@@ -1,13 +1,19 @@
 # MiniClaw2 → native-CLI parity proposal
 
-The current wrapper is a thin slice over `claude-agent-sdk`: one `CCAgent`
-per session, SDK messages translated into a six-event WebSocket
-protocol, and three interaction dialogs (permission / ask-user / plan).
-It works, but the same prompt run in MiniClaw2 vs. the `claude` CLI in
-the same directory will behave noticeably differently because almost
+> **Status note.** `DESIGN.md` is now the source of truth for the
+> long-term architecture; this doc remains as a punch list of
+> CLI-parity gaps. `DESIGN.md` Phase 0 (the spine) is landed and
+> swept up three of the cheap items below — they are marked **✓** in
+> place. Everything else is still pending.
+
+The current wrapper is a slice over `claude-agent-sdk` with a per-node
+state machine, a JSONL/JSON store under `$MINICLAW_HOME`, and three
+interaction dialogs (permission / ask-user / plan). It works, but the
+same prompt run in MiniClaw2 vs. the `claude` CLI in the same
+directory will still behave noticeably differently because almost
 none of the on-disk context the CLI reads is loaded here.
 
-This doc inventories the gaps and proposes a four-phase plan.
+This doc inventories the remaining gaps and the four-phase plan.
 
 ---
 
@@ -32,20 +38,23 @@ This is the single biggest source of behavioral drift between the two.
 
 ### B. Tool / interaction surfaces
 
-1. **Plan mode is broken on the happy path.** `agent.py:281-284` returns
-   `PermissionResultDeny(interrupt=True)` on approve+clear. That tears
-   the turn down instead of switching the SDK to `acceptEdits` and
-   continuing. The "Approve & execute" button is currently a dead end.
-2. **No interrupt button.** Protocol carries `Interrupt`, but
-   `App.tsx` never sends it.
+1. **✓ Plan mode happy path fixed.** `runner._make_can_use_tool` now
+   returns `Allow(updated_permissions=[setMode acceptEdits])` on
+   approve, so the SDK switches mode and the turn continues. The
+   `clear_context` knob is accepted but no-op; a future "Approve in
+   fresh context" affordance is a separate piece of work.
+2. **✓ Interrupt wired.** App.tsx renders a Stop button while
+   `streaming` and sends `{type: "interrupt"}`; the runner transitions
+   the node to `cancelled` and the on-disk state reflects it.
 3. **No `@file` / `!cmd` / image-paste** input affordances.
 4. **No tool-output rendering.** `ToolActivity` shows a start/end dot
    plus truncated input only. Edit diffs, Bash stdout, Read content are
    invisible. Native CLI renders diffs and command output inline.
-5. **Streaming granularity.** `_translate` yields each `TextBlock`
+5. **Streaming granularity.** Translation still yields each `TextBlock`
    whole. CLI streams per-token deltas via partial messages.
-6. **`ThinkingBlock` dropped silently** (`agent.py:206-207`). CLI
-   surfaces these as collapsible reasoning.
+6. **✓ `ThinkingBlock` surfaced** as a new `thinking` server event;
+   frontend renders a collapsible `<details>` block above the
+   assistant text.
 7. **`AskUserQuestion` UI** lacks previews, multiSelect, and the
    "Other" free-text fallback.
 8. **Permission dialog** lacks `updated_input` editing, allow-always
@@ -54,15 +63,20 @@ This is the single biggest source of behavioral drift between the two.
 
 ### C. Session / persistence
 
-1. Sessions live in-memory (`session.py`). Reload the page → lose
-   everything. CLI auto-saves transcripts under `~/.claude/projects/…`.
-2. Only one concurrent turn per session (`app.py:84`); no queue.
-3. No session list / switcher UI. `App.tsx` always creates a fresh
-   session on mount.
+1. **~ Partially closed.** `Project` / `Node` / `HumanGate` now persist
+   to disk under `$MINICLAW_HOME` (`store.py`). Page reload still
+   drops UI state because the WebSocket reconnect-replay endpoint
+   that consumes `events.jsonl` is not yet wired (Phase 1).
+2. Only one concurrent node per project (`registry.ProjectRuntime`);
+   no queue.
+3. No session/project list / switcher UI. `App.tsx` always creates a
+   fresh project on mount.
 4. `cwd` / `model` are settable via REST POST but not surfaced in the
    UI.
-5. SDK `resume` is wired (`agent.py:314-315`) but never used because
-   the wrapper doesn't expose "open existing session by id".
+5. **~ Used implicitly.** SDK `resume` now fires automatically: each
+   new node inherits `sdk_session_id` from its predecessor in the
+   project (`registry.start_node`). Resuming an externally-known
+   session id from a different host or process is still not exposed.
 
 ### D. Settings / runtime knobs
 
@@ -77,15 +91,18 @@ This is the single biggest source of behavioral drift between the two.
 
 ### E. Backend hygiene
 
-- `ClaudeSDKClient` is created **per turn** (`agent.py:107`) rather
-  than per session. Each turn pays connection + auth + CLAUDE.md
-  re-load. `resume` papers over conversation continuity but throws
-  away tool-permission state, MCP connections, etc.
-- Pending-future cleanup in `finally` (`agent.py:152-155`) can race
-  with `can_use_tool` callbacks fired late by the SDK.
-- `_tool_queue` is an attribute used by the closure created in
-  `_make_can_use_tool`; only safe because turns are serialized.
-  Concurrency in (C.2) requires reworking.
+- **~ Structurally addressed.** `ClaudeSDKClient` is now owned by the
+  `NodeRunner` for the node's lifetime (`runner.py`). Observationally
+  identical to the old per-turn behavior because Phase 0 has one node
+  ≈ one user prompt. Real divergence comes in Phase 2 when checkpoint
+  gates extend a node past first model-done.
+- Pending-future cleanup in `runner.py`'s `finally` block can still
+  race with `can_use_tool` callbacks fired late by the SDK; logic
+  carried over from the old `agent.py`.
+- `_sdk_queue` is held on the `NodeRunner` instance and used by the
+  `can_use_tool` closure; only safe because nodes within a project
+  are serialized (DESIGN §2.2). Cross-project concurrency is fine
+  since each project has its own runner.
 
 ---
 
@@ -97,21 +114,25 @@ Each phase lands as a usable improvement on its own.
 
 Small, high-value fixes within the current architecture.
 
-- **Fix plan-mode happy path.** Approve+execute returns
-  `PermissionResultAllow(updated_permissions=[setMode acceptEdits])`
-  instead of `Deny(interrupt=True)`. `clear_context` becomes an
-  optional "Approve in a fresh context" flow.
-- **Wire `Interrupt`.** Stop button in `App.tsx` while `streaming`;
-  sends `{type:"interrupt"}`.
-- **Render tool I/O.** Add an optional `result` field to `Activity`
+- [✓] **Plan-mode happy path** — landed in Phase 0 (`runner.py`).
+- [✓] **Wire `Interrupt`** — landed in Phase 0 (Stop button in
+  `App.tsx`, runner cancels the SDK reader and transitions the node
+  to `cancelled`).
+- [✓] **Surface `ThinkingBlock`** — landed in Phase 0 as a new
+  `thinking` server event + `<details>` block in `Chat.tsx`.
+- [ ] **Render tool I/O.** Add an optional `result` field to `Activity`
   (truncated, ~4 KB). Render Edit as a diff, Bash as stdout, Read as
   a code block in `ToolActivity`. Surface `is_error` distinctly.
-- **Markdown rendering** for assistant text — `react-markdown` plus a
-  syntax highlighter. Current `whitespace-pre-wrap` mangles code
+- [ ] **Markdown rendering** for assistant text — `react-markdown` plus
+  a syntax highlighter. Current `whitespace-pre-wrap` mangles code
   blocks.
-- **Surface `ThinkingBlock`** as a collapsible block.
-- **Per-token streaming.** Switch to the SDK's partial-message stream
-  if available; otherwise chunk `TextBlock.text` ourselves.
+- [ ] **Per-token streaming.** Switch to the SDK's partial-message
+  stream if available; otherwise chunk `TextBlock.text` ourselves.
+- [ ] **Reconnect replay.** Consume `events.jsonl` on WS reconnect:
+  client sends `(node_id, last_seq)`, backend tails the JSONL since
+  `last_seq` then attaches to the live stream. The JSONL is already
+  written; only the endpoint and a tiny client-side `seq` tracker
+  are missing.
 
 ### Phase 2 — Match the CLI's "what's loaded" contract
 
@@ -166,12 +187,20 @@ Closes most of the behavioral drift in (A).
 
 ## 3. Sequencing notes
 
-- Phase 1 is mostly local edits — no schema change, no migrations,
-  safe to land incrementally.
-- Phase 2 requires extending `_build_options` and adding a small
-  config loader; no protocol change.
-- Phase 3 is the largest commit: persistence schema, session UI, and
-  the lifetime refactor for `ClaudeSDKClient` should land together
-  because the client-lifetime change interacts with the queue.
+- Phase 0 of `DESIGN.md` (spine: domain model, store, runner,
+  registry) and the three cheap wins above landed together; the
+  refactor that DESIGN-Phase-0 demands subsumed what would have been
+  the most invasive parts of this proposal's Phase 1 and Phase 3.
+- Phase 1 remaining items are mostly local edits — no schema change,
+  no migrations, safe to land incrementally. The reconnect-replay
+  item is the only one that touches the wire protocol.
+- Phase 2 (`PROPOSAL.md` numbering — on-disk context loading) extends
+  `runner._build_options` and adds a small config loader; no
+  protocol change. This now also feeds `ContextBundle` records under
+  the DESIGN model.
+- Phase 3 (session/project UI + queue) is no longer the largest
+  commit; the persistence layer is already in. What remains is the
+  workspace UI, project switcher, settings surface, and a queue for
+  user messages while a node is running.
 - Phase 4 items are independent of each other and can be picked off
   individually once Phase 3 lands.

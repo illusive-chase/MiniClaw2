@@ -4,6 +4,17 @@ This document supersedes `PROPOSAL.md` (which remains as a punch list of
 CLI-parity gaps in the current wrapper). It captures the architecture we
 are converging toward over the next several phases.
 
+> **Status (Phase 0 landed).** The spine is in. Domain model
+> (`Project`, `Node`, `HumanGate`) persists to disk as JSON + JSONL
+> under `$MINICLAW_HOME` (default `~/.miniclaw2`); SQLite from §8 is
+> **deferred** in favor of JSON/JSONL while the schema is still
+> exploratory. The legacy `/sessions` + `/ws/{sid}` wire protocol is
+> kept as a 1:1 session-to-project compat layer so the existing UI
+> works unchanged. Three CLI-parity items from `PROPOSAL.md` rode
+> along: plan-mode happy path, interrupt button, `ThinkingBlock`
+> surface. WebSocket reconnect replay (the consumer of the per-node
+> JSONL log) is queued for Phase 1.
+
 ## 1. Motivation
 
 MiniClaw2 is not a nicer Claude chat UI. The goal is a **graph IDE for
@@ -202,31 +213,69 @@ you":
 
 ## 8. Persistence sketch
 
-- SQLite under `~/.miniclaw2/` (single-user assumption for MVP).
-- Tables: `project`, `node`, `human_gate`, `context_bundle`, `event_log`.
-- Transcript events streamed to JSONL per node (`nodes/<id>/events.jsonl`)
-  for cheap append + replay on reconnect.
-- WebSocket reconnect strategy: client sends `(session_id, last_seq)`;
-  backend replays events from JSONL since `last_seq` then attaches to
-  live stream.
+> Phase 0 chose **JSON + JSONL only**. SQLite is deferred until
+> cross-project queries (e.g. "list all nodes in `awaiting-review`")
+> actually become hot — likely in Phase 3.
+
+Filesystem layout under `$MINICLAW_HOME` (default `~/.miniclaw2/`,
+single-user assumption for MVP):
+
+```
+projects/<pid>/
+  project.json                # full Project model
+  nodes/<nid>/
+    node.json                 # full Node model, rewritten on each state transition
+    events.jsonl              # {seq, event} per line, append-only
+    gates.jsonl               # {action: "created"|"resolved", gate} per line
+```
+
+- Atomic writes for the JSON files via tmp + rename. Single-writer per
+  node is guaranteed by the rule that nodes within a project run
+  sequentially (§2.2).
+- Future SQLite migration is a flat translation: each JSON file becomes
+  one row, each JSONL line one row of an append-only event table.
+- WebSocket reconnect strategy (Phase 1 work): client sends
+  `(node_id, last_seq)`; backend replays from `events.jsonl` since
+  `last_seq` then attaches to the live stream. The JSONL is already
+  written in Phase 0; only the replay endpoint is missing.
 
 ## 9. Phased plan
 
 Each phase ends with a usable system. The CLI-parity items from
 `PROPOSAL.md` are absorbed into Phase 1 and Phase 2.
 
-### Phase 0 — Spine
+### Phase 0 — Spine ✓ landed
 
 No UI changes. Migrate to the new domain model.
 
-- SQLite persistence for `Project`, `Node`, `HumanGate`, `ContextBundle`.
-- Node state machine implemented and exercised by existing single-session
-  flow (current UI keeps working as "default project with one agent
-  node").
-- Generalize `InteractionRequest` → `HumanGate` (inline kind only).
-- Per-node JSONL event log for reconnect replay.
-- Client lifetime: `ClaudeSDKClient` is held by the node for its whole
-  session (no more reconnect per turn).
+- [✓] Persistence for `Project`, `Node`, `HumanGate` — JSON + JSONL
+  on disk (SQLite deferred; see §8).
+- [✓] Node state machine implemented and exercised by existing
+  single-session flow. Each session id is now a project id; each user
+  prompt becomes a new agent node with implicit `parent_node_id` set
+  to the project's previous node, and `sdk_session_id` inherited so
+  the SDK resumes the conversation.
+- [✓] Generalized `InteractionRequest` → `HumanGate` (inline kind
+  only). The wire still emits `interaction_request` events for
+  compat; the on-disk record is a `HumanGate`.
+- [✓] Per-node JSONL event log (`events.jsonl`). The replay-on-reconnect
+  endpoint that consumes this log is queued for Phase 1.
+- [~] Client lifetime: structurally `ClaudeSDKClient` is owned by the
+  `NodeRunner` for the node's whole lifetime. Because Phase 0 has one
+  node ≈ one user prompt, this is observationally identical to the
+  old per-turn lifetime. Real divergence comes in Phase 2 when
+  checkpoint gates and inline-resume affordances extend a node's life.
+
+Cheap wins from `PROPOSAL.md` Phase 1 absorbed along the way:
+
+- [✓] Plan-mode happy path fixed — Approve now returns
+  `Allow(updated_permissions=[setMode acceptEdits])` instead of
+  `Deny(interrupt=True)`.
+- [✓] Interrupt wired — Stop button while streaming sends `interrupt`,
+  the runner transitions the node to `cancelled`, on-disk state
+  reflects it.
+- [✓] `ThinkingBlock` surfaced as a `thinking` event; frontend renders
+  a collapsible `<details>` panel above the assistant text.
 
 ### Phase 1 — Single-project graph
 
