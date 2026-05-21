@@ -12,6 +12,13 @@ from pydantic import BaseModel, Field
 class TextDelta(BaseModel):
     type: Literal["text_delta"] = "text_delta"
     text: str
+    seq: int = 0
+
+
+class Thinking(BaseModel):
+    type: Literal["thinking"] = "thinking"
+    text: str
+    seq: int = 0
 
 
 class Activity(BaseModel):
@@ -21,6 +28,7 @@ class Activity(BaseModel):
     id: str
     name: str
     summary: str = ""
+    seq: int = 0
 
 
 class InteractionRequest(BaseModel):
@@ -30,6 +38,7 @@ class InteractionRequest(BaseModel):
     tool_name: str
     tool_input: dict[str, Any] = Field(default_factory=dict)
     suggestions: list[Any] = Field(default_factory=list)
+    seq: int = 0
 
 
 class Usage(BaseModel):
@@ -39,15 +48,18 @@ class Usage(BaseModel):
     cache_read_tokens: int = 0
     cache_creation_tokens: int = 0
     final: bool = False
+    seq: int = 0
 
 
 class TurnDone(BaseModel):
     type: Literal["turn_done"] = "turn_done"
+    seq: int = 0
 
 
 class ErrorEvent(BaseModel):
     type: Literal["error"] = "error"
     message: str
+    seq: int = 0
 
 
 # ---------- Client -> Server ----------

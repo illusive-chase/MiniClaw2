@@ -29,6 +29,8 @@ export function App() {
   const handleEvent = useCallback((ev: ServerEvent) => {
     if (ev.type === "text_delta") {
       setTurns((prev) => appendAssistantText(prev, ev.text));
+    } else if (ev.type === "thinking") {
+      setTurns((prev) => appendAssistantThinking(prev, ev.text));
     } else if (ev.type === "activity") {
       setTurns((prev) => mergeActivity(prev, ev));
     } else if (ev.type === "interaction_request") {
@@ -60,6 +62,11 @@ export function App() {
     setInput("");
     setStreaming(true);
     send({ type: "user_message", text });
+  };
+
+  const onStop = () => {
+    if (!streaming || status !== "open") return;
+    send({ type: "interrupt" });
   };
 
   const resolvePending = (
@@ -149,13 +156,23 @@ export function App() {
             disabled={status !== "open" || streaming}
             className="flex-1 resize-none rounded-lg border border-slate-800 bg-slate-900 px-3 py-2 text-sm focus:border-slate-600 focus:outline-none disabled:opacity-50"
           />
-          <button
-            onClick={onSend}
-            disabled={status !== "open" || streaming || !input.trim()}
-            className="rounded-lg bg-slate-100 px-4 text-sm font-medium text-slate-900 hover:bg-white disabled:opacity-40"
-          >
-            Send
-          </button>
+          {streaming ? (
+            <button
+              onClick={onStop}
+              disabled={status !== "open"}
+              className="rounded-lg bg-rose-600 px-4 text-sm font-medium text-white hover:bg-rose-500 disabled:opacity-40"
+            >
+              Stop
+            </button>
+          ) : (
+            <button
+              onClick={onSend}
+              disabled={status !== "open" || !input.trim()}
+              className="rounded-lg bg-slate-100 px-4 text-sm font-medium text-slate-900 hover:bg-white disabled:opacity-40"
+            >
+              Send
+            </button>
+          )}
         </div>
       </div>
     </div>
@@ -167,6 +184,17 @@ function appendAssistantText(prev: ChatTurn[], text: string): ChatTurn[] {
   const last = prev[prev.length - 1];
   if (last.role !== "assistant") return prev;
   const updated = { ...last, text: last.text + text };
+  return [...prev.slice(0, -1), updated];
+}
+
+function appendAssistantThinking(prev: ChatTurn[], text: string): ChatTurn[] {
+  if (prev.length === 0) return prev;
+  const last = prev[prev.length - 1];
+  if (last.role !== "assistant") return prev;
+  const updated = {
+    ...last,
+    thinking: (last.thinking ?? "") + (text.endsWith("\n") ? text : text + "\n"),
+  };
   return [...prev.slice(0, -1), updated];
 }
 

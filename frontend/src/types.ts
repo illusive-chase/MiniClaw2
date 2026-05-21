@@ -1,6 +1,8 @@
 // Mirror of backend WebSocket events (backend/miniclaw2/events.py).
 
-export type TextDelta = { type: "text_delta"; text: string };
+export type TextDelta = { type: "text_delta"; text: string; seq?: number };
+
+export type Thinking = { type: "thinking"; text: string; seq?: number };
 
 export type Activity = {
   type: "activity";
@@ -9,6 +11,7 @@ export type Activity = {
   id: string;
   name: string;
   summary: string;
+  seq?: number;
 };
 
 export type InteractionRequest = {
@@ -18,6 +21,7 @@ export type InteractionRequest = {
   tool_name: string;
   tool_input: Record<string, unknown>;
   suggestions: unknown[];
+  seq?: number;
 };
 
 export type Usage = {
@@ -27,13 +31,15 @@ export type Usage = {
   cache_read_tokens: number;
   cache_creation_tokens: number;
   final: boolean;
+  seq?: number;
 };
 
-export type TurnDone = { type: "turn_done" };
-export type ErrorEvent = { type: "error"; message: string };
+export type TurnDone = { type: "turn_done"; seq?: number };
+export type ErrorEvent = { type: "error"; message: string; seq?: number };
 
 export type ServerEvent =
   | TextDelta
+  | Thinking
   | Activity
   | InteractionRequest
   | Usage

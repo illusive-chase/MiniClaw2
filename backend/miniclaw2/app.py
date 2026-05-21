@@ -1,9 +1,15 @@
-"""FastAPI app: session CRUD + WebSocket gateway."""
+"""FastAPI app: session-shaped REST + WebSocket gateway over ProjectRegistry.
+
+The wire protocol is intentionally unchanged from before the Phase 0
+refactor: a "session" id is a project id; each ``user_message`` spawns
+a new agent node whose conversation continues from the project's
+latest node via SDK ``resume``.
+"""
 
 from __future__ import annotations
 
-import asyncio
 import logging
+import os
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
@@ -11,7 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from .events import InteractionResponse, Interrupt, UserMessage
-from .session import SessionRegistry
+from .registry import ProjectRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -35,44 +41,40 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
-    registry = SessionRegistry()
+    registry = ProjectRegistry()
 
     @app.post("/sessions", response_model=SessionInfo)
     def create_session(req: CreateSessionRequest) -> SessionInfo:
-        s = registry.create(cwd=req.cwd, model=req.model)
-        return SessionInfo(id=s.id, created_at=s.created_at, turns=s.turns)
+        project = registry.create_project(cwd=req.cwd or os.getcwd(), model=req.model)
+        return SessionInfo(id=project.id, created_at=project.created_at, turns=0)
 
     @app.get("/sessions", response_model=list[SessionInfo])
     def list_sessions() -> list[SessionInfo]:
         return [
-            SessionInfo(id=s.id, created_at=s.created_at, turns=s.turns)
-            for s in registry.list()
+            SessionInfo(
+                id=p.id,
+                created_at=p.created_at,
+                turns=registry.turn_count(p.id),
+            )
+            for p in registry.list_projects()
         ]
 
     @app.delete("/sessions/{sid}")
     def delete_session(sid: str) -> dict[str, bool]:
-        if not registry.delete(sid):
+        if not registry.delete_project(sid):
             raise HTTPException(404, "session not found")
         return {"ok": True}
 
     @app.websocket("/ws/{sid}")
     async def ws(websocket: WebSocket, sid: str) -> None:
-        session = registry.get(sid)
-        if session is None:
+        if registry.get_project(sid) is None:
             await websocket.close(code=4404, reason="session not found")
             return
 
         await websocket.accept()
-        turn_task: asyncio.Task | None = None
 
-        async def run_turn(text: str) -> None:
-            session.turns += 1
-            try:
-                async for event in session.agent.run_turn(text):
-                    await websocket.send_json(event.model_dump())
-            except Exception:  # noqa: BLE001
-                logger.exception("turn failed")
-                await _send(websocket, {"type": "error", "message": "internal error"})
+        async def on_event(event: dict[str, Any]) -> None:
+            await websocket.send_json(event)
 
         try:
             while True:
@@ -81,14 +83,18 @@ def create_app() -> FastAPI:
 
                 if msg_type == "user_message":
                     msg = UserMessage(**raw)
-                    if turn_task and not turn_task.done():
-                        await _send(websocket, {"type": "error", "message": "turn in progress"})
+                    runner = registry.start_node(sid, msg.text, on_event)
+                    if runner is None:
+                        await _send(websocket, {
+                            "type": "error",
+                            "message": "turn in progress",
+                        })
                         continue
-                    turn_task = asyncio.create_task(run_turn(msg.text))
 
                 elif msg_type == "interaction_response":
                     resp = InteractionResponse(**raw)
-                    ok = session.agent.resolve_interaction(
+                    ok = registry.resolve_gate(
+                        sid,
                         resp.id,
                         allow=resp.allow,
                         message=resp.message,
@@ -104,17 +110,21 @@ def create_app() -> FastAPI:
 
                 elif msg_type == "interrupt":
                     Interrupt(**raw)  # validate shape
-                    if turn_task and not turn_task.done():
-                        turn_task.cancel()
+                    registry.interrupt(sid)
 
                 else:
-                    await _send(websocket, {"type": "error", "message": f"unknown type: {msg_type}"})
+                    await _send(websocket, {
+                        "type": "error",
+                        "message": f"unknown type: {msg_type}",
+                    })
 
         except WebSocketDisconnect:
             pass
         finally:
-            if turn_task and not turn_task.done():
-                turn_task.cancel()
+            # Don't cancel the runner on WS disconnect — it should finish
+            # and persist final state. The next WS connect can resume
+            # observation once replay is implemented (Phase 1).
+            pass
 
     return app
 

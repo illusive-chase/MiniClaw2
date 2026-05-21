@@ -21,7 +21,7 @@ export function PlanDialog({ request, onRespond }: Props) {
       <div className="flex flex-wrap gap-2">
         <button
           onClick={() =>
-            onRespond({ allow: true, clearContext: true, permissionMode: "acceptEdits" })
+            onRespond({ allow: true, permissionMode: "acceptEdits" })
           }
           className="rounded bg-emerald-600 px-3 py-1 text-xs font-medium hover:bg-emerald-500"
         >

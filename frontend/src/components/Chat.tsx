@@ -6,6 +6,7 @@ export type ChatTurn = {
   id: string;
   role: "user" | "assistant";
   text: string;
+  thinking?: string;
   activities: Activity[];
   streaming?: boolean;
 };
@@ -23,6 +24,16 @@ export function Chat({ turns }: { turns: ChatTurn[] }) {
           <div className="text-[10px] uppercase tracking-wider text-slate-500">
             {t.role}
           </div>
+          {t.role === "assistant" && t.thinking && (
+            <details className="rounded-lg border border-slate-800/60 bg-slate-900/30 px-3 py-2 text-xs text-slate-400">
+              <summary className="cursor-pointer select-none text-slate-500">
+                thinking ({t.thinking.length} chars)
+              </summary>
+              <pre className="mt-2 whitespace-pre-wrap font-mono text-[11px] text-slate-500">
+                {t.thinking}
+              </pre>
+            </details>
+          )}
           {t.role === "assistant" && <ToolActivity items={t.activities} />}
           <div
             className={
