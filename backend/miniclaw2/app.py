@@ -25,6 +25,7 @@ logger = logging.getLogger(__name__)
 class CreateSessionRequest(BaseModel):
     cwd: str | None = None
     model: str | None = None
+    model_provider: str | None = None
     provider: str | None = None
 
 
@@ -51,6 +52,7 @@ def create_app() -> FastAPI:
             project = registry.create_project(
                 cwd=req.cwd or os.getcwd(),
                 model=req.model,
+                model_provider=req.model_provider,
                 provider=req.provider,
             )
         except ValueError as exc:

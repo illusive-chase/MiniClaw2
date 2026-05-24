@@ -35,14 +35,7 @@ class CodexProvider:
                 if not thread_id:
                     start = await client.request(
                         "thread/start",
-                        {
-                            "model": context.project.settings_override.get("model"),
-                            "cwd": context.project.root_path,
-                            "approvalPolicy": _approval_policy(context),
-                            "sandbox": _sandbox_mode(context),
-                            "config": context.project.settings_override.get("codex_config"),
-                            "serviceName": "MiniClaw2",
-                        },
+                        _thread_params(context, {"cwd": context.project.root_path}),
                     )
                     thread_id = start.get("thread", {}).get("id")
                     if not thread_id:
@@ -51,14 +44,13 @@ class CodexProvider:
                 else:
                     resumed = await client.request(
                         "thread/resume",
-                        {
-                            "threadId": thread_id,
-                            "model": context.project.settings_override.get("model"),
-                            "cwd": context.project.root_path,
-                            "approvalPolicy": _approval_policy(context),
-                            "sandbox": _sandbox_mode(context),
-                            "config": context.project.settings_override.get("codex_config"),
-                        },
+                        _thread_params(
+                            context,
+                            {
+                                "threadId": thread_id,
+                                "cwd": context.project.root_path,
+                            },
+                        ),
                     )
                     resumed_thread_id = resumed.get("thread", {}).get("id")
                     if resumed_thread_id and resumed_thread_id != thread_id:
@@ -467,12 +459,26 @@ class _CodexJsonRpcClient:
                 logger.debug("codex app-server stderr: %s", text)
 
 
-def _approval_policy(context: AgentProviderContext) -> Any:
-    return context.project.settings_override.get("approval_policy") or "on-request"
+def _thread_params(
+    context: AgentProviderContext,
+    base: dict[str, Any],
+) -> dict[str, Any]:
+    settings = context.project.settings_override
+    params = dict(base)
+    _set_if_present(params, "model", settings.get("model"))
+    _set_if_present(params, "modelProvider", settings.get("model_provider"))
+    _set_if_present(params, "serviceTier", settings.get("service_tier"))
+    _set_if_present(params, "approvalPolicy", settings.get("approval_policy"))
+    _set_if_present(params, "sandbox", settings.get("sandbox"))
+    _set_if_present(params, "config", settings.get("codex_config"))
+    if "threadId" not in params:
+        params["serviceName"] = "MiniClaw2"
+    return params
 
 
-def _sandbox_mode(context: AgentProviderContext) -> str | None:
-    return context.project.settings_override.get("sandbox") or "workspace-write"
+def _set_if_present(target: dict[str, Any], key: str, value: Any) -> None:
+    if value is not None:
+        target[key] = value
 
 
 def _codex_user_input_response(response: dict[str, Any]) -> dict[str, Any]:

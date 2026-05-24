@@ -53,7 +53,10 @@ Env:
 - `MINICLAW_HOME` (default `~/.miniclaw2`) — root for the on-disk store.
 - Claude provider: whatever auth the `claude` CLI already uses on your machine.
 - Codex provider: `codex` must be on `PATH` and `codex doctor` should
-  show working auth/config. The adapter uses `codex app-server --listen stdio://`.
+  show working auth/config. The adapter uses `codex app-server --listen stdio://`
+  and does not set `modelProvider`, `approvalPolicy`, or `sandbox` unless
+  they are explicitly provided as session overrides, so Codex keeps using
+  `$CODEX_HOME/config.toml` defaults such as your `packycode` provider/base URL.
 
 The frontend has a Claude/Codex selector. You can also create a
 Codex-backed session manually:

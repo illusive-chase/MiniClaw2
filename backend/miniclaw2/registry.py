@@ -50,17 +50,23 @@ class ProjectRegistry:
         self,
         cwd: str,
         model: str | None = None,
+        model_provider: str | None = None,
         name: str = "",
         provider: str | None = None,
     ) -> Project:
         normalized_provider = (provider or "claude").lower()
         if normalized_provider not in {"claude", "codex"}:
             raise ValueError(f"unknown provider: {provider}")
+        settings: dict[str, Any] = {}
+        if model:
+            settings["model"] = model
+        if model_provider:
+            settings["model_provider"] = model_provider
         project = Project(
             root_path=cwd,
             name=name,
             provider=normalized_provider,
-            settings_override={"model": model} if model else {},
+            settings_override=settings,
         )
         self.store.create_project(project)
         self._runtimes[project.id] = ProjectRuntime(project)
