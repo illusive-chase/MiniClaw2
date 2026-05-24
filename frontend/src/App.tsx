@@ -15,6 +15,7 @@ import { useSessionSocket } from "./ws";
 
 export function App() {
   const [session, setSession] = useState<SessionInfo | null>(null);
+  const [provider, setProvider] = useState<"claude" | "codex">("claude");
   const [turns, setTurns] = useState<ChatTurn[]>([]);
   const [pending, setPending] = useState<InteractionRequest | null>(null);
   const [usage, setUsage] = useState<Usage | null>(null);
@@ -23,8 +24,8 @@ export function App() {
   const turnIdRef = useRef(0);
 
   useEffect(() => {
-    createSession().then(setSession).catch(console.error);
-  }, []);
+    createSession({ provider }).then(setSession).catch(console.error);
+  }, [provider]);
 
   const handleEvent = useCallback((ev: ServerEvent) => {
     if (ev.type === "text_delta") {
@@ -86,7 +87,15 @@ export function App() {
       return (
         <PermissionDialog
           request={pending}
-          onRespond={(allow, message) => resolvePending({ allow, message: message ?? "" })}
+          onRespond={(args) =>
+            resolvePending({
+              allow: args.allow,
+              decision: args.decision ?? null,
+              scope: args.scope ?? null,
+              interrupt: args.interrupt ?? false,
+              message: args.message ?? "",
+            })
+          }
         />
       );
     }
@@ -97,7 +106,11 @@ export function App() {
           onRespond={(answers) =>
             resolvePending({
               allow: true,
-              updated_input: { ...pending.tool_input, answers },
+              updated_input: {
+                ...pending.tool_input,
+                answers: toLegacyAnswers(answers),
+              },
+              response: { answers },
             })
           }
         />
@@ -128,6 +141,21 @@ export function App() {
             session {session?.id ?? "—"} · ws {status}
           </div>
         </div>
+        <select
+          value={provider}
+          onChange={(e) => {
+            setProvider(e.target.value as "claude" | "codex");
+            setTurns([]);
+            setUsage(null);
+            setStreaming(false);
+            setPending(null);
+          }}
+          disabled={streaming}
+          className="rounded border border-slate-800 bg-slate-900 px-2 py-1 text-xs text-slate-300"
+        >
+          <option value="claude">Claude</option>
+          <option value="codex">Codex</option>
+        </select>
         {usage && (
           <div className="text-[11px] text-slate-500 font-mono">
             in {usage.input_tokens} · out {usage.output_tokens} · cache r{" "}
@@ -152,7 +180,7 @@ export function App() {
               }
             }}
             rows={2}
-            placeholder={status === "open" ? "Message Claude…" : "Connecting…"}
+            placeholder={status === "open" ? "Message agent..." : "Connecting..."}
             disabled={status !== "open" || streaming}
             className="flex-1 resize-none rounded-lg border border-slate-800 bg-slate-900 px-3 py-2 text-sm focus:border-slate-600 focus:outline-none disabled:opacity-50"
           />
@@ -207,4 +235,13 @@ function mergeActivity(prev: ChatTurn[], a: Activity): ChatTurn[] {
     ? last.activities.map((x, idx) => (idx === i ? a : x))
     : [...last.activities, a];
   return [...prev.slice(0, -1), { ...last, activities: next }];
+}
+
+function toLegacyAnswers(answers: Record<string, { answers: string[] }>) {
+  return Object.fromEntries(
+    Object.entries(answers).map(([key, value]) => [
+      key,
+      value.answers.length <= 1 ? (value.answers[0] ?? "") : value.answers,
+    ]),
+  );
 }

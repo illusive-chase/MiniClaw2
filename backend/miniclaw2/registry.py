@@ -2,8 +2,8 @@
 
 The legacy "session" id maps 1:1 to a project id. Each user prompt
 becomes a new agent :class:`Node` whose ``parent_node_id`` points at
-the previous node in that project, and whose ``sdk_session_id``
-inherits from the predecessor so the SDK resumes the conversation.
+the previous node in that project, and whose provider ids inherit from
+the predecessor so the selected provider resumes the conversation.
 
 Within a project, only one node runs at a time (DESIGN §2.2).
 """
@@ -47,11 +47,19 @@ class ProjectRegistry:
     # ---- project CRUD ----
 
     def create_project(
-        self, cwd: str, model: str | None = None, name: str = ""
+        self,
+        cwd: str,
+        model: str | None = None,
+        name: str = "",
+        provider: str | None = None,
     ) -> Project:
+        normalized_provider = (provider or "claude").lower()
+        if normalized_provider not in {"claude", "codex"}:
+            raise ValueError(f"unknown provider: {provider}")
         project = Project(
             root_path=cwd,
             name=name,
+            provider=normalized_provider,
             settings_override={"model": model} if model else {},
         )
         self.store.create_project(project)
@@ -103,6 +111,8 @@ class ProjectRegistry:
             kind=NodeKind.AGENT,
             state=NodeState.QUEUED,
             parent_node_id=latest.id if latest else None,
+            provider=rt.project.provider,
+            provider_session_id=latest.provider_session_id if latest else None,
             sdk_session_id=latest.sdk_session_id if latest else None,
             prompt=prompt,
         )
@@ -119,6 +129,8 @@ class ProjectRegistry:
         if rt is None or not rt.is_running():
             return False
         assert rt.runner_task is not None
+        if rt.runner is not None:
+            asyncio.create_task(rt.runner.interrupt())
         rt.runner_task.cancel()
         return True
 
@@ -128,8 +140,12 @@ class ProjectRegistry:
         gate_id: str,
         *,
         allow: bool,
+        decision: str | dict[str, Any] | None = None,
         message: str = "",
         updated_input: dict[str, Any] | None = None,
+        response: dict[str, Any] | None = None,
+        scope: str | None = None,
+        interrupt: bool = False,
         permission_mode: str | None = None,
         clear_context: bool = False,
     ) -> bool:
@@ -139,8 +155,12 @@ class ProjectRegistry:
         return rt.runner.resolve_gate(
             gate_id,
             allow=allow,
+            decision=decision,
             message=message,
             updated_input=updated_input,
+            response=response,
+            scope=scope,
+            interrupt=interrupt,
             permission_mode=permission_mode,
             clear_context=clear_context,
         )

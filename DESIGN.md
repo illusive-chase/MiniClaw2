@@ -4,7 +4,7 @@ This document supersedes `PROPOSAL.md` (which remains as a punch list of
 CLI-parity gaps in the current wrapper). It captures the architecture we
 are converging toward over the next several phases.
 
-> **Status (Phase 0 landed).** The spine is in. Domain model
+> **Status (Phase 0 landed, provider split added).** The spine is in. Domain model
 > (`Project`, `Node`, `HumanGate`) persists to disk as JSON + JSONL
 > under `$MINICLAW_HOME` (default `~/.miniclaw2`); SQLite from §8 is
 > **deferred** in favor of JSON/JSONL while the schema is still
@@ -12,12 +12,14 @@ are converging toward over the next several phases.
 > kept as a 1:1 session-to-project compat layer so the existing UI
 > works unchanged. Three CLI-parity items from `PROPOSAL.md` rode
 > along: plan-mode happy path, interrupt button, `ThinkingBlock`
-> surface. WebSocket reconnect replay (the consumer of the per-node
-> JSONL log) is queued for Phase 1.
+> surface. `NodeRunner` now delegates provider-native IO to adapters:
+> Claude via `claude-agent-sdk`, Codex via `codex app-server` JSON-RPC.
+> WebSocket reconnect replay (the consumer of the per-node JSONL log)
+> is queued for Phase 1.
 
 ## 1. Motivation
 
-MiniClaw2 is not a nicer Claude chat UI. The goal is a **graph IDE for
+MiniClaw2 is not a nicer chat UI for one vendor. The goal is a **graph IDE for
 human-supervised LLM workflows**:
 
 - The atom of computation is a **session**, not a turn — because a session
@@ -38,7 +40,7 @@ human-supervised LLM workflows**:
 
 Three primary objects. Everything else is a view over these.
 
-### 2.1 Node — one Claude session or one programmatic op
+### 2.1 Node — one provider session/turn or one programmatic op
 
 Every node has:
 
@@ -46,7 +48,10 @@ Every node has:
 - `state ∈ {queued, running, waiting, awaiting-review, done, error, cancelled}`
 - `parent_node_id?` — for **resume** edges (SDK conversation continuation)
 - `context_sources: [node_id]` — for **context** edges (acausal config carryover)
-- `sdk_session_id?` — set for `agent`/`gate` once the SDK initializes
+- `provider` — `claude` or `codex`
+- `provider_session_id?` — Claude SDK session id or Codex thread id
+- `provider_turn_id?` — provider-native turn id when available
+- `sdk_session_id?` — legacy alias for old Claude records
 - `commit_before?`, `commit_after?` — repo state at start / finish
 - `summary` — short one-liner generated post-completion
 - `created_at`, `started_at`, `finished_at`
@@ -56,6 +61,7 @@ Every node has:
 - `id`, `root_path`, `name`
 - `head_commit` — latest committed state
 - `parent_project_id?`, `parent_commit?` — for forks
+- `provider` — default agent backend for new nodes
 - `settings_override` — model, permission mode, allowed tools, etc.
 
 Within a project the timeline is strictly ordered: nodes run **one at
@@ -67,7 +73,7 @@ intra-project parallelism. This keeps FS state coherent.
 | Edge | Stored as | Means |
 |---|---|---|
 | timeline | implicit from `(project_id, sequence)` | FS-state dependency between adjacent nodes |
-| resume | `parent_node_id` | SDK conversation continuation (`resume=<sid>`); creates a new node, not a continuation of the old one |
+| resume | `parent_node_id` | Provider conversation continuation (`resume=<sid>` for Claude, `threadId` for Codex); creates a new node, not a continuation of the old one |
 | context | `context_sources[]` | Snapshotted bundle of CLAUDE.md fragments, memory files, settings, allowed-tools, agents — evaluated once at consumer-creation time |
 | fork | `parent_project_id` + `parent_commit` | A new project rooted at a git worktree of another project's snapshot |
 
@@ -75,7 +81,7 @@ intra-project parallelism. This keeps FS state coherent.
 
 ```
 ┌────────────────────────────────────────────────────────────┐
-│ agent   │ A Claude session. Inline human gates allowed.   │
+│ agent   │ A provider-backed session/turn. Inline gates allowed. │
 │ gate    │ An agent + a post-completion markdown contract. │
 │         │ After session ends, node enters awaiting-review │
 │         │ until user resolves.                            │
@@ -86,11 +92,12 @@ intra-project parallelism. This keeps FS state coherent.
 
 ### 3.1 agent
 
-Runs the SDK with whatever options are assembled from project settings
-+ context-edge bundle + per-node overrides. Inline human gates
-(`permission`, `ask_user`, `plan_approval`) flow through the existing
-`can_use_tool` callback and put the node into `waiting`. Resolving an
-inline gate continues the same session — the node returns to `running`.
+Runs the selected provider with whatever options are assembled from
+project settings + context-edge bundle + per-node overrides. Inline
+human gates (`permission`, `ask_user`, `plan_approval`) are normalized
+by the provider adapter and put the node into `waiting`. Resolving an
+inline gate continues the same provider session/turn — the node returns
+to `running`.
 
 ### 3.2 gate (checkpoint node)
 
@@ -253,18 +260,17 @@ No UI changes. Migrate to the new domain model.
 - [✓] Node state machine implemented and exercised by existing
   single-session flow. Each session id is now a project id; each user
   prompt becomes a new agent node with implicit `parent_node_id` set
-  to the project's previous node, and `sdk_session_id` inherited so
-  the SDK resumes the conversation.
+  to the project's previous node, and `provider_session_id` inherited
+  so the selected provider resumes the conversation.
 - [✓] Generalized `InteractionRequest` → `HumanGate` (inline kind
   only). The wire still emits `interaction_request` events for
   compat; the on-disk record is a `HumanGate`.
 - [✓] Per-node JSONL event log (`events.jsonl`). The replay-on-reconnect
   endpoint that consumes this log is queued for Phase 1.
-- [~] Client lifetime: structurally `ClaudeSDKClient` is owned by the
-  `NodeRunner` for the node's whole lifetime. Because Phase 0 has one
-  node ≈ one user prompt, this is observationally identical to the
-  old per-turn lifetime. Real divergence comes in Phase 2 when
-  checkpoint gates and inline-resume affordances extend a node's life.
+- [✓] Provider lifetime: `NodeRunner` owns the node state machine and
+  delegates provider-native IO to an adapter for the node's whole
+  lifetime. Claude uses `ClaudeSDKClient`; Codex uses `codex
+  app-server` JSON-RPC.
 
 Cheap wins from `PROPOSAL.md` Phase 1 absorbed along the way:
 

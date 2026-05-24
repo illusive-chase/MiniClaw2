@@ -25,12 +25,14 @@ logger = logging.getLogger(__name__)
 class CreateSessionRequest(BaseModel):
     cwd: str | None = None
     model: str | None = None
+    provider: str | None = None
 
 
 class SessionInfo(BaseModel):
     id: str
     created_at: float
     turns: int
+    provider: str = "claude"
 
 
 def create_app() -> FastAPI:
@@ -45,8 +47,20 @@ def create_app() -> FastAPI:
 
     @app.post("/sessions", response_model=SessionInfo)
     def create_session(req: CreateSessionRequest) -> SessionInfo:
-        project = registry.create_project(cwd=req.cwd or os.getcwd(), model=req.model)
-        return SessionInfo(id=project.id, created_at=project.created_at, turns=0)
+        try:
+            project = registry.create_project(
+                cwd=req.cwd or os.getcwd(),
+                model=req.model,
+                provider=req.provider,
+            )
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        return SessionInfo(
+            id=project.id,
+            created_at=project.created_at,
+            turns=0,
+            provider=project.provider,
+        )
 
     @app.get("/sessions", response_model=list[SessionInfo])
     def list_sessions() -> list[SessionInfo]:
@@ -55,6 +69,7 @@ def create_app() -> FastAPI:
                 id=p.id,
                 created_at=p.created_at,
                 turns=registry.turn_count(p.id),
+                provider=p.provider,
             )
             for p in registry.list_projects()
         ]
@@ -99,6 +114,10 @@ def create_app() -> FastAPI:
                         allow=resp.allow,
                         message=resp.message,
                         updated_input=resp.updated_input,
+                        decision=resp.decision,
+                        response=resp.response,
+                        scope=resp.scope,
+                        interrupt=resp.interrupt,
                         permission_mode=resp.permission_mode,
                         clear_context=resp.clear_context,
                     )

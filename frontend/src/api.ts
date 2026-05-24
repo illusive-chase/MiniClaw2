@@ -1,6 +1,8 @@
 import type { SessionInfo } from "./types";
 
-export async function createSession(body: { cwd?: string; model?: string } = {}): Promise<SessionInfo> {
+export async function createSession(
+  body: { cwd?: string; model?: string; provider?: string } = {},
+): Promise<SessionInfo> {
   const res = await fetch("/sessions", {
     method: "POST",
     headers: { "Content-Type": "application/json" },

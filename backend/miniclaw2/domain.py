@@ -54,6 +54,7 @@ class Project(BaseModel):
     id: str = Field(default_factory=_new_id)
     root_path: str
     name: str = ""
+    provider: str = "claude"
     head_commit: str | None = None
     parent_project_id: str | None = None
     parent_commit: str | None = None
@@ -68,6 +69,9 @@ class Node(BaseModel):
     state: NodeState = NodeState.QUEUED
     parent_node_id: str | None = None
     context_sources: list[str] = Field(default_factory=list)
+    provider: str = "claude"
+    provider_session_id: str | None = None
+    provider_turn_id: str | None = None
     sdk_session_id: str | None = None
     commit_before: str | None = None
     commit_after: str | None = None

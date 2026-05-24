@@ -4,14 +4,20 @@
 > long-term architecture; this doc remains as a punch list of
 > CLI-parity gaps. `DESIGN.md` Phase 0 (the spine) is landed and
 > swept up three of the cheap items below — they are marked **✓** in
-> place. Everything else is still pending.
+> place. A provider layer now supports Claude by default and an initial
+> Codex app-server adapter per session.
 
-The current wrapper is a slice over `claude-agent-sdk` with a per-node
-state machine, a JSONL/JSON store under `$MINICLAW_HOME`, and three
-interaction dialogs (permission / ask-user / plan). It works, but the
-same prompt run in MiniClaw2 vs. the `claude` CLI in the same
-directory will still behave noticeably differently because almost
-none of the on-disk context the CLI reads is loaded here.
+The current default provider is a slice over `claude-agent-sdk` with a
+per-node state machine, a JSONL/JSON store under `$MINICLAW_HOME`, and
+three interaction dialogs (permission / ask-user / plan). It works, but
+the same prompt run in MiniClaw2 vs. the `claude` CLI in the same
+directory will still behave noticeably differently because almost none
+of the on-disk context the CLI reads is loaded here.
+
+Codex is available as an initial provider through `codex app-server`
+JSON-RPC. It maps Codex text/reasoning/tool/activity/usage events and
+server requests (`requestUserInput`, command/file/permission approvals)
+onto MiniClaw2's existing WebSocket protocol.
 
 This doc inventories the remaining gaps and the four-phase plan.
 
@@ -38,11 +44,11 @@ This is the single biggest source of behavioral drift between the two.
 
 ### B. Tool / interaction surfaces
 
-1. **✓ Plan mode happy path fixed.** `runner._make_can_use_tool` now
-   returns `Allow(updated_permissions=[setMode acceptEdits])` on
-   approve, so the SDK switches mode and the turn continues. The
-   `clear_context` knob is accepted but no-op; a future "Approve in
-   fresh context" affordance is a separate piece of work.
+1. **✓ Plan mode happy path fixed.** The Claude provider returns
+   `Allow(updated_permissions=[setMode acceptEdits])` on approve, so
+   the SDK switches mode and the turn continues. The `clear_context`
+   knob is accepted but no-op; a future "Approve in fresh context"
+   affordance is a separate piece of work.
 2. **✓ Interrupt wired.** App.tsx renders a Stop button while
    `streaming` and sends `{type: "interrupt"}`; the runner transitions
    the node to `cancelled` and the on-disk state reflects it.
@@ -55,11 +61,12 @@ This is the single biggest source of behavioral drift between the two.
 6. **✓ `ThinkingBlock` surfaced** as a new `thinking` server event;
    frontend renders a collapsible `<details>` block above the
    assistant text.
-7. **`AskUserQuestion` UI** lacks previews, multiSelect, and the
-   "Other" free-text fallback.
+7. **~ `AskUserQuestion` / Codex `requestUserInput` UI** supports
+   provider-neutral question ids, multi-select, "Other", and secret
+   inputs. It still lacks richer previews.
 8. **Permission dialog** lacks `updated_input` editing, allow-always
-   scoping (session / project), and `suggestions` rendering — the
-   protocol carries `suggestions: list[Any]` but the UI ignores it.
+   project scoping, and `suggestions` rendering. Session-scoped allow
+   is wired for Codex as `acceptForSession`.
 
 ### C. Session / persistence
 
@@ -73,10 +80,10 @@ This is the single biggest source of behavioral drift between the two.
    fresh project on mount.
 4. `cwd` / `model` are settable via REST POST but not surfaced in the
    UI.
-5. **~ Used implicitly.** SDK `resume` now fires automatically: each
-   new node inherits `sdk_session_id` from its predecessor in the
-   project (`registry.start_node`). Resuming an externally-known
-   session id from a different host or process is still not exposed.
+5. **~ Used implicitly.** Provider resume now fires automatically: each
+   new node inherits `provider_session_id` from its predecessor in the
+   project (`registry.start_node`). Claude still writes the legacy
+   `sdk_session_id`; Codex uses its thread id.
 
 ### D. Settings / runtime knobs
 
@@ -91,18 +98,15 @@ This is the single biggest source of behavioral drift between the two.
 
 ### E. Backend hygiene
 
-- **~ Structurally addressed.** `ClaudeSDKClient` is now owned by the
-  `NodeRunner` for the node's lifetime (`runner.py`). Observationally
-  identical to the old per-turn behavior because Phase 0 has one node
-  ≈ one user prompt. Real divergence comes in Phase 2 when checkpoint
-  gates extend a node past first model-done.
-- Pending-future cleanup in `runner.py`'s `finally` block can still
-  race with `can_use_tool` callbacks fired late by the SDK; logic
-  carried over from the old `agent.py`.
-- `_sdk_queue` is held on the `NodeRunner` instance and used by the
-  `can_use_tool` closure; only safe because nodes within a project
-  are serialized (DESIGN §2.2). Cross-project concurrency is fine
-  since each project has its own runner.
+- **✓ Structurally addressed.** `NodeRunner` now owns the state machine
+  and persistence only; provider-native IO lives in `providers/claude.py`
+  and `providers/codex.py`.
+- Provider cleanup can still race with late provider callbacks. The
+  state machine resolves any open `HumanGate` as denied when the node
+  ends.
+- Gate futures live on `NodeRunner`; this is safe because nodes within
+  a project are serialized (DESIGN §2.2). Cross-project concurrency is
+  fine since each project has its own runner.
 
 ---
 
@@ -151,13 +155,12 @@ Closes most of the behavioral drift in (A).
 
 ### Phase 3 — Session lifecycle that survives a reload
 
-- **Persistent session store.** Replace `SessionRegistry` with SQLite
-  or JSONL files under `~/.miniclaw2/sessions/<id>/`. Record `cwd`,
-  `model`, `sdk_session_id`, transcript of WS events, pending
-  interaction state.
+- **Persistent session store.** Continue extending the JSON/JSONL store
+  under `$MINICLAW_HOME`. Record `cwd`, `model`, provider ids,
+  transcript of WS events, pending interaction state.
 - **Session list / switcher UI.** Sidebar listing sessions; click to
-  resume — `POST /sessions` with the saved `sdk_session_id` to attach
-  via SDK `resume`.
+  resume — `POST /sessions` with the saved provider ids to attach via
+  Claude `resume` or Codex `thread/resume`.
 - **`ClaudeSDKClient` lifetime = session lifetime**, not turn. Hold
   the client in `CCAgent` across turns; close only on session
   deletion. Keeps MCP connections, permission state, skill caches warm.

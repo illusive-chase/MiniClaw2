@@ -3,7 +3,13 @@ import type { InteractionRequest } from "../types";
 
 type Props = {
   request: InteractionRequest;
-  onRespond: (allow: boolean, message?: string) => void;
+  onRespond: (args: {
+    allow: boolean;
+    message?: string;
+    decision?: string;
+    scope?: string;
+    interrupt?: boolean;
+  }) => void;
 };
 
 export function PermissionDialog({ request, onRespond }: Props) {
@@ -24,16 +30,35 @@ export function PermissionDialog({ request, onRespond }: Props) {
       />
       <div className="flex gap-2">
         <button
-          onClick={() => onRespond(true)}
+          onClick={() => onRespond({ allow: true })}
           className="rounded bg-emerald-600 px-3 py-1 text-xs font-medium hover:bg-emerald-500"
         >
           Allow
         </button>
         <button
-          onClick={() => onRespond(false, reason)}
+          onClick={() => onRespond({ allow: true, decision: "acceptForSession", scope: "session" })}
+          className="rounded bg-emerald-700 px-3 py-1 text-xs font-medium hover:bg-emerald-600"
+        >
+          Allow for session
+        </button>
+        <button
+          onClick={() => onRespond({ allow: false, message: reason })}
           className="rounded bg-rose-600 px-3 py-1 text-xs font-medium hover:bg-rose-500"
         >
           Deny
+        </button>
+        <button
+          onClick={() =>
+            onRespond({
+              allow: false,
+              decision: "cancel",
+              interrupt: true,
+              message: reason || "Cancelled by user",
+            })
+          }
+          className="rounded border border-rose-500/50 px-3 py-1 text-xs font-medium text-rose-300 hover:bg-rose-500/10"
+        >
+          Cancel turn
         </button>
       </div>
     </div>

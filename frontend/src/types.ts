@@ -21,6 +21,7 @@ export type InteractionRequest = {
   tool_name: string;
   tool_input: Record<string, unknown>;
   suggestions: unknown[];
+  response_hint?: Record<string, unknown>;
   seq?: number;
 };
 
@@ -52,11 +53,20 @@ export type ClientMessage =
       type: "interaction_response";
       id: string;
       allow: boolean;
+      decision?: string | Record<string, unknown> | null;
       message?: string;
       updated_input?: Record<string, unknown> | null;
+      response?: Record<string, unknown> | null;
+      scope?: string | null;
+      interrupt?: boolean;
       permission_mode?: string | null;
       clear_context?: boolean;
     }
   | { type: "interrupt" };
 
-export type SessionInfo = { id: string; created_at: number; turns: number };
+export type SessionInfo = {
+  id: string;
+  created_at: number;
+  turns: number;
+  provider?: string;
+};

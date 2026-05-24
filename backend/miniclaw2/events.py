@@ -38,6 +38,7 @@ class InteractionRequest(BaseModel):
     tool_name: str
     tool_input: dict[str, Any] = Field(default_factory=dict)
     suggestions: list[Any] = Field(default_factory=list)
+    response_hint: dict[str, Any] = Field(default_factory=dict)
     seq: int = 0
 
 
@@ -73,8 +74,12 @@ class InteractionResponse(BaseModel):
     type: Literal["interaction_response"]
     id: str
     allow: bool = True
+    decision: str | dict[str, Any] | None = None
     message: str = ""
     updated_input: dict[str, Any] | None = None
+    response: dict[str, Any] | None = None
+    scope: str | None = None
+    interrupt: bool = False
     permission_mode: str | None = None
     clear_context: bool = False
 
