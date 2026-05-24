@@ -519,23 +519,44 @@ def _codex_decision(
 def _activity_from_item(item: dict[str, Any], status: str) -> Activity | None:
     item_type = item.get("type")
     item_id = str(item.get("id") or item_type or "item")
+    finishing = status in {"finish", "failed"}
     if item_type == "commandExecution":
-        summary = item.get("command") or item.get("aggregatedOutput") or ""
+        summary = item.get("command") or ""
         final_status = "failed" if item.get("exitCode") not in (None, 0) and status == "finish" else status
+        is_failure = final_status == "failed"
+        result_text: str | None = None
+        result_kind: str | None = None
+        if finishing:
+            aggregated = item.get("aggregatedOutput")
+            if aggregated:
+                result_text = _truncate(str(aggregated), 4096)
+                result_kind = "text" if is_failure else "stdout"
         return Activity(
             kind="tool",
             status=final_status,  # type: ignore[arg-type]
             id=item_id,
             name="command",
             summary=_truncate(str(summary)),
+            result=result_text,
+            result_kind=result_kind,  # type: ignore[arg-type]
         )
     if item_type == "fileChange":
+        changes = item.get("changes") or []
+        result_text = None
+        result_kind = None
+        if finishing and changes:
+            rendered = _render_changes(changes)
+            if rendered:
+                result_text = _truncate(rendered, 4096)
+                result_kind = "text" if status == "failed" else "diff"
         return Activity(
             kind="tool",
             status=status,  # type: ignore[arg-type]
             id=item_id,
             name="fileChange",
-            summary=_truncate(json.dumps(item.get("changes") or [], ensure_ascii=False)),
+            summary=_truncate(json.dumps(changes, ensure_ascii=False)),
+            result=result_text,
+            result_kind=result_kind,  # type: ignore[arg-type]
         )
     if item_type == "mcpToolCall":
         return Activity(
@@ -562,6 +583,35 @@ def _activity_from_item(item: dict[str, Any], status: str) -> Activity | None:
             summary=_truncate(json.dumps(item, ensure_ascii=False)),
         )
     return None
+
+
+def _render_changes(changes: Any) -> str:
+    """Render Codex fileChange `changes` as a unified-diff-ish text block."""
+    if not isinstance(changes, list):
+        return ""
+    lines: list[str] = []
+    for entry in changes:
+        if not isinstance(entry, dict):
+            continue
+        path = entry.get("path") or entry.get("file") or "?"
+        action = (entry.get("action") or entry.get("kind") or "update").lower()
+        new_content = entry.get("content") or entry.get("newContent") or ""
+        old_content = entry.get("oldContent") or ""
+        lines.append(f"--- {path}")
+        lines.append(f"+++ {path}  ({action})")
+        if action == "delete":
+            for ln in str(old_content).splitlines():
+                lines.append(f"-{ln}")
+        elif action == "add":
+            for ln in str(new_content).splitlines():
+                lines.append(f"+{ln}")
+        else:
+            for ln in str(old_content).splitlines():
+                lines.append(f"-{ln}")
+            for ln in str(new_content).splitlines():
+                lines.append(f"+{ln}")
+        lines.append("")
+    return "\n".join(lines).rstrip()
 
 
 def _truncate(value: str, limit: int = 200) -> str:

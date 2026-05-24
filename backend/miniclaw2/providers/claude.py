@@ -131,7 +131,14 @@ class ClaudeProvider:
                 if isinstance(block, ToolResultBlock):
                     pending = pending_tools.pop(block.tool_use_id, None)
                     if pending is not None:
-                        pending.status = "failed" if block.is_error else "finish"
+                        is_error = bool(block.is_error)
+                        pending.status = "failed" if is_error else "finish"
+                        result_text = _flatten_tool_result(block.content)
+                        if result_text:
+                            pending.result = _truncate(result_text, 4096)
+                            pending.result_kind = (
+                                "text" if is_error else _kind_for_tool(pending.name)
+                            )
                         yield AgentProviderEvent(kind="event", event=pending)
             return
 
@@ -222,3 +229,36 @@ class ClaudeProvider:
 
 def _truncate(value: str, limit: int = 200) -> str:
     return value if len(value) <= limit else value[:limit] + "..."
+
+
+_DIFF_TOOLS = {"Edit", "MultiEdit", "Write"}
+_STDOUT_TOOLS = {"Bash", "BashOutput"}
+
+
+def _kind_for_tool(name: str) -> str:
+    if name in _STDOUT_TOOLS:
+        return "stdout"
+    if name in _DIFF_TOOLS:
+        return "diff"
+    return "text"
+
+
+def _flatten_tool_result(content: Any) -> str:
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for entry in content:
+            if isinstance(entry, dict):
+                if entry.get("type") == "text" and isinstance(entry.get("text"), str):
+                    parts.append(entry["text"])
+                elif isinstance(entry.get("text"), str):
+                    parts.append(entry["text"])
+            else:
+                text = getattr(entry, "text", None)
+                if isinstance(text, str):
+                    parts.append(text)
+        return "\n".join(parts)
+    return str(content)

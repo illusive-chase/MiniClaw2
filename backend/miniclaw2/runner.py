@@ -15,6 +15,7 @@ from .domain import GateKind, GateState, HumanGate, Node, NodeState, Project
 from .events import (
     ErrorEvent,
     InteractionRequest,
+    NodeStarted,
     TurnDone,
 )
 from .providers import AgentProvider, AgentProviderContext, AgentProviderEvent, GateRequest
@@ -88,6 +89,12 @@ class NodeRunner:
 
     async def run(self) -> None:
         self._transition(NodeState.RUNNING, started=True)
+        await self._emit(
+            NodeStarted(
+                node_id=self.node.id,
+                parent_node_id=self.node.parent_node_id,
+            )
+        )
         final_state: NodeState = NodeState.DONE
         error_msg: str | None = None
 

@@ -4,18 +4,26 @@ This document supersedes `PROPOSAL.md` (which remains as a punch list of
 CLI-parity gaps in the current wrapper). It captures the architecture we
 are converging toward over the next several phases.
 
-> **Status (Phase 0 landed, provider split added).** The spine is in. Domain model
-> (`Project`, `Node`, `HumanGate`) persists to disk as JSON + JSONL
-> under `$MINICLAW_HOME` (default `~/.miniclaw2`); SQLite from §8 is
-> **deferred** in favor of JSON/JSONL while the schema is still
-> exploratory. The legacy `/sessions` + `/ws/{sid}` wire protocol is
-> kept as a 1:1 session-to-project compat layer so the existing UI
-> works unchanged. Three CLI-parity items from `PROPOSAL.md` rode
-> along: plan-mode happy path, interrupt button, `ThinkingBlock`
-> surface. `NodeRunner` now delegates provider-native IO to adapters:
-> Claude via `claude-agent-sdk`, Codex via `codex app-server` JSON-RPC.
-> WebSocket reconnect replay (the consumer of the per-node JSONL log)
-> is queued for Phase 1.
+> **Status (Phase 0 spine + Phase 1 chat polish landed).** The spine is in.
+> Domain model (`Project`, `Node`, `HumanGate`) persists to disk as
+> JSON + JSONL under `$MINICLAW_HOME` (default `~/.miniclaw2`); SQLite
+> from §8 is **deferred** in favor of JSON/JSONL while the schema is
+> still exploratory. The legacy `/sessions` + `/ws/{sid}` wire
+> protocol is kept as a 1:1 session-to-project compat layer so the
+> existing UI works unchanged. Three CLI-parity items from
+> `PROPOSAL.md` rode along with Phase 0: plan-mode happy path,
+> interrupt button, `ThinkingBlock` surface. `NodeRunner` now
+> delegates provider-native IO to adapters: Claude via
+> `claude-agent-sdk`, Codex via `codex app-server` JSON-RPC. The
+> chat-surface polish from `PROPOSAL.md` Phase 1 then landed as a
+> follow-up pass: tool I/O rendering (`Activity.result` +
+> `result_kind` carrying Bash stdout / Edit diffs / Read content from
+> both providers), markdown rendering for assistant text
+> (`react-markdown` + GFM + `highlight.js`), and WebSocket reconnect
+> replay (`node_started` server event + `replay_request` client
+> envelope, consuming the per-node JSONL log). Per-token streaming
+> remains deferred until the pinned `claude-agent-sdk` exposes
+> partial messages.
 
 ## 1. Motivation
 
@@ -266,7 +274,7 @@ No UI changes. Migrate to the new domain model.
   only). The wire still emits `interaction_request` events for
   compat; the on-disk record is a `HumanGate`.
 - [✓] Per-node JSONL event log (`events.jsonl`). The replay-on-reconnect
-  endpoint that consumes this log is queued for Phase 1.
+  consumer landed as part of the Phase 1 chat-polish pass (see §9.1).
 - [✓] Provider lifetime: `NodeRunner` owns the node state machine and
   delegates provider-native IO to an adapter for the node's whole
   lifetime. Claude uses `ClaudeSDKClient`; Codex uses `codex
@@ -285,12 +293,39 @@ Cheap wins from `PROPOSAL.md` Phase 1 absorbed along the way:
 
 ### Phase 1 — Single-project graph
 
+Chat-surface polish from `PROPOSAL.md` Phase 1 landed first so the
+timeline UI's side panel can render real content from day one:
+
+- [✓] **Plan-mode happy path**, **interrupt button**, **`ThinkingBlock`
+  surface** — landed with Phase 0.
+- [✓] **Tool I/O rendering.** `Activity` carries `result` (≤4 KB) and
+  `result_kind ∈ {stdout, diff, text, json}`. Claude provider extracts
+  `ToolResultBlock.content`; Codex provider pulls `aggregatedOutput`
+  (commandExecution) and renders `changes` (fileChange) as a
+  unified-diff-ish block. Rendered in `ToolActivity` as a collapsible
+  `<details>` — open-by-default on failed, closed on success — with
+  red/green/cyan coloring for diffs.
+- [✓] **Markdown rendering.** Assistant text passes through
+  `react-markdown` with `remark-gfm` and `rehype-highlight`
+  (github-dark theme). User messages stay plain. Hand-rolled
+  `.md-prose` styles in `index.css`.
+- [✓] **Reconnect replay.** New `node_started` server event carries
+  `node_id`/`parent_node_id`; new `replay_request` client envelope
+  takes `(node_id, since_seq)`. The WS handler consumes
+  `store.replay_events` synchronously before resuming the live tail.
+  `ws.ts` tracks `(activeNodeId, lastSeq)` and replays on every
+  reconnect after the first open. 4xxx close codes (e.g. session not
+  found) suppress the auto-reconnect loop.
+- [ ] **Per-token streaming** — deferred until the pinned
+  `claude-agent-sdk` exposes partial messages. Codex already streams
+  per-delta.
+
+Still to do for this phase:
+
 - Horizontal timeline UI for one project.
 - Agent nodes: create / launch / cancel / inspect.
-- Node detail side panel — this is where the old `PROPOSAL.md` Phase 1
-  items live: **plan-mode fix**, **interrupt button**, **tool I/O
-  rendering (Edit diff, Bash stdout, Read content)**, **markdown
-  rendering**, **thinking-block surface**, **per-token streaming**.
+- Node detail side panel — moves the rendering above out of a single
+  chat surface into a per-node panel.
 - Inline gates render in the side panel; node tile pulses green.
 
 ### Phase 2 — Gate nodes, commit ops, resume edges, on-disk context

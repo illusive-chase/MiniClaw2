@@ -23,18 +23,24 @@ Vite frontend.
   provider messages into a small event union over the WebSocket, and
   persists every event to `events.jsonl` before pushing.
 - **Frontend** (`frontend/`) — chat surface with streaming text deltas,
-  inline tool-activity indicators, three interaction dialogs
-  (permission, ask-user, plan approval), a Stop button while streaming,
-  and a collapsible reasoning panel.
+  markdown-rendered assistant output (`react-markdown` + GFM +
+  `highlight.js`), inline tool-activity indicators with collapsible
+  result panels (Bash stdout, Edit diffs, Read content), three
+  interaction dialogs (permission, ask-user, plan approval), a Stop
+  button while streaming, a collapsible reasoning panel, and
+  WebSocket reconnect-replay.
 
 ## Scope
 
-In: streaming chat, tool activity, permission / ask-user / plan-approval
-interactions, on-disk persistence per project & node, interrupt,
-extended-thinking surface, Claude and initial Codex provider adapters.
-Out (for now): WebSocket reconnect replay, multi-project workspace UI,
-checkpoint gates, provider-specific on-disk context inheritance, auth,
-cost tracking, rich tool I/O rendering.
+In: streaming chat with markdown rendering, tool activity with full
+result panels, permission / ask-user / plan-approval interactions,
+on-disk persistence per project & node, interrupt, extended-thinking
+surface, WebSocket reconnect replay (mid-session drops), Claude and
+initial Codex provider adapters.
+Out (for now): multi-project workspace UI, checkpoint gates,
+provider-specific on-disk context inheritance, hard-reload session
+survival (session-switcher UI), per-token streaming for Claude, auth,
+cost tracking.
 
 See [`DESIGN.md`](DESIGN.md) for the long-term graph-IDE plan and
 [`PROPOSAL.md`](PROPOSAL.md) for the CLI-parity punch list (with
@@ -112,11 +118,14 @@ The HTTP/WS shape is the "session"-based legacy compat layer: each
 session id is a project id, and each `user_message` spawns a fresh
 agent node.
 
-- Client → server: `user_message`, `interaction_response`, `interrupt`.
-- Server → client: `text_delta`, `thinking`, `activity`,
-  `interaction_request`, `usage`, `turn_done`, `error`. All carry an
-  optional monotonic `seq` (used by the on-disk event log; reconnect
-  replay is not yet wired).
+- Client → server: `user_message`, `interaction_response`, `interrupt`,
+  `replay_request {node_id, since_seq}`.
+- Server → client: `node_started`, `text_delta`, `thinking`, `activity`
+  (now with optional `result` + `result_kind`), `interaction_request`,
+  `usage`, `turn_done`, `error`. All carry a monotonic `seq` that
+  drives the on-disk event log and reconnect replay: clients track
+  `(activeNodeId, lastSeq)` and send `replay_request` after every
+  reconnect.
 
 `interaction_response` remains backward-compatible with Claude's
 `allow/message/updated_input` shape and also accepts Codex-style
@@ -127,17 +136,24 @@ and [`frontend/src/types.ts`](frontend/src/types.ts).
 
 ## Status
 
-Phase 0 of [`DESIGN.md`](DESIGN.md) is in. The big shifts from the
-initial single-file wrapper:
+Phase 0 spine + Phase 1 chat polish from [`DESIGN.md`](DESIGN.md) are
+in. The shifts from the initial single-file wrapper:
 
 - Domain model on disk: `Project` / `Node` / `HumanGate` survive a
   process restart (JSONL/JSON; SQLite from DESIGN §8 is deferred).
 - Node state machine with explicit transitions and an event log per node.
 - Provider layer split out of the state machine. Claude remains the
   default provider; Codex can be selected per session.
-- Three [`PROPOSAL.md`](PROPOSAL.md) Phase 1 items landed as cheap
-  wins: plan-mode happy path fixed, Stop / interrupt wired,
-  `ThinkingBlock` surfaced as a collapsible block.
+- [`PROPOSAL.md`](PROPOSAL.md) Phase 1 (chat polish) is landed:
+  plan-mode happy path, Stop / interrupt, `ThinkingBlock` surface,
+  tool I/O rendering (Bash stdout / Edit diffs / Read content as
+  collapsible result panels in `ToolActivity`), markdown rendering
+  for assistant text, and WebSocket reconnect replay
+  (`node_started` + `replay_request` consumes `events.jsonl`).
+- Per-token streaming for the Claude provider stays deferred until
+  the pinned SDK exposes partial messages; Codex already streams
+  per-delta.
 
-The wire protocol is unchanged from before the refactor, so the UI
-behaves the same except for the three new affordances above.
+Next up (DESIGN Phase 1 remainder): the per-project horizontal
+timeline UI with a node detail side panel that the rendering pieces
+above will move into.

@@ -16,7 +16,7 @@ from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from .events import InteractionResponse, Interrupt, UserMessage
+from .events import InteractionResponse, Interrupt, ReplayRequest, UserMessage
 from .registry import ProjectRegistry
 
 logger = logging.getLogger(__name__)
@@ -132,6 +132,13 @@ def create_app() -> FastAPI:
                 elif msg_type == "interrupt":
                     Interrupt(**raw)  # validate shape
                     registry.interrupt(sid)
+
+                elif msg_type == "replay_request":
+                    req = ReplayRequest(**raw)
+                    for rec in registry.store.replay_events(
+                        sid, req.node_id, req.since_seq
+                    ):
+                        await _send(websocket, rec["event"])
 
                 else:
                     await _send(websocket, {

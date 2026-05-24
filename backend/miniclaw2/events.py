@@ -28,6 +28,8 @@ class Activity(BaseModel):
     id: str
     name: str
     summary: str = ""
+    result: str | None = None
+    result_kind: Literal["stdout", "diff", "text", "json"] | None = None
     seq: int = 0
 
 
@@ -49,6 +51,13 @@ class Usage(BaseModel):
     cache_read_tokens: int = 0
     cache_creation_tokens: int = 0
     final: bool = False
+    seq: int = 0
+
+
+class NodeStarted(BaseModel):
+    type: Literal["node_started"] = "node_started"
+    node_id: str
+    parent_node_id: str | None = None
     seq: int = 0
 
 
@@ -86,3 +95,9 @@ class InteractionResponse(BaseModel):
 
 class Interrupt(BaseModel):
     type: Literal["interrupt"]
+
+
+class ReplayRequest(BaseModel):
+    type: Literal["replay_request"]
+    node_id: str
+    since_seq: int = 0

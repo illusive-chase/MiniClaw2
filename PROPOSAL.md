@@ -5,7 +5,11 @@
 > CLI-parity gaps. `DESIGN.md` Phase 0 (the spine) is landed and
 > swept up three of the cheap items below — they are marked **✓** in
 > place. A provider layer now supports Claude by default and an initial
-> Codex app-server adapter per session.
+> Codex app-server adapter per session. **Phase 1 chat polish (tool
+> I/O rendering, markdown rendering, reconnect replay) has since
+> landed** as a follow-up pass; per-token streaming is the only
+> Phase 1 item still pending (deferred until the SDK exposes partial
+> messages).
 
 The current default provider is a slice over `claude-agent-sdk` with a
 per-node state machine, a JSONL/JSON store under `$MINICLAW_HOME`, and
@@ -53,11 +57,17 @@ This is the single biggest source of behavioral drift between the two.
    `streaming` and sends `{type: "interrupt"}`; the runner transitions
    the node to `cancelled` and the on-disk state reflects it.
 3. **No `@file` / `!cmd` / image-paste** input affordances.
-4. **No tool-output rendering.** `ToolActivity` shows a start/end dot
-   plus truncated input only. Edit diffs, Bash stdout, Read content are
-   invisible. Native CLI renders diffs and command output inline.
-5. **Streaming granularity.** Translation still yields each `TextBlock`
-   whole. CLI streams per-token deltas via partial messages.
+4. **✓ Tool I/O rendering landed.** `Activity` now carries `result`
+   (≤4 KB) and `result_kind ∈ {stdout, diff, text, json}`. Claude
+   extracts `ToolResultBlock.content`; Codex pulls `aggregatedOutput`
+   for commandExecution and renders `changes` for fileChange as a
+   diff-ish block. `ToolActivity.tsx` renders the result in a
+   collapsible `<details>` (open-by-default on failed) with diff
+   coloring.
+5. **Streaming granularity (Claude only).** Claude provider still
+   yields each `TextBlock` whole — the pinned `claude-agent-sdk>=0.1.40`
+   exposes no partial-message option. Codex already streams per-delta.
+   Revisit when the SDK is bumped.
 6. **✓ `ThinkingBlock` surfaced** as a new `thinking` server event;
    frontend renders a collapsible `<details>` block above the
    assistant text.
@@ -70,10 +80,14 @@ This is the single biggest source of behavioral drift between the two.
 
 ### C. Session / persistence
 
-1. **~ Partially closed.** `Project` / `Node` / `HumanGate` now persist
-   to disk under `$MINICLAW_HOME` (`store.py`). Page reload still
-   drops UI state because the WebSocket reconnect-replay endpoint
-   that consumes `events.jsonl` is not yet wired (Phase 1).
+1. **~ Mid-session WS drops now recoverable.** `Project` / `Node` /
+   `HumanGate` persist to disk under `$MINICLAW_HOME` (`store.py`).
+   The reconnect-replay endpoint that consumes `events.jsonl` is
+   wired: `node_started` server event carries the active node id;
+   `replay_request {node_id, since_seq}` client envelope drives
+   `store.replay_events`. Hard page reload still drops UI state
+   because `App.tsx` creates a fresh session on mount — that's a
+   session-switcher concern (Phase 3), not chat polish.
 2. Only one concurrent node per project (`registry.ProjectRuntime`);
    no queue.
 3. No session/project list / switcher UI. `App.tsx` always creates a
@@ -124,19 +138,28 @@ Small, high-value fixes within the current architecture.
   to `cancelled`).
 - [✓] **Surface `ThinkingBlock`** — landed in Phase 0 as a new
   `thinking` server event + `<details>` block in `Chat.tsx`.
-- [ ] **Render tool I/O.** Add an optional `result` field to `Activity`
-  (truncated, ~4 KB). Render Edit as a diff, Bash as stdout, Read as
-  a code block in `ToolActivity`. Surface `is_error` distinctly.
-- [ ] **Markdown rendering** for assistant text — `react-markdown` plus
-  a syntax highlighter. Current `whitespace-pre-wrap` mangles code
-  blocks.
-- [ ] **Per-token streaming.** Switch to the SDK's partial-message
-  stream if available; otherwise chunk `TextBlock.text` ourselves.
-- [ ] **Reconnect replay.** Consume `events.jsonl` on WS reconnect:
-  client sends `(node_id, last_seq)`, backend tails the JSONL since
-  `last_seq` then attaches to the live stream. The JSONL is already
-  written; only the endpoint and a tiny client-side `seq` tracker
-  are missing.
+- [✓] **Render tool I/O.** `Activity` gained `result` (≤4 KB) and
+  `result_kind ∈ {stdout, diff, text, json}`. Claude pulls
+  `ToolResultBlock.content`; Codex pulls `aggregatedOutput` for
+  commandExecution and renders `changes` for fileChange as
+  unified-diff-ish text. `ToolActivity.tsx` renders results in a
+  collapsible `<details>` (open-by-default on failed) with red/green
+  diff coloring.
+- [✓] **Markdown rendering** for assistant text — `react-markdown` +
+  `remark-gfm` + `rehype-highlight` (github-dark) in `Chat.tsx`. User
+  messages stay plain. Hand-rolled `.md-prose` styles in
+  `index.css` to avoid the `@tailwindcss/typography` dep.
+- [ ] **Per-token streaming.** Deferred. Pinned
+  `claude-agent-sdk>=0.1.40` exposes no partial-message option;
+  server-side chunking would be cosmetic only. Codex already streams.
+  Revisit when the SDK is bumped.
+- [✓] **Reconnect replay.** `NodeRunner` emits `node_started` as the
+  first event of each turn. Client tracks `(activeNodeId, lastSeq)`
+  in `ws.ts`; on reconnect sends `{type: "replay_request", node_id,
+  since_seq}`. Backend `app.py` consumes `store.replay_events`
+  synchronously before resuming the live tail. 4xxx WS close codes
+  (session not found) suppress the auto-reconnect loop. Hard reload
+  (new session on mount) is a separate Phase 3 concern.
 
 ### Phase 2 — Match the CLI's "what's loaded" contract
 
@@ -194,9 +217,11 @@ Closes most of the behavioral drift in (A).
   registry) and the three cheap wins above landed together; the
   refactor that DESIGN-Phase-0 demands subsumed what would have been
   the most invasive parts of this proposal's Phase 1 and Phase 3.
-- Phase 1 remaining items are mostly local edits — no schema change,
-  no migrations, safe to land incrementally. The reconnect-replay
-  item is the only one that touches the wire protocol.
+- Phase 1 landed in a second pass after Phase 0: tool I/O, markdown,
+  and reconnect replay are in. The wire protocol picked up two new
+  envelopes (`node_started` server, `replay_request` client) and one
+  field extension (`Activity.result` + `result_kind`); no migrations.
+  Per-token streaming stays deferred.
 - Phase 2 (`PROPOSAL.md` numbering — on-disk context loading) extends
   `runner._build_options` and adds a small config loader; no
   protocol change. This now also feeds `ContextBundle` records under

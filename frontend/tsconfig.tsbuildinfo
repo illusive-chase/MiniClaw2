@@ -1,0 +1,1 @@
+{"root":["./src/app.tsx","./src/api.ts","./src/main.tsx","./src/types.ts","./src/ws.ts","./src/components/askuserdialog.tsx","./src/components/chat.tsx","./src/components/permissiondialog.tsx","./src/components/plandialog.tsx","./src/components/toolactivity.tsx"],"version":"5.9.3"}

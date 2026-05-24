@@ -1,4 +1,7 @@
 import { useEffect, useRef } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import rehypeHighlight from "rehype-highlight";
 import type { Activity } from "../types";
 import { ToolActivity } from "./ToolActivity";
 
@@ -35,16 +38,26 @@ export function Chat({ turns }: { turns: ChatTurn[] }) {
             </details>
           )}
           {t.role === "assistant" && <ToolActivity items={t.activities} />}
-          <div
-            className={
-              "whitespace-pre-wrap rounded-lg px-4 py-3 text-sm leading-relaxed " +
-              (t.role === "user"
-                ? "bg-slate-800/60 text-slate-100"
-                : "bg-slate-900/50 text-slate-200")
-            }
-          >
-            {t.text || (t.streaming ? "…" : "")}
-          </div>
+          {t.role === "user" ? (
+            <div className="whitespace-pre-wrap rounded-lg bg-slate-800/60 px-4 py-3 text-sm leading-relaxed text-slate-100">
+              {t.text}
+            </div>
+          ) : (
+            <div className="rounded-lg bg-slate-900/50 px-4 py-3 text-sm leading-relaxed text-slate-200">
+              {t.text ? (
+                <div className="md-prose">
+                  <ReactMarkdown
+                    remarkPlugins={[remarkGfm]}
+                    rehypePlugins={[[rehypeHighlight, { detect: true, ignoreMissing: true }]]}
+                  >
+                    {t.text}
+                  </ReactMarkdown>
+                </div>
+              ) : (
+                <span className="text-slate-500">{t.streaming ? "…" : ""}</span>
+              )}
+            </div>
+          )}
         </div>
       ))}
       <div ref={endRef} />

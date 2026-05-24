@@ -4,6 +4,8 @@ export type TextDelta = { type: "text_delta"; text: string; seq?: number };
 
 export type Thinking = { type: "thinking"; text: string; seq?: number };
 
+export type ResultKind = "stdout" | "diff" | "text" | "json";
+
 export type Activity = {
   type: "activity";
   kind: "tool" | "agent";
@@ -11,6 +13,8 @@ export type Activity = {
   id: string;
   name: string;
   summary: string;
+  result?: string | null;
+  result_kind?: ResultKind | null;
   seq?: number;
 };
 
@@ -37,6 +41,12 @@ export type Usage = {
 
 export type TurnDone = { type: "turn_done"; seq?: number };
 export type ErrorEvent = { type: "error"; message: string; seq?: number };
+export type NodeStarted = {
+  type: "node_started";
+  node_id: string;
+  parent_node_id?: string | null;
+  seq?: number;
+};
 
 export type ServerEvent =
   | TextDelta
@@ -45,7 +55,8 @@ export type ServerEvent =
   | InteractionRequest
   | Usage
   | TurnDone
-  | ErrorEvent;
+  | ErrorEvent
+  | NodeStarted;
 
 export type ClientMessage =
   | { type: "user_message"; text: string }
@@ -62,7 +73,8 @@ export type ClientMessage =
       permission_mode?: string | null;
       clear_context?: boolean;
     }
-  | { type: "interrupt" };
+  | { type: "interrupt" }
+  | { type: "replay_request"; node_id: string; since_seq: number };
 
 export type SessionInfo = {
   id: string;

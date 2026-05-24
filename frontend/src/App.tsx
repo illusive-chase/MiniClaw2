@@ -45,6 +45,8 @@ export function App() {
       );
     } else if (ev.type === "error") {
       console.error("server error:", ev.message);
+    } else if (ev.type === "node_started") {
+      // Tracked at the WS layer for replay-on-reconnect; no UI change here yet.
     }
   }, []);
 
