@@ -36,7 +36,9 @@ class Activity(BaseModel):
 class InteractionRequest(BaseModel):
     type: Literal["interaction_request"] = "interaction_request"
     id: str
-    interaction_type: Literal["permission", "ask_user", "plan_approval"]
+    interaction_type: Literal[
+        "permission", "ask_user", "plan_approval", "checkpoint_review"
+    ]
     tool_name: str
     tool_input: dict[str, Any] = Field(default_factory=dict)
     suggestions: list[Any] = Field(default_factory=list)
@@ -58,6 +60,7 @@ class NodeStarted(BaseModel):
     type: Literal["node_started"] = "node_started"
     node_id: str
     parent_node_id: str | None = None
+    kind: str = "agent"
     seq: int = 0
 
 
@@ -84,6 +87,12 @@ class UserMessage(BaseModel):
     type: Literal["user_message"]
     text: str
     resume_from_node_id: str | None = None
+
+
+class StartGateNode(BaseModel):
+    type: Literal["start_gate_node"]
+    prompt: str
+    contract: str = ""
 
 
 class InteractionResponse(BaseModel):

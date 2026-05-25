@@ -19,7 +19,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from .domain import Node
-from .events import InteractionResponse, Interrupt, ReplayRequest, UserMessage
+from .events import (
+    InteractionResponse,
+    Interrupt,
+    ReplayRequest,
+    StartGateNode,
+    UserMessage,
+)
 from .git_state import node_diff
 from .registry import ProjectRegistry
 from .replay import LiveReplayBuffer
@@ -32,6 +38,7 @@ class CreateSessionRequest(BaseModel):
     model: str | None = None
     model_provider: str | None = None
     provider: str | None = None
+    auto_commit: bool | None = None
 
 
 class SessionInfo(BaseModel):
@@ -70,6 +77,7 @@ def create_app() -> FastAPI:
                 model=req.model,
                 model_provider=req.model_provider,
                 provider=req.provider,
+                auto_commit=req.auto_commit,
             )
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
@@ -186,6 +194,17 @@ def create_app() -> FastAPI:
                         await _send(send_now, {
                             "type": "error",
                             "message": "turn in progress or invalid resume source",
+                        })
+                        continue
+
+                elif msg_type == "start_gate_node":
+                    await mark_live_ready()
+                    gmsg = StartGateNode(**raw)
+                    runner = registry.start_gate_node(sid, gmsg.prompt, gmsg.contract)
+                    if runner is None:
+                        await _send(send_now, {
+                            "type": "error",
+                            "message": "turn in progress",
                         })
                         continue
 

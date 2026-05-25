@@ -77,6 +77,7 @@ class ProjectRegistry:
         model_provider: str | None = None,
         name: str = "",
         provider: str | None = None,
+        auto_commit: bool | None = None,
     ) -> Project:
         normalized_provider = (provider or "claude").lower()
         if normalized_provider not in {"claude", "codex"}:
@@ -86,6 +87,8 @@ class ProjectRegistry:
             settings["model"] = model
         if model_provider:
             settings["model_provider"] = model_provider
+        if auto_commit is not None:
+            settings["auto_commit"] = bool(auto_commit)
         project = Project(
             root_path=cwd,
             name=name,
@@ -205,8 +208,91 @@ class ProjectRegistry:
         runner = NodeRunner(node, rt.project, self.store, rt.broadcast)
         rt.runner = runner
         rt.runner_task = asyncio.create_task(runner.run())
-        rt.runner_task.add_done_callback(lambda _t, _rt=rt: _on_runner_done(_rt))
+        rt.runner_task.add_done_callback(lambda _t, _rt=rt: self._on_runner_done(_rt))
         return runner
+
+    def start_gate_node(
+        self,
+        pid: str,
+        prompt: str,
+        contract: str,
+    ) -> NodeRunner | None:
+        rt = self._runtimes.get(pid)
+        if rt is None:
+            return None
+        if rt.is_running():
+            return None
+
+        node = Node(
+            project_id=pid,
+            kind=NodeKind.GATE,
+            state=NodeState.QUEUED,
+            provider=rt.project.provider,
+            prompt=prompt,
+            contract=contract,
+        )
+        self.store.create_node(node)
+
+        runner = NodeRunner(node, rt.project, self.store, rt.broadcast)
+        rt.runner = runner
+        rt.runner_task = asyncio.create_task(runner.run())
+        rt.runner_task.add_done_callback(lambda _t, _rt=rt: self._on_runner_done(_rt))
+        return runner
+
+    def _on_runner_done(self, rt: ProjectRuntime) -> None:
+        finished_node = rt.runner.node if rt.runner else None
+        rt.runner = None
+        rt.runner_task = None
+
+        if finished_node is None:
+            return
+        if (
+            finished_node.kind in (NodeKind.AGENT, NodeKind.GATE)
+            and finished_node.state is NodeState.DONE
+            and bool(rt.project.settings_override.get("auto_commit"))
+        ):
+            self._spawn_op_commit(rt, finished_node)
+
+    def _spawn_op_commit(self, rt: ProjectRuntime, agent_node: Node) -> None:
+        op_node = Node(
+            project_id=rt.project.id,
+            kind=NodeKind.OP,
+            op_kind="commit",
+            state=NodeState.QUEUED,
+            parent_node_id=agent_node.id,
+            provider=agent_node.provider,
+        )
+        self.store.create_node(op_node)
+
+        runner = NodeRunner(op_node, rt.project, self.store, rt.broadcast)
+        rt.runner = runner
+        rt.runner_task = asyncio.create_task(
+            self._run_op_and_rewrite(rt, runner, agent_node.id)
+        )
+        rt.runner_task.add_done_callback(lambda _t, _rt=rt: self._on_runner_done(_rt))
+
+    async def _run_op_and_rewrite(
+        self,
+        rt: ProjectRuntime,
+        runner: NodeRunner,
+        agent_node_id: str,
+    ) -> None:
+        await runner.run()
+        op_node = runner.node
+        if (
+            op_node.state is NodeState.DONE
+            and op_node.commit_after
+            and op_node.commit_after != op_node.commit_before
+        ):
+            fresh_agent = self.store.load_node(rt.project.id, agent_node_id)
+            if fresh_agent is not None and fresh_agent.commit_after != op_node.commit_after:
+                fresh_agent.commit_after = op_node.commit_after
+                self.store.update_node(fresh_agent)
+                await rt.broadcast({
+                    "type": "node_updated",
+                    "node": fresh_agent.model_dump(),
+                    "seq": 0,
+                })
 
     def interrupt(self, pid: str) -> bool:
         rt = self._runtimes.get(pid)
@@ -250,6 +336,3 @@ class ProjectRegistry:
         )
 
 
-def _on_runner_done(rt: ProjectRuntime) -> None:
-    rt.runner = None
-    rt.runner_task = None

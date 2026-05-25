@@ -9,7 +9,10 @@
 > I/O rendering, markdown rendering, reconnect replay) has since
 > landed** as a follow-up pass; per-token streaming is the only
 > Phase 1 item still pending (deferred until the SDK exposes partial
-> messages).
+> messages). **`DESIGN.md` Phase 2 centerpieces (commit-op node + gate
+> node kind) have also landed** — see §3 below; the CLI-parity items in
+> this doc are unaffected since the op/gate work is graph-IDE
+> architecture, not native-CLI parity.
 
 The current default provider is a slice over `claude-agent-sdk` with a
 per-node state machine, a JSONL/JSON store under `$MINICLAW_HOME`, and
@@ -251,6 +254,14 @@ Closes most of the behavioral drift in (A).
   is snapshotted on the node (`system_context_snapshot`). No protocol
   change. Vendor-specific loading (CLAUDE.md walk, `.claude/settings`,
   agents, MCP) is deferred behind this slice.
+- `DESIGN.md` Phase 2 centerpieces (commit-op node + gate node kind)
+  landed alongside this CLI-parity work. They add one new client
+  envelope (`start_gate_node`), one new `interaction_type`
+  (`checkpoint_review`), and one new field on `NodeStarted` (`kind`)
+  so the frontend can suppress selection-jumps for op-node tiles. The
+  `CreateSessionRequest` also accepts `auto_commit` to opt the project
+  into auto-appending a commit op after each agent/gate node. None of
+  these change the CLI-parity gap analysis above.
 - Phase 3 (session/project UI + queue) is no longer the largest
   commit; the persistence layer is already in. What remains is the
   workspace UI, project switcher, settings surface, and a queue for

@@ -6,6 +6,7 @@ import { AskUserDialog } from "./components/AskUserDialog";
 import { PlanDialog } from "./components/PlanDialog";
 import { ProjectTimeline } from "./components/ProjectTimeline";
 import { NodeDetail } from "./components/NodeDetail";
+import { GateLaunchModal } from "./components/GateLaunchModal";
 import type {
   Activity,
   EventRecord,
@@ -45,6 +46,8 @@ export function App() {
   const [streaming, setStreaming] = useState(false);
   const [input, setInput] = useState("");
   const [resumeFromNodeId, setResumeFromNodeId] = useState<string | null>(null);
+  const [gateModalOpen, setGateModalOpen] = useState(false);
+  const [pendingReview, setPendingReview] = useState<InteractionRequest | null>(null);
   const turnIdRef = useRef(0);
   const activeNodeIdRef = useRef<string | null>(null);
   const selectedNodeIdRef = useRef<string | null>(null);
@@ -170,7 +173,11 @@ export function App() {
     } else if (ev.type === "activity") {
       setTurns((prev) => mergeActivity(prev, ev));
     } else if (ev.type === "interaction_request") {
-      setPending(ev);
+      if (ev.interaction_type === "checkpoint_review") {
+        setPendingReview(ev);
+      } else {
+        setPending(ev);
+      }
       void refreshNodes();
     } else if (ev.type === "usage") {
       setUsage(ev);
@@ -185,7 +192,10 @@ export function App() {
     } else if (ev.type === "node_started") {
       activeNodeIdRef.current = ev.node_id;
       eventNodeId = ev.node_id;
-      setSelectedNodeId(ev.node_id);
+      const startedKind = ev.kind ?? "agent";
+      if (startedKind !== "op") {
+        setSelectedNodeId(ev.node_id);
+      }
       void refreshNodes();
     } else if (ev.type === "node_updated") {
       eventNodeId = ev.node.id;
@@ -215,6 +225,45 @@ export function App() {
   const onStop = () => {
     if (!streaming || status !== "open") return;
     send({ type: "interrupt" });
+  };
+
+  const onLaunchGate = (prompt: string, contract: string) => {
+    if (streaming || status !== "open") return;
+    setGateModalOpen(false);
+    const userId = `u${++turnIdRef.current}`;
+    const aId = `a${++turnIdRef.current}`;
+    setTurns((prev) => [
+      ...prev,
+      { id: userId, role: "user", text: `[gate] ${prompt}`, activities: [] },
+      { id: aId, role: "assistant", text: "", activities: [], streaming: true },
+    ]);
+    setStreaming(true);
+    send({ type: "start_gate_node", prompt, contract });
+  };
+
+  const onResolveReview = (payload: {
+    id: string;
+    decision: "write-json" | "no-op";
+    path?: string;
+    payload?: unknown;
+    notes?: string;
+  }) => {
+    if (status !== "open") return;
+    send({
+      type: "interaction_response",
+      id: payload.id,
+      allow: true,
+      decision: payload.decision,
+      response: {
+        path: payload.path,
+        payload: payload.payload,
+        notes: payload.notes,
+      },
+    });
+    setPendingReview(null);
+    window.setTimeout(() => {
+      void refreshNodes();
+    }, 250);
   };
 
   const resolvePending = (
@@ -305,6 +354,14 @@ export function App() {
               {usage.cache_read_tokens} / w {usage.cache_creation_tokens}
             </div>
           )}
+          <button
+            type="button"
+            onClick={() => setGateModalOpen(true)}
+            disabled={streaming || status !== "open"}
+            className="rounded border border-emerald-700 px-2 py-1 text-xs text-emerald-300 hover:bg-emerald-950 disabled:opacity-40"
+          >
+            + Gate
+          </button>
           <select
             value={provider}
             onChange={(e) => {
@@ -313,6 +370,7 @@ export function App() {
               setUsage(null);
               setStreaming(false);
               setPending(null);
+              setPendingReview(null);
             }}
             disabled={streaming}
             className="rounded border border-slate-800 bg-slate-900 px-2 py-1 text-xs text-slate-300"
@@ -322,6 +380,12 @@ export function App() {
           </select>
         </div>
       </header>
+
+      <GateLaunchModal
+        open={gateModalOpen}
+        onCancel={() => setGateModalOpen(false)}
+        onLaunch={onLaunchGate}
+      />
 
       <ProjectTimeline
         nodes={nodes}
@@ -391,6 +455,12 @@ export function App() {
           diff={selectedDiff}
           diffLoading={selectedDiffLoading}
           onResumeFromNode={handleResumeFromNode}
+          pendingReview={
+            pendingReview && selectedNode && selectedNode.state === "awaiting_review"
+              ? pendingReview
+              : null
+          }
+          onResolveReview={onResolveReview}
         />
       </div>
     </div>

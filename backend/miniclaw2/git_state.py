@@ -21,6 +21,28 @@ def git_head(cwd: str) -> str | None:
     return text or None
 
 
+def commit_all(cwd: str, message: str) -> tuple[str | None, str | None]:
+    """Stage every change and commit. Returns ``(new_head, error)``.
+
+    ``(None, None)`` means there was nothing to commit (clean tree after
+    ``git add -A``); a string ``error`` indicates a git failure.
+    """
+    add = _git(cwd, ["add", "-A"])
+    if add.returncode != 0:
+        return None, add.stderr.strip() or "git add failed"
+
+    status = _git(cwd, ["status", "--porcelain"])
+    if status.returncode != 0:
+        return None, status.stderr.strip() or "git status failed"
+    if not status.stdout.strip():
+        return None, None
+
+    commit = _git(cwd, ["commit", "-m", message])
+    if commit.returncode != 0:
+        return None, commit.stderr.strip() or "git commit failed"
+    return git_head(cwd), None
+
+
 def node_diff(cwd: str, before: str | None, after: str | None) -> GitDiff:
     if before and after and before != after:
         result = _git(cwd, ["diff", "--no-ext-diff", before, after])

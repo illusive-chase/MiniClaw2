@@ -31,7 +31,10 @@ Vite frontend.
   includes permission / ask-user / plan approval dialogs, a Stop
   button, a collapsible reasoning panel, repo diff inspection, an
   explicit resume-from-node control, a collapsible System-context
-  block in the node summary tab, and WebSocket reconnect-replay.
+  block in the node summary tab, and WebSocket reconnect-replay. A
+  `+ Gate` button in the header opens a launch modal (prompt + markdown
+  contract); finished gate nodes surface a `Review` tab in the side
+  panel for write-json / no-op resolution.
 - **Project-level context** — a `CONTEXT.md` file at the project root
   is loaded at each node launch and injected provider-neutrally: into
   Claude via `system_prompt.append` on the `claude_code` preset, and
@@ -46,13 +49,14 @@ result panels, permission / ask-user / plan-approval interactions,
 on-disk persistence per project & node, interrupt, extended-thinking
 surface, WebSocket reconnect replay (mid-session drops), Claude and
 initial Codex provider adapters, provider-neutral project context
-via `CONTEXT.md`.
-Out (for now): multi-project workspace UI, checkpoint gates,
-vendor-specific on-disk context (`CLAUDE.md`, `AGENTS.md`,
-`.claude/settings.json`, `.claude/agents`, `.mcp.json`), hard-reload
-session survival (session-switcher UI), per-token streaming for
-Claude, auth, cost tracking, true git snapshot diffs in the side
-panel.
+via `CONTEXT.md`, checkpoint gate nodes (markdown contract +
+write-json / no-op review), and opt-in auto-commit op nodes with
+real two-commit per-node diffs.
+Out (for now): multi-project workspace UI, vendor-specific on-disk
+context (`CLAUDE.md`, `AGENTS.md`, `.claude/settings.json`,
+`.claude/agents`, `.mcp.json`), hard-reload session survival
+(session-switcher UI), per-token streaming for Claude, auth, cost
+tracking.
 
 See [`DESIGN.md`](DESIGN.md) for the long-term graph-IDE plan and
 [`PROPOSAL.md`](PROPOSAL.md) for the CLI-parity punch list (with
@@ -82,6 +86,15 @@ Codex-backed session manually:
 curl -X POST http://127.0.0.1:8000/sessions \
   -H 'content-type: application/json' \
   -d '{"cwd":"'"$PWD"'","provider":"codex"}'
+```
+
+Opt a project into auto-commit (a `commit` op node appended after each
+agent/gate node reaches `done`, rewriting that node's `commit_after`
+so the per-node diff becomes a real two-commit diff):
+```bash
+curl -X POST http://127.0.0.1:8000/sessions \
+  -H 'content-type: application/json' \
+  -d '{"cwd":"'"$PWD"'","auto_commit":true}'
 ```
 
 **Frontend**:
@@ -115,7 +128,8 @@ frontend/src/
   ws.ts         # useSessionSocket hook
   api.ts        # REST helpers
   types.ts      # mirror of backend events
-  components/   # Chat, ToolActivity, PermissionDialog, AskUserDialog, PlanDialog
+  components/   # Chat, ToolActivity, PermissionDialog, AskUserDialog, PlanDialog,
+                # GateLaunchModal, GateReviewPanel
 ```
 
 On-disk layout (under `$MINICLAW_HOME`, default `~/.miniclaw2`):
@@ -140,12 +154,18 @@ agent node.
   `GET /sessions/{sid}/nodes/{nid}`, and
   `GET /sessions/{sid}/nodes/{nid}/events`, plus
   `GET /sessions/{sid}/nodes/{nid}/diff`.
-- Client → server: `user_message`, `interaction_response`, `interrupt`,
+- `POST /sessions` accepts an optional `auto_commit: bool` that
+  stores into `project.settings_override["auto_commit"]` and triggers
+  the commit-op auto-append.
+- Client → server: `user_message`, `start_gate_node {prompt, contract}`,
+  `interaction_response`, `interrupt`,
   `replay_request {node_id, since_seq}`.
-- Server → client: `node_started`, `node_updated`, `text_delta`,
+- Server → client: `node_started` (now with `kind` to distinguish
+  agent/gate/op tiles), `node_updated`, `text_delta`,
   `thinking`, `activity` (now with optional `result` + `result_kind`),
-  `interaction_request`, `usage`, `turn_done`, `error`.
-  All carry a monotonic `seq` that
+  `interaction_request` (with `interaction_type` extended to include
+  `"checkpoint_review"` for gate-node contracts), `usage`, `turn_done`,
+  `error`. All carry a monotonic `seq` that
   drives the on-disk event log and reconnect replay: clients track
   `(activeNodeId, lastSeq)` and send `replay_request` after every
   reconnect.
@@ -191,6 +211,27 @@ snapshotted onto the Node and surfaced in the side-panel summary.
 Vendor-specific loading (CLAUDE.md walk, `.claude/settings.json`,
 custom agents, `.mcp.json`) is intentionally out of scope.
 
-Next up (DESIGN Phase 1 remainder): richer node launch controls,
-side-panel tabs for gates/settings, and tighter per-node snapshot diffs
-once commit ops or checkpointing are available.
+The DESIGN Phase 2 centerpieces have since landed too:
+
+- **`gate` node kind.** A `+ Gate` button in the header opens a
+  modal with a prompt textarea and a contract editor pre-filled with
+  a three-section template (`# Expected` / `# Unexpected` /
+  `# Response protocol`). Submitting sends `start_gate_node` over the
+  WebSocket. The agent runs, and on completion the node enters
+  `awaiting_review`. The `NodeDetail` side panel grows a `Review` tab
+  rendering the contract via `react-markdown` plus a write-json /
+  no-op response form. Write-json validates the path
+  (project-relative only, no `..`) and loops on errors so the
+  reviewer can fix the path without restarting the node.
+- **`commit` op node.** When the project has `auto_commit:true`, a
+  `commit` op node is auto-appended after each agent/gate node that
+  reaches `done`. The op runs `git add -A && git commit -m
+  miniclaw:node:<id>`; on success it rewrites the preceding node's
+  `commit_after` to the new commit hash. Op tiles render narrower in
+  the timeline and the selection deliberately does not jump to them
+  (`node_started.kind` distinguishes agent/gate/op events).
+
+Next up (DESIGN Phase 1/2 remainder): inline-gate rendering inside
+the side panel, settings tab in `NodeDetail`, and resume-edge UI
+(per-node "fork conversation" affordance with visual edge in the
+timeline).

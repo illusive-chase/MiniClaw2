@@ -21,7 +21,11 @@ export type Activity = {
 export type InteractionRequest = {
   type: "interaction_request";
   id: string;
-  interaction_type: "permission" | "ask_user" | "plan_approval";
+  interaction_type:
+    | "permission"
+    | "ask_user"
+    | "plan_approval"
+    | "checkpoint_review";
   tool_name: string;
   tool_input: Record<string, unknown>;
   suggestions: unknown[];
@@ -45,6 +49,7 @@ export type NodeStarted = {
   type: "node_started";
   node_id: string;
   parent_node_id?: string | null;
+  kind?: string;
   seq?: number;
 };
 export type NodeUpdated = {
@@ -80,7 +85,8 @@ export type ClientMessage =
       clear_context?: boolean;
     }
   | { type: "interrupt" }
-  | { type: "replay_request"; node_id: string; since_seq: number };
+  | { type: "replay_request"; node_id: string; since_seq: number }
+  | { type: "start_gate_node"; prompt: string; contract: string };
 
 export type SessionInfo = {
   id: string;
@@ -103,6 +109,7 @@ export type NodeInfo = {
   id: string;
   project_id: string;
   kind: NodeKind;
+  op_kind?: string | null;
   state: NodeState;
   parent_node_id?: string | null;
   context_sources: string[];
@@ -113,6 +120,7 @@ export type NodeInfo = {
   commit_before?: string | null;
   commit_after?: string | null;
   prompt: string;
+  contract?: string;
   summary?: string | null;
   error?: string | null;
   system_context_snapshot?: string;

@@ -3,16 +3,27 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from collections.abc import Awaitable, Callable
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
 from pydantic import BaseModel
 
 from .context import load_project_context
-from .domain import GateKind, GateState, HumanGate, Node, NodeState, Project
+from .domain import (
+    GateKind,
+    GateState,
+    GateSubtype,
+    HumanGate,
+    Node,
+    NodeKind,
+    NodeState,
+    Project,
+)
 from .events import (
     ErrorEvent,
     InteractionRequest,
@@ -20,7 +31,7 @@ from .events import (
     NodeUpdated,
     TurnDone,
 )
-from .git_state import git_head
+from .git_state import commit_all, git_head
 from .providers import AgentProvider, AgentProviderContext, AgentProviderEvent, GateRequest
 from .providers.claude import ClaudeProvider
 from .providers.codex import CodexProvider
@@ -91,12 +102,19 @@ class NodeRunner:
     # ---- main entry point ----
 
     async def run(self) -> None:
+        if self.node.kind is NodeKind.OP:
+            await self._run_op()
+        else:
+            await self._run_agent()
+
+    async def _run_agent(self) -> None:
         self.node.commit_before = git_head(self.project.root_path)
         self._transition(NodeState.RUNNING, started=True)
         await self._emit(
             NodeStarted(
                 node_id=self.node.id,
                 parent_node_id=self.node.parent_node_id,
+                kind=self.node.kind.value,
             )
         )
         await self._emit_node_updated()
@@ -104,44 +122,108 @@ class NodeRunner:
         error_msg: str | None = None
 
         try:
-            system_context = load_project_context(self.project.root_path)
-            if system_context != self.node.system_context_snapshot:
-                self.node.system_context_snapshot = system_context
-                self.store.update_node(self.node)
-                await self._emit_node_updated()
+            try:
+                system_context = load_project_context(self.project.root_path)
+                if system_context != self.node.system_context_snapshot:
+                    self.node.system_context_snapshot = system_context
+                    self.store.update_node(self.node)
+                    await self._emit_node_updated()
 
-            provider = _make_provider(self.node.provider or self.project.provider)
-            self._provider = provider
-            context = AgentProviderContext(
-                node=self.node,
-                project=self.project,
-                request_gate_handler=self._request_gate,
-                system_context=system_context,
-            )
-            async for ev in provider.run(context):
-                await self._handle_provider_event(ev)
-                if ev.kind == "done":
-                    final_state = _state_from_provider(ev.final_state) or NodeState.DONE
-                    break
-                if ev.kind == "error":
-                    error_msg = ev.error or "provider error"
+                provider = _make_provider(self.node.provider or self.project.provider)
+                self._provider = provider
+                context = AgentProviderContext(
+                    node=self.node,
+                    project=self.project,
+                    request_gate_handler=self._request_gate,
+                    system_context=system_context,
+                )
+                async for ev in provider.run(context):
+                    await self._handle_provider_event(ev)
+                    if ev.kind == "done":
+                        final_state = _state_from_provider(ev.final_state) or NodeState.DONE
+                        break
+                    if ev.kind == "error":
+                        error_msg = ev.error or "provider error"
+                        final_state = NodeState.ERROR
+                        break
+            except asyncio.CancelledError:
+                final_state = NodeState.CANCELLED
+                await self.interrupt()
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("runner failed")
+                error_msg = f"Unexpected runner error: {exc}"
+                final_state = NodeState.ERROR
+                await self._emit(ErrorEvent(message=error_msg))
+            finally:
+                self._provider = None
+
+            if (
+                self.node.kind is NodeKind.GATE
+                and final_state is NodeState.DONE
+                and error_msg is None
+            ):
+                try:
+                    await self._handle_checkpoint_review()
+                except asyncio.CancelledError:
+                    final_state = NodeState.CANCELLED
+                except Exception as exc:  # noqa: BLE001
+                    logger.exception("checkpoint review failed")
+                    error_msg = f"checkpoint review error: {exc}"
                     final_state = NodeState.ERROR
-                    break
-
-        except asyncio.CancelledError:
-            final_state = NodeState.CANCELLED
-            await self.interrupt()
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("runner failed")
-            error_msg = f"Unexpected runner error: {exc}"
-            final_state = NodeState.ERROR
-            await self._emit(ErrorEvent(message=error_msg))
+                    await self._emit(ErrorEvent(message=error_msg))
         finally:
-            self._provider = None
             self._resolve_open_gates()
             if error_msg is not None:
                 self.node.error = error_msg
             self.node.commit_after = git_head(self.project.root_path)
+            self._transition(final_state, finished=True)
+            await self._emit_node_updated()
+            await self._emit(TurnDone())
+
+    async def _run_op(self) -> None:
+        """Run a non-provider op node (currently only ``commit``)."""
+        self.node.commit_before = git_head(self.project.root_path)
+        self._transition(NodeState.RUNNING, started=True)
+        await self._emit(
+            NodeStarted(
+                node_id=self.node.id,
+                parent_node_id=self.node.parent_node_id,
+                kind=self.node.kind.value,
+            )
+        )
+        await self._emit_node_updated()
+
+        final_state = NodeState.DONE
+        error_msg: str | None = None
+
+        try:
+            if self.node.op_kind == "commit":
+                message = f"miniclaw:node:{self.node.parent_node_id or self.node.id}"
+                new_head, err = commit_all(self.project.root_path, message)
+                if err is not None:
+                    error_msg = err
+                    final_state = NodeState.ERROR
+                elif new_head is None:
+                    self.node.summary = "no changes to commit"
+                    self.node.commit_after = self.node.commit_before
+                else:
+                    self.node.summary = f"commit {new_head[:8]}"
+                    self.node.commit_after = new_head
+            else:
+                error_msg = f"unknown op_kind: {self.node.op_kind}"
+                final_state = NodeState.ERROR
+        except asyncio.CancelledError:
+            final_state = NodeState.CANCELLED
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("op runner failed")
+            error_msg = f"Unexpected op runner error: {exc}"
+            final_state = NodeState.ERROR
+            await self._emit(ErrorEvent(message=error_msg))
+        finally:
+            if error_msg is not None:
+                self.node.error = error_msg
+            if self.node.commit_after is None:
+                self.node.commit_after = git_head(self.project.root_path)
             self._transition(final_state, finished=True)
             await self._emit_node_updated()
             await self._emit(TurnDone())
@@ -250,6 +332,75 @@ class NodeRunner:
         self._gate_records.pop(gate.id, None)
         return response
 
+    # ---- checkpoint gate flow ----
+
+    async def _handle_checkpoint_review(self) -> None:
+        """Block on a user response to a checkpoint contract.
+
+        Loops on path-traversal / file-write errors so the user can fix
+        the path and resubmit without restarting the node.
+        """
+        self._transition(NodeState.AWAITING_REVIEW)
+        await self._emit_node_updated()
+
+        gate_id = uuid4().hex[:12]
+        gate = HumanGate(
+            id=gate_id,
+            node_id=self.node.id,
+            kind=GateKind.CHECKPOINT,
+            subtype=GateSubtype.CHECKPOINT_REVIEW,
+            tool_name="checkpoint_review",
+            tool_input={"contract": self.node.contract},
+        )
+        self.store.append_gate(self.project.id, gate, "created")
+        self._gate_records[gate_id] = gate
+
+        loop = asyncio.get_running_loop()
+        last_error: str | None = None
+        while True:
+            future: asyncio.Future[dict[str, Any]] = loop.create_future()
+            self._gates[gate_id] = future
+
+            tool_input: dict[str, Any] = {"contract": self.node.contract}
+            if last_error is not None:
+                tool_input["last_error"] = last_error
+            await self._emit(
+                InteractionRequest(
+                    id=gate_id,
+                    interaction_type="checkpoint_review",
+                    tool_name="checkpoint_review",
+                    tool_input=tool_input,
+                )
+            )
+
+            try:
+                response = await future
+            finally:
+                self._gates.pop(gate_id, None)
+
+            decision = response.get("decision")
+            resp_payload = response.get("response") or {}
+            if not isinstance(resp_payload, dict):
+                resp_payload = {}
+
+            if decision == "write-json":
+                err = _write_review_json(
+                    self.project.root_path,
+                    resp_payload.get("path"),
+                    resp_payload.get("payload"),
+                )
+                if err is not None:
+                    last_error = err
+                    await self._emit(ErrorEvent(message=err))
+                    continue
+
+            gate.state = GateState.RESOLVED
+            gate.resolved_at = time.time()
+            gate.response = response
+            self.store.append_gate(self.project.id, gate, "resolved")
+            self._gate_records.pop(gate_id, None)
+            return
+
     def _resolve_open_gates(self) -> None:
         for gate_id, fut in list(self._gates.items()):
             if not fut.done():
@@ -271,6 +422,32 @@ def _make_provider(provider: str) -> AgentProvider:
     if normalized == "claude":
         return ClaudeProvider()
     raise ValueError(f"unknown provider: {provider}")
+
+
+def _write_review_json(root: str, path_str: Any, payload: Any) -> str | None:
+    """Write ``payload`` as JSON to ``root/path_str``. Returns an error string or None."""
+    if not isinstance(path_str, str) or not path_str:
+        return "write-json requires a 'path' string"
+    if payload is None:
+        return "write-json requires a 'payload'"
+    rel = Path(path_str)
+    if rel.is_absolute():
+        return f"path must be project-relative: {path_str}"
+    root_path = Path(root).resolve()
+    target = (root_path / rel).resolve()
+    try:
+        target.relative_to(root_path)
+    except ValueError:
+        return f"path escapes project root: {path_str}"
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(
+            json.dumps(payload, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        return f"failed to write {path_str}: {exc}"
+    return None
 
 
 def _state_from_provider(value: str | None) -> NodeState | None:

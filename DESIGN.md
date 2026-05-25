@@ -4,10 +4,10 @@ This document supersedes `PROPOSAL.md` (which remains as a punch list of
 CLI-parity gaps in the current wrapper). It captures the architecture we
 are converging toward over the next several phases.
 
-> **Status (Phase 0 spine + Phase 1 graph shell in progress).** The spine is in.
+> **Status (Phase 0 spine + Phase 1 graph shell + Phase 2 op/gate landed).** The spine is in.
 > Domain model (`Project`, `Node`, `HumanGate`) persists to disk as
 > JSON + JSONL under `$MINICLAW_HOME` (default `~/.miniclaw2`); SQLite
-> from §8 is **deferred** in favor of JSON/JSONL while the schema is
+> from §9 is **deferred** in favor of JSON/JSONL while the schema is
 > still exploratory. The legacy `/sessions` + `/ws/{sid}` wire
 > protocol is kept as a 1:1 session-to-project compat layer so the
 > existing UI works unchanged. Three CLI-parity items from
@@ -39,6 +39,23 @@ are converging toward over the next several phases.
 > CLAUDE.md/AGENTS.md/`.claude/`/`.mcp.json` loading is **intentionally
 > deferred** — the simpler one-file protocol covers the project-context
 > need without provider-format negotiation.
+>
+> **Phase 2 centerpieces — `op` node + `gate` node.** A `commit` op
+> node is now auto-appended after an `agent`/`gate` node reaches `done`
+> when the project's `auto_commit` setting is on (`POST /sessions
+> {auto_commit:true}`). The op runs `git add -A && git commit -m
+> miniclaw:node:<id>`; on success it rewrites the preceding node's
+> `commit_after` to the new commit hash so the per-node diff is a real
+> two-commit diff. Op tiles render narrower in the timeline; the
+> selection does not jump to op nodes (`node_started.kind` distinguishes
+> them). `gate` nodes carry a markdown contract; the agent runs to
+> completion, the node enters `awaiting_review`, and the `NodeDetail`
+> side panel grows a `Review` tab with the contract + a
+> write-json / no-op response form. Write-json rejects absolute paths
+> and parent traversal, loops on write errors so the user can retry
+> without restarting the node. Resume edges (per-node "fork
+> conversation" affordance beyond the existing Resume button) and
+> vendor-specific on-disk context remain deferred.
 
 ## 1. Motivation
 
@@ -226,7 +243,216 @@ you":
 | Continuation | Resolving resumes the same session | Resolving does not wake the agent; user spawns a follow-up node manually if needed |
 | UI signal | Pulsing animation on a running node | Solid color on a finished node |
 
-## 7. Visual model
+## 7. Templates (programmable graph)
+
+> A template is a **declarative recipe for a sequence of nodes** with
+> named slots and minimal control flow. Templates package workflows
+> like "Build → Review → Fix → Snapshot" without hiding node
+> boundaries: every step materializes as a visible `Node`, the human
+> can interrupt or leave a template at any point, and the graph
+> remains the control plane.
+
+The principle: **the engine stays general (low-level operators); the
+templates are the high-level layer.** A template never introduces a
+new node kind, a new state, or a new edge type. It is a saved
+*launch policy* that the registry consults when deciding what node
+to create next.
+
+### 7.1 What a template is (and isn't)
+
+For:
+
+- pre-filling launch options (provider, permission mode, context
+  sources, gate contract) so the user can declare intent in one click
+- chaining nodes that a user would otherwise wire by hand
+- expressing the canonical build → review → fix → snapshot loop as a
+  single reusable artifact
+
+Not:
+
+- a new node kind (`agent` / `gate` / `op` stay as defined in §3)
+- a black-box workflow (no node boundary is ever hidden)
+- a Turing-complete recipe language (see §7.4)
+
+### 7.2 File format and on-disk layout
+
+Templates are YAML files. Search order at launch: project →
+user → bundled.
+
+```
+<project_root>/.miniclaw2/templates/*.yaml     # project-local
+~/.miniclaw2/templates/*.yaml                  # user-wide
+backend/miniclaw2/templates/bundled/*.yaml     # bundled (one to start)
+```
+
+Shape:
+
+```yaml
+name: gui-build
+description: "Build → review → fix → snapshot loop for GUI work."
+slots:
+  - name: goal
+    label: "What should the app do?"
+    required: true
+  - name: stack
+    label: "Stack hint"
+    default: "any"
+steps:
+  - id: plan
+    kind: agent
+    permission_mode: plan
+    prompt: |
+      Design {{slots.goal}} for stack "{{slots.stack}}".
+      First give me a plan, file layout, and acceptance criteria.
+      Do not modify files.
+  - id: build
+    kind: agent
+    after: plan
+    context_sources: [plan]
+    prompt: "Implement the plan from {{steps.plan.summary}}."
+  - id: review
+    kind: gate
+    after: build
+    contract_template: gui-review.md
+  - id: fix
+    kind: agent
+    after: review
+    on_state: reviewed_reject
+    context_sources: [review]
+    prompt: "Address review notes: {{steps.review.response.notes}}."
+    next: review
+  - id: snapshot
+    kind: op
+    op_kind: commit
+    after: review
+    on_state: reviewed_approve
+```
+
+Step `kind` values map 1:1 to `NodeKind`. Step ids are unique within
+the template; `after` references must form a DAG. The engine
+validates step ids, references, interpolation roots, and `on_state`
+values at parse time.
+
+### 7.3 Slot interpolation
+
+`{{...}}` placeholders are resolved against a **whitelisted** set of
+roots — arbitrary attribute access is rejected at parse time so the
+template stays statically inspectable:
+
+| Root | Meaning |
+|---|---|
+| `slots.<name>` | A user-provided slot value (string only in v1) |
+| `steps.<id>.summary` | The completed node's `summary` string |
+| `steps.<id>.state` | Terminal state — `done`, `error`, `reviewed_approve`, `reviewed_reject` |
+| `steps.<id>.response.<field>` | Gate node's structured response (`decision`, `notes`, `path`, `data`) |
+
+A reference to a step that does not yet exist on the cursor's current
+branch is a runtime error; the engine knows the DAG at parse time so
+most such errors fail early.
+
+### 7.4 Control flow (deliberately tiny)
+
+Two primitives, and only two:
+
+- **Branching via `on_state`.** Allowed values: `done`, `error`,
+  `reviewed_approve`, `reviewed_reject`. A step fires only when its
+  `after` step terminates in the listed state. Omitting `on_state`
+  means "any terminal state."
+- **Looping via `next:`.** A step may declare `next: <step_id>` to
+  point back to an earlier (or any) step. When this step completes,
+  the engine re-expands the referenced step with a fresh node id.
+  History grows; nothing is overwritten.
+
+No conditionals beyond `on_state`. No expression language. No
+`while`, no max-iteration counter. The human is the loop terminator:
+stopping the project drops the template's cursor, and the existing
+nodes stay where they are.
+
+### 7.5 Gate contracts inside templates
+
+A `gate` step may declare its contract either:
+
+- inline: `contract: |\n  # Expected\n  ...`
+- by reference: `contract_template: <name>.md`, resolved against
+  `<project_root>/.miniclaw2/contracts/`, then user-wide, then
+  bundled.
+
+Inline takes precedence if both are given. The resolved contract
+text is snapshotted onto the gate node at expansion time, so editing
+the template or contract file mid-run does not change an in-flight
+run (same pattern as `system_context_snapshot`).
+
+### 7.6 Runtime model
+
+Three new pieces, all in the registry layer — `NodeRunner` is
+unchanged:
+
+- **`TemplateDefinition`** (Pydantic) — parsed YAML. Validates
+  step-id uniqueness, DAG consistency, whitelisted interpolation
+  roots, allowed `on_state` values, no unknown keys.
+- **`TemplateInstance`** — the runtime cursor. Fields: `id`,
+  `template_name`, `slot_values`, `snapshotted_yaml`,
+  `step_history: [{step_id, node_id, terminal_state}]`. Persisted as
+  `templates_runs/<run_id>.json` under the project. The full
+  template YAML is snapshotted at launch for reproducibility.
+- **`TemplateExpander`** — a pure function:
+  `(TemplateInstance, just_finished_node) → list[NodeSpec]`.
+  Returns the next node spec(s) to enqueue, or empty when the
+  template is exhausted. Called by `ProjectRegistry` on every
+  `runner_done` callback, before the user gets a chance to type a
+  free-form prompt.
+
+`Node` grows two small fields: `created_by: "user" | "template:<run_id>"`
+and `template_step_id: str | None`. These let the UI badge
+template-created nodes and let the expander find the next step. Both
+default safely for existing on-disk records.
+
+### 7.7 Scope rules
+
+- **One template instance per project at a time.** Nodes serialize
+  within a project (§2.2); so do templates. Parallel runs → fork the
+  project.
+- **The user can leave a template mid-run.** A "Leave template"
+  button on the project drops the instance; subsequent nodes go back
+  to free-form. Existing template-created nodes stay where they are.
+- **Template-created nodes can be edited before they expand.** Ghost
+  tiles ahead of the cursor (derived from the template + slot values
+  + reachable `on_state` branches) render with a dashed border;
+  clicking one opens a per-step override (override the prompt, change
+  permission mode, etc.). Overrides attach to the `TemplateInstance`,
+  not to the YAML on disk.
+
+### 7.8 UI surface (composer)
+
+Above the existing chat textarea: a `Template: ▾` picker. Default
+"None (free text)" — the composer behaves identically to today and
+existing chat users never see the template surface.
+
+Selecting a template:
+
+- reveals a slot form populated from the template's `slots` section
+- keeps the textarea visible as an optional "additional notes" field,
+  appended to the first step's prompt at launch
+- changes the Send button to **Launch template**, which atomically
+  creates the `TemplateInstance` and the first step's `Node`
+
+While a template is running, the project header shows the active
+template name and a **Leave template** button; the timeline renders
+ghost tiles for the reachable upcoming steps.
+
+### 7.9 Explicitly out of scope for v1
+
+- Template composition (`include: other-template`).
+- User-authored templates from the UI ("save my last N nodes as a
+  template").
+- Slot types beyond string (no numbers, lists, or file pickers).
+- Conditional expressions, jq, embedded Python.
+- More than the four `on_state` values listed in §7.4.
+
+These are easy to add once the format has been used. Shipping them
+first risks warping the format to fit speculative needs.
+
+## 8. Visual model
 
 - **Workspace** = stacked vertical lanes, one per project.
 - Each lane is a horizontal timeline, left → right by `started_at`.
@@ -244,11 +470,11 @@ you":
   - default tab: **summary + open gates** (matches "hide detail")
   - other tabs: transcript, activities/tools, snapshot diff, settings
 
-## 8. Persistence sketch
+## 9. Persistence sketch
 
 > Phase 0 chose **JSON + JSONL only**. SQLite is deferred until
 > cross-project queries (e.g. "list all nodes in `awaiting-review`")
-> actually become hot — likely in Phase 3.
+> actually become hot — likely in Phase 4.
 
 Filesystem layout under `$MINICLAW_HOME` (default `~/.miniclaw2/`,
 single-user assumption for MVP):
@@ -272,7 +498,7 @@ projects/<pid>/
   `last_seq` then attaches to the live stream. The JSONL is already
   written in Phase 0; only the replay endpoint is missing.
 
-## 9. Phased plan
+## 10. Phased plan
 
 Each phase ends with a usable system. The CLI-parity items from
 `PROPOSAL.md` are absorbed into Phase 1 and Phase 2.
@@ -282,7 +508,7 @@ Each phase ends with a usable system. The CLI-parity items from
 No UI changes. Migrate to the new domain model.
 
 - [✓] Persistence for `Project`, `Node`, `HumanGate` — JSON + JSONL
-  on disk (SQLite deferred; see §8).
+  on disk (SQLite deferred; see §9).
 - [✓] Node state machine implemented and exercised by existing
   single-project flow. Each session id is now a project id; each user
   prompt becomes a new agent node. New nodes start fresh by default:
@@ -292,7 +518,7 @@ No UI changes. Migrate to the new domain model.
   only). The wire still emits `interaction_request` events for
   compat; the on-disk record is a `HumanGate`.
 - [✓] Per-node JSONL event log (`events.jsonl`). The replay-on-reconnect
-  consumer landed as part of the Phase 1 chat-polish pass (see §9.1).
+  consumer landed as part of the Phase 1 chat-polish pass (see §10.1).
 - [✓] Provider lifetime: `NodeRunner` owns the node state machine and
   delegates provider-native IO to an adapter for the node's whole
   lifetime. Claude uses `ClaudeSDKClient`; Codex uses `codex
@@ -347,18 +573,37 @@ timeline UI's side panel can render real content from day one:
 
 Still to do for this phase:
 
-- Richer agent node launch controls beyond the chat composer.
 - Settings tab in the node detail panel.
-- Tighter per-node snapshot diffs once Phase 2 commit ops/checkpoints
-  are available; the current diff tab falls back to working-tree diff
-  when a node has no distinct `commit_after`.
 - Inline gates render in the side panel; node tile pulses green.
+- [✓] **Richer agent node launch controls beyond the chat composer.**
+  Gate-node launch is now driven by a dedicated `+ Gate` button in the
+  header that opens `GateLaunchModal` (prompt + contract editor); the
+  chat composer stays the launcher for ordinary agent nodes.
+- [✓] **Tighter per-node snapshot diffs.** When `auto_commit` is on
+  for a project, the commit-op rewrites the preceding agent/gate
+  node's `commit_after` so `git_state.node_diff` returns a real
+  `commit_before..commit_after` two-commit diff. Projects without
+  auto-commit still fall back to working-tree diff.
 
 ### Phase 2 — Gate nodes, commit ops, resume edges, on-disk context
 
-- `gate` node kind: contract editor at launch (template pre-filled),
-  awaiting-review UI in the side panel, write-json / no-op resolution.
-- `commit` op node, opt-in auto-append.
+- [✓] **`gate` node kind.** Contract editor at launch
+  (`GateLaunchModal` with three-section template), `awaiting_review`
+  state after the provider session completes, `Review` tab in
+  `NodeDetail` with write-json / no-op resolution. Write-json
+  validates project-relative paths (rejects absolute / `..`) and
+  loops on write errors so the user can fix the path without
+  restarting the node. New WS envelope `start_gate_node {prompt,
+  contract}` triggers launch; new `InteractionRequest.interaction_type
+  = "checkpoint_review"` carries the contract on the wire.
+- [✓] **`commit` op node, opt-in auto-append.** New `NodeKind.OP`
+  with `op_kind="commit"`. Auto-appended after any `agent`/`gate`
+  node that reaches `done` when `project.settings_override.auto_commit`
+  is truthy. Runs `git add -A && git commit -m miniclaw:node:<id>`;
+  on success the preceding node's `commit_after` is rewritten to the
+  new commit hash and a `node_updated` event is broadcast for that
+  node. `NodeStarted.kind` distinguishes op-node events so the
+  frontend doesn't jump the selection to the op tile.
 - Resume edges: "fork conversation" affordance on a finished agent node
   creates a child node with `parent_node_id` set; SDK/app-server called
   with the source node's provider session/thread id. Ordinary launches
@@ -377,7 +622,39 @@ Still to do for this phase:
   - `.claude/agents/*.md`
   - `.mcp.json`
 
-### Phase 3 — Multi-project, forks, context edges
+### Phase 3 — Templates (programmable graph)
+
+Implements §7. First cut: a registry-level template engine, the
+bundled `gui-build` template, and composer UI for picking and filling
+templates.
+
+- **YAML format** as in §7.2, parsed and validated at load time.
+  Whitelisted interpolation roots (§7.3), `on_state` + `next:` control
+  flow (§7.4), no composition.
+- **`TemplateDefinition`, `TemplateInstance`, `TemplateExpander`** —
+  three classes in `backend/miniclaw2/templates/`. The runner stays
+  unchanged; expansion happens on `runner_done` in the registry.
+- **Persistence.** `templates_runs/<run_id>.json` per project,
+  carrying the YAML snapshot, slot values, and step history.
+- **Node schema bump.** Add `created_by` and `template_step_id` to
+  `Node`. Existing on-disk records default to `"user"` / `None`.
+- **Composer UI.** A `Template: ▾` picker above the chat textarea;
+  selecting a template reveals a slot form; the Send button becomes
+  Launch template. New WS envelope `start_template_run {name,
+  slot_values, notes}` triggers launch.
+- **Ghost-node rendering** in `ProjectTimeline.tsx` — derive
+  upcoming-step tiles from the active `TemplateInstance` and the
+  reachable `on_state` branches.
+- **One bundled template:** `gui-build` (build → review → fix →
+  snapshot). Bundled `gui-review.md` contract under
+  `backend/miniclaw2/templates/bundled/contracts/`.
+- **Leave-template affordance** in the project header.
+
+Out of scope for this phase: template composition, user-authored
+templates from the UI, slot types beyond string, additional bundled
+templates (next two follow once the format has been used in anger).
+
+### Phase 4 — Multi-project, forks, context edges
 
 - Workspace UI: stacked project lanes, drag-and-drop arrangement.
 - `fork-project` op: git worktree under the hood, new project row
@@ -387,7 +664,7 @@ Still to do for this phase:
   agents allowlist) and merges it into the new node's options.
 - Cross-project visualization (curves between lanes).
 
-### Phase 4 — Affordances and ergonomics
+### Phase 5 — Affordances and ergonomics
 
 - Slash-command interceptors in the input (`/clear`, `/compact`,
   `/model`, `/cwd`, `/permissions`) — translate to REST/WS calls, not
@@ -397,7 +674,7 @@ Still to do for this phase:
 - Cost rollups per project, per branch, per workspace.
 - TBD gate response types beyond write-json / no-op.
 
-## 10. Open questions
+## 11. Open questions
 
 To revisit at the end of each phase:
 
@@ -408,8 +685,8 @@ To revisit at the end of each phase:
   after Phase 1.
 - **Concurrency within a project.** Strictly sequential for now. If
   users repeatedly want to run two things in the same repo at once,
-  consider implicit-fork-on-parallel-drop (Phase 3+).
-- **Merge of forked projects back to parent.** Phase 3 creates forks;
+  consider implicit-fork-on-parallel-drop (Phase 4+).
+- **Merge of forked projects back to parent.** Phase 4 creates forks;
   merging them back is a separate design problem. Likely a `merge` op
   node in a later phase.
 - **Multi-user / collaboration.** Currently single-user, single-host.

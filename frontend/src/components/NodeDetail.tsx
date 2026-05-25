@@ -1,8 +1,16 @@
-import { useMemo, useState } from "react";
-import type { Activity, EventRecord, NodeDiff, NodeInfo, ServerEvent } from "../types";
+import { useEffect, useMemo, useState } from "react";
+import type {
+  Activity,
+  EventRecord,
+  InteractionRequest,
+  NodeDiff,
+  NodeInfo,
+  ServerEvent,
+} from "../types";
 import { Chat, type ChatTurn } from "./Chat";
+import { GateReviewPanel } from "./GateReviewPanel";
 
-type DetailTab = "summary" | "transcript" | "diff" | "events";
+type DetailTab = "summary" | "transcript" | "diff" | "events" | "review";
 
 export function NodeDetail({
   node,
@@ -11,6 +19,8 @@ export function NodeDetail({
   diff,
   diffLoading,
   onResumeFromNode,
+  pendingReview,
+  onResolveReview,
 }: {
   node: NodeInfo | null;
   events: EventRecord[];
@@ -18,9 +28,25 @@ export function NodeDetail({
   diff: NodeDiff | null;
   diffLoading: boolean;
   onResumeFromNode?: (node: NodeInfo) => void;
+  pendingReview?: InteractionRequest | null;
+  onResolveReview?: (payload: {
+    id: string;
+    decision: "write-json" | "no-op";
+    path?: string;
+    payload?: unknown;
+    notes?: string;
+  }) => void;
 }) {
+  const showReview =
+    !!node && (node.state === "awaiting_review" || !!pendingReview);
   const [tab, setTab] = useState<DetailTab>("summary");
   const turns = useMemo(() => (node ? turnsFromEvents(node, events) : []), [node, events]);
+
+  useEffect(() => {
+    if (showReview) {
+      setTab("review");
+    }
+  }, [showReview, node?.id]);
 
   return (
     <aside className="flex w-[520px] flex-none flex-col border-l border-slate-800 bg-slate-950/70">
@@ -56,7 +82,15 @@ export function NodeDetail({
           )}
         </div>
         <div className="mt-3 flex gap-1">
-          {(["summary", "transcript", "diff", "events"] as DetailTab[]).map((name) => (
+          {(
+            [
+              "summary",
+              "transcript",
+              "diff",
+              "events",
+              ...(showReview ? (["review"] as DetailTab[]) : []),
+            ] as DetailTab[]
+          ).map((name) => (
             <button
               key={name}
               type="button"
@@ -65,7 +99,9 @@ export function NodeDetail({
                 "rounded px-2 py-1 text-[11px] capitalize " +
                 (tab === name
                   ? "bg-slate-800 text-slate-100"
-                  : "text-slate-500 hover:bg-slate-900 hover:text-slate-300")
+                  : name === "review"
+                    ? "text-emerald-400 hover:bg-slate-900"
+                    : "text-slate-500 hover:bg-slate-900 hover:text-slate-300")
               }
             >
               {name}
@@ -79,11 +115,22 @@ export function NodeDetail({
           Select a timeline node to inspect its prompt, transcript, tools, and raw events.
         </div>
       ) : tab === "summary" ? (
-        <Summary node={node} eventCount={events.length} loading={loading} />
+        <Summary
+          node={node}
+          eventCount={events.length}
+          loading={loading}
+          showReviewBanner={showReview}
+        />
       ) : tab === "transcript" ? (
         <Chat turns={turns} variant="panel" />
       ) : tab === "diff" ? (
         <DiffView diff={diff} loading={diffLoading} />
+      ) : tab === "review" && node ? (
+        <GateReviewPanel
+          node={node}
+          pending={pendingReview ?? null}
+          onSubmit={(payload) => onResolveReview?.(payload)}
+        />
       ) : (
         <RawEvents events={events} loading={loading} />
       )}
@@ -102,22 +149,55 @@ function Summary({
   node,
   eventCount,
   loading,
+  showReviewBanner,
 }: {
   node: NodeInfo;
   eventCount: number;
   loading: boolean;
+  showReviewBanner?: boolean;
 }) {
+  const isOp = node.kind === "op";
   return (
     <div className="flex-1 overflow-y-auto px-4 py-4 text-sm">
       <div className="space-y-4">
-        <section>
-          <h3 className="mb-2 text-[11px] font-medium uppercase tracking-wider text-slate-500">
-            Prompt
-          </h3>
-          <div className="whitespace-pre-wrap rounded-md border border-slate-800 bg-slate-900/50 p-3 text-slate-200">
-            {node.prompt || "(empty prompt)"}
+        {showReviewBanner && (
+          <div className="rounded-md border border-emerald-900 bg-emerald-950/30 px-3 py-2 text-xs text-emerald-200">
+            Awaiting reviewer response — open the Review tab.
           </div>
-        </section>
+        )}
+        {isOp ? (
+          <section>
+            <h3 className="mb-2 text-[11px] font-medium uppercase tracking-wider text-slate-500">
+              Op
+            </h3>
+            <div className="rounded-md border border-slate-800 bg-slate-900/50 p-3 text-slate-200">
+              <div className="text-xs uppercase tracking-wider text-slate-500">
+                kind
+              </div>
+              <div className="font-mono text-sm">{node.op_kind ?? "-"}</div>
+              <div className="mt-3 text-xs uppercase tracking-wider text-slate-500">
+                result
+              </div>
+              <div className="text-sm">{node.summary ?? "-"}</div>
+              <div className="mt-3 text-xs uppercase tracking-wider text-slate-500">
+                commit
+              </div>
+              <div className="font-mono text-xs text-slate-300">
+                {(node.commit_before ?? "-").slice(0, 12)} →{" "}
+                {(node.commit_after ?? "-").slice(0, 12)}
+              </div>
+            </div>
+          </section>
+        ) : (
+          <section>
+            <h3 className="mb-2 text-[11px] font-medium uppercase tracking-wider text-slate-500">
+              Prompt
+            </h3>
+            <div className="whitespace-pre-wrap rounded-md border border-slate-800 bg-slate-900/50 p-3 text-slate-200">
+              {node.prompt || "(empty prompt)"}
+            </div>
+          </section>
+        )}
 
         {node.error && (
           <section>
@@ -130,7 +210,7 @@ function Summary({
           </section>
         )}
 
-        {node.system_context_snapshot && (
+        {!isOp && node.system_context_snapshot && (
           <section>
             <details className="rounded-md border border-slate-800 bg-slate-900/50">
               <summary className="cursor-pointer px-3 py-2 text-[11px] font-medium uppercase tracking-wider text-slate-500 hover:text-slate-300">
@@ -154,12 +234,16 @@ function Summary({
             <dd className="text-slate-300">{node.provider}</dd>
             <dt className="text-slate-600">Parent</dt>
             <dd className="truncate font-mono text-slate-300">{node.parent_node_id ?? "-"}</dd>
-            <dt className="text-slate-600">Provider session</dt>
-            <dd className="truncate font-mono text-slate-300">
-              {node.provider_session_id ?? node.sdk_session_id ?? "-"}
-            </dd>
-            <dt className="text-slate-600">Provider turn</dt>
-            <dd className="truncate font-mono text-slate-300">{node.provider_turn_id ?? "-"}</dd>
+            {!isOp && (
+              <>
+                <dt className="text-slate-600">Provider session</dt>
+                <dd className="truncate font-mono text-slate-300">
+                  {node.provider_session_id ?? node.sdk_session_id ?? "-"}
+                </dd>
+                <dt className="text-slate-600">Provider turn</dt>
+                <dd className="truncate font-mono text-slate-300">{node.provider_turn_id ?? "-"}</dd>
+              </>
+            )}
             <dt className="text-slate-600">Events</dt>
             <dd className="text-slate-300">{loading ? "loading" : eventCount}</dd>
             <dt className="text-slate-600">Started</dt>

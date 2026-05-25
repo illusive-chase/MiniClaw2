@@ -43,6 +43,7 @@ class GateSubtype(StrEnum):
     PERMISSION = "permission"
     ASK_USER = "ask_user"
     PLAN_APPROVAL = "plan_approval"
+    CHECKPOINT_REVIEW = "checkpoint_review"
 
 
 class GateState(StrEnum):
@@ -66,6 +67,7 @@ class Node(BaseModel):
     id: str = Field(default_factory=_new_id)
     project_id: str
     kind: NodeKind = NodeKind.AGENT
+    op_kind: str | None = None
     state: NodeState = NodeState.QUEUED
     parent_node_id: str | None = None
     context_sources: list[str] = Field(default_factory=list)
@@ -76,6 +78,7 @@ class Node(BaseModel):
     commit_before: str | None = None
     commit_after: str | None = None
     prompt: str = ""
+    contract: str = ""
     summary: str | None = None
     error: str | None = None
     system_context_snapshot: str = ""
