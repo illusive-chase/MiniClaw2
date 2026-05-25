@@ -51,13 +51,13 @@ human-supervised LLM workflows**:
 
 Three primary objects. Everything else is a view over these.
 
-### 2.1 Node — one provider session/turn or one programmatic op
+### 2.1 Node — one provider-backed session or one programmatic op
 
 Every node has:
 
 - `id`, `project_id`, `kind ∈ {agent, gate, op}`
 - `state ∈ {queued, running, waiting, awaiting-review, done, error, cancelled}`
-- `parent_node_id?` — for **resume** edges (SDK conversation continuation)
+- `parent_node_id?` — for explicit **resume** edges (provider conversation continuation)
 - `context_sources: [node_id]` — for **context** edges (acausal config carryover)
 - `provider` — `claude` or `codex`
 - `provider_session_id?` — Claude SDK session id or Codex thread id
@@ -84,7 +84,7 @@ intra-project parallelism. This keeps FS state coherent.
 | Edge | Stored as | Means |
 |---|---|---|
 | timeline | implicit from `(project_id, sequence)` | FS-state dependency between adjacent nodes |
-| resume | `parent_node_id` | Provider conversation continuation (`resume=<sid>` for Claude, `threadId` for Codex); creates a new node, not a continuation of the old one |
+| resume | `parent_node_id` | Explicit provider conversation continuation (`resume=<sid>` for Claude, `threadId` for Codex); creates a new node that starts from another node's conversation state |
 | context | `context_sources[]` | Snapshotted bundle of CLAUDE.md fragments, memory files, settings, allowed-tools, agents — evaluated once at consumer-creation time |
 | fork | `parent_project_id` + `parent_commit` | A new project rooted at a git worktree of another project's snapshot |
 
@@ -92,7 +92,7 @@ intra-project parallelism. This keeps FS state coherent.
 
 ```
 ┌────────────────────────────────────────────────────────────┐
-│ agent   │ A provider-backed session/turn. Inline gates allowed. │
+│ agent   │ A provider-backed session. Inline gates allowed. │
 │ gate    │ An agent + a post-completion markdown contract. │
 │         │ After session ends, node enters awaiting-review │
 │         │ until user resolves.                            │
@@ -104,11 +104,14 @@ intra-project parallelism. This keeps FS state coherent.
 ### 3.1 agent
 
 Runs the selected provider with whatever options are assembled from
-project settings + context-edge bundle + per-node overrides. Inline
-human gates (`permission`, `ask_user`, `plan_approval`) are normalized
-by the provider adapter and put the node into `waiting`. Resolving an
-inline gate continues the same provider session/turn — the node returns
-to `running`.
+project settings + context-edge bundle + per-node overrides. A normal
+agent node starts a fresh provider session/thread. Timeline adjacency
+only means filesystem/workspace ordering; it never implies provider
+conversation continuation. Inline human gates (`permission`,
+`ask_user`, `plan_approval`) are normalized by the provider adapter and
+put the node into `waiting`. Resolving an inline gate continues the
+same provider session/turn inside that node — the node returns to
+`running`.
 
 ### 3.2 gate (checkpoint node)
 
@@ -269,10 +272,10 @@ No UI changes. Migrate to the new domain model.
 - [✓] Persistence for `Project`, `Node`, `HumanGate` — JSON + JSONL
   on disk (SQLite deferred; see §8).
 - [✓] Node state machine implemented and exercised by existing
-  single-session flow. Each session id is now a project id; each user
-  prompt becomes a new agent node with implicit `parent_node_id` set
-  to the project's previous node, and `provider_session_id` inherited
-  so the selected provider resumes the conversation.
+  single-project flow. Each session id is now a project id; each user
+  prompt becomes a new agent node. New nodes start fresh by default:
+  `parent_node_id` and provider session/thread ids are only populated
+  for explicit resume edges, not for ordinary timeline adjacency.
 - [✓] Generalized `InteractionRequest` → `HumanGate` (inline kind
   only). The wire still emits `interaction_request` events for
   compat; the on-disk record is a `HumanGate`.
@@ -345,8 +348,8 @@ Still to do for this phase:
   awaiting-review UI in the side panel, write-json / no-op resolution.
 - `commit` op node, opt-in auto-append.
 - Resume edges: "fork conversation" affordance on a finished agent node
-  creates a child node with `parent_node_id` set; SDK called with
-  `resume=<sid>`.
+  creates a child node with `parent_node_id` set; SDK/app-server called
+  with the source node's provider session/thread id.
 - On-disk context loaded into agent options at launch:
   - CLAUDE.md merging (project + user)
   - `.claude/settings.json` + `settings.local.json`

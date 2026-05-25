@@ -1,9 +1,9 @@
 """ProjectRegistry — in-memory orchestration over the disk Store.
 
 The legacy "session" id maps 1:1 to a project id. Each user prompt
-becomes a new agent :class:`Node` whose ``parent_node_id`` points at
-the previous node in that project, and whose provider ids inherit from
-the predecessor so the selected provider resumes the conversation.
+becomes a new agent :class:`Node`. New nodes start with a fresh
+provider session by default; conversation continuation is explicit, not
+inherited from timeline adjacency.
 
 Within a project, only one node runs at a time (DESIGN §2.2).
 """
@@ -173,15 +173,11 @@ class ProjectRegistry:
         if rt.is_running():
             return None
 
-        latest = self.store.latest_node(pid)
         node = Node(
             project_id=pid,
             kind=NodeKind.AGENT,
             state=NodeState.QUEUED,
-            parent_node_id=latest.id if latest else None,
             provider=rt.project.provider,
-            provider_session_id=latest.provider_session_id if latest else None,
-            sdk_session_id=latest.sdk_session_id if latest else None,
             prompt=prompt,
         )
         self.store.create_node(node)

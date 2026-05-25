@@ -1,8 +1,14 @@
 from __future__ import annotations
 
+import tempfile
 import unittest
+from pathlib import Path
+from unittest.mock import patch
 
+from miniclaw2.domain import Node, NodeKind, NodeState, Project
+from miniclaw2.registry import ProjectRegistry
 from miniclaw2.replay import LiveReplayBuffer, covered_by_replay
+from miniclaw2.store import Store
 
 
 class LiveReplayBufferTest(unittest.TestCase):
@@ -67,6 +73,47 @@ class CoveredByReplayTest(unittest.TestCase):
                 99,
             )
         )
+
+
+class FreshNodeLaunchTest(unittest.TestCase):
+    def test_start_node_does_not_inherit_previous_provider_session(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(root=Path(tmp))
+            project = Project(root_path=tmp, provider="codex")
+            store.create_project(project)
+
+            previous = store.create_node(
+                Node(
+                    project_id=project.id,
+                    kind=NodeKind.AGENT,
+                    state=NodeState.DONE,
+                    provider="codex",
+                    provider_session_id="thread_previous",
+                    sdk_session_id="thread_previous",
+                )
+            )
+
+            registry = ProjectRegistry(store=store)
+
+            class _FakeTask:
+                def add_done_callback(self, callback):
+                    self._callback = callback
+
+            def fake_create_task(coro):
+                coro.close()
+                return _FakeTask()
+
+            with patch("miniclaw2.registry.asyncio.create_task", side_effect=fake_create_task):
+                runner = registry.start_node(project.id, "hello")
+
+            self.assertIsNotNone(runner)
+
+            node = store.latest_node(project.id)
+            assert node is not None
+            self.assertEqual(node.parent_node_id, None)
+            self.assertEqual(node.provider_session_id, None)
+            self.assertEqual(node.sdk_session_id, None)
+            self.assertNotEqual(node.id, previous.id)
 
 
 if __name__ == "__main__":

@@ -15,13 +15,14 @@ Vite frontend.
 ```
 
 - **Backend** (`backend/miniclaw2/`) — a **Project / Node** domain
-  model persisted to disk as JSON + JSONL. Each user prompt becomes an
-  agent `Node` using the project's selected provider. Claude projects
-  preserve continuity via SDK `resume`; Codex projects preserve
-  continuity via app-server `threadId`. A `NodeRunner` drives the state machine
-  (`queued → running [↔ waiting] → done|error|cancelled`), translates
-  provider messages into a small event union over the WebSocket, and
-  persists every event to `events.jsonl` before pushing.
+  model persisted to disk as JSON + JSONL. Each user prompt becomes a
+  fresh agent `Node` using the project's selected provider. Provider
+  conversation continuity is explicit rather than implicit: a node
+  starts a new Claude SDK session or Codex app-server thread unless the
+  UI later adds a deliberate resume edge. A `NodeRunner` drives the
+  state machine (`queued → running [↔ waiting] → done|error|cancelled`),
+  translates provider messages into a small event union over the
+  WebSocket, and persists every event to `events.jsonl` before pushing.
 - **Frontend** (`frontend/`) — single-project workspace with a
   horizontal node timeline, node detail side panel, and chat surface.
   Assistant output is markdown-rendered (`react-markdown` + GFM +
