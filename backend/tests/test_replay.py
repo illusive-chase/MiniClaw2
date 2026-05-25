@@ -115,6 +115,76 @@ class FreshNodeLaunchTest(unittest.TestCase):
             self.assertEqual(node.sdk_session_id, None)
             self.assertNotEqual(node.id, previous.id)
 
+    def test_start_node_can_explicitly_resume_from_source_node(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(root=Path(tmp))
+            project = Project(root_path=tmp, provider="codex")
+            store.create_project(project)
+
+            source = store.create_node(
+                Node(
+                    project_id=project.id,
+                    kind=NodeKind.AGENT,
+                    state=NodeState.DONE,
+                    provider="codex",
+                    provider_session_id="thread_source",
+                    sdk_session_id="thread_source",
+                )
+            )
+
+            registry = ProjectRegistry(store=store)
+
+            class _FakeTask:
+                def add_done_callback(self, callback):
+                    self._callback = callback
+
+            def fake_create_task(coro):
+                coro.close()
+                return _FakeTask()
+
+            with patch("miniclaw2.registry.asyncio.create_task", side_effect=fake_create_task):
+                runner = registry.start_node(
+                    project.id,
+                    "continue from source",
+                    resume_from_node_id=source.id,
+                )
+
+            self.assertIsNotNone(runner)
+
+            node = store.latest_node(project.id)
+            assert node is not None
+            self.assertEqual(node.parent_node_id, source.id)
+            self.assertEqual(node.provider, "codex")
+            self.assertEqual(node.provider_session_id, "thread_source")
+            self.assertEqual(node.sdk_session_id, "thread_source")
+            self.assertNotEqual(node.id, source.id)
+
+    def test_start_node_rejects_resume_from_nonterminal_source_node(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(root=Path(tmp))
+            project = Project(root_path=tmp, provider="codex")
+            store.create_project(project)
+
+            source = store.create_node(
+                Node(
+                    project_id=project.id,
+                    kind=NodeKind.AGENT,
+                    state=NodeState.RUNNING,
+                    provider="codex",
+                    provider_session_id="thread_source",
+                )
+            )
+
+            registry = ProjectRegistry(store=store)
+            self.assertIsNone(
+                registry.start_node(
+                    project.id,
+                    "continue from source",
+                    resume_from_node_id=source.id,
+                )
+            )
+            self.assertEqual(store.latest_node(project.id).id, source.id)
+
 
 if __name__ == "__main__":
     unittest.main()

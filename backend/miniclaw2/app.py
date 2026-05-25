@@ -2,8 +2,8 @@
 
 The wire protocol is intentionally unchanged from before the Phase 0
 refactor: a "session" id is a project id; each ``user_message`` spawns
-a new agent node whose conversation continues from the project's
-latest node via SDK ``resume``.
+a new agent node. Conversation continuation is explicit via an
+optional resume source, not inherited from timeline adjacency.
 """
 
 from __future__ import annotations
@@ -177,11 +177,15 @@ def create_app() -> FastAPI:
                 if msg_type == "user_message":
                     await mark_live_ready()
                     msg = UserMessage(**raw)
-                    runner = registry.start_node(sid, msg.text)
+                    runner = registry.start_node(
+                        sid,
+                        msg.text,
+                        resume_from_node_id=msg.resume_from_node_id,
+                    )
                     if runner is None:
                         await _send(send_now, {
                             "type": "error",
-                            "message": "turn in progress",
+                            "message": "turn in progress or invalid resume source",
                         })
                         continue
 

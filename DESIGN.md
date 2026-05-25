@@ -349,7 +349,8 @@ Still to do for this phase:
 - `commit` op node, opt-in auto-append.
 - Resume edges: "fork conversation" affordance on a finished agent node
   creates a child node with `parent_node_id` set; SDK/app-server called
-  with the source node's provider session/thread id.
+  with the source node's provider session/thread id. Ordinary launches
+  stay fresh unless the user explicitly selects a resume source.
 - On-disk context loaded into agent options at launch:
   - CLAUDE.md merging (project + user)
   - `.claude/settings.json` + `settings.local.json`

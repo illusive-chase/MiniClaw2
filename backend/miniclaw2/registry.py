@@ -161,11 +161,14 @@ class ProjectRegistry:
         self,
         pid: str,
         prompt: str,
+        *,
+        resume_from_node_id: str | None = None,
     ) -> NodeRunner | None:
         """Create a new agent node and launch its runner as a task.
 
-        Returns the runner, or ``None`` if the project is unknown or a
-        node is already running.
+        Returns the runner, or ``None`` if the project is unknown, a
+        node is already running, or a requested resume source is
+        invalid.
         """
         rt = self._runtimes.get(pid)
         if rt is None:
@@ -173,11 +176,28 @@ class ProjectRegistry:
         if rt.is_running():
             return None
 
+        resume_source: Node | None = None
+        if resume_from_node_id:
+            resume_source = self.store.load_node(pid, resume_from_node_id)
+            if resume_source is None:
+                return None
+            if resume_source.state not in {
+                NodeState.DONE,
+                NodeState.ERROR,
+                NodeState.CANCELLED,
+            }:
+                return None
+            if not (resume_source.provider_session_id or resume_source.sdk_session_id):
+                return None
+
         node = Node(
             project_id=pid,
             kind=NodeKind.AGENT,
             state=NodeState.QUEUED,
-            provider=rt.project.provider,
+            parent_node_id=resume_source.id if resume_source else None,
+            provider=resume_source.provider if resume_source else rt.project.provider,
+            provider_session_id=resume_source.provider_session_id if resume_source else None,
+            sdk_session_id=resume_source.sdk_session_id if resume_source else None,
             prompt=prompt,
         )
         self.store.create_node(node)

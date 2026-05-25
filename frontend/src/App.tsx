@@ -44,6 +44,7 @@ export function App() {
   const [usage, setUsage] = useState<Usage | null>(null);
   const [streaming, setStreaming] = useState(false);
   const [input, setInput] = useState("");
+  const [resumeFromNodeId, setResumeFromNodeId] = useState<string | null>(null);
   const turnIdRef = useRef(0);
   const activeNodeIdRef = useRef<string | null>(null);
   const selectedNodeIdRef = useRef<string | null>(null);
@@ -55,6 +56,7 @@ export function App() {
     setSelectedNodeId(null);
     setSelectedEvents([]);
     setSelectedDiff(null);
+    setResumeFromNodeId(null);
     activeNodeIdRef.current = null;
     createSessionOnce(provider)
       .then((next) => {
@@ -206,7 +208,8 @@ export function App() {
     ]);
     setInput("");
     setStreaming(true);
-    send({ type: "user_message", text });
+    send({ type: "user_message", text, resume_from_node_id: resumeFromNodeId });
+    setResumeFromNodeId(null);
   };
 
   const onStop = () => {
@@ -278,6 +281,14 @@ export function App() {
     );
   }, [pending, refreshNodes]);
 
+  const handleResumeFromNode = useCallback((node: NodeInfo) => {
+    if (!node.provider_session_id && !node.sdk_session_id) {
+      return;
+    }
+    setResumeFromNodeId(node.id);
+    setSelectedNodeId(node.id);
+  }, []);
+
   return (
     <div className="flex h-screen flex-col bg-slate-950 text-slate-100">
       <header className="flex items-center justify-between border-b border-slate-800 px-6 py-3">
@@ -320,6 +331,18 @@ export function App() {
 
       <div className="flex min-h-0 flex-1">
         <main className="flex min-w-0 flex-1 flex-col">
+          {resumeFromNodeId && (
+            <div className="border-b border-slate-800 bg-slate-900/40 px-6 py-2 text-[11px] text-slate-400">
+              Resuming from node {resumeFromNodeId}
+              <button
+                type="button"
+                onClick={() => setResumeFromNodeId(null)}
+                className="ml-3 rounded border border-slate-700 px-2 py-0.5 text-slate-300 hover:bg-slate-800"
+              >
+                Clear
+              </button>
+            </div>
+          )}
           <Chat turns={turns} />
 
           {interactionUI && <div className="px-6 pb-3">{interactionUI}</div>}
@@ -367,6 +390,7 @@ export function App() {
           loading={selectedEventsLoading}
           diff={selectedDiff}
           diffLoading={selectedDiffLoading}
+          onResumeFromNode={handleResumeFromNode}
         />
       </div>
     </div>

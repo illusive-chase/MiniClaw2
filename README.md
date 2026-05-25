@@ -28,9 +28,9 @@ Vite frontend.
   Assistant output is markdown-rendered (`react-markdown` + GFM +
   `highlight.js`); inline tool activity has collapsible output panels
   (stdout/text/json and real diffs when providers supply one); the app
-  includes permission / ask-user / plan approval dialogs, a Stop button,
-  a collapsible reasoning panel, repo diff inspection, and WebSocket
-  reconnect-replay.
+  includes permission / ask-user / plan approval dialogs, a Stop
+  button, a collapsible reasoning panel, repo diff inspection, an
+  explicit resume-from-node control, and WebSocket reconnect-replay.
 
 ## Scope
 

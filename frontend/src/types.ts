@@ -65,7 +65,7 @@ export type ServerEvent =
   | NodeUpdated;
 
 export type ClientMessage =
-  | { type: "user_message"; text: string }
+  | { type: "user_message"; text: string; resume_from_node_id?: string | null }
   | {
       type: "interaction_response";
       id: string;

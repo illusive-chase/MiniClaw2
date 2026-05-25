@@ -10,12 +10,14 @@ export function NodeDetail({
   loading,
   diff,
   diffLoading,
+  onResumeFromNode,
 }: {
   node: NodeInfo | null;
   events: EventRecord[];
   loading: boolean;
   diff: NodeDiff | null;
   diffLoading: boolean;
+  onResumeFromNode?: (node: NodeInfo) => void;
 }) {
   const [tab, setTab] = useState<DetailTab>("summary");
   const turns = useMemo(() => (node ? turnsFromEvents(node, events) : []), [node, events]);
@@ -33,9 +35,24 @@ export function NodeDetail({
             </div>
           </div>
           {node && (
-            <span className="rounded border border-slate-800 px-2 py-1 text-[11px] text-slate-400">
-              {node.state}
-            </span>
+            <div className="flex flex-none items-center gap-2">
+              <button
+                type="button"
+                onClick={() => onResumeFromNode?.(node)}
+                disabled={!canResumeNode(node)}
+                className="rounded border border-slate-700 px-2 py-1 text-[11px] text-slate-300 hover:bg-slate-900 disabled:cursor-not-allowed disabled:opacity-40"
+                title={
+                  canResumeNode(node)
+                    ? "Use this node's provider conversation as the next launch source"
+                    : "Only terminal nodes with provider sessions can be resumed"
+                }
+              >
+                Resume
+              </button>
+              <span className="rounded border border-slate-800 px-2 py-1 text-[11px] text-slate-400">
+                {node.state}
+              </span>
+            </div>
           )}
         </div>
         <div className="mt-3 flex gap-1">
@@ -71,6 +88,13 @@ export function NodeDetail({
         <RawEvents events={events} loading={loading} />
       )}
     </aside>
+  );
+}
+
+function canResumeNode(node: NodeInfo): boolean {
+  return (
+    Boolean(node.provider_session_id || node.sdk_session_id) &&
+    (node.state === "done" || node.state === "error" || node.state === "cancelled")
   );
 }
 

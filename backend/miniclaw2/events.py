@@ -83,6 +83,7 @@ class ErrorEvent(BaseModel):
 class UserMessage(BaseModel):
     type: Literal["user_message"]
     text: str
+    resume_from_node_id: str | None = None
 
 
 class InteractionResponse(BaseModel):
