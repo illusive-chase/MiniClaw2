@@ -11,6 +11,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel
 
+from .context import load_project_context
 from .domain import GateKind, GateState, HumanGate, Node, NodeState, Project
 from .events import (
     ErrorEvent,
@@ -103,12 +104,19 @@ class NodeRunner:
         error_msg: str | None = None
 
         try:
+            system_context = load_project_context(self.project.root_path)
+            if system_context != self.node.system_context_snapshot:
+                self.node.system_context_snapshot = system_context
+                self.store.update_node(self.node)
+                await self._emit_node_updated()
+
             provider = _make_provider(self.node.provider or self.project.provider)
             self._provider = provider
             context = AgentProviderContext(
                 node=self.node,
                 project=self.project,
                 request_gate_handler=self._request_gate,
+                system_context=system_context,
             )
             async for ev in provider.run(context):
                 await self._handle_provider_event(ev)

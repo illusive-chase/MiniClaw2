@@ -115,6 +115,7 @@ export type NodeInfo = {
   prompt: string;
   summary?: string | null;
   error?: string | null;
+  system_context_snapshot?: string;
   created_at: number;
   started_at?: number | null;
   finished_at?: number | null;

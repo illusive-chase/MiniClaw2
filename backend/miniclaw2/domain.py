@@ -78,6 +78,7 @@ class Node(BaseModel):
     prompt: str = ""
     summary: str | None = None
     error: str | None = None
+    system_context_snapshot: str = ""
     created_at: float = Field(default_factory=_now)
     started_at: float | None = None
     finished_at: float | None = None

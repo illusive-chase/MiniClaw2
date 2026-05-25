@@ -51,6 +51,7 @@ class AgentProviderContext:
     node: Node
     project: Project
     request_gate_handler: Callable[[GateRequest], Awaitable[dict[str, Any]]]
+    system_context: str = ""
 
     async def request_gate(self, gate: GateRequest) -> dict[str, Any]:
         return await self.request_gate_handler(gate)

@@ -32,6 +32,7 @@ class CodexProvider:
             try:
                 await client.initialize()
                 thread_id = context.node.provider_session_id or context.node.sdk_session_id
+                fresh_thread = not thread_id
                 if not thread_id:
                     start = await client.request(
                         "thread/start",
@@ -58,6 +59,9 @@ class CodexProvider:
                         yield AgentProviderEvent(kind="session", session_id=thread_id)
 
                 self._thread_id = thread_id
+                turn_text = context.node.prompt
+                if fresh_thread and context.system_context:
+                    turn_text = f"{context.system_context}\n\n{turn_text}"
                 turn = await client.request(
                     "turn/start",
                     {
@@ -65,7 +69,7 @@ class CodexProvider:
                         "input": [
                             {
                                 "type": "text",
-                                "text": context.node.prompt,
+                                "text": turn_text,
                                 "text_elements": [],
                             }
                         ],

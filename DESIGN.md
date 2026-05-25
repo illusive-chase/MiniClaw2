@@ -27,6 +27,18 @@ are converging toward over the next several phases.
 > read-only node/event/diff REST APIs, with explicit `node_updated`
 > events for live tile/panel state. Per-token streaming remains
 > deferred until the pinned `claude-agent-sdk` exposes partial messages.
+>
+> **Phase 2 first slice — provider-neutral `CONTEXT.md`.** A
+> `<project_root>/CONTEXT.md` file is loaded at each node launch and
+> injected uniformly across providers: Claude receives it via
+> `system_prompt.append` on the `claude_code` preset; Codex gets it
+> prepended to `turn/start` input on fresh threads (resumed threads
+> keep the context they were started with). The resolved text is
+> snapshotted onto the `Node` as `system_context_snapshot` for audit
+> and surfaced in the side-panel summary. Vendor-specific
+> CLAUDE.md/AGENTS.md/`.claude/`/`.mcp.json` loading is **intentionally
+> deferred** — the simpler one-file protocol covers the project-context
+> need without provider-format negotiation.
 
 ## 1. Motivation
 
@@ -351,8 +363,16 @@ Still to do for this phase:
   creates a child node with `parent_node_id` set; SDK/app-server called
   with the source node's provider session/thread id. Ordinary launches
   stay fresh unless the user explicitly selects a resume source.
-- On-disk context loaded into agent options at launch:
-  - CLAUDE.md merging (project + user)
+- [✓] **Provider-neutral `CONTEXT.md`.** `<project_root>/CONTEXT.md` is
+  loaded at each node launch by `backend/miniclaw2/context.py`; injected
+  into Claude via `system_prompt.append` on the `claude_code` preset,
+  and into Codex by prepending to the first `turn/start` input text on
+  fresh threads. The resolved text is snapshotted onto the node as
+  `system_context_snapshot` for audit and shown in the side-panel
+  summary. Strict filename (no `CLAUDE.md` / `AGENTS.md` fallback),
+  project-root lookup only.
+- Vendor-specific on-disk context (deferred):
+  - `CLAUDE.md` walk (project + user) merged into Claude's preset
   - `.claude/settings.json` + `settings.local.json`
   - `.claude/agents/*.md`
   - `.mcp.json`

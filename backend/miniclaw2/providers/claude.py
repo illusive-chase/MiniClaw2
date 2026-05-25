@@ -216,8 +216,11 @@ class ClaudeProvider:
             or os.environ.get("MINICLAW_ANTHROPIC_MODEL")
             or "claude-sonnet-4-6"
         )
+        system_prompt: dict[str, Any] = {"type": "preset", "preset": "claude_code"}
+        if context.system_context:
+            system_prompt["append"] = context.system_context
         opts: dict[str, Any] = {
-            "system_prompt": {"type": "preset", "preset": "claude_code"},
+            "system_prompt": system_prompt,
             "model": model,
             "permission_mode": "default",
             "cwd": context.project.root_path,

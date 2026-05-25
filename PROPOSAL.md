@@ -32,11 +32,14 @@ This doc inventories the remaining gaps and the four-phase plan.
 ### A. Context the CLI loads automatically that this wrapper ignores
 
 Native `claude` builds the agent's environment from disk before the
-first turn. MiniClaw2 passes only `cwd` and `model`.
+first turn. MiniClaw2 takes a provider-neutral shortcut: it loads
+`<project_root>/CONTEXT.md` (if present) and injects it into both
+Claude (`system_prompt.append`) and Codex (prepended `turn/start`
+input on fresh threads). Vendor-specific files are still ignored.
 
 | Native CLI loads | MiniClaw2 |
 |---|---|
-| `~/.claude/CLAUDE.md`, `<repo>/CLAUDE.md`, nested CLAUDE.md merged into system prompt | none |
+| `~/.claude/CLAUDE.md`, `<repo>/CLAUDE.md`, nested CLAUDE.md merged into system prompt | provider-neutral `<repo>/CONTEXT.md` instead (project-root only, strict filename) |
 | `~/.claude/projects/.../memory/MEMORY.md` + memory files | none |
 | `.claude/settings.json` + `.claude/settings.local.json` (allow/deny, env, hooks, MCP) | none |
 | `.claude/agents/*.md` (custom subagents) | none |
@@ -44,7 +47,9 @@ first turn. MiniClaw2 passes only `cwd` and `model`.
 | `.mcp.json` MCP servers | none |
 | `~/.claude/keybindings.json` | n/a (web UI) |
 
-This is the single biggest source of behavioral drift between the two.
+`CONTEXT.md` closes the largest single source of behavioral drift
+(missing project conventions / repo-specific instructions). The
+remaining items are vendor-specific settings/tools and stay TBD.
 
 ### B. Tool / interaction surfaces
 
@@ -167,10 +172,19 @@ Small, high-value fixes within the current architecture.
 
 Closes most of the behavioral drift in (A).
 
-- **CLAUDE.md merging.** Walk from `cwd` up, plus `~/.claude/CLAUDE.md`,
-  concatenate into the system prompt — or use the SDK's
-  `setting_sources=["project", "user"]` option, which is the right
-  knob.
+- [✓] **Provider-neutral `CONTEXT.md`.** A single
+  `<project_root>/CONTEXT.md` is loaded by `backend/miniclaw2/context.py`
+  and threaded through `AgentProviderContext.system_context`. Claude
+  uses `system_prompt={"type":"preset","preset":"claude_code","append":<text>}`;
+  Codex prepends to the first `turn/start` input on fresh threads. The
+  resolved text is snapshotted on the node and rendered in the side
+  panel. Strict filename, project-root only. This is the
+  provider-neutral substitute for CLAUDE.md merging.
+- **CLAUDE.md merging (deferred).** Native CLI walks from `cwd` up plus
+  `~/.claude/CLAUDE.md`. Could be wired via the SDK's
+  `setting_sources=["project", "user"]` option later, but `CONTEXT.md`
+  covers the project-context use case without provider-format
+  negotiation.
 - **`.claude/settings.json` + `settings.local.json` loading.** Pass
   `permissions`, `env`, `hooks`, `mcpServers`, `allowedTools`,
   `disallowedTools` into `ClaudeAgentOptions`. SDK accepts most
@@ -229,10 +243,14 @@ Closes most of the behavioral drift in (A).
    DESIGN Phase 1 graph shell has also started with read-only
    node/event/diff APIs, explicit `node_updated` events, a single-project
    timeline, and a node detail side panel.
-- Phase 2 (`PROPOSAL.md` numbering — on-disk context loading) extends
-  `runner._build_options` and adds a small config loader; no
-  protocol change. This now also feeds `ContextBundle` records under
-  the DESIGN model.
+- Phase 2 (`PROPOSAL.md` numbering — on-disk context loading) took the
+  provider-neutral path first: a `CONTEXT.md` loader
+  (`backend/miniclaw2/context.py`) feeds
+  `AgentProviderContext.system_context`, which Claude appends to its
+  preset and Codex prepends to fresh-thread input. The resolved text
+  is snapshotted on the node (`system_context_snapshot`). No protocol
+  change. Vendor-specific loading (CLAUDE.md walk, `.claude/settings`,
+  agents, MCP) is deferred behind this slice.
 - Phase 3 (session/project UI + queue) is no longer the largest
   commit; the persistence layer is already in. What remains is the
   workspace UI, project switcher, settings surface, and a queue for

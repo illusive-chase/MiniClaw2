@@ -30,7 +30,14 @@ Vite frontend.
   (stdout/text/json and real diffs when providers supply one); the app
   includes permission / ask-user / plan approval dialogs, a Stop
   button, a collapsible reasoning panel, repo diff inspection, an
-  explicit resume-from-node control, and WebSocket reconnect-replay.
+  explicit resume-from-node control, a collapsible System-context
+  block in the node summary tab, and WebSocket reconnect-replay.
+- **Project-level context** — a `CONTEXT.md` file at the project root
+  is loaded at each node launch and injected provider-neutrally: into
+  Claude via `system_prompt.append` on the `claude_code` preset, and
+  into Codex by prepending to the `turn/start` input text on fresh
+  threads. The resolved text is snapshotted onto the Node
+  (`system_context_snapshot`) for audit.
 
 ## Scope
 
@@ -38,11 +45,14 @@ In: streaming chat with markdown rendering, tool activity with full
 result panels, permission / ask-user / plan-approval interactions,
 on-disk persistence per project & node, interrupt, extended-thinking
 surface, WebSocket reconnect replay (mid-session drops), Claude and
-initial Codex provider adapters.
+initial Codex provider adapters, provider-neutral project context
+via `CONTEXT.md`.
 Out (for now): multi-project workspace UI, checkpoint gates,
-provider-specific on-disk context inheritance, hard-reload session
-survival (session-switcher UI), per-token streaming for Claude, auth,
-cost tracking, true git snapshot diffs in the side panel.
+vendor-specific on-disk context (`CLAUDE.md`, `AGENTS.md`,
+`.claude/settings.json`, `.claude/agents`, `.mcp.json`), hard-reload
+session survival (session-switcher UI), per-token streaming for
+Claude, auth, cost tracking, true git snapshot diffs in the side
+panel.
 
 See [`DESIGN.md`](DESIGN.md) for the long-term graph-IDE plan and
 [`PROPOSAL.md`](PROPOSAL.md) for the CLI-parity punch list (with
@@ -93,6 +103,7 @@ backend/miniclaw2/
   registry.py   # ProjectRegistry — in-memory orchestration over the store
   events.py     # Pydantic models for the WS protocol
   app.py        # FastAPI: REST + WebSocket gateway (legacy /sessions URL shape)
+  context.py    # CONTEXT.md loader (project-root, provider-neutral)
   git_state.py  # small git helpers for commit ids and read-only diffs
   replay.py     # replay/live buffering for reconnecting WS observers
   __main__.py   # uvicorn entry
@@ -171,6 +182,14 @@ in. The shifts from the initial single-file wrapper:
 - Per-token streaming for the Claude provider stays deferred until
   the pinned SDK exposes partial messages; Codex already streams
   per-delta.
+
+A first slice of DESIGN Phase 2 also landed: a provider-neutral
+`CONTEXT.md` is loaded from the project root and injected into both
+Claude (via `system_prompt.append`) and Codex (prepended to the first
+`turn/start` input on fresh threads). The resolved text is
+snapshotted onto the Node and surfaced in the side-panel summary.
+Vendor-specific loading (CLAUDE.md walk, `.claude/settings.json`,
+custom agents, `.mcp.json`) is intentionally out of scope.
 
 Next up (DESIGN Phase 1 remainder): richer node launch controls,
 side-panel tabs for gates/settings, and tighter per-node snapshot diffs
