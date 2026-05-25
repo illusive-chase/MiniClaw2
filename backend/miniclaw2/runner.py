@@ -109,6 +109,7 @@ class NodeRunner:
 
     async def _run_agent(self) -> None:
         self.node.commit_before = git_head(self.project.root_path)
+        self._snapshot_launch_settings()
         self._transition(NodeState.RUNNING, started=True)
         await self._emit(
             NodeStarted(
@@ -183,6 +184,7 @@ class NodeRunner:
     async def _run_op(self) -> None:
         """Run a non-provider op node (currently only ``commit``)."""
         self.node.commit_before = git_head(self.project.root_path)
+        self._snapshot_launch_settings()
         self._transition(NodeState.RUNNING, started=True)
         await self._emit(
             NodeStarted(
@@ -227,6 +229,12 @@ class NodeRunner:
             self._transition(final_state, finished=True)
             await self._emit_node_updated()
             await self._emit(TurnDone())
+
+    def _snapshot_launch_settings(self) -> None:
+        snapshot: dict[str, Any] = dict(self.project.settings_override)
+        snapshot["cwd"] = self.project.root_path
+        snapshot["provider"] = self.node.provider or self.project.provider
+        self.node.settings_snapshot = snapshot
 
     # ---- state transitions ----
 

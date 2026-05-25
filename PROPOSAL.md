@@ -12,11 +12,19 @@
 > messages). **`DESIGN.md` Phase 2 centerpieces (commit-op node + gate
 > node kind) have also landed** — see §3 below; the CLI-parity items in
 > this doc are unaffected since the op/gate work is graph-IDE
-> architecture, not native-CLI parity.
+> architecture, not native-CLI parity. A subsequent **Phase 1/2 polish
+> sweep** consolidated all interaction surfaces into the side panel:
+> permission / ask-user / plan-approval no longer render under the
+> chat composer — they share a unified `gate` tab on `NodeDetail`
+> alongside checkpoint-review. A read-only `Settings` tab (backed by
+> a new `Node.settings_snapshot`) and SVG resume-edge connectors on
+> the timeline (with `↻ {id}` badges on resumed tiles) also landed in
+> the same pass.
 
 The current default provider is a slice over `claude-agent-sdk` with a
 per-node state machine, a JSONL/JSON store under `$MINICLAW_HOME`, and
-three interaction dialogs (permission / ask-user / plan). It works, but
+a unified `gate` tab on the node-detail side panel that handles
+permission / ask-user / plan / checkpoint-review requests. It works, but
 the same prompt run in MiniClaw2 vs. the `claude` CLI in the same
 directory will still behave noticeably differently because almost none
 of the on-disk context the CLI reads is loaded here.

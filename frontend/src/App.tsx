@@ -1,16 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createSession, getNodeDiff, listNodeEvents, listNodes } from "./api";
 import { Chat, type ChatTurn } from "./components/Chat";
-import { PermissionDialog } from "./components/PermissionDialog";
-import { AskUserDialog } from "./components/AskUserDialog";
-import { PlanDialog } from "./components/PlanDialog";
 import { ProjectTimeline } from "./components/ProjectTimeline";
-import { NodeDetail } from "./components/NodeDetail";
+import { NodeDetail, type PendingGate } from "./components/NodeDetail";
 import { GateLaunchModal } from "./components/GateLaunchModal";
 import type {
   Activity,
   EventRecord,
-  InteractionRequest,
   NodeDiff,
   NodeInfo,
   ServerEvent,
@@ -41,13 +37,13 @@ export function App() {
   const [selectedEventsLoading, setSelectedEventsLoading] = useState(false);
   const [selectedDiff, setSelectedDiff] = useState<NodeDiff | null>(null);
   const [selectedDiffLoading, setSelectedDiffLoading] = useState(false);
-  const [pending, setPending] = useState<InteractionRequest | null>(null);
+  const [pendingGate, setPendingGate] = useState<PendingGate | null>(null);
+  const [pendingReview, setPendingReview] = useState<PendingGate | null>(null);
   const [usage, setUsage] = useState<Usage | null>(null);
   const [streaming, setStreaming] = useState(false);
   const [input, setInput] = useState("");
   const [resumeFromNodeId, setResumeFromNodeId] = useState<string | null>(null);
   const [gateModalOpen, setGateModalOpen] = useState(false);
-  const [pendingReview, setPendingReview] = useState<InteractionRequest | null>(null);
   const turnIdRef = useRef(0);
   const activeNodeIdRef = useRef<string | null>(null);
   const selectedNodeIdRef = useRef<string | null>(null);
@@ -173,10 +169,14 @@ export function App() {
     } else if (ev.type === "activity") {
       setTurns((prev) => mergeActivity(prev, ev));
     } else if (ev.type === "interaction_request") {
-      if (ev.interaction_type === "checkpoint_review") {
-        setPendingReview(ev);
-      } else {
-        setPending(ev);
+      const ownerNodeId = activeNodeIdRef.current;
+      if (ownerNodeId) {
+        if (ev.interaction_type === "checkpoint_review") {
+          setPendingReview({ request: ev, nodeId: ownerNodeId });
+        } else {
+          setPendingGate({ request: ev, nodeId: ownerNodeId });
+        }
+        setSelectedNodeId(ownerNodeId);
       }
       void refreshNodes();
     } else if (ev.type === "usage") {
@@ -266,69 +266,35 @@ export function App() {
     }, 250);
   };
 
-  const resolvePending = (
-    payload: Omit<
-      Extract<Parameters<typeof send>[0], { type: "interaction_response" }>,
-      "type" | "id"
-    >,
-  ) => {
-    if (!pending) return;
-    send({ type: "interaction_response", id: pending.id, ...payload });
-    setPending(null);
-    window.setTimeout(() => {
-      void refreshNodes();
-    }, 250);
-  };
+  const onResolveGate = useCallback(
+    (
+      id: string,
+      payload: Omit<
+        Extract<Parameters<typeof send>[0], { type: "interaction_response" }>,
+        "type" | "id"
+      >,
+    ) => {
+      send({ type: "interaction_response", id, ...payload });
+      setPendingGate((prev) => (prev && prev.request.id === id ? null : prev));
+      window.setTimeout(() => {
+        void refreshNodes();
+      }, 250);
+    },
+    [send, refreshNodes],
+  );
 
-  const interactionUI = useMemo(() => {
-    if (!pending) return null;
-    if (pending.interaction_type === "permission") {
-      return (
-        <PermissionDialog
-          request={pending}
-          onRespond={(args) =>
-            resolvePending({
-              allow: args.allow,
-              decision: args.decision ?? null,
-              scope: args.scope ?? null,
-              interrupt: args.interrupt ?? false,
-              message: args.message ?? "",
-            })
-          }
-        />
-      );
-    }
-    if (pending.interaction_type === "ask_user") {
-      return (
-        <AskUserDialog
-          request={pending}
-          onRespond={(answers) =>
-            resolvePending({
-              allow: true,
-              updated_input: {
-                ...pending.tool_input,
-                answers: toLegacyAnswers(answers),
-              },
-              response: { answers },
-            })
-          }
-        />
-      );
-    }
-    return (
-      <PlanDialog
-        request={pending}
-        onRespond={(args) =>
-          resolvePending({
-            allow: args.allow,
-            clear_context: args.clearContext ?? false,
-            permission_mode: args.permissionMode ?? null,
-            message: args.message ?? "",
-          })
-        }
-      />
-    );
-  }, [pending, refreshNodes]);
+  const pendingBanner = useMemo(() => {
+    const active = pendingReview ?? pendingGate;
+    if (!active || active.nodeId === selectedNodeId) return null;
+    const labelKind =
+      active.request.interaction_type === "checkpoint_review"
+        ? "review"
+        : "response";
+    return {
+      nodeId: active.nodeId,
+      label: `Node ${active.nodeId.slice(0, 8)} is awaiting your ${labelKind}.`,
+    };
+  }, [pendingGate, pendingReview, selectedNodeId]);
 
   const handleResumeFromNode = useCallback((node: NodeInfo) => {
     if (!node.provider_session_id && !node.sdk_session_id) {
@@ -369,7 +335,7 @@ export function App() {
               setTurns([]);
               setUsage(null);
               setStreaming(false);
-              setPending(null);
+              setPendingGate(null);
               setPendingReview(null);
             }}
             disabled={streaming}
@@ -409,7 +375,18 @@ export function App() {
           )}
           <Chat turns={turns} />
 
-          {interactionUI && <div className="px-6 pb-3">{interactionUI}</div>}
+          {pendingBanner && (
+            <div className="border-t border-amber-700/40 bg-amber-950/30 px-6 py-2 text-[11px] text-amber-200">
+              {pendingBanner.label}{" "}
+              <button
+                type="button"
+                onClick={() => setSelectedNodeId(pendingBanner.nodeId)}
+                className="ml-2 rounded border border-amber-700/60 px-2 py-0.5 text-amber-200 hover:bg-amber-900/40"
+              >
+                Open in side panel
+              </button>
+            </div>
+          )}
 
           <div className="border-t border-slate-800 px-6 py-3">
             <div className="flex gap-2">
@@ -455,11 +432,17 @@ export function App() {
           diff={selectedDiff}
           diffLoading={selectedDiffLoading}
           onResumeFromNode={handleResumeFromNode}
+          pendingGate={
+            pendingGate && selectedNode && pendingGate.nodeId === selectedNode.id
+              ? pendingGate
+              : null
+          }
           pendingReview={
             pendingReview && selectedNode && selectedNode.state === "awaiting_review"
               ? pendingReview
               : null
           }
+          onResolveGate={onResolveGate}
           onResolveReview={onResolveReview}
         />
       </div>
@@ -505,11 +488,3 @@ function upsertNode(prev: NodeInfo[], node: NodeInfo): NodeInfo[] {
   return prev.map((item, i) => (i === index ? node : item));
 }
 
-function toLegacyAnswers(answers: Record<string, { answers: string[] }>) {
-  return Object.fromEntries(
-    Object.entries(answers).map(([key, value]) => [
-      key,
-      value.answers.length <= 1 ? (value.answers[0] ?? "") : value.answers,
-    ]),
-  );
-}

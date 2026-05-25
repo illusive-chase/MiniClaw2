@@ -1,4 +1,7 @@
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { NodeInfo, NodeState } from "../types";
+
+type EdgePath = { d: string; key: string; selected: boolean };
 
 export function ProjectTimeline({
   nodes,
@@ -9,6 +12,68 @@ export function ProjectTimeline({
   selectedNodeId: string | null;
   onSelect: (nodeId: string) => void;
 }) {
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const tileRefs = useRef<Map<string, HTMLButtonElement>>(new Map());
+  const [paths, setPaths] = useState<EdgePath[]>([]);
+  const [overlay, setOverlay] = useState<{ width: number; height: number }>({
+    width: 0,
+    height: 0,
+  });
+
+  const nodeById = useNodeById(nodes);
+
+  const recompute = useCallback(() => {
+    const container = scrollRef.current;
+    if (!container) return;
+    const containerRect = container.getBoundingClientRect();
+    const scrollLeft = container.scrollLeft;
+    const next: EdgePath[] = [];
+    for (const node of nodes) {
+      if (!node.parent_node_id) continue;
+      if (node.kind === "op") continue;
+      const parent = nodeById.get(node.parent_node_id);
+      if (!parent || parent.kind === "op") continue;
+      const childTile = tileRefs.current.get(node.id);
+      const parentTile = tileRefs.current.get(node.parent_node_id);
+      if (!childTile || !parentTile) continue;
+      const parentRect = parentTile.getBoundingClientRect();
+      const childRect = childTile.getBoundingClientRect();
+      const x1 = parentRect.right - containerRect.left + scrollLeft;
+      const y1 = parentRect.bottom - containerRect.top - 6;
+      const x2 = childRect.left - containerRect.left + scrollLeft;
+      const y2 = childRect.bottom - containerRect.top - 6;
+      const dx = Math.max(40, Math.abs(x2 - x1) * 0.4);
+      const d = `M ${x1} ${y1} C ${x1 + dx} ${y1 + 16}, ${x2 - dx} ${y2 + 16}, ${x2} ${y2}`;
+      next.push({
+        d,
+        key: `${node.parent_node_id}->${node.id}`,
+        selected:
+          node.id === selectedNodeId || node.parent_node_id === selectedNodeId,
+      });
+    }
+    setPaths(next);
+    setOverlay({ width: container.scrollWidth, height: container.clientHeight });
+  }, [nodes, nodeById, selectedNodeId]);
+
+  useLayoutEffect(() => {
+    recompute();
+  }, [recompute]);
+
+  useEffect(() => {
+    const container = scrollRef.current;
+    if (!container) return;
+    const ro = new ResizeObserver(() => recompute());
+    ro.observe(container);
+    const onScroll = () => recompute();
+    container.addEventListener("scroll", onScroll, { passive: true });
+    window.addEventListener("resize", recompute);
+    return () => {
+      ro.disconnect();
+      container.removeEventListener("scroll", onScroll);
+      window.removeEventListener("resize", recompute);
+    };
+  }, [recompute]);
+
   return (
     <section className="border-b border-slate-800 bg-slate-950/40 px-6 py-3">
       <div className="mb-2 flex items-center justify-between">
@@ -22,7 +87,29 @@ export function ProjectTimeline({
           No nodes yet.
         </div>
       ) : (
-        <div className="flex gap-2 overflow-x-auto pb-1">
+        <div
+          ref={scrollRef}
+          className="relative flex gap-2 overflow-x-auto pb-1"
+        >
+          {paths.length > 0 && (
+            <svg
+              className="pointer-events-none absolute inset-0"
+              width={overlay.width}
+              height={overlay.height}
+              aria-hidden="true"
+            >
+              {paths.map((path) => (
+                <path
+                  key={path.key}
+                  d={path.d}
+                  fill="none"
+                  stroke={path.selected ? "rgb(125 211 252)" : "rgb(71 85 105)"}
+                  strokeWidth={path.selected ? 2 : 1.5}
+                  strokeDasharray="4 3"
+                />
+              ))}
+            </svg>
+          )}
           {nodes.map((node, index) => {
             const isOp = node.kind === "op";
             const kindLabel = isOp && node.op_kind ? `op · ${node.op_kind}` : node.kind;
@@ -30,13 +117,20 @@ export function ProjectTimeline({
               isOp
                 ? node.summary || "(running)"
                 : node.summary || node.prompt || "(empty prompt)";
+            const resumeParent = !isOp
+              ? findResumeParent(node, nodeById)
+              : null;
             return (
               <button
                 key={node.id}
                 type="button"
+                ref={(el) => {
+                  if (el) tileRefs.current.set(node.id, el);
+                  else tileRefs.current.delete(node.id);
+                }}
                 onClick={() => onSelect(node.id)}
                 className={
-                  "group relative grid h-24 flex-none grid-rows-[auto_1fr_auto] rounded-md border px-3 py-2 text-left transition " +
+                  "group relative z-10 grid h-24 flex-none grid-rows-[auto_1fr_auto] rounded-md border px-3 py-2 text-left transition " +
                   (isOp ? "w-32 " : "w-48 ") +
                   (selectedNodeId === node.id
                     ? "border-sky-500/80 bg-sky-950/30"
@@ -58,6 +152,14 @@ export function ProjectTimeline({
                   <span className="font-mono">{node.id.slice(0, 8)}</span>
                   <span>{formatNodeTime(node.started_at ?? node.created_at)}</span>
                 </div>
+                {resumeParent && (
+                  <span
+                    className="absolute -top-2 left-2 rounded-full border border-sky-700 bg-slate-950 px-1.5 py-0.5 font-mono text-[9px] text-sky-300"
+                    title={`Resumed from ${resumeParent.id}`}
+                  >
+                    ↻ {resumeParent.id.slice(0, 6)}
+                  </span>
+                )}
               </button>
             );
           })}
@@ -65,6 +167,22 @@ export function ProjectTimeline({
       )}
     </section>
   );
+}
+
+function useNodeById(nodes: NodeInfo[]): Map<string, NodeInfo> {
+  const map = new Map<string, NodeInfo>();
+  for (const node of nodes) map.set(node.id, node);
+  return map;
+}
+
+function findResumeParent(
+  node: NodeInfo,
+  byId: Map<string, NodeInfo>,
+): NodeInfo | null {
+  if (!node.parent_node_id) return null;
+  const parent = byId.get(node.parent_node_id);
+  if (!parent || parent.kind === "op") return null;
+  return parent;
 }
 
 function stateDot(state: NodeState): string {

@@ -82,6 +82,7 @@ class Node(BaseModel):
     summary: str | None = None
     error: str | None = None
     system_context_snapshot: str = ""
+    settings_snapshot: dict[str, Any] = Field(default_factory=dict)
     created_at: float = Field(default_factory=_now)
     started_at: float | None = None
     finished_at: float | None = None

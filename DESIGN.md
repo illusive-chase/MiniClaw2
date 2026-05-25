@@ -53,9 +53,22 @@ are converging toward over the next several phases.
 > side panel grows a `Review` tab with the contract + a
 > write-json / no-op response form. Write-json rejects absolute paths
 > and parent traversal, loops on write errors so the user can retry
-> without restarting the node. Resume edges (per-node "fork
-> conversation" affordance beyond the existing Resume button) and
-> vendor-specific on-disk context remain deferred.
+> without restarting the node. Vendor-specific on-disk context remains
+> deferred.
+>
+> **Phase 1/2 polish sweep.** Three follow-up items landed together:
+> (1) inline gates moved off the chat composer into a unified `gate`
+> tab on `NodeDetail` (subsumes the old `Review` tab; auto-switches
+> when a request arrives; an amber banner surfaces requests for nodes
+> that aren't currently selected). (2) A read-only `Settings` tab on
+> `NodeDetail` backed by a new `Node.settings_snapshot` field that
+> `NodeRunner` populates at start with `project.settings_override +
+> cwd + provider`. (3) Resume-edge connectors: `ProjectTimeline`
+> overlays an SVG bezier from each parent agent/gate tile to its
+> resume child, with a `↻ {id}` badge on resumed tiles for when the
+> parent is off-screen. Op-parent edges (auto-append commit) are
+> skipped so the line on the timeline always means "conversation
+> continuation."
 
 ## 1. Motivation
 
@@ -573,8 +586,27 @@ timeline UI's side panel can render real content from day one:
 
 Still to do for this phase:
 
-- Settings tab in the node detail panel.
-- Inline gates render in the side panel; node tile pulses green.
+- [✓] **Inline gates render in the side panel.** Permission / ask-user /
+  plan-approval requests no longer render under the chat composer; they
+  consolidate into a single dynamic `gate` tab on `NodeDetail` that
+  also subsumes the previous `Review` tab for checkpoint contracts.
+  Tab label switches per request type (permission / ask / plan /
+  review). When an inline gate arrives, the timeline auto-selects the
+  owning node and the side panel auto-switches to `gate`; if the user
+  is parked on a different node, a small amber banner above the chat
+  composer surfaces "Node X is awaiting your response" with a
+  click-through. Node tiles already pulse for `waiting` /
+  `awaiting_review` via existing `stateDot`.
+- [✓] **Settings tab in the node detail panel.** Read-only tab on
+  `NodeDetail` that displays the launch-time settings snapshot. New
+  field `Node.settings_snapshot: dict[str, Any]` is populated by
+  `NodeRunner` at runner start with `project.settings_override + cwd +
+  provider` (same pattern as `system_context_snapshot`). The tab
+  renders provider / model / model-provider / cwd / auto-commit as
+  known rows, surfaces any extra snapshot keys, and shows a Context
+  section with `system_context_snapshot` size and `context_sources`.
+  Old on-disk nodes (without the field) load fine via the Pydantic
+  default.
 - [✓] **Richer agent node launch controls beyond the chat composer.**
   Gate-node launch is now driven by a dedicated `+ Gate` button in the
   header that opens `GateLaunchModal` (prompt + contract editor); the
@@ -604,10 +636,18 @@ Still to do for this phase:
   new commit hash and a `node_updated` event is broadcast for that
   node. `NodeStarted.kind` distinguishes op-node events so the
   frontend doesn't jump the selection to the op tile.
-- Resume edges: "fork conversation" affordance on a finished agent node
-  creates a child node with `parent_node_id` set; SDK/app-server called
-  with the source node's provider session/thread id. Ordinary launches
-  stay fresh unless the user explicitly selects a resume source.
+- [✓] **Resume edges.** A `Resume` button in the `NodeDetail` header
+  on a terminal agent/gate node with a provider session sets the next
+  launch's `resume_from_node_id`; the chat composer shows a
+  "Resuming from node X" banner with a Clear button. The new node
+  inherits the parent's `provider_session_id` / `sdk_session_id` and
+  starts the SDK/app-server in resume mode. The timeline now overlays
+  an SVG layer drawing a dashed bezier from each parent agent/gate
+  tile to its resume child, plus a small `↻ {id}` badge on the resumed
+  tile so the relationship stays visible when the parent has scrolled
+  off-screen. Op auto-append parents are explicitly skipped from edge
+  drawing (those are not resumes). Ordinary launches without an
+  explicit resume source still start fresh.
 - [✓] **Provider-neutral `CONTEXT.md`.** `<project_root>/CONTEXT.md` is
   loaded at each node launch by `backend/miniclaw2/context.py`; injected
   into Claude via `system_prompt.append` on the `claude_code` preset,

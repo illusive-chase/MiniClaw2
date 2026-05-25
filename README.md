@@ -28,13 +28,17 @@ Vite frontend.
   Assistant output is markdown-rendered (`react-markdown` + GFM +
   `highlight.js`); inline tool activity has collapsible output panels
   (stdout/text/json and real diffs when providers supply one); the app
-  includes permission / ask-user / plan approval dialogs, a Stop
-  button, a collapsible reasoning panel, repo diff inspection, an
-  explicit resume-from-node control, a collapsible System-context
-  block in the node summary tab, and WebSocket reconnect-replay. A
-  `+ Gate` button in the header opens a launch modal (prompt + markdown
-  contract); finished gate nodes surface a `Review` tab in the side
-  panel for write-json / no-op resolution.
+  has a Stop button, a collapsible reasoning panel, repo diff
+  inspection, an explicit resume-from-node control with a visible
+  SVG connector + `↻ {id}` badge on the timeline, a collapsible
+  System-context block in the node summary tab, a read-only
+  `Settings` tab driven by `Node.settings_snapshot`, and WebSocket
+  reconnect-replay. Permission / ask-user / plan-approval and
+  checkpoint-review all share a unified `gate` tab on `NodeDetail`
+  that auto-switches when a request arrives; an amber banner above
+  the chat composer surfaces requests for nodes that aren't currently
+  selected. A `+ Gate` button in the header opens a launch modal
+  (prompt + markdown contract) for new checkpoint gate nodes.
 - **Project-level context** — a `CONTEXT.md` file at the project root
   is loaded at each node launch and injected provider-neutrally: into
   Claude via `system_prompt.append` on the `claude_code` preset, and
@@ -231,7 +235,28 @@ The DESIGN Phase 2 centerpieces have since landed too:
   the timeline and the selection deliberately does not jump to them
   (`node_started.kind` distinguishes agent/gate/op events).
 
-Next up (DESIGN Phase 1/2 remainder): inline-gate rendering inside
-the side panel, settings tab in `NodeDetail`, and resume-edge UI
-(per-node "fork conversation" affordance with visual edge in the
-timeline).
+A subsequent **Phase 1/2 polish sweep** then landed three follow-ups:
+
+- **Inline gates moved into the side panel.** Permission / ask-user /
+  plan-approval and checkpoint-review share a single dynamic `gate`
+  tab on `NodeDetail`; the bottom-of-chat dialog is gone. When a
+  request fires, the timeline auto-selects the owning node and the
+  side panel auto-switches to `gate`. An amber banner above the chat
+  composer surfaces requests for nodes the user isn't currently
+  parked on.
+- **Settings tab in `NodeDetail`.** Read-only inspector for what the
+  node was launched with, backed by a new
+  `Node.settings_snapshot: dict[str, Any]` populated at runner start
+  with `project.settings_override + cwd + provider`. Pydantic default
+  keeps older on-disk records loading cleanly.
+- **Resume-edge connectors on the timeline.** `ProjectTimeline`
+  overlays an SVG bezier from each parent agent/gate tile to its
+  resume child (computed via tile refs, recomputed on scroll /
+  resize). Each resumed tile also gets a `↻ {id}` badge so the
+  relationship stays visible when the parent is off-screen. Op
+  auto-append parents are deliberately skipped — drawn edges only
+  ever mean conversation continuation.
+
+Next up: DESIGN Phase 3 (Templates — programmable graph), or the
+deferred vendor-specific on-disk context (CLAUDE.md walk,
+`.claude/settings.json`, `.claude/agents`, `.mcp.json`).

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type {
   Activity,
+  ClientMessage,
   EventRecord,
   InteractionRequest,
   NodeDiff,
@@ -9,8 +10,27 @@ import type {
 } from "../types";
 import { Chat, type ChatTurn } from "./Chat";
 import { GateReviewPanel } from "./GateReviewPanel";
+import { PermissionDialog } from "./PermissionDialog";
+import { AskUserDialog } from "./AskUserDialog";
+import { PlanDialog } from "./PlanDialog";
 
-type DetailTab = "summary" | "transcript" | "diff" | "events" | "review";
+type DetailTab =
+  | "summary"
+  | "transcript"
+  | "diff"
+  | "events"
+  | "settings"
+  | "gate";
+
+export type PendingGate = {
+  request: InteractionRequest;
+  nodeId: string;
+};
+
+type ResolveGatePayload = Omit<
+  Extract<ClientMessage, { type: "interaction_response" }>,
+  "type" | "id"
+>;
 
 export function NodeDetail({
   node,
@@ -19,7 +39,9 @@ export function NodeDetail({
   diff,
   diffLoading,
   onResumeFromNode,
+  pendingGate,
   pendingReview,
+  onResolveGate,
   onResolveReview,
 }: {
   node: NodeInfo | null;
@@ -28,7 +50,9 @@ export function NodeDetail({
   diff: NodeDiff | null;
   diffLoading: boolean;
   onResumeFromNode?: (node: NodeInfo) => void;
-  pendingReview?: InteractionRequest | null;
+  pendingGate?: PendingGate | null;
+  pendingReview?: PendingGate | null;
+  onResolveGate?: (id: string, payload: ResolveGatePayload) => void;
   onResolveReview?: (payload: {
     id: string;
     decision: "write-json" | "no-op";
@@ -37,16 +61,30 @@ export function NodeDetail({
     notes?: string;
   }) => void;
 }) {
-  const showReview =
-    !!node && (node.state === "awaiting_review" || !!pendingReview);
+  const reviewRequest =
+    pendingReview && node && pendingReview.nodeId === node.id
+      ? pendingReview.request
+      : null;
+  const gateRequest =
+    pendingGate && node && pendingGate.nodeId === node.id
+      ? pendingGate.request
+      : null;
+  const showReview = !!node && (node.state === "awaiting_review" || !!reviewRequest);
+  const showGate = showReview || !!gateRequest;
   const [tab, setTab] = useState<DetailTab>("summary");
   const turns = useMemo(() => (node ? turnsFromEvents(node, events) : []), [node, events]);
 
   useEffect(() => {
-    if (showReview) {
-      setTab("review");
+    if (showGate) {
+      setTab("gate");
     }
-  }, [showReview, node?.id]);
+  }, [showGate, node?.id]);
+
+  useEffect(() => {
+    if (!showGate && tab === "gate") {
+      setTab("summary");
+    }
+  }, [showGate, tab]);
 
   return (
     <aside className="flex w-[520px] flex-none flex-col border-l border-slate-800 bg-slate-950/70">
@@ -88,7 +126,8 @@ export function NodeDetail({
               "transcript",
               "diff",
               "events",
-              ...(showReview ? (["review"] as DetailTab[]) : []),
+              "settings",
+              ...(showGate ? (["gate"] as DetailTab[]) : []),
             ] as DetailTab[]
           ).map((name) => (
             <button
@@ -99,12 +138,12 @@ export function NodeDetail({
                 "rounded px-2 py-1 text-[11px] capitalize " +
                 (tab === name
                   ? "bg-slate-800 text-slate-100"
-                  : name === "review"
-                    ? "text-emerald-400 hover:bg-slate-900"
+                  : name === "gate"
+                    ? gateTabAccentClass(reviewRequest, gateRequest)
                     : "text-slate-500 hover:bg-slate-900 hover:text-slate-300")
               }
             >
-              {name}
+              {name === "gate" ? gateTabLabel(reviewRequest, gateRequest) : name}
             </button>
           ))}
         </div>
@@ -125,11 +164,15 @@ export function NodeDetail({
         <Chat turns={turns} variant="panel" />
       ) : tab === "diff" ? (
         <DiffView diff={diff} loading={diffLoading} />
-      ) : tab === "review" && node ? (
-        <GateReviewPanel
+      ) : tab === "settings" ? (
+        <SettingsView node={node} />
+      ) : tab === "gate" && node ? (
+        <GatePanel
           node={node}
-          pending={pendingReview ?? null}
-          onSubmit={(payload) => onResolveReview?.(payload)}
+          reviewRequest={reviewRequest}
+          gateRequest={gateRequest}
+          onResolveGate={onResolveGate}
+          onResolveReview={onResolveReview}
         />
       ) : (
         <RawEvents events={events} loading={loading} />
@@ -358,6 +401,218 @@ function mergeActivity(items: Activity[], activity: Activity): Activity[] {
   const index = items.findIndex((item) => item.id === activity.id);
   if (index < 0) return [...items, activity];
   return items.map((item, i) => (i === index ? activity : item));
+}
+
+function SettingsView({ node }: { node: NodeInfo }) {
+  const snapshot = node.settings_snapshot ?? {};
+  const entries = Object.entries(snapshot);
+  const known = new Map(entries);
+  const knownRows: Array<[string, string]> = [
+    ["Provider", String(known.get("provider") ?? node.provider)],
+    ["Model", String(known.get("model") ?? "(default)")],
+    ["Model provider", String(known.get("model_provider") ?? "(default)")],
+    ["CWD", String(known.get("cwd") ?? "(unknown)")],
+    [
+      "Auto-commit",
+      known.get("auto_commit") === undefined ? "off" : known.get("auto_commit") ? "on" : "off",
+    ],
+  ];
+  const extras = entries.filter(
+    ([key]) => !["provider", "model", "model_provider", "cwd", "auto_commit"].includes(key),
+  );
+  const isSnapshotEmpty = entries.length === 0;
+
+  return (
+    <div className="flex-1 overflow-y-auto px-4 py-4 text-sm">
+      <section>
+        <h3 className="mb-2 text-[11px] font-medium uppercase tracking-wider text-slate-500">
+          Launch settings
+        </h3>
+        {isSnapshotEmpty && (
+          <p className="mb-3 rounded-md border border-slate-800 bg-slate-900/30 p-3 text-xs text-slate-500">
+            No snapshot recorded for this node (predates the settings-snapshot
+            field). Showing live node fields where possible.
+          </p>
+        )}
+        <dl className="grid grid-cols-[140px_1fr] gap-x-3 gap-y-2 text-xs">
+          {knownRows.map(([label, value]) => (
+            <KeyValueRow key={label} label={label} value={value} />
+          ))}
+        </dl>
+      </section>
+
+      {extras.length > 0 && (
+        <section className="mt-5">
+          <h3 className="mb-2 text-[11px] font-medium uppercase tracking-wider text-slate-500">
+            Other snapshotted settings
+          </h3>
+          <dl className="grid grid-cols-[140px_1fr] gap-x-3 gap-y-2 text-xs">
+            {extras.map(([key, value]) => (
+              <KeyValueRow
+                key={key}
+                label={key}
+                value={typeof value === "string" ? value : JSON.stringify(value)}
+              />
+            ))}
+          </dl>
+        </section>
+      )}
+
+      <section className="mt-5">
+        <h3 className="mb-2 text-[11px] font-medium uppercase tracking-wider text-slate-500">
+          Context
+        </h3>
+        <dl className="grid grid-cols-[140px_1fr] gap-x-3 gap-y-2 text-xs">
+          <KeyValueRow
+            label="System context"
+            value={
+              node.system_context_snapshot
+                ? `${node.system_context_snapshot.length} chars`
+                : "none"
+            }
+          />
+          <KeyValueRow
+            label="Context sources"
+            value={
+              node.context_sources.length === 0
+                ? "none"
+                : node.context_sources.join(", ")
+            }
+          />
+        </dl>
+      </section>
+    </div>
+  );
+}
+
+function KeyValueRow({ label, value }: { label: string; value: string }) {
+  return (
+    <>
+      <dt className="text-slate-600">{label}</dt>
+      <dd className="truncate font-mono text-slate-300" title={value}>
+        {value}
+      </dd>
+    </>
+  );
+}
+
+function GatePanel({
+  node,
+  reviewRequest,
+  gateRequest,
+  onResolveGate,
+  onResolveReview,
+}: {
+  node: NodeInfo;
+  reviewRequest: InteractionRequest | null;
+  gateRequest: InteractionRequest | null;
+  onResolveGate?: (id: string, payload: ResolveGatePayload) => void;
+  onResolveReview?: (payload: {
+    id: string;
+    decision: "write-json" | "no-op";
+    path?: string;
+    payload?: unknown;
+    notes?: string;
+  }) => void;
+}) {
+  if (reviewRequest || node.state === "awaiting_review") {
+    return (
+      <GateReviewPanel
+        node={node}
+        pending={reviewRequest}
+        onSubmit={(payload) => onResolveReview?.(payload)}
+      />
+    );
+  }
+  if (gateRequest) {
+    const resolve = (payload: ResolveGatePayload) =>
+      onResolveGate?.(gateRequest.id, payload);
+    return (
+      <div className="flex-1 overflow-y-auto px-4 py-4">
+        {gateRequest.interaction_type === "permission" ? (
+          <PermissionDialog
+            request={gateRequest}
+            onRespond={(args) =>
+              resolve({
+                allow: args.allow,
+                decision: args.decision ?? null,
+                scope: args.scope ?? null,
+                interrupt: args.interrupt ?? false,
+                message: args.message ?? "",
+              })
+            }
+          />
+        ) : gateRequest.interaction_type === "ask_user" ? (
+          <AskUserDialog
+            request={gateRequest}
+            onRespond={(answers) =>
+              resolve({
+                allow: true,
+                updated_input: {
+                  ...gateRequest.tool_input,
+                  answers: toLegacyAnswers(answers),
+                },
+                response: { answers },
+              })
+            }
+          />
+        ) : (
+          <PlanDialog
+            request={gateRequest}
+            onRespond={(args) =>
+              resolve({
+                allow: args.allow,
+                clear_context: args.clearContext ?? false,
+                permission_mode: args.permissionMode ?? null,
+                message: args.message ?? "",
+              })
+            }
+          />
+        )}
+      </div>
+    );
+  }
+  return (
+    <div className="px-4 py-6 text-sm text-slate-600">
+      No pending gate for this node.
+    </div>
+  );
+}
+
+function gateTabLabel(
+  reviewRequest: InteractionRequest | null,
+  gateRequest: InteractionRequest | null,
+): string {
+  if (reviewRequest) return "review";
+  if (gateRequest) {
+    if (gateRequest.interaction_type === "permission") return "permission";
+    if (gateRequest.interaction_type === "ask_user") return "ask";
+    if (gateRequest.interaction_type === "plan_approval") return "plan";
+  }
+  return "gate";
+}
+
+function gateTabAccentClass(
+  reviewRequest: InteractionRequest | null,
+  gateRequest: InteractionRequest | null,
+): string {
+  if (reviewRequest) return "text-emerald-400 hover:bg-slate-900";
+  if (gateRequest?.interaction_type === "permission")
+    return "text-amber-300 hover:bg-slate-900";
+  if (gateRequest?.interaction_type === "ask_user")
+    return "text-sky-300 hover:bg-slate-900";
+  if (gateRequest?.interaction_type === "plan_approval")
+    return "text-violet-300 hover:bg-slate-900";
+  return "text-emerald-400 hover:bg-slate-900";
+}
+
+function toLegacyAnswers(answers: Record<string, { answers: string[] }>) {
+  return Object.fromEntries(
+    Object.entries(answers).map(([key, value]) => [
+      key,
+      value.answers.length <= 1 ? (value.answers[0] ?? "") : value.answers,
+    ]),
+  );
 }
 
 function diffLineClass(line: string): string {
