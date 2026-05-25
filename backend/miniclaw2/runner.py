@@ -16,8 +16,10 @@ from .events import (
     ErrorEvent,
     InteractionRequest,
     NodeStarted,
+    NodeUpdated,
     TurnDone,
 )
+from .git_state import git_head
 from .providers import AgentProvider, AgentProviderContext, AgentProviderEvent, GateRequest
 from .providers.claude import ClaudeProvider
 from .providers.codex import CodexProvider
@@ -88,6 +90,7 @@ class NodeRunner:
     # ---- main entry point ----
 
     async def run(self) -> None:
+        self.node.commit_before = git_head(self.project.root_path)
         self._transition(NodeState.RUNNING, started=True)
         await self._emit(
             NodeStarted(
@@ -95,6 +98,7 @@ class NodeRunner:
                 parent_node_id=self.node.parent_node_id,
             )
         )
+        await self._emit_node_updated()
         final_state: NodeState = NodeState.DONE
         error_msg: str | None = None
 
@@ -129,7 +133,9 @@ class NodeRunner:
             self._resolve_open_gates()
             if error_msg is not None:
                 self.node.error = error_msg
+            self.node.commit_after = git_head(self.project.root_path)
             self._transition(final_state, finished=True)
+            await self._emit_node_updated()
             await self._emit(TurnDone())
 
     # ---- state transitions ----
@@ -159,10 +165,12 @@ class NodeRunner:
             self.node.provider_session_id = ev.session_id
             self.node.sdk_session_id = ev.session_id
             self.store.update_node(self.node)
+            await self._emit_node_updated()
             return
         if ev.kind == "turn" and ev.turn_id:
             self.node.provider_turn_id = ev.turn_id
             self.store.update_node(self.node)
+            await self._emit_node_updated()
             return
         if ev.kind == "error" and ev.error:
             await self._emit(ErrorEvent(message=ev.error))
@@ -184,6 +192,9 @@ class NodeRunner:
         except Exception:  # noqa: BLE001
             logger.exception("on_event handler failed")
 
+    async def _emit_node_updated(self) -> None:
+        await self._emit(NodeUpdated(node=self.node.model_dump()))
+
     # ---- inline gate flow ----
 
     async def _request_gate(self, request: GateRequest) -> dict[str, Any]:
@@ -204,6 +215,7 @@ class NodeRunner:
         self._gates[gate.id] = future
 
         self._transition(NodeState.WAITING)
+        await self._emit_node_updated()
         await self._emit(
             InteractionRequest(
                 id=gate.id,
@@ -223,6 +235,7 @@ class NodeRunner:
                 gate.state = GateState.RESOLVED
                 gate.resolved_at = time.time()
             self._transition(NodeState.RUNNING)
+            await self._emit_node_updated()
 
         gate.response = response
         self.store.append_gate(self.project.id, gate, "resolved")

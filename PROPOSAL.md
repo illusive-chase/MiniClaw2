@@ -60,8 +60,9 @@ This is the single biggest source of behavioral drift between the two.
 4. **✓ Tool I/O rendering landed.** `Activity` now carries `result`
    (≤4 KB) and `result_kind ∈ {stdout, diff, text, json}`. Claude
    extracts `ToolResultBlock.content`; Codex pulls `aggregatedOutput`
-   for commandExecution and renders `changes` for fileChange as a
-   diff-ish block. `ToolActivity.tsx` renders the result in a
+   for commandExecution and renders file-change details as a provider
+   diff only when a real patch/diff is supplied, otherwise JSON/text.
+   `ToolActivity.tsx` renders the result in a
    collapsible `<details>` (open-by-default on failed) with diff
    coloring.
 5. **Streaming granularity (Claude only).** Claude provider still
@@ -85,7 +86,8 @@ This is the single biggest source of behavioral drift between the two.
    The reconnect-replay endpoint that consumes `events.jsonl` is
    wired: `node_started` server event carries the active node id;
    `replay_request {node_id, since_seq}` client envelope drives
-   `store.replay_events`. Hard page reload still drops UI state
+   `store.replay_events`, and the new socket re-attaches to live
+   project broadcasts. Hard page reload still drops UI state
    because `App.tsx` creates a fresh session on mount — that's a
    session-switcher concern (Phase 3), not chat polish.
 2. Only one concurrent node per project (`registry.ProjectRuntime`);
@@ -221,7 +223,12 @@ Closes most of the behavioral drift in (A).
   and reconnect replay are in. The wire protocol picked up two new
   envelopes (`node_started` server, `replay_request` client) and one
   field extension (`Activity.result` + `result_kind`); no migrations.
-  Per-token streaming stays deferred.
+   Replay now uses project-level WebSocket observers plus a tested
+   replay/live buffer so reconnects keep receiving live events after
+   the JSONL gap is replayed. Per-token streaming stays deferred. The
+   DESIGN Phase 1 graph shell has also started with read-only
+   node/event/diff APIs, explicit `node_updated` events, a single-project
+   timeline, and a node detail side panel.
 - Phase 2 (`PROPOSAL.md` numbering — on-disk context loading) extends
   `runner._build_options` and adds a small config loader; no
   protocol change. This now also feeds `ContextBundle` records under

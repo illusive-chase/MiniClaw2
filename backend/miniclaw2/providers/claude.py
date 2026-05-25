@@ -136,8 +136,10 @@ class ClaudeProvider:
                         result_text = _flatten_tool_result(block.content)
                         if result_text:
                             pending.result = _truncate(result_text, 4096)
-                            pending.result_kind = (
-                                "text" if is_error else _kind_for_tool(pending.name)
+                            pending.result_kind = _kind_for_tool(
+                                pending.name,
+                                result_text,
+                                is_error=is_error,
                             )
                         yield AgentProviderEvent(kind="event", event=pending)
             return
@@ -231,16 +233,24 @@ def _truncate(value: str, limit: int = 200) -> str:
     return value if len(value) <= limit else value[:limit] + "..."
 
 
-_DIFF_TOOLS = {"Edit", "MultiEdit", "Write"}
 _STDOUT_TOOLS = {"Bash", "BashOutput"}
 
 
-def _kind_for_tool(name: str) -> str:
+def _kind_for_tool(name: str, text: str, *, is_error: bool) -> str:
+    if is_error:
+        return "text"
+    if _looks_like_diff(text):
+        return "diff"
     if name in _STDOUT_TOOLS:
         return "stdout"
-    if name in _DIFF_TOOLS:
-        return "diff"
     return "text"
+
+
+def _looks_like_diff(text: str) -> bool:
+    lines = text.splitlines()
+    return any(line.startswith("@@") for line in lines) and any(
+        line.startswith("+++") or line.startswith("---") for line in lines
+    )
 
 
 def _flatten_tool_result(content: Any) -> str:

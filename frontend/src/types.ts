@@ -47,6 +47,11 @@ export type NodeStarted = {
   parent_node_id?: string | null;
   seq?: number;
 };
+export type NodeUpdated = {
+  type: "node_updated";
+  node: NodeInfo;
+  seq?: number;
+};
 
 export type ServerEvent =
   | TextDelta
@@ -56,7 +61,8 @@ export type ServerEvent =
   | Usage
   | TurnDone
   | ErrorEvent
-  | NodeStarted;
+  | NodeStarted
+  | NodeUpdated;
 
 export type ClientMessage =
   | { type: "user_message"; text: string }
@@ -81,4 +87,46 @@ export type SessionInfo = {
   created_at: number;
   turns: number;
   provider?: string;
+};
+
+export type NodeKind = "agent" | "gate" | "op";
+export type NodeState =
+  | "queued"
+  | "running"
+  | "waiting"
+  | "awaiting_review"
+  | "done"
+  | "error"
+  | "cancelled";
+
+export type NodeInfo = {
+  id: string;
+  project_id: string;
+  kind: NodeKind;
+  state: NodeState;
+  parent_node_id?: string | null;
+  context_sources: string[];
+  provider: string;
+  provider_session_id?: string | null;
+  provider_turn_id?: string | null;
+  sdk_session_id?: string | null;
+  commit_before?: string | null;
+  commit_after?: string | null;
+  prompt: string;
+  summary?: string | null;
+  error?: string | null;
+  created_at: number;
+  started_at?: number | null;
+  finished_at?: number | null;
+};
+
+export type EventRecord = {
+  seq: number;
+  event: ServerEvent;
+};
+
+export type NodeDiff = {
+  kind: "commit_diff" | "working_tree" | string;
+  text: string;
+  error?: string | null;
 };

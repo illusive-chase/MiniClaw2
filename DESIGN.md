@@ -4,7 +4,7 @@ This document supersedes `PROPOSAL.md` (which remains as a punch list of
 CLI-parity gaps in the current wrapper). It captures the architecture we
 are converging toward over the next several phases.
 
-> **Status (Phase 0 spine + Phase 1 chat polish landed).** The spine is in.
+> **Status (Phase 0 spine + Phase 1 graph shell in progress).** The spine is in.
 > Domain model (`Project`, `Node`, `HumanGate`) persists to disk as
 > JSON + JSONL under `$MINICLAW_HOME` (default `~/.miniclaw2`); SQLite
 > from §8 is **deferred** in favor of JSON/JSONL while the schema is
@@ -21,9 +21,12 @@ are converging toward over the next several phases.
 > both providers), markdown rendering for assistant text
 > (`react-markdown` + GFM + `highlight.js`), and WebSocket reconnect
 > replay (`node_started` server event + `replay_request` client
-> envelope, consuming the per-node JSONL log). Per-token streaming
-> remains deferred until the pinned `claude-agent-sdk` exposes
-> partial messages.
+> envelope, consuming the per-node JSONL log and re-attaching the new
+> socket to live project events). The first graph-shell pass is also in:
+> a single-project horizontal timeline, selected-node side panel, and
+> read-only node/event/diff REST APIs, with explicit `node_updated`
+> events for live tile/panel state. Per-token streaming remains
+> deferred until the pinned `claude-agent-sdk` exposes partial messages.
 
 ## 1. Motivation
 
@@ -312,20 +315,28 @@ timeline UI's side panel can render real content from day one:
 - [✓] **Reconnect replay.** New `node_started` server event carries
   `node_id`/`parent_node_id`; new `replay_request` client envelope
   takes `(node_id, since_seq)`. The WS handler consumes
-  `store.replay_events` synchronously before resuming the live tail.
+  `store.replay_events`; WebSocket connections attach as project-level
+  observers so a reconnect also resumes the live tail.
   `ws.ts` tracks `(activeNodeId, lastSeq)` and replays on every
   reconnect after the first open. 4xxx close codes (e.g. session not
   found) suppress the auto-reconnect loop.
 - [ ] **Per-token streaming** — deferred until the pinned
   `claude-agent-sdk` exposes partial messages. Codex already streams
   per-delta.
+- [✓] **Initial horizontal timeline + side panel.** A single project now
+  renders as a horizontal node timeline. Clicking a node opens a detail
+  side panel with prompt metadata, transcript/tool/thinking rendering,
+  repo diff rendering, and raw JSONL event inspection via read-only REST
+  APIs. `node_updated` events keep node tiles and metadata live without
+  relying only on REST refreshes.
 
 Still to do for this phase:
 
-- Horizontal timeline UI for one project.
-- Agent nodes: create / launch / cancel / inspect.
-- Node detail side panel — moves the rendering above out of a single
-  chat surface into a per-node panel.
+- Richer agent node launch controls beyond the chat composer.
+- Settings tab in the node detail panel.
+- Tighter per-node snapshot diffs once Phase 2 commit ops/checkpoints
+  are available; the current diff tab falls back to working-tree diff
+  when a node has no distinct `commit_after`.
 - Inline gates render in the side panel; node tile pulses green.
 
 ### Phase 2 — Gate nodes, commit ops, resume edges, on-disk context

@@ -10,9 +10,19 @@ from typing import Any, Protocol
 from pydantic import BaseModel
 
 from ..domain import GateSubtype, Node, Project
-from ..events import Activity, ErrorEvent, InteractionRequest, TextDelta, Thinking, Usage
+from ..events import (
+    Activity,
+    ErrorEvent,
+    InteractionRequest,
+    NodeUpdated,
+    TextDelta,
+    Thinking,
+    Usage,
+)
 
-ProviderWireEvent = TextDelta | Thinking | Activity | InteractionRequest | Usage | ErrorEvent
+ProviderWireEvent = (
+    TextDelta | Thinking | Activity | InteractionRequest | Usage | ErrorEvent | NodeUpdated
+)
 
 
 @dataclass(slots=True)

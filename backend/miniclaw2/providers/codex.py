@@ -545,10 +545,10 @@ def _activity_from_item(item: dict[str, Any], status: str) -> Activity | None:
         result_text = None
         result_kind = None
         if finishing and changes:
-            rendered = _render_changes(changes)
+            rendered, rendered_kind = _render_changes(changes)
             if rendered:
                 result_text = _truncate(rendered, 4096)
-                result_kind = "text" if status == "failed" else "diff"
+                result_kind = "text" if status == "failed" else rendered_kind
         return Activity(
             kind="tool",
             status=status,  # type: ignore[arg-type]
@@ -585,33 +585,20 @@ def _activity_from_item(item: dict[str, Any], status: str) -> Activity | None:
     return None
 
 
-def _render_changes(changes: Any) -> str:
-    """Render Codex fileChange `changes` as a unified-diff-ish text block."""
+def _render_changes(changes: Any) -> tuple[str, str]:
+    """Render Codex fileChange details without inventing a patch."""
     if not isinstance(changes, list):
-        return ""
-    lines: list[str] = []
+        return "", "text"
+    patches: list[str] = []
     for entry in changes:
         if not isinstance(entry, dict):
             continue
-        path = entry.get("path") or entry.get("file") or "?"
-        action = (entry.get("action") or entry.get("kind") or "update").lower()
-        new_content = entry.get("content") or entry.get("newContent") or ""
-        old_content = entry.get("oldContent") or ""
-        lines.append(f"--- {path}")
-        lines.append(f"+++ {path}  ({action})")
-        if action == "delete":
-            for ln in str(old_content).splitlines():
-                lines.append(f"-{ln}")
-        elif action == "add":
-            for ln in str(new_content).splitlines():
-                lines.append(f"+{ln}")
-        else:
-            for ln in str(old_content).splitlines():
-                lines.append(f"-{ln}")
-            for ln in str(new_content).splitlines():
-                lines.append(f"+{ln}")
-        lines.append("")
-    return "\n".join(lines).rstrip()
+        patch = entry.get("patch") or entry.get("diff") or entry.get("unifiedDiff")
+        if isinstance(patch, str) and patch.strip():
+            patches.append(patch.strip())
+    if patches:
+        return "\n\n".join(patches), "diff"
+    return json.dumps(changes, ensure_ascii=False, indent=2), "json"
 
 
 def _truncate(value: str, limit: int = 200) -> str:

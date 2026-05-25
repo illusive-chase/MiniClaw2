@@ -61,6 +61,12 @@ class NodeStarted(BaseModel):
     seq: int = 0
 
 
+class NodeUpdated(BaseModel):
+    type: Literal["node_updated"] = "node_updated"
+    node: dict[str, Any]
+    seq: int = 0
+
+
 class TurnDone(BaseModel):
     type: Literal["turn_done"] = "turn_done"
     seq: int = 0

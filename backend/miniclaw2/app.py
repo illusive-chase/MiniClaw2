@@ -8,16 +8,21 @@ latest node via SDK ``resume``.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+from .domain import Node
 from .events import InteractionResponse, Interrupt, ReplayRequest, UserMessage
+from .git_state import node_diff
 from .registry import ProjectRegistry
+from .replay import LiveReplayBuffer
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +39,17 @@ class SessionInfo(BaseModel):
     created_at: float
     turns: int
     provider: str = "claude"
+
+
+class EventRecord(BaseModel):
+    seq: int
+    event: dict[str, Any]
+
+
+class NodeDiffResponse(BaseModel):
+    kind: str
+    text: str
+    error: str | None = None
 
 
 def create_app() -> FastAPI:
@@ -82,6 +98,42 @@ def create_app() -> FastAPI:
             raise HTTPException(404, "session not found")
         return {"ok": True}
 
+    @app.get("/sessions/{sid}/nodes", response_model=list[Node])
+    def list_nodes(sid: str) -> list[Node]:
+        nodes = registry.list_nodes(sid)
+        if nodes is None:
+            raise HTTPException(404, "session not found")
+        return nodes
+
+    @app.get("/sessions/{sid}/nodes/{nid}", response_model=Node)
+    def get_node(sid: str, nid: str) -> Node:
+        if registry.get_project(sid) is None:
+            raise HTTPException(404, "session not found")
+        node = registry.get_node(sid, nid)
+        if node is None:
+            raise HTTPException(404, "node not found")
+        return node
+
+    @app.get("/sessions/{sid}/nodes/{nid}/events", response_model=list[EventRecord])
+    def get_node_events(sid: str, nid: str, since_seq: int = 0) -> list[EventRecord]:
+        records = registry.replay_node_events(sid, nid, since_seq)
+        if records is None:
+            if registry.get_project(sid) is None:
+                raise HTTPException(404, "session not found")
+            raise HTTPException(404, "node not found")
+        return [EventRecord(**record) for record in records]
+
+    @app.get("/sessions/{sid}/nodes/{nid}/diff", response_model=NodeDiffResponse)
+    def get_node_diff(sid: str, nid: str) -> NodeDiffResponse:
+        project = registry.get_project(sid)
+        if project is None:
+            raise HTTPException(404, "session not found")
+        node = registry.get_node(sid, nid)
+        if node is None:
+            raise HTTPException(404, "node not found")
+        diff = node_diff(project.root_path, node.commit_before, node.commit_after)
+        return NodeDiffResponse(kind=diff.kind, text=diff.text, error=diff.error)
+
     @app.websocket("/ws/{sid}")
     async def ws(websocket: WebSocket, sid: str) -> None:
         if registry.get_project(sid) is None:
@@ -89,9 +141,33 @@ def create_app() -> FastAPI:
             return
 
         await websocket.accept()
+        send_lock = asyncio.Lock()
+        replay_buffer = LiveReplayBuffer()
+
+        async def send_now(event: dict[str, Any]) -> None:
+            async with send_lock:
+                await websocket.send_json(event)
 
         async def on_event(event: dict[str, Any]) -> None:
-            await websocket.send_json(event)
+            ready_event = replay_buffer.push_live(event)
+            if ready_event is not None:
+                await send_now(ready_event)
+
+        async def mark_live_ready(
+            *,
+            replay_node_id: str | None = None,
+            replayed_through_seq: int | None = None,
+        ) -> None:
+            for event in replay_buffer.mark_live_ready(
+                replay_node_id=replay_node_id,
+                replayed_through_seq=replayed_through_seq,
+            ):
+                await send_now(event)
+
+        observer_token = registry.attach_observer(sid, on_event)
+        if observer_token is None:
+            await websocket.close(code=4404, reason="session not found")
+            return
 
         try:
             while True:
@@ -99,16 +175,18 @@ def create_app() -> FastAPI:
                 msg_type = raw.get("type")
 
                 if msg_type == "user_message":
+                    await mark_live_ready()
                     msg = UserMessage(**raw)
-                    runner = registry.start_node(sid, msg.text, on_event)
+                    runner = registry.start_node(sid, msg.text)
                     if runner is None:
-                        await _send(websocket, {
+                        await _send(send_now, {
                             "type": "error",
                             "message": "turn in progress",
                         })
                         continue
 
                 elif msg_type == "interaction_response":
+                    await mark_live_ready()
                     resp = InteractionResponse(**raw)
                     ok = registry.resolve_gate(
                         sid,
@@ -124,24 +202,33 @@ def create_app() -> FastAPI:
                         clear_context=resp.clear_context,
                     )
                     if not ok:
-                        await _send(websocket, {
+                        await _send(send_now, {
                             "type": "error",
                             "message": f"no pending interaction with id {resp.id}",
                         })
 
                 elif msg_type == "interrupt":
+                    await mark_live_ready()
                     Interrupt(**raw)  # validate shape
                     registry.interrupt(sid)
 
                 elif msg_type == "replay_request":
                     req = ReplayRequest(**raw)
-                    for rec in registry.store.replay_events(
+                    records = registry.store.replay_events(
                         sid, req.node_id, req.since_seq
-                    ):
-                        await _send(websocket, rec["event"])
+                    )
+                    replayed_through_seq = req.since_seq
+                    for rec in records:
+                        replayed_through_seq = max(replayed_through_seq, rec["seq"])
+                        await _send(send_now, rec["event"])
+                    await mark_live_ready(
+                        replay_node_id=req.node_id,
+                        replayed_through_seq=replayed_through_seq,
+                    )
 
                 else:
-                    await _send(websocket, {
+                    await mark_live_ready()
+                    await _send(send_now, {
                         "type": "error",
                         "message": f"unknown type: {msg_type}",
                     })
@@ -150,16 +237,19 @@ def create_app() -> FastAPI:
             pass
         finally:
             # Don't cancel the runner on WS disconnect — it should finish
-            # and persist final state. The next WS connect can resume
-            # observation once replay is implemented (Phase 1).
-            pass
+            # and persist final state. A reconnect attaches a fresh observer
+            # and uses replay_request to fill any gap from the JSONL log.
+            registry.detach_observer(sid, observer_token)
 
     return app
 
 
-async def _send(ws: WebSocket, payload: dict[str, Any]) -> None:
+async def _send(
+    on_event: Callable[[dict[str, Any]], Awaitable[None]],
+    payload: dict[str, Any],
+) -> None:
     try:
-        await ws.send_json(payload)
+        await on_event(payload)
     except Exception:  # noqa: BLE001
         pass
 

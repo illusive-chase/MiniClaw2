@@ -14,6 +14,7 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
+from uuid import uuid4
 
 from .domain import Node, NodeKind, NodeState, Project
 from .runner import NodeRunner
@@ -29,9 +30,32 @@ class ProjectRuntime:
         self.project = project
         self.runner: NodeRunner | None = None
         self.runner_task: asyncio.Task[None] | None = None
+        self.observers: dict[str, Callable[[dict[str, Any]], Awaitable[None]]] = {}
 
     def is_running(self) -> bool:
         return self.runner_task is not None and not self.runner_task.done()
+
+    def add_observer(
+        self,
+        on_event: Callable[[dict[str, Any]], Awaitable[None]],
+    ) -> str:
+        token = uuid4().hex
+        self.observers[token] = on_event
+        return token
+
+    def remove_observer(self, token: str) -> None:
+        self.observers.pop(token, None)
+
+    async def broadcast(self, event: dict[str, Any]) -> None:
+        stale: list[str] = []
+        for token, on_event in list(self.observers.items()):
+            try:
+                await on_event(event)
+            except Exception:  # noqa: BLE001
+                logger.debug("dropping failed project observer", exc_info=True)
+                stale.append(token)
+        for token in stale:
+            self.remove_observer(token)
 
 
 class ProjectRegistry:
@@ -89,8 +113,47 @@ class ProjectRegistry:
         self.store.delete_project(pid)
         return True
 
+    def attach_observer(
+        self,
+        pid: str,
+        on_event: Callable[[dict[str, Any]], Awaitable[None]],
+    ) -> str | None:
+        rt = self._runtimes.get(pid)
+        if rt is None:
+            return None
+        return rt.add_observer(on_event)
+
+    def detach_observer(self, pid: str, token: str | None) -> None:
+        if token is None:
+            return
+        rt = self._runtimes.get(pid)
+        if rt is not None:
+            rt.remove_observer(token)
+
     def turn_count(self, pid: str) -> int:
         return len(self.store.list_nodes(pid))
+
+    def list_nodes(self, pid: str) -> list[Node] | None:
+        if pid not in self._runtimes:
+            return None
+        return self.store.list_nodes(pid)
+
+    def get_node(self, pid: str, nid: str) -> Node | None:
+        if pid not in self._runtimes:
+            return None
+        return self.store.load_node(pid, nid)
+
+    def replay_node_events(
+        self,
+        pid: str,
+        nid: str,
+        since_seq: int = 0,
+    ) -> list[dict[str, Any]] | None:
+        if pid not in self._runtimes:
+            return None
+        if self.store.load_node(pid, nid) is None:
+            return None
+        return self.store.replay_events(pid, nid, since_seq)
 
     # ---- node lifecycle ----
 
@@ -98,7 +161,6 @@ class ProjectRegistry:
         self,
         pid: str,
         prompt: str,
-        on_event: Callable[[dict[str, Any]], Awaitable[None]],
     ) -> NodeRunner | None:
         """Create a new agent node and launch its runner as a task.
 
@@ -124,7 +186,7 @@ class ProjectRegistry:
         )
         self.store.create_node(node)
 
-        runner = NodeRunner(node, rt.project, self.store, on_event)
+        runner = NodeRunner(node, rt.project, self.store, rt.broadcast)
         rt.runner = runner
         rt.runner_task = asyncio.create_task(runner.run())
         rt.runner_task.add_done_callback(lambda _t, _rt=rt: _on_runner_done(_rt))

@@ -38,16 +38,18 @@ export function useSessionSocket(
 
       ws.onopen = () => {
         setStatus("open");
+        const nodeId = activeNodeIdRef.current;
+        const sinceSeq = lastSeqRef.current;
         if (
           isReconnect &&
-          activeNodeIdRef.current &&
-          lastSeqRef.current > 0 &&
+          nodeId &&
+          sinceSeq > 0 &&
           ws?.readyState === WebSocket.OPEN
         ) {
           const msg: ClientMessage = {
             type: "replay_request",
-            node_id: activeNodeIdRef.current,
-            since_seq: lastSeqRef.current,
+            node_id: nodeId,
+            since_seq: sinceSeq,
           };
           ws.send(JSON.stringify(msg));
         }
@@ -65,10 +67,19 @@ export function useSessionSocket(
         try {
           const data = JSON.parse(e.data) as ServerEvent;
           if (data.type === "node_started") {
+            if (
+              activeNodeIdRef.current === data.node_id &&
+              typeof data.seq === "number" &&
+              data.seq <= lastSeqRef.current
+            ) {
+              return;
+            }
             activeNodeIdRef.current = data.node_id;
             lastSeqRef.current = data.seq ?? 0;
           } else if (typeof data.seq === "number" && data.seq > lastSeqRef.current) {
             lastSeqRef.current = data.seq;
+          } else if (typeof data.seq === "number") {
+            return;
           }
           onEventRef.current(data);
         } catch (err) {

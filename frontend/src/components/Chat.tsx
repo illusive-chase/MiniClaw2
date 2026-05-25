@@ -14,14 +14,26 @@ export type ChatTurn = {
   streaming?: boolean;
 };
 
-export function Chat({ turns }: { turns: ChatTurn[] }) {
+export function Chat({
+  turns,
+  variant = "main",
+}: {
+  turns: ChatTurn[];
+  variant?: "main" | "panel";
+}) {
   const endRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [turns]);
 
   return (
-    <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
+    <div
+      className={
+        variant === "panel"
+          ? "flex-1 overflow-y-auto px-4 py-3 space-y-3"
+          : "flex-1 overflow-y-auto px-6 py-4 space-y-4"
+      }
+    >
       {turns.map((t) => (
         <div key={t.id} className="space-y-2">
           <div className="text-[10px] uppercase tracking-wider text-slate-500">

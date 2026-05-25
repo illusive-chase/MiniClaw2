@@ -22,13 +22,14 @@ Vite frontend.
   (`queued → running [↔ waiting] → done|error|cancelled`), translates
   provider messages into a small event union over the WebSocket, and
   persists every event to `events.jsonl` before pushing.
-- **Frontend** (`frontend/`) — chat surface with streaming text deltas,
-  markdown-rendered assistant output (`react-markdown` + GFM +
-  `highlight.js`), inline tool-activity indicators with collapsible
-  result panels (Bash stdout, Edit diffs, Read content), three
-  interaction dialogs (permission, ask-user, plan approval), a Stop
-  button while streaming, a collapsible reasoning panel, and
-  WebSocket reconnect-replay.
+- **Frontend** (`frontend/`) — single-project workspace with a
+  horizontal node timeline, node detail side panel, and chat surface.
+  Assistant output is markdown-rendered (`react-markdown` + GFM +
+  `highlight.js`); inline tool activity has collapsible output panels
+  (stdout/text/json and real diffs when providers supply one); the app
+  includes permission / ask-user / plan approval dialogs, a Stop button,
+  a collapsible reasoning panel, repo diff inspection, and WebSocket
+  reconnect-replay.
 
 ## Scope
 
@@ -40,7 +41,7 @@ initial Codex provider adapters.
 Out (for now): multi-project workspace UI, checkpoint gates,
 provider-specific on-disk context inheritance, hard-reload session
 survival (session-switcher UI), per-token streaming for Claude, auth,
-cost tracking.
+cost tracking, true git snapshot diffs in the side panel.
 
 See [`DESIGN.md`](DESIGN.md) for the long-term graph-IDE plan and
 [`PROPOSAL.md`](PROPOSAL.md) for the CLI-parity punch list (with
@@ -91,10 +92,14 @@ backend/miniclaw2/
   registry.py   # ProjectRegistry — in-memory orchestration over the store
   events.py     # Pydantic models for the WS protocol
   app.py        # FastAPI: REST + WebSocket gateway (legacy /sessions URL shape)
+  git_state.py  # small git helpers for commit ids and read-only diffs
+  replay.py     # replay/live buffering for reconnecting WS observers
   __main__.py   # uvicorn entry
 
 frontend/src/
   App.tsx       # session + chat + Stop button + interaction dispatch
+  components/ProjectTimeline.tsx  # single-project horizontal timeline
+  components/NodeDetail.tsx       # selected node transcript/events panel
   ws.ts         # useSessionSocket hook
   api.ts        # REST helpers
   types.ts      # mirror of backend events
@@ -118,11 +123,17 @@ The HTTP/WS shape is the "session"-based legacy compat layer: each
 session id is a project id, and each `user_message` spawns a fresh
 agent node.
 
+- REST read APIs for the Phase 1 workspace shell:
+  `GET /sessions/{sid}/nodes`,
+  `GET /sessions/{sid}/nodes/{nid}`, and
+  `GET /sessions/{sid}/nodes/{nid}/events`, plus
+  `GET /sessions/{sid}/nodes/{nid}/diff`.
 - Client → server: `user_message`, `interaction_response`, `interrupt`,
   `replay_request {node_id, since_seq}`.
-- Server → client: `node_started`, `text_delta`, `thinking`, `activity`
-  (now with optional `result` + `result_kind`), `interaction_request`,
-  `usage`, `turn_done`, `error`. All carry a monotonic `seq` that
+- Server → client: `node_started`, `node_updated`, `text_delta`,
+  `thinking`, `activity` (now with optional `result` + `result_kind`),
+  `interaction_request`, `usage`, `turn_done`, `error`.
+  All carry a monotonic `seq` that
   drives the on-disk event log and reconnect replay: clients track
   `(activeNodeId, lastSeq)` and send `replay_request` after every
   reconnect.
@@ -146,14 +157,20 @@ in. The shifts from the initial single-file wrapper:
   default provider; Codex can be selected per session.
 - [`PROPOSAL.md`](PROPOSAL.md) Phase 1 (chat polish) is landed:
   plan-mode happy path, Stop / interrupt, `ThinkingBlock` surface,
-  tool I/O rendering (Bash stdout / Edit diffs / Read content as
+  tool I/O rendering (stdout/text/json and provider-supplied diffs as
   collapsible result panels in `ToolActivity`), markdown rendering
   for assistant text, and WebSocket reconnect replay
-  (`node_started` + `replay_request` consumes `events.jsonl`).
+  (`node_started` + `replay_request` consumes `events.jsonl` and the
+  reconnected socket re-attaches to live events).
+- DESIGN Phase 1 is now in progress: the single-project horizontal
+  timeline and selected-node side panel are in, backed by read-only
+  node/event/diff REST endpoints and explicit `node_updated` events.
+  Chat remains the launch surface for new agent nodes while the graph
+  workflow matures.
 - Per-token streaming for the Claude provider stays deferred until
   the pinned SDK exposes partial messages; Codex already streams
   per-delta.
 
-Next up (DESIGN Phase 1 remainder): the per-project horizontal
-timeline UI with a node detail side panel that the rendering pieces
-above will move into.
+Next up (DESIGN Phase 1 remainder): richer node launch controls,
+side-panel tabs for gates/settings, and tighter per-node snapshot diffs
+once commit ops or checkpointing are available.

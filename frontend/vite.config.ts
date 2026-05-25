@@ -1,14 +1,17 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
+const backendUrl = process.env.MINICLAW_BACKEND_URL ?? "http://127.0.0.1:8000";
+const backendWsUrl = backendUrl.replace(/^http/, "ws");
+
 export default defineConfig({
   plugins: [react()],
   server: {
     port: 5173,
     proxy: {
-      "/sessions": "http://127.0.0.1:8000",
+      "/sessions": backendUrl,
       "/ws": {
-        target: "ws://127.0.0.1:8000",
+        target: backendWsUrl,
         ws: true,
       },
     },
