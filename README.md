@@ -75,7 +75,7 @@ pip install -e .
 python -m miniclaw2 --reload     # http://127.0.0.1:8000
 ```
 Env:
-- `ANTHROPIC_MODEL` (default `claude-sonnet-4-6`)
+- `MINICLAW_ANTHROPIC_MODEL` (default `claude-sonnet-4-6`)
 - `MINICLAW_HOME` (default `~/.miniclaw2`) — root for the on-disk store.
 - Claude provider: whatever auth the `claude` CLI already uses on your machine.
 - Codex provider: `codex` must be on `PATH` and `codex doctor` should

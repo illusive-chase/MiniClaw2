@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { NodeInfo, NodeState } from "../types";
 
 type EdgePath = { d: string; key: string; selected: boolean };
@@ -20,7 +20,11 @@ export function ProjectTimeline({
     height: 0,
   });
 
-  const nodeById = useNodeById(nodes);
+  const nodeById = useMemo(() => {
+    const map = new Map<string, NodeInfo>();
+    for (const node of nodes) map.set(node.id, node);
+    return map;
+  }, [nodes]);
 
   const recompute = useCallback(() => {
     const container = scrollRef.current;
@@ -51,8 +55,14 @@ export function ProjectTimeline({
           node.id === selectedNodeId || node.parent_node_id === selectedNodeId,
       });
     }
-    setPaths(next);
-    setOverlay({ width: container.scrollWidth, height: container.clientHeight });
+    setPaths((prev) => (samePaths(prev, next) ? prev : next));
+    const nextWidth = container.scrollWidth;
+    const nextHeight = container.clientHeight;
+    setOverlay((prev) =>
+      prev.width === nextWidth && prev.height === nextHeight
+        ? prev
+        : { width: nextWidth, height: nextHeight },
+    );
   }, [nodes, nodeById, selectedNodeId]);
 
   useLayoutEffect(() => {
@@ -169,10 +179,18 @@ export function ProjectTimeline({
   );
 }
 
-function useNodeById(nodes: NodeInfo[]): Map<string, NodeInfo> {
-  const map = new Map<string, NodeInfo>();
-  for (const node of nodes) map.set(node.id, node);
-  return map;
+function samePaths(a: EdgePath[], b: EdgePath[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (
+      a[i].key !== b[i].key ||
+      a[i].d !== b[i].d ||
+      a[i].selected !== b[i].selected
+    ) {
+      return false;
+    }
+  }
+  return true;
 }
 
 function findResumeParent(

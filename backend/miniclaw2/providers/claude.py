@@ -25,6 +25,8 @@ from claude_agent_sdk import (
     ToolPermissionContext,
     ToolResultBlock,
     ToolUseBlock,
+)
+from claude_agent_sdk import (
     UserMessage as SDKUserMessage,
 )
 
@@ -212,7 +214,6 @@ class ClaudeProvider:
     def _build_options(self, context: AgentProviderContext) -> ClaudeAgentOptions:
         model = (
             context.project.settings_override.get("model")
-            or os.environ.get("ANTHROPIC_MODEL")
             or os.environ.get("MINICLAW_ANTHROPIC_MODEL")
             or "claude-sonnet-4-6"
         )
