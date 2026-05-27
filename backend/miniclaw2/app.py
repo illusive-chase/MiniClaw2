@@ -340,15 +340,21 @@ def create_app() -> FastAPI:
 
                 elif msg_type == "replay_request":
                     req = ReplayRequest(**raw)
-                    records = registry.store.replay_events(
-                        sid, req.node_id, req.since_seq
+                    replay_node_id = req.node_id
+                    if not replay_node_id:
+                        latest = registry.store.latest_node(sid)
+                        replay_node_id = latest.id if latest is not None else ""
+                    records = registry.replay_node_events(
+                        sid, replay_node_id, req.since_seq
                     )
+                    if records is None:
+                        records = []
                     replayed_through_seq = req.since_seq
                     for rec in records:
                         replayed_through_seq = max(replayed_through_seq, rec["seq"])
                         await _send(send_now, rec["event"])
                     await mark_live_ready(
-                        replay_node_id=req.node_id,
+                        replay_node_id=replay_node_id or None,
                         replayed_through_seq=replayed_through_seq,
                     )
 

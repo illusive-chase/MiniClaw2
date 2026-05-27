@@ -2,6 +2,7 @@ name: bash-uname
 brief: "Agent runs a single Bash command and reports its output."
 providers: [claude, codex]
 auto_commit: false
+permission_mode: bypassPermissions
 nodes:
   - id: turn1
     kind: agent

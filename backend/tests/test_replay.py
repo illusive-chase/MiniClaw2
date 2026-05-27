@@ -186,5 +186,28 @@ class FreshNodeLaunchTest(unittest.TestCase):
             self.assertEqual(store.latest_node(project.id).id, source.id)
 
 
+class ReplayBootstrapTest(unittest.TestCase):
+    def test_replay_node_events_bootstraps_latest_node_when_id_is_empty(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(root=Path(tmp))
+            project = Project(root_path=tmp, provider="claude")
+            store.create_project(project)
+            first = store.create_node(
+                Node(
+                    project_id=project.id,
+                    kind=NodeKind.AGENT,
+                    state=NodeState.DONE,
+                    provider="claude",
+                )
+            )
+            store.append_event(project.id, first.id, 1, {"type": "text_delta", "seq": 1})
+            registry = ProjectRegistry(store=store)
+
+            self.assertEqual(
+                registry.replay_node_events(project.id, "", 0),
+                [{"seq": 1, "event": {"type": "text_delta", "seq": 1}}],
+            )
+
+
 if __name__ == "__main__":
     unittest.main()

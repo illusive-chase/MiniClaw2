@@ -79,6 +79,8 @@ class ProjectRegistry:
         name: str = "",
         provider: str | None = None,
         auto_commit: bool | None = None,
+        permission_mode: str | None = None,
+        approval_policy: str | None = None,
         temporary: bool = False,
         scenario_name: str | None = None,
     ) -> Project:
@@ -98,6 +100,10 @@ class ProjectRegistry:
             settings["model_provider"] = model_provider
         if auto_commit is not None:
             settings["auto_commit"] = bool(auto_commit)
+        if permission_mode is not None:
+            settings["permission_mode"] = permission_mode
+        if approval_policy is not None:
+            settings["approval_policy"] = approval_policy
         project = Project(
             root_path=root_path,
             name=name,
@@ -167,6 +173,11 @@ class ProjectRegistry:
     ) -> list[dict[str, Any]] | None:
         if pid not in self._runtimes:
             return None
+        if not nid:
+            latest = self.store.latest_node(pid)
+            if latest is None:
+                return []
+            nid = latest.id
         if self.store.load_node(pid, nid) is None:
             return None
         return self.store.replay_events(pid, nid, since_seq)
@@ -347,5 +358,3 @@ class ProjectRegistry:
             permission_mode=permission_mode,
             clear_context=clear_context,
         )
-
-

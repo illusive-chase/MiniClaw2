@@ -34,6 +34,7 @@ class Scenario:
     brief: str
     providers: list[str]
     auto_commit: bool
+    permission_mode: str | None
     nodes: list[NodeSpec]
     seed: list[tuple[Path, str]]  # (source path, relative dest in tempdir)
     root: Path
@@ -105,6 +106,18 @@ def load_scenario(name: str) -> Scenario:
     if not isinstance(providers, list) or not all(isinstance(p, str) for p in providers):
         raise ScenarioError(f"{name}: providers must be a list of strings")
 
+    permission_mode = data.get("permission_mode")
+    if permission_mode is not None:
+        if not isinstance(permission_mode, str) or permission_mode not in {
+            "default",
+            "acceptEdits",
+            "plan",
+            "bypassPermissions",
+        }:
+            raise ScenarioError(
+                f"{name}: permission_mode must be default, acceptEdits, plan, or bypassPermissions"
+            )
+
     raw_nodes = data.get("nodes") or []
     if not isinstance(raw_nodes, list) or not raw_nodes:
         raise ScenarioError(f"{name}: nodes must be a non-empty list")
@@ -165,6 +178,7 @@ def load_scenario(name: str) -> Scenario:
         brief=brief,
         providers=[p.lower() for p in providers],
         auto_commit=bool(data.get("auto_commit", False)),
+        permission_mode=permission_mode,
         nodes=nodes,
         seed=seed_entries,
         root=root,

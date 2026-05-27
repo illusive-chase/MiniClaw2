@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import os
+from collections import deque
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -14,6 +15,9 @@ from ..events import Activity, TextDelta, Thinking, Usage
 from .base import AgentProviderContext, AgentProviderEvent, GateRequest
 
 logger = logging.getLogger(__name__)
+
+_CODEX_REQUEST_TIMEOUT_SECONDS = 60.0
+_CODEX_STDERR_TAIL_LINES = 20
 
 
 class CodexProvider:
@@ -250,10 +254,7 @@ class CodexProvider:
             )
             return _codex_user_input_response(response)
 
-        if method in {
-            "item/commandExecution/requestApproval",
-            "execCommandApproval",
-        }:
+        if method == "item/commandExecution/requestApproval":
             response = await context.request_gate(
                 GateRequest(
                     subtype=GateSubtype.PERMISSION,
@@ -265,10 +266,19 @@ class CodexProvider:
             )
             return {"decision": _codex_decision(response, command=True)}
 
-        if method in {
-            "item/fileChange/requestApproval",
-            "applyPatchApproval",
-        }:
+        if method == "execCommandApproval":
+            response = await context.request_gate(
+                GateRequest(
+                    subtype=GateSubtype.PERMISSION,
+                    tool_name="commandExecution",
+                    tool_input=params,
+                    provider_request_id=request_id,
+                    response_hint={"codex_method": method, "decision_kind": "command"},
+                )
+            )
+            return {"decision": _codex_legacy_decision(response)}
+
+        if method == "item/fileChange/requestApproval":
             response = await context.request_gate(
                 GateRequest(
                     subtype=GateSubtype.PERMISSION,
@@ -279,6 +289,18 @@ class CodexProvider:
                 )
             )
             return {"decision": _codex_decision(response, command=False)}
+
+        if method == "applyPatchApproval":
+            response = await context.request_gate(
+                GateRequest(
+                    subtype=GateSubtype.PERMISSION,
+                    tool_name="fileChange",
+                    tool_input=params,
+                    provider_request_id=request_id,
+                    response_hint={"codex_method": method, "decision_kind": "file"},
+                )
+            )
+            return {"decision": _codex_legacy_decision(response)}
 
         if method == "item/permissions/requestApproval":
             response = await context.request_gate(
@@ -304,21 +326,12 @@ class CodexProvider:
             }
 
         if method == "mcpServer/elicitation/request":
-            response = await context.request_gate(
-                GateRequest(
-                    subtype=GateSubtype.ASK_USER,
-                    tool_name="mcp_elicitation",
-                    tool_input=params,
-                    provider_request_id=request_id,
-                    response_hint={"codex_method": method},
-                )
-            )
-            if response.get("response"):
-                return response["response"]
             return {
-                "action": "accept" if response.get("allow", True) else "decline",
-                "content": (response.get("updated_input") or {}).get("content"),
-                "_meta": None,
+                "action": "decline",
+                "content": None,
+                "_meta": {
+                    "reason": "MiniClaw2 does not support MCP elicitation yet.",
+                },
             }
 
         if method == "item/tool/call":
@@ -349,9 +362,12 @@ class _CodexJsonRpcClient:
         self._proc: asyncio.subprocess.Process | None = None
         self._next_id = 1
         self._pending: dict[int, asyncio.Future[dict[str, Any]]] = {}
-        self._queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        self._queue: asyncio.Queue[dict[str, Any] | BaseException] = asyncio.Queue()
         self._reader_task: asyncio.Task[None] | None = None
         self._stderr_task: asyncio.Task[None] | None = None
+        self._stderr_tail: deque[str] = deque(maxlen=_CODEX_STDERR_TAIL_LINES)
+        self._closed_error: RuntimeError | None = None
+        self._closing = False
 
     async def __aenter__(self) -> "_CodexJsonRpcClient":
         env = os.environ.copy()
@@ -370,6 +386,7 @@ class _CodexJsonRpcClient:
         return self
 
     async def __aexit__(self, *_exc: object) -> None:
+        self._closing = True
         if self._proc is not None and self._proc.returncode is None:
             self._proc.terminate()
             try:
@@ -380,6 +397,13 @@ class _CodexJsonRpcClient:
         for task in (self._reader_task, self._stderr_task):
             if task is not None:
                 task.cancel()
+        tasks = [
+            task
+            for task in (self._reader_task, self._stderr_task)
+            if task is not None
+        ]
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     async def initialize(self) -> dict[str, Any]:
         return await self.request(
@@ -409,11 +433,17 @@ class _CodexJsonRpcClient:
         loop = asyncio.get_running_loop()
         fut: asyncio.Future[dict[str, Any]] = loop.create_future()
         self._pending[req_id] = fut
-        await self._send({"id": req_id, "method": method, "params": params})
         try:
-            if timeout is None:
-                return await fut
-            return await asyncio.wait_for(fut, timeout=timeout)
+            await self._send({"id": req_id, "method": method, "params": params})
+            effective_timeout = (
+                _CODEX_REQUEST_TIMEOUT_SECONDS if timeout is None else timeout
+            )
+            return await asyncio.wait_for(fut, timeout=effective_timeout)
+        except TimeoutError as exc:
+            fut.cancel()
+            raise TimeoutError(
+                f"Codex request {method} timed out after {effective_timeout:.1f}s"
+            ) from exc
         finally:
             self._pending.pop(req_id, None)
 
@@ -421,46 +451,138 @@ class _CodexJsonRpcClient:
         await self._send({"id": req_id, "result": result})
 
     async def receive(self) -> dict[str, Any]:
-        return await self._queue.get()
+        if self._closed_error is not None and self._queue.empty():
+            raise self._closed_error
+        item = await self._queue.get()
+        if isinstance(item, BaseException):
+            raise item
+        return item
 
     async def _send(self, payload: dict[str, Any]) -> None:
         if self._proc is None or self._proc.stdin is None:
             raise RuntimeError("Codex app-server is not running")
+        if self._proc.returncode is not None:
+            raise self._fail("exited before request could be sent")
         data = json.dumps(payload, ensure_ascii=False) + "\n"
-        self._proc.stdin.write(data.encode("utf-8"))
-        await self._proc.stdin.drain()
+        try:
+            self._proc.stdin.write(data.encode("utf-8"))
+            await self._proc.stdin.drain()
+        except (BrokenPipeError, ConnectionResetError) as exc:
+            raise self._fail("closed stdin before request could be sent") from exc
 
     async def _read_stdout(self) -> None:
         assert self._proc is not None and self._proc.stdout is not None
-        while True:
-            line = await self._proc.stdout.readline()
-            if not line:
-                break
+        try:
+            while True:
+                line = await self._proc.stdout.readline()
+                if not line:
+                    break
+                try:
+                    payload = json.loads(line.decode("utf-8"))
+                except json.JSONDecodeError:
+                    logger.debug("non-json Codex stdout: %r", line)
+                    continue
+                msg_id = payload.get("id")
+                if msg_id in self._pending and (
+                    "result" in payload or "error" in payload
+                ):
+                    fut = self._pending.get(msg_id)
+                    if fut is not None and not fut.done():
+                        if "error" in payload:
+                            fut.set_exception(
+                                RuntimeError(
+                                    payload["error"].get("message", "Codex error")
+                                )
+                            )
+                        else:
+                            fut.set_result(payload.get("result") or {})
+                else:
+                    await self._queue.put(payload)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            if not self._closing:
+                self._fail("stdout reader failed", exc)
+            return
+        if not self._closing:
             try:
-                payload = json.loads(line.decode("utf-8"))
-            except json.JSONDecodeError:
-                logger.debug("non-json Codex stdout: %r", line)
-                continue
-            msg_id = payload.get("id")
-            if msg_id in self._pending and ("result" in payload or "error" in payload):
-                fut = self._pending.get(msg_id)
-                if fut is not None and not fut.done():
-                    if "error" in payload:
-                        fut.set_exception(RuntimeError(payload["error"].get("message", "Codex error")))
-                    else:
-                        fut.set_result(payload.get("result") or {})
-            else:
-                await self._queue.put(payload)
+                await asyncio.wait_for(self._proc.wait(), timeout=0.2)
+            except TimeoutError:
+                pass
+            await asyncio.sleep(0)
+            self._fail("closed stdout before completing the Codex request")
 
     async def _read_stderr(self) -> None:
         assert self._proc is not None and self._proc.stderr is not None
-        while True:
-            line = await self._proc.stderr.readline()
-            if not line:
-                break
-            text = line.decode("utf-8", errors="replace").strip()
-            if text:
-                logger.debug("codex app-server stderr: %s", text)
+        try:
+            while True:
+                line = await self._proc.stderr.readline()
+                if not line:
+                    break
+                text = line.decode("utf-8", errors="replace").strip()
+                if text:
+                    self._stderr_tail.append(text)
+                    logger.debug("codex app-server stderr: %s", text)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001
+            logger.debug("Codex stderr reader failed", exc_info=True)
+
+    def _fail(self, reason: str, cause: BaseException | None = None) -> RuntimeError:
+        if self._closed_error is None:
+            self._closed_error = RuntimeError(
+                self._format_process_error(reason, cause)
+            )
+            for fut in list(self._pending.values()):
+                if not fut.done():
+                    fut.set_exception(self._closed_error)
+            self._pending.clear()
+            self._queue.put_nowait(self._closed_error)
+        return self._closed_error
+
+    def _format_process_error(
+        self,
+        reason: str,
+        cause: BaseException | None = None,
+    ) -> str:
+        parts = [f"Codex app-server {reason}"]
+        returncode = self._proc.returncode if self._proc is not None else None
+        if returncode is not None:
+            parts.append(f"exit code {returncode}")
+        if cause is not None:
+            parts.append(str(cause))
+        message = "; ".join(parts)
+        if self._stderr_tail:
+            stderr = "\n".join(self._stderr_tail)
+            message = f"{message}\nstderr tail:\n{stderr}"
+        return message
+
+
+def _codex_legacy_decision(response: dict[str, Any]) -> Any:
+    decision = response.get("decision")
+    if isinstance(decision, dict):
+        return decision
+    if isinstance(decision, str):
+        legacy_map = {
+            "approved": "approved",
+            "approved_for_session": "approved_for_session",
+            "denied": "denied",
+            "abort": "abort",
+            "accept": "approved",
+            "acceptForSession": "approved_for_session",
+            "decline": "denied",
+            "cancel": "abort",
+        }
+        mapped = legacy_map.get(decision)
+        if mapped is not None:
+            return mapped
+    if response.get("allow", True):
+        if response.get("scope") == "session":
+            return "approved_for_session"
+        return "approved"
+    if response.get("interrupt", False):
+        return "abort"
+    return "denied"
 
 
 def _thread_params(

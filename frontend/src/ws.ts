@@ -38,21 +38,15 @@ export function useSessionSocket(
 
       ws.onopen = () => {
         setStatus("open");
-        const nodeId = activeNodeIdRef.current;
-        const sinceSeq = lastSeqRef.current;
-        if (
-          isReconnect &&
-          nodeId &&
-          sinceSeq > 0 &&
-          ws?.readyState === WebSocket.OPEN
-        ) {
-          const msg: ClientMessage = {
-            type: "replay_request",
-            node_id: nodeId,
-            since_seq: sinceSeq,
-          };
-          ws.send(JSON.stringify(msg));
-        }
+        if (ws?.readyState !== WebSocket.OPEN) return;
+        const nodeId = isReconnect ? activeNodeIdRef.current : null;
+        const sinceSeq = isReconnect ? lastSeqRef.current : 0;
+        const msg: ClientMessage = {
+          type: "replay_request",
+          node_id: nodeId ?? "",
+          since_seq: sinceSeq,
+        };
+        ws.send(JSON.stringify(msg));
       };
       ws.onclose = (e) => {
         setStatus("closed");

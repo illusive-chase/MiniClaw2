@@ -223,10 +223,14 @@ class ClaudeProvider:
         opts: dict[str, Any] = {
             "system_prompt": system_prompt,
             "model": model,
-            "permission_mode": "default",
             "cwd": context.project.root_path,
             "can_use_tool": self._make_can_use_tool(context),
         }
+        permission_mode = context.project.settings_override.get("permission_mode")
+        if isinstance(permission_mode, str) and permission_mode:
+            opts["permission_mode"] = permission_mode
+        else:
+            opts["permission_mode"] = "default"
         session_id = context.node.provider_session_id or context.node.sdk_session_id
         if session_id:
             opts["resume"] = session_id

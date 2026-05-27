@@ -2,6 +2,7 @@ name: write-readme
 brief: "Agent produces one file via Edit/Write — README.md with a single line."
 providers: [claude, codex]
 auto_commit: false
+permission_mode: bypassPermissions
 nodes:
   - id: turn1
     kind: agent

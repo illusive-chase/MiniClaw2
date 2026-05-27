@@ -26,6 +26,7 @@ class ScenariosLoaderTest(unittest.TestCase):
         self.assertEqual(scenario.nodes[0].kind, "agent")
         self.assertIn("[OK]", scenario.nodes[0].prompt)
         self.assertFalse(scenario.auto_commit)
+        self.assertEqual(scenario.permission_mode, "bypassPermissions")
 
     def test_unknown_scenario_raises(self) -> None:
         from miniclaw2.scenarios import ScenarioError

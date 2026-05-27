@@ -46,6 +46,10 @@ class LaunchScenarioTest(unittest.TestCase):
                 self.assertTrue(project.temporary)
                 self.assertEqual(project.scenario_name, "hello-text")
                 self.assertEqual(project.provider, "claude")
+                self.assertEqual(
+                    project.settings_override.get("permission_mode"),
+                    "bypassPermissions",
+                )
 
                 nodes = store.list_nodes(project.id)
                 self.assertEqual(len(nodes), 1)
@@ -56,6 +60,30 @@ class LaunchScenarioTest(unittest.TestCase):
                 root = Path(project.root_path)
                 self.assertTrue(root.exists())
                 self.assertTrue((root / ".git").exists())
+            finally:
+                registry.delete_project(project.id)
+
+    def test_launching_bash_uname_codex_sets_never_approval_policy(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            store = Store(root=Path(raw))
+            registry = ProjectRegistry(store=store)
+
+            with patch(
+                "miniclaw2.registry.asyncio.create_task",
+                side_effect=_fake_create_task,
+            ):
+                project, scenario = launch_scenario("bash-uname", "codex", registry)
+
+            try:
+                self.assertEqual(scenario.name, "bash-uname")
+                self.assertEqual(
+                    project.settings_override.get("approval_policy"),
+                    "never",
+                )
+                self.assertEqual(
+                    project.settings_override.get("permission_mode"),
+                    "bypassPermissions",
+                )
             finally:
                 registry.delete_project(project.id)
 
