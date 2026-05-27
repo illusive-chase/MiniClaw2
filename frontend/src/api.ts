@@ -16,6 +16,7 @@ export async function createSession(
     provider?: string;
     temporary?: boolean;
     scenario_name?: string | null;
+    name?: string;
   } = {},
 ): Promise<SessionInfo> {
   const res = await fetch("/sessions", {
@@ -36,6 +37,16 @@ export async function listSessions(): Promise<SessionInfo[]> {
 export async function deleteSession(id: string): Promise<void> {
   const res = await fetch(`/sessions/${id}`, { method: "DELETE" });
   if (!res.ok) throw new Error(`deleteSession failed: ${res.status}`);
+}
+
+export async function renameSession(id: string, name: string): Promise<SessionInfo> {
+  const res = await fetch(`/sessions/${id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name }),
+  });
+  if (!res.ok) throw new Error(`renameSession failed: ${res.status}`);
+  return res.json();
 }
 
 export async function listNodes(sessionId: string): Promise<NodeInfo[]> {

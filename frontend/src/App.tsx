@@ -1,10 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { createSession, getNodeDiff, listNodeEvents, listNodes } from "./api";
+import { getNodeDiff, listNodeEvents, listNodes } from "./api";
+import { canResumeNode } from "./nodeUtil";
 import { Chat, type ChatTurn } from "./components/Chat";
 import { ProjectTimeline } from "./components/ProjectTimeline";
 import { NodeDetail, type PendingGate } from "./components/NodeDetail";
 import { GateLaunchModal } from "./components/GateLaunchModal";
+import { NodeLaunchModal } from "./components/NodeLaunchModal";
+import { NewProjectModal } from "./components/NewProjectModal";
+import { ProjectsLanding } from "./components/ProjectsLanding";
 import { TestsPanel } from "./components/TestsPanel";
+import { ThemeToggle } from "./components/ThemeToggle";
+import { UsageStrip } from "./components/UsageStrip";
 import { VerifyCard } from "./components/VerifyCard";
 import type {
   Activity,
@@ -18,24 +24,13 @@ import type {
 import { useSessionSocket } from "./ws";
 
 type View = "chat" | "tests";
+type Route = "landing" | "project";
 
 const TERMINAL_STATES = new Set(["done", "error", "cancelled"]);
 
-const sessionCreateInFlight = new Map<string, Promise<SessionInfo>>();
-
-function createSessionOnce(provider: "claude" | "codex"): Promise<SessionInfo> {
-  const cached = sessionCreateInFlight.get(provider);
-  if (cached) return cached;
-  const request = createSession({ provider }).finally(() => {
-    sessionCreateInFlight.delete(provider);
-  });
-  sessionCreateInFlight.set(provider, request);
-  return request;
-}
-
 export function App() {
+  const [route, setRoute] = useState<Route>("landing");
   const [session, setSession] = useState<SessionInfo | null>(null);
-  const [provider, setProvider] = useState<"claude" | "codex">("claude");
   const [view, setView] = useState<View>("chat");
   const [turns, setTurns] = useState<ChatTurn[]>([]);
   const [nodes, setNodes] = useState<NodeInfo[]>([]);
@@ -48,9 +43,10 @@ export function App() {
   const [pendingReview, setPendingReview] = useState<PendingGate | null>(null);
   const [usage, setUsage] = useState<Usage | null>(null);
   const [streaming, setStreaming] = useState(false);
-  const [input, setInput] = useState("");
-  const [resumeFromNodeId, setResumeFromNodeId] = useState<string | null>(null);
   const [gateModalOpen, setGateModalOpen] = useState(false);
+  const [nodeModalOpen, setNodeModalOpen] = useState(false);
+  const [nodeModalResumeId, setNodeModalResumeId] = useState<string | null>(null);
+  const [newProjectModalOpen, setNewProjectModalOpen] = useState(false);
   const turnIdRef = useRef(0);
   const activeNodeIdRef = useRef<string | null>(null);
   const selectedNodeIdRef = useRef<string | null>(null);
@@ -60,7 +56,6 @@ export function App() {
     setSelectedNodeId(null);
     setSelectedEvents([]);
     setSelectedDiff(null);
-    setResumeFromNodeId(null);
     setTurns([]);
     setUsage(null);
     setStreaming(false);
@@ -69,41 +64,27 @@ export function App() {
     activeNodeIdRef.current = null;
   }, []);
 
-  // Mount: create the default (non-temporary) session for the current provider.
-  useEffect(() => {
-    let cancelled = false;
-    createSessionOnce(provider)
-      .then((next) => {
-        if (!cancelled) setSession(next);
-      })
-      .catch(console.error);
-    return () => {
-      cancelled = true;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  const onProviderChange = useCallback(
-    (next: "claude" | "codex") => {
-      setProvider(next);
+  const openProject = useCallback(
+    (next: SessionInfo) => {
       resetAllSessionState();
-      setSession(null);
-      createSessionOnce(next)
-        .then(setSession)
-        .catch(console.error);
+      setSession(next);
+      setView("chat");
+      setRoute("project");
     },
     [resetAllSessionState],
   );
 
+  const backToLanding = useCallback(() => {
+    resetAllSessionState();
+    setSession(null);
+    setRoute("landing");
+  }, [resetAllSessionState]);
+
   const onScenarioLaunched = useCallback(
     (next: SessionInfo) => {
-      resetAllSessionState();
-      setSession(next);
-      const launchedProvider = (next.provider ?? "claude") as "claude" | "codex";
-      setProvider(launchedProvider);
-      setView("chat");
+      openProject(next);
     },
-    [resetAllSessionState],
+    [openProject],
   );
 
   useEffect(() => {
@@ -243,23 +224,35 @@ export function App() {
     appendSelectedEvent(eventNodeId, ev);
   }, [appendSelectedEvent, refreshNodes]);
 
-  const { status, send } = useSessionSocket(session?.id ?? null, handleEvent);
+  const { status, send } = useSessionSocket(
+    route === "project" ? (session?.id ?? null) : null,
+    handleEvent,
+  );
 
-  const onSend = () => {
-    const text = input.trim();
-    if (!text || streaming || status !== "open") return;
-    const userId = `u${++turnIdRef.current}`;
-    const aId = `a${++turnIdRef.current}`;
-    setTurns((prev) => [
-      ...prev,
-      { id: userId, role: "user", text, activities: [] },
-      { id: aId, role: "assistant", text: "", activities: [], streaming: true },
-    ]);
-    setInput("");
-    setStreaming(true);
-    send({ type: "user_message", text, resume_from_node_id: resumeFromNodeId });
-    setResumeFromNodeId(null);
-  };
+  const launchAgentNode = useCallback(
+    (text: string, resume: string | null) => {
+      if (streaming || status !== "open") return;
+      const userId = `u${++turnIdRef.current}`;
+      const aId = `a${++turnIdRef.current}`;
+      setTurns((prev) => [
+        ...prev,
+        { id: userId, role: "user", text, activities: [] },
+        { id: aId, role: "assistant", text: "", activities: [], streaming: true },
+      ]);
+      setStreaming(true);
+      send({ type: "user_message", text, resume_from_node_id: resume });
+    },
+    [streaming, status, send],
+  );
+
+  const onLaunchNode = useCallback(
+    (prompt: string, resume: string | null) => {
+      setNodeModalOpen(false);
+      setNodeModalResumeId(null);
+      launchAgentNode(prompt, resume);
+    },
+    [launchAgentNode],
+  );
 
   const onStop = () => {
     if (!streaming || status !== "open") return;
@@ -335,13 +328,17 @@ export function App() {
     };
   }, [pendingGate, pendingReview, selectedNodeId]);
 
-  const handleResumeFromNode = useCallback((node: NodeInfo) => {
-    if (!node.provider_session_id && !node.sdk_session_id) {
-      return;
-    }
-    setResumeFromNodeId(node.id);
+  const openNodeModalForResume = useCallback((node: NodeInfo) => {
+    if (!canResumeNode(node)) return;
+    setNodeModalResumeId(node.id);
     setSelectedNodeId(node.id);
+    setNodeModalOpen(true);
   }, []);
+
+  const resumeOptions = useMemo(
+    () => nodes.filter((n) => canResumeNode(n)),
+    [nodes],
+  );
 
   const allNodesTerminal = useMemo(
     () => nodes.length > 0 && nodes.every((n) => TERMINAL_STATES.has(n.state)),
@@ -351,47 +348,112 @@ export function App() {
   const showVerifyCard =
     !!session?.scenario_name && allNodesTerminal && !streaming;
 
+  if (route === "landing") {
+    return (
+      <>
+        <ProjectsLanding
+          onOpen={openProject}
+          onCreate={() => setNewProjectModalOpen(true)}
+        />
+        <NewProjectModal
+          open={newProjectModalOpen}
+          onCancel={() => setNewProjectModalOpen(false)}
+          onCreated={(next) => {
+            setNewProjectModalOpen(false);
+            openProject(next);
+          }}
+        />
+      </>
+    );
+  }
+
+  const projectTitle =
+    session?.name?.trim() ||
+    (session ? `Project ${session.id.slice(0, 8)}` : "Project");
+
+  const wsTone =
+    status === "open"
+      ? "text-state-running"
+      : status === "connecting"
+        ? "text-state-waiting"
+        : "text-state-error";
+
   return (
-    <div className="flex h-screen flex-col bg-slate-950 text-slate-100">
-      <header className="flex items-center justify-between border-b border-slate-800 px-6 py-3">
-        <div>
-          <div className="text-sm font-semibold">MiniClaw2</div>
-          <div className="text-[11px] text-slate-500">
-            session {session?.id ?? "—"} · ws {status}
+    <div className="flex h-screen flex-col bg-surface text-ink">
+      <header className="flex items-center justify-between gap-4 border-b border-line bg-surface-raised px-6 py-3">
+        <div className="flex min-w-0 items-center gap-3">
+          <button
+            type="button"
+            onClick={backToLanding}
+            className="inline-flex h-8 items-center gap-1 rounded-md border border-line bg-surface px-2.5 text-[11px] text-ink-muted transition hover:border-line-strong hover:bg-surface-sunken hover:text-ink"
+            title="Back to projects"
+          >
+            <span aria-hidden="true">←</span>
+            <span className="hidden sm:inline">Projects</span>
+          </button>
+          <div className="min-w-0">
+            <div className="truncate font-display text-[15px] font-semibold tracking-tight text-ink-strong">
+              {projectTitle}
+            </div>
+            <div className="flex items-center gap-2 font-mono text-[10px] text-ink-subtle">
+              <span className="truncate">{session?.id ?? "—"}</span>
+              <span className="text-line-strong">·</span>
+              <span className={"inline-flex items-center gap-1 " + wsTone}>
+                <span className="inline-block h-1.5 w-1.5 rounded-full bg-current" />
+                ws {status}
+              </span>
+            </div>
           </div>
         </div>
-        <div className="flex items-center gap-4">
-          {usage && (
-            <div className="text-[11px] text-slate-500 font-mono">
-              in {usage.input_tokens} · out {usage.output_tokens} · cache r{" "}
-              {usage.cache_read_tokens} / w {usage.cache_creation_tokens}
-            </div>
+
+        <div className="flex items-center gap-3">
+          <UsageStrip usage={usage} />
+
+          {streaming && (
+            <button
+              type="button"
+              onClick={onStop}
+              disabled={status !== "open"}
+              className="inline-flex h-8 items-center rounded-md border border-state-error/40 bg-state-error-soft px-2.5 text-xs font-medium text-state-error transition hover:border-state-error/70 disabled:opacity-40"
+            >
+              Stop
+            </button>
           )}
+
+          <button
+            type="button"
+            onClick={() => {
+              setNodeModalResumeId(null);
+              setNodeModalOpen(true);
+            }}
+            disabled={
+              streaming ||
+              status !== "open" ||
+              !!pendingGate ||
+              !!pendingReview
+            }
+            className="inline-flex h-8 items-center rounded-md bg-brand px-3 text-xs font-medium text-white shadow-card transition hover:brightness-[0.95] disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            <span className="mr-1 text-sm leading-none">+</span> Node
+          </button>
+
           <button
             type="button"
             onClick={() => setGateModalOpen(true)}
             disabled={streaming || status !== "open"}
-            className="rounded border border-emerald-700 px-2 py-1 text-xs text-emerald-300 hover:bg-emerald-950 disabled:opacity-40"
+            className="inline-flex h-8 items-center rounded-md border border-state-review/40 bg-state-review-soft px-2.5 text-xs font-medium text-state-review transition hover:border-state-review/70 disabled:opacity-40"
           >
-            + Gate
+            <span className="mr-1 text-sm leading-none">+</span> Gate
           </button>
-          <select
-            value={provider}
-            onChange={(e) => onProviderChange(e.target.value as "claude" | "codex")}
-            disabled={streaming}
-            className="rounded border border-slate-800 bg-slate-900 px-2 py-1 text-xs text-slate-300"
-          >
-            <option value="claude">Claude</option>
-            <option value="codex">Codex</option>
-          </select>
-          <div className="flex overflow-hidden rounded border border-slate-800 text-xs">
+
+          <div className="inline-flex h-8 overflow-hidden rounded-md border border-line text-xs">
             <button
               type="button"
               onClick={() => setView("chat")}
               className={
                 view === "chat"
-                  ? "bg-slate-800 px-3 py-1 text-slate-100"
-                  : "bg-slate-950 px-3 py-1 text-slate-400 hover:bg-slate-900"
+                  ? "bg-surface-sunken px-3 font-medium text-ink-strong"
+                  : "bg-surface-raised px-3 text-ink-muted hover:bg-surface-sunken hover:text-ink"
               }
             >
               Chat
@@ -401,13 +463,15 @@ export function App() {
               onClick={() => setView("tests")}
               className={
                 view === "tests"
-                  ? "bg-slate-800 px-3 py-1 text-slate-100"
-                  : "bg-slate-950 px-3 py-1 text-slate-400 hover:bg-slate-900"
+                  ? "bg-surface-sunken px-3 font-medium text-ink-strong"
+                  : "bg-surface-raised px-3 text-ink-muted hover:bg-surface-sunken hover:text-ink"
               }
             >
               Tests
             </button>
           </div>
+
+          <ThemeToggle />
         </div>
       </header>
 
@@ -415,6 +479,17 @@ export function App() {
         open={gateModalOpen}
         onCancel={() => setGateModalOpen(false)}
         onLaunch={onLaunchGate}
+      />
+
+      <NodeLaunchModal
+        open={nodeModalOpen}
+        onCancel={() => {
+          setNodeModalOpen(false);
+          setNodeModalResumeId(null);
+        }}
+        onLaunch={onLaunchNode}
+        resumeOptions={resumeOptions}
+        presetResumeFromNodeId={nodeModalResumeId}
       />
 
       {view === "tests" ? (
@@ -431,68 +506,20 @@ export function App() {
 
       <div className="flex min-h-0 flex-1">
         <main className="flex min-w-0 flex-1 flex-col">
-          {resumeFromNodeId && (
-            <div className="border-b border-slate-800 bg-slate-900/40 px-6 py-2 text-[11px] text-slate-400">
-              Resuming from node {resumeFromNodeId}
-              <button
-                type="button"
-                onClick={() => setResumeFromNodeId(null)}
-                className="ml-3 rounded border border-slate-700 px-2 py-0.5 text-slate-300 hover:bg-slate-800"
-              >
-                Clear
-              </button>
-            </div>
-          )}
           <Chat turns={turns} />
 
           {pendingBanner && (
-            <div className="border-t border-amber-700/40 bg-amber-950/30 px-6 py-2 text-[11px] text-amber-200">
-              {pendingBanner.label}{" "}
+            <div className="flex items-center justify-between gap-3 border-t border-state-waiting/30 bg-state-waiting-soft px-6 py-2 text-[11px] text-state-waiting">
+              <span>{pendingBanner.label}</span>
               <button
                 type="button"
                 onClick={() => setSelectedNodeId(pendingBanner.nodeId)}
-                className="ml-2 rounded border border-amber-700/60 px-2 py-0.5 text-amber-200 hover:bg-amber-900/40"
+                className="rounded border border-state-waiting/40 bg-surface-raised px-2 py-0.5 text-state-waiting transition hover:border-state-waiting/70"
               >
                 Open in side panel
               </button>
             </div>
           )}
-
-          <div className="border-t border-slate-800 px-6 py-3">
-            <div className="flex gap-2">
-              <textarea
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && !e.shiftKey) {
-                    e.preventDefault();
-                    onSend();
-                  }
-                }}
-                rows={2}
-                placeholder={status === "open" ? "Message agent..." : "Connecting..."}
-                disabled={status !== "open" || streaming}
-                className="flex-1 resize-none rounded-lg border border-slate-800 bg-slate-900 px-3 py-2 text-sm focus:border-slate-600 focus:outline-none disabled:opacity-50"
-              />
-              {streaming ? (
-                <button
-                  onClick={onStop}
-                  disabled={status !== "open"}
-                  className="rounded-lg bg-rose-600 px-4 text-sm font-medium text-white hover:bg-rose-500 disabled:opacity-40"
-                >
-                  Stop
-                </button>
-              ) : (
-                <button
-                  onClick={onSend}
-                  disabled={status !== "open" || !input.trim()}
-                  className="rounded-lg bg-slate-100 px-4 text-sm font-medium text-slate-900 hover:bg-white disabled:opacity-40"
-                >
-                  Send
-                </button>
-              )}
-            </div>
-          </div>
 
           {showVerifyCard && session && session.scenario_name && (
             <VerifyCard
@@ -508,7 +535,7 @@ export function App() {
           loading={selectedEventsLoading}
           diff={selectedDiff}
           diffLoading={selectedDiffLoading}
-          onResumeFromNode={handleResumeFromNode}
+          onResumeFromNode={openNodeModalForResume}
           pendingGate={
             pendingGate && selectedNode && pendingGate.nodeId === selectedNode.id
               ? pendingGate
@@ -566,4 +593,3 @@ function upsertNode(prev: NodeInfo[], node: NodeInfo): NodeInfo[] {
   }
   return prev.map((item, i) => (i === index ? node : item));
 }
-

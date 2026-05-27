@@ -49,16 +49,16 @@ export function VerifyCard({ sessionId, scenarioName }: Props) {
   const scenarioPassed = programmaticPassed && allChecked;
 
   return (
-    <div className="border-t border-slate-800 bg-slate-900/30 px-6 py-4">
+    <div className="border-t border-line bg-surface-sunken px-6 py-4">
       <div className="mb-3 flex items-center gap-3">
-        <div className="text-xs font-semibold uppercase tracking-wide text-slate-400">
+        <div className="text-[10px] font-semibold uppercase tracking-[0.14em] text-ink-muted">
           Verify
         </div>
-        <div className="font-mono text-[11px] text-slate-500">
+        <div className="font-mono text-[10px] text-ink-subtle">
           scenario: {scenarioName}
         </div>
         {scenarioPassed && (
-          <span className="rounded bg-emerald-900/60 px-2 py-0.5 text-[10px] uppercase tracking-wide text-emerald-200">
+          <span className="rounded-md bg-state-review-soft px-2 py-0.5 text-[10px] uppercase tracking-[0.12em] text-state-review">
             passed
           </span>
         )}
@@ -66,14 +66,14 @@ export function VerifyCard({ sessionId, scenarioName }: Props) {
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         <div>
-          <div className="mb-2 text-[11px] uppercase tracking-wide text-slate-500">
+          <div className="mb-2 text-[10px] uppercase tracking-[0.14em] text-ink-subtle">
             Programmatic floor
           </div>
           <button
             type="button"
             onClick={() => void onVerify()}
             disabled={verifying}
-            className="rounded border border-slate-700 px-3 py-1 text-xs text-slate-200 hover:bg-slate-800 disabled:opacity-40"
+            className="rounded-md border border-line bg-surface px-3 py-1 text-xs text-ink transition hover:border-line-strong hover:bg-surface-raised disabled:opacity-40"
           >
             {verifying ? "Running…" : verifyResult ? "Re-run verify.sh" : "Run verify.sh"}
           </button>
@@ -82,25 +82,25 @@ export function VerifyCard({ sessionId, scenarioName }: Props) {
               <div
                 className={
                   verifyResult.exit_code === 0
-                    ? "text-emerald-300"
-                    : "text-rose-300"
+                    ? "text-state-review"
+                    : "text-state-error"
                 }
               >
                 exit {verifyResult.exit_code}
                 {verifyResult.timed_out ? " (timed out)" : ""}
               </div>
               {verifyResult.stdout && (
-                <details className="rounded border border-slate-800 bg-slate-950/60 px-2 py-1">
-                  <summary className="cursor-pointer text-slate-400">stdout</summary>
-                  <pre className="mt-1 whitespace-pre-wrap break-words font-mono text-[10px] text-slate-300">
+                <details className="rounded-md border border-line bg-surface-raised px-2 py-1">
+                  <summary className="cursor-pointer text-ink-muted">stdout</summary>
+                  <pre className="mt-1 whitespace-pre-wrap break-words font-mono text-[10px] text-ink">
                     {verifyResult.stdout}
                   </pre>
                 </details>
               )}
               {verifyResult.stderr && (
-                <details className="rounded border border-slate-800 bg-slate-950/60 px-2 py-1" open>
-                  <summary className="cursor-pointer text-slate-400">stderr</summary>
-                  <pre className="mt-1 whitespace-pre-wrap break-words font-mono text-[10px] text-rose-200">
+                <details className="rounded-md border border-state-error/30 bg-state-error-soft px-2 py-1" open>
+                  <summary className="cursor-pointer text-state-error">stderr</summary>
+                  <pre className="mt-1 whitespace-pre-wrap break-words font-mono text-[10px] text-state-error">
                     {verifyResult.stderr}
                   </pre>
                 </details>
@@ -110,11 +110,11 @@ export function VerifyCard({ sessionId, scenarioName }: Props) {
         </div>
 
         <div>
-          <div className="mb-2 text-[11px] uppercase tracking-wide text-slate-500">
+          <div className="mb-2 text-[10px] uppercase tracking-[0.14em] text-ink-subtle">
             Human acceptance
           </div>
           {items.length === 0 ? (
-            <div className="text-[11px] text-slate-500">
+            <div className="text-[11px] text-ink-muted">
               {detail ? "No acceptance items defined." : "Loading…"}
             </div>
           ) : (
@@ -127,11 +127,13 @@ export function VerifyCard({ sessionId, scenarioName }: Props) {
                     onChange={(e) =>
                       setChecked((prev) => ({ ...prev, [idx]: e.target.checked }))
                     }
-                    className="mt-0.5"
+                    className="mt-0.5 accent-brand"
                   />
                   <span
                     className={
-                      checked[idx] ? "text-slate-400 line-through" : "text-slate-200"
+                      checked[idx]
+                        ? "text-ink-muted line-through"
+                        : "text-ink-strong"
                     }
                   >
                     {text}

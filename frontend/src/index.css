@@ -2,68 +2,285 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ───────────── design tokens ─────────────
+ * Light = "paper & clay" (warm cream, Anthropic coral)
+ * Dark  = "warm graphite" (slight brown tint, not slate)
+ * Colors stored as raw RGB triplets so Tailwind can mix alpha:
+ *   `bg-surface/60` → rgb(var(--surface) / 60%)
+ */
+:root {
+  --surface: 250 249 245;          /* #faf9f5 warm cream  */
+  --surface-raised: 255 255 255;
+  --surface-sunken: 243 239 231;
+  --surface-scrim: 28 25 22;        /* used at low opacity for modal scrim */
+
+  --ink-strong: 44 41 37;
+  --ink: 84 80 74;
+  --ink-muted: 140 133 121;
+  --ink-subtle: 184 176 160;
+
+  --border: 229 221 207;
+  --border-strong: 212 200 181;
+
+  --brand: 204 120 92;              /* #cc785c Anthropic coral */
+  --brand-soft: 246 230 221;
+  --brand-ink: 132 64 38;
+
+  --state-queued: 168 162 158;
+  --state-queued-soft: 232 228 222;
+
+  --state-running: 204 120 92;      /* = brand */
+  --state-running-soft: 246 230 221;
+
+  --state-waiting: 198 140 46;
+  --state-waiting-soft: 250 240 220;
+
+  --state-review: 90 139 122;
+  --state-review-soft: 220 232 226;
+
+  --state-done: 120 113 108;
+  --state-done-soft: 232 228 222;
+
+  --state-error: 192 57 43;
+  --state-error-soft: 247 224 220;
+
+  --state-cancelled: 168 162 158;
+  --state-cancelled-soft: 240 238 236;
+
+  --shadow: 28 25 22;
+  --grid-line: 212 200 181;
+  --grid-opacity: 0.18;
+
+  color-scheme: light;
+}
+
+html.dark {
+  --surface: 31 30 28;
+  --surface-raised: 42 41 38;
+  --surface-sunken: 22 21 19;
+  --surface-scrim: 0 0 0;
+
+  --ink-strong: 250 249 245;
+  --ink: 212 207 196;
+  --ink-muted: 155 148 137;
+  --ink-subtle: 110 105 95;
+
+  --border: 58 56 53;
+  --border-strong: 82 79 74;
+
+  --brand: 224 138 110;             /* brightened coral for dark */
+  --brand-soft: 59 38 32;
+  --brand-ink: 248 226 217;
+
+  --state-queued: 130 124 115;
+  --state-queued-soft: 50 48 44;
+
+  --state-running: 224 138 110;
+  --state-running-soft: 59 38 32;
+
+  --state-waiting: 220 158 65;
+  --state-waiting-soft: 67 47 18;
+
+  --state-review: 130 174 158;
+  --state-review-soft: 30 56 50;
+
+  --state-done: 130 122 113;
+  --state-done-soft: 48 46 43;
+
+  --state-error: 220 88 75;
+  --state-error-soft: 66 28 24;
+
+  --state-cancelled: 110 104 95;
+  --state-cancelled-soft: 38 36 33;
+
+  --shadow: 0 0 0;
+  --grid-line: 80 76 70;
+  --grid-opacity: 0.32;
+
+  color-scheme: dark;
+}
+
+/* ───────────── base ───────────── */
 html,
 body,
 #root {
   height: 100%;
 }
 
+html {
+  font-family:
+    "Switzer",
+    "Inter",
+    system-ui,
+    -apple-system,
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  background-color: rgb(var(--surface));
+  color: rgb(var(--ink));
+  font-feature-settings: "ss01", "cv11";
+}
+
+/* ───────────── timeline canvas: graph paper ─────────────
+ * Barely-perceptible 8px grid. Anchors the "instrument" register.
+ */
+.bg-grid {
+  background-color: rgb(var(--surface-sunken));
+  background-image:
+    linear-gradient(to right, rgb(var(--grid-line) / var(--grid-opacity)) 1px, transparent 1px),
+    linear-gradient(to bottom, rgb(var(--grid-line) / var(--grid-opacity)) 1px, transparent 1px);
+  background-size: 8px 8px;
+  background-position: -1px -1px;
+}
+
+/* ───────────── animations (gated by reduced-motion) ───────────── */
+@media (prefers-reduced-motion: no-preference) {
+  /* sweep: the bar is w-1/3 of its parent track. Translating by % of self,
+   * -100% places the right edge at 0 (just off-left); 300% places the left
+   * edge at 100% (just off-right). The resulting motion fills the track. */
+  @keyframes node-sweep {
+    0% {
+      transform: translateX(-100%);
+    }
+    100% {
+      transform: translateX(300%);
+    }
+  }
+  .node-sweep {
+    animation: node-sweep 1.6s linear infinite;
+  }
+
+  @keyframes edge-march {
+    from {
+      stroke-dashoffset: 0;
+    }
+    to {
+      stroke-dashoffset: -10;
+    }
+  }
+  .edge-marching {
+    animation: edge-march 0.9s linear infinite;
+  }
+
+  @keyframes state-pulse-slow {
+    0%, 100% { opacity: 0.55; }
+    50%      { opacity: 1; }
+  }
+  .pulse-slow {
+    animation: state-pulse-slow 2.6s ease-in-out infinite;
+  }
+
+  @keyframes review-ring {
+    0%, 100% { box-shadow: 0 0 0 0 rgb(var(--state-review) / 0.40); }
+    50%      { box-shadow: 0 0 0 6px rgb(var(--state-review) / 0); }
+  }
+  .review-ring {
+    animation: review-ring 2.4s ease-out infinite;
+  }
+
+  @keyframes stream-dot {
+    0%, 80%, 100% { opacity: 0.2; }
+    40%           { opacity: 1; }
+  }
+  .stream-dot {
+    animation: stream-dot 1.4s ease-in-out infinite;
+  }
+}
+
+/* Reduced-motion: still show a static colored bar so state remains legible */
+@media (prefers-reduced-motion: reduce) {
+  .node-sweep {
+    transform: translateX(0);
+    opacity: 0.4;
+  }
+}
+
+/* ───────────── markdown prose (theme-aware) ───────────── */
 .md-prose > * + * {
   margin-top: 0.6em;
 }
 .md-prose h1,
 .md-prose h2,
 .md-prose h3 {
+  font-family:
+    "Fraunces",
+    Georgia,
+    ui-serif,
+    serif;
   font-weight: 600;
-  color: rgb(226 232 240);
+  color: rgb(var(--ink-strong));
   margin-top: 1em;
+  letter-spacing: -0.01em;
 }
-.md-prose h1 { font-size: 1.15rem; }
-.md-prose h2 { font-size: 1.05rem; }
-.md-prose h3 { font-size: 0.95rem; }
+.md-prose h1 {
+  font-size: 1.2rem;
+}
+.md-prose h2 {
+  font-size: 1.08rem;
+}
+.md-prose h3 {
+  font-size: 0.96rem;
+}
 .md-prose p {
-  line-height: 1.55;
+  line-height: 1.6;
+  color: rgb(var(--ink));
 }
 .md-prose ul,
 .md-prose ol {
   padding-left: 1.25rem;
 }
-.md-prose ul { list-style: disc; }
-.md-prose ol { list-style: decimal; }
+.md-prose ul {
+  list-style: disc;
+}
+.md-prose ol {
+  list-style: decimal;
+}
 .md-prose li + li {
   margin-top: 0.2em;
 }
 .md-prose a {
-  color: rgb(125 211 252);
+  color: rgb(var(--brand));
   text-decoration: underline;
   text-underline-offset: 2px;
 }
 .md-prose code {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-family:
+    "JetBrains Mono",
+    ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    Consolas,
+    monospace;
   font-size: 0.85em;
-  background: rgb(15 23 42 / 0.7);
-  padding: 0.1em 0.35em;
-  border-radius: 0.25rem;
-  color: rgb(248 250 252);
+  background: rgb(var(--surface-sunken));
+  padding: 0.12em 0.38em;
+  border-radius: 4px;
+  color: rgb(var(--ink-strong));
+  border: 1px solid rgb(var(--border) / 0.6);
 }
 .md-prose pre {
-  background: rgb(2 6 23 / 0.7);
+  background: rgb(var(--surface-sunken));
+  border: 1px solid rgb(var(--border));
   padding: 0.75rem 0.85rem;
-  border-radius: 0.5rem;
+  border-radius: 6px;
   overflow-x: auto;
   font-size: 0.78rem;
-  line-height: 1.45;
+  line-height: 1.5;
 }
 .md-prose pre code {
   background: transparent;
+  border: none;
   padding: 0;
   font-size: inherit;
-  color: inherit;
+  color: rgb(var(--ink-strong));
 }
 .md-prose blockquote {
-  border-left: 3px solid rgb(51 65 85);
+  border-left: 3px solid rgb(var(--brand));
   padding-left: 0.75rem;
-  color: rgb(148 163 184);
+  color: rgb(var(--ink-muted));
 }
 .md-prose table {
   border-collapse: collapse;
@@ -71,9 +288,86 @@ body,
 }
 .md-prose th,
 .md-prose td {
-  border: 1px solid rgb(30 41 59);
-  padding: 0.25rem 0.5rem;
+  border: 1px solid rgb(var(--border));
+  padding: 0.3rem 0.55rem;
 }
 .md-prose hr {
-  border-color: rgb(30 41 59);
+  border: none;
+  border-top: 1px solid rgb(var(--border));
+}
+
+/* ───────────── highlight.js theme bridge ─────────────
+ * main.tsx loads github.css (light tokens). We override the background
+ * to be transparent so the prose surface shows through, and adjust the
+ * most important tokens in dark mode so syntax reads on warm graphite.
+ */
+.hljs {
+  background: transparent !important;
+  color: rgb(var(--ink-strong));
+}
+html.dark .hljs-keyword,
+html.dark .hljs-built_in,
+html.dark .hljs-type {
+  color: #b48cc7;
+}
+html.dark .hljs-string,
+html.dark .hljs-attr {
+  color: #d8a878;
+}
+html.dark .hljs-number,
+html.dark .hljs-literal {
+  color: #e2a87a;
+}
+html.dark .hljs-comment,
+html.dark .hljs-quote {
+  color: rgb(var(--ink-muted));
+  font-style: italic;
+}
+html.dark .hljs-title,
+html.dark .hljs-name,
+html.dark .hljs-section {
+  color: #e0c98a;
+}
+html.dark .hljs-variable,
+html.dark .hljs-template-variable {
+  color: rgb(var(--ink-strong));
+}
+html.dark .hljs-tag,
+html.dark .hljs-meta,
+html.dark .hljs-deletion,
+html.dark .hljs-addition,
+html.dark .hljs-emphasis {
+  color: rgb(var(--ink));
+}
+
+/* ───────────── focus + scrollbars ───────────── */
+*:focus-visible {
+  outline: 2px solid rgb(var(--brand) / 0.65);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+::selection {
+  background: rgb(var(--brand) / 0.28);
+  color: rgb(var(--ink-strong));
+}
+
+/* Hairline scrollbars (WebKit) */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: rgb(var(--border-strong) / 0.65);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgb(var(--ink-muted) / 0.55);
+  background-clip: content-box;
+  border: 2px solid transparent;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
 }

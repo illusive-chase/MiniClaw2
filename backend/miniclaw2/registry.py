@@ -123,6 +123,14 @@ class ProjectRegistry:
     def list_projects(self) -> list[Project]:
         return [rt.project for rt in self._runtimes.values()]
 
+    def rename_project(self, pid: str, name: str) -> Project | None:
+        rt = self._runtimes.get(pid)
+        if rt is None:
+            return None
+        rt.project.name = name
+        self.store.update_project(rt.project)
+        return rt.project
+
     def delete_project(self, pid: str) -> bool:
         rt = self._runtimes.pop(pid, None)
         if rt is None:

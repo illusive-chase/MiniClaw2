@@ -66,6 +66,9 @@ class Store:
         self._write_json(self._project_file(project.id), project.model_dump())
         return project
 
+    def update_project(self, project: Project) -> None:
+        self._write_json(self._project_file(project.id), project.model_dump())
+
     def load_project(self, pid: str) -> Project | None:
         path = self._project_file(pid)
         if not path.exists():

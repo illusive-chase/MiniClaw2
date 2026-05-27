@@ -40,10 +40,12 @@ export function TestsPanel({ onLaunched }: Props) {
   };
 
   return (
-    <div className="flex h-full flex-col overflow-y-auto bg-slate-950 px-6 py-6 text-slate-200">
-      <div className="mb-6">
-        <h1 className="text-base font-semibold text-slate-100">Tests</h1>
-        <p className="mt-1 max-w-2xl text-xs text-slate-500">
+    <div className="flex h-full flex-col overflow-y-auto bg-surface px-6 py-6 text-ink">
+      <div className="mb-6 max-w-2xl">
+        <h1 className="font-display text-lg font-semibold tracking-tight text-ink-strong">
+          Tests
+        </h1>
+        <p className="mt-1 text-xs leading-relaxed text-ink-muted">
           Each scenario runs in a fresh temporary git workspace. Click a
           provider button to launch; you'll supervise it in the normal
           project view. After every node reaches a terminal state, a
@@ -53,32 +55,39 @@ export function TestsPanel({ onLaunched }: Props) {
       </div>
 
       {error && (
-        <div className="mb-4 rounded border border-rose-700/60 bg-rose-950/40 px-3 py-2 text-xs text-rose-200">
+        <div className="mb-4 rounded-md border border-state-error/30 bg-state-error-soft px-3 py-2 text-xs text-state-error">
           {error}
         </div>
       )}
 
       {scenarios === null && !error && (
-        <div className="text-xs text-slate-500">Loading…</div>
+        <div className="text-xs text-ink-muted">Loading…</div>
       )}
 
       {scenarios && scenarios.length === 0 && (
-        <div className="text-xs text-slate-500">No scenarios are bundled.</div>
+        <div className="text-xs text-ink-muted">No scenarios are bundled.</div>
       )}
 
       <div className="grid max-w-3xl grid-cols-1 gap-3">
         {scenarios?.map((s) => (
           <div
             key={s.name}
-            className="rounded-lg border border-slate-800 bg-slate-900/40 px-4 py-3"
+            className="rounded-lg border border-line bg-surface-raised px-4 py-3 shadow-card transition hover:border-line-strong"
           >
             <div className="flex items-start justify-between gap-4">
               <div className="min-w-0">
-                <div className="font-mono text-sm text-slate-100">{s.name}</div>
-                <div className="mt-1 text-[11px] text-slate-400">{s.brief}</div>
-                <div className="mt-2 text-[10px] uppercase tracking-wide text-slate-600">
-                  {s.node_count} node{s.node_count === 1 ? "" : "s"}
-                  {s.auto_commit ? " · auto-commit" : ""}
+                <div className="font-mono text-sm text-ink-strong">{s.name}</div>
+                <div className="mt-1 text-[11px] text-ink-muted">{s.brief}</div>
+                <div className="mt-2 flex items-center gap-2 text-[10px] uppercase tracking-[0.14em] text-ink-subtle">
+                  <span>
+                    {s.node_count} node{s.node_count === 1 ? "" : "s"}
+                  </span>
+                  {s.auto_commit && (
+                    <>
+                      <span className="text-line-strong">·</span>
+                      <span>auto-commit</span>
+                    </>
+                  )}
                 </div>
               </div>
               <div className="flex shrink-0 gap-2">
@@ -90,7 +99,7 @@ export function TestsPanel({ onLaunched }: Props) {
                       void onRun(s.name, provider as "claude" | "codex")
                     }
                     disabled={launching !== null}
-                    className="rounded border border-slate-700 px-3 py-1 text-xs text-slate-200 hover:bg-slate-800 disabled:opacity-40"
+                    className="inline-flex h-8 items-center rounded-md border border-line bg-surface px-3 text-xs text-ink transition hover:border-brand/40 hover:bg-brand-soft hover:text-brand-ink disabled:opacity-40"
                   >
                     {launching === `${s.name}:${provider}`
                       ? "Launching…"

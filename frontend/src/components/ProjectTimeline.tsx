@@ -1,7 +1,14 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { NodeInfo, NodeState } from "../types";
 
-type EdgePath = { d: string; key: string; selected: boolean };
+type EdgePath = {
+  d: string;
+  key: string;
+  selected: boolean;
+  childState: NodeState;
+};
+
+const ACTIVE_STATES = new Set<NodeState>(["running", "waiting", "awaiting_review"]);
 
 export function ProjectTimeline({
   nodes,
@@ -53,6 +60,7 @@ export function ProjectTimeline({
         key: `${node.parent_node_id}->${node.id}`,
         selected:
           node.id === selectedNodeId || node.parent_node_id === selectedNodeId,
+        childState: node.state,
       });
     }
     setPaths((prev) => (samePaths(prev, next) ? prev : next));
@@ -85,21 +93,26 @@ export function ProjectTimeline({
   }, [recompute]);
 
   return (
-    <section className="border-b border-slate-800 bg-slate-950/40 px-6 py-3">
+    <section className="border-b border-line bg-surface-sunken px-6 py-3">
       <div className="mb-2 flex items-center justify-between">
-        <div className="text-[11px] font-medium uppercase tracking-wider text-slate-500">
+        <div className="flex items-center gap-2 text-[10px] font-medium uppercase tracking-[0.14em] text-ink-muted">
+          <span className="inline-block h-1 w-1 rounded-full bg-brand" />
           Project timeline
         </div>
-        <div className="text-[11px] text-slate-600">{nodes.length} nodes</div>
+        <div className="font-mono text-[10px] text-ink-subtle">
+          {nodes.length} node{nodes.length === 1 ? "" : "s"}
+        </div>
       </div>
+
       {nodes.length === 0 ? (
-        <div className="rounded-md border border-dashed border-slate-800 px-3 py-3 text-xs text-slate-600">
-          No nodes yet.
+        <div className="rounded-md border border-dashed border-line bg-surface-raised/40 px-3 py-3 text-xs text-ink-muted">
+          No nodes yet — launch one with{" "}
+          <span className="font-mono text-ink">+ Node</span>.
         </div>
       ) : (
         <div
           ref={scrollRef}
-          className="relative flex gap-2 overflow-x-auto pb-1"
+          className="relative flex gap-3 overflow-x-auto bg-grid rounded-md border border-line p-3"
         >
           {paths.length > 0 && (
             <svg
@@ -108,76 +121,342 @@ export function ProjectTimeline({
               height={overlay.height}
               aria-hidden="true"
             >
-              {paths.map((path) => (
-                <path
-                  key={path.key}
-                  d={path.d}
-                  fill="none"
-                  stroke={path.selected ? "rgb(125 211 252)" : "rgb(71 85 105)"}
-                  strokeWidth={path.selected ? 2 : 1.5}
-                  strokeDasharray="4 3"
-                />
-              ))}
+              {paths.map((path) => {
+                const active = ACTIVE_STATES.has(path.childState);
+                const stroke = path.selected
+                  ? "rgb(var(--brand))"
+                  : edgeStroke(path.childState);
+                const width = path.selected ? 2 : active ? 1.5 : 1;
+                return (
+                  <path
+                    key={path.key}
+                    d={path.d}
+                    fill="none"
+                    stroke={stroke}
+                    strokeWidth={width}
+                    strokeDasharray={active ? "3 4" : undefined}
+                    className={active ? "edge-marching" : undefined}
+                    opacity={path.selected ? 1 : active ? 0.85 : 0.55}
+                  />
+                );
+              })}
             </svg>
           )}
-          {nodes.map((node, index) => {
-            const isOp = node.kind === "op";
-            const kindLabel = isOp && node.op_kind ? `op · ${node.op_kind}` : node.kind;
-            const body =
-              isOp
-                ? node.summary || "(running)"
-                : node.summary || node.prompt || "(empty prompt)";
-            const resumeParent = !isOp
-              ? findResumeParent(node, nodeById)
-              : null;
-            return (
-              <button
-                key={node.id}
-                type="button"
-                ref={(el) => {
-                  if (el) tileRefs.current.set(node.id, el);
-                  else tileRefs.current.delete(node.id);
-                }}
-                onClick={() => onSelect(node.id)}
-                className={
-                  "group relative z-10 grid h-24 flex-none grid-rows-[auto_1fr_auto] rounded-md border px-3 py-2 text-left transition " +
-                  (isOp ? "w-32 " : "w-48 ") +
-                  (selectedNodeId === node.id
-                    ? "border-sky-500/80 bg-sky-950/30"
-                    : isOp
-                      ? "border-slate-800/60 bg-slate-900/30 hover:border-slate-700"
-                      : "border-slate-800 bg-slate-900/50 hover:border-slate-700")
-                }
-              >
-                <div className="flex items-center justify-between gap-2">
-                  <span className="font-mono text-[11px] text-slate-400">
-                    {index + 1}. {kindLabel}
-                  </span>
-                  <span className={"h-2 w-2 rounded-full " + stateDot(node.state)} />
-                </div>
-                <div className="mt-1 line-clamp-2 text-xs leading-5 text-slate-200">
-                  {body}
-                </div>
-                <div className="mt-2 flex items-center justify-between gap-2 text-[10px] text-slate-500">
-                  <span className="font-mono">{node.id.slice(0, 8)}</span>
-                  <span>{formatNodeTime(node.started_at ?? node.created_at)}</span>
-                </div>
-                {resumeParent && (
-                  <span
-                    className="absolute -top-2 left-2 rounded-full border border-sky-700 bg-slate-950 px-1.5 py-0.5 font-mono text-[9px] text-sky-300"
-                    title={`Resumed from ${resumeParent.id}`}
-                  >
-                    ↻ {resumeParent.id.slice(0, 6)}
-                  </span>
-                )}
-              </button>
-            );
-          })}
+
+          {nodes.map((node, index) => (
+            <NodeTile
+              key={node.id}
+              node={node}
+              index={index}
+              selected={selectedNodeId === node.id}
+              resumeParent={node.kind === "op" ? null : findResumeParent(node, nodeById)}
+              onSelect={onSelect}
+              tileRef={(el) => {
+                if (el) tileRefs.current.set(node.id, el);
+                else tileRefs.current.delete(node.id);
+              }}
+            />
+          ))}
         </div>
       )}
     </section>
   );
 }
+
+function NodeTile({
+  node,
+  index,
+  selected,
+  resumeParent,
+  onSelect,
+  tileRef,
+}: {
+  node: NodeInfo;
+  index: number;
+  selected: boolean;
+  resumeParent: NodeInfo | null;
+  onSelect: (id: string) => void;
+  tileRef: (el: HTMLButtonElement | null) => void;
+}) {
+  const isOp = node.kind === "op";
+  const meta = stateMeta(node.state);
+  const kindLabel = isOp && node.op_kind ? `op · ${node.op_kind}` : node.kind;
+  const body = isOp
+    ? node.summary || "(running)"
+    : node.summary || node.prompt || "(empty prompt)";
+
+  return (
+    <div
+      className={
+        "relative flex-none rounded-md transition " +
+        (selected ? "ring-2 ring-brand ring-offset-2 ring-offset-surface-sunken" : "")
+      }
+    >
+      <button
+        type="button"
+        ref={tileRef}
+        onClick={() => onSelect(node.id)}
+        className={
+          "group relative z-10 grid h-[104px] grid-rows-[auto_1fr_auto] overflow-hidden rounded-md border border-line text-left transition hover:border-line-strong hover:shadow-card " +
+          (isOp ? "w-32" : "w-52") + " " +
+          meta.tileBg
+        }
+      >
+        {/* state rail */}
+        <span
+          className={"pointer-events-none absolute inset-y-0 left-0 w-[3px] " + meta.railBg}
+          aria-hidden="true"
+        />
+
+        {/* tile body */}
+        <div className="flex items-center justify-between gap-2 pl-3.5 pr-2.5 pt-2">
+          <StateChip meta={meta} />
+          <span className="font-mono text-[10px] text-ink-subtle">
+            {index + 1}
+            <span className="text-ink-subtle/70"> · {kindLabel}</span>
+          </span>
+        </div>
+
+        <div className="line-clamp-2 pl-3.5 pr-2.5 pt-1 text-[12.5px] leading-[1.35] text-ink-strong">
+          {body}
+        </div>
+
+        <div className="flex items-center justify-between gap-2 pb-1.5 pl-3.5 pr-2.5 pt-1.5 text-[10px] text-ink-subtle">
+          <span className="font-mono">{node.id.slice(0, 8)}</span>
+          <span className="font-mono">{formatNodeTime(node.started_at ?? node.created_at)}</span>
+        </div>
+
+        {/* bottom progress / state bar */}
+        <span
+          className={"pointer-events-none absolute bottom-0 left-0 h-[2px] w-full " + meta.barTrack}
+          aria-hidden="true"
+        >
+          <span
+            className={"absolute inset-y-0 " + meta.barFill}
+            style={meta.barStyle}
+          />
+        </span>
+
+        {/* awaiting_review: pulsing ring */}
+        {meta.ring && (
+          <span
+            className="pointer-events-none absolute inset-0 rounded-md review-ring"
+            aria-hidden="true"
+          />
+        )}
+      </button>
+
+      {/* resume-parent badge */}
+      {resumeParent && (
+        <span
+          className="pointer-events-none absolute -top-2 left-3 z-20 rounded-full border border-brand/40 bg-surface-raised px-1.5 py-0.5 font-mono text-[9px] text-brand-ink shadow-card"
+          title={`Resumed from ${resumeParent.id}`}
+        >
+          ↻ {resumeParent.id.slice(0, 6)}
+        </span>
+      )}
+    </div>
+  );
+}
+
+type StateMeta = {
+  label: string;
+  icon: JSX.Element;
+  chipBg: string;
+  chipText: string;
+  railBg: string;
+  tileBg: string;
+  barTrack: string;
+  barFill: string;
+  barStyle: React.CSSProperties;
+  ring: boolean;
+};
+
+function stateMeta(state: NodeState): StateMeta {
+  switch (state) {
+    case "queued":
+      return {
+        label: "queued",
+        icon: <DotIcon />,
+        chipBg: "bg-state-queued-soft",
+        chipText: "text-ink-muted",
+        railBg: "bg-state-queued",
+        tileBg: "bg-surface-raised",
+        barTrack: "bg-transparent",
+        barFill: "w-0 bg-state-queued",
+        barStyle: {},
+        ring: false,
+      };
+    case "running":
+      return {
+        label: "running",
+        icon: <DotPulseIcon />,
+        chipBg: "bg-state-running-soft",
+        chipText: "text-brand-ink dark:text-brand",
+        railBg: "bg-state-running",
+        tileBg: "bg-state-running-soft/40",
+        barTrack: "bg-state-running-soft",
+        barFill: "node-sweep w-1/3 bg-gradient-to-r from-transparent via-state-running to-transparent",
+        barStyle: {},
+        ring: false,
+      };
+    case "waiting":
+      return {
+        label: "waiting",
+        icon: <HourglassIcon />,
+        chipBg: "bg-state-waiting-soft",
+        chipText: "text-state-waiting dark:text-state-waiting",
+        railBg: "bg-state-waiting pulse-slow",
+        tileBg: "bg-state-waiting-soft/35",
+        barTrack: "bg-state-waiting-soft",
+        barFill: "w-1/2 bg-state-waiting/70 pulse-slow",
+        barStyle: {},
+        ring: false,
+      };
+    case "awaiting_review":
+      return {
+        label: "review",
+        icon: <RingIcon />,
+        chipBg: "bg-state-review-soft",
+        chipText: "text-state-review dark:text-state-review",
+        railBg: "bg-state-review",
+        tileBg: "bg-state-review-soft/35",
+        barTrack: "bg-state-review-soft",
+        barFill: "w-full bg-state-review/55 pulse-slow",
+        barStyle: {},
+        ring: true,
+      };
+    case "done":
+      return {
+        label: "done",
+        icon: <CheckIcon />,
+        chipBg: "bg-state-done-soft",
+        chipText: "text-ink-muted",
+        railBg: "bg-state-done",
+        tileBg: "bg-surface-raised",
+        barTrack: "bg-transparent",
+        barFill: "w-full bg-state-done/40",
+        barStyle: {},
+        ring: false,
+      };
+    case "error":
+      return {
+        label: "error",
+        icon: <CrossIcon />,
+        chipBg: "bg-state-error-soft",
+        chipText: "text-state-error",
+        railBg: "bg-state-error",
+        tileBg: "bg-state-error-soft/35",
+        barTrack: "bg-transparent",
+        barFill: "w-full bg-state-error/55",
+        barStyle: {},
+        ring: false,
+      };
+    case "cancelled":
+      return {
+        label: "cancelled",
+        icon: <SlashIcon />,
+        chipBg: "bg-state-cancelled-soft",
+        chipText: "text-ink-subtle",
+        railBg: "bg-state-cancelled",
+        tileBg: "bg-surface-raised",
+        barTrack: "bg-transparent",
+        barFill: "w-full bg-state-cancelled/40",
+        barStyle: {},
+        ring: false,
+      };
+    default:
+      return stateMeta("queued");
+  }
+}
+
+function StateChip({ meta }: { meta: StateMeta }) {
+  return (
+    <span
+      className={
+        "inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-[0.12em] " +
+        meta.chipBg + " " + meta.chipText
+      }
+    >
+      <span className="inline-flex h-2 w-2 items-center justify-center">
+        {meta.icon}
+      </span>
+      {meta.label}
+    </span>
+  );
+}
+
+function edgeStroke(state: NodeState): string {
+  switch (state) {
+    case "running":
+      return "rgb(var(--state-running))";
+    case "waiting":
+      return "rgb(var(--state-waiting))";
+    case "awaiting_review":
+      return "rgb(var(--state-review))";
+    case "error":
+      return "rgb(var(--state-error))";
+    default:
+      return "rgb(var(--border-strong))";
+  }
+}
+
+/* ───────── icons ───────── */
+
+function DotIcon() {
+  return <span className="block h-1.5 w-1.5 rounded-full bg-current" />;
+}
+
+function DotPulseIcon() {
+  return (
+    <span className="relative block h-1.5 w-1.5">
+      <span className="absolute inset-0 rounded-full bg-current opacity-40 pulse-slow" />
+      <span className="absolute inset-[1px] rounded-full bg-current" />
+    </span>
+  );
+}
+
+function HourglassIcon() {
+  return (
+    <svg viewBox="0 0 8 8" width="8" height="8" fill="currentColor" aria-hidden="true">
+      <path d="M1.5 1h5v.6L4.6 4l1.9 2.4V7h-5v-.6L3.4 4 1.5 1.6V1Z" />
+    </svg>
+  );
+}
+
+function RingIcon() {
+  return (
+    <svg viewBox="0 0 8 8" width="8" height="8" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true">
+      <circle cx="4" cy="4" r="2.4" />
+    </svg>
+  );
+}
+
+function CheckIcon() {
+  return (
+    <svg viewBox="0 0 8 8" width="8" height="8" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M1.4 4.4 3 6l3.6-4" />
+    </svg>
+  );
+}
+
+function CrossIcon() {
+  return (
+    <svg viewBox="0 0 8 8" width="8" height="8" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" aria-hidden="true">
+      <path d="M2 2 6 6M6 2 2 6" />
+    </svg>
+  );
+}
+
+function SlashIcon() {
+  return (
+    <svg viewBox="0 0 8 8" width="8" height="8" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" aria-hidden="true">
+      <path d="M1.5 6.5 6.5 1.5" />
+    </svg>
+  );
+}
+
+/* ───────── helpers ───────── */
 
 function samePaths(a: EdgePath[], b: EdgePath[]): boolean {
   if (a.length !== b.length) return false;
@@ -185,7 +464,8 @@ function samePaths(a: EdgePath[], b: EdgePath[]): boolean {
     if (
       a[i].key !== b[i].key ||
       a[i].d !== b[i].d ||
-      a[i].selected !== b[i].selected
+      a[i].selected !== b[i].selected ||
+      a[i].childState !== b[i].childState
     ) {
       return false;
     }
@@ -201,26 +481,6 @@ function findResumeParent(
   const parent = byId.get(node.parent_node_id);
   if (!parent || parent.kind === "op") return null;
   return parent;
-}
-
-function stateDot(state: NodeState): string {
-  switch (state) {
-    case "queued":
-      return "bg-slate-500";
-    case "running":
-      return "bg-sky-400 animate-pulse";
-    case "waiting":
-    case "awaiting_review":
-      return "bg-emerald-400 animate-pulse";
-    case "done":
-      return "bg-slate-400";
-    case "error":
-      return "bg-rose-500";
-    case "cancelled":
-      return "bg-zinc-600";
-    default:
-      return "bg-slate-500";
-  }
 }
 
 function formatNodeTime(value: number): string {

@@ -13,9 +13,9 @@ type Props = {
 export function PlanDialog({ request, onRespond }: Props) {
   const plan = (request.tool_input.plan as string) || "(no plan provided)";
   return (
-    <div className="rounded-lg border border-violet-500/40 bg-violet-500/5 p-4 space-y-3">
-      <div className="text-sm font-medium text-violet-300">Plan approval</div>
-      <pre className="max-h-64 overflow-auto whitespace-pre-wrap rounded bg-slate-950/60 p-3 text-xs text-slate-200">
+    <div className="space-y-3 rounded-lg border border-state-review/30 bg-state-review-soft p-4">
+      <div className="text-sm font-medium text-state-review">Plan approval</div>
+      <pre className="max-h-64 overflow-auto whitespace-pre-wrap rounded border border-line bg-surface-raised p-3 text-xs text-ink-strong">
         {plan}
       </pre>
       <div className="flex flex-wrap gap-2">
@@ -23,13 +23,13 @@ export function PlanDialog({ request, onRespond }: Props) {
           onClick={() =>
             onRespond({ allow: true, permissionMode: "acceptEdits" })
           }
-          className="rounded bg-emerald-600 px-3 py-1 text-xs font-medium hover:bg-emerald-500"
+          className="rounded-md bg-state-review px-3 py-1 text-xs font-medium text-white transition hover:brightness-[0.92]"
         >
           Approve &amp; execute
         </button>
         <button
           onClick={() => onRespond({ allow: false, message: "Plan rejected" })}
-          className="rounded bg-rose-600 px-3 py-1 text-xs font-medium hover:bg-rose-500"
+          className="rounded-md bg-state-error px-3 py-1 text-xs font-medium text-white transition hover:brightness-[0.92]"
         >
           Reject
         </button>

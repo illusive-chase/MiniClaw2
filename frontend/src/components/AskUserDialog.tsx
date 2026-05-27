@@ -33,60 +33,63 @@ export function AskUserDialog({ request, onRespond }: Props) {
   };
 
   return (
-    <div className="rounded-lg border border-sky-500/40 bg-sky-500/5 p-4 space-y-3">
-      <div className="text-sm font-medium text-sky-300">Agent is asking:</div>
+    <div className="space-y-3 rounded-lg border border-brand/30 bg-brand-soft p-4">
+      <div className="text-sm font-medium text-brand-ink dark:text-brand">
+        Agent is asking:
+      </div>
       {questions.map((q, i) => {
         const key = questionKey(q, i);
         const selected = answers[key] ?? [];
         const options = q.options ?? [];
         return (
-        <div key={key} className="space-y-1">
-          <div className="text-xs uppercase tracking-wide text-slate-500">
-            {q.header || `Question ${i + 1}`}
+          <div key={key} className="space-y-1">
+            <div className="text-[10px] uppercase tracking-[0.14em] text-ink-subtle">
+              {q.header || `Question ${i + 1}`}
+            </div>
+            <div className="text-sm text-ink-strong">{q.question}</div>
+            <div className="flex flex-wrap gap-1">
+              {options.map((opt) => {
+                const isSelected = selected.includes(opt.label);
+                return (
+                  <button
+                    key={opt.label}
+                    onClick={() =>
+                      setAnswers({
+                        ...answers,
+                        [key]: q.multiSelect
+                          ? toggle(selected, opt.label)
+                          : [opt.label],
+                      })
+                    }
+                    className={
+                      "rounded-md border px-2 py-1 text-xs transition " +
+                      (isSelected
+                        ? "border-brand bg-brand/15 text-brand-ink dark:text-brand"
+                        : "border-line bg-surface-raised text-ink hover:border-brand/40")
+                    }
+                    title={opt.description}
+                  >
+                    {opt.label}
+                  </button>
+                );
+              })}
+            </div>
+            {q.isOther && (
+              <input
+                value={other[key] ?? ""}
+                type={q.isSecret ? "password" : "text"}
+                onChange={(e) => setOther({ ...other, [key]: e.target.value })}
+                placeholder="Other"
+                className="mt-1 w-full rounded-md border border-line bg-surface-raised px-2 py-1 text-xs text-ink-strong placeholder:text-ink-subtle focus:border-brand focus:outline-none"
+              />
+            )}
           </div>
-          <div className="text-sm">{q.question}</div>
-          <div className="flex flex-wrap gap-1">
-            {options.map((opt) => {
-              const isSelected = selected.includes(opt.label);
-              return (
-                <button
-                  key={opt.label}
-                  onClick={() =>
-                    setAnswers({
-                      ...answers,
-                      [key]: q.multiSelect
-                        ? toggle(selected, opt.label)
-                        : [opt.label],
-                    })
-                  }
-                  className={
-                    "rounded border px-2 py-1 text-xs " +
-                    (isSelected
-                      ? "border-sky-400 bg-sky-500/20"
-                      : "border-slate-700 bg-slate-900 hover:border-slate-500")
-                  }
-                  title={opt.description}
-                >
-                  {opt.label}
-                </button>
-              );
-            })}
-          </div>
-          {q.isOther && (
-            <input
-              value={other[key] ?? ""}
-              type={q.isSecret ? "password" : "text"}
-              onChange={(e) => setOther({ ...other, [key]: e.target.value })}
-              placeholder="Other"
-              className="mt-1 w-full rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs"
-            />
-          )}
-        </div>
-      )})}
+        );
+      })}
       <button
         onClick={submit}
         disabled={!allAnswered(questions, answers, other)}
-        className="rounded bg-sky-600 px-3 py-1 text-xs font-medium hover:bg-sky-500 disabled:opacity-40"
+        className="rounded-md bg-brand px-3 py-1 text-xs font-medium text-white shadow-card transition hover:brightness-[0.95] disabled:opacity-40"
       >
         Send
       </button>

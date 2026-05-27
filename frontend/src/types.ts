@@ -95,6 +95,7 @@ export type SessionInfo = {
   provider?: string;
   temporary?: boolean;
   scenario_name?: string | null;
+  name?: string;
 };
 
 export type ScenarioSummary = {

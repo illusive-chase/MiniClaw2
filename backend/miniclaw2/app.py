@@ -48,6 +48,11 @@ class CreateSessionRequest(BaseModel):
     auto_commit: bool | None = None
     temporary: bool = False
     scenario_name: str | None = None
+    name: str | None = None
+
+
+class RenameSessionRequest(BaseModel):
+    name: str
 
 
 class SessionInfo(BaseModel):
@@ -57,6 +62,7 @@ class SessionInfo(BaseModel):
     provider: str = "claude"
     temporary: bool = False
     scenario_name: str | None = None
+    name: str = ""
 
 
 class EventRecord(BaseModel):
@@ -119,6 +125,7 @@ def create_app() -> FastAPI:
                 auto_commit=req.auto_commit,
                 temporary=req.temporary,
                 scenario_name=req.scenario_name,
+                name=req.name or "",
             )
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
@@ -131,6 +138,7 @@ def create_app() -> FastAPI:
             provider=project.provider,
             temporary=project.temporary,
             scenario_name=project.scenario_name,
+            name=project.name,
         )
 
     @app.get("/sessions", response_model=list[SessionInfo])
@@ -143,9 +151,25 @@ def create_app() -> FastAPI:
                 provider=p.provider,
                 temporary=p.temporary,
                 scenario_name=p.scenario_name,
+                name=p.name,
             )
             for p in registry.list_projects()
         ]
+
+    @app.patch("/sessions/{sid}", response_model=SessionInfo)
+    def rename_session(sid: str, req: RenameSessionRequest) -> SessionInfo:
+        project = registry.rename_project(sid, req.name)
+        if project is None:
+            raise HTTPException(404, "session not found")
+        return SessionInfo(
+            id=project.id,
+            created_at=project.created_at,
+            turns=registry.turn_count(project.id),
+            provider=project.provider,
+            temporary=project.temporary,
+            scenario_name=project.scenario_name,
+            name=project.name,
+        )
 
     @app.delete("/sessions/{sid}")
     def delete_session(sid: str) -> dict[str, bool]:
@@ -221,6 +245,7 @@ def create_app() -> FastAPI:
             provider=project.provider,
             temporary=project.temporary,
             scenario_name=project.scenario_name,
+            name=project.name,
         )
 
     @app.post("/sessions/{sid}/verify", response_model=VerifyResponse)

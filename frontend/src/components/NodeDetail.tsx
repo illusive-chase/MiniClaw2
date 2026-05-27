@@ -8,6 +8,7 @@ import type {
   NodeInfo,
   ServerEvent,
 } from "../types";
+import { canResumeNode } from "../nodeUtil";
 import { Chat, type ChatTurn } from "./Chat";
 import { GateReviewPanel } from "./GateReviewPanel";
 import { PermissionDialog } from "./PermissionDialog";
@@ -87,14 +88,14 @@ export function NodeDetail({
   }, [showGate, tab]);
 
   return (
-    <aside className="flex w-[520px] flex-none flex-col border-l border-slate-800 bg-slate-950/70">
-      <div className="border-b border-slate-800 px-4 py-3">
+    <aside className="flex w-[520px] flex-none flex-col border-l border-line bg-surface-sunken">
+      <div className="border-b border-line bg-surface px-4 py-3">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
-            <div className="text-[11px] font-medium uppercase tracking-wider text-slate-500">
+            <div className="text-[10px] font-medium uppercase tracking-[0.14em] text-ink-subtle">
               Node detail
             </div>
-            <div className="mt-1 truncate font-mono text-xs text-slate-300">
+            <div className="mt-1 truncate font-mono text-xs text-ink">
               {node?.id ?? "No node selected"}
             </div>
           </div>
@@ -104,18 +105,16 @@ export function NodeDetail({
                 type="button"
                 onClick={() => onResumeFromNode?.(node)}
                 disabled={!canResumeNode(node)}
-                className="rounded border border-slate-700 px-2 py-1 text-[11px] text-slate-300 hover:bg-slate-900 disabled:cursor-not-allowed disabled:opacity-40"
+                className="rounded border border-line bg-surface px-2 py-1 text-[11px] text-ink-muted transition hover:border-line-strong hover:text-ink disabled:cursor-not-allowed disabled:opacity-40"
                 title={
                   canResumeNode(node)
                     ? "Use this node's provider conversation as the next launch source"
                     : "Only terminal nodes with provider sessions can be resumed"
                 }
               >
-                Resume
+                ↻ Resume
               </button>
-              <span className="rounded border border-slate-800 px-2 py-1 text-[11px] text-slate-400">
-                {node.state}
-              </span>
+              <StatePill state={node.state} />
             </div>
           )}
         </div>
@@ -135,12 +134,12 @@ export function NodeDetail({
               type="button"
               onClick={() => setTab(name)}
               className={
-                "rounded px-2 py-1 text-[11px] capitalize " +
+                "rounded px-2 py-1 text-[11px] capitalize transition " +
                 (tab === name
-                  ? "bg-slate-800 text-slate-100"
+                  ? "bg-ink-strong text-surface"
                   : name === "gate"
                     ? gateTabAccentClass(reviewRequest, gateRequest)
-                    : "text-slate-500 hover:bg-slate-900 hover:text-slate-300")
+                    : "text-ink-muted hover:bg-surface-sunken hover:text-ink")
               }
             >
               {name === "gate" ? gateTabLabel(reviewRequest, gateRequest) : name}
@@ -150,7 +149,7 @@ export function NodeDetail({
       </div>
 
       {!node ? (
-        <div className="px-4 py-6 text-sm text-slate-600">
+        <div className="px-4 py-6 text-sm text-ink-muted">
           Select a timeline node to inspect its prompt, transcript, tools, and raw events.
         </div>
       ) : tab === "summary" ? (
@@ -181,10 +180,33 @@ export function NodeDetail({
   );
 }
 
-function canResumeNode(node: NodeInfo): boolean {
+function StatePill({ state }: { state: NodeInfo["state"] }) {
+  const map: Record<
+    NodeInfo["state"],
+    { bg: string; text: string; label: string }
+  > = {
+    queued: { bg: "bg-state-queued-soft", text: "text-ink-muted", label: "queued" },
+    running: { bg: "bg-state-running-soft", text: "text-brand-ink dark:text-brand", label: "running" },
+    waiting: { bg: "bg-state-waiting-soft", text: "text-state-waiting", label: "waiting" },
+    awaiting_review: { bg: "bg-state-review-soft", text: "text-state-review", label: "review" },
+    done: { bg: "bg-state-done-soft", text: "text-ink-muted", label: "done" },
+    error: { bg: "bg-state-error-soft", text: "text-state-error", label: "error" },
+    cancelled: {
+      bg: "bg-state-cancelled-soft",
+      text: "text-ink-subtle",
+      label: "cancelled",
+    },
+  };
+  const m = map[state];
   return (
-    Boolean(node.provider_session_id || node.sdk_session_id) &&
-    (node.state === "done" || node.state === "error" || node.state === "cancelled")
+    <span
+      className={
+        "rounded px-2 py-1 text-[10px] font-medium uppercase tracking-[0.12em] " +
+        m.bg + " " + m.text
+      }
+    >
+      {m.label}
+    </span>
   );
 }
 
@@ -201,31 +223,31 @@ function Summary({
 }) {
   const isOp = node.kind === "op";
   return (
-    <div className="flex-1 overflow-y-auto px-4 py-4 text-sm">
+    <div className="flex-1 overflow-y-auto bg-surface px-4 py-4 text-sm">
       <div className="space-y-4">
         {showReviewBanner && (
-          <div className="rounded-md border border-emerald-900 bg-emerald-950/30 px-3 py-2 text-xs text-emerald-200">
+          <div className="rounded-md border border-state-review/30 bg-state-review-soft px-3 py-2 text-xs text-state-review">
             Awaiting reviewer response — open the Review tab.
           </div>
         )}
         {isOp ? (
           <section>
-            <h3 className="mb-2 text-[11px] font-medium uppercase tracking-wider text-slate-500">
+            <h3 className="mb-2 text-[10px] font-medium uppercase tracking-[0.14em] text-ink-subtle">
               Op
             </h3>
-            <div className="rounded-md border border-slate-800 bg-slate-900/50 p-3 text-slate-200">
-              <div className="text-xs uppercase tracking-wider text-slate-500">
+            <div className="rounded-md border border-line bg-surface-sunken p-3 text-ink-strong">
+              <div className="text-[10px] uppercase tracking-[0.14em] text-ink-subtle">
                 kind
               </div>
               <div className="font-mono text-sm">{node.op_kind ?? "-"}</div>
-              <div className="mt-3 text-xs uppercase tracking-wider text-slate-500">
+              <div className="mt-3 text-[10px] uppercase tracking-[0.14em] text-ink-subtle">
                 result
               </div>
               <div className="text-sm">{node.summary ?? "-"}</div>
-              <div className="mt-3 text-xs uppercase tracking-wider text-slate-500">
+              <div className="mt-3 text-[10px] uppercase tracking-[0.14em] text-ink-subtle">
                 commit
               </div>
-              <div className="font-mono text-xs text-slate-300">
+              <div className="font-mono text-xs text-ink">
                 {(node.commit_before ?? "-").slice(0, 12)} →{" "}
                 {(node.commit_after ?? "-").slice(0, 12)}
               </div>
@@ -233,10 +255,10 @@ function Summary({
           </section>
         ) : (
           <section>
-            <h3 className="mb-2 text-[11px] font-medium uppercase tracking-wider text-slate-500">
+            <h3 className="mb-2 text-[10px] font-medium uppercase tracking-[0.14em] text-ink-subtle">
               Prompt
             </h3>
-            <div className="whitespace-pre-wrap rounded-md border border-slate-800 bg-slate-900/50 p-3 text-slate-200">
+            <div className="whitespace-pre-wrap rounded-md border border-line bg-surface-sunken p-3 text-ink-strong">
               {node.prompt || "(empty prompt)"}
             </div>
           </section>
@@ -244,10 +266,10 @@ function Summary({
 
         {node.error && (
           <section>
-            <h3 className="mb-2 text-[11px] font-medium uppercase tracking-wider text-rose-400">
+            <h3 className="mb-2 text-[10px] font-medium uppercase tracking-[0.14em] text-state-error">
               Error
             </h3>
-            <pre className="whitespace-pre-wrap rounded-md border border-rose-950 bg-rose-950/30 p-3 text-xs text-rose-200">
+            <pre className="whitespace-pre-wrap rounded-md border border-state-error/30 bg-state-error-soft p-3 text-xs text-state-error">
               {node.error}
             </pre>
           </section>
@@ -255,11 +277,11 @@ function Summary({
 
         {!isOp && node.system_context_snapshot && (
           <section>
-            <details className="rounded-md border border-slate-800 bg-slate-900/50">
-              <summary className="cursor-pointer px-3 py-2 text-[11px] font-medium uppercase tracking-wider text-slate-500 hover:text-slate-300">
+            <details className="rounded-md border border-line bg-surface-sunken">
+              <summary className="cursor-pointer px-3 py-2 text-[10px] font-medium uppercase tracking-[0.14em] text-ink-muted hover:text-ink">
                 System context ({node.system_context_snapshot.length} chars)
               </summary>
-              <pre className="whitespace-pre-wrap border-t border-slate-800 px-3 py-2 text-xs text-slate-300">
+              <pre className="whitespace-pre-wrap border-t border-line px-3 py-2 text-xs text-ink">
                 {node.system_context_snapshot}
               </pre>
             </details>
@@ -267,32 +289,32 @@ function Summary({
         )}
 
         <section>
-          <h3 className="mb-2 text-[11px] font-medium uppercase tracking-wider text-slate-500">
+          <h3 className="mb-2 text-[10px] font-medium uppercase tracking-[0.14em] text-ink-subtle">
             Metadata
           </h3>
           <dl className="grid grid-cols-[120px_1fr] gap-x-3 gap-y-2 text-xs">
-            <dt className="text-slate-600">Kind</dt>
-            <dd className="text-slate-300">{node.kind}</dd>
-            <dt className="text-slate-600">Provider</dt>
-            <dd className="text-slate-300">{node.provider}</dd>
-            <dt className="text-slate-600">Parent</dt>
-            <dd className="truncate font-mono text-slate-300">{node.parent_node_id ?? "-"}</dd>
+            <dt className="text-ink-subtle">Kind</dt>
+            <dd className="text-ink">{node.kind}</dd>
+            <dt className="text-ink-subtle">Provider</dt>
+            <dd className="text-ink">{node.provider}</dd>
+            <dt className="text-ink-subtle">Parent</dt>
+            <dd className="truncate font-mono text-ink">{node.parent_node_id ?? "-"}</dd>
             {!isOp && (
               <>
-                <dt className="text-slate-600">Provider session</dt>
-                <dd className="truncate font-mono text-slate-300">
+                <dt className="text-ink-subtle">Provider session</dt>
+                <dd className="truncate font-mono text-ink">
                   {node.provider_session_id ?? node.sdk_session_id ?? "-"}
                 </dd>
-                <dt className="text-slate-600">Provider turn</dt>
-                <dd className="truncate font-mono text-slate-300">{node.provider_turn_id ?? "-"}</dd>
+                <dt className="text-ink-subtle">Provider turn</dt>
+                <dd className="truncate font-mono text-ink">{node.provider_turn_id ?? "-"}</dd>
               </>
             )}
-            <dt className="text-slate-600">Events</dt>
-            <dd className="text-slate-300">{loading ? "loading" : eventCount}</dd>
-            <dt className="text-slate-600">Started</dt>
-            <dd className="text-slate-300">{formatTime(node.started_at)}</dd>
-            <dt className="text-slate-600">Finished</dt>
-            <dd className="text-slate-300">{formatTime(node.finished_at)}</dd>
+            <dt className="text-ink-subtle">Events</dt>
+            <dd className="text-ink">{loading ? "loading" : eventCount}</dd>
+            <dt className="text-ink-subtle">Started</dt>
+            <dd className="text-ink">{formatTime(node.started_at)}</dd>
+            <dt className="text-ink-subtle">Finished</dt>
+            <dd className="text-ink">{formatTime(node.finished_at)}</dd>
           </dl>
         </section>
       </div>
@@ -308,27 +330,27 @@ function DiffView({
   loading: boolean;
 }) {
   if (loading) {
-    return <div className="px-4 py-6 text-sm text-slate-600">Loading diff...</div>;
+    return <div className="bg-surface px-4 py-6 text-sm text-ink-muted">Loading diff...</div>;
   }
   if (!diff) {
-    return <div className="px-4 py-6 text-sm text-slate-600">No diff available.</div>;
+    return <div className="bg-surface px-4 py-6 text-sm text-ink-muted">No diff available.</div>;
   }
   if (diff.error) {
     return (
-      <pre className="m-4 whitespace-pre-wrap rounded-md border border-rose-950 bg-rose-950/30 p-3 text-xs text-rose-200">
+      <pre className="m-4 whitespace-pre-wrap rounded-md border border-state-error/30 bg-state-error-soft p-3 text-xs text-state-error">
         {diff.error}
       </pre>
     );
   }
   if (!diff.text) {
-    return <div className="px-4 py-6 text-sm text-slate-600">No file changes.</div>;
+    return <div className="bg-surface px-4 py-6 text-sm text-ink-muted">No file changes.</div>;
   }
   return (
-    <div className="flex-1 overflow-y-auto px-4 py-4">
-      <div className="mb-2 text-[11px] font-medium uppercase tracking-wider text-slate-500">
+    <div className="flex-1 overflow-y-auto bg-surface px-4 py-4">
+      <div className="mb-2 text-[10px] font-medium uppercase tracking-[0.14em] text-ink-subtle">
         {diff.kind.replace("_", " ")}
       </div>
-      <pre className="overflow-auto rounded-md border border-slate-800 bg-slate-950 p-3 font-mono text-[11px] leading-relaxed">
+      <pre className="overflow-auto rounded-md border border-line bg-surface-sunken p-3 font-mono text-[11px] leading-relaxed">
         {diff.text.split("\n").map((line, index) => (
           <div key={index} className={diffLineClass(line)}>
             {line || " "}
@@ -347,13 +369,13 @@ function RawEvents({
   loading: boolean;
 }) {
   return (
-    <div className="flex-1 overflow-y-auto px-4 py-4">
+    <div className="flex-1 overflow-y-auto bg-surface px-4 py-4">
       {loading ? (
-        <div className="text-sm text-slate-600">Loading events...</div>
+        <div className="text-sm text-ink-muted">Loading events...</div>
       ) : events.length === 0 ? (
-        <div className="text-sm text-slate-600">No events recorded.</div>
+        <div className="text-sm text-ink-muted">No events recorded.</div>
       ) : (
-        <pre className="whitespace-pre-wrap rounded-md border border-slate-800 bg-slate-950 p-3 text-[11px] leading-relaxed text-slate-400">
+        <pre className="whitespace-pre-wrap rounded-md border border-line bg-surface-sunken p-3 text-[11px] leading-relaxed text-ink-muted">
           {JSON.stringify(events, null, 2)}
         </pre>
       )}
@@ -423,13 +445,13 @@ function SettingsView({ node }: { node: NodeInfo }) {
   const isSnapshotEmpty = entries.length === 0;
 
   return (
-    <div className="flex-1 overflow-y-auto px-4 py-4 text-sm">
+    <div className="flex-1 overflow-y-auto bg-surface px-4 py-4 text-sm">
       <section>
-        <h3 className="mb-2 text-[11px] font-medium uppercase tracking-wider text-slate-500">
+        <h3 className="mb-2 text-[10px] font-medium uppercase tracking-[0.14em] text-ink-subtle">
           Launch settings
         </h3>
         {isSnapshotEmpty && (
-          <p className="mb-3 rounded-md border border-slate-800 bg-slate-900/30 p-3 text-xs text-slate-500">
+          <p className="mb-3 rounded-md border border-line bg-surface-sunken p-3 text-xs text-ink-muted">
             No snapshot recorded for this node (predates the settings-snapshot
             field). Showing live node fields where possible.
           </p>
@@ -443,7 +465,7 @@ function SettingsView({ node }: { node: NodeInfo }) {
 
       {extras.length > 0 && (
         <section className="mt-5">
-          <h3 className="mb-2 text-[11px] font-medium uppercase tracking-wider text-slate-500">
+          <h3 className="mb-2 text-[10px] font-medium uppercase tracking-[0.14em] text-ink-subtle">
             Other snapshotted settings
           </h3>
           <dl className="grid grid-cols-[140px_1fr] gap-x-3 gap-y-2 text-xs">
@@ -459,7 +481,7 @@ function SettingsView({ node }: { node: NodeInfo }) {
       )}
 
       <section className="mt-5">
-        <h3 className="mb-2 text-[11px] font-medium uppercase tracking-wider text-slate-500">
+        <h3 className="mb-2 text-[10px] font-medium uppercase tracking-[0.14em] text-ink-subtle">
           Context
         </h3>
         <dl className="grid grid-cols-[140px_1fr] gap-x-3 gap-y-2 text-xs">
@@ -488,8 +510,8 @@ function SettingsView({ node }: { node: NodeInfo }) {
 function KeyValueRow({ label, value }: { label: string; value: string }) {
   return (
     <>
-      <dt className="text-slate-600">{label}</dt>
-      <dd className="truncate font-mono text-slate-300" title={value}>
+      <dt className="text-ink-subtle">{label}</dt>
+      <dd className="truncate font-mono text-ink" title={value}>
         {value}
       </dd>
     </>
@@ -528,7 +550,7 @@ function GatePanel({
     const resolve = (payload: ResolveGatePayload) =>
       onResolveGate?.(gateRequest.id, payload);
     return (
-      <div className="flex-1 overflow-y-auto px-4 py-4">
+      <div className="flex-1 overflow-y-auto bg-surface px-4 py-4">
         {gateRequest.interaction_type === "permission" ? (
           <PermissionDialog
             request={gateRequest}
@@ -573,7 +595,7 @@ function GatePanel({
     );
   }
   return (
-    <div className="px-4 py-6 text-sm text-slate-600">
+    <div className="bg-surface px-4 py-6 text-sm text-ink-muted">
       No pending gate for this node.
     </div>
   );
@@ -596,14 +618,15 @@ function gateTabAccentClass(
   reviewRequest: InteractionRequest | null,
   gateRequest: InteractionRequest | null,
 ): string {
-  if (reviewRequest) return "text-emerald-400 hover:bg-slate-900";
+  if (reviewRequest)
+    return "text-state-review hover:bg-surface-sunken";
   if (gateRequest?.interaction_type === "permission")
-    return "text-amber-300 hover:bg-slate-900";
+    return "text-state-waiting hover:bg-surface-sunken";
   if (gateRequest?.interaction_type === "ask_user")
-    return "text-sky-300 hover:bg-slate-900";
+    return "text-brand hover:bg-surface-sunken";
   if (gateRequest?.interaction_type === "plan_approval")
-    return "text-violet-300 hover:bg-slate-900";
-  return "text-emerald-400 hover:bg-slate-900";
+    return "text-state-review hover:bg-surface-sunken";
+  return "text-state-review hover:bg-surface-sunken";
 }
 
 function toLegacyAnswers(answers: Record<string, { answers: string[] }>) {
@@ -616,12 +639,12 @@ function toLegacyAnswers(answers: Record<string, { answers: string[] }>) {
 }
 
 function diffLineClass(line: string): string {
-  if (line.startsWith("diff --git")) return "text-cyan-300";
-  if (line.startsWith("+++") || line.startsWith("---")) return "text-slate-400";
-  if (line.startsWith("@@")) return "text-cyan-400";
-  if (line.startsWith("+")) return "text-emerald-400";
-  if (line.startsWith("-")) return "text-rose-400";
-  return "text-slate-400";
+  if (line.startsWith("diff --git")) return "text-brand-ink dark:text-brand";
+  if (line.startsWith("+++") || line.startsWith("---")) return "text-ink-muted";
+  if (line.startsWith("@@")) return "text-brand";
+  if (line.startsWith("+")) return "text-state-review dark:text-state-review";
+  if (line.startsWith("-")) return "text-state-error";
+  return "text-ink-muted";
 }
 
 function formatTime(value?: number | null): string {
