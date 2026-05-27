@@ -1,0 +1,8 @@
+name: write-readme
+brief: "Agent produces one file via Edit/Write — README.md with a single line."
+providers: [claude, codex]
+auto_commit: false
+nodes:
+  - id: turn1
+    kind: agent
+    prompt_file: prompts/turn1.md

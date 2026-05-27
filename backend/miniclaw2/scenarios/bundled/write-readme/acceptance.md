@@ -1,0 +1,3 @@
+- The node's diff panel shows a single new file `README.md` added with content `# scratch`.
+- The agent's confirmation sentence is not a lie — it actually wrote the file (the diff confirms).
+- No extra files (e.g. `.gitignore`, `notes.md`) were created on the side.

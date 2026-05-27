@@ -4,6 +4,8 @@ import { Chat, type ChatTurn } from "./components/Chat";
 import { ProjectTimeline } from "./components/ProjectTimeline";
 import { NodeDetail, type PendingGate } from "./components/NodeDetail";
 import { GateLaunchModal } from "./components/GateLaunchModal";
+import { TestsPanel } from "./components/TestsPanel";
+import { VerifyCard } from "./components/VerifyCard";
 import type {
   Activity,
   EventRecord,
@@ -14,6 +16,10 @@ import type {
   Usage,
 } from "./types";
 import { useSessionSocket } from "./ws";
+
+type View = "chat" | "tests";
+
+const TERMINAL_STATES = new Set(["done", "error", "cancelled"]);
 
 const sessionCreateInFlight = new Map<string, Promise<SessionInfo>>();
 
@@ -30,6 +36,7 @@ function createSessionOnce(provider: "claude" | "codex"): Promise<SessionInfo> {
 export function App() {
   const [session, setSession] = useState<SessionInfo | null>(null);
   const [provider, setProvider] = useState<"claude" | "codex">("claude");
+  const [view, setView] = useState<View>("chat");
   const [turns, setTurns] = useState<ChatTurn[]>([]);
   const [nodes, setNodes] = useState<NodeInfo[]>([]);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
@@ -48,15 +55,23 @@ export function App() {
   const activeNodeIdRef = useRef<string | null>(null);
   const selectedNodeIdRef = useRef<string | null>(null);
 
-  useEffect(() => {
-    let cancelled = false;
-    setSession(null);
+  const resetAllSessionState = useCallback(() => {
     setNodes([]);
     setSelectedNodeId(null);
     setSelectedEvents([]);
     setSelectedDiff(null);
     setResumeFromNodeId(null);
+    setTurns([]);
+    setUsage(null);
+    setStreaming(false);
+    setPendingGate(null);
+    setPendingReview(null);
     activeNodeIdRef.current = null;
+  }, []);
+
+  // Mount: create the default (non-temporary) session for the current provider.
+  useEffect(() => {
+    let cancelled = false;
     createSessionOnce(provider)
       .then((next) => {
         if (!cancelled) setSession(next);
@@ -65,7 +80,31 @@ export function App() {
     return () => {
       cancelled = true;
     };
-  }, [provider]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const onProviderChange = useCallback(
+    (next: "claude" | "codex") => {
+      setProvider(next);
+      resetAllSessionState();
+      setSession(null);
+      createSessionOnce(next)
+        .then(setSession)
+        .catch(console.error);
+    },
+    [resetAllSessionState],
+  );
+
+  const onScenarioLaunched = useCallback(
+    (next: SessionInfo) => {
+      resetAllSessionState();
+      setSession(next);
+      const launchedProvider = (next.provider ?? "claude") as "claude" | "codex";
+      setProvider(launchedProvider);
+      setView("chat");
+    },
+    [resetAllSessionState],
+  );
 
   useEffect(() => {
     selectedNodeIdRef.current = selectedNodeId;
@@ -304,6 +343,14 @@ export function App() {
     setSelectedNodeId(node.id);
   }, []);
 
+  const allNodesTerminal = useMemo(
+    () => nodes.length > 0 && nodes.every((n) => TERMINAL_STATES.has(n.state)),
+    [nodes],
+  );
+
+  const showVerifyCard =
+    !!session?.scenario_name && allNodesTerminal && !streaming;
+
   return (
     <div className="flex h-screen flex-col bg-slate-950 text-slate-100">
       <header className="flex items-center justify-between border-b border-slate-800 px-6 py-3">
@@ -330,20 +377,37 @@ export function App() {
           </button>
           <select
             value={provider}
-            onChange={(e) => {
-              setProvider(e.target.value as "claude" | "codex");
-              setTurns([]);
-              setUsage(null);
-              setStreaming(false);
-              setPendingGate(null);
-              setPendingReview(null);
-            }}
+            onChange={(e) => onProviderChange(e.target.value as "claude" | "codex")}
             disabled={streaming}
             className="rounded border border-slate-800 bg-slate-900 px-2 py-1 text-xs text-slate-300"
           >
             <option value="claude">Claude</option>
             <option value="codex">Codex</option>
           </select>
+          <div className="flex overflow-hidden rounded border border-slate-800 text-xs">
+            <button
+              type="button"
+              onClick={() => setView("chat")}
+              className={
+                view === "chat"
+                  ? "bg-slate-800 px-3 py-1 text-slate-100"
+                  : "bg-slate-950 px-3 py-1 text-slate-400 hover:bg-slate-900"
+              }
+            >
+              Chat
+            </button>
+            <button
+              type="button"
+              onClick={() => setView("tests")}
+              className={
+                view === "tests"
+                  ? "bg-slate-800 px-3 py-1 text-slate-100"
+                  : "bg-slate-950 px-3 py-1 text-slate-400 hover:bg-slate-900"
+              }
+            >
+              Tests
+            </button>
+          </div>
         </div>
       </header>
 
@@ -353,6 +417,12 @@ export function App() {
         onLaunch={onLaunchGate}
       />
 
+      {view === "tests" ? (
+        <div className="flex min-h-0 flex-1">
+          <TestsPanel onLaunched={(s) => onScenarioLaunched(s)} />
+        </div>
+      ) : (
+        <>
       <ProjectTimeline
         nodes={nodes}
         selectedNodeId={selectedNodeId}
@@ -423,6 +493,13 @@ export function App() {
               )}
             </div>
           </div>
+
+          {showVerifyCard && session && session.scenario_name && (
+            <VerifyCard
+              sessionId={session.id}
+              scenarioName={session.scenario_name}
+            />
+          )}
         </main>
 
         <NodeDetail
@@ -446,6 +523,8 @@ export function App() {
           onResolveReview={onResolveReview}
         />
       </div>
+        </>
+      )}
     </div>
   );
 }

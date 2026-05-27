@@ -29,6 +29,13 @@ from .events import (
 from .git_state import node_diff
 from .registry import ProjectRegistry
 from .replay import LiveReplayBuffer
+from .scenarios import (
+    ScenarioError,
+    launch_scenario,
+    list_scenarios,
+    load_scenario,
+    run_verify,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +46,8 @@ class CreateSessionRequest(BaseModel):
     model_provider: str | None = None
     provider: str | None = None
     auto_commit: bool | None = None
+    temporary: bool = False
+    scenario_name: str | None = None
 
 
 class SessionInfo(BaseModel):
@@ -46,6 +55,8 @@ class SessionInfo(BaseModel):
     created_at: float
     turns: int
     provider: str = "claude"
+    temporary: bool = False
+    scenario_name: str | None = None
 
 
 class EventRecord(BaseModel):
@@ -57,6 +68,34 @@ class NodeDiffResponse(BaseModel):
     kind: str
     text: str
     error: str | None = None
+
+
+class ScenarioSummary(BaseModel):
+    name: str
+    brief: str
+    providers: list[str]
+    auto_commit: bool
+    node_count: int
+
+
+class ScenarioDetail(BaseModel):
+    name: str
+    brief: str
+    providers: list[str]
+    auto_commit: bool
+    node_count: int
+    acceptance: str
+
+
+class ScenarioRunRequest(BaseModel):
+    provider: str
+
+
+class VerifyResponse(BaseModel):
+    exit_code: int
+    stdout: str
+    stderr: str
+    timed_out: bool
 
 
 def create_app() -> FastAPI:
@@ -73,19 +112,25 @@ def create_app() -> FastAPI:
     def create_session(req: CreateSessionRequest) -> SessionInfo:
         try:
             project = registry.create_project(
-                cwd=req.cwd or os.getcwd(),
+                cwd=None if req.temporary else (req.cwd or os.getcwd()),
                 model=req.model,
                 model_provider=req.model_provider,
                 provider=req.provider,
                 auto_commit=req.auto_commit,
+                temporary=req.temporary,
+                scenario_name=req.scenario_name,
             )
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(500, str(exc)) from exc
         return SessionInfo(
             id=project.id,
             created_at=project.created_at,
             turns=0,
             provider=project.provider,
+            temporary=project.temporary,
+            scenario_name=project.scenario_name,
         )
 
     @app.get("/sessions", response_model=list[SessionInfo])
@@ -96,6 +141,8 @@ def create_app() -> FastAPI:
                 created_at=p.created_at,
                 turns=registry.turn_count(p.id),
                 provider=p.provider,
+                temporary=p.temporary,
+                scenario_name=p.scenario_name,
             )
             for p in registry.list_projects()
         ]
@@ -141,6 +188,62 @@ def create_app() -> FastAPI:
             raise HTTPException(404, "node not found")
         diff = node_diff(project.root_path, node.commit_before, node.commit_after)
         return NodeDiffResponse(kind=diff.kind, text=diff.text, error=diff.error)
+
+    @app.get("/scenarios", response_model=list[ScenarioSummary])
+    def list_scenarios_endpoint() -> list[ScenarioSummary]:
+        return [ScenarioSummary(**s.metadata()) for s in list_scenarios()]
+
+    @app.get("/scenarios/{name}", response_model=ScenarioDetail)
+    def get_scenario(name: str) -> ScenarioDetail:
+        try:
+            scenario = load_scenario(name)
+        except ScenarioError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        meta = scenario.metadata()
+        return ScenarioDetail(**meta, acceptance=scenario.acceptance)
+
+    @app.post("/scenarios/{name}/run", response_model=SessionInfo)
+    async def run_scenario(name: str, req: ScenarioRunRequest) -> SessionInfo:
+        # async so that registry.start_node's asyncio.create_task sees an
+        # active event loop (the runner runs concurrently with the request).
+        try:
+            project, _ = launch_scenario(name, req.provider, registry)
+        except ScenarioError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(500, str(exc)) from exc
+        return SessionInfo(
+            id=project.id,
+            created_at=project.created_at,
+            turns=0,
+            provider=project.provider,
+            temporary=project.temporary,
+            scenario_name=project.scenario_name,
+        )
+
+    @app.post("/sessions/{sid}/verify", response_model=VerifyResponse)
+    async def verify_session(sid: str) -> VerifyResponse:
+        project = registry.get_project(sid)
+        if project is None:
+            raise HTTPException(404, "session not found")
+        if not project.scenario_name:
+            raise HTTPException(400, "project has no associated scenario")
+        try:
+            # run_verify blocks on subprocess.run; offload so the event loop
+            # stays responsive for WS observers.
+            result = await asyncio.to_thread(run_verify, project)
+        except ScenarioError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        return VerifyResponse(
+            exit_code=result.exit_code,
+            stdout=result.stdout,
+            stderr=result.stderr,
+            timed_out=result.timed_out,
+        )
 
     @app.websocket("/ws/{sid}")
     async def ws(websocket: WebSocket, sid: str) -> None:

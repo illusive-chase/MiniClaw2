@@ -1,240 +1,319 @@
-# MiniClaw2 testing proposal — demo-driven, investigation-free benchmark
+# MiniClaw2 testing — dashboard-launched, demo-driven, investigation-free
 
-> **Status: proposal.** No implementation has landed yet — this
-> document describes the shape we intend to build. Grounded in
-> `DESIGN.md §1.1` ("investigation-free interface"): the test harness
-> is a *simulated user*, and a simulated user observes effects, never
-> internals.
+> **Status: Tier 1 landed.** The dashboard test panel, the
+> temporary-workspace feature, the scenario loader/launcher, the
+> `verify.sh` runner, and three bundled Tier 1 scenarios
+> (`hello-text`, `bash-uname`, `write-readme`) are all in. See
+> `TESTING.zh.md` for the end-user run-through. Tiers 2–4 remain
+> planned (scenarios named, surfaces identified, YAML shape
+> accommodates them) but not yet built. Grounded in `DESIGN.md §1.1`
+> ("investigation-free interface"): every test is a small task whose
+> **observable outcome** the human ratifies. Internal correctness —
+> gate routing, commit-op rewrite, reconnect replay — is exercised
+> transitively. If an internal path is broken, the visible artifact
+> is broken too.
 
-## 1. What we are testing
+## 1. What this document is
 
-The benchmark is a **single behavioral axis**: did the demo behave as
-its brief promised? There is no separate "graph-machinery" test stack
-running alongside it. Internal correctness — state transitions, event
-log shape, gate routing, commit-op rewrite, reconnect replay — is
-exercised transitively, because a broken internal path produces a
-broken external artifact. If a gate mis-routes, the user sees no gate;
-if the auto-commit op forgets to rewrite `commit_after`, the per-node
-diff comes back empty. Those failures show up as observable defects.
+This is the integration-test tier. Engineer-facing unit tests under
+`backend/tests/` (`test_context`, `test_gate_node`, `test_op_node`,
+`test_replay`, `test_temporary_project`, `test_scenarios_loader`,
+`test_scenarios_launch`) exist for backend hygiene during
+development and are **separate** from this document — they live on
+as the fast inner loop for refactors. Tier 1 added the latter three
+to that pile when the scenario module landed.
 
-A test scenario is a small, well-defined task ("implement a GUI
-calculator") handed to MiniClaw2 as if a human researcher had typed it
-into a fresh project. The pass/fail signal is what an observer sees:
-the produced program runs, the produced UI looks and behaves right,
-the produced gate output exists at the contracted path. The
-framework's own state log is never inspected to decide pass/fail.
+The integration tier covers **whole demos** behaving correctly across
+both providers. Each demo is a **scenario** — a small task launched
+from the dashboard's built-in test section, run in a fresh temporary
+workspace, and ratified by a human after every node has reached a
+terminal state.
 
-## 2. Scenario layout — files in the codebase
+## 2. Where it lives — the dashboard test section
 
-Each scenario lives as a directory under `backend/tests/scenarios/`:
+There is **no CLI runner**. The entrypoint is a "Tests" panel in the
+dashboard:
 
-    backend/tests/scenarios/<name>/
-      brief.md            # the task as a user would receive it
-      contract.md         # gate contract (when the scenario uses a gate)
-      acceptance.md       # human-visible checklist of expected effects
-      operator.py         # programmatic "user" that drives gates / chat
-      verify.sh           # black-box programmatic check; exit 0 = floor passed
-
-Scenarios are source-controlled, version-able, discoverable by name,
-and reviewable as documents. A reader who has never touched the
-benchmark runner can read `brief.md` + `acceptance.md` and know what
-the scenario claims.
-
-## 3. Workspace isolation — fresh empty tempdir per run
-
-Each scenario run gets a **fresh, empty tempdir** as the project root.
-The runner:
-
-1. Creates the tempdir via `tempfile.mkdtemp(prefix="miniclaw2-bench-")`.
-2. Runs `git init` and lays down an empty initial commit so commit-op
-   nodes produce real two-commit diffs.
-3. Copies the scenario's `contract.md` (if present) into the tempdir
-   for the agent to reference.
-4. Sets `MINICLAW_HOME` to a sibling tempdir so the on-disk store does
-   not leak across runs.
-5. `POST /sessions {cwd=<tempdir>, provider=<claude|codex>, auto_commit=true}`.
-6. On success: deletes both tempdirs. On failure: leaves them and
-   prints the paths so the human can poke at the produced artifacts
-   and the event log.
-
-No state is shared across scenarios. No state is shared across
-providers within a scenario. No reuse of `$MINICLAW_HOME` from prior
-runs.
-
-## 4. Verification — visual / interactive primary, programmatic as a floor
-
-This is the load-bearing piece of the principle.
-
-**Programmatic verification (`verify.sh`) is necessary but never
-sufficient.** A scenario only passes when the human observer confirms
-the visual / interactive acceptance criteria. Anything that could be
-"working" by `verify.sh` while *looking* broken to a human is a
-failure — and for GUI scenarios that gap is enormous.
-
-Verifier responsibilities:
-
-- `verify.sh` — black-box programmatic floor. Smoke-imports the
-  produced module, runs a headless behavior check where possible
-  (instantiate the widget class, fire button-press events
-  programmatically, assert label text), runs the scenario's own
-  unit tests if it produced any. Exit 0 if the smoke passes. Must
-  not touch `events.jsonl`, `node.json`, or the WS protocol; treats
-  the produced repo as an opaque deliverable.
-- `acceptance.md` — the human checklist. Items are observable from
-  the outside: "a window opens with buttons 0–9", "clicking `1`,
-  `+`, `2`, `=` shows `3`", "closing the window exits cleanly". The
-  runner prints this list, launches the produced app (or instructs
-  the human to launch it), and reads y/n per item from stdin.
+- The panel lists every bundled scenario discovered by the backend
+  (`GET /scenarios`).
+- Each row shows the scenario's name, one-line brief, and a per-
+  provider Run button (Claude / Codex).
+- Clicking Run creates a fresh temporary project, seeds the
+  scenario's starter files into it, creates the first node, and
+  switches the dashboard into the existing single-project view.
+- From that point on **the scenario is just a normal project**: the
+  user supervises in the normal node timeline, chats / approves
+  gates / hits Stop as they would for their own work. Multi-step
+  scenarios will enqueue their next nodes via the same `runner_done`
+  hook the auto-commit op uses (Tier 2+ work); Tier 1 scenarios are
+  single-step so the user never has to type a follow-up prompt.
+- After every declared node has reached a terminal state, the
+  project view reveals a **Verify** card with two halves:
+  - **Programmatic floor.** A "Run verify.sh" button that POSTs to
+    `/sessions/{sid}/verify`; the backend runs `verify.sh` in the
+    project root (60s timeout, `MINICLAW_PROJECT_ID` +
+    `MINICLAW_HOME` injected into env) and returns stdout/stderr +
+    exit code.
+  - **Human acceptance.** The scenario's `acceptance.md` is
+    rendered as a checklist of checkboxes the user ticks (parsed
+    from `- ` bullet items).
 
 A scenario is **passed** only when:
 
 1. `verify.sh` exits 0, **and**
-2. Every item in `acceptance.md` is marked OK by the human.
+2. Every item in the acceptance checklist is ticked OK by the
+   human.
 
-Either alone is a failure. The programmatic floor catches regressions
-that would slip past tired eyes (an emoji-only display that shows the
-right digits but lays them out wrong); the interactive check catches
-the "the program runs but the UI is ugly / non-functional / wrong"
-cases that programmatic checks structurally cannot.
+Either alone is a failure. **The human acceptance step is never
+skipped, even for the simplest Tier 1 scenarios** — "an LLM produced
+a sensible reply" is fuzzy enough that a human ratifies it. The
+principle stands regardless of artifact shape: programmatic checks
+catch regressions that would slip past tired eyes; human checks
+catch "the program runs but the artifact is broken / wrong / ugly"
+that programmatic checks structurally cannot.
 
-Programmatic-only scenarios are forbidden, even when the artifact has
-no GUI: the acceptance step then asks the human to observe terminal
-output, file contents, or process behavior. The principle stands
-regardless of artifact shape.
+## 3. General feature — temporary workspaces
+
+The test panel rides on a feature that is **not test-specific** and
+landed alongside Tier 1: a project may be created with `temporary:
+true`, in which case the backend:
+
+1. Creates a fresh tempdir (`tempfile.mkdtemp(prefix="miniclaw2-tmp-")`),
+   via `backend/miniclaw2/workspace.py:create_temporary_root()`.
+2. Runs `git init --initial-branch=main` + an empty initial commit
+   so commit-op nodes produce real two-commit diffs.
+3. Uses that path as the project's `root_path`.
+4. Marks the project as `temporary` on disk (`Project.temporary =
+   True`); deleting the project also removes the worktree (the
+   `remove_temporary_root` helper refuses to rmtree any path that
+   doesn't carry the `miniclaw2-tmp-` prefix).
+
+This is exposed via the existing `POST /sessions` endpoint
+(`temporary: true` flag). Test scenarios are the first heavy
+consumer of this feature and the reason it landed now. A "Scratch
+project" affordance for ad-hoc experiments is straightforward to
+add on top of this flag but is **not** in v1 — the user explicitly
+deferred it to a follow-up.
+
+A temporary project is otherwise indistinguishable from a permanent
+one: nodes run the same way, the timeline UI renders the same, the
+auto-commit op still works against the seeded git history, and
+reconnect replay still resumes the live tail.
+
+## 4. Scenario layout — files in the codebase
+
+Each scenario lives under `backend/miniclaw2/scenarios/bundled/<name>/`:
+
+    backend/miniclaw2/scenarios/bundled/<name>/
+      brief.md          # multi-line description (body); first non-empty line is a fallback
+      scenario.yaml     # metadata: provider matrix, node spec, seed files, settings
+      prompts/<id>.md   # per-node prompt files (referenced from scenario.yaml)
+      contract.md       # gate contract (when the scenario uses a gate)
+      seed/             # files copied into the tempdir at launch (e.g. CONTEXT.md)
+      verify.sh         # black-box programmatic check; exit 0 = floor passed
+      acceptance.md     # human checklist rendered in the Verify card
+
+`scenario.yaml` minimum shape (Tier 1 — what landed):
+
+```yaml
+name: hello-text
+brief: "Simplest end-to-end run: agent produces a sensible text reply."
+providers: [claude, codex]        # always both
+auto_commit: false
+nodes:
+  - id: turn1
+    kind: agent
+    prompt_file: prompts/turn1.md
+```
+
+The dashboard row uses the YAML `brief:` field (terse one-liner);
+`brief.md` is reserved for longer-form context shown elsewhere or
+to maintainers reading the directory.
+
+Extended shape (Tiers 2–4 — for forward reference, not v1 impl):
+
+```yaml
+name: gui-calculator
+brief: "Build a Tk calculator, review it, snapshot it."
+providers: [claude, codex]
+auto_commit: true
+permission_mode: default          # or "plan" for plan-mode-approval
+seed:
+  - from: seed/CONTEXT.md         # copied verbatim into tempdir
+    to: CONTEXT.md
+nodes:
+  - id: build
+    kind: agent
+    prompt_file: prompts/build.md
+  - id: review
+    kind: gate
+    prompt_file: prompts/review.md
+    contract_file: contract.md
+  # auto-commit ops are NOT declared here — they happen because auto_commit: true
+  - id: fix                       # for resume-fix-after-reject
+    kind: agent
+    prompt_file: prompts/fix.md
+    resume_from: build            # explicit conversation continuation
+    when: review.rejected         # scripting branch — see §8
+```
+
+The scenario engine in `backend/miniclaw2/scenarios/` parses this
+YAML, copies seed files into the tempdir, and uses
+`ProjectRegistry.start_node` / `start_gate_node` (the same paths the
+chat composer uses) to launch the first step. For Tier 1 only the
+first step exists; Tier 2+ work adds a scenario-step expander on
+the `runner_done` callback (parallel to the auto-commit op's
+expander) so subsequent steps land without a scenario-specific
+runner — the "just runs like a normal node" guarantee stays.
 
 ## 5. Provider matrix — Claude and Codex, both, every time
 
-Every scenario runs against **both Claude and Codex**. The runner
-invokes the scenario once per provider in independent tempdirs, and
-reports per-provider:
+Every scenario runs once per provider, in independent temporary
+workspaces. The dashboard surfaces the two as separate rows under
+the scenario; running both is two clicks, not one. A scenario is
+"passing" only when both providers pass — both `verify.sh` exits
+and both human checklists are fully ticked.
 
-    gui-calculator
-      claude  ✓ programmatic ✓ interactive   (3 nodes, 1 gate, 84s)
-      codex   ✓ programmatic ✗ interactive   ("digit buttons unresponsive")
+Provider divergence is itself useful signal: if Claude passes and
+Codex fails on the same scenario, the failure is either in the Codex
+adapter or in Codex's own ability to deliver the task — and either
+is information we want surfaced.
 
-Both providers are run because the orchestration layer (`NodeRunner`,
-adapter translation in `providers/claude.py` and `providers/codex.py`,
-gate normalization, context injection) is exactly the surface we're
-validating end-to-end. Provider divergence is itself a useful signal:
-if Claude passes and Codex fails on the same scenario, the failure is
-either in the Codex adapter or in the provider's own ability to
-deliver the task — and either is information we want surfaced.
+## 6. Scenario catalogue
 
-The brief, contract, operator, and verifier do not vary by provider.
-A scenario is "passing" only when both providers pass.
+Tiered from simplest to most integrated. **Tier 1 landed; Tiers 2–4
+are planned** and the YAML/contract shape accommodates them without
+churn.
 
-## 6. First scenario — `gui-calculator`
+### Tier 1 — basic agent (✓ landed)
 
-Chosen because:
+**hello-text**
+> Agent should produce a coherent text reply, no tool use.
 
-- It produces a real artifact (a Tk window) that *only* a human can
-  fully validate. A pure-CLI calculator would let programmatic checks
-  pretend they were sufficient; a GUI forces the visual / interactive
-  axis to exist.
-- It has a clean two-commit boundary (build → review → snapshot) so
-  the auto-commit op and the checkpoint-gate path are both on the
-  critical path of the demo — covered transitively per §1.
-- It is small enough that 1 agent + 1 gate + 1 auto-commit op suffice,
-  but the produced artifact is rich enough that "looks broken" is
-  obvious to the human.
+- Prompt: "Reply with one sentence about Python. End your reply with the literal token `[OK]`."
+- Verify: assistant text in `events.jsonl` contains `[OK]`.
+- Acceptance: "the reply reads like a sensible sentence about Python (not a refusal, not gibberish, not just `[OK]` on its own)."
 
-Sketch of the per-file contents (real text lives in the files once
-written):
+**bash-uname**
+> Agent should run a single Bash command and report its output.
 
-**`brief.md`** — the task as the user receives it:
+- Prompt: "Run `uname -a` via Bash and tell me what OS this is, in one sentence."
+- Verify: `events.jsonl` contains a tool activity with `result_kind == "stdout"` whose `result` field contains "Darwin" or "Linux"; and the assistant text mentions one of those.
+- Acceptance: "in the tool panel, expanding the Bash output shows a real uname line, and the assistant's sentence is consistent with it."
 
-> Build a Python desktop calculator with a graphical interface using
-> only the standard library (`tkinter`). Support `+`, `-`, `*`, `/`,
-> a clear button, and an equals button. Keyboard entry of digits and
-> operators should also work. Provide a `tests/` directory with at
-> least one smoke test that constructs the calculator class and
-> programmatically fires a `1 + 2 =` sequence, asserting the
-> displayed result. The app must launch via `python calculator.py`
-> from the project root.
+**write-readme**
+> Agent should produce one file via Edit/Write.
 
-**`contract.md`** — gate contract for the review node:
+- Prompt: "Create a `README.md` at the project root containing exactly the single line `# scratch` (followed by a newline). Do not create any other files."
+- Verify: `tempdir/README.md` exists with content `# scratch\n`; no other tracked files were added.
+- Acceptance: "in the node's diff panel, you can see `README.md` was added with the expected content."
 
-> # Expected
-> The repo now contains `calculator.py` runnable via
-> `python calculator.py`, and `tests/test_calculator.py`. The smoke
-> test passes locally.
->
-> # Unexpected
-> Hardcoded operation results, missing operators, runtime crashes on
-> common input (including divide-by-zero), non-stdlib dependencies,
-> a non-resizable or invisible window.
->
-> # Response protocol
-> Write JSON to `reviews/build.json` with shape
-> `{"approved": bool, "notes": str}`.
+### Tier 2 — inline gates and interactivity (planned)
 
-**`operator.py`** — the simulated user:
+**permission-approve**
+> Tool triggers a default-deny gate; user approves; tool runs.
 
-- On plan-mode `interaction_request`: approve.
-- On any other inline gate (permission, ask-user): approve with
-  sensible defaults; abort the scenario if the agent asks a question
-  the operator cannot answer from the brief.
-- On the checkpoint-review request: emit
-  `{"decision": "write-json", "response": {"path": "reviews/build.json", "payload": {"approved": true, "notes": "auto-approved by bench operator"}}}`.
+- Project launched with permission mode that defaults to ask for
+  Bash. Agent told to run `ls`. Inline permission gate fires;
+  user approves once.
+- Verify: a `permission` interaction request appears in `events.jsonl`
+  and is followed by a successful Bash activity.
+- Acceptance: "you saw a permission prompt appear in the gate tab,
+  approved it, and the agent then ran `ls` and reported the output."
 
-**`verify.sh`** — programmatic floor:
+**plan-mode-approval**
+> Project in plan permission mode; agent plans; user approves; agent executes; one file lands.
 
-- `test -f calculator.py`
-- `python -c "import calculator"` exits 0
-- `pytest -q tests/test_calculator.py` exits 0
-- A small headless harness (`tools/bench_verify_calculator.py`,
-  scenario-local) instantiates the calculator class, fires button
-  events programmatically for `1 + 2 =`, asserts the display reads
-  `3`, and asserts a `9 / 0` sequence produces an error indicator
-  rather than a Python traceback.
+- Permission mode: `plan`. Prompt asks for a file to be created.
+- Verify: a `plan_approval` interaction request appears; after
+  approval, an Edit/Write tool activity appears; the file exists.
+- Acceptance: "you saw a plan-approval prompt, approved it, and the
+  agent then created the file."
 
-**`acceptance.md`** — the human checklist:
+**interrupt-midstream**
+> Long-running Bash; user hits Stop; node ends `cancelled`; partial output preserved.
 
-- [ ] A window opens when running `python calculator.py` from the
-      project root.
-- [ ] Buttons for `0`–`9`, `+`, `-`, `*`, `/`, `=`, `C` (clear) are
-      visibly present and labeled.
-- [ ] Clicking `1`, `+`, `2`, `=` shows `3` in the display.
-- [ ] Typing digits and operators on the keyboard updates the
-      display the same way clicks do.
-- [ ] `9 / 0 =` shows an error indicator (not a Python traceback in
-      the terminal).
-- [ ] `C` clears the display to `0` or empty.
-- [ ] Closing the window via the OS close button exits the process
-      cleanly (no stack trace in the terminal).
+- Prompt: "Run `for i in 1..60; do echo $i; sleep 1; done` via Bash."
+- Verify: node's terminal state on disk is `cancelled`; partial
+  `events.jsonl` contains some text deltas but not a `turn_done`
+  with a `done` final state.
+- Acceptance: "you hit Stop after a few seconds, the node tile
+  turned muted-grey, and the partial output is still in the
+  transcript."
 
-## 7. The runner
+### Tier 3 — integrated (gates + ops + edges) (planned)
 
-A new `python -m miniclaw2.bench <scenario> [--provider {claude,codex,both}]`
-entry point. Default provider is `both`.
+**gui-calculator** *(flagship visual demo)*
+> Agent builds a tkinter calculator → checkpoint gate with markdown contract → write-json review → auto-commit op rewrites the agent's `commit_after`.
 
-Per-provider behavior:
+- Two declared nodes (`build` agent, `review` gate); `auto_commit:
+  true`. The review contract lives in `contract.md`; the reviewer
+  writes JSON to `reviews/build.json`.
+- Verify: `calculator.py` runs (`python -c "import calculator"`);
+  smoke test fires button events for `1 + 2 =` and asserts `3`;
+  `9 / 0` produces an error indicator (not a Python traceback);
+  `git log --oneline` shows two commits per agent/gate node; the
+  `build` node's `commit_after` differs from its `commit_before`
+  (proves the rewrite happened).
+- Acceptance: a window opens, buttons 0–9 + operators are visible
+  and labeled, clicking `1 + 2 =` shows `3`, keyboard entry works,
+  `9 / 0` shows an error indicator, `C` clears, closing the window
+  exits cleanly.
 
-1. Build a fresh tempdir per §3. Set `MINICLAW_HOME` to a sibling
-   tempdir.
-2. Spin up the FastAPI app in-process (TestClient or asgi-lifespan).
-3. Import `operator.py` from the scenario directory. Call its
-   `kickoff(send)` hook to send the first `user_message`; route
-   incoming `interaction_request` envelopes to its `on_gate(request)
-   -> response`; route `node_updated` and `turn_done` to its
-   `on_node(node)` for the operator's own bookkeeping.
-4. When all nodes have reached terminal states and the project is
-   idle, run `verify.sh` in the produced repo with a 60s timeout. If
-   it exits non-zero, record programmatic failure and skip the
-   interactive step.
-5. If programmatic passed: print `acceptance.md`, launch the
-   produced app (or instruct the human), and read y/n per item from
-   stdin. Record interactive pass/fail.
-6. Print the per-provider report line as in §5; on any failure,
-   preserve the tempdir and print its path along with the path to
-   the scenario's `events.jsonl` under `MINICLAW_HOME`.
+**Note for maintainers:** this is the explicit scenario to run when
+validating the auto-commit op path; no dedicated `auto-commit-only`
+scenario exists by design — the auto-commit op is on the critical
+path of `gui-calculator`, so a regression there breaks this demo's
+verify *and* its acceptance. Document this in the dashboard's test
+panel so a future maintainer knows where to look.
 
-The runner is the only piece of machinery that touches the WS
-protocol. Scenarios stay declarative — the operator script knows
-about gate-response shapes (because that is part of the user model)
-but not about the internal event log.
+**context-md-respected**
+> Project-neutral `CONTEXT.md` injection is honored by both providers.
 
-## 8. Out of scope for v1
+- Seed copies a `CONTEXT.md` containing "End every assistant reply
+  with the literal token `[CTX-OK]`."
+- Prompt: "What's 2 + 3?" (banal — the interesting signal is the
+  marker).
+- Verify: assistant text in the first turn's `events.jsonl`
+  contains `[CTX-OK]`; the node's `system_context_snapshot` field
+  matches the seeded text byte-for-byte.
+- Acceptance: "the reply ended with `[CTX-OK]`."
+
+**resume-fix-after-reject**
+> Resume edge: agent → gate (reject) → resume agent → gate (approve).
+
+- Three declared nodes: `build` agent, `review` gate (reject path),
+  `fix` agent with `resume_from: build` and `when: review.rejected`.
+  The first gate is rejected via write-json `{approved: false,
+  notes: "add division"}`. A second `review` (or re-using the same
+  template via §8) lets the user approve.
+- Verify: timeline has the expected node sequence; the `fix` node
+  carries `parent_node_id == build.id` and inherits `build`'s
+  `provider_session_id`; final `git log` shows the multi-commit
+  history; an SVG resume connector is visible in the timeline.
+- Acceptance: "you saw the first review render the contract,
+  rejected it with the canned notes, watched the resume node
+  continue from the build's session (visible `↻` badge), and
+  approved the second review."
+
+### Tier 4 — resilience (planned)
+
+**reconnect-replay**
+> WS drops mid-stream; reconnect; replay fills the gap; live tail finishes.
+
+- Start an agent node with a prompt that streams for ~10s
+  (e.g. "Write a 200-word summary of Python's history; type
+  slowly"). Mid-stream, simulate a drop: a **Simulate drop** button
+  on the test panel closes the active WS and reopens it with
+  `(node_id, last_seq)`.
+- Verify: events captured by the second observer + replay produce
+  no duplicates, no gaps; the `events.jsonl` matches the union of
+  pre-drop + post-replay sequences exactly.
+- Acceptance: "after the simulated drop, the transcript kept
+  growing without rewinding, no text was duplicated, and the node
+  reached `done` cleanly."
+
+## 7. Out of scope for v1
 
 - Recorded provider transcripts (VCR-style replay). Worth adding
   once one scenario passes end-to-end live on both providers;
@@ -243,32 +322,48 @@ but not about the internal event log.
 - Headless visual diffing (screenshot baseline + perceptual diff).
   The human is the visual oracle for v1; baselines come once we
   know what "correct" looks like across both providers.
-- CI integration. The benchmark requires a display and real provider
-  credentials; it is a developer-driven gate, not a CI gate, for now.
-- Scenarios beyond `gui-calculator`. The next two (after the format
-  has been used in anger): a "fix this failing test suite" scenario
-  (exercises a `resume` edge after a rejected gate) and a
-  "build a small CLI" scenario (exercises a long agent + multiple
-  bash tool invocations).
-- Recording real operator scripts derived from human sessions.
+- CI integration. The benchmark requires a display, real provider
+  credentials, and human ratification by design; it is a developer-
+  driven gate, not a CI gate.
+- A simulated-user (`operator.py`) framework. The dashboard makes
+  the real user the operator. Scenarios that need scripted gate
+  responses (e.g. an "auto-approve every gate" affordance for
+  unattended re-runs) are reconsidered after Tier 1 has been used.
+- User-authored scenarios from the UI. For now scenarios are
+  bundled in the repo and discovered at backend startup.
 
-## 9. Open questions
+## 8. Open questions
 
-To revisit when the first scenario is implemented end-to-end:
+To revisit when Tier 2+ work starts:
 
-- **Operator generality.** Is `operator.py` an importable module with
-  declared callbacks, or a subprocess driven by a small RPC? The
-  former is simpler; the latter lets the operator outlive a single
-  Python interpreter (useful if scenarios start running inside
-  containers / VMs / different Python versions). Default: importable
-  module.
-- **Visual acceptance UX.** Tty checklist read from stdin vs a tiny
-  Tk window with checkboxes. Tty first; revisit if scenario count
-  grows past ~5.
-- **Multi-node demos.** `gui-calculator` is 1 agent + 1 gate +
-  auto-commit op. Once the format is comfortable, the next scenario
-  exercises a `resume` edge (reject the gate, agent fixes it, gate
-  approves on the second pass) so the resume path is observable too.
+- **Scenario-step expander on `runner_done`.** Tier 1 only launches
+  the first step. Multi-step scenarios (Tier 2+) need an expander
+  parallel to `_spawn_op_commit` in `ProjectRegistry._on_runner_done`
+  that consults the scenario's `nodes:` list + step terminal state +
+  optional `when:` predicate and enqueues the next step (or
+  finishes the scenario). Threading the `TemplateInstance`-style
+  cursor through the registry without polluting general node paths
+  is the work to scope.
+- **Branching in `scenario.yaml`.** Tier 3's `resume-fix-after-reject`
+  needs "the gate was rejected → run the fix step." A minimal
+  `when: <step>.rejected` / `when: <step>.approved` predicate,
+  evaluated by the same expander, covers the planned scenarios
+  without a full template engine. Worth keeping the YAML linear
+  until we actually need it.
+- **How to drive `reconnect-replay` from the dashboard.** A
+  "Simulate drop" button on the test panel is the cleanest option;
+  instructing the user to close the tab is the simplest. Decide
+  when the scenario is implemented.
 - **Cross-provider artifact comparison.** Same brief, two providers,
   two produced repos — is there a useful diff to surface? Likely
-  yes, but the format will fall out of running a few scenarios first.
+  yes, but the format will fall out of running a few scenarios
+  first.
+- **Acceptance state persistence.** Tier 1 keeps the tick state in
+  frontend-only React state — closing the project view loses the
+  ticks. If a "passing" record matters across reloads, persist
+  `Project.scenario_run` with the verify exit code and per-item
+  acceptance state. Not painful enough to fix yet.
+- **Scratch-project affordance.** The `temporary: true` flag is now
+  general, but no "New scratch project" button exists in the
+  dashboard. Add when ad-hoc-experiment use shows up; the wiring is
+  one button + a `POST /sessions {temporary: true}` call.

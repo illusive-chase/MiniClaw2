@@ -19,6 +19,7 @@ from uuid import uuid4
 from .domain import Node, NodeKind, NodeState, Project
 from .runner import NodeRunner
 from .store import Store
+from .workspace import create_temporary_root, remove_temporary_root
 
 logger = logging.getLogger(__name__)
 
@@ -72,16 +73,24 @@ class ProjectRegistry:
 
     def create_project(
         self,
-        cwd: str,
+        cwd: str | None,
         model: str | None = None,
         model_provider: str | None = None,
         name: str = "",
         provider: str | None = None,
         auto_commit: bool | None = None,
+        temporary: bool = False,
+        scenario_name: str | None = None,
     ) -> Project:
         normalized_provider = (provider or "claude").lower()
         if normalized_provider not in {"claude", "codex"}:
             raise ValueError(f"unknown provider: {provider}")
+        if temporary:
+            root_path = create_temporary_root()
+        else:
+            if not cwd:
+                raise ValueError("cwd is required for non-temporary projects")
+            root_path = cwd
         settings: dict[str, Any] = {}
         if model:
             settings["model"] = model
@@ -90,10 +99,12 @@ class ProjectRegistry:
         if auto_commit is not None:
             settings["auto_commit"] = bool(auto_commit)
         project = Project(
-            root_path=cwd,
+            root_path=root_path,
             name=name,
             provider=normalized_provider,
             settings_override=settings,
+            temporary=temporary,
+            scenario_name=scenario_name,
         )
         self.store.create_project(project)
         self._runtimes[project.id] = ProjectRuntime(project)
@@ -113,6 +124,8 @@ class ProjectRegistry:
         if rt.is_running():
             assert rt.runner_task is not None
             rt.runner_task.cancel()
+        if rt.project.temporary:
+            remove_temporary_root(rt.project.root_path)
         self.store.delete_project(pid)
         return True
 

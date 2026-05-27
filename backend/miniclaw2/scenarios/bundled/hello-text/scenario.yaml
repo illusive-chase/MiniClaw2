@@ -1,0 +1,8 @@
+name: hello-text
+brief: "Simplest end-to-end run: agent produces a sensible text reply."
+providers: [claude, codex]
+auto_commit: false
+nodes:
+  - id: turn1
+    kind: agent
+    prompt_file: prompts/turn1.md

@@ -12,10 +12,26 @@ dependencies = [
     "fastapi>=0.110",
     "uvicorn[standard]>=0.27",
     "pydantic>=2.6",
+    "PyYAML>=6.0",
 ]
 
 [project.scripts]
 miniclaw2 = "miniclaw2.__main__:main"
 
 [tool.setuptools]
-packages = ["miniclaw2"]
+packages = [
+    "miniclaw2",
+    "miniclaw2.providers",
+    "miniclaw2.scenarios",
+]
+
+[tool.setuptools.package-data]
+"miniclaw2.scenarios" = [
+    "bundled/*/scenario.yaml",
+    "bundled/*/brief.md",
+    "bundled/*/acceptance.md",
+    "bundled/*/contract.md",
+    "bundled/*/verify.sh",
+    "bundled/*/prompts/*.md",
+    "bundled/*/seed/**/*",
+]

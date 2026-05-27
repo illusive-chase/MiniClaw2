@@ -60,6 +60,8 @@ class Project(BaseModel):
     parent_project_id: str | None = None
     parent_commit: str | None = None
     settings_override: dict[str, Any] = Field(default_factory=dict)
+    temporary: bool = False
+    scenario_name: str | None = None
     created_at: float = Field(default_factory=_now)
 
 

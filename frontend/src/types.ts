@@ -93,6 +93,27 @@ export type SessionInfo = {
   created_at: number;
   turns: number;
   provider?: string;
+  temporary?: boolean;
+  scenario_name?: string | null;
+};
+
+export type ScenarioSummary = {
+  name: string;
+  brief: string;
+  providers: string[];
+  auto_commit: boolean;
+  node_count: number;
+};
+
+export type ScenarioDetail = ScenarioSummary & {
+  acceptance: string;
+};
+
+export type VerifyResponse = {
+  exit_code: number;
+  stdout: string;
+  stderr: string;
+  timed_out: boolean;
 };
 
 export type NodeKind = "agent" | "gate" | "op";
