@@ -89,6 +89,38 @@ human-supervised LLM workflows**:
 - Detail is hidden by default. The graph shows *state*; the side panel
   shows transcripts, diffs, and gate payloads on demand.
 
+### 1.1 Guiding principle — investigation-free interface
+
+A user of MiniClaw2 is never asked to investigate internals to decide
+whether the system worked. They are given (a) what to do and (b) what
+they should see; success is "the observed effect matches the
+description." They may know nothing about the node graph, the event
+log, the state machine, the gate kinds, or the provider adapters. The
+framework's job is to be inspectable when something fails, not to be
+required reading when things work.
+
+This principle is foundational and shapes two surfaces:
+
+- **Product UX.** A user supervising work interacts with node tiles,
+  gate prompts, and produced artifacts. They never need to read
+  `events.jsonl`, distinguish inline gates from checkpoint gates, or
+  reason about commit-op rewrites in order to know whether their work
+  landed. The side panel is *available* for diagnosis, not *required*
+  for usage.
+- **Validation / benchmarking.** A demo passes when the produced
+  artifact behaves as its brief promised (the calculator computes
+  `2+3=5`; the GUI window opens; the review JSON appears at the
+  contracted path). Internal correctness — that a gate routed to the
+  right runner, that the auto-commit op rewrote `commit_after`, that
+  reconnect-replay reconstructed the right stream — is *implied* by
+  the visible outcome. If an internal path is broken, the user-visible
+  artifact will be broken too, and that is the signal we ground on.
+  `TEST.md` is the operational counterpart of this principle.
+
+Engineer-facing unit tests under `backend/tests/` are unaffected by
+this principle: they exist for backend hygiene during development.
+The principle governs anything a *user* (real or simulated) ever sees.
+
 ## 2. Core abstractions
 
 Three primary objects. Everything else is a view over these.
