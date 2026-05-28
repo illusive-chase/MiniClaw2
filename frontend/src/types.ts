@@ -39,8 +39,19 @@ export type Usage = {
   output_tokens: number;
   cache_read_tokens: number;
   cache_creation_tokens: number;
+  cumulative_output_tokens?: number | null;
+  cumulative_cache_creation_tokens?: number | null;
   final: boolean;
   seq?: number;
+};
+
+export type TokenUsage = {
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  cache_creation_tokens: number;
+  cumulative_output_tokens?: number | null;
+  cumulative_cache_creation_tokens?: number | null;
 };
 
 export type TurnDone = { type: "turn_done"; seq?: number };
@@ -145,6 +156,7 @@ export type NodeInfo = {
   contract?: string;
   summary?: string | null;
   error?: string | null;
+  usage?: TokenUsage | null;
   system_context_snapshot?: string;
   settings_snapshot?: Record<string, unknown>;
   created_at: number;

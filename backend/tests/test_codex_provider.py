@@ -232,6 +232,44 @@ class CodexProviderTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(ctx.requests, [])
 
+    async def test_token_usage_keeps_last_context_and_cumulative_output(self) -> None:
+        provider = CodexProvider()
+        events = [
+            event
+            async for event in provider._handle_message(
+                {
+                    "method": "thread/tokenUsage/updated",
+                    "params": {
+                        "tokenUsage": {
+                            "last": {
+                                "inputTokens": 100,
+                                "outputTokens": 30,
+                                "cachedInputTokens": 20,
+                                "cacheCreationInputTokens": 5,
+                            },
+                            "total": {
+                                "outputTokens": 300,
+                                "cacheCreationInputTokens": 40,
+                            },
+                        }
+                    },
+                },
+                _FakeProviderContext(),  # type: ignore[arg-type]
+                object(),  # type: ignore[arg-type]
+            )
+        ]
+
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].kind, "event")
+        usage = events[0].event
+        assert usage is not None
+        self.assertEqual(usage.input_tokens, 100)
+        self.assertEqual(usage.output_tokens, 30)
+        self.assertEqual(usage.cache_read_tokens, 20)
+        self.assertEqual(usage.cache_creation_tokens, 5)
+        self.assertEqual(usage.cumulative_output_tokens, 300)
+        self.assertEqual(usage.cumulative_cache_creation_tokens, 40)
+
     async def test_thread_start_uses_project_sandbox_override(self) -> None:
         provider = CodexProvider()
         ctx = _FakeProviderContext(

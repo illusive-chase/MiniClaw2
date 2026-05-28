@@ -23,6 +23,7 @@ from .domain import (
     NodeKind,
     NodeState,
     Project,
+    TokenUsage,
 )
 from .events import (
     ErrorEvent,
@@ -30,6 +31,7 @@ from .events import (
     NodeStarted,
     NodeUpdated,
     TurnDone,
+    Usage,
 )
 from .git_state import commit_all, git_head
 from .providers import AgentProvider, AgentProviderContext, AgentProviderEvent, GateRequest
@@ -257,7 +259,11 @@ class NodeRunner:
 
     async def _handle_provider_event(self, ev: AgentProviderEvent) -> None:
         if ev.kind == "event" and ev.event is not None:
+            if isinstance(ev.event, Usage):
+                self._record_usage(ev.event)
             await self._emit(ev.event)
+            if isinstance(ev.event, Usage):
+                await self._emit_node_updated()
             return
         if ev.kind == "session" and ev.session_id:
             self.node.provider_session_id = ev.session_id
@@ -273,6 +279,17 @@ class NodeRunner:
         if ev.kind == "error" and ev.error:
             await self._emit(ErrorEvent(message=ev.error))
             return
+
+    def _record_usage(self, usage: Usage) -> None:
+        self.node.usage = TokenUsage(
+            input_tokens=usage.input_tokens,
+            output_tokens=usage.output_tokens,
+            cache_read_tokens=usage.cache_read_tokens,
+            cache_creation_tokens=usage.cache_creation_tokens,
+            cumulative_output_tokens=usage.cumulative_output_tokens,
+            cumulative_cache_creation_tokens=usage.cumulative_cache_creation_tokens,
+        )
+        self.store.update_node(self.node)
 
     # ---- emit (persist + push) ----
 

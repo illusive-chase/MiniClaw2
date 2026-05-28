@@ -155,16 +155,10 @@ class CodexProvider:
             return
 
         if method == "thread/tokenUsage/updated":
-            usage = ((params.get("tokenUsage") or {}).get("last") or {})
+            usage = _usage_from_token_usage(params.get("tokenUsage") or {})
             yield AgentProviderEvent(
                 kind="event",
-                event=Usage(
-                    input_tokens=int(usage.get("inputTokens") or 0),
-                    output_tokens=int(usage.get("outputTokens") or 0),
-                    cache_read_tokens=int(usage.get("cachedInputTokens") or 0),
-                    cache_creation_tokens=0,
-                    final=False,
-                ),
+                event=usage,
             )
             return
 
@@ -709,6 +703,73 @@ def _activity_from_item(item: dict[str, Any], status: str) -> Activity | None:
             summary=_truncate(json.dumps(item, ensure_ascii=False)),
         )
     return None
+
+
+def _usage_from_token_usage(token_usage: Any) -> Usage:
+    root = token_usage if isinstance(token_usage, dict) else {}
+    last = root.get("last") if isinstance(root.get("last"), dict) else {}
+    total = root.get("total") if isinstance(root.get("total"), dict) else {}
+
+    return Usage(
+        input_tokens=_usage_int(
+            last,
+            "inputTokens",
+            "input_tokens",
+            "requestTokens",
+            "promptTokens",
+        ),
+        output_tokens=_usage_int(
+            last,
+            "outputTokens",
+            "output_tokens",
+            "completionTokens",
+        ),
+        cache_read_tokens=_usage_int(
+            last,
+            "cachedInputTokens",
+            "cacheReadInputTokens",
+            "cacheReadTokens",
+            "cache_read_input_tokens",
+        ),
+        cache_creation_tokens=_usage_int(
+            last,
+            "cacheCreationInputTokens",
+            "cacheCreationTokens",
+            "cache_creation_input_tokens",
+        ),
+        cumulative_output_tokens=_usage_optional_int(
+            (total, root),
+            "outputTokens",
+            "cumulativeOutputTokens",
+            "output_tokens",
+            "completionTokens",
+        ),
+        cumulative_cache_creation_tokens=_usage_optional_int(
+            (total, root),
+            "cacheCreationInputTokens",
+            "cacheCreationTokens",
+            "cumulativeCacheCreationInputTokens",
+            "cache_creation_input_tokens",
+        ),
+        final=False,
+    )
+
+
+def _usage_optional_int(sources: tuple[dict[str, Any], ...], *keys: str) -> int | None:
+    for source in sources:
+        for key in keys:
+            value = source.get(key)
+            if value is not None:
+                try:
+                    return int(value)
+                except (TypeError, ValueError):
+                    continue
+    return None
+
+
+def _usage_int(source: dict[str, Any], *keys: str) -> int:
+    value = _usage_optional_int((source,), *keys)
+    return value or 0
 
 
 def _render_changes(changes: Any) -> tuple[str, str]:

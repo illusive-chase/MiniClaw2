@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { NodeInfo, NodeState } from "../types";
+import { UsageStrip } from "./UsageStrip";
 
 type EdgePath = {
   d: string;
@@ -184,6 +185,7 @@ function NodeTile({
   const body = isOp
     ? node.summary || "(running)"
     : node.summary || node.prompt || "(empty prompt)";
+  const startedAt = formatNodeTime(node.started_at ?? node.created_at);
 
   return (
     <div
@@ -196,6 +198,7 @@ function NodeTile({
         type="button"
         ref={tileRef}
         onClick={() => onSelect(node.id)}
+        title={`${node.id} · ${startedAt}`}
         className={
           "group relative z-10 grid h-[104px] grid-rows-[auto_1fr_auto] overflow-hidden rounded-md border border-line text-left transition hover:border-line-strong hover:shadow-card " +
           (isOp ? "w-32" : "w-52") + " " +
@@ -223,7 +226,11 @@ function NodeTile({
 
         <div className="flex items-center justify-between gap-2 pb-1.5 pl-3.5 pr-2.5 pt-1.5 text-[10px] text-ink-subtle">
           <span className="font-mono">{node.id.slice(0, 8)}</span>
-          <span className="font-mono">{formatNodeTime(node.started_at ?? node.created_at)}</span>
+          {node.usage ? (
+            <UsageStrip usage={node.usage} className="shrink-0 px-1.5 py-0 text-[10px]" />
+          ) : (
+            <span className="font-mono">{startedAt}</span>
+          )}
         </div>
 
         {/* bottom progress / state bar */}

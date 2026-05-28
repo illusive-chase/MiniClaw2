@@ -1,19 +1,19 @@
 import { useEffect, useMemo, useState } from "react";
 import type {
-  Activity,
   ClientMessage,
   EventRecord,
   InteractionRequest,
   NodeDiff,
   NodeInfo,
-  ServerEvent,
 } from "../types";
 import { canResumeNode } from "../nodeUtil";
-import { Chat, type ChatTurn } from "./Chat";
+import { buildTurnsFromEvents } from "../transcript";
+import { Chat } from "./Chat";
 import { GateReviewPanel } from "./GateReviewPanel";
 import { PermissionDialog } from "./PermissionDialog";
 import { AskUserDialog } from "./AskUserDialog";
 import { PlanDialog } from "./PlanDialog";
+import { UsageStrip } from "./UsageStrip";
 
 type DetailTab =
   | "summary"
@@ -73,7 +73,7 @@ export function NodeDetail({
   const showReview = !!node && (node.state === "awaiting_review" || !!reviewRequest);
   const showGate = showReview || !!gateRequest;
   const [tab, setTab] = useState<DetailTab>("summary");
-  const turns = useMemo(() => (node ? turnsFromEvents(node, events) : []), [node, events]);
+  const turns = useMemo(() => (node ? buildTurnsFromEvents(node, events) : []), [node, events]);
 
   useEffect(() => {
     if (showGate) {
@@ -309,6 +309,10 @@ function Summary({
                 <dd className="truncate font-mono text-ink">{node.provider_turn_id ?? "-"}</dd>
               </>
             )}
+            <dt className="text-ink-subtle">Usage</dt>
+            <dd className="text-ink">
+              <UsageStrip usage={node.usage ?? null} className="text-[11px]" />
+            </dd>
             <dt className="text-ink-subtle">Events</dt>
             <dd className="text-ink">{loading ? "loading" : eventCount}</dd>
             <dt className="text-ink-subtle">Started</dt>
@@ -381,48 +385,6 @@ function RawEvents({
       )}
     </div>
   );
-}
-
-function turnsFromEvents(node: NodeInfo, records: EventRecord[]): ChatTurn[] {
-  const assistant: ChatTurn = {
-    id: `${node.id}-assistant`,
-    role: "assistant",
-    text: "",
-    activities: [],
-    streaming: node.state === "running" || node.state === "waiting",
-  };
-  for (const record of records) {
-    applyEventToTurn(assistant, record.event);
-  }
-  return [
-    {
-      id: `${node.id}-user`,
-      role: "user",
-      text: node.prompt,
-      activities: [],
-    },
-    assistant,
-  ];
-}
-
-function applyEventToTurn(turn: ChatTurn, event: ServerEvent) {
-  if (event.type === "text_delta") {
-    turn.text += event.text;
-  } else if (event.type === "thinking") {
-    turn.thinking = (turn.thinking ?? "") + (event.text.endsWith("\n") ? event.text : event.text + "\n");
-  } else if (event.type === "activity") {
-    turn.activities = mergeActivity(turn.activities, event);
-  } else if (event.type === "turn_done") {
-    turn.streaming = false;
-  } else if (event.type === "error") {
-    turn.text += `${turn.text ? "\n\n" : ""}Error: ${event.message}`;
-  }
-}
-
-function mergeActivity(items: Activity[], activity: Activity): Activity[] {
-  const index = items.findIndex((item) => item.id === activity.id);
-  if (index < 0) return [...items, activity];
-  return items.map((item, i) => (i === index ? activity : item));
 }
 
 function SettingsView({ node }: { node: NodeInfo }) {

@@ -51,6 +51,15 @@ class GateState(StrEnum):
     RESOLVED = "resolved"
 
 
+class TokenUsage(BaseModel):
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_creation_tokens: int = 0
+    cumulative_output_tokens: int | None = None
+    cumulative_cache_creation_tokens: int | None = None
+
+
 class Project(BaseModel):
     id: str = Field(default_factory=_new_id)
     root_path: str
@@ -83,6 +92,7 @@ class Node(BaseModel):
     contract: str = ""
     summary: str | None = None
     error: str | None = None
+    usage: TokenUsage | None = None
     system_context_snapshot: str = ""
     settings_snapshot: dict[str, Any] = Field(default_factory=dict)
     created_at: float = Field(default_factory=_now)

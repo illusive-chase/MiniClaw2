@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getNodeDiff, listNodeEvents, listNodes } from "./api";
 import { canResumeNode } from "./nodeUtil";
-import { Chat, type ChatTurn } from "./components/Chat";
+import { Chat } from "./components/Chat";
 import { ProjectTimeline } from "./components/ProjectTimeline";
 import { NodeDetail, type PendingGate } from "./components/NodeDetail";
 import { GateLaunchModal } from "./components/GateLaunchModal";
@@ -13,14 +13,18 @@ import { ThemeToggle } from "./components/ThemeToggle";
 import { UsageStrip } from "./components/UsageStrip";
 import { VerifyCard } from "./components/VerifyCard";
 import type {
-  Activity,
   EventRecord,
   NodeDiff,
   NodeInfo,
   ServerEvent,
   SessionInfo,
-  Usage,
 } from "./types";
+import {
+  appendServerEvent,
+  createAssistantTurn,
+  createUserTurn,
+  type ChatTurn,
+} from "./transcript";
 import { useSessionSocket } from "./ws";
 
 type View = "chat" | "tests";
@@ -41,7 +45,6 @@ export function App() {
   const [selectedDiffLoading, setSelectedDiffLoading] = useState(false);
   const [pendingGate, setPendingGate] = useState<PendingGate | null>(null);
   const [pendingReview, setPendingReview] = useState<PendingGate | null>(null);
-  const [usage, setUsage] = useState<Usage | null>(null);
   const [streaming, setStreaming] = useState(false);
   const [gateModalOpen, setGateModalOpen] = useState(false);
   const [nodeModalOpen, setNodeModalOpen] = useState(false);
@@ -57,7 +60,6 @@ export function App() {
     setSelectedEvents([]);
     setSelectedDiff(null);
     setTurns([]);
-    setUsage(null);
     setStreaming(false);
     setPendingGate(null);
     setPendingReview(null);
@@ -182,13 +184,8 @@ export function App() {
 
   const handleEvent = useCallback((ev: ServerEvent) => {
     let eventNodeId = activeNodeIdRef.current;
-    if (ev.type === "text_delta") {
-      setTurns((prev) => appendAssistantText(prev, ev.text));
-    } else if (ev.type === "thinking") {
-      setTurns((prev) => appendAssistantThinking(prev, ev.text));
-    } else if (ev.type === "activity") {
-      setTurns((prev) => mergeActivity(prev, ev));
-    } else if (ev.type === "interaction_request") {
+    setTurns((prev) => appendServerEvent(prev, ev));
+    if (ev.type === "interaction_request") {
       const ownerNodeId = activeNodeIdRef.current;
       if (ownerNodeId) {
         if (ev.interaction_type === "checkpoint_review") {
@@ -199,15 +196,11 @@ export function App() {
         setSelectedNodeId(ownerNodeId);
       }
       void refreshNodes();
-    } else if (ev.type === "usage") {
-      setUsage(ev);
     } else if (ev.type === "turn_done") {
       setStreaming(false);
-      setTurns((prev) =>
-        prev.map((t, i) => (i === prev.length - 1 ? { ...t, streaming: false } : t)),
-      );
       void refreshNodes();
     } else if (ev.type === "error") {
+      setStreaming(false);
       console.error("server error:", ev.message);
     } else if (ev.type === "node_started") {
       activeNodeIdRef.current = ev.node_id;
@@ -236,8 +229,8 @@ export function App() {
       const aId = `a${++turnIdRef.current}`;
       setTurns((prev) => [
         ...prev,
-        { id: userId, role: "user", text, activities: [] },
-        { id: aId, role: "assistant", text: "", activities: [], streaming: true },
+        createUserTurn(userId, text),
+        createAssistantTurn(aId, true),
       ]);
       setStreaming(true);
       send({ type: "user_message", text, resume_from_node_id: resume });
@@ -266,8 +259,8 @@ export function App() {
     const aId = `a${++turnIdRef.current}`;
     setTurns((prev) => [
       ...prev,
-      { id: userId, role: "user", text: `[gate] ${prompt}`, activities: [] },
-      { id: aId, role: "assistant", text: "", activities: [], streaming: true },
+      createUserTurn(userId, `[gate] ${prompt}`),
+      createAssistantTurn(aId, true),
     ]);
     setStreaming(true);
     send({ type: "start_gate_node", prompt, contract });
@@ -407,7 +400,7 @@ export function App() {
         </div>
 
         <div className="flex items-center gap-3">
-          <UsageStrip usage={usage} />
+          <UsageStrip usage={selectedNode?.usage ?? null} />
 
           {streaming && (
             <button
@@ -554,36 +547,6 @@ export function App() {
       )}
     </div>
   );
-}
-
-function appendAssistantText(prev: ChatTurn[], text: string): ChatTurn[] {
-  if (prev.length === 0) return prev;
-  const last = prev[prev.length - 1];
-  if (last.role !== "assistant") return prev;
-  const updated = { ...last, text: last.text + text };
-  return [...prev.slice(0, -1), updated];
-}
-
-function appendAssistantThinking(prev: ChatTurn[], text: string): ChatTurn[] {
-  if (prev.length === 0) return prev;
-  const last = prev[prev.length - 1];
-  if (last.role !== "assistant") return prev;
-  const updated = {
-    ...last,
-    thinking: (last.thinking ?? "") + (text.endsWith("\n") ? text : text + "\n"),
-  };
-  return [...prev.slice(0, -1), updated];
-}
-
-function mergeActivity(prev: ChatTurn[], a: Activity): ChatTurn[] {
-  if (prev.length === 0) return prev;
-  const last = prev[prev.length - 1];
-  if (last.role !== "assistant") return prev;
-  const i = last.activities.findIndex((x) => x.id === a.id);
-  const next = i >= 0
-    ? last.activities.map((x, idx) => (idx === i ? a : x))
-    : [...last.activities, a];
-  return [...prev.slice(0, -1), { ...last, activities: next }];
 }
 
 function upsertNode(prev: NodeInfo[], node: NodeInfo): NodeInfo[] {

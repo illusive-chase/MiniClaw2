@@ -52,6 +52,8 @@ class Usage(BaseModel):
     output_tokens: int = 0
     cache_read_tokens: int = 0
     cache_creation_tokens: int = 0
+    cumulative_output_tokens: int | None = None
+    cumulative_cache_creation_tokens: int | None = None
     final: bool = False
     seq: int = 0
 
