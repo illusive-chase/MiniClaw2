@@ -78,6 +78,24 @@ class _FakeGateContext:
         return self.response
 
 
+class _FakeProviderContext:
+    def __init__(self, *, settings_override: dict[str, Any] | None = None) -> None:
+        from miniclaw2.domain import Node, Project
+
+        self.node = Node(project_id="project-1", prompt="Create README.md")
+        self.project = Project(
+            root_path="/tmp/workspace",
+            provider="codex",
+            settings_override=settings_override or {},
+        )
+        self.system_context = ""
+        self.gates: list[Any] = []
+
+    async def request_gate(self, gate: Any) -> dict[str, Any]:
+        self.gates.append(gate)
+        return {"allow": False, "interrupt": False}
+
+
 class CodexProviderTest(unittest.IsolatedAsyncioTestCase):
     async def test_initialize_fails_when_app_server_exits_before_reply(self) -> None:
         def on_request(payload: dict[str, Any]) -> None:
@@ -213,6 +231,63 @@ class CodexProviderTest(unittest.IsolatedAsyncioTestCase):
             },
         )
         self.assertEqual(ctx.requests, [])
+
+    async def test_thread_start_uses_project_sandbox_override(self) -> None:
+        provider = CodexProvider()
+        ctx = _FakeProviderContext(
+            settings_override={
+                "approval_policy": "never",
+                "sandbox": "workspace-write",
+            }
+        )
+
+        captured_requests: list[dict[str, Any]] = []
+
+        class _ClientStub:
+            async def initialize(self) -> dict[str, Any]:
+                return {}
+
+            async def request(self, method: str, params: dict[str, Any], **_kwargs: Any) -> dict[str, Any]:
+                captured_requests.append({"method": method, "params": params})
+                if method == "thread/start":
+                    return {"thread": {"id": "thread-1"}}
+                if method == "turn/start":
+                    return {"turn": {"id": "turn-1"}}
+                raise AssertionError(method)
+
+            async def receive(self) -> dict[str, Any]:
+                return {"method": "turn/completed", "params": {"turn": {"status": "completed"}}}
+
+            async def respond(self, *_args: Any, **_kwargs: Any) -> None:
+                return None
+
+        class _ClientCtx:
+            async def __aenter__(self_nonlocal) -> Any:
+                return _ClientStub()
+
+            async def __aexit__(self_nonlocal, *_exc: object) -> None:
+                return None
+
+        async def _run_once() -> list[dict[str, Any]]:
+            original_client = provider._client
+            try:
+                provider._client = None
+                with patch("miniclaw2.providers.codex._CodexJsonRpcClient", return_value=_ClientCtx()):
+                    events = []
+                    async for ev in provider.run(ctx):  # type: ignore[arg-type]
+                        events.append(ev)
+                        if ev.kind == "done":
+                            break
+                    return captured_requests
+            finally:
+                provider._client = original_client
+
+        requests = await _run_once()
+        self.assertGreaterEqual(len(requests), 2)
+        self.assertEqual(requests[0]["method"], "thread/start")
+        self.assertEqual(requests[0]["params"]["sandbox"], "workspace-write")
+        self.assertEqual(requests[0]["params"]["approvalPolicy"], "never")
+        self.assertEqual(requests[0]["params"]["cwd"], "/tmp/workspace")
 
 
 if __name__ == "__main__":

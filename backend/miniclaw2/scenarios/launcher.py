@@ -37,6 +37,7 @@ def launch_scenario(
         auto_commit=scenario.auto_commit or None,
         permission_mode=scenario.permission_mode,
         approval_policy=_approval_policy_for(provider, scenario.permission_mode),
+        sandbox=_sandbox_for(provider, scenario.permission_mode),
         temporary=True,
         scenario_name=name,
     )
@@ -78,4 +79,10 @@ def _seed_workspace(scenario: Scenario, root: Path) -> None:
 def _approval_policy_for(provider: str, permission_mode: str | None) -> str | None:
     if provider.lower() == "codex" and permission_mode == "bypassPermissions":
         return "never"
+    return None
+
+
+def _sandbox_for(provider: str, permission_mode: str | None) -> str | None:
+    if provider.lower() == "codex" and permission_mode == "bypassPermissions":
+        return "workspace-write"
     return None

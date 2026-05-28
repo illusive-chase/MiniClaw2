@@ -63,7 +63,7 @@ class LaunchScenarioTest(unittest.TestCase):
             finally:
                 registry.delete_project(project.id)
 
-    def test_launching_bash_uname_codex_sets_never_approval_policy(self) -> None:
+    def test_launching_bash_uname_codex_sets_noninteractive_workspace_write(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             store = Store(root=Path(raw))
             registry = ProjectRegistry(store=store)
@@ -79,6 +79,10 @@ class LaunchScenarioTest(unittest.TestCase):
                 self.assertEqual(
                     project.settings_override.get("approval_policy"),
                     "never",
+                )
+                self.assertEqual(
+                    project.settings_override.get("sandbox"),
+                    "workspace-write",
                 )
                 self.assertEqual(
                     project.settings_override.get("permission_mode"),

@@ -81,6 +81,7 @@ class ProjectRegistry:
         auto_commit: bool | None = None,
         permission_mode: str | None = None,
         approval_policy: str | None = None,
+        sandbox: str | None = None,
         temporary: bool = False,
         scenario_name: str | None = None,
     ) -> Project:
@@ -104,6 +105,8 @@ class ProjectRegistry:
             settings["permission_mode"] = permission_mode
         if approval_policy is not None:
             settings["approval_policy"] = approval_policy
+        if sandbox is not None:
+            settings["sandbox"] = sandbox
         project = Project(
             root_path=root_path,
             name=name,
