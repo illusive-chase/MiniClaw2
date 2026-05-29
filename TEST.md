@@ -1,12 +1,14 @@
 # MiniClaw2 testing — dashboard-launched, demo-driven, investigation-free
 
-> **Status: Tier 1, Tier 2, and the Tier 3 flagship `gui-calculator`
-> landed (engine + assets — live-smoke pending).** The dashboard test
-> panel, the temporary-workspace feature, the scenario
+> **Status: Tier 1, Tier 2, Tier 3, and Tier 4 catalogues all landed
+> (engine + assets — live-smoke pending on Tier 3/4).** The dashboard
+> test panel, the temporary-workspace feature, the scenario
 > loader/launcher, the `verify.sh` runner, the three bundled Tier 1
 > scenarios (`hello-text`, `bash-uname`, `write-readme`), and the
 > three Tier 2 single-node scenarios (`permission-approve`,
-> `plan-mode-approval`, `interrupt-midstream`) are all in. See
+> `plan-mode-approval`, `interrupt-midstream`) are all in. Tier 3
+> adds `gui-calculator`, `context-md-respected`, and
+> `resume-fix-after-reject`; Tier 4 adds `reconnect-replay`. See
 > `TESTING.zh.md` for the end-user run-through.
 >
 > **Multi-step scenario engine landed.** The scenario-step expander
@@ -25,22 +27,32 @@
 > and renders it for the human, who responds via write-json / no-op
 > as before. See `DESIGN.md §3.2` for the rationale.
 >
-> **Tier 3 `gui-calculator` landed (assets pending live smoke).**
-> Two-step scenario (`build` agent → `review` passive gate) with
-> `auto_commit: true`. Verify checks: `calculator.py` imports cleanly,
-> the auto-commit op rewrote the build node's `commit_after`,
-> `reviews/build.json` exists. GUI behavior (1+2=3, 9/0 error
-> indicator, C clear, window close) is human-verified in
-> `acceptance.md`. Other Tier 3 scenarios (`context-md-respected`,
-> `resume-fix-after-reject`) and Tier 4 (`reconnect-replay`) remain
-> planned — the engine + brief-from + history fields are now in
-> place, so `resume-fix-after-reject` only needs the `resume_from:` +
-> `when:` YAML extension. Grounded in `DESIGN.md §1.1`
-> ("investigation-free interface"): every test is a small task whose
-> **observable outcome** the human ratifies. Internal correctness —
-> gate routing, commit-op rewrite, reconnect replay — is exercised
-> transitively. If an internal path is broken, the visible artifact
-> is broken too.
+> **Tier 3 + Tier 4 catalogue closed (assets pending live smoke).**
+> `gui-calculator` is the flagship two-step demo (build agent → passive
+> review gate, `auto_commit: true`). `context-md-respected` is a
+> single-node scenario that seeds `CONTEXT.md` and checks both the
+> `[CTX-OK]` marker in the transcript and that `system_context_snapshot`
+> matches the seed byte-for-byte. `resume-fix-after-reject` is the
+> three-step reject-driven branch (build → reject review → fix); its
+> verify checks `scenario_step_history` recorded `decision: "rejected"`,
+> `fix.parent_node_id == build.id`, and `fix` inherited the build's
+> provider session. `reconnect-replay` is the Tier 4 resilience demo:
+> the project header grows a **Simulate WS drop** button (conditional
+> on `scenario_name === "reconnect-replay"`) that closes the live
+> socket with code 1000 so `ws.ts`'s existing reconnect loop fires
+> with `(node_id, last_seq)`; verify checks `events.jsonl` is a
+> contiguous monotonic sequence and the transcript reaches the
+> end-of-stream marker. New scenario-engine YAML extensions: `when:
+> <step>.approved|rejected` (string predicate evaluated against the
+> recorded gate decision) and `resume_from: <step_id>` (resolved via
+> history to `start_node`'s `resume_from_node_id`). Gate completions
+> now stamp `Node.review_outcome` from the write-json payload
+> (`approved: false` → `"rejected"`, else `"approved"`). Grounded in
+> `DESIGN.md §1.1` ("investigation-free interface"): every test is a
+> small task whose **observable outcome** the human ratifies. Internal
+> correctness — gate routing, commit-op rewrite, reconnect replay — is
+> exercised transitively. If an internal path is broken, the visible
+> artifact is broken too.
 
 ## 1. What this document is
 
@@ -317,7 +329,7 @@ in any of them breaks this demo's verify *and* its acceptance.
 Document this in the dashboard's test panel so a future maintainer
 knows where to look.
 
-**context-md-respected**
+**context-md-respected** *(✓ engine + assets landed; live smoke pending)*
 > Project-neutral `CONTEXT.md` injection is honored by both providers.
 
 - Seed copies a `CONTEXT.md` containing "End every assistant reply
@@ -325,43 +337,57 @@ knows where to look.
 - Prompt: "What's 2 + 3?" (banal — the interesting signal is the
   marker).
 - Verify: assistant text in the first turn's `events.jsonl`
-  contains `[CTX-OK]`; the node's `system_context_snapshot` field
-  matches the seeded text byte-for-byte.
+  contains `[CTX-OK]`; at least one node's `system_context_snapshot`
+  field matches the seeded text byte-for-byte.
 - Acceptance: "the reply ended with `[CTX-OK]`."
 
-**resume-fix-after-reject**
-> Resume edge: agent → gate (reject) → resume agent → gate (approve).
+**resume-fix-after-reject** *(✓ engine + assets landed; live smoke pending)*
+> Resume edge: agent → gate (reject) → resume agent.
 
-- Three declared nodes: `build` agent, `review` gate (reject path),
-  `fix` agent with `resume_from: build` and `when: review.rejected`.
-  The first gate is rejected via write-json `{approved: false,
-  notes: "add division"}`. A second `review` (or re-using the same
-  template via §8) lets the user approve.
-- Verify: timeline has the expected node sequence; the `fix` node
-  carries `parent_node_id == build.id` and inherits `build`'s
-  `provider_session_id`; final `git log` shows the multi-commit
-  history; an SVG resume connector is visible in the timeline.
-- Acceptance: "you saw the first review render the contract,
-  rejected it with the canned notes, watched the resume node
-  continue from the build's session (visible `↻` badge), and
-  approved the second review."
+- Three declared nodes: `build` agent (writes `mathutils.py` with only
+  `add`), `review` gate sourced via `brief_from: build`, `fix` agent
+  with `resume_from: build` and `when: review.rejected`. The first
+  gate is rejected via write-json `{approved: false, notes: "..."}`.
+  The expander records `decision: "rejected"` on the review's history
+  entry and branches into `fix`; the fix step resumes the build's
+  provider session and addresses the notes (a second review is *not*
+  declared in v1 — the verify floor + acceptance covers the resume
+  path without a second human turn).
+- Verify: `scenario_step_history` shows `build` / `review` / `fix`
+  all `terminal_state: done` and review's `decision: "rejected"`;
+  the `fix` node carries `parent_node_id == build.id` and inherits
+  `build`'s `provider_session_id`; `mathutils.py` ends up with both
+  `add` and at least one more function the reviewer asked for;
+  `git rev-list --count HEAD >= 3` (seed + per-step auto-commit ops).
+- Acceptance: "you saw the build node produce `mathutils.py` with
+  only `add` and a brief naming the import command, rejected the
+  review with `{approved: false, notes: …}`, watched the fix node
+  appear with the `↻ build` resume badge, and confirmed the final
+  `mathutils.py` contains both the original `add` and the function
+  you asked for."
 
-### Tier 4 — resilience (planned)
+### Tier 4 — resilience
 
-**reconnect-replay**
+**reconnect-replay** *(✓ engine + assets landed; live smoke pending)*
 > WS drops mid-stream; reconnect; replay fills the gap; live tail finishes.
 
-- Start an agent node with a prompt that streams for ~10s
-  (e.g. "Write a 200-word summary of Python's history; type
-  slowly"). Mid-stream, simulate a drop: a **Simulate drop** button
-  on the test panel closes the active WS and reopens it with
-  `(node_id, last_seq)`.
-- Verify: events captured by the second observer + replay produce
-  no duplicates, no gaps; the `events.jsonl` matches the union of
-  pre-drop + post-replay sequences exactly.
-- Acceptance: "after the simulated drop, the transcript kept
-  growing without rewinding, no text was duplicated, and the node
-  reached `done` cleanly."
+- Single agent node with a prompt asking for "10 short facts about
+  Python, one per line, each prefixed `Fact N:`, ending the last line
+  with `[END]`." The project header surfaces a **Simulate WS drop**
+  button (conditional on `scenario_name === "reconnect-replay"`) that
+  calls `useSessionSocket`'s new `simulateDrop()` — closing the active
+  socket with code 1000 so `ws.ts`'s existing reconnect loop fires
+  with the tracked `(node_id, last_seq)`.
+- Verify: `events.jsonl` for the streaming node carries strictly
+  increasing seqs with no gaps (the canonical source replay reads
+  from); transcript contains `[END]`; node `state == "done"`. Client-
+  side duplicate / gap behavior is *not* observable from the shell
+  and is therefore deferred to the human acceptance step.
+- Acceptance: "the transcript was visibly growing line-by-line when
+  you clicked Simulate WS drop; the ws indicator briefly flickered to
+  `connecting` then `open`; the transcript continued from where it
+  left off (no rewind, no visibly duplicated facts); the node reached
+  `done` cleanly and ended with `[END]`."
 
 ## 7. Out of scope for v1
 
@@ -384,27 +410,28 @@ knows where to look.
 
 ## 8. Open questions
 
-To revisit when the remaining Tier 3 / Tier 4 work starts:
+To revisit after live-smoking the Tier 3 / Tier 4 catalogue:
 
-- **Branching in `scenario.yaml`.** Tier 3's `resume-fix-after-reject`
-  needs "the gate was rejected → run the fix step." A minimal
-  `when: <step>.rejected` / `when: <step>.approved` predicate,
-  evaluated by the existing expander, covers the planned scenarios
-  without a full template engine. The hard work is now scoped: a
-  `decision` field on `scenario_step_history` entries (populated from
-  the gate's response payload — `approved: false` → `"rejected"`,
-  otherwise `"approved"`) plus an `if` arm in `_advance_scenario_step`
-  that skips steps whose `when:` doesn't match. Worth keeping the
-  YAML linear (no DAG) until we actually need it.
-- **`resume_from:` step field.** Tier 3's `resume-fix-after-reject`
-  also needs to thread a step's source node id into `start_node` as
-  `resume_from_node_id`. The history already records `node_id` per
-  step, so the expander has everything it needs once the YAML field
-  is plumbed.
-- **How to drive `reconnect-replay` from the dashboard.** A
-  "Simulate drop" button on the test panel is the cleanest option;
-  instructing the user to close the tab is the simplest. Decide
-  when the scenario is implemented.
+- **Branching in `scenario.yaml`.** *Resolved.* `when:
+  <step>.approved|rejected` is a string predicate parsed at load
+  time; `_advance_scenario_step` walks forward skipping steps whose
+  predicate doesn't match the recorded gate `decision`. Gate
+  completions stamp `Node.review_outcome` from the write-json
+  payload (`approved: false` → `"rejected"`, else `"approved"`); the
+  expander mirrors that onto the history entry. YAML stays linear
+  (no DAG) until a real second use-case forces our hand.
+- **`resume_from:` step field.** *Resolved.* Agent steps may declare
+  `resume_from: <step_id>`; the loader validates the target is an
+  earlier step, the expander resolves the matching `node_id` from
+  history and passes it as `start_node`'s `resume_from_node_id`. The
+  new node inherits the source's provider session.
+- **How to drive `reconnect-replay` from the dashboard.** *Resolved.*
+  A small "Simulate WS drop" button lives in the project header,
+  conditional on `session.scenario_name === "reconnect-replay"`. It
+  calls `useSessionSocket`'s `simulateDrop()` helper, which closes
+  the live socket with code 1000 so the existing reconnect path
+  fires with `(node_id, last_seq)`. No test-panel-specific UI
+  needed.
 - **Cross-provider artifact comparison.** Same brief, two providers,
   two produced repos — is there a useful diff to surface? Likely
   yes, but the format will fall out of running a few scenarios
@@ -418,3 +445,9 @@ To revisit when the remaining Tier 3 / Tier 4 work starts:
   general, but no "New scratch project" button exists in the
   dashboard. Add when ad-hoc-experiment use shows up; the wiring is
   one button + a `POST /sessions {temporary: true}` call.
+- **Second-review step for `resume-fix-after-reject`.** v1 ships
+  three steps (build / review / fix) so the resume edge is the
+  observable outcome. Adding a `review_2` step (the "approve the
+  second review" line from the original acceptance copy) would
+  exercise `when:` with the approved branch too. Hold until we
+  have a second use-case that wants the same shape.

@@ -120,6 +120,33 @@ class PassiveGateNodeRunnerTest(unittest.IsolatedAsyncioTestCase):
                 json.loads(target.read_text(encoding="utf-8")),
                 {"approved": True, "notes": "ok"},
             )
+            # Approved payload should stamp review_outcome="approved" so
+            # downstream scenario `when:` predicates can branch on it.
+            self.assertEqual(node.review_outcome, "approved")
+
+    async def test_passive_gate_rejected_payload_stamps_review_outcome(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            store, project, node, events, on_event = _setup_gate_run(tmp)
+
+            runner = NodeRunner(node, project, store, on_event)
+            task = asyncio.create_task(runner.run())
+
+            await _wait_for(lambda: len(_interaction_requests(events)) >= 1)
+            req = _interaction_requests(events)[0]
+            runner.resolve_gate(
+                req["id"],
+                allow=True,
+                decision="write-json",
+                response={
+                    "path": "out/review.json",
+                    "payload": {"approved": False, "notes": "needs fix"},
+                },
+            )
+            await task
+
+            self.assertEqual(node.state, NodeState.DONE)
+            self.assertEqual(node.review_outcome, "rejected")
 
     async def test_passive_gate_no_op_transitions_to_done(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

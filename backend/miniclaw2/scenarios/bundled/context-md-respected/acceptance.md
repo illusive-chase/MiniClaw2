@@ -1,0 +1,3 @@
+- The assistant's reply answered the arithmetic question.
+- The reply ended with the literal `[CTX-OK]` marker on its own line.
+- No tool activity appeared in the timeline (no Bash, Edit, or other tool tiles).

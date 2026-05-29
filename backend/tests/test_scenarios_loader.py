@@ -18,6 +18,9 @@ class ScenariosLoaderTest(unittest.TestCase):
                 "plan-mode-approval",
                 "interrupt-midstream",
                 "gui-calculator",
+                "context-md-respected",
+                "resume-fix-after-reject",
+                "reconnect-replay",
             },
         )
 
@@ -59,6 +62,16 @@ class ScenariosLoaderTest(unittest.TestCase):
         self.assertEqual(review.kind, "gate")
         self.assertEqual(review.brief_from, "build")
         self.assertEqual(review.response_path, "reviews/build.json")
+        self.assertTrue(scenario.auto_commit)
+
+    def test_resume_fix_after_reject_parses_resume_and_when(self) -> None:
+        scenario = load_scenario("resume-fix-after-reject")
+        self.assertEqual([n.id for n in scenario.nodes], ["build", "review", "fix"])
+        fix = scenario.nodes[2]
+        self.assertEqual(fix.kind, "agent")
+        self.assertEqual(fix.resume_from, "build")
+        self.assertEqual(fix.when_step, "review")
+        self.assertEqual(fix.when_decision, "rejected")
         self.assertTrue(scenario.auto_commit)
 
 

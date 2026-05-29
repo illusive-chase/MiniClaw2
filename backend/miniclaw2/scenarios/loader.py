@@ -30,6 +30,9 @@ class NodeSpec:
     output_path: str = ""
     brief_from: str = ""        # for gate steps: source agent step id
     response_path: str = ""     # gate-only: default path for write-json response
+    resume_from: str = ""       # agent-only: source step whose session this resumes
+    when_step: str = ""         # predicate target — must be an earlier gate step
+    when_decision: str = ""     # "approved" | "rejected" — required iff when_step set
 
 
 @dataclass(slots=True)
@@ -191,6 +194,27 @@ def load_scenario(name: str) -> Scenario:
                 f"{name}: node {node_id} response_path must be project-relative and may not contain '..'"
             )
 
+        resume_from = raw.get("resume_from", "") or ""
+        if resume_from and not isinstance(resume_from, str):
+            raise ScenarioError(f"{name}: node {node_id} resume_from must be a string")
+        if resume_from and kind != "agent":
+            raise ScenarioError(
+                f"{name}: node {node_id} has resume_from but is not an agent"
+            )
+
+        when_raw = raw.get("when", "") or ""
+        when_step = ""
+        when_decision = ""
+        if when_raw:
+            if not isinstance(when_raw, str):
+                raise ScenarioError(f"{name}: node {node_id} when must be a string")
+            parts = when_raw.split(".")
+            if len(parts) != 2 or not parts[0] or parts[1] not in {"approved", "rejected"}:
+                raise ScenarioError(
+                    f"{name}: node {node_id} when must be '<step>.approved' or '<step>.rejected' (got {when_raw!r})"
+                )
+            when_step, when_decision = parts[0], parts[1]
+
         nodes.append(
             NodeSpec(
                 id=node_id,
@@ -201,6 +225,9 @@ def load_scenario(name: str) -> Scenario:
                 output_path=output_path or "",
                 brief_from=brief_from,
                 response_path=response_path,
+                resume_from=resume_from,
+                when_step=when_step,
+                when_decision=when_decision,
             )
         )
 
@@ -227,6 +254,40 @@ def load_scenario(name: str) -> Scenario:
                 f"{name}: gate {spec.id} brief_from must reference an agent step (got {src.kind})"
             )
         src.output_kind = "review_brief"
+
+    # Third pass: resume_from must reference an earlier step (any kind, since
+    # we capture the node id and inherit its provider session).
+    for cur_idx, spec in enumerate(nodes):
+        if not spec.resume_from:
+            continue
+        src_idx = by_id.get(spec.resume_from)
+        if src_idx is None:
+            raise ScenarioError(
+                f"{name}: step {spec.id} resume_from references unknown step {spec.resume_from!r}"
+            )
+        if src_idx >= cur_idx:
+            raise ScenarioError(
+                f"{name}: step {spec.id} resume_from must reference an earlier step"
+            )
+
+    # Fourth pass: when_step must reference an earlier gate step. The
+    # decision is recorded on gate completions only.
+    for cur_idx, spec in enumerate(nodes):
+        if not spec.when_step:
+            continue
+        src_idx = by_id.get(spec.when_step)
+        if src_idx is None:
+            raise ScenarioError(
+                f"{name}: step {spec.id} when references unknown step {spec.when_step!r}"
+            )
+        if src_idx >= cur_idx:
+            raise ScenarioError(
+                f"{name}: step {spec.id} when must reference an earlier step"
+            )
+        if nodes[src_idx].kind != "gate":
+            raise ScenarioError(
+                f"{name}: step {spec.id} when must reference a gate step (got {nodes[src_idx].kind})"
+            )
 
     seed_entries: list[tuple[Path, str]] = []
     for entry in data.get("seed") or []:

@@ -107,6 +107,7 @@ class Node(BaseModel):
     system_context_snapshot: str = ""
     settings_snapshot: dict[str, Any] = Field(default_factory=dict)
     scenario_step_id: str | None = None
+    review_outcome: str | None = None  # "approved" | "rejected" | None — gate nodes only
     created_at: float = Field(default_factory=_now)
     started_at: float | None = None
     finished_at: float | None = None

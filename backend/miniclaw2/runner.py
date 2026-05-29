@@ -520,6 +520,7 @@ class NodeRunner:
             gate.response = response
             self.store.append_gate(self.project.id, gate, "resolved")
             self._gate_records.pop(gate_id, None)
+            self.node.review_outcome = _review_outcome_from_payload(decision, resp_payload)
             return
 
     def _resolve_open_gates(self) -> None:
@@ -569,6 +570,22 @@ def _write_review_json(root: str, path_str: Any, payload: Any) -> str | None:
     except OSError as exc:
         return f"failed to write {path_str}: {exc}"
     return None
+
+
+def _review_outcome_from_payload(decision: Any, payload: dict[str, Any]) -> str | None:
+    """Derive scenario-branching outcome from a resolved checkpoint-review gate.
+
+    A ``write-json`` response with ``approved: false`` in its payload is
+    treated as ``"rejected"``; any other ``write-json`` (including missing
+    ``approved`` or non-bool values) is treated as ``"approved"``. A
+    ``no-op`` resolution carries no decision and returns ``None``.
+    """
+    if decision != "write-json":
+        return None
+    body = payload.get("payload")
+    if isinstance(body, dict) and body.get("approved") is False:
+        return "rejected"
+    return "approved"
 
 
 def _state_from_provider(value: str | None) -> NodeState | None:

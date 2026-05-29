@@ -98,5 +98,14 @@ export function useSessionSocket(
     }
   };
 
-  return { status, send };
+  // For the reconnect-replay test scenario: close the live socket with a
+  // normal code so the reconnect path fires with `(node_id, last_seq)`.
+  const simulateDrop = () => {
+    const ws = wsRef.current;
+    if (ws) {
+      ws.close(1000, "simulate-drop");
+    }
+  };
+
+  return { status, send, simulateDrop };
 }

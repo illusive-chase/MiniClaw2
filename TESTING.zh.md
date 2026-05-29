@@ -1,12 +1,19 @@
-# MiniClaw2 手动测试指南（Tier 1 + Tier 2 单节点）
+# MiniClaw2 手动测试指南（Tier 1 + Tier 2 + Tier 3 + Tier 4）
 
-本文档面向用户，介绍如何在仪表盘里逐个运行已经落地的六个内置测试场景，并手工
-验证它们是否真的工作。其中 Tier 1 三个（`hello-text`、`bash-uname`、
-`write-readme`）覆盖最小闭环、Bash 工具、Edit/Write 工具；Tier 2 三个
-（`permission-approve`、`plan-mode-approval`、`interrupt-midstream`）覆盖内联
-permission gate、plan-mode 批准、以及中途中断（Stop 按钮）路径。多步场景
-（Tier 3 的 `gui-calculator`、`resume-fix-after-reject` 等）和重连场景（Tier 4
-的 `reconnect-replay`）尚未落地，本文档不涉及。
+本文档面向用户，介绍如何在仪表盘里逐个运行已经落地的内置测试场景，并手工
+验证它们是否真的工作。本指南详细覆盖以下 9 个：
+
+- **Tier 1**（最小闭环）：`hello-text`、`bash-uname`、`write-readme`。
+- **Tier 2**（内联 gate 与中断）：`permission-approve`、`plan-mode-approval`、
+  `interrupt-midstream`。
+- **Tier 3**（多步与上下文）：`context-md-respected`（§8）、
+  `resume-fix-after-reject`（§9）。
+- **Tier 4**（韧性）：`reconnect-replay`（§10）。
+
+Tier 3 的旗舰场景 `gui-calculator`（构建 Tk 计算器 → 被动 review gate →
+auto-commit 改写 `commit_after`）也已经在仪表盘里可用，但它的人工验收涉及
+GUI 行为校验，内容相对独立，**本指南暂未为它专门写一节**；最新约定参见
+`TEST.md §6 Tier 3`，运行流程与本指南覆盖的其它场景相同。
 
 > **原则。** MiniClaw2 的测试不靠脚本"判定通过"。脚本（`verify.sh`）只是
 > 程序底线；最终是否通过，**必须由你本人对照人工验收清单逐项打勾确认**。
@@ -54,9 +61,11 @@ npm run dev        # 默认 http://127.0.0.1:5173
 ## 1. 打开测试面板
 
 1. 在顶部 header 点击 **Tests** 标签。
-2. 你应该看到六行场景（按字母序）：`bash-uname`、`hello-text`、
-   `interrupt-midstream`、`permission-approve`、`plan-mode-approval`、
-   `write-readme`，每行右侧有 `Run · claude` 和 `Run · codex` 两个按钮。
+2. 你应该看到十行场景（按字母序）：`bash-uname`、`context-md-respected`、
+   `gui-calculator`、`hello-text`、`interrupt-midstream`、
+   `permission-approve`、`plan-mode-approval`、`reconnect-replay`、
+   `resume-fix-after-reject`、`write-readme`，每行右侧有 `Run · claude` 和
+   `Run · codex` 两个按钮。
 3. 点击任一按钮，前端会：
    - 调用 `POST /scenarios/<name>/run`；
    - 后端创建一个临时 git workspace（`/var/folders/.../miniclaw2-tmp-xxxx/`）；
@@ -371,9 +380,233 @@ verify.sh 从 `MINICLAW_HOME` 里翻出该 project 最新的 `node.json` 检查�
 
 ---
 
-## 8. 一些通用注意事项
+## 8. 场景七：`context-md-respected`（Tier 3）
 
-### 8.1 verify.sh 在哪里跑、看到了什么
+### 8.1 它在测什么
+
+`<project_root>/CONTEXT.md` 的 provider-中立注入路径：场景启动时 backend 会把
+`seed/CONTEXT.md` 拷贝到临时 workspace 根目录；`NodeRunner` 在 launch 时调用
+`load_project_context()` 读出来，Claude 走 `system_prompt.append`、Codex 走
+`turn/start` 输入预置；同一份文本会被快照到 `Node.system_context_snapshot`
+字段以供事后审计。这条路径若挂了，所有依赖项目级上下文（行为约定、术语
+词表、风格规范）的下游场景都会跟着挂。
+
+### 8.2 操作步骤
+
+1. Tests 面板 → `context-md-respected` → `Run · claude`。
+2. 时间线出现一个 agent 节点，prompt 只是「2 + 3 等于多少？」这种家常算术题
+   ——上下文里的「每次回复都要以 `[CTX-OK]` 结尾」才是实际信号。
+3. 等几秒，节点进入 `done`；右侧 Chat 面板里的 assistant 回复应当在末尾带
+   `[CTX-OK]` 标记。
+4. 切到右侧 **Settings** 标签，确认 `system_context_snapshot` 段不为空、
+   内容就是 seed 里那句话（同时它也作为 `CONTEXT.md` 出现在 workspace 根）。
+
+### 8.3 预期观察到什么
+
+- assistant 给出了 2 + 3 = 5 的简单答复（不是拒答、不是别的题目）。
+- 回复**末尾**带有 `[CTX-OK]` 标记，且整段没有任何工具调用 tile。
+- Settings 标签里 `system_context_snapshot` 显示的字符串和 seed 那句话一致。
+
+### 8.4 跑 verify.sh
+
+verify.sh 做两件事：
+1. 拼接所有节点的 `events.jsonl` 里的 `text_delta`，断言里面包含 `[CTX-OK]`。
+2. 遍历所有 `node.json`，断言至少有一个节点的 `system_context_snapshot`
+   **逐字节等于** workspace 根的 `CONTEXT.md`（防止 loader 路径读到空字符串
+   或读串行）。
+
+可能的失败：
+- `transcript missing [CTX-OK] marker`：模型没听上下文（可能 prompt 太霸道、
+  也可能 provider 适配没注入成功）。
+- `no node carried a system_context_snapshot matching CONTEXT.md`：注入路径有
+  bug，更严重——回归级别。
+
+### 8.5 人工验收清单
+
+- [ ] assistant 的回答给出了 2 + 3 = 5（不是拒答、不是答非所问）。
+- [ ] 回复末尾出现 `[CTX-OK]` 标记。
+- [ ] 时间线里没有任何工具调用 tile。
+
+### 8.6 切换 provider
+
+`Run · codex` 再跑一次。Codex 是把 CONTEXT.md 内容 prepend 到 `turn/start`
+输入上的；如果 Codex 端拿不到 marker 但 Claude 端拿得到，说明适配层在 Codex
+分支上漏了 context 注入——记下来反馈，不要在 acceptance 强行打勾。
+
+---
+
+## 9. 场景八：`resume-fix-after-reject`（Tier 3）
+
+### 9.1 它在测什么
+
+resume 边 + scenario 分支：三个节点 `build → review → fix`。`build` 故意只
+写 `mathutils.py::add` 并产出一份 review brief；`review` 是被动 gate，把
+brief 渲染给人看；你必须以 `{"approved": false, "notes": "..."}` 形式 reject。
+scenario expander 把 review 的 `decision: "rejected"` 写进 history,匹配
+`fix` 节点的 `when: review.rejected` 谓词,启动 `fix` 节点并通过
+`resume_from: build` 把 `build` 的 provider 会话继承下来——所以 fix 就像「同
+一个 agent 接着写」一样能读到先前的对话上下文。这条路径串起来后,以下回归都
+会一并暴露：
+
+- `Node.review_outcome` 是否正确从 `{approved: bool}` 推出 `approved`/`rejected`;
+- `scenario_step_history` 是否落上 `decision`;
+- expander 的 `when:` 跳过逻辑是否正确;
+- `resume_from_node_id` 是否真的把 `provider_session_id` 一路接过去;
+- 时间线 SVG 是否把 resume 连线和 `↻ build` 角标画出来。
+
+### 9.2 操作步骤
+
+1. Tests 面板 → `resume-fix-after-reject` → `Run · claude`。
+2. `build` 节点开始 streaming，最终会做两件事：
+   - 在 workspace 根写出 `mathutils.py`,**只**导出 `add(a, b)`;
+   - 在 `.miniclaw2/outputs/<build-id>/brief.md` 写出一份三段式 review
+     brief（`# How to run` / `# What to verify` / `# Response schema`）,
+     指明审阅者该如何 import 该模块并填什么样的 JSON。
+3. `build` 完成后,auto-commit op 节点会被自动追加,提交这次改动。
+4. 紧接着出现 `review` 被动 gate 节点,右侧面板自动切到 `gate` 标签——里面
+   逐字渲染 build 写的 brief（**不是模板**,是 agent 现场写的）。
+5. 在 gate 表单里选 **write-json**,路径填 `reviews/build.json`(scenario
+   预设值,通常会自动带上),内容写：
+   ```json
+   {"approved": false, "notes": "请再加一个 subtract(a, b)"}
+   ```
+   （`notes` 可换成别的合理要求，例如「加 multiply / divide」；fix 节点会按你
+   写的来。）
+6. 提交后 review 节点变 `done`，scenario expander 会：
+   - 落上 `decision: "rejected"` 到 history;
+   - 匹配 `fix` 节点的 `when: review.rejected`;
+   - 用 `build.id` 作为 `parent_node_id` 启动 `fix` 节点。
+7. `fix` 节点开始 streaming——时间线上能看到 `↻ build` 角标和从 build 拉过来
+   的 SVG 虚线连线。
+8. `fix` 完成、其 auto-commit op 完成后,workspace 根的 `mathutils.py` 应当
+   除 `add` 外又多了一个你要的函数。下方出现 Verify 卡片。
+
+### 9.3 预期观察到什么
+
+- `build` 完成时,workspace 根**只**有 `mathutils.py` + `.miniclaw2/...`,
+  里面只 `def add`。
+- `review` 节点的 gate 标签页里的 brief 是 agent **现场写的**(`# How to run`
+  里命名了具体 import 命令,不是泛泛而谈)。
+- 你写 reject JSON 之后,fix 节点确实启动了,而不是 scenario 直接结束。
+- 时间线在 build 和 fix 之间画了一条**虚线**贝塞尔曲线,fix tile 上有
+  `↻ build` 角标。
+- fix 完成后,`mathutils.py` 同时存在 `def add` 和你 notes 里要求的那个函数。
+
+### 9.4 跑 verify.sh
+
+verify.sh 一次性核对：
+- `scenario_step_history` 里 build / review / fix 三步都是 `terminal_state:
+  "done"`,且 review 那条带 `decision: "rejected"`;
+- fix 节点的 `node.json` 里 `parent_node_id == build.id`;
+- fix 的 `provider_session_id`(或 fallback 到 `sdk_session_id`)和 build 一致
+  ——证明 resume 边把 provider 会话真的接过来了;
+- `mathutils.py` 至少定义两个不同的 `def`(`add` + 一个 fix 加的);
+- `git rev-list --count HEAD >= 3`(seed + 至少两次 auto-commit)。
+
+可能的失败：
+- `review decision != 'rejected'`：你提交时填的不是 `approved: false`,或者
+  gate runner 没把 outcome stamp 上去。
+- `fix.parent_node_id != build.id`：resume_from 解析挂了——`history` 里也许
+  没找到 build,或者 `start_node` 拒绝了 resume（最常见原因是 build 没拿到
+  `provider_session_id`,适配层问题）。
+- `fix did not inherit build's provider session`:同上,resume 路径有 bug。
+- `mathutils.py only defines [...]`:fix agent 没真的按 notes 改文件,或者它
+  把 `add` 也覆盖掉了——后者也算失败。
+
+### 9.5 人工验收清单
+
+- [ ] `build` 节点的 review brief 是 agent 现场写的(`# How to run` 里
+      命名了 import `mathutils` 的具体命令)。
+- [ ] 你以 `{"approved": false, "notes": "..."}` 形式 reject 了 review，
+      review 节点变成深灰色(done)。
+- [ ] `fix` 节点在 review 之后真的出现了，tile 上能看到 `↻ build` 角标，
+      时间线上有从 build 拉到 fix 的虚线 SVG 连线。
+- [ ] `fix` 完成后 `mathutils.py` 同时包含原有的 `add` 和你 notes 里要求的
+      新函数(没有把 `add` 删/改坏)。
+
+### 9.6 切换 provider
+
+`Run · codex` 再跑一次。Codex 的 resume 是 thread id 继承（`threadId`），
+和 Claude 的 `resume=<sid>` 不是同一条码。如果 Claude 通过但 Codex 端 fix
+拿不到 build 的会话(verify 里 `fix did not inherit build's provider
+session`)——记下来,适配层信号。
+
+---
+
+## 10. 场景九：`reconnect-replay`（Tier 4）
+
+### 10.1 它在测什么
+
+WebSocket 重连 + replay 路径：agent 在 streaming 时,客户端的 WS 被人为
+关掉,`ws.ts` 的重连环会重新打开 WS 并发一个 `replay_request`,带上它最后
+看到的 `(node_id, last_seq)`。后端从该 node 的 `events.jsonl` 把缺失的 seq
+段回放出来,然后挂回 live tail。整条路径成功的人类可见证据是：transcript
+继续往下长、**不**回到开头重放、**不**重复任何已经看过的字。
+
+为了让你能干净地触发这次「掉线」,项目顶 header 会在 `scenario_name ===
+"reconnect-replay"` 时额外露出一个 **Simulate WS drop** 按钮。
+
+### 10.2 操作步骤
+
+1. Tests 面板 → `reconnect-replay` → `Run · claude`。
+2. 时间线出现 agent 节点开始 streaming;右侧 Chat 面板里 assistant 文本一
+   行一行往外吐——每行是 `Fact N: …`(Python 的一句历史)。
+3. **等到看到至少三四条 fact 之后(大概 2–5 秒)**,看一下 header 右边——
+   `Stop` 按钮旁边会有一个浅色 **Simulate WS drop** 按钮(只有在这个场景下
+   才出现)。点它。
+4. header 左上角的 `ws` 状态会从 `open` 变成短暂的 `connecting`,然后回到
+   `open`。
+5. assistant 文本继续往下长,**直接接着第 N+1 条 fact**,不会跳回 `Fact 1:`,
+   也不会把已经渲染过的几行再吐一遍。
+6. 最后一行应当是 `Fact 10: ... [END]`。节点进入 `done`,下方出现 Verify
+   卡片。
+
+### 10.3 预期观察到什么
+
+- Simulate WS drop 按钮**只在该场景下**出现（其它 9 个场景跑的时候 header 里
+  没有这个按钮——这是确认 conditional 渲染生效的副产品检查）。
+- 点完按钮后 `ws` 指示灯短暂 `connecting` → 回 `open`，整个过程不会久于 1 秒。
+- 文本从断点继续往下，没有任何视觉「卷回开头再重放」的迹象,也没有同一条 fact
+  连续出现两次。
+- 最终 transcript 末尾真的有 `[END]` 标记。
+
+### 10.4 跑 verify.sh
+
+verify.sh 只能从磁盘上观察「JSONL 是不是连续的」——客户端到底有没有真的
+看到回放,程序无法直接观察(那是人工验收的领域)。具体核对：
+- 该项目的 agent 节点 `state == "done"`;
+- 它的 `events.jsonl` 里所有 seq 严格递增、连续(没有空洞、没有重复);
+  这是 replay 能否正确工作的**充分必要条件**——后端是从这份 JSONL 回放的;
+- 拼出来的 assistant transcript 里包含字面 token `[END]`。
+
+可能的失败：
+- `transcript missing [END] marker — agent did not finish`：节点没跑完(可能
+  你 Simulate drop 之后 WS 没再连回来,或模型自己截断了)。
+- `seq gap or duplicate at index ...`：JSONL 本身有空洞或重复——**这是回归级
+  bug**,后端写盘路径有问题,需要立刻报告。
+- `agent node state != done`：节点没收尾,可能是被你顺手 Stop 了或 provider 报错。
+
+### 10.5 人工验收清单
+
+- [ ] streaming 进行中(已经看到几条 Fact)的时候你点了 **Simulate WS drop**。
+- [ ] 点击后 `ws` 指示灯**短暂**变 `connecting`，然后回 `open`(不是一直停在
+      `connecting` 上)。
+- [ ] transcript 从断点继续，**没**回到 `Fact 1:` 重放、**没**有任何一条 fact
+      连续重复两次。
+- [ ] 节点最终进入 `done`(深灰色 tile,不是红色 error),末行带 `[END]`。
+
+### 10.6 切换 provider
+
+`Run · codex` 再跑一次。Codex 是逐 delta 流的,逐 token 颗粒度更细,所以掉
+线窗口里看到的「丢字 vs 接上」会比 Claude 端更明显。如果 Claude 端通过但
+Codex 端在 replay 之后看到了重复或乱序——记下来,可能是 Codex 适配层在 seq
+归一化上的 bug。
+
+---
+
+## 11. 一些通用注意事项
+
+### 11.1 verify.sh 在哪里跑、看到了什么
 
 `verify.sh` 由后端 `/sessions/{sid}/verify` 端点同步触发：
 - 工作目录是 workspace 临时根（`miniclaw2-tmp-xxxx`）；
@@ -381,7 +614,7 @@ verify.sh 从 `MINICLAW_HOME` 里翻出该 project 最新的 `node.json` 检查�
   事件日志里读 transcript 和工具调用；
 - 60 秒超时；超时时 `exit_code=124` 且 `timed_out=true`。
 
-### 8.2 跑完之后的清理
+### 11.2 跑完之后的清理
 
 每个场景跑完一遍，后端会留着 session 和它的 workspace。如果你想清理：
 
@@ -399,23 +632,29 @@ rm -rf /var/folders/*/T/miniclaw2-tmp-*    # macOS
 rm -rf /tmp/miniclaw2-tmp-*                # Linux
 ```
 
-### 8.3 还没覆盖到的能力
+### 11.3 还没覆盖到的能力
 
-下面这些路径目前**没有**对应的内置场景，需要等 Tier 3 / Tier 4 落地：
+本指南**已经**覆盖了 Tier 1/2/3/4 的大部分主路径——checkpoint gate
+（§9 `resume-fix-after-reject` 的 review 步）、resume 边 + provider 会话继承
+（§9）、CONTEXT.md 注入（§8）、WS 重连 replay（§10）都有专门的章节。
+下面这些路径目前仍**没有**本指南级别的中文走查：
 
-- 内联 `ask_user` gate（剩余的一种内联 gate；permission 和 plan_approval 已经在
-  §5、§6 覆盖了）。
-- checkpoint gate（contract + write-json 评审，Tier 3 `gui-calculator` 会带）。
-- auto-commit op、`commit_after` 改写（Tier 3 `gui-calculator` 会带）。
-- resume 边、跨节点继续会话（Tier 3 `resume-fix-after-reject`）。
-- CONTEXT.md 注入（Tier 3 `context-md-respected`）。
-- WS 重连 replay（Tier 4 `reconnect-replay`）。
+- 内联 `ask_user` gate（剩余的一种内联 gate；permission 和 plan_approval 已经
+  在 §5、§6 覆盖了）。`ask_user` 还没有专门的内置 scenario。
+- Tier 3 旗舰 `gui-calculator`（构建 Tk 计算器 → 被动 review gate →
+  auto-commit 改写 `commit_after`）。**它已经在仪表盘里可以跑**，运行方式
+  同其它场景：点 `Run · claude` / `Run · codex`，时间线上会出现 build
+  agent → 自动 commit op → 被动 review gate；review brief 由 build agent
+  现场写，你在 gate tab 里以 write-json 形式提交评审意见。GUI 行为的人工
+  验收清单见 `backend/miniclaw2/scenarios/bundled/gui-calculator/acceptance.md`
+  （计算 1+2=3、9÷0 不抛 Python traceback、C 清屏、关窗能正常退出）。
+  它是验证 auto-commit op 是否正常的主路径——回归会同时打破 verify 和
+  acceptance。
 
-特别提醒：**想验证 auto-commit op 是否正常**，应当跑 Tier 3 的 `gui-calculator`
-场景（它把 auto-commit 放在主路径上，回归会同时打破 verify 和 acceptance）。
-目前 `gui-calculator` 还没实现，等它落地后会在这里加一节。
+如果你希望本指南也为 `gui-calculator` 写一节详尽中文走查，欢迎在 repo 里提
+issue 催更。
 
-### 8.4 失败时该怎么办
+### 11.4 失败时该怎么办
 
 - **provider 鉴权失败**：节点会迅速进 `error`，事件流里出现 error 事件。检查
   `claude` / `codex` CLI 是否能跑通。
@@ -429,7 +668,7 @@ rm -rf /tmp/miniclaw2-tmp-*                # Linux
 - **模型答得"差不多对但不严格"**：这是手工测试的核心价值——脚本能挑出来，
   人眼也能挑出来。把这一轮判否、记下 provider 名和现象，往后再跑就行。
 
-### 8.5 一句话总结判定规则
+### 11.5 一句话总结判定规则
 
 - ✅ **该场景该 provider 通过** = verify.sh `exit 0` **并且** 人工验收清单全勾。
 - ✅ **该场景通过** = Claude 和 Codex 各自都满足上一条。

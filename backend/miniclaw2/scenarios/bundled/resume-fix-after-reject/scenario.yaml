@@ -1,0 +1,18 @@
+name: resume-fix-after-reject
+brief: "Resume edge: build → reject review → fix step resumes the build's session."
+providers: [claude, codex]
+auto_commit: true
+permission_mode: bypassPermissions
+nodes:
+  - id: build
+    kind: agent
+    prompt_file: prompts/build.md
+  - id: review
+    kind: gate
+    brief_from: build
+    response_path: reviews/build.json
+  - id: fix
+    kind: agent
+    resume_from: build
+    when: review.rejected
+    prompt_file: prompts/fix.md

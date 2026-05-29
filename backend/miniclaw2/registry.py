@@ -416,11 +416,16 @@ class ProjectRegistry:
             already_recorded = True
         else:
             already_recorded = False
-            history.append({
+            entry: dict[str, Any] = {
                 "step_id": step_node.scenario_step_id,
                 "node_id": step_node.id,
                 "terminal_state": step_node.state.value,
-            })
+            }
+            # Gate completions carry a derived decision so downstream
+            # `when:` predicates can branch on the human's response.
+            if step_node.kind is NodeKind.GATE and step_node.review_outcome:
+                entry["decision"] = step_node.review_outcome
+            history.append(entry)
             project.scenario_step_history = history
             self.store.update_project(project)
 
@@ -446,28 +451,58 @@ class ProjectRegistry:
         if step_idx is None:
             return
 
-        next_idx = step_idx + 1
-        if next_idx >= len(scenario.nodes):
-            return
         # Don't double-launch if the next step was already enqueued earlier
         # (e.g. recovered state on restart).
         if already_recorded:
             return
 
+        # Walk forward, skipping steps whose `when:` predicate doesn't
+        # match the recorded gate decision. This keeps the YAML linear
+        # (no DAG) while supporting reject-driven branches.
+        next_idx = step_idx + 1
+        while next_idx < len(scenario.nodes):
+            cand = scenario.nodes[next_idx]
+            if self._step_when_matches(project, cand):
+                break
+            next_idx += 1
+        if next_idx >= len(scenario.nodes):
+            return
+
         next_spec = scenario.nodes[next_idx]
         if next_spec.kind == "agent":
+            resume_node_id = self._resolve_resume_node(project, next_spec)
             self.start_node(
                 project.id,
                 next_spec.prompt,
                 output_kind=next_spec.output_kind,
                 output_path=next_spec.output_path or None,
                 scenario_step_id=next_spec.id,
+                resume_from_node_id=resume_node_id,
             )
         elif next_spec.kind == "gate":
             brief = self._load_gate_brief(project, scenario, next_spec)
             self.start_gate_node(
                 project.id, brief, scenario_step_id=next_spec.id
             )
+
+    def _step_when_matches(self, project: Project, spec: Any) -> bool:
+        """True if ``spec`` has no `when:` or its predicate matches history."""
+        if not spec.when_step:
+            return True
+        for h in project.scenario_step_history:
+            if h.get("step_id") == spec.when_step:
+                return h.get("decision") == spec.when_decision
+        return False
+
+    def _resolve_resume_node(self, project: Project, spec: Any) -> str | None:
+        """Return the node id matching ``spec.resume_from`` from history, if any."""
+        if not spec.resume_from:
+            return None
+        for h in project.scenario_step_history:
+            if h.get("step_id") == spec.resume_from:
+                node_id = h.get("node_id")
+                return node_id if isinstance(node_id, str) else None
+        return None
 
     def _load_gate_brief(
         self,

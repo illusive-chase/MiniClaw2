@@ -262,6 +262,111 @@ class ScenarioExpanderTest(unittest.IsolatedAsyncioTestCase):
                 except BaseException:
                     pass
 
+    async def test_resume_fix_after_reject_branches_to_fix_on_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            store, project = _scenario_project(tmp, auto_commit=False)
+            # Override the scenario name set by the helper.
+            project.scenario_name = "resume-fix-after-reject"
+            store.update_project(project)
+
+            build = store.create_node(
+                Node(
+                    project_id=project.id,
+                    kind=NodeKind.AGENT,
+                    state=NodeState.DONE,
+                    scenario_step_id="build",
+                    output_kind=NodeOutputKind.REVIEW_BRIEF,
+                    provider_session_id="claude-session-build",
+                )
+            )
+            review = store.create_node(
+                Node(
+                    project_id=project.id,
+                    kind=NodeKind.GATE,
+                    state=NodeState.DONE,
+                    scenario_step_id="review",
+                    review_outcome="rejected",
+                )
+            )
+            project.scenario_step_history = [
+                {"step_id": "build", "node_id": build.id, "terminal_state": "done"}
+            ]
+            store.update_project(project)
+
+            registry = ProjectRegistry(store=store)
+            rt = registry._runtimes[project.id]
+            registry._advance_scenario_step(rt, review)
+
+            refreshed = store.load_project(project.id)
+            assert refreshed is not None
+            review_entry = next(
+                h for h in refreshed.scenario_step_history if h["step_id"] == "review"
+            )
+            self.assertEqual(review_entry["decision"], "rejected")
+
+            nodes = store.list_nodes(project.id)
+            fix = nodes[-1]
+            self.assertEqual(fix.kind, NodeKind.AGENT)
+            self.assertEqual(fix.scenario_step_id, "fix")
+            self.assertEqual(fix.parent_node_id, build.id)
+            self.assertEqual(fix.provider_session_id, "claude-session-build")
+
+            if rt.runner_task is not None:
+                rt.runner_task.cancel()
+                try:
+                    await rt.runner_task
+                except BaseException:
+                    pass
+
+    async def test_resume_fix_after_reject_skips_fix_on_approved(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            store, project = _scenario_project(tmp, auto_commit=False)
+            project.scenario_name = "resume-fix-after-reject"
+            store.update_project(project)
+
+            build = store.create_node(
+                Node(
+                    project_id=project.id,
+                    kind=NodeKind.AGENT,
+                    state=NodeState.DONE,
+                    scenario_step_id="build",
+                    output_kind=NodeOutputKind.REVIEW_BRIEF,
+                    provider_session_id="claude-session-build",
+                )
+            )
+            review = store.create_node(
+                Node(
+                    project_id=project.id,
+                    kind=NodeKind.GATE,
+                    state=NodeState.DONE,
+                    scenario_step_id="review",
+                    review_outcome="approved",
+                )
+            )
+            project.scenario_step_history = [
+                {"step_id": "build", "node_id": build.id, "terminal_state": "done"}
+            ]
+            store.update_project(project)
+
+            registry = ProjectRegistry(store=store)
+            rt = registry._runtimes[project.id]
+            registry._advance_scenario_step(rt, review)
+
+            # Only build + review exist; fix should be skipped since
+            # `when: review.rejected` does not match an approved review.
+            nodes = store.list_nodes(project.id)
+            self.assertEqual(len(nodes), 2)
+            self.assertIsNone(rt.runner_task)
+
+            refreshed = store.load_project(project.id)
+            assert refreshed is not None
+            review_entry = next(
+                h for h in refreshed.scenario_step_history if h["step_id"] == "review"
+            )
+            self.assertEqual(review_entry["decision"], "approved")
+
     async def test_advance_ignores_non_scenario_nodes(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             tmp = Path(raw)

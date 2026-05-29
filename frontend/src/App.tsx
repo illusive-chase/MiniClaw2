@@ -259,7 +259,7 @@ export function App() {
     appendSelectedEvent(eventNodeId, ev);
   }, [appendSelectedEvent, refreshNodes]);
 
-  const { status, send } = useSessionSocket(
+  const { status, send, simulateDrop } = useSessionSocket(
     route === "project" ? (session?.id ?? null) : null,
     handleEvent,
   );
@@ -456,6 +456,18 @@ export function App() {
               className="inline-flex h-8 items-center rounded-md border border-state-error/40 bg-state-error-soft px-2.5 text-xs font-medium text-state-error transition hover:border-state-error/70 disabled:opacity-40"
             >
               Stop
+            </button>
+          )}
+
+          {session?.scenario_name === "reconnect-replay" && (
+            <button
+              type="button"
+              onClick={simulateDrop}
+              disabled={status !== "open"}
+              title="Close the WebSocket; the client will auto-reconnect and replay missed events from the JSONL log."
+              className="inline-flex h-8 items-center rounded-md border border-line bg-surface px-2.5 text-xs font-medium text-ink-muted transition hover:border-line-strong hover:bg-surface-sunken hover:text-ink disabled:opacity-40"
+            >
+              Simulate WS drop
             </button>
           )}
 
