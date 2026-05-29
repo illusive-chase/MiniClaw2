@@ -1,12 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 
-const TEMPLATE = `# Expected
-What the agent should produce, and where (paths, file types).
+const TEMPLATE = `# How to run
+Commands or steps the reviewer should take to exercise what was built.
 
-# Unexpected
-Failure modes, common pitfalls, things to watch for.
+# What to verify
+- specific behavior 1
+- specific behavior 2
 
-# Response protocol
+# Response schema
 Reviewer writes JSON to: out/review.json
 Schema: { approved: boolean, notes: string }
 `;
@@ -18,23 +19,21 @@ export function GateLaunchModal({
 }: {
   open: boolean;
   onCancel: () => void;
-  onLaunch: (prompt: string, contract: string) => void;
+  onLaunch: (brief: string) => void;
 }) {
-  const [prompt, setPrompt] = useState("");
-  const [contract, setContract] = useState(TEMPLATE);
-  const promptRef = useRef<HTMLTextAreaElement | null>(null);
+  const [brief, setBrief] = useState(TEMPLATE);
+  const briefRef = useRef<HTMLTextAreaElement | null>(null);
 
   useEffect(() => {
     if (open) {
-      setPrompt("");
-      setContract(TEMPLATE);
-      window.setTimeout(() => promptRef.current?.focus(), 0);
+      setBrief(TEMPLATE);
+      window.setTimeout(() => briefRef.current?.focus(), 0);
     }
   }, [open]);
 
   if (!open) return null;
 
-  const canSubmit = prompt.trim().length > 0 && contract.trim().length > 0;
+  const canSubmit = brief.trim().length > 0;
 
   return (
     <div className="fixed inset-0 z-40 flex items-center justify-center bg-surface-scrim/60 backdrop-blur-sm">
@@ -45,7 +44,7 @@ export function GateLaunchModal({
               Launch gate node
             </div>
             <div className="text-[11px] text-ink-muted">
-              The agent runs, then the node waits for your review against this contract.
+              A passive checkpoint. No agent runs — the brief below is shown to the human, who responds in the review tab.
             </div>
           </div>
           <button
@@ -60,25 +59,13 @@ export function GateLaunchModal({
         <div className="flex flex-1 flex-col gap-3 overflow-y-auto px-5 py-4 text-sm">
           <label className="flex flex-col gap-1">
             <span className="text-[10px] font-medium uppercase tracking-[0.14em] text-ink-subtle">
-              Prompt
+              Brief (markdown)
             </span>
             <textarea
-              ref={promptRef}
-              value={prompt}
-              onChange={(e) => setPrompt(e.target.value)}
-              rows={3}
-              placeholder="What should the agent do?"
-              className="resize-none rounded-md border border-line bg-surface-sunken px-3 py-2 text-sm text-ink-strong placeholder:text-ink-subtle focus:border-brand focus:outline-none"
-            />
-          </label>
-          <label className="flex flex-col gap-1">
-            <span className="text-[10px] font-medium uppercase tracking-[0.14em] text-ink-subtle">
-              Contract (markdown)
-            </span>
-            <textarea
-              value={contract}
-              onChange={(e) => setContract(e.target.value)}
-              rows={14}
+              ref={briefRef}
+              value={brief}
+              onChange={(e) => setBrief(e.target.value)}
+              rows={16}
               className="resize-none rounded-md border border-line bg-surface-sunken px-3 py-2 font-mono text-xs leading-relaxed text-ink-strong focus:border-brand focus:outline-none"
             />
           </label>
@@ -95,7 +82,7 @@ export function GateLaunchModal({
           <button
             type="button"
             disabled={!canSubmit}
-            onClick={() => onLaunch(prompt.trim(), contract)}
+            onClick={() => onLaunch(brief)}
             className="rounded-md border border-state-review/40 bg-state-review-soft px-3 py-1.5 text-xs font-medium text-state-review shadow-card transition hover:border-state-review/70 disabled:opacity-40"
           >
             Launch gate

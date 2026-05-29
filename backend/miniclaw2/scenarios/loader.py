@@ -28,6 +28,8 @@ class NodeSpec:
     contract: str = ""
     output_kind: str = "freeform"
     output_path: str = ""
+    brief_from: str = ""        # for gate steps: source agent step id
+    response_path: str = ""     # gate-only: default path for write-json response
 
 
 @dataclass(slots=True)
@@ -126,22 +128,32 @@ def load_scenario(name: str) -> Scenario:
     if not isinstance(raw_nodes, list) or not raw_nodes:
         raise ScenarioError(f"{name}: nodes must be a non-empty list")
     nodes: list[NodeSpec] = []
+    seen_ids: set[str] = set()
     for idx, raw in enumerate(raw_nodes):
         if not isinstance(raw, dict):
             raise ScenarioError(f"{name}: node #{idx} must be a mapping")
-        node_id = raw.get("id") or f"step{idx}"
+        node_id = str(raw.get("id") or f"step{idx}")
+        if node_id in seen_ids:
+            raise ScenarioError(f"{name}: duplicate node id {node_id!r}")
+        seen_ids.add(node_id)
         kind = raw.get("kind", "agent")
         if kind not in {"agent", "gate"}:
             raise ScenarioError(f"{name}: unsupported node kind {kind!r}")
+
+        prompt = ""
         prompt_file = raw.get("prompt_file")
-        if not isinstance(prompt_file, str):
-            raise ScenarioError(f"{name}: node {node_id} missing prompt_file")
-        prompt_path = root / prompt_file
-        if not prompt_path.exists():
-            raise ScenarioError(
-                f"{name}: node {node_id} prompt_file not found: {prompt_file}"
-            )
-        prompt = prompt_path.read_text(encoding="utf-8")
+        if prompt_file is not None:
+            if not isinstance(prompt_file, str):
+                raise ScenarioError(f"{name}: node {node_id} prompt_file must be a string")
+            prompt_path = root / prompt_file
+            if not prompt_path.exists():
+                raise ScenarioError(
+                    f"{name}: node {node_id} prompt_file not found: {prompt_file}"
+                )
+            prompt = prompt_path.read_text(encoding="utf-8")
+        elif kind == "agent":
+            raise ScenarioError(f"{name}: agent node {node_id} missing prompt_file")
+
         contract = ""
         contract_file = raw.get("contract_file")
         if contract_file:
@@ -151,8 +163,9 @@ def load_scenario(name: str) -> Scenario:
                     f"{name}: node {node_id} contract_file not found: {contract_file}"
                 )
             contract = contract_path.read_text(encoding="utf-8")
+
         output_kind = raw.get("output_kind", "freeform")
-        if output_kind not in {"freeform", "summary", "interface"}:
+        if output_kind not in {"freeform", "summary", "interface", "review_brief"}:
             raise ScenarioError(f"{name}: node {node_id} has unsupported output_kind {output_kind!r}")
         output_path = raw.get("output_path", "")
         if output_path is not None and not isinstance(output_path, str):
@@ -161,16 +174,59 @@ def load_scenario(name: str) -> Scenario:
             raise ScenarioError(
                 f"{name}: node {node_id} output_path must be project-relative and may not contain '..'"
             )
+
+        brief_from = raw.get("brief_from", "") or ""
+        if brief_from and not isinstance(brief_from, str):
+            raise ScenarioError(f"{name}: node {node_id} brief_from must be a string")
+        if brief_from and kind != "gate":
+            raise ScenarioError(
+                f"{name}: node {node_id} has brief_from but is not a gate"
+            )
+
+        response_path = raw.get("response_path", "") or ""
+        if response_path and not isinstance(response_path, str):
+            raise ScenarioError(f"{name}: node {node_id} response_path must be a string")
+        if validate_node_output_path(response_path):
+            raise ScenarioError(
+                f"{name}: node {node_id} response_path must be project-relative and may not contain '..'"
+            )
+
         nodes.append(
             NodeSpec(
-                id=str(node_id),
+                id=node_id,
                 kind=kind,
                 prompt=prompt,
                 contract=contract,
                 output_kind=output_kind,
                 output_path=output_path or "",
+                brief_from=brief_from,
+                response_path=response_path,
             )
         )
+
+    # Second pass: for each gate with brief_from, validate the referenced
+    # source step exists earlier in the list and is an agent, then force
+    # that agent step's effective output_kind to review_brief so the
+    # engine-side contract injection prompts it to write the brief.
+    by_id = {spec.id: i for i, spec in enumerate(nodes)}
+    for gate_idx, spec in enumerate(nodes):
+        if spec.kind != "gate" or not spec.brief_from:
+            continue
+        src_idx = by_id.get(spec.brief_from)
+        if src_idx is None:
+            raise ScenarioError(
+                f"{name}: gate {spec.id} brief_from references unknown step {spec.brief_from!r}"
+            )
+        if src_idx >= gate_idx:
+            raise ScenarioError(
+                f"{name}: gate {spec.id} brief_from must reference an earlier step"
+            )
+        src = nodes[src_idx]
+        if src.kind != "agent":
+            raise ScenarioError(
+                f"{name}: gate {spec.id} brief_from must reference an agent step (got {src.kind})"
+            )
+        src.output_kind = "review_brief"
 
     seed_entries: list[tuple[Path, str]] = []
     for entry in data.get("seed") or []:

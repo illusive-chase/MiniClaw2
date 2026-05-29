@@ -299,18 +299,17 @@ export function App() {
     send({ type: "interrupt" });
   };
 
-  const onLaunchGate = (prompt: string, contract: string) => {
+  const onLaunchGate = (brief: string) => {
     if (streaming || status !== "open") return;
     setGateModalOpen(false);
     const userId = `u${++turnIdRef.current}`;
-    const aId = `a${++turnIdRef.current}`;
+    const excerpt = brief.trim().split("\n").slice(0, 2).join(" ").slice(0, 80);
     setTurns((prev) => [
       ...prev,
-      createUserTurn(userId, `[gate] ${prompt}`),
-      createAssistantTurn(aId, true),
+      createUserTurn(userId, `[gate] ${excerpt || "checkpoint"}`),
     ]);
     setStreaming(true);
-    send({ type: "start_gate_node", prompt, contract });
+    send({ type: "start_gate_node", brief });
   };
 
   const onResolveReview = (payload: {

@@ -89,14 +89,13 @@ class UserMessage(BaseModel):
     type: Literal["user_message"]
     text: str
     resume_from_node_id: str | None = None
-    output_kind: Literal["freeform", "summary", "interface"] | None = None
+    output_kind: Literal["freeform", "summary", "interface", "review_brief"] | None = None
     output_path: str | None = None
 
 
 class StartGateNode(BaseModel):
     type: Literal["start_gate_node"]
-    prompt: str
-    contract: str = ""
+    brief: str
 
 
 class InteractionResponse(BaseModel):

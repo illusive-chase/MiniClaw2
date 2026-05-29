@@ -1,0 +1,12 @@
+name: gui-calculator
+brief: "Build a Tk calculator, then review it via a passive gate fed by the agent's brief."
+providers: [claude, codex]
+auto_commit: true
+nodes:
+  - id: build
+    kind: agent
+    prompt_file: prompts/build.md
+  - id: review
+    kind: gate
+    brief_from: build
+    response_path: reviews/build.json

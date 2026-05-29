@@ -55,6 +55,7 @@ class NodeOutputKind(StrEnum):
     FREEFORM = "freeform"
     SUMMARY = "summary"
     INTERFACE = "interface"
+    REVIEW_BRIEF = "review_brief"
 
 
 class TokenUsage(BaseModel):
@@ -77,6 +78,7 @@ class Project(BaseModel):
     settings_override: dict[str, Any] = Field(default_factory=dict)
     temporary: bool = False
     scenario_name: str | None = None
+    scenario_step_history: list[dict[str, Any]] = Field(default_factory=list)
     created_at: float = Field(default_factory=_now)
 
 
@@ -104,6 +106,7 @@ class Node(BaseModel):
     usage: TokenUsage | None = None
     system_context_snapshot: str = ""
     settings_snapshot: dict[str, Any] = Field(default_factory=dict)
+    scenario_step_id: str | None = None
     created_at: float = Field(default_factory=_now)
     started_at: float | None = None
     finished_at: float | None = None
@@ -143,10 +146,25 @@ def default_node_output_path(node_id: str, kind: NodeOutputKind) -> str | None:
         return f".miniclaw2/outputs/{node_id}/result.md"
     if kind is NodeOutputKind.INTERFACE:
         return f".miniclaw2/outputs/{node_id}/result.json"
+    if kind is NodeOutputKind.REVIEW_BRIEF:
+        return f".miniclaw2/outputs/{node_id}/brief.md"
     return None
 
 
 def node_output_contract(kind: NodeOutputKind, path: str | None) -> str:
+    if kind is NodeOutputKind.REVIEW_BRIEF:
+        output_path = path or ".miniclaw2/outputs/<node-id>/brief.md"
+        return (
+            "# Node output contract\n\n"
+            "This node will be followed by a human review checkpoint. The reviewer reads what you write here verbatim before responding. Make it concrete and minimal.\n\n"
+            "## Required output\n"
+            f"- Write a markdown file at `{output_path}`.\n"
+            "- The file must include these sections, in this order:\n"
+            "  - `# How to run`: explicit commands or steps the human should use to exercise what you built. Include exact CLI invocations and any setup. If there is no runnable artifact, say what to read instead.\n"
+            "  - `# What to verify`: a checklist of specific behaviors the human should look for (e.g., \"clicking `1 + 2 =` shows `3`\"). Be specific to what you actually built, not generic.\n"
+            "  - `# Response schema`: the JSON keys and shapes the human should put in their review response (e.g., `{ \"approved\": boolean, \"notes\": string }`). The human's response will be written to a JSON file in the repo.\n"
+            "- Your work is not done until that file exists.\n"
+        )
     if kind is NodeOutputKind.SUMMARY:
         output_path = path or ".miniclaw2/outputs/<node-id>/result.md"
         return (

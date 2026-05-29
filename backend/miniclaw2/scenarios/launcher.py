@@ -51,9 +51,14 @@ def launch_scenario(
             first.prompt,
             output_kind=first.output_kind,
             output_path=first.output_path or None,
+            scenario_step_id=first.id,
         )
     elif first.kind == "gate":
-        runner = registry.start_gate_node(project.id, first.prompt, first.contract)
+        # A first-step gate has no preceding agent step to source a brief
+        # from; fall back to the YAML-declared contract text.
+        runner = registry.start_gate_node(
+            project.id, first.contract, scenario_step_id=first.id
+        )
     else:
         raise ScenarioError(f"unsupported first-node kind: {first.kind}")
 

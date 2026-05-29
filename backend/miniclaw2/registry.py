@@ -13,16 +13,33 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from .artifacts import validate_node_output_path
-from .domain import Node, NodeKind, NodeOutputKind, NodeState, Project
+from .artifacts import (
+    resolve_node_output_path,
+    validate_node_output_path,
+)
+from .domain import (
+    Node,
+    NodeKind,
+    NodeOutputKind,
+    NodeState,
+    Project,
+    default_node_output_path,
+)
 from .runner import NodeRunner
 from .store import Store
 from .workspace import create_temporary_root, remove_temporary_root
 
 logger = logging.getLogger(__name__)
+
+
+_PLACEHOLDER_BRIEF = (
+    "# Brief unavailable\n\n"
+    "_The previous agent step did not produce a review brief._\n"
+)
 
 
 class ProjectRuntime:
@@ -204,6 +221,7 @@ class ProjectRegistry:
         resume_from_node_id: str | None = None,
         output_kind: str | None = None,
         output_path: str | None = None,
+        scenario_step_id: str | None = None,
     ) -> NodeRunner | None:
         """Create a new agent node and launch its runner as a task.
 
@@ -244,6 +262,7 @@ class ProjectRegistry:
             output_kind=self._normalize_output_kind(output_kind),
             output_path=output_path,
             prompt=prompt,
+            scenario_step_id=scenario_step_id,
         )
         self.store.create_node(node)
 
@@ -256,9 +275,16 @@ class ProjectRegistry:
     def start_gate_node(
         self,
         pid: str,
-        prompt: str,
-        contract: str,
+        brief: str,
+        *,
+        scenario_step_id: str | None = None,
     ) -> NodeRunner | None:
+        """Create a passive gate node and launch its runner.
+
+        Gates are pure human checkpoints — the runner skips any provider
+        call and goes straight to ``awaiting_review`` with ``brief`` as
+        the rendered contract.
+        """
         rt = self._runtimes.get(pid)
         if rt is None:
             return None
@@ -270,8 +296,8 @@ class ProjectRegistry:
             kind=NodeKind.GATE,
             state=NodeState.QUEUED,
             provider=rt.project.provider,
-            prompt=prompt,
-            contract=contract,
+            contract=brief,
+            scenario_step_id=scenario_step_id,
         )
         self.store.create_node(node)
 
@@ -287,6 +313,8 @@ class ProjectRegistry:
             return NodeOutputKind.SUMMARY
         if value == "interface":
             return NodeOutputKind.INTERFACE
+        if value == "review_brief":
+            return NodeOutputKind.REVIEW_BRIEF
         return NodeOutputKind.FREEFORM
 
     def _on_runner_done(self, rt: ProjectRuntime) -> None:
@@ -296,12 +324,16 @@ class ProjectRegistry:
 
         if finished_node is None:
             return
+        spawned_op = False
         if (
             finished_node.kind in (NodeKind.AGENT, NodeKind.GATE)
             and finished_node.state is NodeState.DONE
             and bool(rt.project.settings_override.get("auto_commit"))
         ):
             self._spawn_op_commit(rt, finished_node)
+            spawned_op = True
+        if not spawned_op:
+            self._advance_scenario_step(rt, finished_node)
 
     def _spawn_op_commit(self, rt: ProjectRuntime, agent_node: Node) -> None:
         op_node = Node(
@@ -343,6 +375,143 @@ class ProjectRegistry:
                     "node": fresh_agent.model_dump(),
                     "seq": 0,
                 })
+
+    def _advance_scenario_step(
+        self,
+        rt: ProjectRuntime,
+        finished_node: Node,
+    ) -> None:
+        """Advance the project's scenario cursor when a step finishes.
+
+        Called after an agent/gate scenario step (or its auto-commit op
+        child) terminates. Records the step in
+        ``project.scenario_step_history`` and, if the step succeeded and
+        the scenario has more steps, enqueues the next one.
+
+        Non-DONE terminal states halt the scenario — the Verify card
+        still appears since all nodes are terminal, but no further
+        steps fire.
+        """
+        project = rt.project
+        if not project.scenario_name:
+            return
+
+        # If we just finished an auto-commit op, route to its parent
+        # scenario step. Ops themselves are not scenario steps.
+        step_node = finished_node
+        if finished_node.kind is NodeKind.OP and finished_node.parent_node_id:
+            parent = self.store.load_node(project.id, finished_node.parent_node_id)
+            if parent is not None and parent.scenario_step_id:
+                step_node = parent
+            else:
+                return
+
+        if not step_node.scenario_step_id:
+            return
+
+        # Avoid double-recording if the same step is reported twice
+        # (e.g. agent->op both arrive here).
+        history = list(project.scenario_step_history)
+        if any(h.get("step_id") == step_node.scenario_step_id for h in history):
+            already_recorded = True
+        else:
+            already_recorded = False
+            history.append({
+                "step_id": step_node.scenario_step_id,
+                "node_id": step_node.id,
+                "terminal_state": step_node.state.value,
+            })
+            project.scenario_step_history = history
+            self.store.update_project(project)
+
+        # Halt the scenario on non-DONE terminal states.
+        if step_node.state is not NodeState.DONE:
+            return
+
+        try:
+            from .scenarios import load_scenario as _load_scenario
+            scenario = _load_scenario(project.scenario_name)
+        except Exception:  # noqa: BLE001
+            logger.exception("scenario load failed during step advance")
+            return
+
+        step_idx = next(
+            (
+                i
+                for i, spec in enumerate(scenario.nodes)
+                if spec.id == step_node.scenario_step_id
+            ),
+            None,
+        )
+        if step_idx is None:
+            return
+
+        next_idx = step_idx + 1
+        if next_idx >= len(scenario.nodes):
+            return
+        # Don't double-launch if the next step was already enqueued earlier
+        # (e.g. recovered state on restart).
+        if already_recorded:
+            return
+
+        next_spec = scenario.nodes[next_idx]
+        if next_spec.kind == "agent":
+            self.start_node(
+                project.id,
+                next_spec.prompt,
+                output_kind=next_spec.output_kind,
+                output_path=next_spec.output_path or None,
+                scenario_step_id=next_spec.id,
+            )
+        elif next_spec.kind == "gate":
+            brief = self._load_gate_brief(project, scenario, next_spec)
+            self.start_gate_node(
+                project.id, brief, scenario_step_id=next_spec.id
+            )
+
+    def _load_gate_brief(
+        self,
+        project: Project,
+        scenario: Any,
+        next_spec: Any,
+    ) -> str:
+        """Read the brief markdown the previous agent step produced.
+
+        Falls back to a placeholder when the source step or brief file
+        cannot be resolved so the gate still renders.
+        """
+        if not next_spec.brief_from:
+            return next_spec.contract or _PLACEHOLDER_BRIEF
+        src_node_id = next(
+            (
+                h.get("node_id")
+                for h in project.scenario_step_history
+                if h.get("step_id") == next_spec.brief_from
+            ),
+            None,
+        )
+        if not src_node_id:
+            return f"_(brief source step `{next_spec.brief_from}` not found)_\n"
+        src_node = self.store.load_node(project.id, src_node_id)
+        if src_node is None:
+            return f"_(brief source node `{src_node_id}` missing on disk)_\n"
+        target = resolve_node_output_path(project.root_path, src_node)
+        if target is None:
+            rel = src_node.output_path or default_node_output_path(
+                src_node.id, src_node.output_kind
+            )
+            return f"_(could not resolve brief path: `{rel}`)_\n"
+        if not target.exists():
+            try:
+                rel = target.relative_to(Path(project.root_path).resolve())
+            except ValueError:
+                rel = target
+            return f"_(brief file not written: `{rel}`)_\n"
+        try:
+            text = target.read_text(encoding="utf-8")
+        except OSError as exc:
+            return f"_(could not read brief: {exc})_\n"
+        return text.strip() and text or _PLACEHOLDER_BRIEF
 
     def interrupt(self, pid: str) -> bool:
         rt = self._runtimes.get(pid)

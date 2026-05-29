@@ -64,13 +64,13 @@ export function GateReviewPanel({
     }
   };
 
-  const contract = node.contract || "(no contract)";
+  const contract = node.contract || "(no brief)";
 
   return (
     <div className="flex-1 overflow-y-auto bg-surface px-4 py-4 text-sm">
       <section>
         <h3 className="mb-2 text-[10px] font-medium uppercase tracking-[0.14em] text-ink-subtle">
-          Contract
+          Brief
         </h3>
         <div className="md-prose rounded-md border border-line bg-surface-sunken p-3 text-ink-strong">
           <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]}>

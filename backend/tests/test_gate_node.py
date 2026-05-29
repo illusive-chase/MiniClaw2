@@ -9,25 +9,21 @@ from typing import Any
 from unittest.mock import patch
 
 from miniclaw2.domain import Node, NodeKind, NodeState, Project
-from miniclaw2.providers.base import AgentProviderEvent
 from miniclaw2.runner import NodeRunner
 from miniclaw2.store import Store
 
 
-class _StubProvider:
-    """Minimal AgentProvider: yields a session id then ``done`` immediately."""
+class _UnexpectedProvider:
+    """Sentinel: any attempt to construct a provider for a gate is a bug."""
 
-    name = "stub"
+    name = "unexpected"
 
-    def __init__(self) -> None:
-        self.interrupted = False
+    async def run(self, _context: Any):  # pragma: no cover - guarded by test
+        raise AssertionError("provider must not be invoked for a passive gate")
+        yield  # type: ignore[unreachable]
 
-    async def run(self, _context: Any):
-        yield AgentProviderEvent(kind="session", session_id="stub-session")
-        yield AgentProviderEvent(kind="done", final_state="done")
-
-    async def interrupt(self) -> None:
-        self.interrupted = True
+    async def interrupt(self) -> None:  # pragma: no cover - guarded by test
+        raise AssertionError("provider.interrupt must not be invoked for a passive gate")
 
 
 async def _wait_for(
@@ -46,7 +42,7 @@ def _interaction_requests(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [e for e in events if e.get("type") == "interaction_request"]
 
 
-def _setup_gate_run(tmp: Path, contract: str = "# Expected\nfoo\n"):
+def _setup_gate_run(tmp: Path, brief: str = "# How to run\nfoo\n"):
     store = Store(root=tmp / "store")
     root = tmp / "project"
     root.mkdir()
@@ -58,8 +54,7 @@ def _setup_gate_run(tmp: Path, contract: str = "# Expected\nfoo\n"):
             project_id=project.id,
             kind=NodeKind.GATE,
             state=NodeState.QUEUED,
-            prompt="check things",
-            contract=contract,
+            contract=brief,
         )
     )
 
@@ -71,53 +66,52 @@ def _setup_gate_run(tmp: Path, contract: str = "# Expected\nfoo\n"):
     return store, project, node, events, on_event
 
 
-class GateNodeRunnerTest(unittest.IsolatedAsyncioTestCase):
-    async def test_gate_node_transitions_to_awaiting_review_on_provider_done(self) -> None:
+class PassiveGateNodeRunnerTest(unittest.IsolatedAsyncioTestCase):
+    async def test_passive_gate_skips_provider_and_enters_awaiting_review(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             tmp = Path(raw)
             store, project, node, events, on_event = _setup_gate_run(tmp)
 
             with patch(
-                "miniclaw2.runner._make_provider", return_value=_StubProvider()
-            ):
+                "miniclaw2.runner._make_provider", return_value=_UnexpectedProvider()
+            ) as mk:
                 runner = NodeRunner(node, project, store, on_event)
                 task = asyncio.create_task(runner.run())
 
                 await _wait_for(lambda: len(_interaction_requests(events)) >= 1)
+                # Provider must not have been constructed at all.
+                self.assertEqual(mk.call_count, 0)
                 self.assertEqual(node.state, NodeState.AWAITING_REVIEW)
 
                 req = _interaction_requests(events)[0]
                 self.assertEqual(req["interaction_type"], "checkpoint_review")
-                self.assertEqual(req["tool_input"]["contract"], "# Expected\nfoo\n")
+                self.assertEqual(req["tool_input"]["contract"], "# How to run\nfoo\n")
 
                 runner.resolve_gate(req["id"], allow=True, decision="no-op")
                 await task
 
             self.assertEqual(node.state, NodeState.DONE)
 
-    async def test_gate_resolve_write_json_writes_file(self) -> None:
+    async def test_passive_gate_write_json_writes_file(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             tmp = Path(raw)
             store, project, node, events, on_event = _setup_gate_run(tmp)
 
-            with patch(
-                "miniclaw2.runner._make_provider", return_value=_StubProvider()
-            ):
-                runner = NodeRunner(node, project, store, on_event)
-                task = asyncio.create_task(runner.run())
+            runner = NodeRunner(node, project, store, on_event)
+            task = asyncio.create_task(runner.run())
 
-                await _wait_for(lambda: len(_interaction_requests(events)) >= 1)
-                req = _interaction_requests(events)[0]
-                runner.resolve_gate(
-                    req["id"],
-                    allow=True,
-                    decision="write-json",
-                    response={
-                        "path": "out/review.json",
-                        "payload": {"approved": True, "notes": "ok"},
-                    },
-                )
-                await task
+            await _wait_for(lambda: len(_interaction_requests(events)) >= 1)
+            req = _interaction_requests(events)[0]
+            runner.resolve_gate(
+                req["id"],
+                allow=True,
+                decision="write-json",
+                response={
+                    "path": "out/review.json",
+                    "payload": {"approved": True, "notes": "ok"},
+                },
+            )
+            await task
 
             self.assertEqual(node.state, NodeState.DONE)
             target = Path(project.root_path) / "out" / "review.json"
@@ -127,21 +121,18 @@ class GateNodeRunnerTest(unittest.IsolatedAsyncioTestCase):
                 {"approved": True, "notes": "ok"},
             )
 
-    async def test_gate_resolve_no_op_transitions_to_done(self) -> None:
+    async def test_passive_gate_no_op_transitions_to_done(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             tmp = Path(raw)
             store, project, node, events, on_event = _setup_gate_run(tmp)
 
-            with patch(
-                "miniclaw2.runner._make_provider", return_value=_StubProvider()
-            ):
-                runner = NodeRunner(node, project, store, on_event)
-                task = asyncio.create_task(runner.run())
+            runner = NodeRunner(node, project, store, on_event)
+            task = asyncio.create_task(runner.run())
 
-                await _wait_for(lambda: len(_interaction_requests(events)) >= 1)
-                req = _interaction_requests(events)[0]
-                runner.resolve_gate(req["id"], allow=True, decision="no-op")
-                await task
+            await _wait_for(lambda: len(_interaction_requests(events)) >= 1)
+            req = _interaction_requests(events)[0]
+            runner.resolve_gate(req["id"], allow=True, decision="no-op")
+            await task
 
             self.assertEqual(node.state, NodeState.DONE)
             # No file should have been written.
@@ -150,46 +141,43 @@ class GateNodeRunnerTest(unittest.IsolatedAsyncioTestCase):
                 [],
             )
 
-    async def test_gate_resolve_rejects_path_traversal_and_keeps_gate_open(self) -> None:
+    async def test_passive_gate_rejects_path_traversal_and_keeps_gate_open(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             tmp = Path(raw)
             store, project, node, events, on_event = _setup_gate_run(tmp)
 
-            with patch(
-                "miniclaw2.runner._make_provider", return_value=_StubProvider()
-            ):
-                runner = NodeRunner(node, project, store, on_event)
-                task = asyncio.create_task(runner.run())
+            runner = NodeRunner(node, project, store, on_event)
+            task = asyncio.create_task(runner.run())
 
-                await _wait_for(lambda: len(_interaction_requests(events)) >= 1)
-                first = _interaction_requests(events)[0]
-                runner.resolve_gate(
-                    first["id"],
-                    allow=True,
-                    decision="write-json",
-                    response={
-                        "path": "../escape.json",
-                        "payload": {"x": 1},
-                    },
-                )
+            await _wait_for(lambda: len(_interaction_requests(events)) >= 1)
+            first = _interaction_requests(events)[0]
+            runner.resolve_gate(
+                first["id"],
+                allow=True,
+                decision="write-json",
+                response={
+                    "path": "../escape.json",
+                    "payload": {"x": 1},
+                },
+            )
 
-                # Wait for the re-emitted InteractionRequest (gate stays open).
-                await _wait_for(lambda: len(_interaction_requests(events)) >= 2)
+            # Wait for the re-emitted InteractionRequest (gate stays open).
+            await _wait_for(lambda: len(_interaction_requests(events)) >= 2)
 
-                # An ErrorEvent should have been emitted explaining the failure.
-                errs = [e for e in events if e.get("type") == "error"]
-                self.assertTrue(any("escapes project root" in (e.get("message") or "") for e in errs))
+            # An ErrorEvent should have been emitted explaining the failure.
+            errs = [e for e in events if e.get("type") == "error"]
+            self.assertTrue(any("escapes project root" in (e.get("message") or "") for e in errs))
 
-                # Node should still be in AWAITING_REVIEW.
-                self.assertEqual(node.state, NodeState.AWAITING_REVIEW)
+            # Node should still be in AWAITING_REVIEW.
+            self.assertEqual(node.state, NodeState.AWAITING_REVIEW)
 
-                # File was not written.
-                self.assertFalse((tmp / "escape.json").exists())
+            # File was not written.
+            self.assertFalse((tmp / "escape.json").exists())
 
-                # Resolve no-op to let the task finish.
-                second = _interaction_requests(events)[1]
-                runner.resolve_gate(second["id"], allow=True, decision="no-op")
-                await task
+            # Resolve no-op to let the task finish.
+            second = _interaction_requests(events)[1]
+            runner.resolve_gate(second["id"], allow=True, decision="no-op")
+            await task
 
             self.assertEqual(node.state, NodeState.DONE)
 

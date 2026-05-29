@@ -17,6 +17,7 @@ class ScenariosLoaderTest(unittest.TestCase):
                 "permission-approve",
                 "plan-mode-approval",
                 "interrupt-midstream",
+                "gui-calculator",
             },
         )
 
@@ -43,6 +44,22 @@ class ScenariosLoaderTest(unittest.TestCase):
 
         with self.assertRaises(ScenarioError):
             load_scenario("does-not-exist")
+
+    def test_gui_calculator_brief_from_promotes_source_output_kind(self) -> None:
+        scenario = load_scenario("gui-calculator")
+        self.assertEqual(len(scenario.nodes), 2)
+        build, review = scenario.nodes
+        self.assertEqual(build.id, "build")
+        self.assertEqual(build.kind, "agent")
+        # brief_from on the review gate should have promoted build's
+        # output_kind so the engine-side contract injection asks the
+        # agent to write the brief.
+        self.assertEqual(build.output_kind, "review_brief")
+        self.assertEqual(review.id, "review")
+        self.assertEqual(review.kind, "gate")
+        self.assertEqual(review.brief_from, "build")
+        self.assertEqual(review.response_path, "reviews/build.json")
+        self.assertTrue(scenario.auto_commit)
 
 
 if __name__ == "__main__":

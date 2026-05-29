@@ -114,6 +114,8 @@ class NodeRunner:
     async def run(self) -> None:
         if self.node.kind is NodeKind.OP:
             await self._run_op()
+        elif self.node.kind is NodeKind.GATE:
+            await self._run_passive_gate()
         else:
             await self._run_agent()
 
@@ -170,21 +172,6 @@ class NodeRunner:
                     await self._emit(ErrorEvent(message=error_msg))
                 finally:
                     self._provider = None
-
-                if (
-                    self.node.kind is NodeKind.GATE
-                    and final_state is NodeState.DONE
-                    and error_msg is None
-                ):
-                    try:
-                        await self._handle_checkpoint_review()
-                    except asyncio.CancelledError:
-                        final_state = NodeState.CANCELLED
-                    except Exception as exc:  # noqa: BLE001
-                        logger.exception("checkpoint review failed")
-                        error_msg = f"checkpoint review error: {exc}"
-                        final_state = NodeState.ERROR
-                        await self._emit(ErrorEvent(message=error_msg))
             finally:
                 self._resolve_open_gates()
                 self._finalize_output_artifact()
@@ -210,6 +197,46 @@ class NodeRunner:
                 )
             )
             await self._emit(ErrorEvent(message=error_msg))
+            await self._emit_node_updated()
+            await self._emit(TurnDone())
+
+    async def _run_passive_gate(self) -> None:
+        """Run a passive gate node — no provider, straight to awaiting-review.
+
+        The gate's ``contract`` is the brief the human reads (usually
+        prepared by the previous agent step via ``output_kind=review_brief``).
+        """
+        self.node.commit_before = git_head(self.project.root_path)
+        self._snapshot_launch_settings()
+        self._transition(NodeState.RUNNING, started=True)
+        await self._emit(
+            NodeStarted(
+                node_id=self.node.id,
+                parent_node_id=self.node.parent_node_id,
+                kind=self.node.kind.value,
+            )
+        )
+        await self._emit_node_updated()
+
+        final_state: NodeState = NodeState.DONE
+        error_msg: str | None = None
+
+        try:
+            try:
+                await self._handle_checkpoint_review()
+            except asyncio.CancelledError:
+                final_state = NodeState.CANCELLED
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("checkpoint review failed")
+                error_msg = f"checkpoint review error: {exc}"
+                final_state = NodeState.ERROR
+                await self._emit(ErrorEvent(message=error_msg))
+        finally:
+            self._resolve_open_gates()
+            if error_msg is not None:
+                self.node.error = error_msg
+            self.node.commit_after = git_head(self.project.root_path)
+            self._transition(final_state, finished=True)
             await self._emit_node_updated()
             await self._emit(TurnDone())
 

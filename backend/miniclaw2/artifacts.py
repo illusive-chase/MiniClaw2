@@ -121,6 +121,15 @@ def load_node_artifact(root_path: str, node: Node) -> NodeArtifact:
                 content=content,
                 error=schema_error,
             )
+    elif node.output_kind is NodeOutputKind.REVIEW_BRIEF:
+        if not content.strip():
+            return NodeArtifact(
+                kind=node.output_kind.value,
+                path=rel,
+                exists=True,
+                content=content,
+                error="review brief is empty",
+            )
 
     return NodeArtifact(
         kind=node.output_kind.value,
@@ -154,6 +163,12 @@ def summarize_node_artifact(node: Node, artifact: NodeArtifact) -> str | None:
 
     if node.output_kind is NodeOutputKind.SUMMARY and artifact.content:
         return _markdown_summary(artifact.content)
+
+    if node.output_kind is NodeOutputKind.REVIEW_BRIEF and artifact.content:
+        summary = _markdown_summary(artifact.content)
+        if summary:
+            return summary
+        return "review brief ready"
 
     if artifact.path:
         return f"{node.output_kind.value} output ready at {artifact.path}"

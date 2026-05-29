@@ -85,7 +85,7 @@ export type ClientMessage =
       type: "user_message";
       text: string;
       resume_from_node_id?: string | null;
-      output_kind?: "freeform" | "summary" | "interface" | null;
+      output_kind?: "freeform" | "summary" | "interface" | "review_brief" | null;
       output_path?: string | null;
     }
   | {
@@ -103,7 +103,7 @@ export type ClientMessage =
     }
   | { type: "interrupt" }
   | { type: "replay_request"; node_id: string; since_seq: number }
-  | { type: "start_gate_node"; prompt: string; contract: string };
+  | { type: "start_gate_node"; brief: string };
 
 export type SessionInfo = {
   id: string;
@@ -158,7 +158,7 @@ export type NodeInfo = {
   sdk_session_id?: string | null;
   commit_before?: string | null;
   commit_after?: string | null;
-  output_kind?: "freeform" | "summary" | "interface";
+  output_kind?: "freeform" | "summary" | "interface" | "review_brief";
   output_path?: string | null;
   output_contract_snapshot?: string;
   prompt: string;
@@ -168,6 +168,7 @@ export type NodeInfo = {
   usage?: TokenUsage | null;
   system_context_snapshot?: string;
   settings_snapshot?: Record<string, unknown>;
+  scenario_step_id?: string | null;
   created_at: number;
   started_at?: number | null;
   finished_at?: number | null;
@@ -185,7 +186,7 @@ export type NodeDiff = {
 };
 
 export type NodeArtifact = {
-  kind: "freeform" | "summary" | "interface";
+  kind: "freeform" | "summary" | "interface" | "review_brief";
   path?: string | null;
   exists: boolean;
   content?: string | null;
