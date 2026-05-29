@@ -257,7 +257,7 @@ churn.
 > Tool triggers a default-deny permission gate; user approves; tool runs.
 
 - `permission_mode: default`. Prompt tells the agent to run
-  `echo hello-from-bash` via Bash. The runner emits a
+  `python3 -c 'print("hello-from-bash")'` via Bash. The runner emits a
   `permission`-flavored `interaction_request`; the user approves once
   from the gate tab.
 - Verify: `events.jsonl` contains an `interaction_request` with
@@ -265,7 +265,7 @@ churn.
   `result_kind == "stdout"` whose `result` contains `hello-from-bash`
   (proves the gate fired *and* the tool ran afterward).
 - Acceptance: "a permission prompt appeared in the gate tab; you
-  clicked Allow; the agent then ran `echo hello-from-bash` and the
+  clicked Allow; the agent then ran `python3 -c 'print("hello-from-bash")'` and the
   output is visible in the Bash tile."
 
 **plan-mode-approval**

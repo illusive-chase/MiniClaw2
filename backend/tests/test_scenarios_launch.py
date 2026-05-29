@@ -91,6 +91,36 @@ class LaunchScenarioTest(unittest.TestCase):
             finally:
                 registry.delete_project(project.id)
 
+    def test_launching_permission_approve_codex_sets_interactive_policy(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            store = Store(root=Path(raw))
+            registry = ProjectRegistry(store=store)
+
+            with patch(
+                "miniclaw2.registry.asyncio.create_task",
+                side_effect=_fake_create_task,
+            ):
+                project, scenario = launch_scenario(
+                    "permission-approve", "codex", registry
+                )
+
+            try:
+                self.assertEqual(scenario.name, "permission-approve")
+                self.assertEqual(
+                    project.settings_override.get("approval_policy"),
+                    "untrusted",
+                )
+                self.assertEqual(
+                    project.settings_override.get("sandbox"),
+                    "read-only",
+                )
+                self.assertEqual(
+                    project.settings_override.get("permission_mode"),
+                    "default",
+                )
+            finally:
+                registry.delete_project(project.id)
+
     def test_unsupported_provider_raises(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             store = Store(root=Path(raw))

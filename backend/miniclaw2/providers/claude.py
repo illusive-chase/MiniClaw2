@@ -225,6 +225,9 @@ class ClaudeProvider:
             "model": model,
             "cwd": context.project.root_path,
             "can_use_tool": self._make_can_use_tool(context),
+            # MiniClaw2 owns permission flow; avoid implicit CLI settings
+            # auto-allowing tools.
+            "setting_sources": [],
         }
         permission_mode = context.project.settings_override.get("permission_mode")
         if isinstance(permission_mode, str) and permission_mode:

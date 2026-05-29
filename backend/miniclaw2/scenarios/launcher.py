@@ -87,12 +87,20 @@ def _seed_workspace(scenario: Scenario, root: Path) -> None:
 
 
 def _approval_policy_for(provider: str, permission_mode: str | None) -> str | None:
-    if provider.lower() == "codex" and permission_mode == "bypassPermissions":
+    if provider.lower() != "codex":
+        return None
+    if permission_mode == "bypassPermissions":
         return "never"
+    if permission_mode == "default":
+        return "untrusted"
     return None
 
 
 def _sandbox_for(provider: str, permission_mode: str | None) -> str | None:
-    if provider.lower() == "codex" and permission_mode == "bypassPermissions":
+    if provider.lower() != "codex":
+        return None
+    if permission_mode == "bypassPermissions":
         return "workspace-write"
+    if permission_mode == "default":
+        return "read-only"
     return None

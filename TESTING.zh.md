@@ -224,7 +224,7 @@ runner 才会继续，Bash 才会真的执行。这条路径如果挂了，所�
 1. Tests 面板 → `permission-approve` → `Run · claude`。
 2. 时间线上出现 agent 节点（脉冲蓝色 → 短暂之后变成绿色 `waiting`）。
 3. 右侧细节面板会**自动切换到 `gate` 标签页**，里面是 Bash 工具的权限请求；
-   工具命令应当是 `echo hello-from-bash`。
+   工具命令应当是 `python3 -c 'print("hello-from-bash")'`。
 4. 点击 **Allow**（"仅本次"）。
 5. agent 继续运行，时间线下方出现 Bash 工具 tile，展开能看到
    `hello-from-bash` 这一行 stdout；最后 assistant 用一句话告诉你它打印了什么。
