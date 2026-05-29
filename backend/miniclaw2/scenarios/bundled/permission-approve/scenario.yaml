@@ -1,0 +1,9 @@
+name: permission-approve
+brief: "Tool triggers a default-deny permission gate; user approves; tool runs."
+providers: [claude, codex]
+auto_commit: false
+permission_mode: default
+nodes:
+  - id: turn1
+    kind: agent
+    prompt_file: prompts/turn1.md

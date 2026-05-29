@@ -1,12 +1,17 @@
 # MiniClaw2 testing — dashboard-launched, demo-driven, investigation-free
 
-> **Status: Tier 1 landed.** The dashboard test panel, the
-> temporary-workspace feature, the scenario loader/launcher, the
-> `verify.sh` runner, and three bundled Tier 1 scenarios
-> (`hello-text`, `bash-uname`, `write-readme`) are all in. See
-> `TESTING.zh.md` for the end-user run-through. Tiers 2–4 remain
-> planned (scenarios named, surfaces identified, YAML shape
-> accommodates them) but not yet built. Grounded in `DESIGN.md §1.1`
+> **Status: Tier 1 + Tier 2 single-node trio landed.** The dashboard
+> test panel, the temporary-workspace feature, the scenario
+> loader/launcher, the `verify.sh` runner, the three bundled Tier 1
+> scenarios (`hello-text`, `bash-uname`, `write-readme`), and the
+> three Tier 2 single-node scenarios (`permission-approve`,
+> `plan-mode-approval`, `interrupt-midstream`) are all in. See
+> `TESTING.zh.md` for the end-user run-through. Tier 3 (multi-step
+> scenarios — `gui-calculator`, `context-md-respected`,
+> `resume-fix-after-reject`) and Tier 4 (`reconnect-replay`) remain
+> planned; the multi-step ones need a scenario-step expander on the
+> `runner_done` callback (see §8) before they can land. Grounded in
+> `DESIGN.md §1.1`
 > ("investigation-free interface"): every test is a small task whose
 > **observable outcome** the human ratifies. Internal correctness —
 > gate routing, commit-op rewrite, reconnect replay — is exercised
@@ -208,38 +213,50 @@ churn.
 - Verify: `tempdir/README.md` exists with content `# scratch\n`; no other tracked files were added.
 - Acceptance: "in the node's diff panel, you can see `README.md` was added with the expected content."
 
-### Tier 2 — inline gates and interactivity (planned)
+### Tier 2 — inline gates and interactivity (✓ landed)
 
 **permission-approve**
-> Tool triggers a default-deny gate; user approves; tool runs.
+> Tool triggers a default-deny permission gate; user approves; tool runs.
 
-- Project launched with permission mode that defaults to ask for
-  Bash. Agent told to run `ls`. Inline permission gate fires;
-  user approves once.
-- Verify: a `permission` interaction request appears in `events.jsonl`
-  and is followed by a successful Bash activity.
-- Acceptance: "you saw a permission prompt appear in the gate tab,
-  approved it, and the agent then ran `ls` and reported the output."
+- `permission_mode: default`. Prompt tells the agent to run
+  `echo hello-from-bash` via Bash. The runner emits a
+  `permission`-flavored `interaction_request`; the user approves once
+  from the gate tab.
+- Verify: `events.jsonl` contains an `interaction_request` with
+  `interaction_type == "permission"` **and** an `activity` with
+  `result_kind == "stdout"` whose `result` contains `hello-from-bash`
+  (proves the gate fired *and* the tool ran afterward).
+- Acceptance: "a permission prompt appeared in the gate tab; you
+  clicked Allow; the agent then ran `echo hello-from-bash` and the
+  output is visible in the Bash tile."
 
 **plan-mode-approval**
 > Project in plan permission mode; agent plans; user approves; agent executes; one file lands.
 
-- Permission mode: `plan`. Prompt asks for a file to be created.
-- Verify: a `plan_approval` interaction request appears; after
-  approval, an Edit/Write tool activity appears; the file exists.
-- Acceptance: "you saw a plan-approval prompt, approved it, and the
-  agent then created the file."
+- `permission_mode: plan`. Prompt asks the agent to propose a plan
+  and, on approval, write `PLAN_OK.txt` with the single line
+  `plan-approved`.
+- Verify: `events.jsonl` contains an `interaction_request` with
+  `interaction_type == "plan_approval"`; `PLAN_OK.txt` exists in the
+  workspace root with the exact content; `git status --porcelain` is
+  clean apart from that one file.
+- Acceptance: "a plan-approval prompt appeared in the gate tab; you
+  approved it; the diff panel then shows `PLAN_OK.txt` added with the
+  correct content; no extra files were created."
 
 **interrupt-midstream**
 > Long-running Bash; user hits Stop; node ends `cancelled`; partial output preserved.
 
-- Prompt: "Run `for i in 1..60; do echo $i; sleep 1; done` via Bash."
-- Verify: node's terminal state on disk is `cancelled`; partial
-  `events.jsonl` contains some text deltas but not a `turn_done`
-  with a `done` final state.
-- Acceptance: "you hit Stop after a few seconds, the node tile
-  turned muted-grey, and the partial output is still in the
-  transcript."
+- `permission_mode: bypassPermissions`. Prompt:
+  `for i in $(seq 1 60); do echo "line $i"; sleep 1; done`.
+- Verify: the latest node's `node.json` has `state == "cancelled"`;
+  its `events.jsonl` contains at least one `text_delta` or `activity`
+  event (the regression we're guarding against is "cancel wiped the
+  in-flight buffer"); and no `turn_done` event with `state == "done"`
+  is present.
+- Acceptance: "you hit Stop after a few seconds; the node tile turned
+  muted-grey (cancelled); the partial Bash output is still in the
+  tool tile; no follow-up assistant turn fired after the cancel."
 
 ### Tier 3 — integrated (gates + ops + edges) (planned)
 

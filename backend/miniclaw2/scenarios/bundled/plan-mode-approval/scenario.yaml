@@ -1,0 +1,9 @@
+name: plan-mode-approval
+brief: "Project is in plan permission mode; agent plans; user approves; one file lands."
+providers: [claude, codex]
+auto_commit: false
+permission_mode: plan
+nodes:
+  - id: turn1
+    kind: agent
+    prompt_file: prompts/turn1.md

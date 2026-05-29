@@ -6,9 +6,19 @@ from miniclaw2.scenarios import list_scenarios, load_scenario
 
 
 class ScenariosLoaderTest(unittest.TestCase):
-    def test_lists_bundled_tier1_scenarios(self) -> None:
+    def test_lists_bundled_scenarios(self) -> None:
         names = {s.name for s in list_scenarios()}
-        self.assertEqual(names, {"hello-text", "bash-uname", "write-readme"})
+        self.assertEqual(
+            names,
+            {
+                "hello-text",
+                "bash-uname",
+                "write-readme",
+                "permission-approve",
+                "plan-mode-approval",
+                "interrupt-midstream",
+            },
+        )
 
     def test_each_scenario_has_required_fields(self) -> None:
         for scenario in list_scenarios():

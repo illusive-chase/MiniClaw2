@@ -1,0 +1,3 @@
+- A permission prompt appeared in the gate tab asking to run the Bash command (you had to click Allow — it did not auto-run).
+- After you approved, a Bash tool tile appeared in the timeline and its output shows the literal string `hello-from-bash`.
+- The assistant's sentence accurately reports what was printed (not a hallucinated value, not a refusal).

@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+# interrupt-midstream programmatic floor:
+#   - the latest node's node.json has state == "cancelled"
+#   - events.jsonl has at least one text_delta or activity event (proves
+#     we got partway before the interrupt — the regression we care about
+#     is "cancel wiped the in-flight buffer")
+#   - events.jsonl has NO turn_done event with state=="done"
+set -euo pipefail
+
+if [[ -z "${MINICLAW_HOME:-}" ]]; then
+  MINICLAW_HOME="$HOME/.miniclaw2"
+fi
+if [[ -z "${MINICLAW_PROJECT_ID:-}" ]]; then
+  echo "MINICLAW_PROJECT_ID not set" >&2
+  exit 2
+fi
+
+project_dir="$MINICLAW_HOME/projects/$MINICLAW_PROJECT_ID"
+if [[ ! -d "$project_dir/nodes" ]]; then
+  echo "no nodes directory: $project_dir/nodes" >&2
+  exit 3
+fi
+
+python3 - "$project_dir" <<'PY'
+import json, os, sys
+project_dir = sys.argv[1]
+nodes_dir = os.path.join(project_dir, "nodes")
+
+# Find the most recently created node by created_at in node.json.
+candidates = []
+for entry in os.listdir(nodes_dir):
+    nf = os.path.join(nodes_dir, entry, "node.json")
+    if not os.path.isfile(nf):
+        continue
+    try:
+        with open(nf, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        continue
+    candidates.append((data.get("created_at") or 0, entry, data))
+if not candidates:
+    print("no nodes on disk", file=sys.stderr)
+    sys.exit(4)
+candidates.sort(key=lambda x: x[0])
+_, nid, node = candidates[-1]
+
+if node.get("state") != "cancelled":
+    print(f"latest node {nid} state is {node.get('state')!r}, expected 'cancelled'", file=sys.stderr)
+    sys.exit(5)
+
+events_path = os.path.join(nodes_dir, nid, "events.jsonl")
+saw_partial = False
+saw_done = False
+if os.path.isfile(events_path):
+    with open(events_path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            rec = json.loads(line)
+            ev = rec.get("event") or {}
+            t = ev.get("type")
+            if t in ("text_delta", "activity"):
+                saw_partial = True
+            if t == "turn_done" and ev.get("state") == "done":
+                saw_done = True
+
+if saw_done:
+    print("events.jsonl has a turn_done with state=done — node was not actually interrupted", file=sys.stderr)
+    sys.exit(6)
+if not saw_partial:
+    print("events.jsonl has no text_delta or activity — partial output was wiped or never arrived", file=sys.stderr)
+    sys.exit(7)
+print("ok")
+PY

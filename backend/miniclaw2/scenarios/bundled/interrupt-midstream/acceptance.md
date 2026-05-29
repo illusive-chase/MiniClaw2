@@ -1,0 +1,4 @@
+- You hit the Stop button after a few seconds of streaming output (not before the first line, not after the loop finishes on its own).
+- The node tile turned muted-grey (cancelled state) — not red (error), not green (done).
+- The partial Bash output that arrived before you hit Stop is still visible in the tool tile after cancellation (it was not wiped or replaced with an error placeholder).
+- No follow-up assistant turn fired after the cancel.
