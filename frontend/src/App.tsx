@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { getNodeDiff, listNodeEvents, listNodes } from "./api";
+import { getNodeArtifact, getNodeDiff, listNodeEvents, listNodes } from "./api";
 import { canResumeNode } from "./nodeUtil";
 import { Chat } from "./components/Chat";
 import { ProjectTimeline } from "./components/ProjectTimeline";
@@ -15,6 +15,7 @@ import { VerifyCard } from "./components/VerifyCard";
 import type {
   EventRecord,
   NodeDiff,
+  NodeArtifact,
   NodeInfo,
   ServerEvent,
   SessionInfo,
@@ -43,6 +44,8 @@ export function App() {
   const [selectedEventsLoading, setSelectedEventsLoading] = useState(false);
   const [selectedDiff, setSelectedDiff] = useState<NodeDiff | null>(null);
   const [selectedDiffLoading, setSelectedDiffLoading] = useState(false);
+  const [selectedArtifact, setSelectedArtifact] = useState<NodeArtifact | null>(null);
+  const [selectedArtifactLoading, setSelectedArtifactLoading] = useState(false);
   const [pendingGate, setPendingGate] = useState<PendingGate | null>(null);
   const [pendingReview, setPendingReview] = useState<PendingGate | null>(null);
   const [streaming, setStreaming] = useState(false);
@@ -59,6 +62,7 @@ export function App() {
     setSelectedNodeId(null);
     setSelectedEvents([]);
     setSelectedDiff(null);
+    setSelectedArtifact(null);
     setTurns([]);
     setStreaming(false);
     setPendingGate(null);
@@ -117,6 +121,8 @@ export function App() {
     if (!session?.id || !selectedNodeId) {
       setSelectedEvents([]);
       setSelectedEventsLoading(false);
+      setSelectedArtifact(null);
+      setSelectedArtifactLoading(false);
       return;
     }
     let cancelled = false;
@@ -143,6 +149,8 @@ export function App() {
     if (!session?.id || !selectedNodeId) {
       setSelectedDiff(null);
       setSelectedDiffLoading(false);
+      setSelectedArtifact(null);
+      setSelectedArtifactLoading(false);
       return;
     }
     let cancelled = false;
@@ -169,6 +177,40 @@ export function App() {
     selectedNode?.commit_before,
     selectedNode?.commit_after,
     selectedNode?.state,
+  ]);
+
+  useEffect(() => {
+    if (!session?.id || !selectedNodeId) {
+      setSelectedArtifact(null);
+      setSelectedArtifactLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setSelectedArtifactLoading(true);
+    getNodeArtifact(session.id, selectedNodeId)
+      .then((artifact) => {
+        if (!cancelled) setSelectedArtifact(artifact);
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          console.error("get node artifact failed:", err);
+          setSelectedArtifact(null);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setSelectedArtifactLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    session?.id,
+    selectedNodeId,
+    selectedNode?.output_kind,
+    selectedNode?.output_path,
+    selectedNode?.state,
+    selectedNode?.finished_at,
+    selectedNode?.summary,
   ]);
 
   const appendSelectedEvent = useCallback((nodeId: string | null, ev: ServerEvent) => {
@@ -223,7 +265,7 @@ export function App() {
   );
 
   const launchAgentNode = useCallback(
-    (text: string, resume: string | null) => {
+    (text: string, resume: string | null, outputKind: "freeform" | "summary" | "interface") => {
       if (streaming || status !== "open") return;
       const userId = `u${++turnIdRef.current}`;
       const aId = `a${++turnIdRef.current}`;
@@ -233,16 +275,21 @@ export function App() {
         createAssistantTurn(aId, true),
       ]);
       setStreaming(true);
-      send({ type: "user_message", text, resume_from_node_id: resume });
+      send({
+        type: "user_message",
+        text,
+        resume_from_node_id: resume,
+        output_kind: outputKind,
+      });
     },
     [streaming, status, send],
   );
 
   const onLaunchNode = useCallback(
-    (prompt: string, resume: string | null) => {
+    (prompt: string, resume: string | null, outputKind: "freeform" | "summary" | "interface") => {
       setNodeModalOpen(false);
       setNodeModalResumeId(null);
-      launchAgentNode(prompt, resume);
+      launchAgentNode(prompt, resume, outputKind);
     },
     [launchAgentNode],
   );
@@ -483,6 +530,7 @@ export function App() {
         onLaunch={onLaunchNode}
         resumeOptions={resumeOptions}
         presetResumeFromNodeId={nodeModalResumeId}
+        presetOutputKind="summary"
       />
 
       {view === "tests" ? (
@@ -528,6 +576,8 @@ export function App() {
           loading={selectedEventsLoading}
           diff={selectedDiff}
           diffLoading={selectedDiffLoading}
+          artifact={selectedArtifact}
+          artifactLoading={selectedArtifactLoading}
           onResumeFromNode={openNodeModalForResume}
           pendingGate={
             pendingGate && selectedNode && pendingGate.nodeId === selectedNode.id

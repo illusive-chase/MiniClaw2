@@ -22,7 +22,10 @@ Vite frontend.
   UI later adds a deliberate resume edge. A `NodeRunner` drives the
   state machine (`queued → running [↔ waiting] → done|error|cancelled`),
   translates provider messages into a small event union over the
-  WebSocket, and persists every event to `events.jsonl` before pushing.
+  WebSocket, persists every event to `events.jsonl` before pushing, and
+  can inject a node output contract (`freeform`, `summary`, or
+  `interface`) so completed agent nodes have a dashboard-visible result
+  artifact.
 - **Frontend** (`frontend/`) — single-project workspace with a
   horizontal node timeline, node detail side panel, and chat surface.
   Assistant output is markdown-rendered (`react-markdown` + GFM +
@@ -31,7 +34,8 @@ Vite frontend.
   has a Stop button, a collapsible reasoning panel, repo diff
   inspection, an explicit resume-from-node control with a visible
   SVG connector + `↻ {id}` badge on the timeline, a collapsible
-  System-context block in the node summary tab, a read-only
+  System-context block in the node summary tab, artifact-first summary
+  rendering for `summary`/`interface` node outputs, a read-only
   `Settings` tab driven by `Node.settings_snapshot`, and WebSocket
   reconnect-replay. Permission / ask-user / plan-approval and
   checkpoint-review all share a unified `gate` tab on `NodeDetail`
@@ -54,7 +58,8 @@ on-disk persistence per project & node, interrupt, extended-thinking
 surface, WebSocket reconnect replay (mid-session drops), Claude and
 initial Codex provider adapters, provider-neutral project context
 via `CONTEXT.md`, checkpoint gate nodes (markdown contract +
-write-json / no-op review), and opt-in auto-commit op nodes with
+write-json / no-op review), node output contracts (`summary` markdown
+or `interface` JSON artifacts), and opt-in auto-commit op nodes with
 real two-commit per-node diffs.
 Out (for now): multi-project workspace UI, vendor-specific on-disk
 context (`CLAUDE.md`, `AGENTS.md`, `.claude/settings.json`,
@@ -147,6 +152,13 @@ projects/<pid>/
     gates.jsonl         # {action: "created"|"resolved", gate} per line
 ```
 
+Agent node output artifacts live in the project workspace by default:
+
+```
+<project_root>/.miniclaw2/outputs/<nid>/result.md    # output_kind=summary
+<project_root>/.miniclaw2/outputs/<nid>/result.json  # output_kind=interface
+```
+
 ## Wire protocol
 
 The HTTP/WS shape is the "session"-based legacy compat layer: each
@@ -157,11 +169,13 @@ agent node.
   `GET /sessions/{sid}/nodes`,
   `GET /sessions/{sid}/nodes/{nid}`, and
   `GET /sessions/{sid}/nodes/{nid}/events`, plus
-  `GET /sessions/{sid}/nodes/{nid}/diff`.
+  `GET /sessions/{sid}/nodes/{nid}/diff` and
+  `GET /sessions/{sid}/nodes/{nid}/artifact`.
 - `POST /sessions` accepts an optional `auto_commit: bool` that
   stores into `project.settings_override["auto_commit"]` and triggers
   the commit-op auto-append.
-- Client → server: `user_message`, `start_gate_node {prompt, contract}`,
+- Client → server: `user_message {text, resume_from_node_id?,
+  output_kind?, output_path?}`, `start_gate_node {prompt, contract}`,
   `interaction_response`, `interrupt`,
   `replay_request {node_id, since_seq}`.
 - Server → client: `node_started` (now with `kind` to distinguish

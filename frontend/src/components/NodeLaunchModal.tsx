@@ -1,12 +1,19 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { NodeInfo } from "../types";
 
+type OutputKind = "freeform" | "summary" | "interface";
+
 type Props = {
   open: boolean;
   onCancel: () => void;
-  onLaunch: (prompt: string, resumeFromNodeId: string | null) => void;
+  onLaunch: (
+    prompt: string,
+    resumeFromNodeId: string | null,
+    outputKind: OutputKind,
+  ) => void;
   resumeOptions: NodeInfo[];
   presetResumeFromNodeId?: string | null;
+  presetOutputKind?: OutputKind;
 };
 
 export function NodeLaunchModal({
@@ -15,18 +22,21 @@ export function NodeLaunchModal({
   onLaunch,
   resumeOptions,
   presetResumeFromNodeId,
+  presetOutputKind = "summary",
 }: Props) {
   const [prompt, setPrompt] = useState("");
   const [resumeFromNodeId, setResumeFromNodeId] = useState<string | null>(null);
+  const [outputKind, setOutputKind] = useState<OutputKind>("summary");
   const promptRef = useRef<HTMLTextAreaElement | null>(null);
 
   useEffect(() => {
     if (open) {
       setPrompt("");
       setResumeFromNodeId(presetResumeFromNodeId ?? null);
+      setOutputKind(presetOutputKind);
       window.setTimeout(() => promptRef.current?.focus(), 0);
     }
-  }, [open, presetResumeFromNodeId]);
+  }, [open, presetResumeFromNodeId, presetOutputKind]);
 
   const indexed = useMemo(() => {
     return resumeOptions.map((node, idx) => ({ node, idx }));
@@ -38,7 +48,7 @@ export function NodeLaunchModal({
 
   const submit = () => {
     if (!canSubmit) return;
-    onLaunch(prompt.trim(), resumeFromNodeId);
+    onLaunch(prompt.trim(), resumeFromNodeId, outputKind);
   };
 
   return (
@@ -108,6 +118,24 @@ export function NodeLaunchModal({
                 No resumable nodes yet — only terminal nodes with a provider session can be resumed.
               </span>
             )}
+          </label>
+
+          <label className="flex flex-col gap-1">
+            <span className="text-[10px] font-medium uppercase tracking-[0.14em] text-ink-subtle">
+              Output contract
+            </span>
+            <select
+              value={outputKind}
+              onChange={(e) => setOutputKind(e.target.value as OutputKind)}
+              className="rounded-md border border-line bg-surface-sunken px-3 py-2 text-sm text-ink-strong focus:border-brand focus:outline-none"
+            >
+              <option value="summary">summary</option>
+              <option value="interface">interface</option>
+              <option value="freeform">freeform</option>
+            </select>
+            <span className="text-[10px] text-ink-subtle">
+              summary writes a markdown result file; interface writes machine-readable JSON.
+            </span>
           </label>
         </div>
 

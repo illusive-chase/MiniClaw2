@@ -16,7 +16,8 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 from uuid import uuid4
 
-from .domain import Node, NodeKind, NodeState, Project
+from .artifacts import validate_node_output_path
+from .domain import Node, NodeKind, NodeOutputKind, NodeState, Project
 from .runner import NodeRunner
 from .store import Store
 from .workspace import create_temporary_root, remove_temporary_root
@@ -201,6 +202,8 @@ class ProjectRegistry:
         prompt: str,
         *,
         resume_from_node_id: str | None = None,
+        output_kind: str | None = None,
+        output_path: str | None = None,
     ) -> NodeRunner | None:
         """Create a new agent node and launch its runner as a task.
 
@@ -227,6 +230,8 @@ class ProjectRegistry:
                 return None
             if not (resume_source.provider_session_id or resume_source.sdk_session_id):
                 return None
+        if validate_node_output_path(output_path):
+            return None
 
         node = Node(
             project_id=pid,
@@ -236,6 +241,8 @@ class ProjectRegistry:
             provider=resume_source.provider if resume_source else rt.project.provider,
             provider_session_id=resume_source.provider_session_id if resume_source else None,
             sdk_session_id=resume_source.sdk_session_id if resume_source else None,
+            output_kind=self._normalize_output_kind(output_kind),
+            output_path=output_path,
             prompt=prompt,
         )
         self.store.create_node(node)
@@ -273,6 +280,14 @@ class ProjectRegistry:
         rt.runner_task = asyncio.create_task(runner.run())
         rt.runner_task.add_done_callback(lambda _t, _rt=rt: self._on_runner_done(_rt))
         return runner
+
+    @staticmethod
+    def _normalize_output_kind(value: str | None) -> NodeOutputKind:
+        if value == "summary":
+            return NodeOutputKind.SUMMARY
+        if value == "interface":
+            return NodeOutputKind.INTERFACE
+        return NodeOutputKind.FREEFORM
 
     def _on_runner_done(self, rt: ProjectRuntime) -> None:
         finished_node = rt.runner.node if rt.runner else None

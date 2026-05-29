@@ -52,9 +52,13 @@ class AgentProviderContext:
     project: Project
     request_gate_handler: Callable[[GateRequest], Awaitable[dict[str, Any]]]
     system_context: str = ""
+    launch_instructions: str = ""
 
     async def request_gate(self, gate: GateRequest) -> dict[str, Any]:
         return await self.request_gate_handler(gate)
+
+    def turn_text(self) -> str:
+        return compose_turn_text(self.node.prompt, self.launch_instructions)
 
 
 class AgentProvider(Protocol):
@@ -69,3 +73,9 @@ class AgentProvider(Protocol):
 
 def dump_model(value: BaseModel) -> dict[str, Any]:
     return value.model_dump()
+
+
+def compose_turn_text(prompt: str, launch_instructions: str = "") -> str:
+    if not launch_instructions:
+        return prompt
+    return f"{launch_instructions}\n\n---\n\n{prompt}"

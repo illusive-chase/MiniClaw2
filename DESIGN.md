@@ -138,6 +138,13 @@ Every node has:
 - `provider_turn_id?` — provider-native turn id when available
 - `sdk_session_id?` — legacy alias for old Claude records
 - `commit_before?`, `commit_after?` — repo state at start / finish
+- `output_kind ∈ {freeform, summary, interface}` — the node result
+  contract. `summary` asks the agent to write markdown, `interface`
+  asks it to write JSON, and `freeform` preserves the transcript-first
+  behavior for exploratory work.
+- `output_path?`, `output_contract_snapshot` — project-relative
+  artifact path and the exact launch-time instructions injected into
+  the provider turn.
 - `summary` — short one-liner generated post-completion
 - `created_at`, `started_at`, `finished_at`
 
@@ -186,6 +193,25 @@ conversation continuation. Inline human gates (`permission`,
 put the node into `waiting`. Resolving an inline gate continues the
 same provider session/turn inside that node — the node returns to
 `running`.
+
+Agent nodes may also carry an **output contract**:
+
+- `freeform` — no required artifact. Transcript, tool activity, and
+  workspace diff remain the primary evidence.
+- `summary` — the runner injects instructions requiring a markdown
+  artifact at `.miniclaw2/outputs/<node-id>/result.md` by default,
+  with `# Purpose`, `# Method`, and `# Result` sections.
+- `interface` — the runner injects instructions requiring a JSON object
+  at `.miniclaw2/outputs/<node-id>/result.json` by default, with stable
+  keys including `kind`, `summary`, `purpose`, `method`, `result`, and
+  `files`.
+
+The side panel treats the configured artifact as the primary dashboard
+result when `output_kind != freeform`; transcript/diff/events remain
+the audit surface. On completion, MiniClaw2 reads the artifact and uses
+it to populate the node's short `summary` when possible. Missing or
+invalid artifacts are visible as artifact status, not hidden inside the
+transcript.
 
 ### 3.2 gate (checkpoint node)
 
@@ -512,7 +538,7 @@ first risks warping the format to fit speculative needs.
   - **context**: curve between lanes (cross-project)
   - **fork**: a new lane branching off a node's right edge
 - Clicking a node opens a side panel:
-  - default tab: **summary + open gates** (matches "hide detail")
+  - default tab: **artifact summary + open gates** (matches "hide detail")
   - other tabs: transcript, activities/tools, snapshot diff, settings
 
 ## 9. Persistence sketch

@@ -1,11 +1,15 @@
 import { useEffect, useMemo, useState } from "react";
+import ReactMarkdown from "react-markdown";
 import type {
   ClientMessage,
   EventRecord,
   InteractionRequest,
+  NodeArtifact,
   NodeDiff,
   NodeInfo,
 } from "../types";
+import rehypeHighlight from "rehype-highlight";
+import remarkGfm from "remark-gfm";
 import { canResumeNode } from "../nodeUtil";
 import { buildTurnsFromEvents } from "../transcript";
 import { Chat } from "./Chat";
@@ -39,6 +43,8 @@ export function NodeDetail({
   loading,
   diff,
   diffLoading,
+  artifact,
+  artifactLoading,
   onResumeFromNode,
   pendingGate,
   pendingReview,
@@ -50,6 +56,8 @@ export function NodeDetail({
   loading: boolean;
   diff: NodeDiff | null;
   diffLoading: boolean;
+  artifact: NodeArtifact | null;
+  artifactLoading: boolean;
   onResumeFromNode?: (node: NodeInfo) => void;
   pendingGate?: PendingGate | null;
   pendingReview?: PendingGate | null;
@@ -157,6 +165,8 @@ export function NodeDetail({
           node={node}
           eventCount={events.length}
           loading={loading}
+          artifact={artifact}
+          artifactLoading={artifactLoading}
           showReviewBanner={showReview}
         />
       ) : tab === "transcript" ? (
@@ -214,14 +224,19 @@ function Summary({
   node,
   eventCount,
   loading,
+  artifact,
+  artifactLoading,
   showReviewBanner,
 }: {
   node: NodeInfo;
   eventCount: number;
   loading: boolean;
+  artifact: NodeArtifact | null;
+  artifactLoading: boolean;
   showReviewBanner?: boolean;
 }) {
   const isOp = node.kind === "op";
+  const outputKind = node.output_kind ?? "freeform";
   return (
     <div className="flex-1 overflow-y-auto bg-surface px-4 py-4 text-sm">
       <div className="space-y-4">
@@ -253,6 +268,12 @@ function Summary({
               </div>
             </div>
           </section>
+        ) : outputKind !== "freeform" ? (
+          <OutputArtifact
+            node={node}
+            artifact={artifact}
+            loading={artifactLoading}
+          />
         ) : (
           <section>
             <h3 className="mb-2 text-[10px] font-medium uppercase tracking-[0.14em] text-ink-subtle">
@@ -288,6 +309,21 @@ function Summary({
           </section>
         )}
 
+        {!isOp && node.output_contract_snapshot && (
+          <section>
+            <details className="rounded-md border border-line bg-surface-sunken">
+              <summary className="cursor-pointer px-3 py-2 text-[10px] font-medium uppercase tracking-[0.14em] text-ink-muted hover:text-ink">
+                Output contract ({node.output_contract_snapshot.length} chars)
+              </summary>
+              <div className="md-prose border-t border-line px-3 py-2 text-xs text-ink">
+                <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]}>
+                  {node.output_contract_snapshot}
+                </ReactMarkdown>
+              </div>
+            </details>
+          </section>
+        )}
+
         <section>
           <h3 className="mb-2 text-[10px] font-medium uppercase tracking-[0.14em] text-ink-subtle">
             Metadata
@@ -295,6 +331,15 @@ function Summary({
           <dl className="grid grid-cols-[120px_1fr] gap-x-3 gap-y-2 text-xs">
             <dt className="text-ink-subtle">Kind</dt>
             <dd className="text-ink">{node.kind}</dd>
+            {!isOp && (
+              <>
+                <dt className="text-ink-subtle">Output</dt>
+                <dd className="truncate font-mono text-ink" title={node.output_path ?? undefined}>
+                  {outputKind}
+                  {node.output_path ? ` · ${node.output_path}` : ""}
+                </dd>
+              </>
+            )}
             <dt className="text-ink-subtle">Provider</dt>
             <dd className="text-ink">{node.provider}</dd>
             <dt className="text-ink-subtle">Parent</dt>
@@ -363,6 +408,98 @@ function DiffView({
       </pre>
     </div>
   );
+}
+
+function OutputArtifact({
+  node,
+  artifact,
+  loading,
+}: {
+  node: NodeInfo;
+  artifact: NodeArtifact | null;
+  loading: boolean;
+}) {
+  if (loading) {
+    return <div className="bg-surface px-4 py-6 text-sm text-ink-muted">Loading artifact...</div>;
+  }
+  if (!artifact) {
+    return <div className="bg-surface px-4 py-6 text-sm text-ink-muted">No artifact available.</div>;
+  }
+  if (artifact.error) {
+    return (
+      <pre className="m-4 whitespace-pre-wrap rounded-md border border-state-error/30 bg-state-error-soft p-3 text-xs text-state-error">
+        {artifact.error}
+      </pre>
+    );
+  }
+  if (!artifact.exists) {
+    return (
+      <div className="bg-surface px-4 py-6 text-sm text-ink-muted">
+        {artifact.path
+          ? `Expected artifact at ${artifact.path}`
+          : "No artifact path configured."}
+      </div>
+    );
+  }
+  if (node.output_kind === "interface") {
+    return (
+      <div className="flex-1 overflow-y-auto bg-surface px-4 py-4 text-sm">
+        <section className="space-y-3">
+          <div className="rounded-md border border-line bg-surface-sunken p-3">
+            <div className="mb-2 text-[10px] font-medium uppercase tracking-[0.14em] text-ink-subtle">
+              JSON
+            </div>
+            <pre className="whitespace-pre-wrap font-mono text-[11px] leading-relaxed text-ink">
+              {artifact.content || "{}"}
+            </pre>
+          </div>
+          {Boolean(artifact.data) &&
+            typeof artifact.data === "object" &&
+            !Array.isArray(artifact.data) && (
+            <div className="rounded-md border border-line bg-surface-sunken p-3 text-xs text-ink">
+              <dl className="grid grid-cols-[120px_1fr] gap-x-3 gap-y-2">
+                {Object.entries(artifact.data as Record<string, unknown>).map(([key, value]) => (
+                  <NodeArtifactRow key={key} label={key} value={formatArtifactValue(value)} />
+                ))}
+              </dl>
+            </div>
+          )}
+        </section>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex-1 overflow-y-auto bg-surface px-4 py-4 text-sm">
+      <section className="space-y-3">
+        <div className="md-prose rounded-md border border-line bg-surface-sunken p-3 text-ink-strong">
+          <div className="mb-2 text-[10px] font-medium uppercase tracking-[0.14em] text-ink-subtle">
+            Markdown
+          </div>
+          <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]}>
+            {artifact.content || ""}
+          </ReactMarkdown>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function NodeArtifactRow({ label, value }: { label: string; value: string }) {
+  return (
+    <>
+      <dt className="text-ink-subtle">{label}</dt>
+      <dd className="whitespace-pre-wrap break-words font-mono text-ink" title={value}>
+        {value}
+      </dd>
+    </>
+  );
+}
+
+function formatArtifactValue(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (value === null || value === undefined) return "";
+  return JSON.stringify(value, null, 2);
 }
 
 function RawEvents({

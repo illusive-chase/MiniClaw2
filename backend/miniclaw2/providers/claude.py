@@ -32,7 +32,7 @@ from claude_agent_sdk import (
 
 from ..domain import GateSubtype
 from ..events import Activity, TextDelta, Thinking, Usage
-from .base import AgentProviderContext, AgentProviderEvent, GateRequest
+from .base import AgentProviderContext, AgentProviderEvent, GateRequest, compose_turn_text
 
 
 class ClaudeProvider:
@@ -42,7 +42,7 @@ class ClaudeProvider:
         pending_tools: dict[str, Activity] = {}
         try:
             async with ClaudeSDKClient(options=self._build_options(context)) as client:
-                await client.query(context.node.prompt)
+                await client.query(compose_turn_text(context.node.prompt, context.launch_instructions))
                 async for message in client.receive_response():
                     async for ev in self._translate(message, pending_tools, context):
                         yield ev

@@ -18,6 +18,7 @@ from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+from .artifacts import load_node_artifact
 from .domain import Node
 from .events import (
     InteractionResponse,
@@ -73,6 +74,15 @@ class EventRecord(BaseModel):
 class NodeDiffResponse(BaseModel):
     kind: str
     text: str
+    error: str | None = None
+
+
+class NodeArtifactResponse(BaseModel):
+    kind: str
+    path: str | None
+    exists: bool
+    content: str | None = None
+    data: Any | None = None
     error: str | None = None
 
 
@@ -213,6 +223,24 @@ def create_app() -> FastAPI:
         diff = node_diff(project.root_path, node.commit_before, node.commit_after)
         return NodeDiffResponse(kind=diff.kind, text=diff.text, error=diff.error)
 
+    @app.get("/sessions/{sid}/nodes/{nid}/artifact", response_model=NodeArtifactResponse)
+    def get_node_artifact(sid: str, nid: str) -> NodeArtifactResponse:
+        project = registry.get_project(sid)
+        if project is None:
+            raise HTTPException(404, "session not found")
+        node = registry.get_node(sid, nid)
+        if node is None:
+            raise HTTPException(404, "node not found")
+        artifact = load_node_artifact(project.root_path, node)
+        return NodeArtifactResponse(
+            kind=artifact.kind,
+            path=artifact.path,
+            exists=artifact.exists,
+            content=artifact.content,
+            data=artifact.data,
+            error=artifact.error,
+        )
+
     @app.get("/scenarios", response_model=list[ScenarioSummary])
     def list_scenarios_endpoint() -> list[ScenarioSummary]:
         return [ScenarioSummary(**s.metadata()) for s in list_scenarios()]
@@ -317,6 +345,8 @@ def create_app() -> FastAPI:
                         sid,
                         msg.text,
                         resume_from_node_id=msg.resume_from_node_id,
+                        output_kind=msg.output_kind,
+                        output_path=msg.output_path,
                     )
                     if runner is None:
                         await _send(send_now, {

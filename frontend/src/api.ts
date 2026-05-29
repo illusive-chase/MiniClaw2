@@ -1,5 +1,6 @@
 import type {
   EventRecord,
+  NodeArtifact,
   NodeDiff,
   NodeInfo,
   ScenarioDetail,
@@ -70,6 +71,15 @@ export async function getNodeDiff(
 ): Promise<NodeDiff> {
   const res = await fetch(`/sessions/${sessionId}/nodes/${nodeId}/diff`);
   if (!res.ok) throw new Error(`getNodeDiff failed: ${res.status}`);
+  return res.json();
+}
+
+export async function getNodeArtifact(
+  sessionId: string,
+  nodeId: string,
+): Promise<NodeArtifact> {
+  const res = await fetch(`/sessions/${sessionId}/nodes/${nodeId}/artifact`);
+  if (!res.ok) throw new Error(`getNodeArtifact failed: ${res.status}`);
   return res.json();
 }
 

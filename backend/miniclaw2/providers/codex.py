@@ -12,7 +12,7 @@ from typing import Any
 
 from ..domain import GateSubtype
 from ..events import Activity, TextDelta, Thinking, Usage
-from .base import AgentProviderContext, AgentProviderEvent, GateRequest
+from .base import AgentProviderContext, AgentProviderEvent, GateRequest, compose_turn_text
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +63,10 @@ class CodexProvider:
                         yield AgentProviderEvent(kind="session", session_id=thread_id)
 
                 self._thread_id = thread_id
-                turn_text = context.node.prompt
+                turn_text = compose_turn_text(
+                    context.node.prompt,
+                    getattr(context, "launch_instructions", ""),
+                )
                 if fresh_thread and context.system_context:
                     turn_text = f"{context.system_context}\n\n{turn_text}"
                 turn = await client.request(

@@ -8,6 +8,8 @@ from typing import Any
 
 import yaml
 
+from ..artifacts import validate_node_output_path
+
 
 SCENARIOS_DIR = Path(__file__).parent / "bundled"
 
@@ -24,6 +26,8 @@ class NodeSpec:
     kind: str            # "agent" | "gate"
     prompt: str
     contract: str = ""
+    output_kind: str = "freeform"
+    output_path: str = ""
 
 
 @dataclass(slots=True)
@@ -147,8 +151,25 @@ def load_scenario(name: str) -> Scenario:
                     f"{name}: node {node_id} contract_file not found: {contract_file}"
                 )
             contract = contract_path.read_text(encoding="utf-8")
+        output_kind = raw.get("output_kind", "freeform")
+        if output_kind not in {"freeform", "summary", "interface"}:
+            raise ScenarioError(f"{name}: node {node_id} has unsupported output_kind {output_kind!r}")
+        output_path = raw.get("output_path", "")
+        if output_path is not None and not isinstance(output_path, str):
+            raise ScenarioError(f"{name}: node {node_id} output_path must be a string")
+        if validate_node_output_path(output_path):
+            raise ScenarioError(
+                f"{name}: node {node_id} output_path must be project-relative and may not contain '..'"
+            )
         nodes.append(
-            NodeSpec(id=str(node_id), kind=kind, prompt=prompt, contract=contract)
+            NodeSpec(
+                id=str(node_id),
+                kind=kind,
+                prompt=prompt,
+                contract=contract,
+                output_kind=output_kind,
+                output_path=output_path or "",
+            )
         )
 
     seed_entries: list[tuple[Path, str]] = []

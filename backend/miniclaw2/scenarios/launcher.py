@@ -46,7 +46,12 @@ def launch_scenario(
 
     first = scenario.nodes[0]
     if first.kind == "agent":
-        runner = registry.start_node(project.id, first.prompt)
+        runner = registry.start_node(
+            project.id,
+            first.prompt,
+            output_kind=first.output_kind,
+            output_path=first.output_path or None,
+        )
     elif first.kind == "gate":
         runner = registry.start_gate_node(project.id, first.prompt, first.contract)
     else:
