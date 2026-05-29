@@ -264,12 +264,16 @@ Closes most of the behavioral drift in (A).
   agents, MCP) is deferred behind this slice.
 - `DESIGN.md` Phase 2 centerpieces (commit-op node + gate node kind)
   landed alongside this CLI-parity work. They add one new client
-  envelope (`start_gate_node`), one new `interaction_type`
+  envelope (`start_gate_node {brief}`), one new `interaction_type`
   (`checkpoint_review`), and one new field on `NodeStarted` (`kind`)
   so the frontend can suppress selection-jumps for op-node tiles. The
   `CreateSessionRequest` also accepts `auto_commit` to opt the project
-  into auto-appending a commit op after each agent/gate node. None of
-  these change the CLI-parity gap analysis above.
+  into auto-appending a commit op after each agent/gate node. A
+  follow-up gate redesign made gates **passive** (no agent run; the
+  brief comes from the previous agent step via the new
+  `NodeOutputKind.REVIEW_BRIEF` contract); the wire envelope
+  simplified from `{prompt, contract}` to `{brief}`. None of these
+  change the CLI-parity gap analysis above.
 - Phase 3 (session/project UI + queue) is no longer the largest
   commit; the persistence layer is already in. What remains is the
   workspace UI, project switcher, settings surface, and a queue for

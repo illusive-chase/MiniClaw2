@@ -69,6 +69,33 @@ are converging toward over the next several phases.
 > parent is off-screen. Op-parent edges (auto-append commit) are
 > skipped so the line on the timeline always means "conversation
 > continuation."
+>
+> **Gate redesign — passive checkpoint (Phase 2 follow-up).** The
+> `gate` node kind is now a **pure human checkpoint with no agent
+> run**. The runner skips the provider entirely
+> (`NodeRunner._run_passive_gate`) and goes straight to
+> `awaiting_review`. The previous agent step is responsible for the
+> brief: a new `NodeOutputKind.REVIEW_BRIEF` injects an output
+> contract telling the agent to write `.miniclaw2/outputs/<id>/brief.md`
+> with `# How to run`, `# What to verify`, and `# Response schema`
+> sections. The scenario loader auto-promotes the source step's
+> `output_kind` to `review_brief` whenever a downstream gate has
+> `brief_from: <step>` set. The user-launched `+ Gate` modal is also
+> passive — it asks for a brief markdown blob directly, no prompt
+> field. Wire surface change: `StartGateNode` is now
+> `{type, brief}` (was `{type, prompt, contract}`).
+>
+> **Multi-step scenario expander.** `ProjectRegistry` grew an
+> `_advance_scenario_step` method called from `_on_runner_done` after
+> the auto-commit branch. It routes through op parents, appends to a
+> new `Project.scenario_step_history: list[{step_id, node_id,
+> terminal_state}]`, halts on non-DONE terminal states, and enqueues
+> the next step. For gate steps, it reads the previous agent's
+> `brief.md` and uses it verbatim as the gate's contract (placeholder
+> markdown if missing). Nodes grew a `scenario_step_id: str | None`
+> field stamped by `launch_scenario` + the expander. The first
+> Tier 3 scenario `gui-calculator` exercises this path (build agent
+> → auto-commit op → passive review gate); see `TEST.md`.
 
 ## 1. Motivation
 
@@ -213,43 +240,61 @@ it to populate the node's short `summary` when possible. Missing or
 invalid artifacts are visible as artifact status, not hidden inside the
 transcript.
 
-### 3.2 gate (checkpoint node)
+### 3.2 gate (passive checkpoint node)
 
-A gate node is declared with a **markdown contract** at launch time.
-The contract has a standard three-section template:
+A gate node is a **passive human checkpoint** — no provider call, no
+agent turn. It exists to render a markdown **brief** and collect a
+write-json / no-op response. The brief has a standard three-section
+template:
 
 ```markdown
-# Expected
-What the agent should produce, and where (paths, file types).
+# How to run
+The exact commands or steps the reviewer should take to exercise what
+was built.
 
-# Unexpected
-Failure modes, common pitfalls, things to watch for.
+# What to verify
+Specific behaviors the reviewer should look for.
 
-# Response protocol
-What the reviewer should produce — JSON file path + schema, or "info-only".
+# Response schema
+The JSON keys + shapes the reviewer should put in their response.
 ```
 
 Lifecycle:
 
-1. User creates the gate with a prompt + a contract `.md` (template
-   pre-filled, edited per node).
-2. Agent runs to completion oblivious to the gate.
-3. On session end, the node enters `awaiting-review`. The frontend
-   renders the contract next to the agent's outputs and any files it
-   wrote (matched by paths the user can mention in the contract).
+1. A gate node is created with a brief. Two paths:
+   - **Scenario-driven** (typical): the previous agent step is
+     configured with `output_kind: review_brief`, which injects an
+     output contract telling it to write `brief.md`. When that step
+     completes, the scenario expander reads the file and uses its
+     contents as the gate's brief.
+   - **User-launched** (`+ Gate` button): the user types the brief
+     directly in the launch modal.
+2. The gate node enters `awaiting-review` immediately — `NodeRunner`
+   short-circuits in `_run_passive_gate` and skips the provider
+   entirely.
+3. The frontend renders the brief verbatim in the `gate` tab next to a
+   response form.
 4. User responds. Two MVP response types:
    - **write-json**: response is written to a path specified in the
-     contract; this becomes the documented handoff to a downstream node.
+     brief; this becomes the documented handoff to a downstream node.
    - **no-op**: the gate was informational; resolution just marks the
      node `done`.
 5. Iteration, when wanted, is a manual user action: spawn a follow-up
    agent node, attach a context edge, and reference the JSON file in
    the new prompt. Explicit causality, no surprises.
 
-Why markdown over file-globs or scripts: a markdown contract is
-human-authored, lives in the project repo (versionable), and the
-framework only needs to render it — no parsing of glob patterns, no
-sandboxed script execution.
+Why no agent inside the gate: the agent that just finished is the one
+that knows what to test (it built it); asking a fresh agent to
+re-review its predecessor's output wastes a turn and produces
+generic feedback. The brief approach makes the testing instructions
+adapt to whatever the agent actually built, and shifts the human
+ratification step to where the human is already paying attention.
+
+Why markdown over file-globs or scripts: a markdown brief is plain
+text, lives in the project repo as `.miniclaw2/outputs/<id>/brief.md`
+(so the agent's audit trail is intact), and the framework only needs
+to render it — no parsing of glob patterns, no sandboxed script
+execution.
 
 ### 3.3 op (programmatic node)
 
@@ -306,12 +351,13 @@ queued ─► running ─► waiting ──── ┘
 These are different mechanisms that both surface as "the node wants
 you":
 
-| | Inline gate | Checkpoint gate |
+| | Inline gate | Checkpoint gate (passive) |
 |---|---|---|
-| When declared | Implicit (agent calls `AskUserQuestion`/etc.) | Explicit at node launch |
-| When fires | Mid-session | After session completes |
+| Provider call | Inside an agent node's session | None — the gate has no provider call |
+| When declared | Implicit (agent calls `AskUserQuestion`/etc.) | Explicit at node launch, with a brief |
+| When fires | Mid-session | Immediately when the gate node starts |
 | Node state | `waiting` (substate during running) | `awaiting-review` (terminal-but-blocking) |
-| Continuation | Resolving resumes the same session | Resolving does not wake the agent; user spawns a follow-up node manually if needed |
+| Continuation | Resolving resumes the same session | Resolving does not wake any agent; user spawns a follow-up node manually if needed |
 | UI signal | Pulsing animation on a running node | Solid color on a finished node |
 
 ## 7. Templates (programmable graph)
@@ -677,15 +723,19 @@ Still to do for this phase:
 
 ### Phase 2 — Gate nodes, commit ops, resume edges, on-disk context
 
-- [✓] **`gate` node kind.** Contract editor at launch
-  (`GateLaunchModal` with three-section template), `awaiting_review`
-  state after the provider session completes, `Review` tab in
-  `NodeDetail` with write-json / no-op resolution. Write-json
-  validates project-relative paths (rejects absolute / `..`) and
-  loops on write errors so the user can fix the path without
-  restarting the node. New WS envelope `start_gate_node {prompt,
-  contract}` triggers launch; new `InteractionRequest.interaction_type
-  = "checkpoint_review"` carries the contract on the wire.
+- [✓] **`gate` node kind — passive checkpoint (redesigned).**
+  Originally the gate ran an agent on a launch prompt and then
+  entered `awaiting_review`. As of the gate-redesign follow-up the
+  node is **purely passive**: `NodeRunner._run_passive_gate` skips
+  the provider entirely, enters `awaiting_review` immediately, and
+  renders a brief in the `gate` tab on `NodeDetail`. Write-json /
+  no-op resolution still validates project-relative paths (rejects
+  absolute / `..`) and loops on write errors so the user can fix the
+  path without restarting the node. Wire envelope simplified to
+  `start_gate_node {brief}`; `InteractionRequest.interaction_type =
+  "checkpoint_review"` still carries the brief as `tool_input.contract`.
+  Scenario-driven gates source their brief from the previous agent
+  step via `output_kind: review_brief` + the scenario expander.
 - [✓] **`commit` op node, opt-in auto-append.** New `NodeKind.OP`
   with `op_kind="commit"`. Auto-appended after any `agent`/`gate`
   node that reaches `done` when `project.settings_override.auto_commit`

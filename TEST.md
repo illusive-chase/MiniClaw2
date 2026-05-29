@@ -1,17 +1,41 @@
 # MiniClaw2 testing — dashboard-launched, demo-driven, investigation-free
 
-> **Status: Tier 1 + Tier 2 single-node trio landed.** The dashboard
-> test panel, the temporary-workspace feature, the scenario
+> **Status: Tier 1, Tier 2, and the Tier 3 flagship `gui-calculator`
+> landed (engine + assets — live-smoke pending).** The dashboard test
+> panel, the temporary-workspace feature, the scenario
 > loader/launcher, the `verify.sh` runner, the three bundled Tier 1
 > scenarios (`hello-text`, `bash-uname`, `write-readme`), and the
 > three Tier 2 single-node scenarios (`permission-approve`,
 > `plan-mode-approval`, `interrupt-midstream`) are all in. See
-> `TESTING.zh.md` for the end-user run-through. Tier 3 (multi-step
-> scenarios — `gui-calculator`, `context-md-respected`,
+> `TESTING.zh.md` for the end-user run-through.
+>
+> **Multi-step scenario engine landed.** The scenario-step expander
+> question from §8 is resolved: `ProjectRegistry._advance_scenario_step`
+> runs from `_on_runner_done` after the auto-commit branch, routes
+> through op parents, records each step in
+> `Project.scenario_step_history`, halts on non-DONE terminal states,
+> and enqueues the next step. Nodes grew `scenario_step_id`; the
+> scenario loader gained `brief_from:` (gate-only) which auto-promotes
+> the source agent step's `output_kind` to `review_brief`.
+>
+> **Gate semantics changed.** The `gate` node is now a **passive
+> human checkpoint** — no agent run. The previous agent step writes a
+> brief at `.miniclaw2/outputs/<id>/brief.md` (driven by the new
+> `NodeOutputKind.REVIEW_BRIEF` contract); the gate reads that brief
+> and renders it for the human, who responds via write-json / no-op
+> as before. See `DESIGN.md §3.2` for the rationale.
+>
+> **Tier 3 `gui-calculator` landed (assets pending live smoke).**
+> Two-step scenario (`build` agent → `review` passive gate) with
+> `auto_commit: true`. Verify checks: `calculator.py` imports cleanly,
+> the auto-commit op rewrote the build node's `commit_after`,
+> `reviews/build.json` exists. GUI behavior (1+2=3, 9/0 error
+> indicator, C clear, window close) is human-verified in
+> `acceptance.md`. Other Tier 3 scenarios (`context-md-respected`,
 > `resume-fix-after-reject`) and Tier 4 (`reconnect-replay`) remain
-> planned; the multi-step ones need a scenario-step expander on the
-> `runner_done` callback (see §8) before they can land. Grounded in
-> `DESIGN.md §1.1`
+> planned — the engine + brief-from + history fields are now in
+> place, so `resume-fix-after-reject` only needs the `resume_from:` +
+> `when:` YAML extension. Grounded in `DESIGN.md §1.1`
 > ("investigation-free interface"): every test is a small task whose
 > **observable outcome** the human ratifies. Internal correctness —
 > gate routing, commit-op rewrite, reconnect replay — is exercised
@@ -23,10 +47,12 @@
 This is the integration-test tier. Engineer-facing unit tests under
 `backend/tests/` (`test_context`, `test_gate_node`, `test_op_node`,
 `test_replay`, `test_temporary_project`, `test_scenarios_loader`,
-`test_scenarios_launch`) exist for backend hygiene during
-development and are **separate** from this document — they live on
-as the fast inner loop for refactors. Tier 1 added the latter three
-to that pile when the scenario module landed.
+`test_scenarios_launch`, `test_scenarios_expander`) exist for backend
+hygiene during development and are **separate** from this document
+— they live on as the fast inner loop for refactors. Tier 1 added the
+loader / launcher tests when the scenario module landed; the
+gate-redesign + multi-step expander work added `test_scenarios_expander`
+and rewrote `test_gate_node` for the passive flow.
 
 The integration tier covers **whole demos** behaving correctly across
 both providers. Each demo is a **scenario** — a small task launched
@@ -258,31 +284,38 @@ churn.
   muted-grey (cancelled); the partial Bash output is still in the
   tool tile; no follow-up assistant turn fired after the cancel."
 
-### Tier 3 — integrated (gates + ops + edges) (planned)
+### Tier 3 — integrated (gates + ops + edges)
 
-**gui-calculator** *(flagship visual demo)*
-> Agent builds a tkinter calculator → checkpoint gate with markdown contract → write-json review → auto-commit op rewrites the agent's `commit_after`.
+**gui-calculator** *(flagship visual demo — ✓ engine + assets landed; live smoke pending)*
+> Agent builds a tkinter calculator → passive review gate displays an agent-authored brief → user writes JSON review → auto-commit op rewrites the agent's `commit_after`.
 
-- Two declared nodes (`build` agent, `review` gate); `auto_commit:
-  true`. The review contract lives in `contract.md`; the reviewer
+- Two declared nodes (`build` agent, `review` passive gate);
+  `auto_commit: true`. The `build` step's `output_kind` is auto-promoted
+  to `review_brief` by the loader (because `review.brief_from: build`)
+  — the build agent writes `.miniclaw2/outputs/<build-id>/brief.md`
+  with `# How to run` / `# What to verify` / `# Response schema`
+  sections. The gate then renders that brief verbatim; the reviewer
   writes JSON to `reviews/build.json`.
-- Verify: `calculator.py` runs (`python -c "import calculator"`);
-  smoke test fires button events for `1 + 2 =` and asserts `3`;
-  `9 / 0` produces an error indicator (not a Python traceback);
-  `git log --oneline` shows two commits per agent/gate node; the
-  `build` node's `commit_after` differs from its `commit_before`
-  (proves the rewrite happened).
-- Acceptance: a window opens, buttons 0–9 + operators are visible
-  and labeled, clicking `1 + 2 =` shows `3`, keyboard entry works,
-  `9 / 0` shows an error indicator, `C` clears, closing the window
-  exits cleanly.
+- Verify (programmatic floor): `calculator.py` imports cleanly without
+  opening a window (`python3 -c "import calculator"`); `reviews/build.json`
+  exists and parses; `git rev-list --count HEAD >= 2` (initial + at
+  least one auto-commit); the build node's `commit_after !=
+  commit_before` on disk (proves the auto-commit op rewrote it).
+- Verify (human acceptance): a window opens with digits 0–9 +
+  operators visible and labeled, clicking `1 + 2 =` shows `3`,
+  `9 / 0` shows an error indicator (not a Python traceback), `C`
+  clears, closing the window exits cleanly. Plus: the review tab
+  rendered an agent-authored brief naming the exact command to run
+  (not the generic template).
 
 **Note for maintainers:** this is the explicit scenario to run when
-validating the auto-commit op path; no dedicated `auto-commit-only`
-scenario exists by design — the auto-commit op is on the critical
-path of `gui-calculator`, so a regression there breaks this demo's
-verify *and* its acceptance. Document this in the dashboard's test
-panel so a future maintainer knows where to look.
+validating (a) the auto-commit op path, (b) the multi-step scenario
+expander, and (c) the passive-gate + `review_brief` flow. No dedicated
+`auto-commit-only` or `passive-gate-only` scenario exists by design —
+all three are on the critical path of `gui-calculator`, so a regression
+in any of them breaks this demo's verify *and* its acceptance.
+Document this in the dashboard's test panel so a future maintainer
+knows where to look.
 
 **context-md-respected**
 > Project-neutral `CONTEXT.md` injection is honored by both providers.
@@ -351,22 +384,23 @@ panel so a future maintainer knows where to look.
 
 ## 8. Open questions
 
-To revisit when Tier 2+ work starts:
+To revisit when the remaining Tier 3 / Tier 4 work starts:
 
-- **Scenario-step expander on `runner_done`.** Tier 1 only launches
-  the first step. Multi-step scenarios (Tier 2+) need an expander
-  parallel to `_spawn_op_commit` in `ProjectRegistry._on_runner_done`
-  that consults the scenario's `nodes:` list + step terminal state +
-  optional `when:` predicate and enqueues the next step (or
-  finishes the scenario). Threading the `TemplateInstance`-style
-  cursor through the registry without polluting general node paths
-  is the work to scope.
 - **Branching in `scenario.yaml`.** Tier 3's `resume-fix-after-reject`
   needs "the gate was rejected → run the fix step." A minimal
   `when: <step>.rejected` / `when: <step>.approved` predicate,
-  evaluated by the same expander, covers the planned scenarios
-  without a full template engine. Worth keeping the YAML linear
-  until we actually need it.
+  evaluated by the existing expander, covers the planned scenarios
+  without a full template engine. The hard work is now scoped: a
+  `decision` field on `scenario_step_history` entries (populated from
+  the gate's response payload — `approved: false` → `"rejected"`,
+  otherwise `"approved"`) plus an `if` arm in `_advance_scenario_step`
+  that skips steps whose `when:` doesn't match. Worth keeping the
+  YAML linear (no DAG) until we actually need it.
+- **`resume_from:` step field.** Tier 3's `resume-fix-after-reject`
+  also needs to thread a step's source node id into `start_node` as
+  `resume_from_node_id`. The history already records `node_id` per
+  step, so the expander has everything it needs once the YAML field
+  is plumbed.
 - **How to drive `reconnect-replay` from the dashboard.** A
   "Simulate drop" button on the test panel is the cleanest option;
   instructing the user to close the tab is the simplest. Decide
