@@ -101,6 +101,14 @@ export function App() {
     () => nodes.find((node) => node.id === selectedNodeId) ?? null,
     [nodes, selectedNodeId],
   );
+  const activePendingGate = useMemo(
+    () => keepPendingGateForState(pendingGate, nodes, "waiting"),
+    [nodes, pendingGate],
+  );
+  const activePendingReview = useMemo(
+    () => keepPendingGateForState(pendingReview, nodes, "awaiting_review"),
+    [nodes, pendingReview],
+  );
 
   const refreshNodes = useCallback(async () => {
     if (!session?.id) return;
@@ -255,6 +263,12 @@ export function App() {
     } else if (ev.type === "node_updated") {
       eventNodeId = ev.node.id;
       setNodes((prev) => upsertNode(prev, ev.node));
+      if (ev.node.state !== "waiting") {
+        setPendingGate((prev) => (prev?.nodeId === ev.node.id ? null : prev));
+      }
+      if (ev.node.state !== "awaiting_review") {
+        setPendingReview((prev) => (prev?.nodeId === ev.node.id ? null : prev));
+      }
     }
     appendSelectedEvent(eventNodeId, ev);
   }, [appendSelectedEvent, refreshNodes]);
@@ -355,7 +369,7 @@ export function App() {
   );
 
   const pendingBanner = useMemo(() => {
-    const active = pendingReview ?? pendingGate;
+    const active = activePendingReview ?? activePendingGate;
     if (!active || active.nodeId === selectedNodeId) return null;
     const labelKind =
       active.request.interaction_type === "checkpoint_review"
@@ -365,7 +379,7 @@ export function App() {
       nodeId: active.nodeId,
       label: `Node ${active.nodeId.slice(0, 8)} is awaiting your ${labelKind}.`,
     };
-  }, [pendingGate, pendingReview, selectedNodeId]);
+  }, [activePendingGate, activePendingReview, selectedNodeId]);
 
   const openNodeModalForResume = useCallback((node: NodeInfo) => {
     if (!canResumeNode(node)) return;
@@ -480,8 +494,8 @@ export function App() {
             disabled={
               streaming ||
               status !== "open" ||
-              !!pendingGate ||
-              !!pendingReview
+              !!activePendingGate ||
+              !!activePendingReview
             }
             className="inline-flex h-8 items-center rounded-md bg-brand px-3 text-xs font-medium text-white shadow-card transition hover:brightness-[0.95] disabled:cursor-not-allowed disabled:opacity-40"
           >
@@ -591,13 +605,19 @@ export function App() {
           artifactLoading={selectedArtifactLoading}
           onResumeFromNode={openNodeModalForResume}
           pendingGate={
-            pendingGate && selectedNode && pendingGate.nodeId === selectedNode.id
-              ? pendingGate
+            activePendingGate &&
+            selectedNode &&
+            selectedNode.state === "waiting" &&
+            activePendingGate.nodeId === selectedNode.id
+              ? activePendingGate
               : null
           }
           pendingReview={
-            pendingReview && selectedNode && selectedNode.state === "awaiting_review"
-              ? pendingReview
+            activePendingReview &&
+            selectedNode &&
+            selectedNode.state === "awaiting_review" &&
+            activePendingReview.nodeId === selectedNode.id
+              ? activePendingReview
               : null
           }
           onResolveGate={onResolveGate}
@@ -616,4 +636,15 @@ function upsertNode(prev: NodeInfo[], node: NodeInfo): NodeInfo[] {
     return [...prev, node].sort((a, b) => a.created_at - b.created_at);
   }
   return prev.map((item, i) => (i === index ? node : item));
+}
+
+function keepPendingGateForState(
+  pending: PendingGate | null,
+  nodes: NodeInfo[],
+  state: NodeInfo["state"],
+): PendingGate | null {
+  if (!pending) return null;
+  const owner = nodes.find((node) => node.id === pending.nodeId);
+  if (owner && owner.state !== state) return null;
+  return pending;
 }

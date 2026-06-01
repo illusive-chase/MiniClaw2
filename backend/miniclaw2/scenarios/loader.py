@@ -12,6 +12,19 @@ from ..artifacts import validate_node_output_path
 
 
 SCENARIOS_DIR = Path(__file__).parent / "bundled"
+SCENARIO_ORDER = [
+    "hello-text",
+    "bash-uname",
+    "write-readme",
+    "permission-approve",
+    "plan-mode-approval",
+    "interrupt-midstream",
+    "context-md-respected",
+    "resume-fix-after-reject",
+    "reconnect-replay",
+    "gui-calculator",
+]
+_SCENARIO_RANK = {name: idx for idx, name in enumerate(SCENARIO_ORDER)}
 
 
 class ScenarioError(Exception):
@@ -62,11 +75,14 @@ class Scenario:
 
 
 def list_scenarios() -> list[Scenario]:
-    """Return every bundled scenario, sorted by name."""
+    """Return every bundled scenario, ordered from simple to integrated."""
     out: list[Scenario] = []
     if not SCENARIOS_DIR.exists():
         return out
-    for child in sorted(SCENARIOS_DIR.iterdir()):
+    for child in sorted(
+        SCENARIOS_DIR.iterdir(),
+        key=lambda path: (_SCENARIO_RANK.get(path.name, len(SCENARIO_ORDER)), path.name),
+    ):
         if not child.is_dir():
             continue
         if not (child / "scenario.yaml").exists():

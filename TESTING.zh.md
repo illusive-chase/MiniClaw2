@@ -61,10 +61,10 @@ npm run dev        # 默认 http://127.0.0.1:5173
 ## 1. 打开测试面板
 
 1. 在顶部 header 点击 **Tests** 标签。
-2. 你应该看到十行场景（按字母序）：`bash-uname`、`context-md-respected`、
-   `gui-calculator`、`hello-text`、`interrupt-midstream`、
-   `permission-approve`、`plan-mode-approval`、`reconnect-replay`、
-   `resume-fix-after-reject`、`write-readme`，每行右侧有 `Run · claude` 和
+2. 你应该看到十行场景（按从简单到复杂的顺序）：`hello-text`、`bash-uname`、
+   `write-readme`、`permission-approve`、`plan-mode-approval`、
+   `interrupt-midstream`、`context-md-respected`、`resume-fix-after-reject`、
+   `reconnect-replay`、`gui-calculator`，每行右侧有 `Run · claude` 和
    `Run · codex` 两个按钮。
 3. 点击任一按钮，前端会：
    - 调用 `POST /scenarios/<name>/run`；
