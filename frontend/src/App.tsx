@@ -4,7 +4,6 @@ import { canResumeNode } from "./nodeUtil";
 import { Chat } from "./components/Chat";
 import { ProjectTimeline } from "./components/ProjectTimeline";
 import { NodeDetail, type PendingGate } from "./components/NodeDetail";
-import { GateLaunchModal } from "./components/GateLaunchModal";
 import { NodeLaunchModal } from "./components/NodeLaunchModal";
 import { NewProjectModal } from "./components/NewProjectModal";
 import { ProjectsLanding } from "./components/ProjectsLanding";
@@ -20,12 +19,7 @@ import type {
   ServerEvent,
   SessionInfo,
 } from "./types";
-import {
-  appendServerEvent,
-  createAssistantTurn,
-  createUserTurn,
-  type ChatTurn,
-} from "./transcript";
+import { appendServerEvent, type ChatTurn } from "./transcript";
 import { useSessionSocket } from "./ws";
 
 type View = "chat" | "tests";
@@ -49,11 +43,9 @@ export function App() {
   const [pendingGate, setPendingGate] = useState<PendingGate | null>(null);
   const [pendingReview, setPendingReview] = useState<PendingGate | null>(null);
   const [streaming, setStreaming] = useState(false);
-  const [gateModalOpen, setGateModalOpen] = useState(false);
   const [nodeModalOpen, setNodeModalOpen] = useState(false);
   const [nodeModalResumeId, setNodeModalResumeId] = useState<string | null>(null);
   const [newProjectModalOpen, setNewProjectModalOpen] = useState(false);
-  const turnIdRef = useRef(0);
   const activeNodeIdRef = useRef<string | null>(null);
   const selectedNodeIdRef = useRef<string | null>(null);
 
@@ -279,15 +271,12 @@ export function App() {
   );
 
   const launchAgentNode = useCallback(
-    (text: string, resume: string | null, outputKind: "freeform" | "summary" | "interface") => {
+    (
+      text: string,
+      resume: string | null,
+      outputKind: "freeform" | "summary" | "interface" | "review_brief",
+    ) => {
       if (streaming || status !== "open") return;
-      const userId = `u${++turnIdRef.current}`;
-      const aId = `a${++turnIdRef.current}`;
-      setTurns((prev) => [
-        ...prev,
-        createUserTurn(userId, text),
-        createAssistantTurn(aId, true),
-      ]);
       setStreaming(true);
       send({
         type: "user_message",
@@ -300,7 +289,11 @@ export function App() {
   );
 
   const onLaunchNode = useCallback(
-    (prompt: string, resume: string | null, outputKind: "freeform" | "summary" | "interface") => {
+    (
+      prompt: string,
+      resume: string | null,
+      outputKind: "freeform" | "summary" | "interface" | "review_brief",
+    ) => {
       setNodeModalOpen(false);
       setNodeModalResumeId(null);
       launchAgentNode(prompt, resume, outputKind);
@@ -311,19 +304,6 @@ export function App() {
   const onStop = () => {
     if (!streaming || status !== "open") return;
     send({ type: "interrupt" });
-  };
-
-  const onLaunchGate = (brief: string) => {
-    if (streaming || status !== "open") return;
-    setGateModalOpen(false);
-    const userId = `u${++turnIdRef.current}`;
-    const excerpt = brief.trim().split("\n").slice(0, 2).join(" ").slice(0, 80);
-    setTurns((prev) => [
-      ...prev,
-      createUserTurn(userId, `[gate] ${excerpt || "checkpoint"}`),
-    ]);
-    setStreaming(true);
-    send({ type: "start_gate_node", brief });
   };
 
   const onResolveReview = (payload: {
@@ -502,15 +482,6 @@ export function App() {
             <span className="mr-1 text-sm leading-none">+</span> Node
           </button>
 
-          <button
-            type="button"
-            onClick={() => setGateModalOpen(true)}
-            disabled={streaming || status !== "open"}
-            className="inline-flex h-8 items-center rounded-md border border-state-review/40 bg-state-review-soft px-2.5 text-xs font-medium text-state-review transition hover:border-state-review/70 disabled:opacity-40"
-          >
-            <span className="mr-1 text-sm leading-none">+</span> Gate
-          </button>
-
           <div className="inline-flex h-8 overflow-hidden rounded-md border border-line text-xs">
             <button
               type="button"
@@ -539,12 +510,6 @@ export function App() {
           <ThemeToggle />
         </div>
       </header>
-
-      <GateLaunchModal
-        open={gateModalOpen}
-        onCancel={() => setGateModalOpen(false)}
-        onLaunch={onLaunchGate}
-      />
 
       <NodeLaunchModal
         open={nodeModalOpen}

@@ -37,6 +37,9 @@ export function createAssistantTurn(id: string, streaming: boolean): ChatTurn {
 }
 
 export function appendServerEvent(prev: ChatTurn[], event: ServerEvent): ChatTurn[] {
+  if (event.type === "node_started") {
+    return seedAgentTurns(prev, event.node_id, event.kind, event.prompt ?? "");
+  }
   if (event.type === "text_delta") {
     return appendAssistantText(prev, event.text);
   }
@@ -56,6 +59,22 @@ export function appendServerEvent(prev: ChatTurn[], event: ServerEvent): ChatTur
     return markAssistantBoundary(prev);
   }
   return prev;
+}
+
+export function seedAgentTurns(
+  prev: ChatTurn[],
+  nodeId: string,
+  kind: string | undefined,
+  prompt: string,
+): ChatTurn[] {
+  if ((kind ?? "agent") !== "agent") return prev;
+  const assistantId = `${nodeId}-assistant`;
+  if (prev.some((turn) => turn.id === assistantId)) return prev;
+  return [
+    ...prev,
+    createUserTurn(`${nodeId}-user`, prompt),
+    createAssistantTurn(assistantId, true),
+  ];
 }
 
 export function buildTurnsFromEvents(node: NodeInfo, records: EventRecord[]): ChatTurn[] {

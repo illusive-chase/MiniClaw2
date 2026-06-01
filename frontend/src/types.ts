@@ -61,6 +61,7 @@ export type NodeStarted = {
   node_id: string;
   parent_node_id?: string | null;
   kind?: string;
+  prompt?: string;
   seq?: number;
 };
 export type NodeUpdated = {
@@ -102,8 +103,7 @@ export type ClientMessage =
       clear_context?: boolean;
     }
   | { type: "interrupt" }
-  | { type: "replay_request"; node_id: string; since_seq: number }
-  | { type: "start_gate_node"; brief: string };
+  | { type: "replay_request"; node_id: string; since_seq: number };
 
 export type SessionInfo = {
   id: string;

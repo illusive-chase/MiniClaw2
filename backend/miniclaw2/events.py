@@ -63,6 +63,7 @@ class NodeStarted(BaseModel):
     node_id: str
     parent_node_id: str | None = None
     kind: str = "agent"
+    prompt: str = ""
     seq: int = 0
 
 
@@ -91,11 +92,6 @@ class UserMessage(BaseModel):
     resume_from_node_id: str | None = None
     output_kind: Literal["freeform", "summary", "interface", "review_brief"] | None = None
     output_path: str | None = None
-
-
-class StartGateNode(BaseModel):
-    type: Literal["start_gate_node"]
-    brief: str
 
 
 class InteractionResponse(BaseModel):

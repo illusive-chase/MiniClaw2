@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { NodeInfo } from "../types";
 
-type OutputKind = "freeform" | "summary" | "interface";
+type OutputKind = "freeform" | "summary" | "interface" | "review_brief";
 
 type Props = {
   open: boolean;
@@ -131,10 +131,11 @@ export function NodeLaunchModal({
             >
               <option value="summary">summary</option>
               <option value="interface">interface</option>
+              <option value="review_brief">review</option>
               <option value="freeform">freeform</option>
             </select>
             <span className="text-[10px] text-ink-subtle">
-              summary writes a markdown result file; interface writes machine-readable JSON.
+              summary writes a markdown result file; interface writes machine-readable JSON; review writes a brief and then auto-spawns a human-review gate node.
             </span>
           </label>
         </div>

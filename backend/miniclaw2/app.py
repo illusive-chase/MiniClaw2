@@ -24,7 +24,6 @@ from .events import (
     InteractionResponse,
     Interrupt,
     ReplayRequest,
-    StartGateNode,
     UserMessage,
 )
 from .git_state import node_diff
@@ -352,17 +351,6 @@ def create_app() -> FastAPI:
                         await _send(send_now, {
                             "type": "error",
                             "message": "turn in progress or invalid resume source",
-                        })
-                        continue
-
-                elif msg_type == "start_gate_node":
-                    await mark_live_ready()
-                    gmsg = StartGateNode(**raw)
-                    runner = registry.start_gate_node(sid, gmsg.brief)
-                    if runner is None:
-                        await _send(send_now, {
-                            "type": "error",
-                            "message": "turn in progress",
                         })
                         continue
 

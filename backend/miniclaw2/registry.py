@@ -278,6 +278,7 @@ class ProjectRegistry:
         brief: str,
         *,
         scenario_step_id: str | None = None,
+        parent_node_id: str | None = None,
     ) -> NodeRunner | None:
         """Create a passive gate node and launch its runner.
 
@@ -298,6 +299,7 @@ class ProjectRegistry:
             provider=rt.project.provider,
             contract=brief,
             scenario_step_id=scenario_step_id,
+            parent_node_id=parent_node_id,
         )
         self.store.create_node(node)
 
@@ -334,6 +336,7 @@ class ProjectRegistry:
             spawned_op = True
         if not spawned_op:
             self._advance_scenario_step(rt, finished_node)
+            self._advance_user_gate(rt, finished_node)
 
     def _spawn_op_commit(self, rt: ProjectRuntime, agent_node: Node) -> None:
         op_node = Node(
@@ -530,6 +533,9 @@ class ProjectRegistry:
         src_node = self.store.load_node(project.id, src_node_id)
         if src_node is None:
             return f"_(brief source node `{src_node_id}` missing on disk)_\n"
+        return self._read_brief_from_node(project, src_node)
+
+    def _read_brief_from_node(self, project: Project, src_node: Node) -> str:
         target = resolve_node_output_path(project.root_path, src_node)
         if target is None:
             rel = src_node.output_path or default_node_output_path(
@@ -547,6 +553,46 @@ class ProjectRegistry:
         except OSError as exc:
             return f"_(could not read brief: {exc})_\n"
         return text.strip() and text or _PLACEHOLDER_BRIEF
+
+    def _advance_user_gate(
+        self,
+        rt: ProjectRuntime,
+        finished_node: Node,
+    ) -> None:
+        """Spawn a follow-up gate for a user-launched review_brief agent.
+
+        Mirrors the scenario expander's gate handoff: when an agent
+        finishes DONE with ``output_kind == REVIEW_BRIEF`` and was not
+        part of a scenario, read its brief.md and start a passive gate
+        whose contract is that brief. With auto_commit on, the source
+        is the parent of the just-finished commit op.
+        """
+        project = rt.project
+        source = finished_node
+        if finished_node.kind is NodeKind.OP and finished_node.parent_node_id:
+            parent = self.store.load_node(project.id, finished_node.parent_node_id)
+            if parent is None:
+                return
+            source = parent
+        if source.kind is not NodeKind.AGENT:
+            return
+        if source.scenario_step_id:
+            return
+        if source.output_kind is not NodeOutputKind.REVIEW_BRIEF:
+            return
+        if source.state is not NodeState.DONE:
+            return
+        # Avoid double-spawn: if a gate already references this node as
+        # parent, the handoff already happened.
+        for existing in self.store.list_nodes(project.id):
+            if (
+                existing.kind is NodeKind.GATE
+                and existing.parent_node_id == source.id
+            ):
+                return
+
+        brief = self._read_brief_from_node(project, source)
+        self.start_gate_node(project.id, brief, parent_node_id=source.id)
 
     def interrupt(self, pid: str) -> bool:
         rt = self._runtimes.get(pid)

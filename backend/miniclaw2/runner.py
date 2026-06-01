@@ -130,6 +130,7 @@ class NodeRunner:
                     node_id=self.node.id,
                     parent_node_id=self.node.parent_node_id,
                     kind=self.node.kind.value,
+                    prompt=self.node.prompt,
                 )
             )
             await self._emit_node_updated()
@@ -194,6 +195,7 @@ class NodeRunner:
                     node_id=self.node.id,
                     parent_node_id=self.node.parent_node_id,
                     kind=self.node.kind.value,
+                    prompt=self.node.prompt,
                 )
             )
             await self._emit(ErrorEvent(message=error_msg))
