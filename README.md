@@ -41,8 +41,10 @@ Vite frontend.
   checkpoint-review all share a unified `gate` tab on `NodeDetail`
   that auto-switches when a request arrives; an amber banner above
   the chat composer surfaces requests for nodes that aren't currently
-  selected. A `+ Gate` button in the header opens a launch modal
-  (prompt + markdown contract) for new checkpoint gate nodes.
+  selected. Gates are not user-launched directly: the `+ Node` modal's
+  Output contract dropdown exposes a `review` option that sets the
+  agent's `output_kind = review_brief`, after which a passive gate
+  auto-spawns with the agent-authored brief as its contract.
 - **Project-level context** — a `CONTEXT.md` file at the project root
   is loaded at each node launch and injected provider-neutrally: into
   Claude via `system_prompt.append` on the `claude_code` preset, and
@@ -138,7 +140,7 @@ frontend/src/
   api.ts        # REST helpers
   types.ts      # mirror of backend events
   components/   # Chat, ToolActivity, PermissionDialog, AskUserDialog, PlanDialog,
-                # GateLaunchModal, GateReviewPanel
+                # NodeLaunchModal, GateReviewPanel
 ```
 
 On-disk layout (under `$MINICLAW_HOME`, default `~/.miniclaw2`):
@@ -175,11 +177,14 @@ agent node.
   stores into `project.settings_override["auto_commit"]` and triggers
   the commit-op auto-append.
 - Client → server: `user_message {text, resume_from_node_id?,
-  output_kind?, output_path?}`, `start_gate_node {prompt, contract}`,
-  `interaction_response`, `interrupt`,
+  output_kind?, output_path?}` (`output_kind: "review_brief"`
+  triggers an automatic follow-up passive gate after the agent
+  completes), `interaction_response`, `interrupt`,
   `replay_request {node_id, since_seq}`.
-- Server → client: `node_started` (now with `kind` to distinguish
-  agent/gate/op tiles), `node_updated`, `text_delta`,
+- Server → client: `node_started` (carries `kind` to distinguish
+  agent/gate/op tiles and `prompt` so the chat panel can seed turns
+  for any agent node, including scenario-launched ones),
+  `node_updated`, `text_delta`,
   `thinking`, `activity` (now with optional `result` + `result_kind`),
   `interaction_request` (with `interaction_type` extended to include
   `"checkpoint_review"` for gate-node contracts), `usage`, `turn_done`,
@@ -231,14 +236,16 @@ custom agents, `.mcp.json`) is intentionally out of scope.
 
 The DESIGN Phase 2 centerpieces have since landed too:
 
-- **`gate` node kind.** A `+ Gate` button in the header opens a
-  modal with a prompt textarea and a contract editor pre-filled with
-  a three-section template (`# Expected` / `# Unexpected` /
-  `# Response protocol`). Submitting sends `start_gate_node` over the
-  WebSocket. The agent runs, and on completion the node enters
-  `awaiting_review`. The `NodeDetail` side panel grows a `Review` tab
-  rendering the contract via `react-markdown` plus a write-json /
-  no-op response form. Write-json validates the path
+- **`gate` node kind.** Gate nodes are passive human checkpoints —
+  no provider call. They auto-spawn as a follow-up to an agent node
+  whose `output_kind` is `review_brief`: the agent writes a brief at
+  `.miniclaw2/outputs/<nid>/brief.md` (`# How to run` / `# What to
+  verify` / `# Response schema`) and the registry uses that file as
+  the gate's contract. The user picks `review` in the `+ Node` modal's
+  Output contract dropdown to request this handoff; scenarios drive
+  the same path via `brief_from:` in YAML. The `NodeDetail` side
+  panel's `gate` tab renders the contract via `react-markdown` plus a
+  write-json / no-op response form. Write-json validates the path
   (project-relative only, no `..`) and loops on errors so the
   reviewer can fix the path without restarting the node.
 - **`commit` op node.** When the project has `auto_commit:true`, a

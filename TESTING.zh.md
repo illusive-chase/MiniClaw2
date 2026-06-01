@@ -47,8 +47,10 @@ npm install        # 首次需要
 npm run dev        # 默认 http://127.0.0.1:5173
 ```
 
-浏览器打开前端地址，你会看到顶部右侧有 `Claude/Codex` 选择器、`+ Gate` 按钮、
-以及 `Chat | Tests` 两个标签。
+浏览器打开前端地址，你会看到顶部右侧有 `Claude/Codex` 选择器、`+ Node` 按钮、
+以及 `Chat | Tests` 两个标签。Gate 节点不再由用户直接创建——在 `+ Node` 弹窗里
+把 Output contract 选为 `review` 即可让 agent 写 brief，agent 完成后系统会自动
+追加一个 passive gate 节点。
 
 ### 0.3 关于 provider 的说明
 

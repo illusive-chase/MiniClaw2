@@ -202,12 +202,13 @@ nodes:
 
 The scenario engine in `backend/miniclaw2/scenarios/` parses this
 YAML, copies seed files into the tempdir, and uses
-`ProjectRegistry.start_node` / `start_gate_node` (the same paths the
-chat composer uses) to launch the first step. For Tier 1 only the
-first step exists; Tier 2+ work adds a scenario-step expander on
-the `runner_done` callback (parallel to the auto-commit op's
-expander) so subsequent steps land without a scenario-specific
-runner — the "just runs like a normal node" guarantee stays.
+`ProjectRegistry.start_node` / `start_gate_node` (the same registry
+APIs that drive `+ Node` agent launches and the user-gate auto-spawn)
+to launch the first step. For Tier 1 only the first step exists;
+Tier 2+ work adds a scenario-step expander on the `runner_done`
+callback (parallel to the auto-commit op's expander) so subsequent
+steps land without a scenario-specific runner — the "just runs like a
+normal node" guarantee stays.
 
 ## 5. Provider matrix — Claude and Codex, both, every time
 

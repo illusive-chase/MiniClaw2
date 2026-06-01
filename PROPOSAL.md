@@ -263,17 +263,20 @@ Closes most of the behavioral drift in (A).
   change. Vendor-specific loading (CLAUDE.md walk, `.claude/settings`,
   agents, MCP) is deferred behind this slice.
 - `DESIGN.md` Phase 2 centerpieces (commit-op node + gate node kind)
-  landed alongside this CLI-parity work. They add one new client
-  envelope (`start_gate_node {brief}`), one new `interaction_type`
-  (`checkpoint_review`), and one new field on `NodeStarted` (`kind`)
-  so the frontend can suppress selection-jumps for op-node tiles. The
-  `CreateSessionRequest` also accepts `auto_commit` to opt the project
-  into auto-appending a commit op after each agent/gate node. A
-  follow-up gate redesign made gates **passive** (no agent run; the
-  brief comes from the previous agent step via the new
-  `NodeOutputKind.REVIEW_BRIEF` contract); the wire envelope
-  simplified from `{prompt, contract}` to `{brief}`. None of these
-  change the CLI-parity gap analysis above.
+  landed alongside this CLI-parity work. They add one new
+  `interaction_type` (`checkpoint_review`) and two new fields on
+  `NodeStarted` (`kind` so the frontend can suppress selection-jumps
+  for op-node tiles, and `prompt` so the chat panel can seed turns
+  for any agent node). The `CreateSessionRequest` also accepts
+  `auto_commit` to opt the project into auto-appending a commit op
+  after each agent/gate node. A follow-up gate redesign made gates
+  **passive** (no agent run; the brief comes from the previous agent
+  step via the new `NodeOutputKind.REVIEW_BRIEF` contract). A
+  subsequent follow-up removed the user-facing `start_gate_node`
+  envelope entirely: gates only auto-spawn after an agent finishes
+  with `output_kind: review_brief` (scenario via `brief_from:`, user
+  via the `review` Output contract option). None of these change the
+  CLI-parity gap analysis above.
 - Phase 3 (session/project UI + queue) is no longer the largest
   commit; the persistence layer is already in. What remains is the
   workspace UI, project switcher, settings surface, and a queue for

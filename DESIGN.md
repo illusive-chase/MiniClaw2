@@ -80,10 +80,22 @@ are converging toward over the next several phases.
 > with `# How to run`, `# What to verify`, and `# Response schema`
 > sections. The scenario loader auto-promotes the source step's
 > `output_kind` to `review_brief` whenever a downstream gate has
-> `brief_from: <step>` set. The user-launched `+ Gate` modal is also
-> passive — it asks for a brief markdown blob directly, no prompt
-> field. Wire surface change: `StartGateNode` is now
-> `{type, brief}` (was `{type, prompt, contract}`).
+> `brief_from: <step>` set.
+>
+> **Gate handoff unified — no user-launched gate button (follow-up).**
+> The `+ Gate` button and `GateLaunchModal` were removed: users never
+> author a brief by hand. To request a review checkpoint, the user
+> picks `review` as the Output contract on the agent's launch modal;
+> this sets the node's `output_kind = review_brief`, the agent writes
+> `brief.md` per the contract, and `ProjectRegistry._advance_user_gate`
+> (called from `_on_runner_done` alongside the scenario expander)
+> auto-spawns a passive gate whose contract is that brief. With
+> `auto_commit` on, the spawn routes through the commit op's
+> `parent_node_id` so the gate fires after the commit lands. The
+> `StartGateNode` wire envelope was removed; `start_gate_node` remains
+> as an internal API for scenarios and the user-gate auto-spawn (now
+> accepts `parent_node_id`). Double-spawn is guarded by checking for
+> an existing `GATE` child of the source.
 >
 > **Multi-step scenario expander.** `ProjectRegistry` grew an
 > `_advance_scenario_step` method called from `_on_runner_done` after
@@ -261,14 +273,20 @@ The JSON keys + shapes the reviewer should put in their response.
 
 Lifecycle:
 
-1. A gate node is created with a brief. Two paths:
-   - **Scenario-driven** (typical): the previous agent step is
-     configured with `output_kind: review_brief`, which injects an
-     output contract telling it to write `brief.md`. When that step
-     completes, the scenario expander reads the file and uses its
-     contents as the gate's brief.
-   - **User-launched** (`+ Gate` button): the user types the brief
-     directly in the launch modal.
+1. A gate node is always created as the follow-up to an agent step
+   that was launched with `output_kind: review_brief`. The agent
+   writes `brief.md` per the injected output contract; on completion,
+   an auto-spawner reads the file and uses its contents as the gate's
+   contract. Two entry points share this mechanism:
+   - **Scenario-driven**: the scenario YAML declares an `agent` step
+     with a downstream `gate` step using `brief_from: <step>`; the
+     loader auto-promotes the source step's `output_kind` to
+     `review_brief`, and `_advance_scenario_step` performs the handoff.
+   - **User-launched**: the user picks `review` as the Output contract
+     in the agent launch modal. `_advance_user_gate` (running
+     alongside `_advance_scenario_step` from `_on_runner_done`) auto-
+     spawns the gate when the agent reaches `done`. Users never write
+     the brief by hand — the agent that just built the artifact does.
 2. The gate node enters `awaiting-review` immediately — `NodeRunner`
    short-circuits in `_run_passive_gate` and skips the provider
    entirely.
@@ -712,9 +730,12 @@ Still to do for this phase:
   Old on-disk nodes (without the field) load fine via the Pydantic
   default.
 - [✓] **Richer agent node launch controls beyond the chat composer.**
-  Gate-node launch is now driven by a dedicated `+ Gate` button in the
-  header that opens `GateLaunchModal` (prompt + contract editor); the
-  chat composer stays the launcher for ordinary agent nodes.
+  Agent-node launch is driven by a dedicated `+ Node` button in the
+  header that opens `NodeLaunchModal` (prompt + resume-source + output
+  contract). The Output contract dropdown includes `review`, which
+  sets `output_kind: review_brief` on the agent and triggers an
+  automatic follow-up passive gate node (see §3.2). There is no
+  user-launched gate button — users never author a brief by hand.
 - [✓] **Tighter per-node snapshot diffs.** When `auto_commit` is on
   for a project, the commit-op rewrites the preceding agent/gate
   node's `commit_after` so `git_state.node_diff` returns a real
@@ -731,11 +752,14 @@ Still to do for this phase:
   renders a brief in the `gate` tab on `NodeDetail`. Write-json /
   no-op resolution still validates project-relative paths (rejects
   absolute / `..`) and loops on write errors so the user can fix the
-  path without restarting the node. Wire envelope simplified to
-  `start_gate_node {brief}`; `InteractionRequest.interaction_type =
-  "checkpoint_review"` still carries the brief as `tool_input.contract`.
-  Scenario-driven gates source their brief from the previous agent
-  step via `output_kind: review_brief` + the scenario expander.
+  path without restarting the node. `InteractionRequest.interaction_type
+  = "checkpoint_review"` carries the brief as `tool_input.contract`.
+  Gates are always created as the follow-up to an agent step launched
+  with `output_kind: review_brief`: scenario-driven via the loader's
+  `brief_from:` promotion + scenario expander, user-driven via the
+  `review` Output contract option + `_advance_user_gate`. There is no
+  client-facing `start_gate_node` envelope; `registry.start_gate_node`
+  is an internal API that accepts an optional `parent_node_id`.
 - [✓] **`commit` op node, opt-in auto-append.** New `NodeKind.OP`
   with `op_kind="commit"`. Auto-appended after any `agent`/`gate`
   node that reaches `done` when `project.settings_override.auto_commit`
