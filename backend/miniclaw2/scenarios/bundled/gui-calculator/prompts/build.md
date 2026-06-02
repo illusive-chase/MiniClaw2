@@ -1,12 +1,22 @@
 Build a simple desktop calculator at `calculator.py` in the project root.
+Also create a `requirements.txt` in the project root.
 
 Requirements for `calculator.py`:
 
-- Uses only the Python standard library (`tkinter`).
+- Uses PySide6 / Qt Widgets for the GUI. Do not use `tkinter` or
+  `customtkinter`.
+- `requirements.txt` must include a PySide6 dependency, for example
+  `PySide6>=6.7,<7`.
 - Importable: `python3 -c "import calculator"` must succeed without
-  opening any windows. Wrap the `Tk()` instantiation and `mainloop()`
-  call in an `if __name__ == "__main__":` block.
+  opening any windows, even before PySide6 is installed. Keep top-level
+  code dependency-light: only standard-library imports and pure helper
+  functions/classes. Import PySide6 and create the `QApplication` only
+  inside a `main()` function or another function called from
+  `if __name__ == "__main__":`.
 - Running `python3 calculator.py` opens a window titled `Calculator`.
+- If PySide6 is missing when the script is run, print a clear message
+  telling the user to run `python3 -m pip install -r requirements.txt`
+  and exit cleanly instead of showing a traceback.
 - The window shows a display (label or read-only Entry) and buttons:
   digits `0`–`9`, the four operators `+`, `-`, `*`, `/`, an equals
   button `=`, and a clear button `C`.

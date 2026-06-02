@@ -91,7 +91,7 @@ class ScenarioExpanderTest(unittest.IsolatedAsyncioTestCase):
             _write_brief(
                 project.root_path,
                 build,
-                "# How to run\n`python3 calculator.py`\n# What to verify\n- it opens\n# Response schema\n`{\"approved\": bool}`\n",
+                "# How to run\n`python3 -m pip install -r requirements.txt`\n`python3 calculator.py`\n# What to verify\n- it opens\n# Response schema\n`{\"approved\": bool}`\n",
             )
 
             registry = ProjectRegistry(store=store)
@@ -111,6 +111,7 @@ class ScenarioExpanderTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(gate.kind, NodeKind.GATE)
             self.assertEqual(gate.scenario_step_id, "review")
             self.assertIn("How to run", gate.contract)
+            self.assertIn("pip install -r requirements.txt", gate.contract)
             self.assertIn("python3 calculator.py", gate.contract)
 
             # The expander spawned a runner task for the gate; cancel it so

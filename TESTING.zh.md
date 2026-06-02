@@ -10,7 +10,7 @@
   `resume-fix-after-reject`（§9）。
 - **Tier 4**（韧性）：`reconnect-replay`（§10）。
 
-Tier 3 的旗舰场景 `gui-calculator`（构建 Tk 计算器 → 被动 review gate →
+Tier 3 的旗舰场景 `gui-calculator`（构建 PySide6/Qt 计算器 → 被动 review gate →
 auto-commit 改写 `commit_after`）也已经在仪表盘里可用，但它的人工验收涉及
 GUI 行为校验，内容相对独立，**本指南暂未为它专门写一节**；最新约定参见
 `TEST.md §6 Tier 3`，运行流程与本指南覆盖的其它场景相同。
@@ -643,7 +643,7 @@ rm -rf /tmp/miniclaw2-tmp-*                # Linux
 
 - 内联 `ask_user` gate（剩余的一种内联 gate；permission 和 plan_approval 已经
   在 §5、§6 覆盖了）。`ask_user` 还没有专门的内置 scenario。
-- Tier 3 旗舰 `gui-calculator`（构建 Tk 计算器 → 被动 review gate →
+- Tier 3 旗舰 `gui-calculator`（构建 PySide6/Qt 计算器 → 被动 review gate →
   auto-commit 改写 `commit_after`）。**它已经在仪表盘里可以跑**，运行方式
   同其它场景：点 `Run · claude` / `Run · codex`，时间线上会出现 build
   agent → 自动 commit op → 被动 review gate；review brief 由 build agent

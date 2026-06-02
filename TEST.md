@@ -177,7 +177,7 @@ Extended shape (Tiers 2–4 — for forward reference, not v1 impl):
 
 ```yaml
 name: gui-calculator
-brief: "Build a Tk calculator, review it, snapshot it."
+brief: "Build a PySide6 Qt calculator, review it, snapshot it."
 providers: [claude, codex]
 auto_commit: true
 permission_mode: default          # or "plan" for plan-mode-approval
@@ -300,7 +300,7 @@ churn.
 ### Tier 3 — integrated (gates + ops + edges)
 
 **gui-calculator** *(flagship visual demo — ✓ engine + assets landed; live smoke pending)*
-> Agent builds a tkinter calculator → passive review gate displays an agent-authored brief → user writes JSON review → auto-commit op rewrites the agent's `commit_after`.
+> Agent builds a PySide6 / Qt Widgets calculator → passive review gate displays an agent-authored brief → user writes JSON review → auto-commit op rewrites the agent's `commit_after`.
 
 - Two declared nodes (`build` agent, `review` passive gate);
   `auto_commit: true`. The `build` step's `output_kind` is auto-promoted
@@ -309,17 +309,20 @@ churn.
   with `# How to run` / `# What to verify` / `# Response schema`
   sections. The gate then renders that brief verbatim; the reviewer
   writes JSON to `reviews/build.json`.
-- Verify (programmatic floor): `calculator.py` imports cleanly without
-  opening a window (`python3 -c "import calculator"`); `reviews/build.json`
-  exists and parses; `git rev-list --count HEAD >= 2` (initial + at
-  least one auto-commit); the build node's `commit_after !=
-  commit_before` on disk (proves the auto-commit op rewrote it).
+- Verify (programmatic floor): `requirements.txt` declares PySide6;
+  `calculator.py` references PySide6, does not import Tk libraries,
+  and imports cleanly without opening a window or requiring PySide6 to
+  be installed (`python3 -c "import calculator"`);
+  `reviews/build.json` exists and parses; `git rev-list --count HEAD
+  >= 2` (initial + at least one auto-commit); the build node's
+  `commit_after != commit_before` on disk (proves the auto-commit op
+  rewrote it).
 - Verify (human acceptance): a window opens with digits 0–9 +
   operators visible and labeled, clicking `1 + 2 =` shows `3`,
   `9 / 0` shows an error indicator (not a Python traceback), `C`
   clears, closing the window exits cleanly. Plus: the review tab
-  rendered an agent-authored brief naming the exact command to run
-  (not the generic template).
+  rendered an agent-authored brief naming the exact setup and run
+  commands (not the generic template).
 
 **Note for maintainers:** this is the explicit scenario to run when
 validating (a) the auto-commit op path, (b) the multi-step scenario

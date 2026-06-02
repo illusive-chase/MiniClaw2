@@ -1,9 +1,9 @@
 - In the timeline you saw two distinct steps: `build` (agent) and `review` (gate); the review tile pulsed once the build finished.
-- The review tab showed a brief authored by the build agent that named the exact command to run (e.g. `python3 calculator.py`) — not the generic three-section contract template.
+- The review tab showed a brief authored by the build agent that named the exact setup and run commands (for example `python3 -m pip install -r requirements.txt` followed by `python3 calculator.py`) — not the generic three-section contract template.
 - Running that command from the project root opened a window titled `Calculator` with digits 0–9, the four operators (`+`, `-`, `*`, `/`), `=`, and `C` all visible and labeled.
 - Clicking `1`, `+`, `2`, `=` showed `3` in the display.
 - Clicking `9`, `/`, `0`, `=` showed a visible error indicator (e.g. the literal text `Error`) and did NOT raise a Python traceback in the terminal.
 - Clicking `C` returned the display to its empty / zero state.
-- Closing the window exited the process cleanly (no hung interpreter, no extra Tk window left behind).
-- In the build node's diff panel, you can see `calculator.py` and the brief markdown were added in the same commit.
+- Closing the window exited the process cleanly (no hung interpreter or stray GUI process left behind).
+- In the build node's diff panel, you can see `calculator.py`, `requirements.txt`, and the brief markdown were added in the same commit.
 - After you submitted the review with `write-json`, `reviews/build.json` appeared in the workspace and contained your response payload.

@@ -1,5 +1,5 @@
 name: gui-calculator
-brief: "Build a Tk calculator, then review it via a passive gate fed by the agent's brief."
+brief: "Build a PySide6 Qt calculator, then review it via a passive gate fed by the agent's brief."
 providers: [claude, codex]
 auto_commit: true
 nodes:
