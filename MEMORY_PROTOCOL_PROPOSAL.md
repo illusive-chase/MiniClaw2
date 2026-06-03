@@ -1,313 +1,395 @@
-# MiniClaw2 Memory Protocol Proposal
+# MiniClaw2 ContextSpace Proposal
 
-Status: discussion draft.
+Status: discussion draft, iteration 2.
 
-This proposal defines a filesystem memory protocol for MiniClaw2 nodes.
-The goal is not to make agents read more text by default. The goal is to
-make cross-node memory explicit, scoped, auditable, and safe under forks,
-parallel branches, and human review.
+This proposal defines a global filesystem context system for MiniClaw2.
+The key shift from the previous draft is that project status, plans, and
+skills should not be written into the project repository by default.
+They should live in a separate, user-owned, git-maintained ContextSpace
+and connect to MiniClaw2 projects through explicit bindings.
 
-## 1. Goals
+The project root still keeps `CONTEXT.md`, but its role is narrower:
+it is codebase-facing guidance for agents reading and editing that
+repository. Product/UX state such as active plans, branch status, loaded
+skills, and parallel directions belongs to ContextSpace.
 
-MiniClaw2 already has the right runtime spine:
+## 1. Core Model
 
-- `Project`, `Node`, and `HumanGate` persist under `$MINICLAW_HOME`.
-- Per-node `node.json`, `events.jsonl`, and `gates.jsonl` are the
-  authoritative runtime record.
-- Project timelines are serialized; concurrency comes from forks or
-  separate projects, not multiple writers in one worktree.
-- Provider conversation continuation is explicit through resume edges,
-  not implied by timeline adjacency.
-- A project-root `CONTEXT.md` is loaded at node launch and snapshotted
-  onto the node.
-
-The memory protocol should extend that spine without replacing it.
-
-The protocol must support:
-
-- Stable project-level principles.
-- Reusable global skills and project-local skill overrides.
-- Frequently updated project state and plans.
-- Explicit manual vs automatic update policy.
-- Per-node context snapshots for audit and replay.
-- Branch/fork-local state without cross-branch overwrite hazards.
-- A distinction between "the executor finished" and "the result was
-  accepted".
-
-## 2. Non-Goals
-
-This is not a full ARIS-style skill ecosystem.
-
-This is not a replacement for `$MINICLAW_HOME/projects/<pid>/...`.
-Runtime state stays in the existing JSON/JSONL store. Files in the
-project root are collaboration memory, not the source of truth for node
-state transitions.
-
-This is not a plan to run several agent nodes concurrently in the same
-project worktree. MiniClaw2 should keep the current single-runner
-project invariant. Parallelism should come from project forks,
-worktrees, or isolated temporary workspaces.
-
-This is not a plan to inject every memory file into every node. Context
-must be selected, bounded, and snapshotted.
-
-## 3. Memory Classes
-
-MiniClaw2 should treat memory as several distinct classes.
-
-| Class | Examples | Update Rate | Default Policy | Injection |
-|---|---|---:|---|---|
-| Project principles | architecture rules, coding conventions, durable "do not" rules | low | manual/proposed | system context |
-| Skills | reusable tool/workflow knowledge, script conventions | low | manual/proposed | selected per node |
-| Project state | active plan, recent decisions, branch status, open blockers | high | automatic or semi-automatic | short turn context |
-| Runtime facts | node events, gates, provider ids, artifacts, usage | very high | system-owned | not directly injected |
-| Memory deltas | node-proposed updates to state/principles/skills | medium | append-only inbox | reviewed/applied later |
-
-The important design point: a node may freely produce observations, but
-only some observations are automatically promoted into shared memory.
-
-## 4. Global vs Project-Local Scope
-
-MiniClaw2 needs both global and local memory.
-
-Global memory is user-wide and reusable across projects:
+MiniClaw2 should treat context as a graph:
 
 ```text
-$MINICLAW_HOME/
-  memory/
-    global/
-      CONTEXT.md
-      manifest.yaml
-    skills/
-      <skill-id>/
-        manifest.yaml
-        CONTEXT.md
-        assets/
+Project  <--binding edge-->  Plug
+Node     <--snapshot edge--> ContextBundle
+Plug     <--requires edge--> Plug
+Project  <--fork edge------> Project
+Node     <--resume edge----> Node
 ```
 
-Project-local memory lives in the project root so the user can read it
-directly without opening MiniClaw2 internals:
+The important consequence: context is not hardcoded into a project
+directory. A project can have several context plugs attached, and the
+same plug can be reused across projects. Future UX can expose this as
+"drag a plug onto a project" or "connect this planspace to that branch."
+
+MiniClaw2 already models `Project`, `Node`, gates, node events, and
+resume edges. ContextSpace adds a separate graph of reusable context
+objects and project-context bindings.
+
+## 2. Goals
+
+The context system should optimize for:
+
+- Ease of use: users can understand what is loaded without reading
+  hidden runtime files.
+- Explicit loading: users can clearly declare which skills, planspaces,
+  or state plugs are loaded for a project or node.
+- Portability: context can be cloned or moved across machines as an
+  independent git repo.
+- Low cognitive burden: state maintenance can be automatic once a plug
+  is connected.
+- Auditability: each node snapshots the exact context sources it saw.
+- Parallel work: one code project can have several concurrent planning
+  directions without overwriting one root-level `STATUS.md`.
+- Safety: durable rules and skill definitions are not silently rewritten
+  by ordinary worker nodes.
+- Acceptance semantics: a node being done is distinct from its result
+  being accepted.
+
+## 3. Non-Goals
+
+This is not a plan to replace MiniClaw2's `$MINICLAW_HOME/projects/...`
+runtime store. The current JSON/JSONL store remains authoritative for
+project, node, gate, and event state.
+
+This is not a plan to run several agent nodes concurrently in the same
+project worktree. Project-local execution should remain serialized.
+Parallel work should use forks, worktrees, or isolated projects.
+
+This is not a plan to inject every available context file. Loaded plugs
+are selected, bounded, snapshotted, and visible to the user.
+
+This is not a plan to import a whole ARIS or plugctx ecosystem. The
+proposal borrows the proven shape: independent context repo, small
+manifest files, explicit dependencies, and short prompt-facing context.
+
+## 4. Filesystem Layout
+
+### Project Repository
+
+The project repository remains focused on code and code-reading
+guidance.
 
 ```text
 <project_root>/
-  CONTEXT.md                 # stable project principles; manual/proposed
-  STATUS.md                  # short current status; automatic
-  PLAN.md                    # current plan; semi-automatic
-  SKILLS.md                  # optional human-readable index of active skills
-  miniclaw/
-    manifest.yaml            # project memory policy
+  CONTEXT.md                 # codebase guidance only
+```
+
+`CONTEXT.md` explains the repository to an agent:
+
+- architecture overview
+- important directories
+- build/test conventions
+- durable code editing rules
+- repo-specific gotchas
+
+It should not contain:
+
+- current project status
+- active product plan
+- branch/fork coordination
+- transient blockers
+- skill inventory
+- long logs
+- provider runtime state
+
+This keeps the repository self-explanatory for any coding agent, even
+outside MiniClaw2, while preventing root-level status files from
+becoming branch-conflict magnets.
+
+### ContextSpace Repository
+
+Default location:
+
+```text
+$MINICLAW_HOME/contextspace/
+```
+
+This path should be configurable later, for example through
+`MINICLAW_CONTEXT_HOME`, because advanced users may want to place the
+context repo in Dropbox, iCloud, a dotfiles repo, or a manually managed
+git checkout.
+
+Suggested layout:
+
+```text
+$MINICLAW_CONTEXT_HOME/
+  contextspace.yaml
+  README.md
+
+  plugs/
+    global/
+      CONTEXT.md
+      manifest.yaml
+
     skills/
       <skill-id>/
         manifest.yaml
         CONTEXT.md
         assets/
-    state/
-      events.jsonl           # append-only project memory events
-      checkpoints/
-        <bundle-id>.json
-    inbox/
-      <node-id>.memory-delta.json
-      <node-id>.notes.md
-    snapshots/
-      <bundle-id>.json
+
+    planspaces/
+      <planspace-id>/
+        manifest.yaml
+        STATUS.md
+        PLAN.md
+        SKILLS.md
+        events.jsonl
+        inbox/
+          <node-id>.memory-delta.json
+        checkpoints/
+          <timestamp-or-node>.json
+
+    protocols/
+      <protocol-id>/
+        manifest.yaml
+        CONTEXT.md
+
+  bindings/
+    projects/
+      <binding-id>.yaml
+
+  snapshots/
+    <bundle-id>.json
 ```
 
-The visible root files are for humans and agents. The `miniclaw/`
-directory is still visible, but it holds structured files that should
-not clutter the root.
+This repository is git-maintained independently from any code project.
+`STATUS.md`, `PLAN.md`, and `SKILLS.md` are tracked here when a planspace
+plug exists. They are not created by default in a code project.
 
-Project-local skill definitions override or extend global skills with
-the same `skill-id`. Suggested resolution order:
+## 5. Plug Types
 
-1. Project-local `miniclaw/skills/<skill-id>/`.
-2. User-global `$MINICLAW_HOME/memory/skills/<skill-id>/`.
-3. Bundled MiniClaw2 skills, if any are later added.
+A plug is a reusable context object. It may provide prompt text,
+structured state, a plan, or a list of child dependencies.
 
-Global skills should be stable and reusable. Project-local skills should
-capture project-specific wrappers, scripts, paths, and local workflow
-constraints.
+Initial plug types:
 
-## 5. Root File Protocol
+| Type | Purpose | Default Update Policy | Default Injection |
+|---|---|---|---|
+| `global` | user-wide behavior and MiniClaw2 conventions | manual/proposed | system or turn |
+| `skill` | reusable tool/workflow knowledge | manual/proposed | turn |
+| `planspace` | status, plan, loaded skill index, current direction | auto/semi-auto | turn |
+| `protocol` | reusable execution loop or output contract | manual/proposed | turn |
 
-### `CONTEXT.md`
+Future plug types can include `dataset`, `remote`, `reviewer`,
+`experiment-suite`, or `persona`, but v1 should not need them.
 
-Stable project principles and conventions.
+### Skill Plug
 
-Default write policy: `proposed`.
+Example:
 
-Agents should not directly rewrite this file unless the user explicitly
-asks for it. Instead, they should write a memory delta proposing the
-change. A human gate, review node, or future memory-maintainer op can
-apply the proposal.
-
-Suggested contents:
-
-- Project purpose and architecture.
-- Important directory and test conventions.
-- Durable coding rules.
-- Durable safety rules.
-- Short references to longer docs.
-
-Avoid:
-
-- Current task progress.
-- Long logs.
-- Provider-specific runtime state.
-- Large pasted plans.
-- Secrets or machine-local tokens.
-
-### `STATUS.md`
-
-Short current project state.
-
-Default write policy: `auto`.
-
-MiniClaw2 may update this after node completion, gate resolution,
-verifier results, branch changes, or memory-delta application. It should
-be concise and generated from structured facts. It should include enough
-information for a fresh node to orient quickly, but not enough to become
-a transcript replacement.
-
-Suggested sections:
-
-```markdown
-# Project Status
-
-Generated: <timestamp>
-Project: <project id or name>
-Branch/worktree: <git branch or commit>
-
-## Current Objective
-
-## Recent Accepted Changes
-
-## In Progress / Unaccepted Work
-
-## Open Questions and Blockers
-
-## Next Useful Actions
+```text
+plugs/skills/python-testing/
+  manifest.yaml
+  CONTEXT.md
+  assets/
 ```
 
-`STATUS.md` may mention unaccepted work, but it must label it as such.
-It must not silently convert a node's self-report into accepted project
-truth.
+`CONTEXT.md` is short prompt-facing guidance. `assets/` may contain
+longer references or scripts, but they are not injected by default.
 
-### `PLAN.md`
+### Planspace Plug
 
-Current working plan.
+A planspace is the UX-visible planning and status surface. It is the
+global version of the previous draft's root `STATUS.md`, `PLAN.md`, and
+`SKILLS.md`.
 
-Default write policy: `proposed`.
-
-This file is semi-automatic. A planner node may propose an update, but
-automatic worker nodes should not rewrite it silently. This avoids the
-common failure mode where every worker reshapes the plan to match what
-it just did.
-
-Suggested sections:
-
-```markdown
-# Project Plan
-
-## Active Goal
-
-## Milestones
-
-## Decisions
-
-## Branches / Parallel Work
-
-## Deferred Work
+```text
+plugs/planspaces/miniclaw2-main/
+  manifest.yaml
+  STATUS.md
+  PLAN.md
+  SKILLS.md
+  events.jsonl
+  inbox/
+  checkpoints/
 ```
 
-### `SKILLS.md`
+`STATUS.md` is not default-created. It appears only when the user
+creates or connects a planspace. Once present, it is tracked in the
+ContextSpace git repo and may be automatically maintained by MiniClaw2.
 
-Optional human-readable index of active global and local skills.
+`PLAN.md` is semi-automatic: planner nodes may propose updates, but
+ordinary worker nodes should not silently rewrite the plan.
 
-Default write policy: `auto`.
+`SKILLS.md` is an index of loaded skills for this planspace, not a copy
+of skill contents.
 
-This should not duplicate skill contents. It should list skill ids,
-scope, one-line purpose, and where the real `CONTEXT.md` lives.
+## 6. Manifests
 
-## 6. Manifest Protocol
-
-Every structured memory directory should have a `manifest.yaml`.
-
-For a project:
+### ContextSpace Manifest
 
 ```yaml
 version: 1
-type: project-memory
-write_policy:
-  CONTEXT.md: proposed
-  STATUS.md: auto
-  PLAN.md: proposed
-  SKILLS.md: auto
-git_policy:
-  CONTEXT.md: user_decides
-  STATUS.md: user_decides
-  PLAN.md: user_decides
-  miniclaw/state/events.jsonl: local
-  miniclaw/inbox: local
-context_budget:
-  system_max_chars: 8000
-  turn_state_max_chars: 4000
-active_skills: []
+kind: contextspace
+name: default
+created_by: miniclaw2
+git:
+  expected: true
+defaults:
+  context_budget:
+    system_max_chars: 8000
+    turn_max_chars: 6000
+  auto_commit: false
 ```
 
-For a skill:
+`auto_commit` is intentionally false in v1. MiniClaw2 may write files,
+but users should see git changes clearly. Later an op node can add
+automatic ContextSpace commits.
+
+### Plug Manifest
 
 ```yaml
 version: 1
-name: <skill-id>
-type: skill
-scope: global | project
-description: ""
+id: skills.python-testing
+kind: skill
+title: Python Testing
+description: Short guidance for running and interpreting Python tests.
 requires: []
-tags: []
+tags: [python, testing]
 write_policy: proposed
 injection: turn
 max_chars: 6000
 ```
 
-Machine-readable data belongs in `manifest.yaml`. Prompt-facing
-instructions belong in `CONTEXT.md`.
+For a planspace:
 
-## 7. Context Bundle Snapshot
+```yaml
+version: 1
+id: planspaces.miniclaw2-main
+kind: planspace
+title: MiniClaw2 Main Direction
+description: Main planning and status track for MiniClaw2.
+write_policy:
+  STATUS.md: auto
+  PLAN.md: proposed
+  SKILLS.md: auto
+  events.jsonl: auto
+  inbox: auto
+injection:
+  STATUS.md: turn
+  PLAN.md: turn
+  SKILLS.md: none
+max_chars:
+  STATUS.md: 4000
+  PLAN.md: 6000
+```
 
-At node launch, MiniClaw2 should compose a context bundle from selected
-sources and snapshot it onto the node.
+Machine-readable routing, dependencies, injection, and write policy live
+in manifests. Prompt-facing guidance lives in Markdown files.
 
-This should replace the current single-string mental model while
-remaining backward-compatible with `system_context_snapshot`.
+## 7. Project Bindings
 
-Proposed snapshot shape:
+A binding connects one MiniClaw2 project to one or more plugs.
+
+```text
+bindings/projects/<binding-id>.yaml
+```
+
+Example:
+
+```yaml
+version: 1
+id: project.miniclaw2.local-main
+project:
+  name: MiniClaw2
+  miniclaw_project_id: null
+  root_fingerprint:
+    git_remote: git@github.com:user/MiniClaw2.git
+    root_name: MiniClaw2
+  local_paths:
+    - /Users/bytedance/Desktop/repo/MiniClaw2
+plugs:
+  - id: global.default
+    role: global-defaults
+    injection: system
+    enabled: true
+  - id: planspaces.miniclaw2-main
+    role: status-plan
+    injection: turn
+    enabled: true
+    auto_update: true
+  - id: skills.python-testing
+    role: skill
+    injection: turn
+    enabled: true
+```
+
+Bindings should support many-to-many relationships:
+
+- One project can bind several planspaces, for parallel directions.
+- One planspace can bind several projects, for multi-repo work.
+- One skill can bind many projects.
+- A project fork can bind a new branch-specific planspace while still
+  sharing global skills.
+
+The binding is the object future UX should edit with drag-and-drop:
+connect a plug to a project, disconnect it, change injection mode, or
+disable it for a node.
+
+## 8. Loading Semantics
+
+At node launch, MiniClaw2 composes context from:
+
+1. The project-root `CONTEXT.md`.
+2. The project binding's enabled plugs.
+3. Plug dependencies declared through `requires`.
+4. Per-node overrides selected by the user.
+
+The launch modal and node detail panel should make loaded plugs visible.
+The user should be able to answer:
+
+- Which planspace is attached?
+- Which skills are loaded?
+- Which files were injected?
+- Which plug dependencies were pulled in?
+- How much context budget was used?
+
+This visibility is a core product requirement, not an implementation
+detail.
+
+## 9. Context Bundle Snapshot
+
+Every node launch should produce a context bundle snapshot.
+
+Proposed shape:
 
 ```json
 {
   "bundle_id": "abc123",
   "created_at": 1234567890,
+  "project_binding_id": "project.miniclaw2.local-main",
   "sources": [
     {
-      "scope": "project",
-      "kind": "principles",
-      "path": "CONTEXT.md",
+      "scope": "project-root",
+      "kind": "code-guidance",
+      "path": "/repo/MiniClaw2/CONTEXT.md",
       "sha256": "...",
       "chars": 1200,
       "injection": "system"
     },
     {
-      "scope": "project",
-      "kind": "state",
-      "path": "STATUS.md",
+      "scope": "contextspace",
+      "plug_id": "planspaces.miniclaw2-main",
+      "kind": "status",
+      "path": "plugs/planspaces/miniclaw2-main/STATUS.md",
       "sha256": "...",
       "chars": 900,
       "injection": "turn"
     },
     {
-      "scope": "global",
+      "scope": "contextspace",
+      "plug_id": "skills.python-testing",
       "kind": "skill",
-      "id": "python-testing",
-      "path": "$MINICLAW_HOME/memory/skills/python-testing/CONTEXT.md",
+      "path": "plugs/skills/python-testing/CONTEXT.md",
       "sha256": "...",
       "chars": 1500,
       "injection": "turn"
@@ -320,26 +402,25 @@ Proposed snapshot shape:
 
 Provider mapping:
 
-- Claude: stable project principles can continue to use
-  `system_prompt.append`.
-- Codex: stable project principles are prepended on fresh threads as
-  today.
-- State and skill context should be included in launch/turn text so
-  resumed provider threads can still receive current project state when
+- Claude can receive project-root `CONTEXT.md` and global stable
+  context through `system_prompt.append`.
+- Codex can receive stable context on fresh thread start as today.
+- Planspace status, plan, and skills should be included in launch/turn
+  text so resumed provider threads can still receive current state when
   appropriate.
 
-Every injected source needs a hash and path. This makes later audits
-answerable: "what exactly did the node see?"
+The exact snapshot should be persisted with the node or under
+`ContextSpace/snapshots/<bundle-id>.json`, and the node should record
+the `bundle_id`.
 
-## 8. Memory Delta Protocol
+## 10. Automatic State Maintenance
 
-Nodes should not freely rewrite long-lived memory files. They should
-write proposed memory deltas.
+Automatic state maintenance belongs to planspace plugs.
 
-Path:
+Nodes may emit memory deltas:
 
 ```text
-miniclaw/inbox/<node-id>.memory-delta.json
+plugs/planspaces/<planspace-id>/inbox/<node-id>.memory-delta.json
 ```
 
 Shape:
@@ -348,7 +429,11 @@ Shape:
 {
   "version": 1,
   "node_id": "<node id>",
+  "project_id": "<project id>",
+  "binding_id": "<binding id>",
   "created_at": 1234567890,
+  "terminal_state": "done",
+  "acceptance_state": "unreviewed",
   "updates": [
     {
       "target": "STATUS.md",
@@ -362,10 +447,10 @@ Shape:
       "text": "Implemented X; tests Y passed; blocker Z remains."
     },
     {
-      "target": "CONTEXT.md",
+      "target": "PLAN.md",
       "operation": "propose_patch",
       "policy": "proposed",
-      "reason": "A durable project convention was discovered.",
+      "reason": "The next milestone changed after implementation.",
       "patch": "..."
     }
   ]
@@ -374,17 +459,21 @@ Shape:
 
 Application rules:
 
-- `auto` updates may be applied by MiniClaw2 after the node reaches a
-  terminal state.
-- `proposed` updates remain in inbox until a human gate, deterministic
-  verifier, or approved maintainer node accepts them.
-- Failed or cancelled nodes may still write observations, but their
-  deltas must be labeled with the terminal state and should not be
-  promoted to long-lived principles automatically.
-- A rejected review gate should prevent the source node's proposed
-  durable memory from being promoted.
+- `STATUS.md` updates can be auto-applied after terminal transitions,
+  gate resolution, verifier results, or accepted memory deltas.
+- `PLAN.md` updates are proposed by default and should require planner
+  approval, human approval, or a future maintainer node.
+- Skill and protocol plugs are proposed/manual by default.
+- Failed or cancelled nodes can still generate observations, but the
+  status must label them as failed/cancelled and should not promote them
+  into durable rules.
+- Rejected review gates should prevent the source node's durable memory
+  proposals from being applied.
 
-## 9. Done vs Accepted
+Because `STATUS.md` lives in ContextSpace, it can be tracked by the
+ContextSpace git repo without causing code-branch conflicts.
+
+## 11. Done vs Accepted
 
 MiniClaw2 should separate execution completion from acceptance.
 
@@ -442,86 +531,146 @@ Type-B gates require a human verdict or a different model family. Same
 provider self-review can be recorded as advisory, but should not mark
 the node accepted.
 
-This distinction should drive memory promotion. A completed node can
-update `STATUS.md` as "done but unreviewed"; it should not update
-`CONTEXT.md` as durable truth until accepted.
+This distinction drives memory promotion. A completed node can update a
+planspace `STATUS.md` as "done but unreviewed"; it should not update
+skills, protocols, or durable rules until accepted.
 
-## 10. Branch and Parallel Agent Rules
+## 12. Parallel Directions
 
-Within one project worktree, keep the single-runner invariant.
+One MiniClaw2 project can have multiple parallel directions by attaching
+multiple planspaces. At launch time, however, each node must select
+exactly one active planspace. That active planspace is the only
+planspace whose `STATUS.md` and `PLAN.md` contribute to the node's
+context bundle.
 
-Parallel work should use project forks or worktrees. Each fork has its
-own root-visible memory files and branch-local `miniclaw/state/`.
+Example:
 
-When a fork is created:
+```yaml
+plugs:
+  - id: planspaces.miniclaw2-memory-protocol
+    role: direction
+    enabled: true
+  - id: planspaces.miniclaw2-provider-parity
+    role: direction
+    enabled: false
+```
 
-- Copy or reference global skills.
-- Copy project `CONTEXT.md`, `PLAN.md`, and current `STATUS.md`.
-- Record the parent project id and parent commit as today.
-- Mark the fork status as branch-local.
+The active node launch selects exactly one enabled direction plug.
+Multiple skill or protocol plugs may still be loaded alongside it.
 
-When a fork returns:
+This solves the "one project, multiple parallel plans" problem without
+forcing multiple `PLAN.md` files into the code repository. It also lets
+the same code project keep separate status for:
 
-- Do not auto-merge memory files by text overwrite.
-- Import fork memory deltas into the parent inbox.
-- Let a merge gate decide which deltas are accepted into parent memory.
-- Treat code merge acceptance and memory promotion as related but
-  distinct verdicts.
+- mainline implementation
+- speculative redesign
+- benchmark/evaluation track
+- documentation track
+- release hardening track
 
-Same-family fan-out may generate candidates, collect evidence, or draft
-alternatives. It must not act as the final Type-B jury. A cross-provider
-review, deterministic verifier, or human gate must own acceptance.
+For project forks or worktrees:
 
-## 11. Suggested First Implementation Slice
+- Forks may inherit global skills.
+- Forks should usually get their own planspace plug.
+- Merge should import fork memory deltas into the parent planspace inbox,
+  not text-merge `STATUS.md` or `PLAN.md` blindly.
 
-The first slice should be intentionally small.
+## 13. Migration and Multi-Machine Use
+
+ContextSpace should be easy to migrate.
+
+Recommended workflow:
+
+1. User initializes or clones `$MINICLAW_CONTEXT_HOME` as a git repo.
+2. MiniClaw2 reads `contextspace.yaml`.
+3. MiniClaw2 scans bindings and tries to match projects by root
+   fingerprint: git remote, root name, and optional local paths.
+4. If paths differ on a new machine, the UI asks the user to reconnect
+   a binding to the local project path.
+5. Once reconnected, the same plugs and planspaces load.
+
+Local machine paths should be treated as mounting hints, not identity.
+The binding's stable identity should come from project metadata such as
+repo remote, root name, and user-assigned project alias.
+
+## 14. Suggested First Implementation Slice
+
+The first slice should be small and should prove the data model.
 
 1. Add `Node` acceptance fields while keeping `NodeState` unchanged.
-2. Add a memory loader that reads root `CONTEXT.md`, `STATUS.md`,
-   `PLAN.md`, selected global skills, and selected project-local skills.
-3. Add `context_bundle_snapshot` to `Node` or a sibling persisted bundle
-   file under `nodes/<nid>/`.
-4. Continue populating `system_context_snapshot` for backward
-   compatibility from the stable project-principles portion.
-5. Add a basic `STATUS.md` auto-writer that updates only after node
-   terminal transitions and gate/verifier outcomes.
-6. Add `miniclaw/inbox/<node-id>.memory-delta.json` support, but only
-   auto-apply deltas targeting `STATUS.md`.
-7. Update passive gate resolution so a gate can write acceptance fields
+2. Add a configurable ContextSpace root:
+   `$MINICLAW_CONTEXT_HOME` or `$MINICLAW_HOME/contextspace`.
+3. Add minimal plug and binding loaders for:
+   - project-root `CONTEXT.md`
+   - `plugs/planspaces/<id>/STATUS.md`
+   - `plugs/planspaces/<id>/PLAN.md`
+   - `plugs/skills/<id>/CONTEXT.md`
+4. Add `project_context_binding_id` to `Project` or store it in
+   `Project.settings_override` for the first slice.
+5. Add context bundle snapshots with source paths, hashes, plug ids,
+   and injection modes.
+6. Continue populating `system_context_snapshot` for backward
+   compatibility from project-root `CONTEXT.md`.
+7. Add planspace `STATUS.md` auto-writer, but only when the project has
+   an explicit planspace binding. Do not create it by default.
+8. Add memory delta inbox support, but auto-apply only `STATUS.md`
+   updates.
+9. Update passive gate resolution so a gate can write acceptance fields
    on its source node.
-8. Surface acceptance and context bundle sources in the node detail UI.
+10. Surface loaded plugs and context bundle sources in the node detail UI.
 
 Defer:
 
+- Drag-and-drop plug UX.
 - Full skill authoring UI.
 - Cross-provider reviewer nodes.
 - Fork merge UI.
-- Automatic edits to `CONTEXT.md` or `PLAN.md`.
-- Manifest-driven git ignore edits.
-- Global skill marketplace.
+- Automatic edits to `PLAN.md`, skills, or protocols.
+- Automatic ContextSpace git commits.
+- Marketplace or bundled skill distribution.
 
-## 12. Open Design Questions
+## 15. Decisions Captured
 
-The current draft assumes:
+This draft assumes:
 
-- Root-visible `CONTEXT.md`, `STATUS.md`, and `PLAN.md`.
-- Root-visible `miniclaw/` for structured memory.
-- User-global reusable skills under `$MINICLAW_HOME/memory/skills/`.
-- `STATUS.md` automatic, `PLAN.md` semi-automatic, `CONTEXT.md` manual
-  or proposed.
+- Project-root `CONTEXT.md` remains, but only for codebase guidance.
+- `STATUS.md`, `PLAN.md`, and `SKILLS.md` live in ContextSpace
+  planspace plugs, not in project roots.
+- `STATUS.md` is not default-created. Once a planspace exists, it is
+  tracked in the independent ContextSpace git repo.
+- The context system is global and separable from MiniClaw2 projects.
+- Project-context relationships are editable bindings, not hardcoded
+  file paths.
+- One project may connect to several planspaces for parallel directions.
+- A node launch always selects exactly one active planspace. Multiple
+  planspaces may be bound to the project, but only one contributes
+  `STATUS.md` and `PLAN.md` to a node's context bundle.
+- Users must be able to see and explicitly control which plugs are
+  loaded.
+- MiniClaw2 may automatically maintain state inside connected
+  planspaces to reduce user cognitive burden.
 - `done` vs `accepted` should enter the domain model.
+- ContextSpace should not be silently initialized on first run. The user
+  should create or select a ContextSpace when first using the feature.
+- v1 should not automatically commit ContextSpace changes. Git diffs
+  should remain visible to the user; a ContextSpace commit op can come
+  later.
+- v1 should keep project bindings only in ContextSpace, without writing
+  a project-local pointer file.
+- Deterministic verifier results should be represented as verifier op
+  nodes. The verifier op owns its own execution record and writes the
+  acceptance verdict back to the source node.
 
-Questions still worth deciding before implementation:
+## 16. Remaining Discussion Areas
 
-1. Should MiniClaw2 ever auto-create `STATUS.md` in a repo without
-   asking, or only after the user opts into memory protocol?
-2. Should `STATUS.md` be committed by default, ignored by default, or
-   left to user policy?
-3. Should global skills be selectable per project in UI, or only through
-   `miniclaw/manifest.yaml` in the first version?
-4. Should `PLAN.md` be injected into ordinary worker nodes, or only into
+The major architectural questions above are settled for v1. Remaining
+discussion can focus on concrete product and implementation details:
+
+1. What does the first ContextSpace creation flow look like in the UI?
+2. How should MiniClaw2 name new planspaces and bindings by default?
+3. Which plug fields must be editable in the first UI surface, and which
+   can stay YAML-only?
+4. How much of `PLAN.md` should be injected into worker nodes versus
    planner/review nodes?
-5. Should deterministic verifier results accept the source node directly,
-   or should they create a separate verifier op node with its own
-   acceptance verdict?
-
+5. What exact verifier op schema should represent deterministic
+   acceptance?
