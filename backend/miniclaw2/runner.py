@@ -13,13 +13,14 @@ from uuid import uuid4
 
 from pydantic import BaseModel
 
-from .context import load_project_context
 from .artifacts import (
     load_node_artifact,
     summarize_node_artifact,
     validate_node_output_path,
 )
+from .contextspace import apply_memory_delta_inbox, compose_context_bundle
 from .domain import (
+    AcceptanceState,
     GateKind,
     GateState,
     GateSubtype,
@@ -32,6 +33,7 @@ from .domain import (
     default_node_output_path,
     node_output_contract,
     TokenUsage,
+    VerdictSource,
 )
 from .events import (
     ErrorEvent,
@@ -122,8 +124,13 @@ class NodeRunner:
     async def _run_agent(self) -> None:
         self.node.commit_before = git_head(self.project.root_path)
         try:
-            launch_instructions = self._snapshot_output_contract()
+            output_contract = self._snapshot_output_contract()
+            context_bundle = self._snapshot_context_bundle()
             self._snapshot_launch_settings()
+            launch_instructions = _compose_launch_instructions(
+                context_bundle.turn_text,
+                output_contract,
+            )
             self._transition(NodeState.RUNNING, started=True)
             await self._emit(
                 NodeStarted(
@@ -139,19 +146,13 @@ class NodeRunner:
 
             try:
                 try:
-                    system_context = load_project_context(self.project.root_path)
-                    if system_context != self.node.system_context_snapshot:
-                        self.node.system_context_snapshot = system_context
-                        self.store.update_node(self.node)
-                        await self._emit_node_updated()
-
                     provider = _make_provider(self.node.provider or self.project.provider)
                     self._provider = provider
                     context = AgentProviderContext(
                         node=self.node,
                         project=self.project,
                         request_gate_handler=self._request_gate,
-                        system_context=system_context,
+                        system_context=context_bundle.system_text,
                         launch_instructions=launch_instructions,
                     )
                     async for ev in provider.run(context):
@@ -180,6 +181,7 @@ class NodeRunner:
                     self.node.error = error_msg
                 self.node.commit_after = git_head(self.project.root_path)
                 self._transition(final_state, finished=True)
+                self._apply_memory_delta_inbox()
                 await self._emit_node_updated()
                 await self._emit(TurnDone())
         except asyncio.CancelledError:
@@ -190,6 +192,7 @@ class NodeRunner:
             self.node.error = error_msg
             self.node.commit_after = git_head(self.project.root_path)
             self._transition(NodeState.ERROR, started=True, finished=True)
+            self._apply_memory_delta_inbox()
             await self._emit(
                 NodeStarted(
                     node_id=self.node.id,
@@ -209,6 +212,7 @@ class NodeRunner:
         prepared by the previous agent step via ``output_kind=review_brief``).
         """
         self.node.commit_before = git_head(self.project.root_path)
+        self._snapshot_context_bundle()
         self._snapshot_launch_settings()
         self._transition(NodeState.RUNNING, started=True)
         await self._emit(
@@ -239,12 +243,14 @@ class NodeRunner:
                 self.node.error = error_msg
             self.node.commit_after = git_head(self.project.root_path)
             self._transition(final_state, finished=True)
+            self._apply_memory_delta_inbox()
             await self._emit_node_updated()
             await self._emit(TurnDone())
 
     async def _run_op(self) -> None:
         """Run a non-provider op node (currently only ``commit``)."""
         self.node.commit_before = git_head(self.project.root_path)
+        self._snapshot_context_bundle()
         self._snapshot_launch_settings()
         self._transition(NodeState.RUNNING, started=True)
         await self._emit(
@@ -288,8 +294,32 @@ class NodeRunner:
             if self.node.commit_after is None:
                 self.node.commit_after = git_head(self.project.root_path)
             self._transition(final_state, finished=True)
+            self._apply_memory_delta_inbox()
             await self._emit_node_updated()
             await self._emit(TurnDone())
+
+    def _snapshot_context_bundle(self):
+        bundle = compose_context_bundle(
+            self.project,
+            self.node,
+            store_root=self.store.root,
+        )
+        self.node.context_bundle_id = bundle.bundle_id
+        try:
+            self.node.context_bundle_path = str(
+                bundle.bundle_path.relative_to(bundle.context_root)
+            )
+        except ValueError:
+            self.node.context_bundle_path = str(bundle.bundle_path)
+        self.node.context_sources = [
+            str(source.get("path") or "")
+            for source in bundle.sources
+            if source.get("path")
+        ]
+        # Backward compatibility: keep this field scoped to root CONTEXT.md.
+        self.node.system_context_snapshot = bundle.project_context
+        self.store.update_node(self.node)
+        return bundle
 
     def _snapshot_launch_settings(self) -> None:
         snapshot: dict[str, Any] = dict(self.project.settings_override)
@@ -298,6 +328,10 @@ class NodeRunner:
         snapshot["output_kind"] = self.node.output_kind.value
         if self.node.output_path:
             snapshot["output_path"] = self.node.output_path
+        if self.project.project_context_binding_id:
+            snapshot["project_context_binding_id"] = self.project.project_context_binding_id
+        if self.node.context_bundle_id:
+            snapshot["context_bundle_id"] = self.node.context_bundle_id
         self.node.settings_snapshot = snapshot
 
     def _snapshot_output_contract(self) -> str:
@@ -335,6 +369,22 @@ class NodeRunner:
         if summary:
             self.node.summary = summary
         self.store.update_node(self.node)
+
+    def _apply_memory_delta_inbox(self) -> None:
+        try:
+            result = apply_memory_delta_inbox(
+                self.project,
+                self.node,
+                store_root=self.store.root,
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("failed to apply ContextSpace memory delta")
+            return
+        if result.get("applied"):
+            snapshot = dict(self.node.settings_snapshot)
+            snapshot["memory_delta"] = result
+            self.node.settings_snapshot = snapshot
+            self.store.update_node(self.node)
 
     # ---- state transitions ----
 
@@ -523,7 +573,38 @@ class NodeRunner:
             self.store.append_gate(self.project.id, gate, "resolved")
             self._gate_records.pop(gate_id, None)
             self.node.review_outcome = _review_outcome_from_payload(decision, resp_payload)
+            await self._stamp_source_acceptance(resp_payload)
             return
+
+    async def _stamp_source_acceptance(
+        self,
+        resp_payload: dict[str, Any],
+    ) -> None:
+        if self.node.kind is not NodeKind.GATE:
+            return
+        if not self.node.parent_node_id:
+            return
+        if self.node.review_outcome not in {"approved", "rejected"}:
+            return
+        source = self.store.load_node(self.project.id, self.node.parent_node_id)
+        if source is None:
+            return
+        now = time.time()
+        if self.node.review_outcome == "approved":
+            source.acceptance_state = AcceptanceState.ACCEPTED
+            source.accepted_at = now
+            source.rejected_at = None
+        else:
+            source.acceptance_state = AcceptanceState.REJECTED
+            source.rejected_at = now
+            source.accepted_at = None
+        source.verdict_source = VerdictSource.HUMAN
+        source.verdict_thread_id = self.node.id
+        path = resp_payload.get("path")
+        if isinstance(path, str) and path:
+            source.verdict_artifact_path = path
+        self.store.update_node(source)
+        await self._emit(NodeUpdated(node=source.model_dump()))
 
     def _resolve_open_gates(self) -> None:
         for gate_id, fut in list(self._gates.items()):
@@ -588,6 +669,15 @@ def _review_outcome_from_payload(decision: Any, payload: dict[str, Any]) -> str 
     if isinstance(body, dict) and body.get("approved") is False:
         return "rejected"
     return "approved"
+
+
+def _compose_launch_instructions(turn_context: str, output_contract: str) -> str:
+    parts = [
+        part.strip()
+        for part in (turn_context, output_contract)
+        if part and part.strip()
+    ]
+    return "\n\n---\n\n".join(parts)
 
 
 def _state_from_provider(value: str | None) -> NodeState | None:

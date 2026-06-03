@@ -110,6 +110,7 @@ class ScenarioExpanderTest(unittest.IsolatedAsyncioTestCase):
             gate = nodes[-1]
             self.assertEqual(gate.kind, NodeKind.GATE)
             self.assertEqual(gate.scenario_step_id, "review")
+            self.assertEqual(gate.parent_node_id, build.id)
             self.assertIn("How to run", gate.contract)
             self.assertIn("pip install -r requirements.txt", gate.contract)
             self.assertIn("python3 calculator.py", gate.contract)
@@ -193,6 +194,7 @@ class ScenarioExpanderTest(unittest.IsolatedAsyncioTestCase):
             gate = nodes[-1]
             self.assertEqual(gate.kind, NodeKind.GATE)
             self.assertEqual(gate.scenario_step_id, "review")
+            self.assertEqual(gate.parent_node_id, build.id)
 
             if rt.runner_task is not None:
                 rt.runner_task.cancel()

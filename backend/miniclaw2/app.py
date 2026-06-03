@@ -19,6 +19,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from .artifacts import load_node_artifact
+from .contextspace import load_context_bundle_for_node
 from .domain import Node
 from .events import (
     InteractionResponse,
@@ -49,6 +50,7 @@ class CreateSessionRequest(BaseModel):
     temporary: bool = False
     scenario_name: str | None = None
     name: str | None = None
+    project_context_binding_id: str | None = None
 
 
 class RenameSessionRequest(BaseModel):
@@ -63,6 +65,7 @@ class SessionInfo(BaseModel):
     temporary: bool = False
     scenario_name: str | None = None
     name: str = ""
+    project_context_binding_id: str | None = None
 
 
 class EventRecord(BaseModel):
@@ -135,6 +138,7 @@ def create_app() -> FastAPI:
                 temporary=req.temporary,
                 scenario_name=req.scenario_name,
                 name=req.name or "",
+                project_context_binding_id=req.project_context_binding_id,
             )
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
@@ -148,6 +152,7 @@ def create_app() -> FastAPI:
             temporary=project.temporary,
             scenario_name=project.scenario_name,
             name=project.name,
+            project_context_binding_id=project.project_context_binding_id,
         )
 
     @app.get("/sessions", response_model=list[SessionInfo])
@@ -161,6 +166,7 @@ def create_app() -> FastAPI:
                 temporary=p.temporary,
                 scenario_name=p.scenario_name,
                 name=p.name,
+                project_context_binding_id=p.project_context_binding_id,
             )
             for p in registry.list_projects()
         ]
@@ -178,6 +184,7 @@ def create_app() -> FastAPI:
             temporary=project.temporary,
             scenario_name=project.scenario_name,
             name=project.name,
+            project_context_binding_id=project.project_context_binding_id,
         )
 
     @app.delete("/sessions/{sid}")
@@ -240,6 +247,18 @@ def create_app() -> FastAPI:
             error=artifact.error,
         )
 
+    @app.get("/sessions/{sid}/nodes/{nid}/context-bundle", response_model=dict[str, Any])
+    def get_node_context_bundle(sid: str, nid: str) -> dict[str, Any]:
+        if registry.get_project(sid) is None:
+            raise HTTPException(404, "session not found")
+        node = registry.get_node(sid, nid)
+        if node is None:
+            raise HTTPException(404, "node not found")
+        bundle = load_context_bundle_for_node(node, store_root=registry.store.root)
+        if bundle is None:
+            raise HTTPException(404, "context bundle not found")
+        return bundle
+
     @app.get("/scenarios", response_model=list[ScenarioSummary])
     def list_scenarios_endpoint() -> list[ScenarioSummary]:
         return [ScenarioSummary(**s.metadata()) for s in list_scenarios()]
@@ -273,6 +292,7 @@ def create_app() -> FastAPI:
             temporary=project.temporary,
             scenario_name=project.scenario_name,
             name=project.name,
+            project_context_binding_id=project.project_context_binding_id,
         )
 
     @app.post("/sessions/{sid}/verify", response_model=VerifyResponse)

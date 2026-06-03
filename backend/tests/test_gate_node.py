@@ -8,7 +8,14 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
-from miniclaw2.domain import Node, NodeKind, NodeState, Project
+from miniclaw2.domain import (
+    AcceptanceState,
+    Node,
+    NodeKind,
+    NodeState,
+    Project,
+    VerdictSource,
+)
 from miniclaw2.runner import NodeRunner
 from miniclaw2.store import Store
 
@@ -147,6 +154,59 @@ class PassiveGateNodeRunnerTest(unittest.IsolatedAsyncioTestCase):
 
             self.assertEqual(node.state, NodeState.DONE)
             self.assertEqual(node.review_outcome, "rejected")
+
+    async def test_passive_gate_rejected_payload_marks_source_node_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            store = Store(root=tmp / "store")
+            root = tmp / "project"
+            root.mkdir()
+            project = Project(root_path=str(root))
+            store.create_project(project)
+            source = store.create_node(
+                Node(
+                    project_id=project.id,
+                    kind=NodeKind.AGENT,
+                    state=NodeState.DONE,
+                )
+            )
+            gate = store.create_node(
+                Node(
+                    project_id=project.id,
+                    kind=NodeKind.GATE,
+                    state=NodeState.QUEUED,
+                    contract="# Review\n",
+                    parent_node_id=source.id,
+                )
+            )
+            events: list[dict[str, Any]] = []
+
+            async def on_event(payload: dict[str, Any]) -> None:
+                events.append(payload)
+
+            runner = NodeRunner(gate, project, store, on_event)
+            task = asyncio.create_task(runner.run())
+
+            await _wait_for(lambda: len(_interaction_requests(events)) >= 1)
+            req = _interaction_requests(events)[0]
+            runner.resolve_gate(
+                req["id"],
+                allow=True,
+                decision="write-json",
+                response={
+                    "path": "out/review.json",
+                    "payload": {"approved": False, "notes": "needs fix"},
+                },
+            )
+            await task
+
+            updated_source = store.load_node(project.id, source.id)
+            assert updated_source is not None
+            self.assertEqual(updated_source.acceptance_state, AcceptanceState.REJECTED)
+            self.assertEqual(updated_source.verdict_source, VerdictSource.HUMAN)
+            self.assertEqual(updated_source.verdict_artifact_path, "out/review.json")
+            self.assertEqual(updated_source.verdict_thread_id, gate.id)
+            self.assertIsNotNone(updated_source.rejected_at)
 
     async def test_passive_gate_no_op_transitions_to_done(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

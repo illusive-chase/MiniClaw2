@@ -34,6 +34,22 @@ class NodeState(StrEnum):
     CANCELLED = "cancelled"
 
 
+class AcceptanceState(StrEnum):
+    NOT_APPLICABLE = "not_applicable"
+    UNREVIEWED = "unreviewed"
+    ACCEPTED = "accepted"
+    REJECTED = "rejected"
+    BLOCKED = "blocked"
+
+
+class VerdictSource(StrEnum):
+    NONE = "none"
+    HUMAN = "human"
+    DETERMINISTIC = "deterministic"
+    CROSS_PROVIDER = "cross_provider"
+    SAME_PROVIDER_ADVISORY = "same_provider_advisory"
+
+
 class GateKind(StrEnum):
     INLINE = "inline"
     CHECKPOINT = "checkpoint"
@@ -75,6 +91,7 @@ class Project(BaseModel):
     head_commit: str | None = None
     parent_project_id: str | None = None
     parent_commit: str | None = None
+    project_context_binding_id: str | None = None
     settings_override: dict[str, Any] = Field(default_factory=dict)
     temporary: bool = False
     scenario_name: str | None = None
@@ -90,6 +107,8 @@ class Node(BaseModel):
     state: NodeState = NodeState.QUEUED
     parent_node_id: str | None = None
     context_sources: list[str] = Field(default_factory=list)
+    context_bundle_id: str | None = None
+    context_bundle_path: str | None = None
     provider: str = "claude"
     provider_session_id: str | None = None
     provider_turn_id: str | None = None
@@ -108,6 +127,12 @@ class Node(BaseModel):
     settings_snapshot: dict[str, Any] = Field(default_factory=dict)
     scenario_step_id: str | None = None
     review_outcome: str | None = None  # "approved" | "rejected" | None — gate nodes only
+    acceptance_state: AcceptanceState = AcceptanceState.UNREVIEWED
+    verdict_source: VerdictSource = VerdictSource.NONE
+    verdict_artifact_path: str | None = None
+    verdict_thread_id: str | None = None
+    accepted_at: float | None = None
+    rejected_at: float | None = None
     created_at: float = Field(default_factory=_now)
     started_at: float | None = None
     finished_at: float | None = None
@@ -128,9 +153,11 @@ class HumanGate(BaseModel):
 
 
 class ContextBundle(BaseModel):
-    """Snapshotted on-disk context inherited via a context edge.
+    """Legacy context edge shape.
 
-    Defined for forward-compat; no producers in Phase 0.
+    ContextSpace launch snapshots are currently persisted as JSON files
+    by ``miniclaw2.contextspace.compose_context_bundle`` and referenced
+    from ``Node.context_bundle_id`` / ``Node.context_bundle_path``.
     """
     id: str = Field(default_factory=_new_id)
     source_node_id: str
