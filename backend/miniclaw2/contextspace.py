@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -189,6 +190,194 @@ def load_context_bundle_for_node(
         return None
 
 
+def describe_project_contextspace(
+    project: Project,
+    *,
+    store_root: Path | None = None,
+) -> dict[str, Any]:
+    """Return a UI-facing summary of the project's ContextSpace bindings."""
+
+    root = contextspace_root(store_root)
+    binding = resolve_project_binding(project, root)
+    active = resolve_active_planspace(project, root)
+    active_planspace_id = active[1].id if active is not None else None
+    project_active_planspace_id = _string_setting(project, "active_planspace_id")
+
+    return {
+        "root": str(root),
+        "exists": root.exists(),
+        "project_context_binding_id": project.project_context_binding_id,
+        "project_active_planspace_id": project_active_planspace_id,
+        "resolved_binding_id": binding.id if binding else None,
+        "active_planspace_id": active_planspace_id,
+        "bindings": [
+            _binding_summary(project, root, item)
+            for item in list_project_bindings(root)
+        ],
+    }
+
+
+def bootstrap_project_contextspace(
+    project: Project,
+    *,
+    store_root: Path | None = None,
+    title: str | None = None,
+    planspace_slug: str | None = None,
+    binding_slug: str | None = None,
+) -> dict[str, Any]:
+    """Create a minimal ContextSpace planspace + project binding.
+
+    Existing files are left intact. Slug collisions get a numeric suffix.
+    The caller is responsible for writing the returned binding/planspace ids
+    back to the Project.
+    """
+
+    root = contextspace_root(store_root)
+    root.mkdir(parents=True, exist_ok=True)
+    created: list[str] = []
+
+    _write_yaml_if_missing(
+        root / "contextspace.yaml",
+        {
+            "version": 1,
+            "kind": "contextspace",
+            "name": "default",
+            "created_by": "miniclaw2",
+            "git": {"expected": True},
+            "defaults": {
+                "context_budget": {
+                    "system_max_chars": 8000,
+                    "turn_max_chars": 6000,
+                },
+                "auto_commit": False,
+            },
+        },
+        root,
+        created,
+    )
+    _write_text_if_missing(
+        root / "README.md",
+        "# MiniClaw2 ContextSpace\n\n"
+        "This repository stores MiniClaw2 planspaces, bindings, skills, "
+        "and context snapshots outside code repositories.\n",
+        root,
+        created,
+    )
+
+    project_title = (
+        title.strip()
+        if isinstance(title, str) and title.strip()
+        else project.name.strip()
+        if project.name.strip()
+        else Path(project.root_path).name
+    )
+    base_slug = _slugify(planspace_slug or project_title or "project")
+    planspace_slug = _unique_child_slug(root / "plugs" / "planspaces", base_slug)
+    planspace_id = f"planspaces.{planspace_slug}"
+    planspace_dir = root / "plugs" / "planspaces" / planspace_slug
+    (planspace_dir / "inbox").mkdir(parents=True, exist_ok=True)
+    (planspace_dir / "checkpoints").mkdir(parents=True, exist_ok=True)
+
+    _write_yaml_if_missing(
+        planspace_dir / "manifest.yaml",
+        {
+            "version": 1,
+            "id": planspace_id,
+            "kind": "planspace",
+            "title": f"{project_title} Planspace",
+            "description": f"Planning and status track for {project_title}.",
+            "write_policy": {
+                "STATUS.md": "auto",
+                "PLAN.md": "proposed",
+                "SKILLS.md": "auto",
+                "events.jsonl": "auto",
+                "inbox": "auto",
+            },
+            "injection": {
+                "STATUS.md": "turn",
+                "PLAN.md": "turn",
+                "SKILLS.md": "none",
+            },
+            "max_chars": {
+                "STATUS.md": 4000,
+                "PLAN.md": 6000,
+            },
+        },
+        root,
+        created,
+    )
+    _write_text_if_missing(
+        planspace_dir / "STATUS.md",
+        f"# Status\n\n- Created for `{Path(project.root_path).name}`.\n",
+        root,
+        created,
+    )
+    _write_text_if_missing(
+        planspace_dir / "PLAN.md",
+        "# Plan\n\n- Define the next concrete implementation step.\n",
+        root,
+        created,
+    )
+    _write_text_if_missing(
+        planspace_dir / "SKILLS.md",
+        "# Skills\n\n_No skills explicitly loaded yet._\n",
+        root,
+        created,
+    )
+    _touch_if_missing(planspace_dir / "events.jsonl", root, created)
+
+    binding_base_slug = _slugify(binding_slug or project_title or "project")
+    binding_slug = _unique_binding_slug(root, binding_base_slug)
+    binding_id = f"project.{binding_slug}"
+    binding_path = root / "bindings" / "projects" / f"{binding_id}.yaml"
+    _write_yaml_if_missing(
+        binding_path,
+        {
+            "version": 1,
+            "id": binding_id,
+            "active_planspace_id": planspace_id,
+            "project": {
+                "name": project_title,
+                "miniclaw_project_id": project.id,
+                "root_fingerprint": {
+                    "root_name": Path(project.root_path).name,
+                },
+                "local_paths": [project.root_path],
+            },
+            "plugs": [
+                {
+                    "id": planspace_id,
+                    "role": "status-plan",
+                    "injection": "turn",
+                    "enabled": True,
+                    "auto_update": True,
+                }
+            ],
+        },
+        root,
+        created,
+    )
+
+    return {
+        "context_root": str(root),
+        "binding_id": binding_id,
+        "planspace_id": planspace_id,
+        "created": created,
+    }
+
+
+def list_project_bindings(root: Path) -> list[ProjectBinding]:
+    bindings_dir = root / "bindings" / "projects"
+    if not bindings_dir.exists():
+        return []
+    out: list[ProjectBinding] = []
+    for path in sorted(bindings_dir.glob("*.yaml")):
+        binding = _load_binding_file(path)
+        if binding is not None:
+            out.append(binding)
+    return out
+
+
 def apply_memory_delta_inbox(
     project: Project,
     node: Node,
@@ -360,28 +549,9 @@ def _load_binding_by_id(root: Path, binding_id: str) -> ProjectBinding | None:
 
 
 def _find_binding_for_project_path(root: Path, root_path: str) -> ProjectBinding | None:
-    bindings_dir = root / "bindings" / "projects"
-    if not bindings_dir.exists():
-        return None
-    try:
-        project_root = Path(root_path).resolve()
-    except OSError:
-        project_root = Path(root_path)
-    for path in sorted(bindings_dir.glob("*.yaml")):
-        binding = _load_binding_file(path)
-        if binding is None:
-            continue
-        project = binding.raw.get("project") or {}
-        local_paths = project.get("local_paths") or []
-        for candidate in local_paths:
-            if not isinstance(candidate, str):
-                continue
-            try:
-                if Path(candidate).expanduser().resolve() == project_root:
-                    return binding
-            except OSError:
-                if Path(candidate).expanduser() == project_root:
-                    return binding
+    for binding in list_project_bindings(root):
+        if _binding_matches_project_path(binding, root_path):
+            return binding
     return None
 
 
@@ -399,6 +569,96 @@ def _load_binding_file(path: Path) -> ProjectBinding | None:
         plugs=[plug for plug in plugs if plug is not None],
         raw=raw,
     )
+
+
+def _binding_summary(
+    project: Project,
+    root: Path,
+    binding: ProjectBinding,
+) -> dict[str, Any]:
+    expanded_refs = _expand_required_plugs(root, binding.plugs)
+    refs = _merge_plug_refs(binding.plugs, expanded_refs)
+    active = _select_active_planspace(project, binding, expanded_refs)
+    project_raw = binding.raw.get("project") if isinstance(binding.raw, dict) else {}
+    if not isinstance(project_raw, dict):
+        project_raw = {}
+    local_paths = [
+        item for item in (project_raw.get("local_paths") or [])
+        if isinstance(item, str)
+    ]
+    return {
+        "id": binding.id,
+        "path": _display_path(binding.path, root),
+        "title": _string_value(binding.raw.get("title"))
+        or _string_value(project_raw.get("name"))
+        or binding.id,
+        "project_name": _string_value(project_raw.get("name")),
+        "local_paths": local_paths,
+        "matches_project_path": _binding_matches_project_path(binding, project.root_path),
+        "active_planspace_id": active.id if active else None,
+        "binding_active_planspace_id": _string_value(binding.raw.get("active_planspace_id")),
+        "plugs": [
+            _plug_summary(root, ref, active.id if active else None)
+            for ref in refs
+        ],
+    }
+
+
+def _merge_plug_refs(primary: list[PlugRef], expanded: list[PlugRef]) -> list[PlugRef]:
+    out: list[PlugRef] = list(primary)
+    seen = {ref.id for ref in out}
+    for ref in expanded:
+        if ref.id in seen:
+            continue
+        seen.add(ref.id)
+        out.append(ref)
+    return out
+
+
+def _plug_summary(
+    root: Path,
+    ref: PlugRef,
+    active_planspace_id: str | None,
+) -> dict[str, Any]:
+    manifest = _plug_manifest(root, ref.id)
+    plug_dir = _plug_dir(root, ref.id)
+    kind = _plug_kind(ref.id)
+    return {
+        "id": ref.id,
+        "kind": kind,
+        "slug": _plug_slug(ref.id),
+        "role": ref.role,
+        "injection": ref.injection,
+        "enabled": ref.enabled,
+        "auto_update": ref.auto_update,
+        "source": ref.source,
+        "active": kind == "planspace" and ref.id == active_planspace_id,
+        "exists": plug_dir.exists() if plug_dir is not None else False,
+        "path": _display_path(plug_dir, root) if plug_dir is not None else None,
+        "title": _string_value(manifest.get("title")) or ref.id,
+        "description": _string_value(manifest.get("description")),
+    }
+
+
+def _binding_matches_project_path(binding: ProjectBinding, root_path: str) -> bool:
+    try:
+        project_root = Path(root_path).resolve()
+    except OSError:
+        project_root = Path(root_path)
+    project = binding.raw.get("project") or {}
+    if not isinstance(project, dict):
+        return False
+    local_paths = project.get("local_paths") or []
+    for candidate in local_paths:
+        if not isinstance(candidate, str):
+            continue
+        try:
+            if Path(candidate).expanduser().resolve() == project_root:
+                return True
+        except OSError:
+            if Path(candidate).expanduser() == project_root:
+                return True
+    return False
 
 
 def _plug_ref(item: Any) -> PlugRef | None:
@@ -592,6 +852,43 @@ def _append_planspace_event(path: Path, event: dict[str, Any]) -> None:
         handle.write(json.dumps(event, ensure_ascii=False) + "\n")
 
 
+def _write_yaml_if_missing(
+    path: Path,
+    data: dict[str, Any],
+    root: Path,
+    created: list[str],
+) -> None:
+    if path.exists():
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        yaml.safe_dump(data, sort_keys=False, allow_unicode=True),
+        encoding="utf-8",
+    )
+    created.append(_display_path(path, root))
+
+
+def _write_text_if_missing(
+    path: Path,
+    text: str,
+    root: Path,
+    created: list[str],
+) -> None:
+    if path.exists():
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+    created.append(_display_path(path, root))
+
+
+def _touch_if_missing(path: Path, root: Path, created: list[str]) -> None:
+    if path.exists():
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.touch()
+    created.append(_display_path(path, root))
+
+
 def _plug_manifest(root: Path, plug_id: str) -> dict[str, Any]:
     plug_dir = _plug_dir(root, plug_id)
     if plug_dir is None:
@@ -626,6 +923,30 @@ def _plug_kind(plug_id: str) -> str:
 
 def _plug_slug(plug_id: str) -> str:
     return plug_id.split(".", 1)[1] if "." in plug_id else plug_id
+
+
+def _slugify(value: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", value.strip().lower()).strip("-")
+    return slug or "project"
+
+
+def _unique_child_slug(parent: Path, slug: str) -> str:
+    candidate = slug
+    index = 2
+    while (parent / candidate).exists():
+        candidate = f"{slug}-{index}"
+        index += 1
+    return candidate
+
+
+def _unique_binding_slug(root: Path, slug: str) -> str:
+    bindings_dir = root / "bindings" / "projects"
+    candidate = slug
+    index = 2
+    while (bindings_dir / f"project.{candidate}.yaml").exists():
+        candidate = f"{slug}-{index}"
+        index += 1
+    return candidate
 
 
 def _injection_for(

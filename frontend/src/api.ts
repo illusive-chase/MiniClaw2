@@ -1,4 +1,5 @@
 import type {
+  ContextBundle,
   EventRecord,
   NodeArtifact,
   NodeDiff,
@@ -6,6 +7,7 @@ import type {
   ScenarioDetail,
   ScenarioSummary,
   SessionInfo,
+  SessionContextSpaceInfo,
   VerifyResponse,
 } from "./types";
 
@@ -18,6 +20,7 @@ export async function createSession(
     temporary?: boolean;
     scenario_name?: string | null;
     name?: string;
+    project_context_binding_id?: string | null;
   } = {},
 ): Promise<SessionInfo> {
   const res = await fetch("/sessions", {
@@ -38,6 +41,47 @@ export async function listSessions(): Promise<SessionInfo[]> {
 export async function deleteSession(id: string): Promise<void> {
   const res = await fetch(`/sessions/${id}`, { method: "DELETE" });
   if (!res.ok) throw new Error(`deleteSession failed: ${res.status}`);
+}
+
+export async function getSessionContextSpace(
+  sessionId: string,
+): Promise<SessionContextSpaceInfo> {
+  const res = await fetch(`/sessions/${sessionId}/contextspace`);
+  if (!res.ok) throw new Error(`getSessionContextSpace failed: ${res.status}`);
+  return res.json();
+}
+
+export async function updateSessionContextSpace(
+  sessionId: string,
+  body: {
+    project_context_binding_id?: string | null;
+    active_planspace_id?: string | null;
+  },
+): Promise<SessionContextSpaceInfo> {
+  const res = await fetch(`/sessions/${sessionId}/contextspace`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`updateSessionContextSpace failed: ${res.status}`);
+  return res.json();
+}
+
+export async function bootstrapSessionContextSpace(
+  sessionId: string,
+  body: {
+    title?: string;
+    planspace_slug?: string;
+    binding_slug?: string;
+  } = {},
+): Promise<SessionContextSpaceInfo> {
+  const res = await fetch(`/sessions/${sessionId}/contextspace/bootstrap`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`bootstrapSessionContextSpace failed: ${res.status}`);
+  return res.json();
 }
 
 export async function renameSession(id: string, name: string): Promise<SessionInfo> {
@@ -80,6 +124,16 @@ export async function getNodeArtifact(
 ): Promise<NodeArtifact> {
   const res = await fetch(`/sessions/${sessionId}/nodes/${nodeId}/artifact`);
   if (!res.ok) throw new Error(`getNodeArtifact failed: ${res.status}`);
+  return res.json();
+}
+
+export async function getNodeContextBundle(
+  sessionId: string,
+  nodeId: string,
+): Promise<ContextBundle | null> {
+  const res = await fetch(`/sessions/${sessionId}/nodes/${nodeId}/context-bundle`);
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`getNodeContextBundle failed: ${res.status}`);
   return res.json();
 }
 

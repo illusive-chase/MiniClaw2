@@ -1,7 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { getNodeArtifact, getNodeDiff, listNodeEvents, listNodes } from "./api";
+import {
+  bootstrapSessionContextSpace,
+  getNodeArtifact,
+  getNodeContextBundle,
+  getNodeDiff,
+  getSessionContextSpace,
+  listNodeEvents,
+  listNodes,
+  updateSessionContextSpace,
+} from "./api";
 import { canResumeNode } from "./nodeUtil";
 import { Chat } from "./components/Chat";
+import { ContextSpacePanel } from "./components/ContextSpacePanel";
 import { ProjectTimeline } from "./components/ProjectTimeline";
 import { NodeDetail, type PendingGate } from "./components/NodeDetail";
 import { NodeLaunchModal } from "./components/NodeLaunchModal";
@@ -12,17 +22,19 @@ import { ThemeToggle } from "./components/ThemeToggle";
 import { UsageStrip } from "./components/UsageStrip";
 import { VerifyCard } from "./components/VerifyCard";
 import type {
+  ContextBundle,
   EventRecord,
   NodeDiff,
   NodeArtifact,
   NodeInfo,
   ServerEvent,
+  SessionContextSpaceInfo,
   SessionInfo,
 } from "./types";
 import { appendServerEvent, type ChatTurn } from "./transcript";
 import { useSessionSocket } from "./ws";
 
-type View = "chat" | "tests";
+type View = "chat" | "context" | "tests";
 type Route = "landing" | "project";
 
 const TERMINAL_STATES = new Set(["done", "error", "cancelled"]);
@@ -40,6 +52,12 @@ export function App() {
   const [selectedDiffLoading, setSelectedDiffLoading] = useState(false);
   const [selectedArtifact, setSelectedArtifact] = useState<NodeArtifact | null>(null);
   const [selectedArtifactLoading, setSelectedArtifactLoading] = useState(false);
+  const [selectedContextBundle, setSelectedContextBundle] = useState<ContextBundle | null>(null);
+  const [selectedContextBundleLoading, setSelectedContextBundleLoading] = useState(false);
+  const [sessionContextSpace, setSessionContextSpace] = useState<SessionContextSpaceInfo | null>(null);
+  const [sessionContextSpaceLoading, setSessionContextSpaceLoading] = useState(false);
+  const [sessionContextSpaceSaving, setSessionContextSpaceSaving] = useState(false);
+  const [sessionContextSpaceError, setSessionContextSpaceError] = useState<string | null>(null);
   const [pendingGate, setPendingGate] = useState<PendingGate | null>(null);
   const [pendingReview, setPendingReview] = useState<PendingGate | null>(null);
   const [streaming, setStreaming] = useState(false);
@@ -55,6 +73,12 @@ export function App() {
     setSelectedEvents([]);
     setSelectedDiff(null);
     setSelectedArtifact(null);
+    setSelectedContextBundle(null);
+    setSelectedContextBundleLoading(false);
+    setSessionContextSpace(null);
+    setSessionContextSpaceLoading(false);
+    setSessionContextSpaceSaving(false);
+    setSessionContextSpaceError(null);
     setTurns([]);
     setStreaming(false);
     setPendingGate(null);
@@ -117,12 +141,98 @@ export function App() {
     void refreshNodes();
   }, [refreshNodes]);
 
+  const refreshContextSpace = useCallback(async () => {
+    if (!session?.id) return;
+    setSessionContextSpaceLoading(true);
+    setSessionContextSpaceError(null);
+    try {
+      const next = await getSessionContextSpace(session.id);
+      setSessionContextSpace(next);
+      setSession((current) =>
+        current && current.id === session.id
+          ? {
+              ...current,
+              project_context_binding_id: next.project_context_binding_id ?? null,
+            }
+          : current,
+      );
+    } catch (err) {
+      setSessionContextSpaceError(String(err));
+      setSessionContextSpace(null);
+    } finally {
+      setSessionContextSpaceLoading(false);
+    }
+  }, [session?.id]);
+
+  useEffect(() => {
+    void refreshContextSpace();
+  }, [refreshContextSpace]);
+
+  const updateContextSpace = useCallback(
+    async (body: {
+      project_context_binding_id?: string | null;
+      active_planspace_id?: string | null;
+    }) => {
+      if (!session?.id) return;
+      setSessionContextSpaceSaving(true);
+      setSessionContextSpaceError(null);
+      try {
+        const next = await updateSessionContextSpace(session.id, body);
+        setSessionContextSpace(next);
+        setSession((current) =>
+          current && current.id === session.id
+            ? {
+                ...current,
+                project_context_binding_id: next.project_context_binding_id ?? null,
+              }
+            : current,
+        );
+      } catch (err) {
+        setSessionContextSpaceError(String(err));
+      } finally {
+        setSessionContextSpaceSaving(false);
+      }
+    },
+    [session?.id],
+  );
+
+  const bootstrapContextSpace = useCallback(
+    async (body: {
+      title?: string;
+      planspace_slug?: string;
+      binding_slug?: string;
+    }) => {
+      if (!session?.id) return;
+      setSessionContextSpaceSaving(true);
+      setSessionContextSpaceError(null);
+      try {
+        const next = await bootstrapSessionContextSpace(session.id, body);
+        setSessionContextSpace(next);
+        setSession((current) =>
+          current && current.id === session.id
+            ? {
+                ...current,
+                project_context_binding_id: next.project_context_binding_id ?? null,
+              }
+            : current,
+        );
+      } catch (err) {
+        setSessionContextSpaceError(String(err));
+      } finally {
+        setSessionContextSpaceSaving(false);
+      }
+    },
+    [session?.id],
+  );
+
   useEffect(() => {
     if (!session?.id || !selectedNodeId) {
       setSelectedEvents([]);
       setSelectedEventsLoading(false);
       setSelectedArtifact(null);
       setSelectedArtifactLoading(false);
+      setSelectedContextBundle(null);
+      setSelectedContextBundleLoading(false);
       return;
     }
     let cancelled = false;
@@ -211,6 +321,39 @@ export function App() {
     selectedNode?.state,
     selectedNode?.finished_at,
     selectedNode?.summary,
+  ]);
+
+  useEffect(() => {
+    if (!session?.id || !selectedNodeId) {
+      setSelectedContextBundle(null);
+      setSelectedContextBundleLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setSelectedContextBundleLoading(true);
+    getNodeContextBundle(session.id, selectedNodeId)
+      .then((bundle) => {
+        if (!cancelled) setSelectedContextBundle(bundle);
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          console.error("get node context bundle failed:", err);
+          setSelectedContextBundle(null);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setSelectedContextBundleLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    session?.id,
+    selectedNodeId,
+    selectedNode?.context_bundle_id,
+    selectedNode?.context_bundle_path,
+    selectedNode?.state,
+    selectedNode?.finished_at,
   ]);
 
   const appendSelectedEvent = useCallback((nodeId: string | null, ev: ServerEvent) => {
@@ -496,6 +639,17 @@ export function App() {
             </button>
             <button
               type="button"
+              onClick={() => setView("context")}
+              className={
+                view === "context"
+                  ? "bg-surface-sunken px-3 font-medium text-ink-strong"
+                  : "bg-surface-raised px-3 text-ink-muted hover:bg-surface-sunken hover:text-ink"
+              }
+            >
+              Context
+            </button>
+            <button
+              type="button"
               onClick={() => setView("tests")}
               className={
                 view === "tests"
@@ -527,68 +681,82 @@ export function App() {
         <div className="flex min-h-0 flex-1">
           <TestsPanel onLaunched={(s) => onScenarioLaunched(s)} />
         </div>
+      ) : view === "context" ? (
+        <div className="flex min-h-0 flex-1">
+          <ContextSpacePanel
+            info={sessionContextSpace}
+            loading={sessionContextSpaceLoading}
+            saving={sessionContextSpaceSaving}
+            error={sessionContextSpaceError}
+            onRefresh={() => void refreshContextSpace()}
+            onUpdate={updateContextSpace}
+            onBootstrap={bootstrapContextSpace}
+          />
+        </div>
       ) : (
         <>
-      <ProjectTimeline
-        nodes={nodes}
-        selectedNodeId={selectedNodeId}
-        onSelect={setSelectedNodeId}
-      />
+          <ProjectTimeline
+            nodes={nodes}
+            selectedNodeId={selectedNodeId}
+            onSelect={setSelectedNodeId}
+          />
 
-      <div className="flex min-h-0 flex-1">
-        <main className="flex min-w-0 flex-1 flex-col">
-          <Chat turns={turns} />
+          <div className="flex min-h-0 flex-1">
+            <main className="flex min-w-0 flex-1 flex-col">
+              <Chat turns={turns} />
 
-          {pendingBanner && (
-            <div className="flex items-center justify-between gap-3 border-t border-state-waiting/30 bg-state-waiting-soft px-6 py-2 text-[11px] text-state-waiting">
-              <span>{pendingBanner.label}</span>
-              <button
-                type="button"
-                onClick={() => setSelectedNodeId(pendingBanner.nodeId)}
-                className="rounded border border-state-waiting/40 bg-surface-raised px-2 py-0.5 text-state-waiting transition hover:border-state-waiting/70"
-              >
-                Open in side panel
-              </button>
-            </div>
-          )}
+              {pendingBanner && (
+                <div className="flex items-center justify-between gap-3 border-t border-state-waiting/30 bg-state-waiting-soft px-6 py-2 text-[11px] text-state-waiting">
+                  <span>{pendingBanner.label}</span>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedNodeId(pendingBanner.nodeId)}
+                    className="rounded border border-state-waiting/40 bg-surface-raised px-2 py-0.5 text-state-waiting transition hover:border-state-waiting/70"
+                  >
+                    Open in side panel
+                  </button>
+                </div>
+              )}
 
-          {showVerifyCard && session && session.scenario_name && (
-            <VerifyCard
-              sessionId={session.id}
-              scenarioName={session.scenario_name}
+              {showVerifyCard && session && session.scenario_name && (
+                <VerifyCard
+                  sessionId={session.id}
+                  scenarioName={session.scenario_name}
+                />
+              )}
+            </main>
+
+            <NodeDetail
+              node={selectedNode}
+              events={selectedEvents}
+              loading={selectedEventsLoading}
+              diff={selectedDiff}
+              diffLoading={selectedDiffLoading}
+              artifact={selectedArtifact}
+              artifactLoading={selectedArtifactLoading}
+              contextBundle={selectedContextBundle}
+              contextBundleLoading={selectedContextBundleLoading}
+              onResumeFromNode={openNodeModalForResume}
+              pendingGate={
+                activePendingGate &&
+                selectedNode &&
+                selectedNode.state === "waiting" &&
+                activePendingGate.nodeId === selectedNode.id
+                  ? activePendingGate
+                  : null
+              }
+              pendingReview={
+                activePendingReview &&
+                selectedNode &&
+                selectedNode.state === "awaiting_review" &&
+                activePendingReview.nodeId === selectedNode.id
+                  ? activePendingReview
+                  : null
+              }
+              onResolveGate={onResolveGate}
+              onResolveReview={onResolveReview}
             />
-          )}
-        </main>
-
-        <NodeDetail
-          node={selectedNode}
-          events={selectedEvents}
-          loading={selectedEventsLoading}
-          diff={selectedDiff}
-          diffLoading={selectedDiffLoading}
-          artifact={selectedArtifact}
-          artifactLoading={selectedArtifactLoading}
-          onResumeFromNode={openNodeModalForResume}
-          pendingGate={
-            activePendingGate &&
-            selectedNode &&
-            selectedNode.state === "waiting" &&
-            activePendingGate.nodeId === selectedNode.id
-              ? activePendingGate
-              : null
-          }
-          pendingReview={
-            activePendingReview &&
-            selectedNode &&
-            selectedNode.state === "awaiting_review" &&
-            activePendingReview.nodeId === selectedNode.id
-              ? activePendingReview
-              : null
-          }
-          onResolveGate={onResolveGate}
-          onResolveReview={onResolveReview}
-        />
-      </div>
+          </div>
         </>
       )}
     </div>

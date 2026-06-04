@@ -19,7 +19,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from .artifacts import load_node_artifact
-from .contextspace import load_context_bundle_for_node
+from .contextspace import (
+    bootstrap_project_contextspace,
+    describe_project_contextspace,
+    load_context_bundle_for_node,
+)
 from .domain import Node
 from .events import (
     InteractionResponse,
@@ -55,6 +59,17 @@ class CreateSessionRequest(BaseModel):
 
 class RenameSessionRequest(BaseModel):
     name: str
+
+
+class UpdateSessionContextRequest(BaseModel):
+    project_context_binding_id: str | None = None
+    active_planspace_id: str | None = None
+
+
+class BootstrapSessionContextRequest(BaseModel):
+    title: str | None = None
+    planspace_slug: str | None = None
+    binding_slug: str | None = None
 
 
 class SessionInfo(BaseModel):
@@ -192,6 +207,54 @@ def create_app() -> FastAPI:
         if not registry.delete_project(sid):
             raise HTTPException(404, "session not found")
         return {"ok": True}
+
+    @app.get("/sessions/{sid}/contextspace", response_model=dict[str, Any])
+    def get_session_contextspace(sid: str) -> dict[str, Any]:
+        project = registry.get_project(sid)
+        if project is None:
+            raise HTTPException(404, "session not found")
+        return describe_project_contextspace(project, store_root=registry.store.root)
+
+    @app.patch("/sessions/{sid}/contextspace", response_model=dict[str, Any])
+    def update_session_contextspace(
+        sid: str,
+        req: UpdateSessionContextRequest,
+    ) -> dict[str, Any]:
+        kwargs: dict[str, Any] = {}
+        if "project_context_binding_id" in req.model_fields_set:
+            kwargs["project_context_binding_id"] = req.project_context_binding_id
+        if "active_planspace_id" in req.model_fields_set:
+            kwargs["active_planspace_id"] = req.active_planspace_id
+        project = registry.update_project_context(sid, **kwargs)
+        if project is None:
+            raise HTTPException(404, "session not found")
+        return describe_project_contextspace(project, store_root=registry.store.root)
+
+    @app.post("/sessions/{sid}/contextspace/bootstrap", response_model=dict[str, Any])
+    def bootstrap_session_contextspace(
+        sid: str,
+        req: BootstrapSessionContextRequest,
+    ) -> dict[str, Any]:
+        project = registry.get_project(sid)
+        if project is None:
+            raise HTTPException(404, "session not found")
+        result = bootstrap_project_contextspace(
+            project,
+            store_root=registry.store.root,
+            title=req.title,
+            planspace_slug=req.planspace_slug,
+            binding_slug=req.binding_slug,
+        )
+        project = registry.update_project_context(
+            sid,
+            project_context_binding_id=result["binding_id"],
+            active_planspace_id=result["planspace_id"],
+        )
+        if project is None:
+            raise HTTPException(404, "session not found")
+        response = describe_project_contextspace(project, store_root=registry.store.root)
+        response["bootstrap"] = result
+        return response
 
     @app.get("/sessions/{sid}/nodes", response_model=list[Node])
     def list_nodes(sid: str) -> list[Node]:

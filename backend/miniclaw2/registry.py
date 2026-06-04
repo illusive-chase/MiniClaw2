@@ -40,6 +40,7 @@ _PLACEHOLDER_BRIEF = (
     "# Brief unavailable\n\n"
     "_The previous agent step did not produce a review brief._\n"
 )
+_UNSET: object = object()
 
 
 class ProjectRuntime:
@@ -151,6 +152,33 @@ class ProjectRegistry:
         if rt is None:
             return None
         rt.project.name = name
+        self.store.update_project(rt.project)
+        return rt.project
+
+    def update_project_context(
+        self,
+        pid: str,
+        *,
+        project_context_binding_id: str | None | object = _UNSET,
+        active_planspace_id: str | None | object = _UNSET,
+    ) -> Project | None:
+        rt = self._runtimes.get(pid)
+        if rt is None:
+            return None
+        if project_context_binding_id is not _UNSET:
+            rt.project.project_context_binding_id = (
+                project_context_binding_id.strip()
+                if isinstance(project_context_binding_id, str)
+                and project_context_binding_id.strip()
+                else None
+            )
+        if active_planspace_id is not _UNSET:
+            settings = dict(rt.project.settings_override)
+            if isinstance(active_planspace_id, str) and active_planspace_id.strip():
+                settings["active_planspace_id"] = active_planspace_id.strip()
+            else:
+                settings.pop("active_planspace_id", None)
+            rt.project.settings_override = settings
         self.store.update_project(rt.project)
         return rt.project
 

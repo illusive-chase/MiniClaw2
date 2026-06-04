@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import type {
   ClientMessage,
+  ContextBundle,
   EventRecord,
   InteractionRequest,
   NodeArtifact,
@@ -45,6 +46,8 @@ export function NodeDetail({
   diffLoading,
   artifact,
   artifactLoading,
+  contextBundle,
+  contextBundleLoading,
   onResumeFromNode,
   pendingGate,
   pendingReview,
@@ -58,6 +61,8 @@ export function NodeDetail({
   diffLoading: boolean;
   artifact: NodeArtifact | null;
   artifactLoading: boolean;
+  contextBundle: ContextBundle | null;
+  contextBundleLoading: boolean;
   onResumeFromNode?: (node: NodeInfo) => void;
   pendingGate?: PendingGate | null;
   pendingReview?: PendingGate | null;
@@ -167,6 +172,7 @@ export function NodeDetail({
           loading={loading}
           artifact={artifact}
           artifactLoading={artifactLoading}
+          contextBundle={contextBundle}
           showReviewBanner={showReview}
         />
       ) : tab === "transcript" ? (
@@ -174,7 +180,11 @@ export function NodeDetail({
       ) : tab === "diff" ? (
         <DiffView diff={diff} loading={diffLoading} />
       ) : tab === "settings" ? (
-        <SettingsView node={node} />
+        <SettingsView
+          node={node}
+          contextBundle={contextBundle}
+          contextBundleLoading={contextBundleLoading}
+        />
       ) : tab === "gate" && node ? (
         <GatePanel
           node={node}
@@ -226,6 +236,7 @@ function Summary({
   loading,
   artifact,
   artifactLoading,
+  contextBundle,
   showReviewBanner,
 }: {
   node: NodeInfo;
@@ -233,6 +244,7 @@ function Summary({
   loading: boolean;
   artifact: NodeArtifact | null;
   artifactLoading: boolean;
+  contextBundle: ContextBundle | null;
   showReviewBanner?: boolean;
 }) {
   const isOp = node.kind === "op";
@@ -342,8 +354,20 @@ function Summary({
             )}
             <dt className="text-ink-subtle">Provider</dt>
             <dd className="text-ink">{node.provider}</dd>
+            <dt className="text-ink-subtle">Acceptance</dt>
+            <dd className="text-ink">
+              <AcceptancePill state={node.acceptance_state ?? "unreviewed"} />
+            </dd>
+            <dt className="text-ink-subtle">Verdict</dt>
+            <dd className="truncate font-mono text-ink">
+              {formatVerdict(node)}
+            </dd>
             <dt className="text-ink-subtle">Parent</dt>
             <dd className="truncate font-mono text-ink">{node.parent_node_id ?? "-"}</dd>
+            <dt className="text-ink-subtle">Bundle</dt>
+            <dd className="truncate font-mono text-ink" title={contextBundle?.bundle_id ?? undefined}>
+              {contextBundle?.bundle_id ?? node.context_bundle_id ?? "-"}
+            </dd>
             {!isOp && (
               <>
                 <dt className="text-ink-subtle">Provider session</dt>
@@ -502,6 +526,62 @@ function formatArtifactValue(value: unknown): string {
   return JSON.stringify(value, null, 2);
 }
 
+function AcceptancePill({
+  state,
+}: {
+  state: NonNullable<NodeInfo["acceptance_state"]>;
+}) {
+  const map: Record<
+    NonNullable<NodeInfo["acceptance_state"]>,
+    { bg: string; text: string; label: string }
+  > = {
+    not_applicable: {
+      bg: "bg-surface-sunken",
+      text: "text-ink-subtle",
+      label: "not applicable",
+    },
+    unreviewed: {
+      bg: "bg-state-queued-soft",
+      text: "text-ink-muted",
+      label: "unreviewed",
+    },
+    accepted: {
+      bg: "bg-state-done-soft",
+      text: "text-state-review dark:text-state-review",
+      label: "accepted",
+    },
+    rejected: {
+      bg: "bg-state-error-soft",
+      text: "text-state-error",
+      label: "rejected",
+    },
+    blocked: {
+      bg: "bg-state-waiting-soft",
+      text: "text-state-waiting",
+      label: "blocked",
+    },
+  };
+  const m = map[state];
+  return (
+    <span className={"rounded px-1.5 py-0.5 font-mono text-[10px] " + m.bg + " " + m.text}>
+      {m.label}
+    </span>
+  );
+}
+
+function formatVerdict(node: NodeInfo): string {
+  if (node.review_outcome) return `review ${node.review_outcome}`;
+  const source = node.verdict_source ?? "none";
+  if (source === "none") return "none";
+  const timestamp = node.accepted_at ?? node.rejected_at ?? null;
+  return [
+    source,
+    node.verdict_artifact_path,
+    node.verdict_thread_id ? `thread ${node.verdict_thread_id}` : null,
+    timestamp ? formatTime(timestamp) : null,
+  ].filter(Boolean).join(" · ");
+}
+
 function RawEvents({
   events,
   loading,
@@ -524,7 +604,15 @@ function RawEvents({
   );
 }
 
-function SettingsView({ node }: { node: NodeInfo }) {
+function SettingsView({
+  node,
+  contextBundle,
+  contextBundleLoading,
+}: {
+  node: NodeInfo;
+  contextBundle: ContextBundle | null;
+  contextBundleLoading: boolean;
+}) {
   const snapshot = node.settings_snapshot ?? {};
   const entries = Object.entries(snapshot);
   const known = new Map(entries);
@@ -585,6 +673,30 @@ function SettingsView({ node }: { node: NodeInfo }) {
         </h3>
         <dl className="grid grid-cols-[140px_1fr] gap-x-3 gap-y-2 text-xs">
           <KeyValueRow
+            label="Context bundle"
+            value={
+              contextBundleLoading
+                ? "loading"
+                : contextBundle?.bundle_id ?? node.context_bundle_id ?? "none"
+            }
+          />
+          <KeyValueRow
+            label="Binding"
+            value={contextBundle?.project_binding_id ?? "(none)"}
+          />
+          <KeyValueRow
+            label="Active planspace"
+            value={contextBundle?.active_planspace_id ?? "(none)"}
+          />
+          <KeyValueRow
+            label="Bundle text"
+            value={
+              contextBundle
+                ? `system ${formatChars(contextBundle.system_text?.length ?? 0)}, turn ${formatChars(contextBundle.turn_text?.length ?? 0)}`
+                : "none"
+            }
+          />
+          <KeyValueRow
             label="System context"
             value={
               node.system_context_snapshot
@@ -601,7 +713,64 @@ function SettingsView({ node }: { node: NodeInfo }) {
             }
           />
         </dl>
+        {contextBundleLoading ? (
+          <div className="mt-3 rounded-md border border-line bg-surface-sunken px-3 py-2 text-xs text-ink-muted">
+            Loading context bundle...
+          </div>
+        ) : contextBundle ? (
+          <ContextBundleSources bundle={contextBundle} />
+        ) : (
+          <div className="mt-3 rounded-md border border-line bg-surface-sunken px-3 py-2 text-xs text-ink-muted">
+            No context bundle snapshot found for this node.
+          </div>
+        )}
       </section>
+    </div>
+  );
+}
+
+function ContextBundleSources({ bundle }: { bundle: ContextBundle }) {
+  if (bundle.sources.length === 0) {
+    return (
+      <div className="mt-3 rounded-md border border-line bg-surface-sunken px-3 py-2 text-xs text-ink-muted">
+        Bundle recorded no context sources.
+      </div>
+    );
+  }
+
+  return (
+    <div className="mt-3 overflow-hidden rounded-md border border-line bg-surface-sunken">
+      <div className="grid grid-cols-[minmax(0,1fr)_72px_74px_76px] border-b border-line px-3 py-2 text-[10px] font-medium uppercase tracking-[0.12em] text-ink-subtle">
+        <div>Source</div>
+        <div>Inject</div>
+        <div>Chars</div>
+        <div>SHA</div>
+      </div>
+      <div className="divide-y divide-line">
+        {bundle.sources.map((source, index) => (
+          <div
+            key={`${source.path}-${index}`}
+            className="grid grid-cols-[minmax(0,1fr)_72px_74px_76px] gap-x-2 px-3 py-2 text-[11px]"
+          >
+            <div className="min-w-0">
+              <div className="truncate font-mono text-ink" title={source.path}>
+                {source.path}
+              </div>
+              <div className="mt-0.5 flex flex-wrap gap-x-2 gap-y-1 text-[10px] text-ink-subtle">
+                <span>{source.scope}</span>
+                <span>{source.kind}</span>
+                {source.plug_id && <span className="font-mono">{source.plug_id}</span>}
+                {source.truncated && <span>truncated</span>}
+              </div>
+            </div>
+            <div className="font-mono text-ink-muted">{source.injection}</div>
+            <div className="font-mono text-ink-muted">{formatSourceChars(source)}</div>
+            <div className="truncate font-mono text-ink-muted" title={source.sha256}>
+              {shortSha(source.sha256)}
+            </div>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
@@ -615,6 +784,21 @@ function KeyValueRow({ label, value }: { label: string; value: string }) {
       </dd>
     </>
   );
+}
+
+function formatChars(value: number): string {
+  return `${value} chars`;
+}
+
+function formatSourceChars(source: ContextBundle["sources"][number]): string {
+  if (typeof source.raw_chars === "number" && source.raw_chars !== source.chars) {
+    return `${source.chars}/${source.raw_chars}`;
+  }
+  return String(source.chars);
+}
+
+function shortSha(value: string): string {
+  return value ? value.slice(0, 8) : "-";
 }
 
 function GatePanel({
