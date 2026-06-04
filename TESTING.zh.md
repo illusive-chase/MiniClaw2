@@ -1,7 +1,8 @@
-# MiniClaw2 手动测试指南（Tier 1 + Tier 2 + Tier 3 + Tier 4）
+# MiniClaw2 手动测试指南（Tier 1 + Tier 2 + Tier 3 + Tier 4 + ContextSpace）
 
 本文档面向用户，介绍如何在仪表盘里逐个运行已经落地的内置测试场景，并手工
-验证它们是否真的工作。本指南详细覆盖以下 9 个：
+验证它们是否真的工作。本指南详细覆盖以下 9 个内置场景和 1 个 ContextSpace
+手动流程：
 
 - **Tier 1**（最小闭环）：`hello-text`、`bash-uname`、`write-readme`。
 - **Tier 2**（内联 gate 与中断）：`permission-approve`、`plan-mode-approval`、
@@ -9,6 +10,7 @@
 - **Tier 3**（多步与上下文）：`context-md-respected`（§8）、
   `resume-fix-after-reject`（§9）。
 - **Tier 4**（韧性）：`reconnect-replay`（§10）。
+- **ContextSpace 手动流程**：bootstrap + bundle snapshot + 上下文注入（§11）。
 
 Tier 3 的旗舰场景 `gui-calculator`（构建 PySide6/Qt 计算器 → 被动 review gate →
 auto-commit 改写 `commit_after`）也已经在仪表盘里可用，但它的人工验收涉及
@@ -606,9 +608,149 @@ Codex 端在 replay 之后看到了重复或乱序——记下来,可能是 Code
 
 ---
 
-## 11. 一些通用注意事项
+## 11. 手动流程：ContextSpace bootstrap + bundle snapshot
 
-### 11.1 verify.sh 在哪里跑、看到了什么
+### 11.1 它在测什么
+
+这不是 Tests 面板里的内置 scenario。它手动验证 ContextSpace v1 主链路：
+
+- 用隔离的 `MINICLAW_HOME` 启动后端；
+- 在 UI 里创建默认 ContextSpace；
+- session 写入 project binding 和 active planspace；
+- node launch 时同时注入 project `CONTEXT.md` 和 planspace `STATUS.md` /
+  `PLAN.md`；
+- Node detail 里能追溯 context bundle sources。
+
+### 11.2 启动隔离测试环境
+
+先准备一个只用于这次测试的 home 和 workspace：
+
+```bash
+rm -rf /private/tmp/miniclaw2-contextspace-test
+mkdir -p /private/tmp/miniclaw2-contextspace-test/workspace
+
+cat >/private/tmp/miniclaw2-contextspace-test/workspace/CONTEXT.md <<'EOF'
+# ContextSpace Manual Test Workspace
+
+This project exists only for MiniClaw2 ContextSpace testing.
+
+Agents should mention the phrase `contextspace-manual-test` when asked to
+summarize the project context.
+EOF
+```
+
+启动后端，注意这里的特殊 `MINICLAW_HOME`：
+
+```bash
+cd backend
+MINICLAW_HOME=/private/tmp/miniclaw2-contextspace-test/home \
+  python -m miniclaw2 --host 127.0.0.1 --port 8000 --log-level info
+```
+
+另开一个 shell 启动前端：
+
+```bash
+cd frontend
+npm run dev
+```
+
+打开：
+
+```text
+http://localhost:5173/
+```
+
+### 11.3 创建测试 session
+
+可以在 UI 里新建项目：
+
+- name：`ContextSpace Manual Test`
+- cwd：`/private/tmp/miniclaw2-contextspace-test/workspace`
+- provider：`codex` 或 `claude`
+
+也可以直接用 API 创建：
+
+```bash
+curl -s -X POST http://127.0.0.1:8000/sessions \
+  -H 'content-type: application/json' \
+  -d '{"cwd":"/private/tmp/miniclaw2-contextspace-test/workspace","provider":"codex","name":"ContextSpace Manual Test"}'
+```
+
+### 11.4 在 UI 里 bootstrap ContextSpace
+
+1. 选择 `ContextSpace Manual Test`。
+2. 打开 `ContextSpace` 面板。
+3. 先确认：
+   - root 是 `/private/tmp/miniclaw2-contextspace-test/home/contextspace`；
+   - `Root` 是 `missing`；
+   - `Resolved binding` 是 `none`。
+4. 点击 `Create`。
+5. Title 填：`Manual ContextSpace Track`。
+6. 创建后确认：
+   - `Root` 变成 `present`；
+   - resolved binding 是 `project.manual-contextspace-track`；
+   - active planspace 是 `planspaces.manual-contextspace-track`。
+
+### 11.5 启动一个节点验证注入
+
+在聊天框发送：
+
+```text
+Summarize the loaded project/contextspace context. Mention whether you saw the phrase contextspace-manual-test.
+```
+
+如果 provider 请求写 `.miniclaw2/outputs/.../result.md` 的权限，点 Allow。
+这是正常现象。
+
+### 11.6 预期观察到什么
+
+ContextSpace 目录应当出现这些文件：
+
+```text
+/private/tmp/miniclaw2-contextspace-test/home/contextspace/contextspace.yaml
+/private/tmp/miniclaw2-contextspace-test/home/contextspace/bindings/projects/project.manual-contextspace-track.yaml
+/private/tmp/miniclaw2-contextspace-test/home/contextspace/plugs/planspaces/manual-contextspace-track/manifest.yaml
+/private/tmp/miniclaw2-contextspace-test/home/contextspace/plugs/planspaces/manual-contextspace-track/STATUS.md
+/private/tmp/miniclaw2-contextspace-test/home/contextspace/plugs/planspaces/manual-contextspace-track/PLAN.md
+/private/tmp/miniclaw2-contextspace-test/home/contextspace/plugs/planspaces/manual-contextspace-track/SKILLS.md
+```
+
+节点完成后，在 Node detail 的 Context 区域应当看到：
+
+- `Context bundle` 有 id；
+- `Binding` 是 `project.manual-contextspace-track`；
+- `Active planspace` 是 `planspaces.manual-contextspace-track`；
+- sources 里有三项：
+  - workspace 的 `CONTEXT.md`，`injection = system`；
+  - planspace 的 `STATUS.md`，`injection = turn`；
+  - planspace 的 `PLAN.md`，`injection = turn`。
+
+assistant 的回复或 summary artifact 应当明确提到：
+
+```text
+contextspace-manual-test
+```
+
+### 11.7 判定结果
+
+这条手动流程通过 = 同时满足：
+
+- UI bootstrap 成功；
+- session 绑定了 `project.manual-contextspace-track`；
+- active planspace 是 `planspaces.manual-contextspace-track`；
+- node 正常进入 `done`；
+- context bundle sources 包含 `CONTEXT.md`、`STATUS.md`、`PLAN.md`；
+- assistant 看到并提到了 `contextspace-manual-test`；
+- 后端日志没有 ContextSpace 异常。
+
+注意：planspace 的 `events.jsonl` 可以是空的。这条流程不要求生成
+`memory-delta.json`，所以它**不**测试自动写回 `STATUS.md`。
+
+---
+
+## 12. 一些通用注意事项
+
+### 12.1 verify.sh 在哪里跑、看到了什么
 
 `verify.sh` 由后端 `/sessions/{sid}/verify` 端点同步触发：
 - 工作目录是 workspace 临时根（`miniclaw2-tmp-xxxx`）；
@@ -616,7 +758,7 @@ Codex 端在 replay 之后看到了重复或乱序——记下来,可能是 Code
   事件日志里读 transcript 和工具调用；
 - 60 秒超时；超时时 `exit_code=124` 且 `timed_out=true`。
 
-### 11.2 跑完之后的清理
+### 12.2 跑完之后的清理
 
 每个场景跑完一遍，后端会留着 session 和它的 workspace。如果你想清理：
 
@@ -634,7 +776,7 @@ rm -rf /var/folders/*/T/miniclaw2-tmp-*    # macOS
 rm -rf /tmp/miniclaw2-tmp-*                # Linux
 ```
 
-### 11.3 还没覆盖到的能力
+### 12.3 还没覆盖到的能力
 
 本指南**已经**覆盖了 Tier 1/2/3/4 的大部分主路径——checkpoint gate
 （§9 `resume-fix-after-reject` 的 review 步）、resume 边 + provider 会话继承
@@ -656,7 +798,7 @@ rm -rf /tmp/miniclaw2-tmp-*                # Linux
 如果你希望本指南也为 `gui-calculator` 写一节详尽中文走查，欢迎在 repo 里提
 issue 催更。
 
-### 11.4 失败时该怎么办
+### 12.4 失败时该怎么办
 
 - **provider 鉴权失败**：节点会迅速进 `error`，事件流里出现 error 事件。检查
   `claude` / `codex` CLI 是否能跑通。
@@ -670,7 +812,7 @@ issue 催更。
 - **模型答得"差不多对但不严格"**：这是手工测试的核心价值——脚本能挑出来，
   人眼也能挑出来。把这一轮判否、记下 provider 名和现象，往后再跑就行。
 
-### 11.5 一句话总结判定规则
+### 12.5 一句话总结判定规则
 
 - ✅ **该场景该 provider 通过** = verify.sh `exit 0` **并且** 人工验收清单全勾。
 - ✅ **该场景通过** = Claude 和 Codex 各自都满足上一条。

@@ -393,6 +393,100 @@ knows where to look.
   left off (no rewind, no visibly duplicated facts); the node reached
   `done` cleanly and ended with `[END]`."
 
+### Manual case — ContextSpace bootstrap and bundle injection
+
+**contextspace-bootstrap-manual** *(manual dashboard case, not a bundled scenario)*
+> Start MiniClaw2 with an isolated `MINICLAW_HOME`, bootstrap a
+> ContextSpace from the dashboard, launch one node, and verify that
+> project `CONTEXT.md` plus active planspace `STATUS.md` / `PLAN.md`
+> are snapshotted and injected.
+
+Setup uses a special home so the test does not touch the developer's
+real `~/.miniclaw2`:
+
+```bash
+rm -rf /private/tmp/miniclaw2-contextspace-test
+mkdir -p /private/tmp/miniclaw2-contextspace-test/workspace
+cat >/private/tmp/miniclaw2-contextspace-test/workspace/CONTEXT.md <<'EOF'
+# ContextSpace Manual Test Workspace
+
+This project exists only for MiniClaw2 ContextSpace testing.
+
+Agents should mention the phrase `contextspace-manual-test` when asked to
+summarize the project context.
+EOF
+
+cd backend
+MINICLAW_HOME=/private/tmp/miniclaw2-contextspace-test/home \
+  python -m miniclaw2 --host 127.0.0.1 --port 8000 --log-level info
+```
+
+In another shell:
+
+```bash
+cd frontend
+npm run dev
+```
+
+Create or select a session whose cwd is
+`/private/tmp/miniclaw2-contextspace-test/workspace` and provider is
+either `codex` or `claude`. The API equivalent is:
+
+```bash
+curl -s -X POST http://127.0.0.1:8000/sessions \
+  -H 'content-type: application/json' \
+  -d '{"cwd":"/private/tmp/miniclaw2-contextspace-test/workspace","provider":"codex","name":"ContextSpace Manual Test"}'
+```
+
+Dashboard steps:
+
+1. Open `http://localhost:5173/`.
+2. Select `ContextSpace Manual Test`.
+3. Open the `ContextSpace` panel.
+4. Confirm root points at
+   `/private/tmp/miniclaw2-contextspace-test/home/contextspace`, `Root`
+   is missing, and `Resolved binding` is none.
+5. Click `Create`; use title `Manual ContextSpace Track`.
+6. Confirm root is present, resolved binding is
+   `project.manual-contextspace-track`, and active planspace is
+   `planspaces.manual-contextspace-track`.
+7. Send this prompt:
+
+   ```text
+   Summarize the loaded project/contextspace context. Mention whether you saw the phrase contextspace-manual-test.
+   ```
+
+Expected disk and UI evidence:
+
+- ContextSpace files exist under
+  `/private/tmp/miniclaw2-contextspace-test/home/contextspace`, including
+  `contextspace.yaml`,
+  `bindings/projects/project.manual-contextspace-track.yaml`,
+  `plugs/planspaces/manual-contextspace-track/manifest.yaml`,
+  `STATUS.md`, `PLAN.md`, and `SKILLS.md`.
+- The completed node has `context_bundle_id`,
+  `context_bundle_path`, `project_context_binding_id`, and
+  `active_planspace_id` in its detail view / `node.json`.
+- The context bundle sources include:
+  - `/private/tmp/miniclaw2-contextspace-test/workspace/CONTEXT.md`
+    with `injection: system`;
+  - `plugs/planspaces/manual-contextspace-track/STATUS.md` with
+    `injection: turn`;
+  - `plugs/planspaces/manual-contextspace-track/PLAN.md` with
+    `injection: turn`.
+- The assistant reply or summary artifact mentions
+  `contextspace-manual-test`.
+- Server logs show only normal `200 OK` requests and no ContextSpace
+  exception.
+
+Notes:
+
+- A permission gate may appear if the provider writes the summary
+  artifact through a shell command. Approve it; this is expected.
+- The planspace `events.jsonl` can remain empty in this case. This
+  flow does not require a `memory-delta.json`, so it does not test
+  automatic `STATUS.md` writeback.
+
 ## 7. Out of scope for v1
 
 - Recorded provider transcripts (VCR-style replay). Worth adding
