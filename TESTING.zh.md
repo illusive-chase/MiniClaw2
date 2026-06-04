@@ -731,7 +731,48 @@ assistant 的回复或 summary artifact 应当明确提到：
 contextspace-manual-test
 ```
 
-### 11.7 判定结果
+### 11.7 验证 memory delta 写回闭环
+
+在同一个 session 里再启动一个节点，发送：
+
+```text
+Create a ContextSpace memory delta artifact for this completed node. Add a STATUS.md append_observation with policy auto whose text contains contextspace-memory-delta-manual-ok. Also include one PLAN.md propose_patch update with policy proposed whose patch contains do-not-apply-plan-proposal. Do not edit ContextSpace files directly.
+```
+
+节点进入 `done` 后检查：
+
+- workspace 里有这个 project-local artifact：
+
+  ```text
+  /private/tmp/miniclaw2-contextspace-test/workspace/.miniclaw2/outputs/<node-id>/memory-delta.json
+  ```
+
+- ContextSpace 里有后端复制进去的 inbox 文件：
+
+  ```text
+  /private/tmp/miniclaw2-contextspace-test/home/contextspace/plugs/planspaces/manual-contextspace-track/inbox/<node-id>.memory-delta.json
+  ```
+
+- planspace 的 `STATUS.md` 包含：
+
+  ```text
+  contextspace-memory-delta-manual-ok
+  node <node-id>
+  acceptance_state: unreviewed
+  ```
+
+- planspace 的 `PLAN.md` **不**包含：
+
+  ```text
+  do-not-apply-plan-proposal
+  ```
+
+- planspace 的 `events.jsonl` 包含 `memory_delta_applied`，并且事件里能看到
+  一个 proposal 被记录；
+- Node detail -> Settings -> Memory delta 显示 `applied 1`、`proposed 1`，
+  source 是 `project_artifact`。
+
+### 11.8 判定结果
 
 这条手动流程通过 = 同时满足：
 
@@ -741,10 +782,11 @@ contextspace-manual-test
 - node 正常进入 `done`；
 - context bundle sources 包含 `CONTEXT.md`、`STATUS.md`、`PLAN.md`；
 - assistant 看到并提到了 `contextspace-manual-test`；
+- 第二个 node 产生 project-local `memory-delta.json`；
+- `STATUS.md` 自动追加了 observation；
+- `PLAN.md` proposal 被记录但没有自动应用；
+- Node detail 的 Settings 能看到 memory delta 应用结果；
 - 后端日志没有 ContextSpace 异常。
-
-注意：planspace 的 `events.jsonl` 可以是空的。这条流程不要求生成
-`memory-delta.json`，所以它**不**测试自动写回 `STATUS.md`。
 
 ---
 

@@ -53,6 +53,67 @@ class ComposedContextBundle:
     context_root: Path
     bundle_path: Path
     active_planspace_id: str | None = None
+    active_planspace_auto_update: bool = False
+
+
+def memory_delta_output_relpath(node: Node) -> str:
+    """Return the project-relative memory delta artifact path for a node."""
+
+    return f".miniclaw2/outputs/{node.id}/memory-delta.json"
+
+
+def memory_delta_launch_contract(
+    project: Project,
+    node: Node,
+    bundle: ComposedContextBundle,
+) -> str:
+    """Return turn instructions for project-local ContextSpace writeback."""
+
+    if not bundle.active_planspace_id or not bundle.active_planspace_auto_update:
+        return ""
+    binding_id = bundle.project_binding_id or ""
+    output_path = memory_delta_output_relpath(node)
+    return (
+        "# ContextSpace memory delta contract\n\n"
+        "MiniClaw2 loaded an active ContextSpace planspace for this node. "
+        "If your work produces status-relevant observations, write one JSON "
+        f"memory delta artifact at `{output_path}` before you finish. Do not "
+        "write directly into the ContextSpace repository.\n\n"
+        "Required top-level shape:\n\n"
+        "```json\n"
+        "{\n"
+        '  "version": 1,\n'
+        f'  "node_id": "{node.id}",\n'
+        f'  "project_id": "{project.id}",\n'
+        f'  "binding_id": "{binding_id}",\n'
+        f'  "planspace_id": "{bundle.active_planspace_id}",\n'
+        '  "created_at": 1234567890,\n'
+        '  "terminal_state": "done",\n'
+        '  "acceptance_state": "unreviewed",\n'
+        '  "updates": [\n'
+        "    {\n"
+        '      "target": "STATUS.md",\n'
+        '      "operation": "append_observation",\n'
+        '      "policy": "auto",\n'
+        '      "confidence": "observed",\n'
+        '      "text": "Implemented X; verified Y; remaining blocker Z."\n'
+        "    },\n"
+        "    {\n"
+        '      "target": "PLAN.md",\n'
+        '      "operation": "propose_patch",\n'
+        '      "policy": "proposed",\n'
+        '      "reason": "Why the plan should change.",\n'
+        '      "patch": "Proposed PLAN.md patch text."\n'
+        "    }\n"
+        "  ]\n"
+        "}\n"
+        "```\n\n"
+        "Only `STATUS.md` updates with `operation: append_observation` and "
+        "`policy: auto` can be applied automatically. `PLAN.md` updates must "
+        "use `policy: proposed`; MiniClaw2 records them but does not apply "
+        "them automatically. If there is no useful status update, omit the "
+        "artifact.\n"
+    )
 
 
 def contextspace_root(store_root: Path | None = None) -> Path:
@@ -106,11 +167,13 @@ def compose_context_bundle(
 
     active_planspace: PlugRef | None = None
     active_planspace_id: str | None = None
+    active_planspace_auto_update = False
     if binding is not None:
         plug_refs = _expand_required_plugs(root, binding.plugs)
         active_planspace = _select_active_planspace(project, binding, plug_refs)
         if active_planspace is not None:
             active_planspace_id = active_planspace.id
+            active_planspace_auto_update = active_planspace.auto_update
 
         for ref in plug_refs:
             kind = _plug_kind(ref.id)
@@ -147,6 +210,7 @@ def compose_context_bundle(
         "node_id": node.id,
         "project_binding_id": binding.id if binding else None,
         "active_planspace_id": active_planspace_id,
+        "active_planspace_auto_update": active_planspace_auto_update,
         "active_planspace": _snapshot_planspace_ref(active_planspace),
         "sources": sources,
         "system_text": system_text,
@@ -165,6 +229,7 @@ def compose_context_bundle(
         context_root=root,
         bundle_path=bundle_path,
         active_planspace_id=active_planspace_id,
+        active_planspace_auto_update=active_planspace_auto_update,
     )
 
 
@@ -392,22 +457,27 @@ def apply_memory_delta_inbox(
     """
 
     root = contextspace_root(store_root)
-    bundle = load_context_bundle_for_node(node, store_root=root.parent)
+    bundle = load_context_bundle_for_node(node, store_root=store_root)
     if bundle is None and (node.context_bundle_id or node.context_bundle_path):
-        return {"applied": 0, "reason": "context_bundle_not_found"}
+        return {"applied": 0, "proposed": 0, "reason": "context_bundle_not_found"}
     if bundle is None:
         active = _memory_delta_route_from_current_binding(project, root)
         if active is None:
-            return {"applied": 0, "reason": "no_active_planspace"}
+            return {"applied": 0, "proposed": 0, "reason": "no_active_planspace"}
     else:
         active = _memory_delta_route_from_bundle(bundle, root)
         if active is None:
-            return {"applied": 0, "reason": "no_active_planspace_snapshot"}
+            return {
+                "applied": 0,
+                "proposed": 0,
+                "reason": "no_active_planspace_snapshot",
+            }
 
     binding_id, planspace_id, planspace_dir, auto_update = active
     if not auto_update:
         return {
             "applied": 0,
+            "proposed": 0,
             "reason": "planspace_auto_update_disabled",
             "binding_id": binding_id,
             "planspace_id": planspace_id,
@@ -417,9 +487,11 @@ def apply_memory_delta_inbox(
     if not delta_path.exists():
         return {
             "applied": 0,
+            "proposed": 0,
             "reason": "no_delta",
             "binding_id": binding_id,
             "planspace_id": planspace_id,
+            "delta_path": _display_path(delta_path, root),
         }
 
     try:
@@ -427,51 +499,300 @@ def apply_memory_delta_inbox(
     except (OSError, json.JSONDecodeError) as exc:
         return {
             "applied": 0,
+            "proposed": 0,
             "reason": f"invalid_delta: {exc}",
             "binding_id": binding_id,
             "planspace_id": planspace_id,
+            "delta_path": _display_path(delta_path, root),
         }
 
-    applied: list[dict[str, Any]] = []
-    for update in delta.get("updates") or []:
-        if not isinstance(update, dict):
-            continue
-        if update.get("target") != "STATUS.md":
-            continue
-        if update.get("operation") != "append_observation":
-            continue
-        if update.get("policy") != "auto":
-            continue
-        text = update.get("text")
-        if not isinstance(text, str) or not text.strip():
-            continue
-        _append_status_observation(planspace_dir / "STATUS.md", node, text)
-        applied.append({
-            "target": "STATUS.md",
-            "operation": "append_observation",
-            "chars": len(text),
-        })
+    return _apply_memory_delta_payload(
+        project,
+        node,
+        binding_id=binding_id,
+        planspace_id=planspace_id,
+        planspace_dir=planspace_dir,
+        delta_path=delta_path,
+        delta=delta,
+        context_root=root,
+        source="contextspace_inbox",
+    )
 
-    if applied:
-        _append_planspace_event(
-            planspace_dir / "events.jsonl",
-            {
-                "type": "memory_delta_applied",
-                "node_id": node.id,
-                "project_id": project.id,
-                "binding_id": binding_id,
-                "planspace_id": planspace_id,
-                "created_at": time.time(),
-                "updates": applied,
-            },
-        )
 
-    return {
-        "applied": len(applied),
+def apply_memory_delta_artifact(
+    project: Project,
+    node: Node,
+    *,
+    store_root: Path | None = None,
+) -> dict[str, Any]:
+    """Apply a project-local memory delta artifact to the launch planspace.
+
+    Agents write to ``.miniclaw2/outputs/<node-id>/memory-delta.json`` in the
+    project workspace. MiniClaw2 validates that artifact, copies it into the
+    snapshotted active planspace inbox, then applies only safe STATUS.md
+    observations. This keeps the provider from writing ContextSpace directly.
+    """
+
+    root = contextspace_root(store_root)
+    rel_path = memory_delta_output_relpath(node)
+    source_path = _memory_delta_artifact_path(project, node)
+
+    bundle = load_context_bundle_for_node(node, store_root=store_root)
+    if bundle is None:
+        return {
+            "applied": 0,
+            "proposed": 0,
+            "reason": (
+                "context_bundle_not_found"
+                if (node.context_bundle_id or node.context_bundle_path)
+                else "no_context_bundle"
+            ),
+            "source": "project_artifact",
+            "source_path": rel_path,
+        }
+
+    active = _memory_delta_route_from_bundle(bundle, root)
+    if active is None:
+        return {
+            "applied": 0,
+            "proposed": 0,
+            "reason": "no_active_planspace_snapshot",
+            "source": "project_artifact",
+            "source_path": rel_path,
+        }
+
+    binding_id, planspace_id, planspace_dir, auto_update = active
+    base = {
         "binding_id": binding_id,
         "planspace_id": planspace_id,
-        "delta_path": _display_path(delta_path, root),
+        "source": "project_artifact",
+        "source_path": rel_path,
     }
+    if not auto_update:
+        return {
+            "applied": 0,
+            "proposed": 0,
+            "reason": "planspace_auto_update_disabled",
+            **base,
+        }
+    if not source_path.exists():
+        return {
+            "applied": 0,
+            "proposed": 0,
+            "reason": "no_delta",
+            **base,
+        }
+
+    try:
+        delta = json.loads(source_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return {
+            "applied": 0,
+            "proposed": 0,
+            "reason": f"invalid_delta: {exc}",
+            **base,
+        }
+
+    validation_error = _validate_memory_delta_artifact(
+        delta,
+        project,
+        node,
+        binding_id=binding_id,
+        planspace_id=planspace_id,
+    )
+    if validation_error:
+        return {
+            "applied": 0,
+            "proposed": 0,
+            "reason": f"invalid_delta: {validation_error}",
+            **base,
+        }
+
+    delta_path = planspace_dir / "inbox" / f"{node.id}.memory-delta.json"
+    try:
+        delta_path.parent.mkdir(parents=True, exist_ok=True)
+        delta_path.write_text(
+            json.dumps(delta, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        return {
+            "applied": 0,
+            "proposed": 0,
+            "reason": f"inbox_write_failed: {exc}",
+            "delta_path": _display_path(delta_path, root),
+            **base,
+        }
+
+    return _apply_memory_delta_payload(
+        project,
+        node,
+        binding_id=binding_id,
+        planspace_id=planspace_id,
+        planspace_dir=planspace_dir,
+        delta_path=delta_path,
+        delta=delta,
+        context_root=root,
+        source="project_artifact",
+        source_path=rel_path,
+        copied_to_inbox=True,
+    )
+
+
+def _apply_memory_delta_payload(
+    project: Project,
+    node: Node,
+    *,
+    binding_id: str | None,
+    planspace_id: str,
+    planspace_dir: Path,
+    delta_path: Path,
+    delta: Any,
+    context_root: Path,
+    source: str,
+    source_path: str | None = None,
+    copied_to_inbox: bool = False,
+) -> dict[str, Any]:
+    applied: list[dict[str, Any]] = []
+    proposed: list[dict[str, Any]] = []
+    ignored: list[dict[str, Any]] = []
+
+    updates = delta.get("updates") if isinstance(delta, dict) else None
+    if not isinstance(updates, list):
+        return {
+            "applied": 0,
+            "proposed": 0,
+            "ignored": 0,
+            "reason": "invalid_delta: updates must be a list",
+            "binding_id": binding_id,
+            "planspace_id": planspace_id,
+            "delta_path": _display_path(delta_path, context_root),
+            "source": source,
+            **({"source_path": source_path} if source_path else {}),
+            **({"copied_to_inbox": True} if copied_to_inbox else {}),
+        }
+
+    for update in updates:
+        if not isinstance(update, dict):
+            ignored.append({"reason": "update_not_object"})
+            continue
+        if _is_auto_status_observation(update):
+            text = update.get("text")
+            assert isinstance(text, str)
+            _append_status_observation(planspace_dir / "STATUS.md", node, text)
+            applied.append(_memory_delta_update_summary(update))
+            continue
+        if _is_plan_proposal(update):
+            proposed.append(_memory_delta_update_summary(update))
+            continue
+        ignored.append(_memory_delta_update_summary(update))
+
+    event_type: str | None = None
+    if applied or proposed:
+        event_type = "memory_delta_applied" if applied else "memory_delta_recorded"
+        event: dict[str, Any] = {
+            "type": event_type,
+            "node_id": node.id,
+            "project_id": project.id,
+            "binding_id": binding_id,
+            "planspace_id": planspace_id,
+            "created_at": time.time(),
+            "terminal_state": node.state.value,
+            "acceptance_state": node.acceptance_state.value,
+            "delta_path": _display_path(delta_path, context_root),
+            "source": source,
+            "updates": applied,
+            "proposals": proposed,
+            "ignored": ignored,
+        }
+        if source_path:
+            event["source_path"] = source_path
+        if copied_to_inbox:
+            event["copied_to_inbox"] = True
+        _append_planspace_event(planspace_dir / "events.jsonl", event)
+
+    result: dict[str, Any] = {
+        "applied": len(applied),
+        "proposed": len(proposed),
+        "ignored": len(ignored),
+        "binding_id": binding_id,
+        "planspace_id": planspace_id,
+        "delta_path": _display_path(delta_path, context_root),
+        "source": source,
+    }
+    if source_path:
+        result["source_path"] = source_path
+    if copied_to_inbox:
+        result["copied_to_inbox"] = True
+    if event_type:
+        result["event_type"] = event_type
+    if not applied and not proposed:
+        result["reason"] = "no_applicable_updates"
+    return result
+
+
+def _memory_delta_artifact_path(project: Project, node: Node) -> Path:
+    return Path(project.root_path) / memory_delta_output_relpath(node)
+
+
+def _validate_memory_delta_artifact(
+    delta: Any,
+    project: Project,
+    node: Node,
+    *,
+    binding_id: str | None,
+    planspace_id: str,
+) -> str | None:
+    if not isinstance(delta, dict):
+        return "top-level value must be an object"
+    if delta.get("version") != 1:
+        return "version must be 1"
+    if delta.get("node_id") != node.id:
+        return "node_id does not match launch node"
+    if delta.get("project_id") != project.id:
+        return "project_id does not match project"
+    if binding_id is not None and delta.get("binding_id") != binding_id:
+        return "binding_id does not match launch snapshot"
+    if delta.get("planspace_id") != planspace_id:
+        return "planspace_id does not match launch snapshot"
+    updates = delta.get("updates")
+    if not isinstance(updates, list):
+        return "updates must be a list"
+    for index, update in enumerate(updates):
+        if not isinstance(update, dict):
+            return f"updates[{index}] must be an object"
+    return None
+
+
+def _is_auto_status_observation(update: dict[str, Any]) -> bool:
+    text = update.get("text")
+    return (
+        update.get("target") == "STATUS.md"
+        and update.get("operation") == "append_observation"
+        and update.get("policy") == "auto"
+        and isinstance(text, str)
+        and bool(text.strip())
+    )
+
+
+def _is_plan_proposal(update: dict[str, Any]) -> bool:
+    return update.get("target") == "PLAN.md" and update.get("policy") == "proposed"
+
+
+def _memory_delta_update_summary(update: dict[str, Any]) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for key in ("target", "operation", "policy", "confidence", "reason"):
+        value = update.get(key)
+        if isinstance(value, str) and value:
+            out[key] = value
+    payload = update.get("text")
+    if not isinstance(payload, str):
+        payload = update.get("patch")
+    if isinstance(payload, str):
+        out["chars"] = len(payload)
+    if not out:
+        out["reason"] = "unsupported_update"
+    return out
 
 
 def resolve_project_binding(project: Project, root: Path) -> ProjectBinding | None:

@@ -18,7 +18,12 @@ from .artifacts import (
     summarize_node_artifact,
     validate_node_output_path,
 )
-from .contextspace import apply_memory_delta_inbox, compose_context_bundle
+from .contextspace import (
+    apply_memory_delta_artifact,
+    compose_context_bundle,
+    memory_delta_launch_contract,
+    memory_delta_output_relpath,
+)
 from .domain import (
     AcceptanceState,
     GateKind,
@@ -126,10 +131,11 @@ class NodeRunner:
         try:
             output_contract = self._snapshot_output_contract()
             context_bundle = self._snapshot_context_bundle()
-            self._snapshot_launch_settings()
+            self._snapshot_launch_settings(context_bundle)
             launch_instructions = _compose_launch_instructions(
                 context_bundle.turn_text,
                 output_contract,
+                memory_delta_launch_contract(self.project, self.node, context_bundle),
             )
             self._transition(NodeState.RUNNING, started=True)
             await self._emit(
@@ -181,7 +187,7 @@ class NodeRunner:
                     self.node.error = error_msg
                 self.node.commit_after = git_head(self.project.root_path)
                 self._transition(final_state, finished=True)
-                self._apply_memory_delta_inbox()
+                self._apply_memory_delta_artifact()
                 await self._emit_node_updated()
                 await self._emit(TurnDone())
         except asyncio.CancelledError:
@@ -192,7 +198,7 @@ class NodeRunner:
             self.node.error = error_msg
             self.node.commit_after = git_head(self.project.root_path)
             self._transition(NodeState.ERROR, started=True, finished=True)
-            self._apply_memory_delta_inbox()
+            self._apply_memory_delta_artifact()
             await self._emit(
                 NodeStarted(
                     node_id=self.node.id,
@@ -212,8 +218,8 @@ class NodeRunner:
         prepared by the previous agent step via ``output_kind=review_brief``).
         """
         self.node.commit_before = git_head(self.project.root_path)
-        self._snapshot_context_bundle()
-        self._snapshot_launch_settings()
+        context_bundle = self._snapshot_context_bundle()
+        self._snapshot_launch_settings(context_bundle)
         self._transition(NodeState.RUNNING, started=True)
         await self._emit(
             NodeStarted(
@@ -243,15 +249,15 @@ class NodeRunner:
                 self.node.error = error_msg
             self.node.commit_after = git_head(self.project.root_path)
             self._transition(final_state, finished=True)
-            self._apply_memory_delta_inbox()
+            self._apply_memory_delta_artifact()
             await self._emit_node_updated()
             await self._emit(TurnDone())
 
     async def _run_op(self) -> None:
         """Run a non-provider op node (currently only ``commit``)."""
         self.node.commit_before = git_head(self.project.root_path)
-        self._snapshot_context_bundle()
-        self._snapshot_launch_settings()
+        context_bundle = self._snapshot_context_bundle()
+        self._snapshot_launch_settings(context_bundle)
         self._transition(NodeState.RUNNING, started=True)
         await self._emit(
             NodeStarted(
@@ -294,7 +300,7 @@ class NodeRunner:
             if self.node.commit_after is None:
                 self.node.commit_after = git_head(self.project.root_path)
             self._transition(final_state, finished=True)
-            self._apply_memory_delta_inbox()
+            self._apply_memory_delta_artifact()
             await self._emit_node_updated()
             await self._emit(TurnDone())
 
@@ -321,15 +327,34 @@ class NodeRunner:
         self.store.update_node(self.node)
         return bundle
 
-    def _snapshot_launch_settings(self) -> None:
+    def _snapshot_launch_settings(self, context_bundle: Any | None = None) -> None:
         snapshot: dict[str, Any] = dict(self.project.settings_override)
         snapshot["cwd"] = self.project.root_path
         snapshot["provider"] = self.node.provider or self.project.provider
         snapshot["output_kind"] = self.node.output_kind.value
         if self.node.output_path:
             snapshot["output_path"] = self.node.output_path
-        if self.project.project_context_binding_id:
-            snapshot["project_context_binding_id"] = self.project.project_context_binding_id
+        project_binding_id = (
+            getattr(context_bundle, "project_binding_id", None)
+            if context_bundle is not None
+            else self.project.project_context_binding_id
+        )
+        active_planspace_id = (
+            getattr(context_bundle, "active_planspace_id", None)
+            if context_bundle is not None
+            else None
+        )
+        active_planspace_auto_update = (
+            bool(getattr(context_bundle, "active_planspace_auto_update", False))
+            if context_bundle is not None
+            else False
+        )
+        if project_binding_id:
+            snapshot["project_context_binding_id"] = project_binding_id
+        if active_planspace_id:
+            snapshot["active_planspace_id"] = active_planspace_id
+        if active_planspace_id and active_planspace_auto_update:
+            snapshot["memory_delta_output_path"] = memory_delta_output_relpath(self.node)
         if self.node.context_bundle_id:
             snapshot["context_bundle_id"] = self.node.context_bundle_id
         self.node.settings_snapshot = snapshot
@@ -370,9 +395,9 @@ class NodeRunner:
             self.node.summary = summary
         self.store.update_node(self.node)
 
-    def _apply_memory_delta_inbox(self) -> None:
+    def _apply_memory_delta_artifact(self) -> None:
         try:
-            result = apply_memory_delta_inbox(
+            result = apply_memory_delta_artifact(
                 self.project,
                 self.node,
                 store_root=self.store.root,
@@ -380,7 +405,7 @@ class NodeRunner:
         except Exception:  # noqa: BLE001
             logger.exception("failed to apply ContextSpace memory delta")
             return
-        if result.get("applied"):
+        if result.get("planspace_id"):
             snapshot = dict(self.node.settings_snapshot)
             snapshot["memory_delta"] = result
             self.node.settings_snapshot = snapshot
@@ -671,10 +696,10 @@ def _review_outcome_from_payload(decision: Any, payload: dict[str, Any]) -> str 
     return "approved"
 
 
-def _compose_launch_instructions(turn_context: str, output_contract: str) -> str:
+def _compose_launch_instructions(*parts: str) -> str:
     parts = [
         part.strip()
-        for part in (turn_context, output_contract)
+        for part in parts
         if part and part.strip()
     ]
     return "\n\n---\n\n".join(parts)

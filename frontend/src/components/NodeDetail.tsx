@@ -616,6 +616,7 @@ function SettingsView({
   const snapshot = node.settings_snapshot ?? {};
   const entries = Object.entries(snapshot);
   const known = new Map(entries);
+  const memoryDelta = asRecord(known.get("memory_delta"));
   const knownRows: Array<[string, string]> = [
     ["Provider", String(known.get("provider") ?? node.provider)],
     ["Model", String(known.get("model") ?? "(default)")],
@@ -627,7 +628,15 @@ function SettingsView({
     ],
   ];
   const extras = entries.filter(
-    ([key]) => !["provider", "model", "model_provider", "cwd", "auto_commit"].includes(key),
+    ([key]) =>
+      ![
+        "provider",
+        "model",
+        "model_provider",
+        "cwd",
+        "auto_commit",
+        "memory_delta",
+      ].includes(key),
   );
   const isSnapshotEmpty = entries.length === 0;
 
@@ -666,6 +675,8 @@ function SettingsView({
           </dl>
         </section>
       )}
+
+      {memoryDelta && <MemoryDeltaResult result={memoryDelta} />}
 
       <section className="mt-5">
         <h3 className="mb-2 text-[10px] font-medium uppercase tracking-[0.14em] text-ink-subtle">
@@ -727,6 +738,55 @@ function SettingsView({
       </section>
     </div>
   );
+}
+
+function MemoryDeltaResult({ result }: { result: Record<string, unknown> }) {
+  const rows: Array<[string, string]> = [
+    ["Result", formatMemoryDeltaResult(result)],
+    ["Planspace", valueString(result.planspace_id) || "(none)"],
+    ["Binding", valueString(result.binding_id) || "(none)"],
+    ["Source", valueString(result.source) || "(unknown)"],
+    ["Source path", valueString(result.source_path) || "(none)"],
+    ["Inbox path", valueString(result.delta_path) || "(none)"],
+    ["Event", valueString(result.event_type) || "(none)"],
+  ];
+
+  return (
+    <section className="mt-5">
+      <h3 className="mb-2 text-[10px] font-medium uppercase tracking-[0.14em] text-ink-subtle">
+        Memory delta
+      </h3>
+      <dl className="grid grid-cols-[140px_1fr] gap-x-3 gap-y-2 text-xs">
+        {rows.map(([label, value]) => (
+          <KeyValueRow key={label} label={label} value={value} />
+        ))}
+      </dl>
+    </section>
+  );
+}
+
+function formatMemoryDeltaResult(result: Record<string, unknown>): string {
+  const applied = numberString(result.applied);
+  const proposed = numberString(result.proposed);
+  const ignored = numberString(result.ignored);
+  const reason = valueString(result.reason);
+  const counts = [`applied ${applied}`, `proposed ${proposed}`, `ignored ${ignored}`];
+  return reason ? `${counts.join(", ")} (${reason})` : counts.join(", ");
+}
+
+function numberString(value: unknown): string {
+  return typeof value === "number" && Number.isFinite(value) ? String(value) : "0";
+}
+
+function valueString(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  return "";
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  return value as Record<string, unknown>;
 }
 
 function ContextBundleSources({ bundle }: { bundle: ContextBundle }) {

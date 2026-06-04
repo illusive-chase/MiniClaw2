@@ -483,9 +483,29 @@ Notes:
 
 - A permission gate may appear if the provider writes the summary
   artifact through a shell command. Approve it; this is expected.
-- The planspace `events.jsonl` can remain empty in this case. This
-  flow does not require a `memory-delta.json`, so it does not test
-  automatic `STATUS.md` writeback.
+
+Memory delta writeback extension:
+
+1. Launch a second node in the same session with this prompt:
+
+   ```text
+   Create a ContextSpace memory delta artifact for this completed node. Add a STATUS.md append_observation with policy auto whose text contains contextspace-memory-delta-manual-ok. Also include one PLAN.md propose_patch update with policy proposed whose patch contains do-not-apply-plan-proposal. Do not edit ContextSpace files directly.
+   ```
+
+2. After the node reaches `done`, verify:
+   - the workspace contains
+     `/private/tmp/miniclaw2-contextspace-test/workspace/.miniclaw2/outputs/<node-id>/memory-delta.json`;
+   - ContextSpace contains the copied inbox file
+     `plugs/planspaces/manual-contextspace-track/inbox/<node-id>.memory-delta.json`;
+   - `plugs/planspaces/manual-contextspace-track/STATUS.md` contains
+     `contextspace-memory-delta-manual-ok`, `node <node-id>`, and
+     `acceptance_state: unreviewed`;
+   - `plugs/planspaces/manual-contextspace-track/PLAN.md` does not contain
+     `do-not-apply-plan-proposal`;
+   - `plugs/planspaces/manual-contextspace-track/events.jsonl` contains
+     `memory_delta_applied` and records one proposal;
+   - Node detail -> Settings -> Memory delta shows `applied 1` and
+     `proposed 1`, with source `project_artifact`.
 
 ## 7. Out of scope for v1
 
