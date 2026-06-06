@@ -4,7 +4,7 @@ This document supersedes `PROPOSAL.md` (which remains as a punch list of
 CLI-parity gaps in the current wrapper). It captures the architecture we
 are converging toward over the next several phases.
 
-> **Status (Phase 0 spine + Phase 1 graph shell + Phase 2 op/gate landed).** The spine is in.
+> **Status (Phase 0 spine + graph UI first slice + Phase 2 op/gate landed).** The spine is in.
 > Domain model (`Project`, `Node`, `HumanGate`) persists to disk as
 > JSON + JSONL under `$MINICLAW_HOME` (default `~/.miniclaw2`); SQLite
 > from §9 is **deferred** in favor of JSON/JSONL while the schema is
@@ -22,11 +22,19 @@ are converging toward over the next several phases.
 > (`react-markdown` + GFM + `highlight.js`), and WebSocket reconnect
 > replay (`node_started` server event + `replay_request` client
 > envelope, consuming the per-node JSONL log and re-attaching the new
-> socket to live project events). The first graph-shell pass is also in:
-> a single-project horizontal timeline, selected-node side panel, and
-> read-only node/event/diff REST APIs, with explicit `node_updated`
-> events for live tile/panel state. Per-token streaming remains
-> deferred until the pinned `claude-agent-sdk` exposes partial messages.
+> socket to live project events). The original graph-shell pass added
+> read-only node/event/diff REST APIs and explicit `node_updated`
+> events; the current frontend consumes those through the React Flow
+> canvas described below. Per-token streaming remains deferred until the
+> pinned `claude-agent-sdk` exposes partial messages.
+> The first implementation slice of `UI_REDESIGN_PRD.md` has since
+> replaced the old tabbed project view: the frontend now uses a React
+> Flow canvas with project root, agent, gate, op, artifact, context, and
+> phantom-composer nodes; a polymorphic `SidePanel`; context/artifact
+> graph nodes; a projects landing page; and a Tests modal. Some PRD
+> polish is still pending: op nodes have not collapsed into edge
+> chevrons, and inline gates render in the selected agent panel rather
+> than expanding the tile directly on the canvas.
 >
 > **Phase 2 first slice — provider-neutral `CONTEXT.md`.** A
 > `<project_root>/CONTEXT.md` file is loaded at each node launch and
@@ -49,26 +57,24 @@ are converging toward over the next several phases.
 > two-commit diff. Op tiles render narrower in the timeline; the
 > selection does not jump to op nodes (`node_started.kind` distinguishes
 > them). `gate` nodes carry a markdown contract; the agent runs to
-> completion, the node enters `awaiting_review`, and the `NodeDetail`
-> side panel grows a `Review` tab with the contract + a
+> completion, the node enters `awaiting_review`, and the side panel
+> renders the contract / response flow with a
 > write-json / no-op response form. Write-json rejects absolute paths
 > and parent traversal, loops on write errors so the user can retry
 > without restarting the node. Vendor-specific on-disk context remains
 > deferred.
 >
 > **Phase 1/2 polish sweep.** Three follow-up items landed together:
-> (1) inline gates moved off the chat composer into a unified `gate`
-> tab on `NodeDetail` (subsumes the old `Review` tab; auto-switches
-> when a request arrives; an amber banner surfaces requests for nodes
-> that aren't currently selected). (2) A read-only `Settings` tab on
-> `NodeDetail` backed by a new `Node.settings_snapshot` field that
+> (1) inline gates moved off the chat composer and into the selected
+> agent/gate inspector surface (the legacy dynamic `gate` tab was later
+> replaced by the PRD side panel; an amber banner still surfaces
+> requests for nodes that aren't currently selected). (2) Launch
+> settings are snapshotted on `Node.settings_snapshot`; the current UI
+> shows them in the `Inspect` disclosure rather than a peer tab.
 > `NodeRunner` populates at start with `project.settings_override +
-> cwd + provider`. (3) Resume-edge connectors: `ProjectTimeline`
-> overlays an SVG bezier from each parent agent/gate tile to its
-> resume child, with a `↻ {id}` badge on resumed tiles for when the
-> parent is off-screen. Op-parent edges (auto-append commit) are
-> skipped so the line on the timeline always means "conversation
-> continuation."
+> cwd + provider`. (3) Resume edges are materialized in the React Flow
+> graph and resumed agent tiles show `↻` continuation context. Op-parent
+> edges (auto-append commit) are not treated as conversation resumes.
 >
 > **Gate redesign — passive checkpoint (Phase 2 follow-up).** The
 > `gate` node kind is now a **pure human checkpoint with no agent
@@ -85,17 +91,17 @@ are converging toward over the next several phases.
 > **Gate handoff unified — no user-launched gate button (follow-up).**
 > The `+ Gate` button and `GateLaunchModal` were removed: users never
 > author a brief by hand. To request a review checkpoint, the user
-> picks `review` as the Output contract on the agent's launch modal;
-> this sets the node's `output_kind = review_brief`, the agent writes
-> `brief.md` per the contract, and `ProjectRegistry._advance_user_gate`
-> (called from `_on_runner_done` alongside the scenario expander)
-> auto-spawns a passive gate whose contract is that brief. With
-> `auto_commit` on, the spawn routes through the commit op's
-> `parent_node_id` so the gate fires after the commit lands. The
-> `StartGateNode` wire envelope was removed; `start_gate_node` remains
-> as an internal API for scenarios and the user-gate auto-spawn (now
-> accepts `parent_node_id`). Double-spawn is guarded by checking for
-> an existing `GATE` child of the source.
+> chooses the phantom composer's **Hand off for review** intent, which
+> sends `output_kind = review_brief`; the agent writes `brief.md` per
+> the contract, and `ProjectRegistry._advance_user_gate` (called from
+> `_on_runner_done` alongside the scenario expander) auto-spawns a
+> passive gate whose contract is that brief. With `auto_commit` on, the
+> spawn routes through the commit op's `parent_node_id` so the gate
+> fires after the commit lands. The `StartGateNode` wire envelope was
+> removed; `start_gate_node` remains as an internal API for scenarios
+> and the user-gate auto-spawn (now accepts `parent_node_id`). Double-
+> spawn is guarded by checking for an existing `GATE` child of the
+> source.
 >
 > **Multi-step scenario expander.** `ProjectRegistry` grew an
 > `_advance_scenario_step` method called from `_on_runner_done` after
@@ -169,7 +175,7 @@ Three primary objects. Everything else is a view over these.
 Every node has:
 
 - `id`, `project_id`, `kind ∈ {agent, gate, op}`
-- `state ∈ {queued, running, waiting, awaiting-review, done, error, cancelled}`
+- `state ∈ {queued, running, waiting, awaiting_review, done, error, cancelled}`
 - `parent_node_id?` — for explicit **resume** edges (provider conversation continuation)
 - `context_sources: [node_id]` — for **context** edges (acausal config carryover)
 - `provider` — `claude` or `codex`
@@ -177,14 +183,21 @@ Every node has:
 - `provider_turn_id?` — provider-native turn id when available
 - `sdk_session_id?` — legacy alias for old Claude records
 - `commit_before?`, `commit_after?` — repo state at start / finish
-- `output_kind ∈ {freeform, summary, interface}` — the node result
-  contract. `summary` asks the agent to write markdown, `interface`
-  asks it to write JSON, and `freeform` preserves the transcript-first
-  behavior for exploratory work.
+- `output_kind ∈ {freeform, summary, interface, review_brief}` — the
+  node result contract. `summary` asks the agent to write markdown,
+  `interface` asks it to write JSON, `review_brief` asks it to write
+  a markdown brief for a follow-up passive gate, and `freeform`
+  preserves the transcript-first behavior for exploratory work.
 - `output_path?`, `output_contract_snapshot` — project-relative
   artifact path and the exact launch-time instructions injected into
   the provider turn.
 - `summary` — short one-liner generated post-completion
+- `context_bundle_id?`, `context_bundle_path?`, `context_sources[]` —
+  ContextSpace / `CONTEXT.md` snapshot metadata for audit.
+- `acceptance_state`, `verdict_source`, `verdict_artifact_path?`,
+  `verdict_thread_id?`, `accepted_at?`, `rejected_at?` — the current
+  done-vs-accepted slice. Passive gate write-json responses stamp
+  these fields on the upstream source node.
 - `created_at`, `started_at`, `finished_at`
 
 ### 2.2 Project — a workspace = (folder + ordered nodes)
@@ -213,11 +226,10 @@ intra-project parallelism. This keeps FS state coherent.
 ```
 ┌────────────────────────────────────────────────────────────┐
 │ agent   │ A provider-backed session. Inline gates allowed. │
-│ gate    │ An agent + a post-completion markdown contract. │
-│         │ After session ends, node enters awaiting-review │
-│         │ until user resolves.                            │
-│ op      │ Non-agent state operation: commit, fork-project.│
-│         │ Fast, atomic, no SDK. Always immediate.         │
+│ gate    │ Passive human checkpoint with a markdown brief.  │
+│         │ No provider call; awaits write-json / no-op.     │
+│ op      │ Non-agent state operation: commit, fork-project. │
+│         │ Fast, atomic, no SDK. Always immediate.          │
 └────────────────────────────────────────────────────────────┘
 ```
 
@@ -244,6 +256,11 @@ Agent nodes may also carry an **output contract**:
   at `.miniclaw2/outputs/<node-id>/result.json` by default, with stable
   keys including `kind`, `summary`, `purpose`, `method`, `result`, and
   `files`.
+- `review_brief` — the runner injects instructions requiring a markdown
+  brief at `.miniclaw2/outputs/<node-id>/brief.md` by default, with
+  `# How to run`, `# What to verify`, and `# Response schema`
+  sections. Completion of this agent auto-spawns a passive gate unless
+  a scenario step consumes the brief.
 
 The side panel treats the configured artifact as the primary dashboard
 result when `output_kind != freeform`; transcript/diff/events remain
@@ -287,7 +304,7 @@ Lifecycle:
      alongside `_advance_scenario_step` from `_on_runner_done`) auto-
      spawns the gate when the agent reaches `done`. Users never write
      the brief by hand — the agent that just built the artifact does.
-2. The gate node enters `awaiting-review` immediately — `NodeRunner`
+2. The gate node enters `awaiting_review` immediately — `NodeRunner`
    short-circuits in `_run_passive_gate` and skips the provider
    entirely.
 3. The frontend renders the brief verbatim in the `gate` tab next to a
@@ -343,12 +360,12 @@ queued ─► running ─► waiting ──── ┘
             │
             │   agent kind ─► done | error | cancelled
             │
-            └── gate kind ──► awaiting-review ─► done
+            └── gate kind ──► awaiting_review ─► done
 ```
 
 - `waiting` is a substate of an `agent`/`gate` node *during* its
   session. A node may oscillate `running ↔ waiting` many times.
-- `awaiting-review` only exists on `gate` nodes after the session ends.
+- `awaiting_review` only exists on `gate` nodes after the session ends.
 - `op` nodes skip everything and go `queued → running → done|error`.
 
 ## 5. Project / FS model
@@ -374,7 +391,7 @@ you":
 | Provider call | Inside an agent node's session | None — the gate has no provider call |
 | When declared | Implicit (agent calls `AskUserQuestion`/etc.) | Explicit at node launch, with a brief |
 | When fires | Mid-session | Immediately when the gate node starts |
-| Node state | `waiting` (substate during running) | `awaiting-review` (terminal-but-blocking) |
+| Node state | `waiting` (substate during running) | `awaiting_review` (terminal-but-blocking) |
 | Continuation | Resolving resumes the same session | Resolving does not wake any agent; user spawns a follow-up node manually if needed |
 | UI signal | Pulsing animation on a running node | Solid color on a finished node |
 
@@ -559,20 +576,20 @@ default safely for existing on-disk records.
 
 ### 7.8 UI surface (composer)
 
-Above the existing chat textarea: a `Template: ▾` picker. Default
-"None (free text)" — the composer behaves identically to today and
-existing chat users never see the template surface.
+In the current graph UI this would attach to the canvas phantom
+composer, not to a docked chat textarea. Default "None (free text)" —
+the phantom behaves like today's free-run composer.
 
 Selecting a template:
 
 - reveals a slot form populated from the template's `slots` section
-- keeps the textarea visible as an optional "additional notes" field,
+- keeps the phantom text area visible as an optional "additional notes" field,
   appended to the first step's prompt at launch
 - changes the Send button to **Launch template**, which atomically
   creates the `TemplateInstance` and the first step's `Node`
 
 While a template is running, the project header shows the active
-template name and a **Leave template** button; the timeline renders
+template name and a **Leave template** button; the canvas renders
 ghost tiles for the reachable upcoming steps.
 
 ### 7.9 Explicitly out of scope for v1
@@ -589,26 +606,40 @@ first risks warping the format to fit speculative needs.
 
 ## 8. Visual model
 
-- **Workspace** = stacked vertical lanes, one per project.
-- Each lane is a horizontal timeline, left → right by `started_at`.
-- Nodes are tiles in their lane:
-  - `agent` / `gate` / `op` shapes differ
-  - color by state: queued grey, running blue, waiting/awaiting-review
-    green, done slate, error red, cancelled muted
-- Edges:
-  - **timeline**: implicit adjacency within a lane (no curve drawn,
-    just spatial)
-  - **resume**: a connector between two nodes (thicker timeline edge)
-  - **context**: curve between lanes (cross-project)
-  - **fork**: a new lane branching off a node's right edge
-- Clicking a node opens a side panel:
-  - default tab: **artifact summary + open gates** (matches "hide detail")
-  - other tabs: transcript, activities/tools, snapshot diff, settings
+The current frontend implements the first slice of the graph model with
+React Flow:
+
+- **Projects landing** lists persisted projects and exposes the Tests
+  modal. Opening a project enters a single-project canvas.
+- **Canvas** contains a project-root node, a left-to-right run timeline,
+  artifact nodes, context-source nodes, gate nodes, op nodes, and a
+  dashed phantom-composer node.
+- **Shapes encode kind**: agent tiles, gate hexagons, op tiles, document
+  artifact cards, layered context cards, a project-root anchor, and a
+  phantom composer.
+- **Color encodes state**: queued, running, waiting / awaiting review,
+  done, error, and cancelled use the shared `state-*` tokens.
+- **Edges are explicit**:
+  - **timeline**: filesystem/project ordering
+  - **resume**: provider conversation continuation
+  - **produces**: agent/gate produced an artifact
+  - **reviews**: a gate reviews an upstream brief artifact
+  - **loads**: an agent loaded a context source; loads edges are hidden
+    unless an endpoint is selected/hovered
+- **Selection drives inspection** through a polymorphic `SidePanel`.
+  Agents show Result / Activity / Pending / Inspect; gates show the
+  write-json / no-op response form; artifacts show rendered file
+  content; context nodes show source metadata; ops show commit
+  transition and diff; the project-root panel shows project settings
+  and ContextSpace activation.
+
+Multi-project lanes, fork visualization, op-as-edge-chevron, and
+template ghost-step rendering remain future phases / PRD polish.
 
 ## 9. Persistence sketch
 
 > Phase 0 chose **JSON + JSONL only**. SQLite is deferred until
-> cross-project queries (e.g. "list all nodes in `awaiting-review`")
+> cross-project queries (e.g. "list all nodes in `awaiting_review`")
 > actually become hot — likely in Phase 4.
 
 Filesystem layout under `$MINICLAW_HOME` (default `~/.miniclaw2/`,
@@ -621,6 +652,18 @@ projects/<pid>/
     node.json                 # full Node model, rewritten on each state transition
     events.jsonl              # {seq, event} per line, append-only
     gates.jsonl               # {action: "created"|"resolved", gate} per line
+
+contextspace/
+  contextspace.yaml
+  bindings/projects/<binding-id>.yaml
+  plugs/planspaces/<slug>/
+    manifest.yaml
+    STATUS.md
+    PLAN.md
+    SKILLS.md
+    events.jsonl
+    inbox/<node-id>.memory-delta.json
+  snapshots/<bundle-id>.json
 ```
 
 - Atomic writes for the JSON files via tmp + rename. Single-writer per
@@ -628,10 +671,10 @@ projects/<pid>/
   sequentially (§2.2).
 - Future SQLite migration is a flat translation: each JSON file becomes
   one row, each JSONL line one row of an append-only event table.
-- WebSocket reconnect strategy (Phase 1 work): client sends
-  `(node_id, last_seq)`; backend replays from `events.jsonl` since
-  `last_seq` then attaches to the live stream. The JSONL is already
-  written in Phase 0; only the replay endpoint is missing.
+- WebSocket reconnect strategy: client sends `(node_id, last_seq)`;
+  backend replays from `events.jsonl` since `last_seq` then attaches
+  to the live stream. This path is implemented in `app.py` /
+  `replay.py`.
 
 ## 10. Phased plan
 
@@ -699,43 +742,36 @@ timeline UI's side panel can render real content from day one:
 - [ ] **Per-token streaming** — deferred until the pinned
   `claude-agent-sdk` exposes partial messages. Codex already streams
   per-delta.
-- [✓] **Initial horizontal timeline + side panel.** A single project now
-  renders as a horizontal node timeline. Clicking a node opens a detail
-  side panel with prompt metadata, transcript/tool/thinking rendering,
-  repo diff rendering, and raw JSONL event inspection via read-only REST
-  APIs. `node_updated` events keep node tiles and metadata live without
-  relying only on REST refreshes.
+- [✓] **Graph canvas + polymorphic side panel.** A single project now
+  renders as a React Flow canvas. Clicking a graph item opens a
+  kind-specific side panel with result/activity/pending/Inspect views
+  for agents, response forms for gates, artifact content, context
+  source metadata, op diffs, or project settings. `node_updated` events
+  keep graph nodes and metadata live without relying only on REST
+  refreshes.
 
 Still to do for this phase:
 
-- [✓] **Inline gates render in the side panel.** Permission / ask-user /
-  plan-approval requests no longer render under the chat composer; they
-  consolidate into a single dynamic `gate` tab on `NodeDetail` that
-  also subsumes the previous `Review` tab for checkpoint contracts.
-  Tab label switches per request type (permission / ask / plan /
-  review). When an inline gate arrives, the timeline auto-selects the
-  owning node and the side panel auto-switches to `gate`; if the user
-  is parked on a different node, a small amber banner above the chat
-  composer surfaces "Node X is awaiting your response" with a
-  click-through. Node tiles already pulse for `waiting` /
-  `awaiting_review` via existing `stateDot`.
-- [✓] **Settings tab in the node detail panel.** Read-only tab on
-  `NodeDetail` that displays the launch-time settings snapshot. New
-  field `Node.settings_snapshot: dict[str, Any]` is populated by
-  `NodeRunner` at runner start with `project.settings_override + cwd +
-  provider` (same pattern as `system_context_snapshot`). The tab
-  renders provider / model / model-provider / cwd / auto-commit as
-  known rows, surfaces any extra snapshot keys, and shows a Context
-  section with `system_context_snapshot` size and `context_sources`.
-  Old on-disk nodes (without the field) load fine via the Pydantic
-  default.
-- [✓] **Richer agent node launch controls beyond the chat composer.**
-  Agent-node launch is driven by a dedicated `+ Node` button in the
-  header that opens `NodeLaunchModal` (prompt + resume-source + output
-  contract). The Output contract dropdown includes `review`, which
-  sets `output_kind: review_brief` on the agent and triggers an
-  automatic follow-up passive gate node (see §3.2). There is no
-  user-launched gate button — users never author a brief by hand.
+- [✓] **Inline gates render in the inspector surface.** Permission /
+  ask-user / plan-approval requests no longer render under a chat
+  composer. In the current UI they appear as a pending-response block
+  at the top of `AgentPanel`; checkpoint review gates use `GatePanel`.
+  When a request arrives, the graph selects the owning node. If the
+  user is inspecting a different node, an amber canvas banner surfaces
+  "Node X is awaiting your response" with a click-through.
+- [✓] **Launch settings snapshot.** `Node.settings_snapshot:
+  dict[str, Any]` is populated by `NodeRunner` at runner start with
+  `project.settings_override + cwd + provider + output_kind` plus
+  ContextSpace bundle ids when present. The current UI renders it in
+  the agent `Inspect` disclosure. Old on-disk nodes (without the
+  field) load fine via the Pydantic default.
+- [✓] **Richer agent node launch controls beyond a chat composer.**
+  Agent-node launch is driven by the canvas `PhantomNode` composer.
+  Intent chips map to `freeform`, `summary`, `review_brief`, and
+  `interface`; **Hand off for review** sends
+  `output_kind: review_brief` and triggers an automatic follow-up
+  passive gate node (see §3.2). There is no user-launched gate button
+  — users never author a brief by hand.
 - [✓] **Tighter per-node snapshot diffs.** When `auto_commit` is on
   for a project, the commit-op rewrites the preceding agent/gate
   node's `commit_after` so `git_state.node_diff` returns a real
@@ -749,7 +785,7 @@ Still to do for this phase:
   entered `awaiting_review`. As of the gate-redesign follow-up the
   node is **purely passive**: `NodeRunner._run_passive_gate` skips
   the provider entirely, enters `awaiting_review` immediately, and
-  renders a brief in the `gate` tab on `NodeDetail`. Write-json /
+  renders a brief/response form in the side panel. Write-json /
   no-op resolution still validates project-relative paths (rejects
   absolute / `..`) and loops on write errors so the user can fix the
   path without restarting the node. `InteractionRequest.interaction_type
@@ -768,17 +804,12 @@ Still to do for this phase:
   new commit hash and a `node_updated` event is broadcast for that
   node. `NodeStarted.kind` distinguishes op-node events so the
   frontend doesn't jump the selection to the op tile.
-- [✓] **Resume edges.** A `Resume` button in the `NodeDetail` header
-  on a terminal agent/gate node with a provider session sets the next
-  launch's `resume_from_node_id`; the chat composer shows a
-  "Resuming from node X" banner with a Clear button. The new node
-  inherits the parent's `provider_session_id` / `sdk_session_id` and
-  starts the SDK/app-server in resume mode. The timeline now overlays
-  an SVG layer drawing a dashed bezier from each parent agent/gate
-  tile to its resume child, plus a small `↻ {id}` badge on the resumed
-  tile so the relationship stays visible when the parent has scrolled
-  off-screen. Op auto-append parents are explicitly skipped from edge
-  drawing (those are not resumes). Ordinary launches without an
+- [✓] **Resume edges.** A terminal agent with a provider session can
+  spawn a follow-up phantom composer. The new node inherits the
+  parent's `provider_session_id` / `sdk_session_id` and starts the
+  SDK/app-server in resume mode. The React Flow graph renders resume
+  edges distinctly from ordinary timeline/op edges, and resumed agent
+  surfaces show `↻` continuation context. Ordinary launches without an
   explicit resume source still start fresh.
 - [✓] **Provider-neutral `CONTEXT.md`.** `<project_root>/CONTEXT.md` is
   loaded at each node launch by `backend/miniclaw2/context.py`; injected
@@ -810,13 +841,13 @@ templates.
   carrying the YAML snapshot, slot values, and step history.
 - **Node schema bump.** Add `created_by` and `template_step_id` to
   `Node`. Existing on-disk records default to `"user"` / `None`.
-- **Composer UI.** A `Template: ▾` picker above the chat textarea;
-  selecting a template reveals a slot form; the Send button becomes
-  Launch template. New WS envelope `start_template_run {name,
+- **Composer UI.** A `Template: ▾` picker attached to the phantom
+  composer; selecting a template reveals a slot form; the Launch button
+  starts the template. New WS envelope `start_template_run {name,
   slot_values, notes}` triggers launch.
-- **Ghost-node rendering** in `ProjectTimeline.tsx` — derive
-  upcoming-step tiles from the active `TemplateInstance` and the
-  reachable `on_state` branches.
+- **Ghost-node rendering** in `frontend/src/canvas/layout.ts` /
+  `Canvas.tsx` — derive upcoming-step tiles from the active
+  `TemplateInstance` and the reachable `on_state` branches.
 - **One bundled template:** `gui-build` (build → review → fix →
   snapshot). Bundled `gui-review.md` contract under
   `backend/miniclaw2/templates/bundled/contracts/`.

@@ -49,10 +49,13 @@ npm install        # 首次需要
 npm run dev        # 默认 http://127.0.0.1:5173
 ```
 
-浏览器打开前端地址，你会看到顶部右侧有 `Claude/Codex` 选择器、`+ Node` 按钮、
-以及 `Chat | Tests` 两个标签。Gate 节点不再由用户直接创建——在 `+ Node` 弹窗里
-把 Output contract 选为 `review` 即可让 agent 写 brief，agent 完成后系统会自动
-追加一个 passive gate 节点。
+浏览器打开前端地址后会先进入 **Projects** 页面。这里可以打开已有 project、
+创建新 project，或点击 **Tests** 打开内置场景弹窗。进入某个 project 后，主区域
+是 React Flow 画布：project root、agent、gate、op、artifact、context 都是图上的
+节点；右侧是随选择变化的 side panel。发起新任务不再通过 `+ Node` 弹窗，而是在
+画布上打开虚线的 phantom composer：空白画布点击可新开任务，选中/双击已有 agent
+可开 follow-up；意图 chip 里的 **Hand off for review** 会让 agent 写 brief，完成后
+系统自动追加 passive gate 节点。
 
 ### 0.3 关于 provider 的说明
 
@@ -64,7 +67,7 @@ npm run dev        # 默认 http://127.0.0.1:5173
 
 ## 1. 打开测试面板
 
-1. 在顶部 header 点击 **Tests** 标签。
+1. 在 **Projects** 页面点击右上角 **Tests** 按钮。
 2. 你应该看到十行场景（按从简单到复杂的顺序）：`hello-text`、`bash-uname`、
    `write-readme`、`permission-approve`、`plan-mode-approval`、
    `interrupt-midstream`、`context-md-respected`、`resume-fix-after-reject`、
@@ -75,7 +78,7 @@ npm run dev        # 默认 http://127.0.0.1:5173
    - 后端创建一个临时 git workspace（`/var/folders/.../miniclaw2-tmp-xxxx/`）；
    - 用 `temporary=true` 创建一个 Project，绑定 `scenario_name`；
    - 启动场景的第一个节点；
-   - 前端切回 **Chat** 视图，时间线上会出现一个正在运行的节点。
+   - 前端打开该 project 的画布，图上会出现一个正在运行的 agent 节点。
 
 > 💡 临时 workspace 是个一般化的特性，不只测试用。删除这个 session（DELETE
 > /sessions/{sid}）时，workspace 目录会被一并清理。
@@ -92,7 +95,7 @@ npm run dev        # 默认 http://127.0.0.1:5173
 ### 2.2 操作步骤
 
 1. 在 Tests 面板，点击 `hello-text` 那一行的 `Run · claude`。
-2. 等 1–5 秒，时间线上出现一个 agent 节点；右侧细节面板里逐渐出现 assistant
+2. 等 1–5 秒，画布时间线上出现一个 agent 节点；右侧 AgentPanel 里逐渐出现 assistant
    回复（markdown 渲染）。
 3. 节点进入 `done` 状态后，主聊天列下方会出现 **Verify** 卡片。
 
@@ -180,12 +183,14 @@ Edit / Write 工具链路：工具能否真的把内容落到文件，节点 dif
 ### 4.2 操作步骤
 
 1. Tests 面板 → `write-readme` → `Run · claude`。
-2. 时间线出现 agent 节点；右侧面板里能看到一个 Edit / Write 工具调用。
-3. 节点进入 `done` 后，切到右侧细节面板的 **Diff** 区域。
+2. 画布上出现 agent 节点；右侧 AgentPanel 的 Activity 区域里能看到 Edit /
+   Write 相关工具调用（provider 提供 diff 时会在工具输出里显示）。
+3. 节点进入 `done` 后，运行 Verify；如果需要人工复核文件内容，可以查看工具输出
+   或到该临时 workspace 根目录确认 `README.md`。
 
 ### 4.3 预期观察到什么
 
-- 节点 diff 显示新增一个文件 `README.md`，内容恰好是 `# scratch`（加换行符）。
+- `README.md` 被新增，内容恰好是 `# scratch`（加换行符）。
 - 没有别的文件被创建（不应该出现 `.gitignore`、`notes.md`、`README.md.bak` 之类）。
 - assistant 末尾用一句话确认它写好了文件。
 
@@ -203,7 +208,8 @@ verify.sh 在 workspace 根目录下检查：
 
 ### 4.5 人工验收清单
 
-- [ ] Diff 面板里能看到 `README.md` 被新增，内容是 `# scratch`。
+- [ ] `README.md` 被新增，内容是 `# scratch`（可通过工具输出、verify stdout/stderr
+      或 workspace 文件确认）。
 - [ ] assistant 的"我写好了"那句话不是谎话（diff 已经证实文件确实写了）。
 - [ ] 没有额外被创建的文件。
 
@@ -219,7 +225,8 @@ verify.sh 在 workspace 根目录下检查：
 
 内联 permission gate 链路：当 project 处在 `permission_mode: default` 时，agent
 调用 Bash 不会被自动放行，而是会触发一个 `interaction_request`
-（`interaction_type=permission`）。你需要在 gate 标签页里手动 Allow 一次，
+（`interaction_type=permission`）。你需要在右侧 AgentPanel 的
+**Pending response** 区域手动 Allow 一次，
 runner 才会继续，Bash 才会真的执行。这条路径如果挂了，所有需要人工审批的场景
 都会跟着挂。
 
@@ -227,7 +234,8 @@ runner 才会继续，Bash 才会真的执行。这条路径如果挂了，所�
 
 1. Tests 面板 → `permission-approve` → `Run · claude`。
 2. 时间线上出现 agent 节点（脉冲蓝色 → 短暂之后变成绿色 `waiting`）。
-3. 右侧细节面板会**自动切换到 `gate` 标签页**，里面是 Bash 工具的权限请求；
+3. 右侧 side panel 会选中这个 agent，并在顶部出现 **Pending response**；
+   里面是 Bash 工具的权限请求；
    工具命令应当是 `python3 -c 'print("hello-from-bash")'`。
 4. 点击 **Allow**（"仅本次"）。
 5. agent 继续运行，时间线下方出现 Bash 工具 tile，展开能看到
@@ -255,7 +263,7 @@ verify.sh 在 `events.jsonl` 里同时找两样东西：
 
 ### 5.5 人工验收清单
 
-- [ ] gate 标签页弹出过权限请求（你必须点 Allow，不是自动放行的）。
+- [ ] AgentPanel 顶部弹出过权限请求（你必须点 Allow，不是自动放行的）。
 - [ ] Allow 之后时间线出现 Bash 工具 tile，stdout 内容是 `hello-from-bash`。
 - [ ] assistant 的回复准确描述了打印的内容（不是拒答、不是幻觉）。
 
@@ -282,13 +290,14 @@ Plan-mode 链路：project 用 `permission_mode: plan` 启动，agent 必须先�
    类型的请求，里面列出 agent 想写的文件（`PLAN_OK.txt`）和内容
    (`plan-approved`)。
 3. 在 plan 对话框点 **Approve**（接受方案，进入 `acceptEdits` 模式）。
-4. agent 继续运行：时间线出现 Edit / Write 工具 tile，把 `PLAN_OK.txt`
+4. agent 继续运行：Activity 区域出现 Edit / Write 工具记录，把 `PLAN_OK.txt`
    写进 workspace 根目录。
-5. 节点进入 `done` 后切到右侧 **Diff** 区域确认文件确实落盘了。
+5. 节点进入 `done` 后运行 Verify；必要时通过工具输出或 workspace 文件确认文件
+   确实落盘了。
 
 ### 6.3 预期观察到什么
 
-- 没批准之前，**不会**有任何文件被写——time line 里看不到 Edit/Write tile。
+- 没批准之前，**不会**有任何文件被写——Activity 区域里看不到 Edit/Write 记录。
 - 批准后写出的 `PLAN_OK.txt` 内容**严格**是 `plan-approved`（一行，加换行），
   没有别的解释段落、没有大小写改动。
 - 整个 workspace 只新增了这一个文件。
@@ -310,8 +319,9 @@ verify.sh 检查：
 
 ### 6.5 人工验收清单
 
-- [ ] gate 标签页里出现过 plan-approval 请求，你必须点 Approve（不是自动放行）。
-- [ ] Diff 面板能看到 `PLAN_OK.txt` 新增、内容是 `plan-approved`。
+- [ ] AgentPanel 顶部出现过 plan-approval 请求，你必须点 Approve（不是自动放行）。
+- [ ] `PLAN_OK.txt` 新增、内容是 `plan-approved`（可通过工具输出、verify 或
+      workspace 文件确认）。
 - [ ] assistant 的确认句没说谎（diff 已经证实文件确实写了）。
 - [ ] 没有额外被创建的文件。
 
@@ -400,16 +410,16 @@ verify.sh 从 `MINICLAW_HOME` 里翻出该 project 最新的 `node.json` 检查�
 1. Tests 面板 → `context-md-respected` → `Run · claude`。
 2. 时间线出现一个 agent 节点，prompt 只是「2 + 3 等于多少？」这种家常算术题
    ——上下文里的「每次回复都要以 `[CTX-OK]` 结尾」才是实际信号。
-3. 等几秒，节点进入 `done`；右侧 Chat 面板里的 assistant 回复应当在末尾带
+3. 等几秒，节点进入 `done`；右侧 AgentPanel 的 Result 区域里的 assistant 回复应当在末尾带
    `[CTX-OK]` 标记。
-4. 切到右侧 **Settings** 标签，确认 `system_context_snapshot` 段不为空、
-   内容就是 seed 里那句话（同时它也作为 `CONTEXT.md` 出现在 workspace 根）。
+4. 打开该 agent 的 **Inspect ▸ raw fields** 抽屉，确认 `System context`
+   不为空、内容就是 seed 里那句话（同时它也作为 `CONTEXT.md` 出现在 workspace 根）。
 
 ### 8.3 预期观察到什么
 
 - assistant 给出了 2 + 3 = 5 的简单答复（不是拒答、不是别的题目）。
 - 回复**末尾**带有 `[CTX-OK]` 标记，且整段没有任何工具调用 tile。
-- Settings 标签里 `system_context_snapshot` 显示的字符串和 seed 那句话一致。
+- Inspect 抽屉里的 `System context` 显示的字符串和 seed 那句话一致。
 
 ### 8.4 跑 verify.sh
 
@@ -456,7 +466,7 @@ scenario expander 把 review 的 `decision: "rejected"` 写进 history,匹配
 - `scenario_step_history` 是否落上 `decision`;
 - expander 的 `when:` 跳过逻辑是否正确;
 - `resume_from_node_id` 是否真的把 `provider_session_id` 一路接过去;
-- 时间线 SVG 是否把 resume 连线和 `↻ build` 角标画出来。
+- 画布是否把 resume edge 和 `↻ <build-id>` 继续标识画出来。
 
 ### 9.2 操作步骤
 
@@ -467,9 +477,10 @@ scenario expander 把 review 的 `decision: "rejected"` 写进 history,匹配
      brief（`# How to run` / `# What to verify` / `# Response schema`）,
      指明审阅者该如何 import 该模块并填什么样的 JSON。
 3. `build` 完成后,auto-commit op 节点会被自动追加,提交这次改动。
-4. 紧接着出现 `review` 被动 gate 节点,右侧面板自动切到 `gate` 标签——里面
-   逐字渲染 build 写的 brief（**不是模板**,是 agent 现场写的）。
-5. 在 gate 表单里选 **write-json**,路径填 `reviews/build.json`(scenario
+4. 紧接着出现 `review` 被动 gate 节点，右侧 GatePanel 显示 review 表单；点击
+   GatePanel 里的 brief 入口或画布上的 `brief.md` artifact 节点，可以逐字查看
+   build 写的 brief（**不是模板**，是 agent 现场写的）。
+5. 在 GatePanel 表单里选 **Write a JSON response**，路径填 `reviews/build.json`（scenario
    预设值,通常会自动带上),内容写：
    ```json
    {"approved": false, "notes": "请再加一个 subtract(a, b)"}
@@ -480,8 +491,8 @@ scenario expander 把 review 的 `decision: "rejected"` 写进 history,匹配
    - 落上 `decision: "rejected"` 到 history;
    - 匹配 `fix` 节点的 `when: review.rejected`;
    - 用 `build.id` 作为 `parent_node_id` 启动 `fix` 节点。
-7. `fix` 节点开始 streaming——时间线上能看到 `↻ build` 角标和从 build 拉过来
-   的 SVG 虚线连线。
+7. `fix` 节点开始 streaming——画布上能看到 `↻ <build-id>` 继续标识和从 build 指向
+   fix 的 resume edge。
 8. `fix` 完成、其 auto-commit op 完成后,workspace 根的 `mathutils.py` 应当
    除 `add` 外又多了一个你要的函数。下方出现 Verify 卡片。
 
@@ -489,11 +500,11 @@ scenario expander 把 review 的 `decision: "rejected"` 写进 history,匹配
 
 - `build` 完成时,workspace 根**只**有 `mathutils.py` + `.miniclaw2/...`,
   里面只 `def add`。
-- `review` 节点的 gate 标签页里的 brief 是 agent **现场写的**(`# How to run`
+- `review` 节点关联的 `brief.md` artifact 是 agent **现场写的**（`# How to run`
   里命名了具体 import 命令,不是泛泛而谈)。
 - 你写 reject JSON 之后,fix 节点确实启动了,而不是 scenario 直接结束。
-- 时间线在 build 和 fix 之间画了一条**虚线**贝塞尔曲线,fix tile 上有
-  `↻ build` 角标。
+- 画布在 build 和 fix 之间画了一条 resume edge，fix tile 上有 `↻ <build-id>`
+  继续标识。
 - fix 完成后,`mathutils.py` 同时存在 `def add` 和你 notes 里要求的那个函数。
 
 ### 9.4 跑 verify.sh
@@ -523,8 +534,8 @@ verify.sh 一次性核对：
       命名了 import `mathutils` 的具体命令)。
 - [ ] 你以 `{"approved": false, "notes": "..."}` 形式 reject 了 review，
       review 节点变成深灰色(done)。
-- [ ] `fix` 节点在 review 之后真的出现了，tile 上能看到 `↻ build` 角标，
-      时间线上有从 build 拉到 fix 的虚线 SVG 连线。
+- [ ] `fix` 节点在 review 之后真的出现了，tile 上能看到 `↻ <build-id>` 继续标识，
+      画布上有从 build 指向 fix 的 resume edge。
 - [ ] `fix` 完成后 `mathutils.py` 同时包含原有的 `add` 和你 notes 里要求的
       新函数(没有把 `add` 删/改坏)。
 
@@ -547,18 +558,17 @@ WebSocket 重连 + replay 路径：agent 在 streaming 时,客户端的 WS 被�
 段回放出来,然后挂回 live tail。整条路径成功的人类可见证据是：transcript
 继续往下长、**不**回到开头重放、**不**重复任何已经看过的字。
 
-为了让你能干净地触发这次「掉线」,项目顶 header 会在 `scenario_name ===
-"reconnect-replay"` 时额外露出一个 **Simulate WS drop** 按钮。
+为了让你能干净地触发这次「掉线」，项目 header 的 `...` 菜单会在
+`scenario_name === "reconnect-replay"` 时额外露出一个 **Simulate WS drop** 动作。
 
 ### 10.2 操作步骤
 
 1. Tests 面板 → `reconnect-replay` → `Run · claude`。
-2. 时间线出现 agent 节点开始 streaming;右侧 Chat 面板里 assistant 文本一
+2. 画布上出现 agent 节点开始 streaming；右侧 AgentPanel 的 Result 区域里 assistant 文本一
    行一行往外吐——每行是 `Fact N: …`(Python 的一句历史)。
-3. **等到看到至少三四条 fact 之后(大概 2–5 秒)**,看一下 header 右边——
-   `Stop` 按钮旁边会有一个浅色 **Simulate WS drop** 按钮(只有在这个场景下
-   才出现)。点它。
-4. header 左上角的 `ws` 状态会从 `open` 变成短暂的 `connecting`,然后回到
+3. **等到看到至少三四条 fact 之后（大概 2–5 秒）**，打开 header 右侧的
+   `...` 菜单，点击 **Simulate WS drop**（只有在这个场景下才出现）。
+4. header 里的 `ws` 状态会从 `open` 变成短暂的 `connecting`，然后回到
    `open`。
 5. assistant 文本继续往下长,**直接接着第 N+1 条 fact**,不会跳回 `Fact 1:`,
    也不会把已经渲染过的几行再吐一遍。
@@ -567,8 +577,8 @@ WebSocket 重连 + replay 路径：agent 在 streaming 时,客户端的 WS 被�
 
 ### 10.3 预期观察到什么
 
-- Simulate WS drop 按钮**只在该场景下**出现（其它 9 个场景跑的时候 header 里
-  没有这个按钮——这是确认 conditional 渲染生效的副产品检查）。
+- Simulate WS drop 菜单项**只在该场景下**出现（其它 9 个场景跑的时候 `...`
+  菜单里没有这个动作——这是确认 conditional 渲染生效的副产品检查）。
 - 点完按钮后 `ws` 指示灯短暂 `connecting` → 回 `open`，整个过程不会久于 1 秒。
 - 文本从断点继续往下，没有任何视觉「卷回开头再重放」的迹象,也没有同一条 fact
   连续出现两次。
@@ -592,7 +602,8 @@ verify.sh 只能从磁盘上观察「JSONL 是不是连续的」——客户端�
 
 ### 10.5 人工验收清单
 
-- [ ] streaming 进行中(已经看到几条 Fact)的时候你点了 **Simulate WS drop**。
+- [ ] streaming 进行中（已经看到几条 Fact）的时候你从 `...` 菜单点了
+      **Simulate WS drop**。
 - [ ] 点击后 `ws` 指示灯**短暂**变 `connecting`，然后回 `open`(不是一直停在
       `connecting` 上)。
 - [ ] transcript 从断点继续，**没**回到 `Fact 1:` 重放、**没**有任何一条 fact
@@ -619,7 +630,7 @@ Codex 端在 replay 之后看到了重复或乱序——记下来,可能是 Code
 - session 写入 project binding 和 active planspace；
 - node launch 时同时注入 project `CONTEXT.md` 和 planspace `STATUS.md` /
   `PLAN.md`；
-- Node detail 里能追溯 context bundle sources。
+- Agent side panel 的 Inspect 抽屉里能追溯 context bundle sources。
 
 ### 11.2 启动隔离测试环境
 
@@ -679,7 +690,7 @@ curl -s -X POST http://127.0.0.1:8000/sessions \
 ### 11.4 在 UI 里 bootstrap ContextSpace
 
 1. 选择 `ContextSpace Manual Test`。
-2. 打开 `ContextSpace` 面板。
+2. 在画布上选择 project root 节点，打开右侧 `ProjectPanel`。
 3. 先确认：
    - root 是 `/private/tmp/miniclaw2-contextspace-test/home/contextspace`；
    - `Root` 是 `missing`；
@@ -715,7 +726,7 @@ ContextSpace 目录应当出现这些文件：
 /private/tmp/miniclaw2-contextspace-test/home/contextspace/plugs/planspaces/manual-contextspace-track/SKILLS.md
 ```
 
-节点完成后，在 Node detail 的 Context 区域应当看到：
+节点完成后，在该 agent 的 Inspect 抽屉里应当看到：
 
 - `Context bundle` 有 id；
 - `Binding` 是 `project.manual-contextspace-track`；
@@ -769,7 +780,7 @@ Create a ContextSpace memory delta artifact for this completed node. Add a STATU
 
 - planspace 的 `events.jsonl` 包含 `memory_delta_applied`，并且事件里能看到
   一个 proposal 被记录；
-- Node detail -> Settings -> Memory delta 显示 `applied 1`、`proposed 1`，
+- Agent side panel -> Inspect -> Settings snapshot -> Memory delta 显示 `applied 1`、`proposed 1`，
   source 是 `project_artifact`。
 
 ### 11.8 判定结果
@@ -785,7 +796,7 @@ Create a ContextSpace memory delta artifact for this completed node. Add a STATU
 - 第二个 node 产生 project-local `memory-delta.json`；
 - `STATUS.md` 自动追加了 observation；
 - `PLAN.md` proposal 被记录但没有自动应用；
-- Node detail 的 Settings 能看到 memory delta 应用结果；
+- Agent side panel 的 Inspect 抽屉能看到 memory delta 应用结果；
 - 后端日志没有 ContextSpace 异常。
 
 ---
@@ -829,9 +840,9 @@ rm -rf /tmp/miniclaw2-tmp-*                # Linux
   在 §5、§6 覆盖了）。`ask_user` 还没有专门的内置 scenario。
 - Tier 3 旗舰 `gui-calculator`（构建 PySide6/Qt 计算器 → 被动 review gate →
   auto-commit 改写 `commit_after`）。**它已经在仪表盘里可以跑**，运行方式
-  同其它场景：点 `Run · claude` / `Run · codex`，时间线上会出现 build
+  同其它场景：点 `Run · claude` / `Run · codex`，画布上会出现 build
   agent → 自动 commit op → 被动 review gate；review brief 由 build agent
-  现场写，你在 gate tab 里以 write-json 形式提交评审意见。GUI 行为的人工
+  现场写，你在 GatePanel 里以 write-json 形式提交评审意见。GUI 行为的人工
   验收清单见 `backend/miniclaw2/scenarios/bundled/gui-calculator/acceptance.md`
   （计算 1+2=3、9÷0 不抛 Python traceback、C 清屏、关窗能正常退出）。
   它是验证 auto-commit op 是否正常的主路径——回归会同时打破 verify 和
@@ -848,7 +859,7 @@ issue 催更。
   Cloudflare/代理拦。
 - **verify.sh 找不到 events.jsonl**：检查 `MINICLAW_HOME` 是否一致——如果
   后端在不同 shell 下用了不同的 `MINICLAW_HOME`，verify 看到的就是空目录。
-- **gate 标签页没自动弹出**：检查时间线上对应节点是不是被选中了。如果你停在
+- **Pending response / GatePanel 没自动弹出**：检查画布上对应节点是不是被选中了。如果你停在
   别的节点上，应当能看到一条琥珀色提示条"Node X is awaiting your response"——
   点一下就跳过去。
 - **模型答得"差不多对但不严格"**：这是手工测试的核心价值——脚本能挑出来，

@@ -1,6 +1,15 @@
 # MiniClaw2 ContextSpace Proposal
 
-Status: discussion draft, iteration 2.
+Status: proposal plus implementation status. The v1 slice described in
+§14 has largely landed in `backend/miniclaw2/contextspace.py`,
+`NodeRunner`, `ProjectPanel`, `ContextNodePanel`, and `InspectDrawer`:
+ContextSpace root resolution, bootstrap, project bindings, active
+planspace selection, context bundle snapshots, project-local memory
+delta artifacts, safe `STATUS.md` auto-append, and `Node`
+acceptance/verdict fields are implemented. Broader plug UX, durable
+skill/protocol promotion, PLAN approval workflows, verifier op nodes,
+fork merge semantics, and automatic ContextSpace git commits remain
+proposal territory.
 
 This proposal defines a global filesystem context system for MiniClaw2.
 The key shift from the previous draft is that project status, plans, and
@@ -344,8 +353,9 @@ At node launch, MiniClaw2 composes context from:
 3. Plug dependencies declared through `requires`.
 4. Per-node overrides selected by the user.
 
-The launch modal and node detail panel should make loaded plugs visible.
-The user should be able to answer:
+The current graph UI exposes loaded context through context nodes on the
+canvas, the project-root `ProjectPanel`, and the selected agent's
+`Inspect` drawer. The user should be able to answer:
 
 - Which planspace is attached?
 - Which skills are loaded?
@@ -593,31 +603,36 @@ Local machine paths should be treated as mounting hints, not identity.
 The binding's stable identity should come from project metadata such as
 repo remote, root name, and user-assigned project alias.
 
-## 14. Suggested First Implementation Slice
+## 14. First Implementation Slice
 
-The first slice should be small and should prove the data model.
+The first slice was intentionally small and exists in the current code.
+Status by item:
 
-1. Add `Node` acceptance fields while keeping `NodeState` unchanged.
-2. Add a configurable ContextSpace root:
+1. [✓] Add `Node` acceptance fields while keeping `NodeState` unchanged.
+2. [✓] Add a configurable ContextSpace root:
    `$MINICLAW_CONTEXT_HOME` or `$MINICLAW_HOME/contextspace`.
-3. Add minimal plug and binding loaders for:
+3. [✓] Add minimal plug and binding loaders for:
    - project-root `CONTEXT.md`
    - `plugs/planspaces/<id>/STATUS.md`
    - `plugs/planspaces/<id>/PLAN.md`
    - `plugs/skills/<id>/CONTEXT.md`
-4. Add `project_context_binding_id` to `Project` or store it in
-   `Project.settings_override` for the first slice.
-5. Add context bundle snapshots with source paths, hashes, plug ids,
+4. [✓] Add `project_context_binding_id` to `Project`; active planspace
+   lives in `Project.settings_override["active_planspace_id"]`.
+5. [✓] Add context bundle snapshots with source paths, hashes, plug ids,
    and injection modes.
-6. Continue populating `system_context_snapshot` for backward
+6. [✓] Continue populating `system_context_snapshot` for backward
    compatibility from project-root `CONTEXT.md`.
-7. Add planspace `STATUS.md` auto-writer, but only when the project has
-   an explicit planspace binding. Do not create it by default.
-8. Add memory delta inbox support, but auto-apply only `STATUS.md`
-   updates.
-9. Update passive gate resolution so a gate can write acceptance fields
-   on its source node.
-10. Surface loaded plugs and context bundle sources in the node detail UI.
+7. [✓] Add planspace `STATUS.md` auto-writer, but only when the project
+   has an explicit planspace binding. ContextSpace is created by user
+   bootstrap, not silently on first run.
+8. [✓] Add memory delta inbox support, but auto-apply only `STATUS.md`
+   updates. Agents write project-local
+   `.miniclaw2/outputs/<node-id>/memory-delta.json`; MiniClaw2
+   validates and copies it into the snapshotted planspace inbox.
+9. [✓] Update passive gate resolution so a gate can write acceptance
+   fields on its source node.
+10. [✓] Surface loaded plugs and context bundle sources in the graph UI
+   and selected agent's `Inspect` drawer.
 
 Defer:
 
@@ -649,7 +664,8 @@ This draft assumes:
   loaded.
 - MiniClaw2 may automatically maintain state inside connected
   planspaces to reduce user cognitive burden.
-- `done` vs `accepted` should enter the domain model.
+- `done` vs `accepted` has entered the domain model through
+  `Node.acceptance_state` and `Node.verdict_*`.
 - ContextSpace should not be silently initialized on first run. The user
   should create or select a ContextSpace when first using the feature.
 - v1 should not automatically commit ContextSpace changes. Git diffs
@@ -667,7 +683,11 @@ The major architectural questions above are settled for v1. Remaining
 discussion can focus on concrete product and implementation details:
 
 1. What does the first ContextSpace creation flow look like in the UI?
+   Resolved for v1: select the project root, use `ProjectPanel` to
+   bootstrap a binding + planspace.
 2. How should MiniClaw2 name new planspaces and bindings by default?
+   Resolved for v1: slugified project title/path with numeric suffixes
+   on collisions.
 3. Which plug fields must be editable in the first UI surface, and which
    can stay YAML-only?
 4. How much of `PLAN.md` should be injected into worker nodes versus

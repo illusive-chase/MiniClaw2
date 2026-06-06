@@ -1,35 +1,45 @@
 # UI/UX redesign PRD — graph-driven MiniClaw2
 
-This document supersedes the UX surfaces of the current frontend
-(`Chat / Context / Tests` switcher, `+ Node` modal, six-tab
-`NodeDetail`, `ContextSpacePanel`). It does **not** change the backend
-domain model, the on-disk store, or the WebSocket protocol. Everything
-here is a frontend reskin + interaction overhaul over the same APIs.
+This document superseded the old frontend surfaces (`Chat / Context /
+Tests` switcher, `+ Node` modal, six-tab `NodeDetail`,
+`ContextSpacePanel`). It does **not** change the backend domain model,
+the on-disk store, or the WebSocket protocol. Everything here is a
+frontend reskin + interaction overhaul over the same APIs.
+
+**Implementation status.** The first implementation slice is now in the
+codebase: React Flow canvas, project-root node, agent/gate/op nodes,
+artifact nodes, context nodes, loads/produces/reviews/resume edges,
+phantom composer, projects landing page, Tests modal, and polymorphic
+`SidePanel` are implemented. Still pending from this PRD: op-as-edge
+chevrons, inline gate expansion directly inside the canvas tile,
+schema-aware review forms, persisted backend `layout_hints`, removing
+all schema words from primary surfaces, phantom future scenario steps,
+and remaining header/menu polish from §11.
 
 Read this top-to-bottom — the *derivation* (§1, §2) is load-bearing.
 Future contributors should be able to evaluate new UI proposals
 against the principles here, not against the surface designs alone.
 
 
-## 1. Background — what's wrong today
+## 1. Background — what was wrong with the old UI
 
 Two distinct failures motivate this redesign.
 
 ### 1.1 The UI is confusing because it exposes the schema
 
-The current frontend treats the backend ontology as user-facing
+The old frontend treated the backend ontology as user-facing
 vocabulary. Concretely:
 
-- The launch surface is `NodeLaunchModal`, a form with three controls:
+- The launch surface was `NodeLaunchModal`, a form with three controls:
   a prompt textarea, a "Resume from" `<select>`, and an "Output
   contract" `<select>` whose options are the literal enum values
   `freeform` / `summary` / `interface` / `review_brief`.
-- `NodeDetail` ships six tabs (`summary | transcript | diff | events |
+- `NodeDetail` shipped six tabs (`summary | transcript | diff | events |
   settings | gate`). The `summary` tab itself is a `<dl>` of internal
   fields: Provider, Acceptance, Verdict, Bundle, Provider session,
   Provider turn, plus two collapsible `<details>` for "System context
   (NNNN chars)" and "Output contract (NNNN chars)".
-- The `Context` top-level view (`ContextSpacePanel`) renders the
+- The `Context` top-level view (`ContextSpacePanel`) rendered the
   ContextSpace storage schema verbatim — a list of *Bindings*, each
   containing *Plugs* of kinds *planspace / skill / global*, with a
   resolved-binding `<select>` and an active-planspace `<select>`.
@@ -136,7 +146,7 @@ for (mechanical bookkeeping should not eat horizontal real estate).
 Hovering the chevron yields a popover with the commit hash and diff
 stats; clicking it expands an inline diff. Power users may toggle
 "expand ops to full nodes" via a project setting if they want the
-current timeline view back.
+legacy op-node view back.
 
 ### 3.2 Edge styles
 
@@ -272,7 +282,7 @@ On submit:
 ### 5.3 Polymorphic side panel
 
 The side panel's shape depends on the kind of selected node. This
-collapses today's six-tab fixed layout.
+collapses the old six-tab fixed layout.
 
 - **Agent** → progressive single panel:
   - Headline: state pill + first-line prompt + optional `↻ continuing
@@ -423,24 +433,25 @@ These were resolved in conversation and are no longer open:
 
 ## 11. Sequencing for implementation
 
-Suggested order, smallest blast radius first. Each step ships a
-usable intermediate state.
+Original suggested order, now annotated with implementation status:
 
-1. **React Flow canvas behind a feature flag**, rendering today's
-   timeline nodes only, with the existing side panel mounted
-   unchanged. Validates layout + perf with real data.
-2. **Polymorphic side panel** swap-in for agents (the collapse from
-   six tabs to one progressive panel). No graph changes yet.
-3. **Composer-as-phantom** replacing `NodeLaunchModal`.
-4. **Artifacts as nodes** with `produces` edges, brief node, gate
-   response inline.
-5. **Context lane** with context nodes + dashed `loads` edges.
+1. [✓] **React Flow canvas**, rendering the project graph over existing
+   REST / WebSocket APIs.
+2. [✓] **Polymorphic side panel** for agents, gates, artifacts,
+   context nodes, ops, and project root.
+3. [✓] **Composer-as-phantom** replacing `NodeLaunchModal`.
+4. [~] **Artifacts as nodes** with `produces` edges and brief nodes.
+   Result and brief artifacts are graph nodes; reviewer-written JSON is
+   written to the workspace but is not yet always materialized as its
+   own graph node.
+5. [✓] **Context lane** with context nodes + dashed `loads` edges.
    Top-level `Context` tab removed.
-6. **Inline gate tile-expansion** for permission / ask / plan.
-7. **Op chevron on edges** replacing op tiles.
-8. **Header cleanup** + removal of the `Chat / Context / Tests`
+6. [ ] **Inline gate tile-expansion** for permission / ask / plan.
+   Current implementation renders pending inline gates in `AgentPanel`.
+7. [ ] **Op chevron on edges** replacing op tiles. Current
+   implementation still renders op nodes.
+8. [✓] **Header cleanup** + removal of the `Chat / Context / Tests`
    switcher.
-9. **Errors as terminal nodes** + memory-delta arrows.
-
-The feature flag stays until step 8 lands; users can opt back into
-the legacy UI during the transition.
+9. [ ] **Errors as terminal nodes** + memory-delta arrows. Current
+   implementation shows errors in the selected agent panel and memory
+   delta results in `Inspect`.

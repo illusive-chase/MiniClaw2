@@ -13,21 +13,23 @@
 > node kind) have also landed** — see §3 below; the CLI-parity items in
 > this doc are unaffected since the op/gate work is graph-IDE
 > architecture, not native-CLI parity. A subsequent **Phase 1/2 polish
-> sweep** consolidated all interaction surfaces into the side panel:
-> permission / ask-user / plan-approval no longer render under the
-> chat composer — they share a unified `gate` tab on `NodeDetail`
-> alongside checkpoint-review. A read-only `Settings` tab (backed by
-> a new `Node.settings_snapshot`) and SVG resume-edge connectors on
-> the timeline (with `↻ {id}` badges on resumed tiles) also landed in
-> the same pass.
+> sweep** consolidated interaction surfaces into node inspectors:
+> permission / ask-user / plan-approval no longer render under a chat
+> composer, and checkpoint review is a passive gate flow. A later
+> `UI_REDESIGN_PRD.md` slice replaced the tabbed `NodeDetail` /
+> `ProjectTimeline` frontend with a React Flow canvas, phantom composer,
+> artifact/context nodes, and a polymorphic `SidePanel`. Launch settings
+> are still snapshotted on `Node.settings_snapshot`, now shown in the
+> `Inspect` disclosure.
 
 The current default provider is a slice over `claude-agent-sdk` with a
-per-node state machine, a JSONL/JSON store under `$MINICLAW_HOME`, and
-a unified `gate` tab on the node-detail side panel that handles
-permission / ask-user / plan / checkpoint-review requests. It works, but
-the same prompt run in MiniClaw2 vs. the `claude` CLI in the same
-directory will still behave noticeably differently because almost none
-of the on-disk context the CLI reads is loaded here.
+per-node state machine, a JSONL/JSON store under `$MINICLAW_HOME`, and a
+graph UI whose side panel handles permission / ask-user / plan /
+checkpoint-review requests. It works, but the same prompt run in
+MiniClaw2 vs. the `claude` CLI in the same directory will still behave
+noticeably differently because MiniClaw2 intentionally loads only
+provider-neutral `CONTEXT.md` plus explicit ContextSpace bindings, not
+Claude's vendor-specific on-disk configuration.
 
 Codex is available as an initial provider through `codex app-server`
 JSON-RPC. It maps Codex text/reasoning/tool/activity/usage events and
@@ -103,25 +105,29 @@ remaining items are vendor-specific settings/tools and stay TBD.
    wired: `node_started` server event carries the active node id;
    `replay_request {node_id, since_seq}` client envelope drives
    `store.replay_events`, and the new socket re-attaches to live
-   project broadcasts. Hard page reload still drops UI state
-   because `App.tsx` creates a fresh session on mount — that's a
-   session-switcher concern (Phase 3), not chat polish.
+   project broadcasts. Hard reload now returns to the projects landing
+   and can reopen persisted projects; it does not implicitly resume an
+   in-flight browser selection beyond what REST/JSONL can reconstruct.
 2. Only one concurrent node per project (`registry.ProjectRuntime`);
    no queue.
-3. No session/project list / switcher UI. `App.tsx` always creates a
-   fresh project on mount.
-4. `cwd` / `model` are settable via REST POST but not surfaced in the
-   UI.
-5. **~ Used implicitly.** Provider resume now fires automatically: each
-   new node inherits `provider_session_id` from its predecessor in the
-   project (`registry.start_node`). Claude still writes the legacy
-   `sdk_session_id`; Codex uses its thread id.
+3. **✓ Session/project list UI.** `ProjectsLanding` lists persisted
+   projects via `GET /sessions`, supports rename/delete, and opens a
+   selected project instead of creating a fresh one on mount.
+4. `cwd` and provider are surfaced in `NewProjectModal`; `model` /
+   `model_provider` remain REST-only.
+5. **✓ Explicit resume only.** Ordinary timeline adjacency starts a
+   fresh provider session/thread. A child node inherits
+   `provider_session_id` / `sdk_session_id` only when launched with
+   `resume_from_node_id` (for example via the canvas follow-up phantom).
+   Claude still writes the legacy `sdk_session_id`; Codex uses its
+   thread id.
 
 ### D. Settings / runtime knobs
 
 - No model picker, permission-mode selector (`default` / `plan` /
   `acceptEdits` / `bypassPermissions`), allowed/disallowed tools, or
-  env injection.
+  env injection in the primary UI. The backend accepts these settings
+  on project/scenario creation, and scenario YAML uses them.
 - No cost estimate (`Usage` events carry tokens but no $).
 - No hooks lifecycle (PreToolUse / PostToolUse / Stop /
   UserPromptSubmit).
@@ -203,14 +209,14 @@ Closes most of the behavioral drift in (A).
 - **Custom agents.** Read `.claude/agents/*.md` → pass as `agents=`.
 - **MCP servers.** Parse `.mcp.json` and pass `mcp_servers=`.
 
-### Phase 3 — Session lifecycle that survives a reload
+### Phase 3 — Settings, queues, and richer lifecycle
 
-- **Persistent session store.** Continue extending the JSON/JSONL store
-  under `$MINICLAW_HOME`. Record `cwd`, `model`, provider ids,
-  transcript of WS events, pending interaction state.
-- **Session list / switcher UI.** Sidebar listing sessions; click to
-  resume — `POST /sessions` with the saved provider ids to attach via
-  Claude `resume` or Codex `thread/resume`.
+- **Persistent session store.** Already in place for projects, nodes,
+  gates, and event streams. Continue extending it for settings and any
+  browser UI state worth restoring.
+- **Session list / switcher UI.** The projects landing page is in.
+  Remaining work is richer filtering/search, "resume in-flight" polish,
+  and settings visibility.
 - **`ClaudeSDKClient` lifetime = session lifetime**, not turn. Hold
   the client in `CCAgent` across turns; close only on session
   deletion. Keeps MCP connections, permission state, skill caches warm.

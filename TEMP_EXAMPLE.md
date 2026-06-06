@@ -1,3 +1,11 @@
+> **Archive note.** This file is a captured manual-testing transcript, not
+> current product documentation. Several UI references inside predate the
+> graph redesign: `ContextSpacePanel` is now project-root `ProjectPanel`,
+> `NodeDetail` is now the polymorphic `SidePanel` / `Inspect` drawer, and
+> ContextSpace v1 plus `AcceptanceState` / `VerdictSource` fields have
+> since landed. Use `README.md`, `TEST.md`, and `TESTING.zh.md` for current
+> instructions.
+
 我建议：先测试当前这一版，不要继续往协议深处加功能。
 
   我读了 MEMORY_PROTOCOL_PROPOSAL.md:1，它其实已经不是一个“小 memory protocol”了，而是一个完整的 ContextSpace 体系：独立 context
