@@ -69,6 +69,7 @@ export type CanvasProps = {
   projectTitle: string;
   /** focused phantom: undefined = no phantom; null = fresh start; string = resuming from */
   phantomFromNodeId: string | null | undefined;
+  phantomDisabled: boolean;
   contextBundlesByNodeId: Record<string, ContextBundle | null | undefined>;
   onSelectionChange: (sel: CanvasSelection) => void;
   onEmptyCanvasTap: (position: { x: number; y: number }) => void;
@@ -90,6 +91,7 @@ function CanvasInner({
   activeNodeId,
   projectTitle,
   phantomFromNodeId,
+  phantomDisabled,
   contextBundlesByNodeId,
   onSelectionChange,
   onEmptyCanvasTap,
@@ -111,10 +113,18 @@ function CanvasInner({
         projectTitle,
         phantomFromNodeId,
         phantomFreshStart: phantomFromNodeId === null,
+        phantomDisabled,
         layoutHints: layoutHintsRef.current,
         contextBundlesByNodeId,
       }),
-    [nodes, activeNodeId, projectTitle, phantomFromNodeId, contextBundlesByNodeId],
+    [
+      nodes,
+      activeNodeId,
+      projectTitle,
+      phantomFromNodeId,
+      phantomDisabled,
+      contextBundlesByNodeId,
+    ],
   );
 
   /* React Flow controlled state. We keep an internal copy so dragging is smooth

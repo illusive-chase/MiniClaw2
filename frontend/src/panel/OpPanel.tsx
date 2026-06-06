@@ -47,7 +47,7 @@ export function OpPanel({
             <div className="rounded-md border border-line bg-surface-sunken px-3 py-2 text-[11.5px] text-ink-muted">
               Loading diff…
             </div>
-          ) : !diff || !diff.text ? (
+          ) : !diff ? (
             <div className="rounded-md border border-line bg-surface-sunken px-3 py-2 text-[11.5px] text-ink-muted">
               No file changes.
             </div>
@@ -55,6 +55,10 @@ export function OpPanel({
             <pre className="whitespace-pre-wrap rounded-md border border-state-error/30 bg-state-error-soft p-3 text-xs text-state-error">
               {diff.error}
             </pre>
+          ) : !diff.text ? (
+            <div className="rounded-md border border-line bg-surface-sunken px-3 py-2 text-[11.5px] text-ink-muted">
+              No file changes.
+            </div>
           ) : (
             <pre className="overflow-auto rounded-md border border-line bg-surface-sunken p-3 font-mono text-[11px] leading-relaxed">
               {diff.text.split("\n").map((line, idx) => (

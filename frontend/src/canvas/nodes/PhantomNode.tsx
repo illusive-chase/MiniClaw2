@@ -33,6 +33,7 @@ function PhantomNodeImpl({ data, selected }: NodeProps<PhantomNodeData>) {
   const [outputKind, setOutputKind] = useState<OutputKind>("summary");
   const [showMore, setShowMore] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const disabled = data.disabled || ctx.disabled;
 
   useEffect(() => {
     /* Focus the input as soon as the phantom appears. */
@@ -40,11 +41,12 @@ function PhantomNodeImpl({ data, selected }: NodeProps<PhantomNodeData>) {
     return () => window.clearTimeout(timer);
   }, []);
 
-  const canSubmit = prompt.trim().length > 0 && !ctx.disabled;
+  const canSubmit = prompt.trim().length > 0 && !disabled;
 
   const submit = () => {
-    if (!canSubmit) return;
-    ctx.onSubmit({
+    const latest = phantomContext;
+    if (prompt.trim().length === 0 || data.disabled || latest.disabled) return;
+    latest.onSubmit({
       prompt: prompt.trim(),
       resumeFromNodeId: data.resumeFromNodeId,
       outputKind,
@@ -94,7 +96,7 @@ function PhantomNodeImpl({ data, selected }: NodeProps<PhantomNodeData>) {
             ? "What should the agent do next?"
             : "What should the agent do?"
         }
-        disabled={ctx.disabled}
+        disabled={disabled}
         className="nodrag w-full resize-none rounded-md bg-transparent text-[13px] leading-relaxed text-ink-strong placeholder:text-ink-subtle focus:outline-none"
       />
 

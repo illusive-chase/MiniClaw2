@@ -48,6 +48,8 @@ export type PhantomNodeData = {
   resumeFromNodeId: string | null;
   /** display label for the parent ("Build calculator", "fresh start") */
   resumeFromLabel: string | null;
+  /** true when the composer cannot launch a node */
+  disabled: boolean;
 };
 
 export type ProjectRootNodeData = {
@@ -93,6 +95,8 @@ export type BuildGraphArgs = {
   phantomFromNodeId: string | null | undefined;
   /** if a phantom is open as fresh-start, true */
   phantomFreshStart: boolean;
+  /** if the phantom composer should be rendered disabled */
+  phantomDisabled: boolean;
   /** per-node manual position overrides (drag persistence — client-side for now) */
   layoutHints: Record<string, { x: number; y: number }>;
   /** per-node context bundles, keyed by node id, used to materialize context + loads edges */
@@ -120,6 +124,7 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
     projectTitle,
     phantomFromNodeId,
     phantomFreshStart,
+    phantomDisabled,
     layoutHints,
     contextBundlesByNodeId,
   } = args;
@@ -137,7 +142,7 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
     position: layoutHints["root"] ?? { x: LANE.rootX, y: LANE.timelineY },
     data: { title: projectTitle },
     draggable: true,
-    selectable: false,
+    selectable: true,
   });
 
   /* main timeline: agents, gates, ops along x = index*spacing */
@@ -347,6 +352,7 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
       data: {
         resumeFromNodeId: phantomFromNodeId ?? null,
         resumeFromLabel,
+        disabled: phantomDisabled,
       },
       draggable: false,
       selectable: false,

@@ -10,6 +10,7 @@ export type ProjectPanelProps = {
   contextSpaceSaving: boolean;
   contextSpaceError: string | null;
   onActivatePlanspace: (binding_id: string, planspace_id: string) => void;
+  onSelectContextBinding: (binding_id: string) => void;
   onBootstrapContextSpace: () => void;
 };
 
@@ -26,6 +27,7 @@ export function ProjectPanel({
   contextSpaceSaving,
   contextSpaceError,
   onActivatePlanspace,
+  onSelectContextBinding,
   onBootstrapContextSpace,
 }: ProjectPanelProps) {
   if (!session) {
@@ -98,8 +100,45 @@ export function ProjectPanel({
               </button>
             </div>
           ) : !activeBinding ? (
-            <div className="mt-1 rounded-md border border-line bg-surface-sunken px-3 py-2 text-[11.5px] text-ink-muted">
-              No binding resolved. Select a context node on the canvas to attach one.
+            <div className="mt-1 space-y-3 rounded-md border border-line bg-surface-sunken px-3 py-2 text-[11.5px]">
+              <p className="text-ink-muted">
+                No binding resolved for this project.
+              </p>
+              <button
+                type="button"
+                onClick={onBootstrapContextSpace}
+                disabled={contextSpaceSaving}
+                className="rounded-md bg-brand px-2.5 py-1 text-[11px] font-medium text-white shadow-card transition hover:brightness-[0.95] disabled:opacity-40"
+              >
+                Bootstrap project binding
+              </button>
+              {contextSpace.bindings.length > 0 && (
+                <div>
+                  <div className="mb-1 text-[10px] font-medium uppercase tracking-[0.14em] text-ink-subtle">
+                    Existing bindings
+                  </div>
+                  <ul className="space-y-1">
+                    {contextSpace.bindings.map((binding) => (
+                      <li key={binding.id}>
+                        <button
+                          type="button"
+                          disabled={contextSpaceSaving}
+                          onClick={() => onSelectContextBinding(binding.id)}
+                          className="block w-full rounded-md border border-line bg-surface-raised px-3 py-2 text-left text-[12px] transition hover:border-line-strong disabled:opacity-50"
+                        >
+                          <div className="line-clamp-1 font-medium text-ink-strong">
+                            {binding.title}
+                          </div>
+                          <div className="mt-0.5 font-mono text-[10.5px] text-ink-muted">
+                            {binding.id}
+                            {binding.matches_project_path ? " · matches path" : ""}
+                          </div>
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
             </div>
           ) : (
             <ul className="mt-1 space-y-1">

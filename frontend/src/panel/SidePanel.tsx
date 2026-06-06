@@ -62,6 +62,7 @@ export type SidePanelProps = {
   onSelectNode: (nodeId: string) => void;
   onSpawnPhantomFromNode: (nodeId: string) => void;
   onActivatePlanspace: (binding_id: string, planspace_id: string) => void;
+  onSelectContextBinding: (binding_id: string) => void;
   onBootstrapContextSpace: () => void;
 };
 
@@ -106,6 +107,7 @@ function Inner(props: SidePanelProps & { nodesById: Map<string, NodeInfo> }) {
     onSelectNode,
     onSpawnPhantomFromNode,
     onActivatePlanspace,
+    onSelectContextBinding,
     onBootstrapContextSpace,
     nodesById,
   } = props;
@@ -127,6 +129,7 @@ function Inner(props: SidePanelProps & { nodesById: Map<string, NodeInfo> }) {
         contextSpaceSaving={contextSpaceSaving}
         contextSpaceError={contextSpaceError}
         onActivatePlanspace={onActivatePlanspace}
+        onSelectContextBinding={onSelectContextBinding}
         onBootstrapContextSpace={onBootstrapContextSpace}
       />
     );

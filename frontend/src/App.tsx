@@ -159,6 +159,7 @@ export function App() {
     () => keepPendingForState(pendingReview, nodes, "awaiting_review"),
     [nodes, pendingReview],
   );
+  const composerLocked = !!activePendingGate || !!activePendingReview;
 
   /* refresh node list */
   const refreshNodes = useCallback(async () => {
@@ -210,6 +211,30 @@ export function App() {
         const next = await updateSessionContextSpace(session.id, {
           project_context_binding_id: binding_id,
           active_planspace_id: planspace_id,
+        });
+        setSessionContextSpace(next);
+        setSession((current) =>
+          current && current.id === session.id
+            ? { ...current, project_context_binding_id: next.project_context_binding_id ?? null }
+            : current,
+        );
+      } catch (err) {
+        setSessionContextSpaceError(String(err));
+      } finally {
+        setSessionContextSpaceSaving(false);
+      }
+    },
+    [session?.id],
+  );
+
+  const selectContextBinding = useCallback(
+    async (binding_id: string) => {
+      if (!session?.id) return;
+      setSessionContextSpaceSaving(true);
+      setSessionContextSpaceError(null);
+      try {
+        const next = await updateSessionContextSpace(session.id, {
+          project_context_binding_id: binding_id,
         });
         setSessionContextSpace(next);
         setSession((current) =>
@@ -435,7 +460,10 @@ export function App() {
             setPendingGate({ request: ev, nodeId: ownerNodeId });
           }
           setInspectedNodeId(ownerNodeId);
-          setSelection({ kind: "agent", nodeId: ownerNodeId });
+          setSelection({
+            kind: ev.interaction_type === "checkpoint_review" ? "gate" : "agent",
+            nodeId: ownerNodeId,
+          });
         }
         void refreshNodes();
       } else if (ev.type === "turn_done") {
@@ -477,11 +505,12 @@ export function App() {
     route === "project" ? (session?.id ?? null) : null,
     handleEvent,
   );
+  const composerDisabled = composerLocked || streaming || status !== "open";
 
   /* launch via the phantom */
   const launchAgentNode = useCallback(
     (text: string, resume: string | null, outputKind: OutputKind) => {
-      if (streaming || status !== "open") return;
+      if (composerDisabled) return;
       setStreaming(true);
       send({
         type: "user_message",
@@ -490,7 +519,7 @@ export function App() {
         output_kind: outputKind,
       });
     },
-    [streaming, status, send],
+    [composerDisabled, send],
   );
 
   /* Phantom callbacks wired into the module singleton */
@@ -501,9 +530,9 @@ export function App() {
       },
       onDismiss: () => setPhantomFromNodeId(undefined),
       onClearResume: () => setPhantomFromNodeId(null),
-      disabled: streaming || status !== "open",
+      disabled: composerDisabled,
     });
-  }, [launchAgentNode, streaming, status]);
+  }, [composerDisabled, launchAgentNode]);
 
   const onStop = () => {
     if (!streaming || status !== "open") return;
@@ -578,13 +607,22 @@ export function App() {
     [nodes],
   );
 
-  const onSpawnFromAgent = useCallback((nodeId: string) => {
-    setPhantomFromNodeId(nodeId);
-  }, []);
+  const openFreshPhantom = useCallback(() => {
+    if (composerDisabled) return;
+    setPhantomFromNodeId(null);
+  }, [composerDisabled]);
+
+  const onSpawnFromAgent = useCallback(
+    (nodeId: string) => {
+      if (composerDisabled) return;
+      setPhantomFromNodeId(nodeId);
+    },
+    [composerDisabled],
+  );
 
   const onEmptyCanvasTap = useCallback(() => {
-    setPhantomFromNodeId(null);
-  }, []);
+    openFreshPhantom();
+  }, [openFreshPhantom]);
 
   const allNodesTerminal = useMemo(
     () => nodes.length > 0 && nodes.every((n) => TERMINAL_STATES.has(n.state)),
@@ -624,9 +662,6 @@ export function App() {
       : status === "connecting"
         ? "text-state-waiting"
         : "text-state-error";
-
-  /* gating: composer is disabled while a gate is pending */
-  const composerLocked = !!activePendingGate || !!activePendingReview;
 
   return (
     <div className="flex h-screen flex-col bg-surface text-ink">
@@ -706,10 +741,10 @@ export function App() {
                 <MenuItem
                   onClick={() => {
                     /* If no node selected and no phantom, open a fresh-start phantom. */
-                    setPhantomFromNodeId(null);
+                    openFreshPhantom();
                     setMenuOpen(false);
                   }}
-                  disabled={composerLocked || streaming || status !== "open"}
+                  disabled={composerDisabled}
                   label="New run"
                   hint="Open composer"
                 />
@@ -732,6 +767,7 @@ export function App() {
             activeNodeId={activeNodeIdRef.current}
             projectTitle={projectTitle}
             phantomFromNodeId={phantomFromNodeId}
+            phantomDisabled={composerDisabled}
             contextBundlesByNodeId={contextBundlesByNodeId}
             onSelectionChange={onSelectionChange}
             onEmptyCanvasTap={onEmptyCanvasTap}
@@ -768,7 +804,7 @@ export function App() {
             nodes.length === 0 && (
               <button
                 type="button"
-                onClick={() => setPhantomFromNodeId(null)}
+                onClick={openFreshPhantom}
                 className="absolute left-1/2 top-1/2 z-10 -translate-x-1/2 -translate-y-1/2 rounded-xl border-2 border-dashed border-line-strong bg-surface-raised/80 px-6 py-5 text-center text-sm text-ink-muted shadow-card transition hover:border-brand hover:bg-surface-raised hover:text-ink-strong"
               >
                 <div className="font-display text-base font-semibold text-ink-strong">
@@ -819,6 +855,7 @@ export function App() {
           onSelectNode={onSelectNode}
           onSpawnPhantomFromNode={onSpawnFromAgent}
           onActivatePlanspace={activatePlanspace}
+          onSelectContextBinding={selectContextBinding}
           onBootstrapContextSpace={bootstrapContext}
         />
       </div>
@@ -899,4 +936,3 @@ function pendingBanner(
     label: `Node ${active.nodeId.slice(0, 8)} is awaiting your ${labelKind}.`,
   };
 }
-
