@@ -16,7 +16,7 @@ from typing import Any
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .artifacts import load_node_artifact
 from .contextspace import (
@@ -81,6 +81,14 @@ class SessionInfo(BaseModel):
     scenario_name: str | None = None
     name: str = ""
     project_context_binding_id: str | None = None
+    # Opaque per-node canvas positions persisted from the frontend (PRD §5.1).
+    layout_hints: dict[str, dict[str, float]] = Field(default_factory=dict)
+
+
+class UpdateLayoutHintsRequest(BaseModel):
+    # Merge semantics: `updates` overwrites per-id; `remove` deletes ids.
+    updates: dict[str, dict[str, float]] = Field(default_factory=dict)
+    remove: list[str] = Field(default_factory=list)
 
 
 class EventRecord(BaseModel):
@@ -168,6 +176,7 @@ def create_app() -> FastAPI:
             scenario_name=project.scenario_name,
             name=project.name,
             project_context_binding_id=project.project_context_binding_id,
+            layout_hints=project.layout_hints,
         )
 
     @app.get("/sessions", response_model=list[SessionInfo])
@@ -182,6 +191,7 @@ def create_app() -> FastAPI:
                 scenario_name=p.scenario_name,
                 name=p.name,
                 project_context_binding_id=p.project_context_binding_id,
+                layout_hints=p.layout_hints,
             )
             for p in registry.list_projects()
         ]
@@ -200,6 +210,27 @@ def create_app() -> FastAPI:
             scenario_name=project.scenario_name,
             name=project.name,
             project_context_binding_id=project.project_context_binding_id,
+            layout_hints=project.layout_hints,
+        )
+
+    @app.patch("/sessions/{sid}/layout-hints", response_model=SessionInfo)
+    def update_layout_hints(
+        sid: str,
+        req: UpdateLayoutHintsRequest,
+    ) -> SessionInfo:
+        project = registry.update_layout_hints(sid, req.updates, remove=req.remove)
+        if project is None:
+            raise HTTPException(404, "session not found")
+        return SessionInfo(
+            id=project.id,
+            created_at=project.created_at,
+            turns=registry.turn_count(project.id),
+            provider=project.provider,
+            temporary=project.temporary,
+            scenario_name=project.scenario_name,
+            name=project.name,
+            project_context_binding_id=project.project_context_binding_id,
+            layout_hints=project.layout_hints,
         )
 
     @app.delete("/sessions/{sid}")
@@ -356,6 +387,7 @@ def create_app() -> FastAPI:
             scenario_name=project.scenario_name,
             name=project.name,
             project_context_binding_id=project.project_context_binding_id,
+            layout_hints=project.layout_hints,
         )
 
     @app.post("/sessions/{sid}/verify", response_model=VerifyResponse)

@@ -114,6 +114,9 @@ export type SessionInfo = {
   scenario_name?: string | null;
   name?: string;
   project_context_binding_id?: string | null;
+  /** Persisted canvas positions keyed by node id (or synthetic id, e.g.
+   * `artifact:<nid>`). Optional for older sessions. */
+  layout_hints?: Record<string, { x: number; y: number }>;
 };
 
 export type ScenarioSummary = {

@@ -182,6 +182,31 @@ class ProjectRegistry:
         self.store.update_project(rt.project)
         return rt.project
 
+    def update_layout_hints(
+        self,
+        pid: str,
+        updates: dict[str, dict[str, float]],
+        *,
+        remove: list[str] | None = None,
+    ) -> Project | None:
+        rt = self._runtimes.get(pid)
+        if rt is None:
+            return None
+        merged = dict(rt.project.layout_hints)
+        for nid, pos in updates.items():
+            if not isinstance(pos, dict):
+                continue
+            x = pos.get("x")
+            y = pos.get("y")
+            if not isinstance(x, (int, float)) or not isinstance(y, (int, float)):
+                continue
+            merged[nid] = {"x": float(x), "y": float(y)}
+        for nid in remove or ():
+            merged.pop(nid, None)
+        rt.project.layout_hints = merged
+        self.store.update_project(rt.project)
+        return rt.project
+
     def delete_project(self, pid: str) -> bool:
         rt = self._runtimes.pop(pid, None)
         if rt is None:

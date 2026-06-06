@@ -97,6 +97,10 @@ class Project(BaseModel):
     scenario_name: str | None = None
     scenario_step_history: list[dict[str, Any]] = Field(default_factory=list)
     created_at: float = Field(default_factory=_now)
+    # Opaque per-node canvas positions persisted by the frontend (PRD §5.1).
+    # Keys are node ids (or synthetic ids like `artifact:<nid>`); values are
+    # {"x": <float>, "y": <float>}. Backend treats this as a passthrough blob.
+    layout_hints: dict[str, dict[str, float]] = Field(default_factory=dict)
 
 
 class Node(BaseModel):

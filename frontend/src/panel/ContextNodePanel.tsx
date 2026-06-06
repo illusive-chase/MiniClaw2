@@ -112,7 +112,7 @@ function ContextFileContent({
   if (!bundle) {
     return (
       <div className="rounded-md border border-line bg-surface-sunken px-3 py-3 text-[12px] text-ink-muted">
-        Content not captured in the loader's bundle.
+        Content not captured for this run.
       </div>
     );
   }
@@ -122,8 +122,7 @@ function ContextFileContent({
   if (!guess) {
     return (
       <div className="rounded-md border border-line bg-surface-sunken px-3 py-3 text-[12px] text-ink-muted">
-        File contents not embedded in the bundle text — pull them from disk via the
-        backend if needed.
+        File contents not embedded in this run's context — read them from disk.
       </div>
     );
   }
@@ -156,16 +155,16 @@ function extractFromBundleText(systemText: string, turnText: string, path: strin
 
 function plainLanguageDescription(scope?: string, kind?: string): string {
   if (kind === "planspace") {
-    return "This is a planspace — a project-scoped notebook of plans and decisions appended to every agent's system prompt.";
+    return "Project memory — a notebook of plans and decisions the agent reads at the start of every run.";
   }
   if (kind === "memory") {
-    return "This is a memory file — long-lived facts the assistant carries across runs.";
+    return "A memory file — long-lived facts the assistant carries across runs.";
   }
   if (kind === "global") {
-    return "This is a global context file — applied to every project on this machine.";
+    return "A global context file — applied to every project on this machine.";
   }
   if (kind === "binding") {
-    return "This is a binding — the link between this session and a context space.";
+    return "The wiring that connects this project to its memory profile.";
   }
   if (scope === "system") return "System-level context attached to every run.";
   if (scope === "session") return "Session-level note pulled in for this conversation.";

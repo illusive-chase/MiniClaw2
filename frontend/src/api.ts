@@ -94,6 +94,20 @@ export async function renameSession(id: string, name: string): Promise<SessionIn
   return res.json();
 }
 
+export async function updateLayoutHints(
+  sessionId: string,
+  updates: Record<string, { x: number; y: number }>,
+  remove: string[] = [],
+): Promise<SessionInfo> {
+  const res = await fetch(`/sessions/${sessionId}/layout-hints`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ updates, remove }),
+  });
+  if (!res.ok) throw new Error(`updateLayoutHints failed: ${res.status}`);
+  return res.json();
+}
+
 export async function listNodes(sessionId: string): Promise<NodeInfo[]> {
   const res = await fetch(`/sessions/${sessionId}/nodes`);
   if (!res.ok) throw new Error(`listNodes failed: ${res.status}`);

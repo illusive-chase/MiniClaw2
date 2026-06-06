@@ -10,11 +10,16 @@ frontend reskin + interaction overhaul over the same APIs.
 codebase: React Flow canvas, project-root node, agent/gate/op nodes,
 artifact nodes, context nodes, loads/produces/reviews/resume edges,
 phantom composer, projects landing page, Tests modal, and polymorphic
-`SidePanel` are implemented. Still pending from this PRD: op-as-edge
-chevrons, inline gate expansion directly inside the canvas tile,
-schema-aware review forms, persisted backend `layout_hints`, removing
-all schema words from primary surfaces, phantom future scenario steps,
-and remaining header/menu polish from §11.
+`SidePanel` are implemented. The second slice added: op-as-edge
+chevrons (with trailing-op fallback to a tile when no child exists
+yet), error-terminal nodes downstream of failed runs, `+Δ` memory-
+delta arrows from agents into the context nodes they wrote, persisted
+backend `layout_hints` (round-tripped through `project.json` and a
+`PATCH /sessions/{sid}/layout-hints` route), and a schema-word audit
+of primary surfaces. Still pending from this PRD: inline gate
+expansion directly inside the canvas tile, schema-aware review forms,
+phantom future scenario steps, and the remaining header/menu polish
+from §11.
 
 Read this top-to-bottom — the *derivation* (§1, §2) is load-bearing.
 Future contributors should be able to evaluate new UI proposals
@@ -448,10 +453,15 @@ Original suggested order, now annotated with implementation status:
    Top-level `Context` tab removed.
 6. [ ] **Inline gate tile-expansion** for permission / ask / plan.
    Current implementation renders pending inline gates in `AgentPanel`.
-7. [ ] **Op chevron on edges** replacing op tiles. Current
-   implementation still renders op nodes.
+7. [✓] **Op chevron on edges** replacing op tiles. Ops with a child
+   are folded onto the connecting timeline edge as a clickable chevron
+   carrying the commit hash; trailing ops (no child yet) still render
+   as a tile so the auto-commit stays visible.
 8. [✓] **Header cleanup** + removal of the `Chat / Context / Tests`
    switcher.
-9. [ ] **Errors as terminal nodes** + memory-delta arrows. Current
-   implementation shows errors in the selected agent panel and memory
-   delta results in `Inspect`.
+9. [✓] **Errors as terminal nodes** + memory-delta arrows. Errored
+   runs spawn a red-edged terminal node downstream carrying the
+   `error` text; agents whose `settings_snapshot.memory_delta`
+   populated `planspace_id` draw a dashed `+Δ` edge from the agent
+   into the matching context node, with `applied/proposed` counts on
+   the badge.

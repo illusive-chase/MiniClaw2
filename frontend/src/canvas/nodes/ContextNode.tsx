@@ -55,6 +55,13 @@ function ContextNodeImpl({ data, selected }: NodeProps<ContextNodeData>) {
         position={Position.Bottom}
         className="!h-3 !w-3 !border-2 !border-line !bg-surface !opacity-0"
       />
+      {/* Target endpoint for memory-delta arrows from agents writing back. */}
+      <Handle
+        type="target"
+        id="writes"
+        position={Position.Bottom}
+        className="!h-3 !w-3 !border-2 !border-line !bg-surface !opacity-0"
+      />
     </div>
   );
 }
@@ -64,10 +71,10 @@ export const ContextNode = memo(ContextNodeImpl);
 function kindLabel(scope: string, kind: string): string {
   /* Read scope/kind as a single plain-language descriptor so users
    * don't need to know the ontology. */
-  if (kind === "planspace") return "planspace";
+  if (kind === "planspace") return "project memory";
   if (kind === "memory") return "memory";
   if (kind === "global") return "global";
-  if (kind === "binding") return "binding";
+  if (kind === "binding") return "memory link";
   if (scope === "system") return "system context";
   if (scope === "session") return "session note";
   if (scope === "project") return "project file";

@@ -7,6 +7,7 @@ import {
   getSessionContextSpace,
   listNodeEvents,
   listNodes,
+  updateLayoutHints,
   updateSessionContextSpace,
 } from "./api";
 import { Canvas, type CanvasSelection } from "./canvas/Canvas";
@@ -624,6 +625,18 @@ export function App() {
     openFreshPhantom();
   }, [openFreshPhantom]);
 
+  /* Drag-end → push positions to the backend. Best-effort: log on failure but
+   * don't surface; the client-side ref keeps working either way. */
+  const onLayoutHintsChange = useCallback(
+    (updates: Record<string, { x: number; y: number }>) => {
+      if (!session?.id) return;
+      updateLayoutHints(session.id, updates).catch((err) => {
+        console.warn("update layout hints failed:", err);
+      });
+    },
+    [session?.id],
+  );
+
   const allNodesTerminal = useMemo(
     () => nodes.length > 0 && nodes.every((n) => TERMINAL_STATES.has(n.state)),
     [nodes],
@@ -769,9 +782,11 @@ export function App() {
             phantomFromNodeId={phantomFromNodeId}
             phantomDisabled={composerDisabled}
             contextBundlesByNodeId={contextBundlesByNodeId}
+            initialLayoutHints={session?.layout_hints}
             onSelectionChange={onSelectionChange}
             onEmptyCanvasTap={onEmptyCanvasTap}
             onSpawnFromAgent={onSpawnFromAgent}
+            onLayoutHintsChange={onLayoutHintsChange}
           />
 
           {/* Cross-node pending banner — only show if the pending node isn't the

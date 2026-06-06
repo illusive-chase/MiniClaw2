@@ -31,11 +31,15 @@ import { PhantomNode } from "./nodes/PhantomNode";
 import { ProjectRootNode } from "./nodes/ProjectRootNode";
 import {
   LoadsEdge,
+  MemoryDeltaEdge,
+  OpChevronEdge,
   ProducesEdge,
   ResumeEdge,
   ReviewsEdge,
   TimelineEdge,
+  setOpChevronContext,
 } from "./edges/TimelineEdge";
+import { ErrorTerminalNode } from "./nodes/ErrorTerminalNode";
 
 const NODE_TYPES = {
   agent: AgentNode,
@@ -45,6 +49,7 @@ const NODE_TYPES = {
   context: ContextNode,
   phantom: PhantomNode,
   projectRoot: ProjectRootNode,
+  errorTerminal: ErrorTerminalNode,
 };
 
 const EDGE_TYPES = {
@@ -53,6 +58,8 @@ const EDGE_TYPES = {
   produces: ProducesEdge,
   reviews: ReviewsEdge,
   loads: LoadsEdge,
+  opChevron: OpChevronEdge,
+  memoryDelta: MemoryDeltaEdge,
 };
 
 export type CanvasSelection =
@@ -71,10 +78,14 @@ export type CanvasProps = {
   phantomFromNodeId: string | null | undefined;
   phantomDisabled: boolean;
   contextBundlesByNodeId: Record<string, ContextBundle | null | undefined>;
+  /** Persisted positions hydrated from the session. */
+  initialLayoutHints?: Record<string, { x: number; y: number }>;
   onSelectionChange: (sel: CanvasSelection) => void;
   onEmptyCanvasTap: (position: { x: number; y: number }) => void;
   /** spawn the phantom to the right of a finished agent */
   onSpawnFromAgent: (nodeId: string) => void;
+  /** Called debounced after drag-end with positions that changed. */
+  onLayoutHintsChange?: (updates: Record<string, { x: number; y: number }>) => void;
 };
 
 export function Canvas(props: CanvasProps) {
@@ -93,12 +104,51 @@ function CanvasInner({
   phantomFromNodeId,
   phantomDisabled,
   contextBundlesByNodeId,
+  initialLayoutHints,
   onSelectionChange,
   onEmptyCanvasTap,
   onSpawnFromAgent,
+  onLayoutHintsChange,
 }: CanvasProps) {
-  const layoutHintsRef = useRef<Record<string, { x: number; y: number }>>({});
+  const layoutHintsRef = useRef<Record<string, { x: number; y: number }>>(
+    initialLayoutHints ? { ...initialLayoutHints } : {},
+  );
+  const pendingHintsRef = useRef<Record<string, { x: number; y: number }>>({});
+  const flushTimerRef = useRef<number | null>(null);
   const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
+
+  /* Re-hydrate when the session changes (initialLayoutHints prop swap). */
+  useEffect(() => {
+    if (initialLayoutHints) {
+      layoutHintsRef.current = { ...initialLayoutHints };
+    }
+  }, [initialLayoutHints]);
+
+  const flushPendingHints = useCallback(() => {
+    if (flushTimerRef.current !== null) {
+      window.clearTimeout(flushTimerRef.current);
+      flushTimerRef.current = null;
+    }
+    const pending = pendingHintsRef.current;
+    if (Object.keys(pending).length === 0) return;
+    pendingHintsRef.current = {};
+    onLayoutHintsChange?.(pending);
+  }, [onLayoutHintsChange]);
+
+  useEffect(() => {
+    return () => {
+      flushPendingHints();
+    };
+  }, [flushPendingHints]);
+
+  /* Op chevrons live inside edges, so React Flow's selection callback never
+   * sees their clicks. We wire the click into a module-level singleton so the
+   * EdgeLabelRenderer button can push selection up here. */
+  useEffect(() => {
+    setOpChevronContext({
+      onSelectOp: (opNodeId) => onSelectionChange({ kind: "op", nodeId: opNodeId }),
+    });
+  }, [onSelectionChange]);
 
   /* Build the graph. Phantom presence is a function of phantomFromNodeId:
    *   undefined → no phantom in the graph
@@ -151,17 +201,25 @@ function CanvasInner({
     setRfEdges(decorateEdges(built.rfEdges, selectedNodeId, hoveredNodeId));
   }, [built.rfNodes, built.rfEdges, selectedNodeId, hoveredNodeId, setRfNodes, setRfEdges]);
 
-  /* Persist drag positions client-side so they survive node updates. */
+  /* Persist drag positions client-side so they survive node updates, and
+   * debounce a push to the backend so refreshes survive too. */
   const handleNodesChange = useCallback(
     (changes: NodeChange[]) => {
       for (const ch of changes) {
         if (ch.type === "position" && ch.position && ch.dragging === false) {
           layoutHintsRef.current[ch.id] = ch.position;
+          pendingHintsRef.current[ch.id] = ch.position;
+          if (flushTimerRef.current !== null) {
+            window.clearTimeout(flushTimerRef.current);
+          }
+          flushTimerRef.current = window.setTimeout(() => {
+            flushPendingHints();
+          }, 500);
         }
       }
       onNodesChange(changes);
     },
-    [onNodesChange],
+    [onNodesChange, flushPendingHints],
   );
 
   /* Click → selection. We translate React Flow nodes back into the parent's
@@ -199,6 +257,13 @@ function CanvasInner({
         });
       } else if (n.type === "projectRoot") {
         onSelectionChange({ kind: "projectRoot" });
+      } else if (n.type === "errorTerminal") {
+        const data = n.data as import("./layout").ErrorTerminalData;
+        /* The terminal itself has no panel — selecting it focuses its owner. */
+        onSelectionChange({
+          kind: data.ownerKind === "gate" ? "gate" : "agent",
+          nodeId: data.ownerNodeId,
+        });
       } else {
         onSelectionChange({ kind: "none" });
       }
@@ -338,6 +403,20 @@ function decorateEdges(
       const endpoint = e.source === selectedNodeId || e.target === selectedNodeId
         || e.source === hoveredNodeId || e.target === hoveredNodeId;
       return { ...e, style: { ...(e.style ?? {}), opacity: endpoint ? 0.75 : 0 } };
+    }
+    if (e.type === "opChevron") {
+      const opId = (e.data as { op?: { id?: string } } | undefined)?.op?.id;
+      if (opId && opId === selectedNodeId) {
+        return {
+          ...e,
+          data: { ...(e.data as object), opSelected: true },
+          selected: true,
+        };
+      }
+      return {
+        ...e,
+        data: { ...(e.data as object), opSelected: false },
+      };
     }
     if (selectedNodeId && (e.source === selectedNodeId || e.target === selectedNodeId)) {
       return { ...e, selected: true };

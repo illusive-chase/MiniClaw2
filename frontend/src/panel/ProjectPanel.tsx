@@ -71,7 +71,7 @@ export function ProjectPanel({
 
         <section className="mb-5">
           <div className="flex items-baseline justify-between">
-            <SectionLabel>Active planspace</SectionLabel>
+            <SectionLabel>Active project memory</SectionLabel>
             {contextSpaceLoading && (
               <span className="text-[10px] text-ink-subtle">loading…</span>
             )}
@@ -83,12 +83,13 @@ export function ProjectPanel({
           )}
           {!contextSpace ? (
             <div className="mt-1 rounded-md border border-line bg-surface-sunken px-3 py-2 text-[11.5px] text-ink-muted">
-              No context space loaded.
+              Project memory not loaded.
             </div>
           ) : !contextSpace.exists ? (
             <div className="mt-1 space-y-2 rounded-md border border-line bg-surface-sunken px-3 py-2 text-[11.5px]">
               <p className="text-ink-muted">
-                No context space yet. Create one to enable persistent project memory.
+                No project memory yet. Set one up to give the agent a notebook of plans
+                and decisions that survive across runs.
               </p>
               <button
                 type="button"
@@ -96,13 +97,13 @@ export function ProjectPanel({
                 disabled={contextSpaceSaving}
                 className="rounded-md bg-brand px-2.5 py-1 text-[11px] font-medium text-white shadow-card transition hover:brightness-[0.95] disabled:opacity-40"
               >
-                Bootstrap context space
+                Set up project memory
               </button>
             </div>
           ) : !activeBinding ? (
             <div className="mt-1 space-y-3 rounded-md border border-line bg-surface-sunken px-3 py-2 text-[11.5px]">
               <p className="text-ink-muted">
-                No binding resolved for this project.
+                No memory profile is wired up to this project yet.
               </p>
               <button
                 type="button"
@@ -110,12 +111,12 @@ export function ProjectPanel({
                 disabled={contextSpaceSaving}
                 className="rounded-md bg-brand px-2.5 py-1 text-[11px] font-medium text-white shadow-card transition hover:brightness-[0.95] disabled:opacity-40"
               >
-                Bootstrap project binding
+                Set up project memory
               </button>
               {contextSpace.bindings.length > 0 && (
                 <div>
                   <div className="mb-1 text-[10px] font-medium uppercase tracking-[0.14em] text-ink-subtle">
-                    Existing bindings
+                    Existing memory profiles
                   </div>
                   <ul className="space-y-1">
                     {contextSpace.bindings.map((binding) => (

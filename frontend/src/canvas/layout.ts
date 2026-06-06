@@ -19,6 +19,13 @@ export type OpNodeData = {
   child: NodeInfo | null;
 };
 
+export type ErrorTerminalData = {
+  /** The owning agent / gate node whose error this surfaces. */
+  ownerNodeId: string;
+  ownerKind: NodeInfo["kind"];
+  message: string;
+};
+
 export type ArtifactNodeData = {
   /** Owning agent / gate node */
   ownerNodeId: string;
@@ -63,7 +70,8 @@ export type RFNodeData =
   | ArtifactNodeData
   | ContextNodeData
   | PhantomNodeData
-  | ProjectRootNodeData;
+  | ProjectRootNodeData
+  | ErrorTerminalData;
 
 export type RFNode = Node<RFNodeData>;
 export type RFEdge = Edge;
@@ -145,6 +153,22 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
     selectable: true,
   });
 
+  /* Index ops by the child node they sit between, so we can fold them onto
+   * a single chevron edge from (op's parent) → (op's child). Trailing ops
+   * (no child yet) keep their tile rendering so the auto-commit stays visible. */
+  const opByChildId = new Map<string, NodeInfo>();
+  const opsWithChild = new Set<string>();
+  for (const node of nodes) {
+    if (node.kind !== "op") continue;
+    const childIdx = nodes.findIndex(
+      (n) => n.parent_node_id === node.id && n.kind !== "op",
+    );
+    if (childIdx >= 0) {
+      opByChildId.set(nodes[childIdx].id, node);
+      opsWithChild.add(node.id);
+    }
+  }
+
   /* main timeline: agents, gates, ops along x = index*spacing */
   let cursorX = LANE.rootX + 180;
   nodes.forEach((node, index) => {
@@ -153,17 +177,15 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
     const stored = layoutHints[node.id];
 
     if (node.kind === "op") {
+      /* Folded into a chevron edge — skip rendering as a tile. */
+      if (opsWithChild.has(node.id)) return;
       const parent = node.parent_node_id ? (nodeById.get(node.parent_node_id) ?? null) : null;
-      const childIdx = nodes.findIndex(
-        (n) => n.parent_node_id === node.id && n.kind !== "op",
-      );
-      const child = childIdx >= 0 ? nodes[childIdx] : null;
       const position = stored ?? { x: cursorX, y: LANE.timelineY };
       rfNodes.push({
         id: node.id,
         type: "op",
         position,
-        data: { node, parent, child },
+        data: { node, parent, child: null },
         draggable: true,
       });
       cursorX += LANE.opSpacing;
@@ -189,8 +211,22 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
       cursorX += LANE.agentSpacing;
     }
 
-    /* timeline / resume edge from FS-parent */
-    if (node.parent_node_id && nodeById.has(node.parent_node_id)) {
+    /* timeline / resume / op-chevron edge from FS-parent */
+    const interposedOp = opByChildId.get(node.id);
+    if (interposedOp) {
+      /* parent → child carrying the folded op chevron */
+      const grandparentId =
+        interposedOp.parent_node_id && nodeById.has(interposedOp.parent_node_id)
+          ? interposedOp.parent_node_id
+          : "root";
+      rfEdges.push({
+        id: `op:${interposedOp.id}->${node.id}`,
+        source: grandparentId,
+        target: node.id,
+        type: "opChevron",
+        data: { childState: node.state, op: interposedOp },
+      });
+    } else if (node.parent_node_id && nodeById.has(node.parent_node_id)) {
       const parentNode = nodeById.get(node.parent_node_id)!;
       const isResume = parentNode.kind !== "op" && node.kind !== "op";
       rfEdges.push({
@@ -267,6 +303,45 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
     }
   });
 
+  /* error terminals — a small red-edged downstream node per failed run.
+   * The owning agent keeps its own error state; the terminal puts the failure
+   * text into the graph itself so retries (resume edges back to the parent)
+   * read as a visible loop instead of a banner inside a panel. */
+  nodes.forEach((node) => {
+    if (node.kind === "op") return;
+    if (node.state !== "error") return;
+    if (!node.error) return;
+    const terminalId = `err:${node.id}`;
+    const sourceNode = rfNodes.find((n) => n.id === node.id);
+    const baseX = sourceNode?.position.x ?? LANE.rootX;
+    const baseY = sourceNode?.position.y ?? LANE.timelineY;
+    const stored = layoutHints[terminalId];
+    rfNodes.push({
+      id: terminalId,
+      type: "errorTerminal",
+      position: stored ?? {
+        /* Drop below the agent so retries (next timeline slot at
+         * baseX + agentSpacing) don't stack on top of the failure marker. */
+        x: baseX,
+        y: baseY + LANE.artifactOffsetY,
+      },
+      data: {
+        ownerNodeId: node.id,
+        ownerKind: node.kind,
+        message: node.error,
+      },
+      draggable: true,
+      selectable: true,
+    });
+    rfEdges.push({
+      id: `errtl:${node.id}->${terminalId}`,
+      source: node.id,
+      target: terminalId,
+      type: "timeline",
+      data: { childState: "error" as NodeInfo["state"] },
+    });
+  });
+
   /* context lane — one node per distinct (scope, kind, path) tuple across all bundles */
   type CtxAggregate = {
     identityKey: string;
@@ -326,6 +401,36 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
         type: "loads",
       });
     }
+  }
+
+  /* memory-delta arrows — when an agent wrote back into a context node
+   * (planspace), draw a +Δ edge from the agent to that context node.
+   * The source-of-truth is `settings_snapshot.memory_delta.planspace_id`,
+   * resolved against the agent's own bundle so we can map planspace id →
+   * the context node id we materialized above. */
+  for (const node of nodes) {
+    if (node.kind !== "agent") continue;
+    const delta = node.settings_snapshot?.memory_delta as
+      | { planspace_id?: string; applied?: number; proposed?: number }
+      | undefined;
+    if (!delta || !delta.planspace_id) continue;
+    if (!(delta.applied ?? 0) && !(delta.proposed ?? 0)) continue;
+    const bundle = contextBundlesByNodeId[node.id];
+    if (!bundle) continue;
+    const src = bundle.sources.find((s) => s.plug_id === delta.planspace_id);
+    if (!src) continue;
+    const ctxId = `ctx:${contextIdentityKey(src.scope, src.kind, src.path)}`;
+    rfEdges.push({
+      id: `md:${node.id}->${ctxId}`,
+      source: node.id,
+      target: ctxId,
+      targetHandle: "writes",
+      type: "memoryDelta",
+      data: {
+        applied: delta.applied ?? 0,
+        proposed: delta.proposed ?? 0,
+      },
+    });
   }
 
   /* phantom composer */
