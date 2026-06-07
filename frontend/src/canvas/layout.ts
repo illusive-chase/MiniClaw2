@@ -9,6 +9,7 @@ export type AgentNodeData = {
   resumeParent: NodeInfo | null;
   /** true when this agent is currently streaming text in the live channel */
   isActive: boolean;
+  planspaceColor: PlanspaceColor | null;
 };
 
 export type GateNodeData = AgentNodeData;
@@ -63,6 +64,23 @@ export type ProjectRootNodeData = {
   title: string;
 };
 
+export type PlanspaceColor = {
+  name: string;
+  bg: string;
+  border: string;
+  accent: string;
+  text: string;
+};
+
+export type PlanspaceLaneData = {
+  planspaceId: string;
+  label: string;
+  nodeCount: number;
+  width: number;
+  height: number;
+  color: PlanspaceColor;
+};
+
 export type RFNodeData =
   | AgentNodeData
   | GateNodeData
@@ -71,6 +89,7 @@ export type RFNodeData =
   | ContextNodeData
   | PhantomNodeData
   | ProjectRootNodeData
+  | PlanspaceLaneData
   | ErrorTerminalData;
 
 export type RFNode = Node<RFNodeData>;
@@ -89,7 +108,56 @@ export const LANE = {
   opWidth: 96,
   opSpacing: 140,
   gateSpacing: 240,
+  planspaceLaneSpacing: 220,
+  planspaceLanePaddingX: 28,
+  planspaceLaneTopPad: 44,
+  planspaceLaneHeight: 164,
 };
+
+export const PLANSPACE_PALETTE: PlanspaceColor[] = [
+  {
+    name: "indigo",
+    bg: "rgb(95 111 149 / 0.08)",
+    border: "rgb(95 111 149 / 0.28)",
+    accent: "rgb(95 111 149)",
+    text: "rgb(70 82 112)",
+  },
+  {
+    name: "teal",
+    bg: "rgb(67 132 122 / 0.08)",
+    border: "rgb(67 132 122 / 0.28)",
+    accent: "rgb(67 132 122)",
+    text: "rgb(44 103 95)",
+  },
+  {
+    name: "rose",
+    bg: "rgb(166 92 110 / 0.08)",
+    border: "rgb(166 92 110 / 0.28)",
+    accent: "rgb(166 92 110)",
+    text: "rgb(126 67 82)",
+  },
+  {
+    name: "olive",
+    bg: "rgb(116 128 76 / 0.08)",
+    border: "rgb(116 128 76 / 0.28)",
+    accent: "rgb(116 128 76)",
+    text: "rgb(83 95 52)",
+  },
+  {
+    name: "steel",
+    bg: "rgb(82 125 154 / 0.08)",
+    border: "rgb(82 125 154 / 0.28)",
+    accent: "rgb(82 125 154)",
+    text: "rgb(54 94 123)",
+  },
+  {
+    name: "mauve",
+    bg: "rgb(135 99 143 / 0.08)",
+    border: "rgb(135 99 143 / 0.28)",
+    accent: "rgb(135 99 143)",
+    text: "rgb(102 72 110)",
+  },
+];
 
 /* ───────── build graph ───────── */
 
@@ -142,6 +210,18 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
   const artifactsByOwnerId: Record<string, string[]> = {};
   const nodeById = new Map<string, NodeInfo>();
   for (const n of nodes) nodeById.set(n.id, n);
+  const planspaceOrder = collectPlanspaceOrder(nodes, nodeById);
+  const planspaceIndex = new Map(planspaceOrder.map((id, index) => [id, index]));
+  const laneBounds = new Map<
+    string,
+    {
+      minX: number;
+      maxX: number;
+      y: number;
+      count: number;
+      color: PlanspaceColor;
+    }
+  >();
 
   /* project root anchor */
   rfNodes.push({
@@ -175,12 +255,15 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
     const resumeParent = findResumeParent(node, nodeById);
     const isActive = node.id === activeNodeId;
     const stored = layoutHints[node.id];
+    const planspaceId = resolvePlanspaceId(node, nodeById);
+    const laneY = yForPlanspace(planspaceId, planspaceIndex);
+    const planspaceColor = colorForPlanspace(planspaceId, planspaceIndex);
 
     if (node.kind === "op") {
       /* Folded into a chevron edge — skip rendering as a tile. */
       if (opsWithChild.has(node.id)) return;
       const parent = node.parent_node_id ? (nodeById.get(node.parent_node_id) ?? null) : null;
-      const position = stored ?? { x: cursorX, y: LANE.timelineY };
+      const position = stored ?? { x: cursorX, y: laneY };
       rfNodes.push({
         id: node.id,
         type: "op",
@@ -188,26 +271,29 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
         data: { node, parent, child: null },
         draggable: true,
       });
+      recordLaneBounds(laneBounds, planspaceId, position, LANE.opWidth, planspaceIndex);
       cursorX += LANE.opSpacing;
     } else if (node.kind === "gate") {
-      const position = stored ?? { x: cursorX, y: LANE.timelineY };
+      const position = stored ?? { x: cursorX, y: laneY };
       rfNodes.push({
         id: node.id,
         type: "gate",
         position,
-        data: { node, index, resumeParent, isActive },
+        data: { node, index, resumeParent, isActive, planspaceColor },
         draggable: true,
       });
+      recordLaneBounds(laneBounds, planspaceId, position, 200, planspaceIndex);
       cursorX += LANE.gateSpacing;
     } else {
-      const position = stored ?? { x: cursorX, y: LANE.timelineY };
+      const position = stored ?? { x: cursorX, y: laneY };
       rfNodes.push({
         id: node.id,
         type: "agent",
         position,
-        data: { node, index, resumeParent, isActive },
+        data: { node, index, resumeParent, isActive, planspaceColor },
         draggable: true,
       });
+      recordLaneBounds(laneBounds, planspaceId, position, LANE.agentWidth, planspaceIndex);
       cursorX += LANE.agentSpacing;
     }
 
@@ -247,6 +333,33 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
       });
     }
   });
+
+  const laneNodes: RFNode[] = [];
+  for (const [planspaceId, bounds] of laneBounds) {
+    const x = bounds.minX - LANE.planspaceLanePaddingX;
+    const y = bounds.y - LANE.planspaceLaneTopPad;
+    const width = Math.max(
+      LANE.agentWidth + LANE.planspaceLanePaddingX * 2,
+      bounds.maxX - bounds.minX + LANE.planspaceLanePaddingX * 2,
+    );
+    laneNodes.push({
+      id: `planspace:${planspaceId}`,
+      type: "planspaceLane",
+      position: { x, y },
+      data: {
+        planspaceId,
+        label: labelForPlanspace(planspaceId),
+        nodeCount: bounds.count,
+        width,
+        height: LANE.planspaceLaneHeight,
+        color: bounds.color,
+      },
+      selectable: false,
+      draggable: false,
+      zIndex: -20,
+    });
+  }
+  rfNodes.splice(1, 0, ...laneNodes);
 
   /* artifact nodes — one per agent with an output_path */
   nodes.forEach((node) => {
@@ -403,21 +516,22 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
     }
   }
 
-  /* memory-delta arrows — when an agent wrote back into a context node
+  /* planspace-update arrows — when an agent wrote back into a context node
    * (planspace), draw a +Δ edge from the agent to that context node.
-   * The source-of-truth is `settings_snapshot.memory_delta.planspace_id`,
+   * The source-of-truth is `settings_snapshot.planspace_update.planspace_id`,
    * resolved against the agent's own bundle so we can map planspace id →
    * the context node id we materialized above. */
   for (const node of nodes) {
     if (node.kind !== "agent") continue;
-    const delta = node.settings_snapshot?.memory_delta as
+    const update = (node.settings_snapshot?.planspace_update
+      ?? node.settings_snapshot?.memory_delta) as
       | { planspace_id?: string; applied?: number; proposed?: number }
       | undefined;
-    if (!delta || !delta.planspace_id) continue;
-    if (!(delta.applied ?? 0) && !(delta.proposed ?? 0)) continue;
+    if (!update || !update.planspace_id) continue;
+    if (!(update.applied ?? 0) && !(update.proposed ?? 0)) continue;
     const bundle = contextBundlesByNodeId[node.id];
     if (!bundle) continue;
-    const src = bundle.sources.find((s) => s.plug_id === delta.planspace_id);
+    const src = bundle.sources.find((s) => s.plug_id === update.planspace_id);
     if (!src) continue;
     const ctxId = `ctx:${contextIdentityKey(src.scope, src.kind, src.path)}`;
     rfEdges.push({
@@ -427,8 +541,8 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
       targetHandle: "writes",
       type: "memoryDelta",
       data: {
-        applied: delta.applied ?? 0,
-        proposed: delta.proposed ?? 0,
+        applied: update.applied ?? 0,
+        proposed: update.proposed ?? 0,
       },
     });
   }
@@ -488,4 +602,97 @@ export function findResumeParent(
   const parent = byId.get(node.parent_node_id);
   if (!parent || parent.kind === "op") return null;
   return parent;
+}
+
+function collectPlanspaceOrder(
+  nodes: NodeInfo[],
+  byId: Map<string, NodeInfo>,
+): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const node of nodes) {
+    const id = resolvePlanspaceId(node, byId);
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    out.push(id);
+  }
+  return out;
+}
+
+function resolvePlanspaceId(
+  node: NodeInfo,
+  byId: Map<string, NodeInfo>,
+): string | null {
+  if (node.planspace_id) return node.planspace_id;
+  const snapshotValue = node.settings_snapshot?.active_planspace_id;
+  if (typeof snapshotValue === "string" && snapshotValue) return snapshotValue;
+  if (node.parent_node_id) {
+    const parent = byId.get(node.parent_node_id);
+    if (parent) return resolvePlanspaceId(parent, byId);
+  }
+  return null;
+}
+
+function yForPlanspace(
+  planspaceId: string | null,
+  planspaceIndex: Map<string, number>,
+): number {
+  if (!planspaceId) return LANE.timelineY;
+  return LANE.timelineY + (planspaceIndex.get(planspaceId) ?? 0) * LANE.planspaceLaneSpacing;
+}
+
+function colorForPlanspace(
+  planspaceId: string | null,
+  planspaceIndex: Map<string, number>,
+): PlanspaceColor | null {
+  if (!planspaceId) return null;
+  const index = planspaceIndex.get(planspaceId) ?? 0;
+  return PLANSPACE_PALETTE[index % PLANSPACE_PALETTE.length];
+}
+
+function recordLaneBounds(
+  laneBounds: Map<
+    string,
+    {
+      minX: number;
+      maxX: number;
+      y: number;
+      count: number;
+      color: PlanspaceColor;
+    }
+  >,
+  planspaceId: string | null,
+  position: { x: number; y: number },
+  width: number,
+  planspaceIndex: Map<string, number>,
+): void {
+  if (!planspaceId) return;
+  const color = colorForPlanspace(planspaceId, planspaceIndex);
+  if (!color) return;
+  const existing = laneBounds.get(planspaceId);
+  const maxX = position.x + width;
+  if (existing) {
+    existing.minX = Math.min(existing.minX, position.x);
+    existing.maxX = Math.max(existing.maxX, maxX);
+    existing.count += 1;
+    return;
+  }
+  laneBounds.set(planspaceId, {
+    minX: position.x,
+    maxX,
+    y: position.y,
+    count: 1,
+    color,
+  });
+}
+
+function labelForPlanspace(planspaceId: string): string {
+  const raw = planspaceId.includes(".")
+    ? planspaceId.slice(planspaceId.indexOf(".") + 1)
+    : planspaceId;
+  return raw
+    .split(/[-_]/g)
+    .filter(Boolean)
+    .map((part) => part[0]?.toUpperCase() + part.slice(1))
+    .join(" ");
 }

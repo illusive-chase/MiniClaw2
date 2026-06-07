@@ -8,13 +8,14 @@ from typing import Any
 from unittest.mock import patch
 
 from miniclaw2.contextspace import (
-    apply_memory_delta_artifact,
-    apply_memory_delta_inbox,
+    apply_planspace_update_artifact,
+    apply_planspace_update_inbox,
     compose_context_bundle,
     load_context_bundle_for_node,
-    memory_delta_output_relpath,
+    planspace_update_output_relpath,
 )
 from miniclaw2.domain import Node, NodeState, Project
+from miniclaw2.planspace_state import parse_planspace_status
 from miniclaw2.providers.base import AgentProviderEvent
 from miniclaw2.runner import NodeRunner
 from miniclaw2.store import Store
@@ -57,6 +58,9 @@ def _write_contextspace(store_root: Path, project_root: Path) -> Path:
                 "id: planspaces.memory",
                 "kind: planspace",
                 "title: Memory Protocol",
+                "write_policy:",
+                "  STATUS.md: auto",
+                "  PLAN.md: derived",
                 "injection:",
                 "  STATUS.md: turn",
                 "  PLAN.md: turn",
@@ -69,11 +73,30 @@ def _write_contextspace(store_root: Path, project_root: Path) -> Path:
         encoding="utf-8",
     )
     (ctx / "plugs" / "planspaces" / "memory" / "STATUS.md").write_text(
-        "Current status: implement contextspace.\n",
+        "\n".join(
+            [
+                "---",
+                "goal: Implement ContextSpace writeback.",
+                "current_state: Current status: implement contextspace.",
+                "open_questions:",
+                "  - id: Q1",
+                "    summary: Should PLAN be derived from STATUS?",
+                "    raised_at: 2026-06-07",
+                "    raised_by: user",
+                "decisions: []",
+                "out_of_scope: []",
+                "---",
+                "",
+                "# Notes",
+                "",
+                "Current status: implement contextspace.",
+                "",
+            ]
+        ),
         encoding="utf-8",
     )
     (ctx / "plugs" / "planspaces" / "memory" / "PLAN.md").write_text(
-        "Current plan: ship the first slice.\n",
+        "This stale plan should be regenerated from STATUS.\n",
         encoding="utf-8",
     )
     (ctx / "plugs" / "skills" / "python-testing" / "manifest.yaml").write_text(
@@ -112,8 +135,8 @@ class _CaptureProvider:
         return None
 
 
-class _MemoryDeltaWritingProvider:
-    name = "memory-delta"
+class _PlanspaceUpdateWritingProvider:
+    name = "planspace-update"
 
     def __init__(self, before_write: Any | None = None) -> None:
         self.before_write = before_write
@@ -124,7 +147,7 @@ class _MemoryDeltaWritingProvider:
         if self.before_write is not None:
             self.before_write()
         settings = context.node.settings_snapshot
-        path = Path(context.project.root_path) / memory_delta_output_relpath(context.node)
+        path = Path(context.project.root_path) / planspace_update_output_relpath(context.node)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(
             json.dumps(
@@ -140,10 +163,22 @@ class _MemoryDeltaWritingProvider:
                     "updates": [
                         {
                             "target": "STATUS.md",
-                            "operation": "append_observation",
+                            "operation": "append_body",
                             "policy": "auto",
                             "confidence": "observed",
-                            "text": "Implemented memory delta v1 via project artifact.",
+                            "text": "Implemented planspace update v1 via project artifact.",
+                        },
+                        {
+                            "target": "STATUS.md",
+                            "operation": "add_decision",
+                            "policy": "auto",
+                            "summary": "Use structured STATUS frontmatter.",
+                        },
+                        {
+                            "target": "STATUS.md",
+                            "operation": "add_out_of_scope",
+                            "policy": "auto",
+                            "text": "Compressed query packs remain deferred.",
                         },
                         {
                             "target": "PLAN.md",
@@ -206,7 +241,7 @@ class ContextSpaceRunnerTest(unittest.IsolatedAsyncioTestCase):
                 "# Project Context\n\nRespect repo rules.\n",
             )
             self.assertIn("Current status: implement contextspace.", captured.launch_instructions)
-            self.assertIn("Current plan: ship the first slice.", captured.launch_instructions)
+            self.assertIn("Should PLAN be derived from STATUS?", captured.launch_instructions)
             self.assertIn("Use pytest for focused regression tests.", captured.launch_instructions)
 
             bundle = load_context_bundle_for_node(node, store_root=store.root)
@@ -219,7 +254,7 @@ class ContextSpaceRunnerTest(unittest.IsolatedAsyncioTestCase):
             self.assertIn("plugs/planspaces/memory/PLAN.md", source_paths)
             self.assertIn("plugs/skills/python-testing/CONTEXT.md", source_paths)
 
-    async def test_runner_omits_memory_delta_contract_when_auto_update_disabled(self) -> None:
+    async def test_runner_omits_planspace_update_contract_when_auto_update_disabled(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             tmp = Path(raw)
             store = Store(root=tmp / "store")
@@ -255,13 +290,13 @@ class ContextSpaceRunnerTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(provider.contexts), 1)
             launch_instructions = provider.contexts[0].launch_instructions
             self.assertIn("Current status: implement contextspace.", launch_instructions)
-            self.assertNotIn("ContextSpace memory delta contract", launch_instructions)
-            self.assertNotIn(memory_delta_output_relpath(node), launch_instructions)
+            self.assertNotIn("Planspace update contract", launch_instructions)
+            self.assertNotIn(planspace_update_output_relpath(node), launch_instructions)
             self.assertEqual(
                 node.settings_snapshot["active_planspace_id"],
                 "planspaces.memory",
             )
-            self.assertNotIn("memory_delta_output_path", node.settings_snapshot)
+            self.assertNotIn("planspace_update_output_path", node.settings_snapshot)
 
             bundle = load_context_bundle_for_node(node, store_root=store.root)
             assert bundle is not None
@@ -269,7 +304,7 @@ class ContextSpaceRunnerTest(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(bundle["active_planspace_auto_update"])
             self.assertFalse(bundle["active_planspace"]["auto_update"])
 
-    async def test_runner_applies_project_memory_delta_to_snapshot_planspace(self) -> None:
+    async def test_runner_applies_project_planspace_update_to_snapshot_planspace(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             tmp = Path(raw)
             store = Store(root=tmp / "store")
@@ -336,7 +371,7 @@ class ContextSpaceRunnerTest(unittest.IsolatedAsyncioTestCase):
             async def on_event(payload: dict[str, object]) -> None:
                 emitted.append(payload)
 
-            provider = _MemoryDeltaWritingProvider(
+            provider = _PlanspaceUpdateWritingProvider(
                 before_write=lambda: write_binding("planspaces.other")
             )
             with patch("miniclaw2.runner._make_provider", return_value=provider):
@@ -344,12 +379,14 @@ class ContextSpaceRunnerTest(unittest.IsolatedAsyncioTestCase):
                 await runner.run()
 
             self.assertEqual(node.state, NodeState.DONE)
+            self.assertEqual(node.planspace_id, "planspaces.memory")
             self.assertEqual(len(provider.contexts), 1)
             launch_instructions = provider.contexts[0].launch_instructions
-            self.assertIn(memory_delta_output_relpath(node), launch_instructions)
+            self.assertIn(planspace_update_output_relpath(node), launch_instructions)
+            self.assertIn("Planspace update contract", launch_instructions)
             self.assertIn('"target": "STATUS.md"', launch_instructions)
             self.assertIn('"target": "PLAN.md"', launch_instructions)
-            self.assertIn("Do not write directly into the ContextSpace", launch_instructions)
+            self.assertIn("Do not edit STATUS.md or PLAN.md directly", launch_instructions)
 
             memory_status = (
                 ctx / "plugs" / "planspaces" / "memory" / "STATUS.md"
@@ -360,11 +397,16 @@ class ContextSpaceRunnerTest(unittest.IsolatedAsyncioTestCase):
             other_status = (
                 ctx / "plugs" / "planspaces" / "other" / "STATUS.md"
             ).read_text(encoding="utf-8")
-            self.assertIn("Implemented memory delta v1 via project artifact.", memory_status)
+            self.assertIn("Implemented planspace update v1 via project artifact.", memory_status)
+            parsed = parse_planspace_status(memory_status)
+            self.assertEqual(parsed.decisions[-1]["summary"], "Use structured STATUS frontmatter.")
+            self.assertIn("Compressed query packs remain deferred.", parsed.out_of_scope)
             self.assertIn(f"node {node.id}", memory_status)
             self.assertIn("acceptance_state: unreviewed", memory_status)
             self.assertNotIn("Do not auto-apply this plan proposal.", memory_plan)
-            self.assertNotIn("Implemented memory delta v1 via project artifact.", other_status)
+            self.assertIn("[from D1] Use structured STATUS frontmatter.", memory_plan)
+            self.assertIn("Compressed query packs remain deferred.", memory_plan)
+            self.assertNotIn("Implemented planspace update v1 via project artifact.", other_status)
 
             copied_delta = (
                 ctx
@@ -372,26 +414,26 @@ class ContextSpaceRunnerTest(unittest.IsolatedAsyncioTestCase):
                 / "planspaces"
                 / "memory"
                 / "inbox"
-                / f"{node.id}.memory-delta.json"
+                / f"{node.id}.planspace-update.json"
             )
             self.assertTrue(copied_delta.exists())
-            self.assertTrue((project_root / memory_delta_output_relpath(node)).exists())
+            self.assertTrue((project_root / planspace_update_output_relpath(node)).exists())
 
             events = (ctx / "plugs" / "planspaces" / "memory" / "events.jsonl").read_text(
                 encoding="utf-8"
             )
-            self.assertIn("memory_delta_applied", events)
+            self.assertIn("planspace_update_applied", events)
             self.assertIn("proposals", events)
 
-            result = node.settings_snapshot.get("memory_delta")
+            result = node.settings_snapshot.get("planspace_update")
             self.assertIsInstance(result, dict)
             assert isinstance(result, dict)
-            self.assertEqual(result["applied"], 1)
+            self.assertEqual(result["applied"], 3)
             self.assertEqual(result["proposed"], 1)
             self.assertEqual(result["source"], "project_artifact")
             self.assertEqual(result["planspace_id"], "planspaces.memory")
 
-    async def test_memory_delta_auto_applies_only_status_updates(self) -> None:
+    async def test_planspace_update_auto_applies_only_status_updates(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             tmp = Path(raw)
             store = Store(root=tmp / "store")
@@ -405,7 +447,7 @@ class ContextSpaceRunnerTest(unittest.IsolatedAsyncioTestCase):
             )
             node = Node(project_id=project.id, state=NodeState.DONE)
             inbox = ctx / "plugs" / "planspaces" / "memory" / "inbox"
-            (inbox / f"{node.id}.memory-delta.json").write_text(
+            (inbox / f"{node.id}.planspace-update.json").write_text(
                 json.dumps(
                     {
                         "version": 1,
@@ -415,7 +457,7 @@ class ContextSpaceRunnerTest(unittest.IsolatedAsyncioTestCase):
                         "updates": [
                             {
                                 "target": "STATUS.md",
-                                "operation": "append_observation",
+                                "operation": "append_body",
                                 "policy": "auto",
                                 "text": "Implemented the ContextSpace loader.",
                             },
@@ -431,7 +473,7 @@ class ContextSpaceRunnerTest(unittest.IsolatedAsyncioTestCase):
                 encoding="utf-8",
             )
 
-            result = apply_memory_delta_inbox(project, node, store_root=store.root)
+            result = apply_planspace_update_inbox(project, node, store_root=store.root)
 
             self.assertEqual(result["applied"], 1)
             status = (ctx / "plugs" / "planspaces" / "memory" / "STATUS.md").read_text(
@@ -443,9 +485,9 @@ class ContextSpaceRunnerTest(unittest.IsolatedAsyncioTestCase):
             events = (ctx / "plugs" / "planspaces" / "memory" / "events.jsonl").read_text(
                 encoding="utf-8"
             )
-            self.assertIn("memory_delta_applied", events)
+            self.assertIn("planspace_update_applied", events)
 
-    async def test_memory_delta_routes_to_snapshotted_planspace_after_binding_change(self) -> None:
+    async def test_planspace_update_routes_to_snapshotted_planspace_after_binding_change(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             tmp = Path(raw)
             store = Store(root=tmp / "store")
@@ -516,13 +558,13 @@ class ContextSpaceRunnerTest(unittest.IsolatedAsyncioTestCase):
 
             memory_inbox = ctx / "plugs" / "planspaces" / "memory" / "inbox"
             other_inbox = ctx / "plugs" / "planspaces" / "other" / "inbox"
-            (memory_inbox / f"{node.id}.memory-delta.json").write_text(
+            (memory_inbox / f"{node.id}.planspace-update.json").write_text(
                 json.dumps(
                     {
                         "updates": [
                             {
                                 "target": "STATUS.md",
-                                "operation": "append_observation",
+                                "operation": "append_body",
                                 "policy": "auto",
                                 "text": "Apply to the launch planspace.",
                             }
@@ -531,13 +573,13 @@ class ContextSpaceRunnerTest(unittest.IsolatedAsyncioTestCase):
                 ),
                 encoding="utf-8",
             )
-            (other_inbox / f"{node.id}.memory-delta.json").write_text(
+            (other_inbox / f"{node.id}.planspace-update.json").write_text(
                 json.dumps(
                     {
                         "updates": [
                             {
                                 "target": "STATUS.md",
-                                "operation": "append_observation",
+                                "operation": "append_body",
                                 "policy": "auto",
                                 "text": "Wrong active planspace.",
                             }
@@ -547,7 +589,7 @@ class ContextSpaceRunnerTest(unittest.IsolatedAsyncioTestCase):
                 encoding="utf-8",
             )
 
-            result = apply_memory_delta_inbox(project, node, store_root=store.root)
+            result = apply_planspace_update_inbox(project, node, store_root=store.root)
 
             self.assertEqual(result["applied"], 1)
             self.assertEqual(result["planspace_id"], "planspaces.memory")
@@ -560,7 +602,7 @@ class ContextSpaceRunnerTest(unittest.IsolatedAsyncioTestCase):
             self.assertIn("Apply to the launch planspace.", memory_status)
             self.assertNotIn("Wrong active planspace.", other_status)
 
-    async def test_project_memory_delta_artifact_rejects_wrong_node_id(self) -> None:
+    async def test_project_planspace_update_artifact_rejects_wrong_node_id(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             tmp = Path(raw)
             store = Store(root=tmp / "store")
@@ -579,7 +621,7 @@ class ContextSpaceRunnerTest(unittest.IsolatedAsyncioTestCase):
                 bundle.bundle_path.relative_to(bundle.context_root)
             )
 
-            path = project_root / memory_delta_output_relpath(node)
+            path = project_root / planspace_update_output_relpath(node)
             path.parent.mkdir(parents=True)
             path.write_text(
                 json.dumps(
@@ -592,7 +634,7 @@ class ContextSpaceRunnerTest(unittest.IsolatedAsyncioTestCase):
                         "updates": [
                             {
                                 "target": "STATUS.md",
-                                "operation": "append_observation",
+                                "operation": "append_body",
                                 "policy": "auto",
                                 "text": "Should not apply.",
                             }
@@ -602,7 +644,7 @@ class ContextSpaceRunnerTest(unittest.IsolatedAsyncioTestCase):
                 encoding="utf-8",
             )
 
-            result = apply_memory_delta_artifact(project, node, store_root=store.root)
+            result = apply_planspace_update_artifact(project, node, store_root=store.root)
 
             self.assertEqual(result["applied"], 0)
             self.assertIn("node_id", result["reason"])
@@ -610,6 +652,59 @@ class ContextSpaceRunnerTest(unittest.IsolatedAsyncioTestCase):
                 store.root / "contextspace" / "plugs" / "planspaces" / "memory" / "STATUS.md"
             ).read_text(encoding="utf-8")
             self.assertNotIn("Should not apply.", status)
+
+    async def test_compose_does_not_overwrite_plan_when_not_derived(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            store = Store(root=tmp / "store")
+            project_root = tmp / "repo"
+            project_root.mkdir()
+            ctx = _write_contextspace(store.root, project_root)
+
+            # Drop write_policy from manifest to simulate a legacy planspace
+            # that has not opted into the derived PLAN.md policy.
+            manifest_path = ctx / "plugs" / "planspaces" / "memory" / "manifest.yaml"
+            manifest_path.write_text(
+                "\n".join(
+                    [
+                        "version: 1",
+                        "id: planspaces.memory",
+                        "kind: planspace",
+                        "title: Memory Protocol",
+                        "injection:",
+                        "  STATUS.md: turn",
+                        "  PLAN.md: turn",
+                        "max_chars:",
+                        "  STATUS.md: 4000",
+                        "  PLAN.md: 6000",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            hand_written_plan = "# Hand-written plan\n\nDo not regenerate me.\n"
+            plan_path = ctx / "plugs" / "planspaces" / "memory" / "PLAN.md"
+            plan_path.write_text(hand_written_plan, encoding="utf-8")
+
+            project = Project(
+                root_path=str(project_root),
+                project_context_binding_id="project.test",
+            )
+            store.create_project(project)
+            node = store.create_node(Node(project_id=project.id, prompt="Do the work."))
+
+            async def on_event(payload: dict[str, object]) -> None:
+                return None
+
+            provider = _CaptureProvider()
+            with patch("miniclaw2.runner._make_provider", return_value=provider):
+                runner = NodeRunner(node, project, store, on_event)
+                await runner.run()
+
+            self.assertEqual(
+                plan_path.read_text(encoding="utf-8"),
+                hand_written_plan,
+            )
 
 
 if __name__ == "__main__":

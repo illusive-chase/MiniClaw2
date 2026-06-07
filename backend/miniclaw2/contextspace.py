@@ -22,6 +22,17 @@ from uuid import uuid4
 import yaml
 
 from .domain import Node, Project
+from .planspace_state import (
+    PlanspaceStatus,
+    apply_status_update,
+    derive_plan_markdown,
+    load_planspace_status,
+    merge_reviewed_update_markdown,
+    refresh_derived_plan,
+    render_planspace_status,
+    validate_planspace_status,
+    write_planspace_status,
+)
 
 
 @dataclass(slots=True)
@@ -62,23 +73,37 @@ def memory_delta_output_relpath(node: Node) -> str:
     return f".miniclaw2/outputs/{node.id}/memory-delta.json"
 
 
-def memory_delta_launch_contract(
+def planspace_update_output_relpath(node: Node) -> str:
+    """Return the project-relative transient planspace update path for a node."""
+
+    return f".miniclaw2/outputs/{node.id}/planspace-update.json"
+
+
+def planspace_update_launch_contract(
     project: Project,
     node: Node,
     bundle: ComposedContextBundle,
 ) -> str:
-    """Return turn instructions for project-local ContextSpace writeback."""
+    """Return turn instructions for project-local planspace state writeback."""
 
     if not bundle.active_planspace_id or not bundle.active_planspace_auto_update:
         return ""
     binding_id = bundle.project_binding_id or ""
-    output_path = memory_delta_output_relpath(node)
+    output_path = planspace_update_output_relpath(node)
     return (
-        "# ContextSpace memory delta contract\n\n"
-        "MiniClaw2 loaded an active ContextSpace planspace for this node. "
-        "If your work produces status-relevant observations, write one JSON "
-        f"memory delta artifact at `{output_path}` before you finish. Do not "
-        "write directly into the ContextSpace repository.\n\n"
+        "# Planspace update contract\n\n"
+        "MiniClaw2 loaded an active planspace for this node. Before finishing, "
+        "write one transient JSON planspace update at "
+        f"`{output_path}` if your work changes this direction's durable state. "
+        "Do not edit STATUS.md or PLAN.md directly; MiniClaw2 commits the "
+        "update after applying the planspace schema.\n\n"
+        "Write only stable findings: project facts, decisions made, open "
+        "questions discovered, explicit out-of-scope notes, and the current "
+        "posture of this planspace. Filter out transient tool errors, one-run "
+        "environment quirks, permission hiccups, service failures, and claims "
+        "that a tool or reviewer cannot evaluate something unless that is a "
+        "reproducible project fact. If there is no stable state change, omit "
+        "the artifact.\n\n"
         "Required top-level shape:\n\n"
         "```json\n"
         "{\n"
@@ -93,7 +118,7 @@ def memory_delta_launch_contract(
         '  "updates": [\n'
         "    {\n"
         '      "target": "STATUS.md",\n'
-        '      "operation": "append_observation",\n'
+        '      "operation": "append_body",\n'
         '      "policy": "auto",\n'
         '      "confidence": "observed",\n'
         '      "text": "Implemented X; verified Y; remaining blocker Z."\n'
@@ -108,12 +133,22 @@ def memory_delta_launch_contract(
         "  ]\n"
         "}\n"
         "```\n\n"
-        "Only `STATUS.md` updates with `operation: append_observation` and "
-        "`policy: auto` can be applied automatically. `PLAN.md` updates must "
-        "use `policy: proposed`; MiniClaw2 records them but does not apply "
-        "them automatically. If there is no useful status update, omit the "
-        "artifact.\n"
+        "Supported STATUS.md operations are `append_body`, "
+        "`rewrite_current_state`, `add_open_question`, `add_decision`, and "
+        "`add_out_of_scope`. Legacy `append_observation` is accepted as an "
+        "alias for `append_body`. PLAN.md is derived from STATUS.md; PLAN "
+        "patches may be recorded as proposals but are not applied directly.\n"
     )
+
+
+def memory_delta_launch_contract(
+    project: Project,
+    node: Node,
+    bundle: ComposedContextBundle,
+) -> str:
+    """Compatibility wrapper for the former memory-delta contract API."""
+
+    return planspace_update_launch_contract(project, node, bundle)
 
 
 def contextspace_root(store_root: Path | None = None) -> Path:
@@ -351,9 +386,10 @@ def bootstrap_project_contextspace(
             "kind": "planspace",
             "title": f"{project_title} Planspace",
             "description": f"Planning and status track for {project_title}.",
+            "color": "indigo",
             "write_policy": {
                 "STATUS.md": "auto",
-                "PLAN.md": "proposed",
+                "PLAN.md": "derived",
                 "SKILLS.md": "auto",
                 "events.jsonl": "auto",
                 "inbox": "auto",
@@ -371,15 +407,20 @@ def bootstrap_project_contextspace(
         root,
         created,
     )
+    initial_status = PlanspaceStatus(
+        goal=f"Advance {project_title}.",
+        current_state=f"Created for `{Path(project.root_path).name}`; no node has updated this planspace yet.",
+        body=f"# Notes\n\n- Created for `{Path(project.root_path).name}`.\n",
+    )
     _write_text_if_missing(
         planspace_dir / "STATUS.md",
-        f"# Status\n\n- Created for `{Path(project.root_path).name}`.\n",
+        render_planspace_status(initial_status),
         root,
         created,
     )
     _write_text_if_missing(
         planspace_dir / "PLAN.md",
-        "# Plan\n\n- Define the next concrete implementation step.\n",
+        derive_plan_markdown(initial_status),
         root,
         created,
     )
@@ -443,7 +484,7 @@ def list_project_bindings(root: Path) -> list[ProjectBinding]:
     return out
 
 
-def apply_memory_delta_inbox(
+def apply_planspace_update_inbox(
     project: Project,
     node: Node,
     *,
@@ -451,9 +492,8 @@ def apply_memory_delta_inbox(
 ) -> dict[str, Any]:
     """Apply auto-approved STATUS.md updates from the active planspace inbox.
 
-    Only ``STATUS.md`` / ``append_observation`` / ``policy: auto`` updates
-    are applied in this first slice. PLAN.md and durable plug updates are
-    intentionally ignored until an approval workflow exists.
+    ``PLAN.md`` is derived from ``STATUS.md``; PLAN patches are recorded as
+    proposals but are not applied directly.
     """
 
     root = contextspace_root(store_root)
@@ -483,7 +523,11 @@ def apply_memory_delta_inbox(
             "planspace_id": planspace_id,
         }
 
-    delta_path = planspace_dir / "inbox" / f"{node.id}.memory-delta.json"
+    delta_path = planspace_dir / "inbox" / f"{node.id}.planspace-update.json"
+    if not delta_path.exists():
+        legacy_path = planspace_dir / "inbox" / f"{node.id}.memory-delta.json"
+        if legacy_path.exists():
+            delta_path = legacy_path
     if not delta_path.exists():
         return {
             "applied": 0,
@@ -506,7 +550,7 @@ def apply_memory_delta_inbox(
             "delta_path": _display_path(delta_path, root),
         }
 
-    return _apply_memory_delta_payload(
+    return _apply_planspace_update_payload(
         project,
         node,
         binding_id=binding_id,
@@ -519,23 +563,40 @@ def apply_memory_delta_inbox(
     )
 
 
-def apply_memory_delta_artifact(
+def apply_memory_delta_inbox(
     project: Project,
     node: Node,
     *,
     store_root: Path | None = None,
 ) -> dict[str, Any]:
-    """Apply a project-local memory delta artifact to the launch planspace.
+    """Compatibility wrapper for the former memory-delta inbox API."""
 
-    Agents write to ``.miniclaw2/outputs/<node-id>/memory-delta.json`` in the
-    project workspace. MiniClaw2 validates that artifact, copies it into the
+    return apply_planspace_update_inbox(project, node, store_root=store_root)
+
+
+def apply_planspace_update_artifact(
+    project: Project,
+    node: Node,
+    *,
+    store_root: Path | None = None,
+) -> dict[str, Any]:
+    """Apply a project-local planspace update artifact to the launch planspace.
+
+    Agents write to ``.miniclaw2/outputs/<node-id>/planspace-update.json`` in
+    the project workspace. MiniClaw2 validates that artifact, copies it into the
     snapshotted active planspace inbox, then applies only safe STATUS.md
     observations. This keeps the provider from writing ContextSpace directly.
     """
 
     root = contextspace_root(store_root)
-    rel_path = memory_delta_output_relpath(node)
-    source_path = _memory_delta_artifact_path(project, node)
+    rel_path = planspace_update_output_relpath(node)
+    source_path = _planspace_update_artifact_path(project, node)
+    legacy_rel_path = memory_delta_output_relpath(node)
+    if not source_path.exists():
+        legacy_source_path = _memory_delta_artifact_path(project, node)
+        if legacy_source_path.exists():
+            rel_path = legacy_rel_path
+            source_path = legacy_source_path
 
     bundle = load_context_bundle_for_node(node, store_root=store_root)
     if bundle is None:
@@ -593,7 +654,7 @@ def apply_memory_delta_artifact(
             **base,
         }
 
-    validation_error = _validate_memory_delta_artifact(
+    validation_error = _validate_planspace_update_artifact(
         delta,
         project,
         node,
@@ -608,7 +669,7 @@ def apply_memory_delta_artifact(
             **base,
         }
 
-    delta_path = planspace_dir / "inbox" / f"{node.id}.memory-delta.json"
+    delta_path = planspace_dir / "inbox" / f"{node.id}.planspace-update.json"
     try:
         delta_path.parent.mkdir(parents=True, exist_ok=True)
         delta_path.write_text(
@@ -624,7 +685,7 @@ def apply_memory_delta_artifact(
             **base,
         }
 
-    return _apply_memory_delta_payload(
+    return _apply_planspace_update_payload(
         project,
         node,
         binding_id=binding_id,
@@ -639,7 +700,226 @@ def apply_memory_delta_artifact(
     )
 
 
-def _apply_memory_delta_payload(
+def apply_memory_delta_artifact(
+    project: Project,
+    node: Node,
+    *,
+    store_root: Path | None = None,
+) -> dict[str, Any]:
+    """Compatibility wrapper for the former memory-delta artifact API."""
+
+    return apply_planspace_update_artifact(project, node, store_root=store_root)
+
+
+def stage_planspace_update_artifact(
+    project: Project,
+    node: Node,
+    *,
+    store_root: Path | None = None,
+) -> dict[str, Any]:
+    """Stage a gate-bearing node's interim update until the review closes."""
+
+    root = contextspace_root(store_root)
+    rel_path = planspace_update_output_relpath(node)
+    source_path = _planspace_update_artifact_path(project, node)
+    if not source_path.exists():
+        legacy_source_path = _memory_delta_artifact_path(project, node)
+        if legacy_source_path.exists():
+            rel_path = memory_delta_output_relpath(node)
+            source_path = legacy_source_path
+
+    bundle = load_context_bundle_for_node(node, store_root=store_root)
+    if bundle is None:
+        return {
+            "staged": False,
+            "reason": (
+                "context_bundle_not_found"
+                if (node.context_bundle_id or node.context_bundle_path)
+                else "no_context_bundle"
+            ),
+            "source": "project_artifact",
+            "source_path": rel_path,
+        }
+
+    active = _memory_delta_route_from_bundle(bundle, root)
+    if active is None:
+        return {
+            "staged": False,
+            "reason": "no_active_planspace_snapshot",
+            "source": "project_artifact",
+            "source_path": rel_path,
+        }
+
+    binding_id, planspace_id, planspace_dir, auto_update = active
+    base = {
+        "binding_id": binding_id,
+        "planspace_id": planspace_id,
+        "source": "project_artifact",
+        "source_path": rel_path,
+    }
+    if not auto_update:
+        return {"staged": False, "reason": "planspace_auto_update_disabled", **base}
+    if not source_path.exists():
+        return {"staged": False, "reason": "no_delta", **base}
+
+    try:
+        delta = json.loads(source_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return {"staged": False, "reason": f"invalid_delta: {exc}", **base}
+
+    validation_error = _validate_planspace_update_artifact(
+        delta,
+        project,
+        node,
+        binding_id=binding_id,
+        planspace_id=planspace_id,
+    )
+    if validation_error:
+        return {"staged": False, "reason": f"invalid_delta: {validation_error}", **base}
+
+    staged_path = planspace_dir / "checkpoints" / f"{node.id}.interim-planspace-update.json"
+    try:
+        staged_path.parent.mkdir(parents=True, exist_ok=True)
+        staged_path.write_text(
+            json.dumps(delta, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        return {
+            "staged": False,
+            "reason": f"checkpoint_write_failed: {exc}",
+            "staged_path": _display_path(staged_path, root),
+            **base,
+        }
+
+    event = {
+        "type": "planspace_update_staged",
+        "node_id": node.id,
+        "project_id": project.id,
+        "binding_id": binding_id,
+        "planspace_id": planspace_id,
+        "created_at": time.time(),
+        "source_path": rel_path,
+        "staged_path": _display_path(staged_path, root),
+    }
+    _append_planspace_event(planspace_dir / "events.jsonl", event)
+    return {
+        "staged": True,
+        "staged_path": _display_path(staged_path, root),
+        **base,
+    }
+
+
+def commit_gate_reviewed_planspace_update(
+    project: Project,
+    gate_node: Node,
+    *,
+    source_node: Node | None,
+    user_judgment: str,
+    review_guidance: str,
+    store_root: Path | None = None,
+) -> dict[str, Any]:
+    """Merge a staged interim update with free-form review judgment."""
+
+    root = contextspace_root(store_root)
+    route_node = source_node or gate_node
+    bundle = load_context_bundle_for_node(route_node, store_root=store_root)
+    if bundle is None:
+        return {
+            "applied": 0,
+            "proposed": 0,
+            "reason": (
+                "context_bundle_not_found"
+                if (route_node.context_bundle_id or route_node.context_bundle_path)
+                else "no_context_bundle"
+            ),
+            "source": "checkpoint_review",
+        }
+
+    active = _memory_delta_route_from_bundle(bundle, root)
+    if active is None:
+        return {
+            "applied": 0,
+            "proposed": 0,
+            "reason": "no_active_planspace_snapshot",
+            "source": "checkpoint_review",
+        }
+
+    binding_id, planspace_id, planspace_dir, auto_update = active
+    base = {
+        "binding_id": binding_id,
+        "planspace_id": planspace_id,
+        "source": "checkpoint_review",
+    }
+    if not auto_update:
+        return {
+            "applied": 0,
+            "proposed": 0,
+            "reason": "planspace_auto_update_disabled",
+            **base,
+        }
+
+    staged_path: Path | None = None
+    interim_delta: Any = None
+    if source_node is not None:
+        candidate = planspace_dir / "checkpoints" / f"{source_node.id}.interim-planspace-update.json"
+        if candidate.exists():
+            staged_path = candidate
+            try:
+                interim_delta = json.loads(candidate.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                interim_delta = None
+
+    merged_text = merge_reviewed_update_markdown(
+        interim_delta=interim_delta,
+        user_judgment=user_judgment,
+        review_guidance=review_guidance,
+        gate_node=gate_node,
+        source_node=source_node,
+    )
+    reviewed_updates = _carry_over_structured_updates(interim_delta)
+    reviewed_updates.append(
+        {
+            "target": "STATUS.md",
+            "operation": "append_body",
+            "policy": "auto",
+            "confidence": "reviewed",
+            "text": merged_text,
+        }
+    )
+    delta = {
+        "version": 1,
+        "node_id": gate_node.id,
+        "project_id": project.id,
+        "binding_id": binding_id,
+        "planspace_id": planspace_id,
+        "created_at": time.time(),
+        "terminal_state": gate_node.state.value,
+        "acceptance_state": gate_node.acceptance_state.value,
+        "updates": reviewed_updates,
+    }
+    delta_path = staged_path or planspace_dir / "checkpoints" / f"{gate_node.id}.review-merge"
+    result = _apply_planspace_update_payload(
+        project,
+        gate_node,
+        binding_id=binding_id,
+        planspace_id=planspace_id,
+        planspace_dir=planspace_dir,
+        delta_path=delta_path,
+        delta=delta,
+        context_root=root,
+        source="checkpoint_review",
+    )
+    if staged_path is not None:
+        try:
+            staged_path.unlink()
+        except OSError:
+            pass
+        result["staged_discarded"] = True
+    return result
+
+
+def _apply_planspace_update_payload(
     project: Project,
     node: Node,
     *,
@@ -656,6 +936,8 @@ def _apply_memory_delta_payload(
     applied: list[dict[str, Any]] = []
     proposed: list[dict[str, Any]] = []
     ignored: list[dict[str, Any]] = []
+    status_changed = False
+    status = load_planspace_status(planspace_dir / "STATUS.md")
 
     updates = delta.get("updates") if isinstance(delta, dict) else None
     if not isinstance(updates, list):
@@ -676,20 +958,41 @@ def _apply_memory_delta_payload(
         if not isinstance(update, dict):
             ignored.append({"reason": "update_not_object"})
             continue
-        if _is_auto_status_observation(update):
-            text = update.get("text")
-            assert isinstance(text, str)
-            _append_status_observation(planspace_dir / "STATUS.md", node, text)
-            applied.append(_memory_delta_update_summary(update))
+        if _is_auto_status_update(update):
+            summary = apply_status_update(status, update, node)
+            if summary is None:
+                ignored.append(_planspace_update_summary(update))
+                continue
+            status_changed = True
+            applied.append(summary)
             continue
         if _is_plan_proposal(update):
-            proposed.append(_memory_delta_update_summary(update))
+            proposed.append(_planspace_update_summary(update))
             continue
-        ignored.append(_memory_delta_update_summary(update))
+        ignored.append(_planspace_update_summary(update))
+
+    if status_changed:
+        validation_errors = validate_planspace_status(status)
+        if validation_errors:
+            return {
+                "applied": 0,
+                "proposed": len(proposed),
+                "ignored": len(ignored),
+                "reason": "invalid_status: " + "; ".join(validation_errors),
+                "binding_id": binding_id,
+                "planspace_id": planspace_id,
+                "delta_path": _display_path(delta_path, context_root),
+                "source": source,
+                **({"source_path": source_path} if source_path else {}),
+                **({"copied_to_inbox": True} if copied_to_inbox else {}),
+            }
+        write_planspace_status(planspace_dir / "STATUS.md", status)
+        if _plan_is_derived(_plug_manifest(context_root, planspace_id)):
+            refresh_derived_plan(planspace_dir)
 
     event_type: str | None = None
     if applied or proposed:
-        event_type = "memory_delta_applied" if applied else "memory_delta_recorded"
+        event_type = "planspace_update_applied" if applied else "planspace_update_recorded"
         event: dict[str, Any] = {
             "type": event_type,
             "node_id": node.id,
@@ -735,7 +1038,11 @@ def _memory_delta_artifact_path(project: Project, node: Node) -> Path:
     return Path(project.root_path) / memory_delta_output_relpath(node)
 
 
-def _validate_memory_delta_artifact(
+def _planspace_update_artifact_path(project: Project, node: Node) -> Path:
+    return Path(project.root_path) / planspace_update_output_relpath(node)
+
+
+def _validate_planspace_update_artifact(
     delta: Any,
     project: Project,
     node: Node,
@@ -764,14 +1071,57 @@ def _validate_memory_delta_artifact(
     return None
 
 
-def _is_auto_status_observation(update: dict[str, Any]) -> bool:
-    text = update.get("text")
+def _validate_memory_delta_artifact(
+    delta: Any,
+    project: Project,
+    node: Node,
+    *,
+    binding_id: str | None,
+    planspace_id: str,
+) -> str | None:
+    """Compatibility wrapper for tests/imports using the former helper name."""
+
+    return _validate_planspace_update_artifact(
+        delta,
+        project,
+        node,
+        binding_id=binding_id,
+        planspace_id=planspace_id,
+    )
+
+
+def _carry_over_structured_updates(interim_delta: Any) -> list[dict[str, Any]]:
+    if not isinstance(interim_delta, dict):
+        return []
+    updates = interim_delta.get("updates")
+    if not isinstance(updates, list):
+        return []
+    out: list[dict[str, Any]] = []
+    for update in updates:
+        if not isinstance(update, dict):
+            continue
+        if not _is_auto_status_update(update):
+            continue
+        carried = dict(update)
+        carried["confidence"] = "reviewed"
+        out.append(carried)
+    return out
+
+
+def _is_auto_status_update(update: dict[str, Any]) -> bool:
     return (
         update.get("target") == "STATUS.md"
-        and update.get("operation") == "append_observation"
+        and update.get("operation")
+        in {
+            "append_observation",
+            "append_body",
+            "append_note",
+            "rewrite_current_state",
+            "add_open_question",
+            "add_decision",
+            "add_out_of_scope",
+        }
         and update.get("policy") == "auto"
-        and isinstance(text, str)
-        and bool(text.strip())
     )
 
 
@@ -779,7 +1129,7 @@ def _is_plan_proposal(update: dict[str, Any]) -> bool:
     return update.get("target") == "PLAN.md" and update.get("policy") == "proposed"
 
 
-def _memory_delta_update_summary(update: dict[str, Any]) -> dict[str, Any]:
+def _planspace_update_summary(update: dict[str, Any]) -> dict[str, Any]:
     out: dict[str, Any] = {}
     for key in ("target", "operation", "policy", "confidence", "reason"):
         value = update.get(key)
@@ -793,6 +1143,12 @@ def _memory_delta_update_summary(update: dict[str, Any]) -> dict[str, Any]:
     if not out:
         out["reason"] = "unsupported_update"
     return out
+
+
+def _memory_delta_update_summary(update: dict[str, Any]) -> dict[str, Any]:
+    """Compatibility wrapper for the former helper name."""
+
+    return _planspace_update_summary(update)
 
 
 def resolve_project_binding(project: Project, root: Path) -> ProjectBinding | None:
@@ -1061,8 +1417,10 @@ def _load_planspace_sources(root: Path, ref: PlugRef) -> list[tuple[dict[str, An
     if plug_dir is None:
         return out
     manifest = _plug_manifest(root, ref.id)
+    if _plan_is_derived(manifest):
+        refresh_derived_plan(plug_dir)
     for filename, kind, default_limit in (
-        ("STATUS.md", "status", 4000),
+        ("STATUS.md", "status", None),
         ("PLAN.md", "plan", 6000),
     ):
         injection = _injection_for(ref, manifest, filename, "turn")
@@ -1075,7 +1433,11 @@ def _load_planspace_sources(root: Path, ref: PlugRef) -> list[tuple[dict[str, An
             injection=injection,
             context_root=root,
             plug_id=ref.id,
-            max_chars=_max_chars_for(manifest, filename, default_limit),
+            max_chars=(
+                None
+                if filename == "STATUS.md"
+                else _max_chars_for(manifest, filename, default_limit)
+            ),
         )
         if loaded is not None:
             out.append(loaded)
@@ -1143,28 +1505,18 @@ def _read_context_source(
 
 
 def _append_status_observation(path: Path, node: Node, text: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    existing = ""
-    if path.exists():
-        try:
-            existing = path.read_text(encoding="utf-8")
-        except OSError:
-            existing = ""
-    prefix = "" if existing else "# Status\n"
-    needs_newline = bool(existing) and not existing.endswith("\n")
-    timestamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-    block = (
-        ("\n" if needs_newline else "")
-        + f"\n## {timestamp} - node {node.id}\n\n"
-        + f"- terminal_state: {node.state.value}\n"
-        + f"- acceptance_state: {node.acceptance_state.value}\n\n"
-        + text.strip()
-        + "\n"
+    status = load_planspace_status(path)
+    apply_status_update(
+        status,
+        {
+            "target": "STATUS.md",
+            "operation": "append_body",
+            "policy": "auto",
+            "text": text,
+        },
+        node,
     )
-    with path.open("a", encoding="utf-8") as handle:
-        if prefix:
-            handle.write(prefix)
-        handle.write(block)
+    write_planspace_status(path, status)
 
 
 def _append_planspace_event(path: Path, event: dict[str, Any]) -> None:
@@ -1208,6 +1560,13 @@ def _touch_if_missing(path: Path, root: Path, created: list[str]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.touch()
     created.append(_display_path(path, root))
+
+
+def _plan_is_derived(manifest: dict[str, Any]) -> bool:
+    write_policy = manifest.get("write_policy")
+    if not isinstance(write_policy, dict):
+        return False
+    return write_policy.get("PLAN.md") == "derived"
 
 
 def _plug_manifest(root: Path, plug_id: str) -> dict[str, Any]:

@@ -12,7 +12,7 @@ import { stateMeta } from "./stateMeta";
  * `+` handle on the right edge is the entry point for the phantom composer.
  */
 function AgentNodeImpl({ data, selected }: NodeProps<AgentNodeData>) {
-  const { node, index, resumeParent, isActive } = data;
+  const { node, index, resumeParent, isActive, planspaceColor } = data;
   const meta = stateMeta(node.state);
   const headline = oneLine(node.summary || node.prompt || "(empty prompt)");
 
@@ -30,7 +30,11 @@ function AgentNodeImpl({ data, selected }: NodeProps<AgentNodeData>) {
     >
       {/* state rail */}
       <span
-        className={"pointer-events-none absolute inset-y-0 left-0 w-[3px] " + meta.railBg}
+        className={
+          "pointer-events-none absolute inset-y-0 left-0 w-[3px] " +
+          (planspaceColor ? "" : meta.railBg)
+        }
+        style={planspaceColor ? { background: planspaceColor.accent } : undefined}
         aria-hidden="true"
       />
 

@@ -110,6 +110,7 @@ class Node(BaseModel):
     op_kind: str | None = None
     state: NodeState = NodeState.QUEUED
     parent_node_id: str | None = None
+    planspace_id: str | None = None
     context_sources: list[str] = Field(default_factory=list)
     context_bundle_id: str | None = None
     context_bundle_path: str | None = None

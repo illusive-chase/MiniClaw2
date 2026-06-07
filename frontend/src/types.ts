@@ -169,6 +169,7 @@ export type NodeInfo = {
   op_kind?: string | null;
   state: NodeState;
   parent_node_id?: string | null;
+  planspace_id?: string | null;
   context_sources: string[];
   context_bundle_id?: string | null;
   context_bundle_path?: string | null;

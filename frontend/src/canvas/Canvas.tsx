@@ -28,6 +28,7 @@ import { ArtifactNode } from "./nodes/ArtifactNode";
 import { ContextNode } from "./nodes/ContextNode";
 import { PhantomNode } from "./nodes/PhantomNode";
 import { ProjectRootNode } from "./nodes/ProjectRootNode";
+import { PlanspaceLaneNode } from "./nodes/PlanspaceLaneNode";
 import {
   LoadsEdge,
   MemoryDeltaEdge,
@@ -48,6 +49,7 @@ const NODE_TYPES = {
   context: ContextNode,
   phantom: PhantomNode,
   projectRoot: ProjectRootNode,
+  planspaceLane: PlanspaceLaneNode,
   errorTerminal: ErrorTerminalNode,
 };
 

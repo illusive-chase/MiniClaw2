@@ -30,8 +30,7 @@ export type PhantomNodeContext = {
 function PhantomNodeImpl({ data, selected }: NodeProps<PhantomNodeData>) {
   const ctx = phantomContext;
   const [prompt, setPrompt] = useState("");
-  const [outputKind, setOutputKind] = useState<OutputKind>("summary");
-  const [showMore, setShowMore] = useState(false);
+  const [needsReview, setNeedsReview] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const disabled = data.disabled || ctx.disabled;
 
@@ -49,7 +48,7 @@ function PhantomNodeImpl({ data, selected }: NodeProps<PhantomNodeData>) {
     latest.onSubmit({
       prompt: prompt.trim(),
       resumeFromNodeId: data.resumeFromNodeId,
-      outputKind,
+      outputKind: needsReview ? "review_brief" : "freeform",
     });
   };
 
@@ -100,42 +99,15 @@ function PhantomNodeImpl({ data, selected }: NodeProps<PhantomNodeData>) {
         className="nodrag w-full resize-none rounded-md bg-transparent text-[13px] leading-relaxed text-ink-strong placeholder:text-ink-subtle focus:outline-none"
       />
 
-      {/* intent chip row */}
-      <div className="mt-2 flex flex-wrap items-center gap-1.5">
-        <IntentChip
-          label="Explore"
-          active={outputKind === "freeform"}
-          onClick={() => setOutputKind("freeform")}
+      <label className="nodrag mt-2 flex items-center justify-between gap-3 rounded border border-line bg-surface-sunken/60 px-2 py-1.5 text-[11px] text-ink">
+        <span>Needs review</span>
+        <input
+          type="checkbox"
+          checked={needsReview}
+          onChange={(e) => setNeedsReview(e.target.checked)}
+          className="h-3.5 w-3.5 accent-brand"
         />
-        <IntentChip
-          label="Build & summarize"
-          active={outputKind === "summary"}
-          onClick={() => setOutputKind("summary")}
-        />
-        <IntentChip
-          label="Hand off for review"
-          active={outputKind === "review_brief"}
-          onClick={() => setOutputKind("review_brief")}
-        />
-        <button
-          type="button"
-          onClick={() => setShowMore((v) => !v)}
-          className="ml-auto rounded px-1.5 py-0.5 text-[10px] text-ink-muted transition hover:bg-surface-sunken hover:text-ink"
-          title="More intents"
-        >
-          ⋯
-        </button>
-      </div>
-
-      {showMore && (
-        <div className="mt-1 flex flex-wrap gap-1.5 border-t border-line pt-1.5">
-          <IntentChip
-            label="Interface (JSON)"
-            active={outputKind === "interface"}
-            onClick={() => setOutputKind("interface")}
-          />
-        </div>
-      )}
+      </label>
 
       <div className="mt-2 flex items-center justify-between text-[10px] text-ink-subtle">
         <span>⌘/Ctrl + Enter to launch · Esc to dismiss</span>
@@ -172,29 +144,4 @@ let phantomContext: PhantomNodeContext = {
 
 export function setPhantomContext(ctx: PhantomNodeContext): void {
   phantomContext = ctx;
-}
-
-function IntentChip({
-  label,
-  active,
-  onClick,
-}: {
-  label: string;
-  active: boolean;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={
-        "nodrag rounded-full border px-2 py-0.5 text-[10.5px] transition " +
-        (active
-          ? "border-brand bg-brand-soft text-brand-ink"
-          : "border-line text-ink-muted hover:border-line-strong hover:bg-surface-sunken hover:text-ink")
-      }
-    >
-      {label}
-    </button>
-  );
 }

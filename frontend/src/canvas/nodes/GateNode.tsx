@@ -11,7 +11,7 @@ import { stateMeta } from "./stateMeta";
  * rectangular bounding box for drag/select math.
  */
 function GateNodeImpl({ data, selected }: NodeProps<GateNodeData>) {
-  const { node, isActive } = data;
+  const { node, isActive, planspaceColor } = data;
   const meta = stateMeta(node.state);
   const body =
     (node.summary || node.prompt || "review checkpoint").replace(/\s+/g, " ").trim();
@@ -41,6 +41,14 @@ function GateNodeImpl({ data, selected }: NodeProps<GateNodeData>) {
           }
         />
       </div>
+
+      {planspaceColor && (
+        <span
+          className="pointer-events-none absolute bottom-2 left-4 top-2 z-10 w-[3px]"
+          style={{ background: planspaceColor.accent, clipPath: HEX_CLIP }}
+          aria-hidden="true"
+        />
+      )}
 
       {/* inner content overlays the hex (clipped) */}
       <div
