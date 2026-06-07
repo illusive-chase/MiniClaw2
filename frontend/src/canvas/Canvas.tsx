@@ -9,7 +9,6 @@ import ReactFlow, {
   type Node,
   type NodeChange,
   type NodeMouseHandler,
-  type OnSelectionChangeFunc,
   useEdgesState,
   useNodesState,
   useReactFlow,
@@ -186,20 +185,33 @@ function CanvasInner({
     decorateEdges(built.rfEdges, selectedNodeId, hoveredNodeId),
   );
 
-  /* Sync upstream changes into local state without trampling drag positions. */
+  /* Sync upstream node changes into local state without trampling drag
+   * positions. Critically, this effect must NOT depend on hover state — hover
+   * does not change node identity, and forcing a node-list rewrite on every
+   * mouseenter/leave makes React Flow's pointer hit-test churn enough to lose
+   * its grip on which element is under the cursor, producing the cursor flicker
+   * between pane (grab) and node (pointer). */
   useEffect(() => {
     setRfNodes((current) => {
       const positionById = new Map(current.map((n) => [n.id, n.position]));
-      return decorateSelection(
-        built.rfNodes.map((n) => {
-          const existing = positionById.get(n.id);
-          return existing ? { ...n, position: existing } : n;
-        }),
-        selectedNodeId,
-      );
+      const next = built.rfNodes.map((n) => {
+        const existing = positionById.get(n.id);
+        // Only allocate a new object when the carried-over position actually
+        // differs; stable refs let React Flow skip work and keep hit-test stable.
+        if (existing && (existing.x !== n.position.x || existing.y !== n.position.y)) {
+          return { ...n, position: existing };
+        }
+        return n;
+      });
+      return decorateSelection(next, selectedNodeId);
     });
+  }, [built.rfNodes, selectedNodeId, setRfNodes]);
+
+  /* Edges depend on hover (the `loads` lane fades in only for the hovered or
+   * selected node), so they get a separate effect. */
+  useEffect(() => {
     setRfEdges(decorateEdges(built.rfEdges, selectedNodeId, hoveredNodeId));
-  }, [built.rfNodes, built.rfEdges, selectedNodeId, hoveredNodeId, setRfNodes, setRfEdges]);
+  }, [built.rfEdges, selectedNodeId, hoveredNodeId, setRfEdges]);
 
   /* Persist drag positions client-side so they survive node updates, and
    * debounce a push to the backend so refreshes survive too. */
@@ -222,15 +234,20 @@ function CanvasInner({
     [onNodesChange, flushPendingHints],
   );
 
-  /* Click → selection. We translate React Flow nodes back into the parent's
-   * polymorphic CanvasSelection shape. */
-  const onSelChange = useCallback<OnSelectionChangeFunc>(
-    ({ nodes: selNodes }) => {
-      const n = selNodes[0] as RFNode | undefined;
-      if (!n) {
-        onSelectionChange({ kind: "none" });
-        return;
-      }
+  /* Click → selection. We translate the clicked React Flow node into the
+   * parent's polymorphic CanvasSelection shape.
+   *
+   * We deliberately use `onNodeClick` instead of React Flow's
+   * `onSelectionChange`. The latter is fired by React Flow whenever its
+   * internal selection store changes — including changes WE caused by setting
+   * `selected` on nodes via decorateSelection. Subscribing to it created a
+   * tight feedback loop (RF.selection → App.selection → setRfNodes → RF
+   * mirrors → fires onSelectionChange again), which manifested as cursor
+   * flicker, fetch storms, and visible re-renders on every pane click.
+   * onNodeClick only fires for genuine user clicks, breaking the loop. */
+  const onNodeClick = useCallback<NodeMouseHandler>(
+    (_, node) => {
+      const n = node as RFNode;
       if (n.type === "agent") {
         const data = n.data as import("./layout").AgentNodeData;
         onSelectionChange({ kind: "agent", nodeId: data.node.id });
@@ -264,14 +281,15 @@ function CanvasInner({
           kind: data.ownerKind === "gate" ? "gate" : "agent",
           nodeId: data.ownerNodeId,
         });
-      } else {
-        onSelectionChange({ kind: "none" });
       }
     },
     [onSelectionChange],
   );
 
-  /* Empty-canvas tap: spawn a fresh-start phantom at the click position. */
+  /* Empty-canvas tap: clear selection AND spawn a fresh-start phantom. The
+   * deselect used to happen via React Flow's onSelectionChange when the pane
+   * click cleared its internal selection; since we no longer subscribe to
+   * that callback, we do it explicitly here. */
   const onPaneClick = useCallback(
     (event: React.MouseEvent) => {
       const target = event.target as HTMLElement;
@@ -279,12 +297,13 @@ function CanvasInner({
         target.classList.contains("react-flow__pane") ||
         target.classList.contains("react-flow__renderer");
       if (!isPane) return;
+      onSelectionChange({ kind: "none" });
       const rect = (event.currentTarget as HTMLDivElement).getBoundingClientRect();
       const x = event.clientX - rect.left;
       const y = event.clientY - rect.top;
       onEmptyCanvasTap({ x, y });
     },
-    [onEmptyCanvasTap],
+    [onSelectionChange, onEmptyCanvasTap],
   );
 
   const onNodeMouseEnter = useCallback<NodeMouseHandler>((_, node) => {
@@ -314,7 +333,7 @@ function CanvasInner({
         nodes={rfNodes}
         edges={rfEdges}
         onNodesChange={handleNodesChange}
-        onSelectionChange={onSelChange}
+        onNodeClick={onNodeClick}
         onNodeMouseEnter={onNodeMouseEnter}
         onNodeMouseLeave={onNodeMouseLeave}
         onNodeDoubleClick={onNodeDoubleClick}
@@ -333,7 +352,9 @@ function CanvasInner({
         minZoom={0.3}
         maxZoom={1.6}
         panOnScroll
-        selectionOnDrag
+        panOnDrag
+        selectionOnDrag={false}
+        selectNodesOnDrag={false}
         snapToGrid
         snapGrid={[8, 8]}
         nodesConnectable={false}
@@ -387,10 +408,10 @@ function FitOnInit() {
 }
 
 function decorateSelection(nodes: RFNode[], selectedNodeId: string | null): Node[] {
-  if (!selectedNodeId) return nodes;
-  return nodes.map((n) =>
-    n.id === selectedNodeId ? { ...n, selected: true } : n,
-  );
+  return nodes.map((n) => {
+    const selected = n.id === selectedNodeId;
+    return n.selected === selected ? n : { ...n, selected };
+  });
 }
 
 function decorateEdges(

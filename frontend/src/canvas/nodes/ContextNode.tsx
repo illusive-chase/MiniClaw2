@@ -14,7 +14,9 @@ function ContextNodeImpl({ data, selected }: NodeProps<ContextNodeData>) {
       title={`${kindLabel(scope, kind)}\n${path}\n${chars} chars · loaded by ${loadedByNodeIds.length} run${loadedByNodeIds.length === 1 ? "" : "s"}`}
       className={
         "relative w-[160px] select-none transition " +
-        (selected ? "ring-2 ring-brand ring-offset-2 ring-offset-surface-sunken rounded-md" : "")
+        (selected
+          ? "rounded-md ring-2 ring-brand ring-offset-2 ring-offset-surface-sunken"
+          : "rounded-md hover:ring-2 hover:ring-line-strong/45 hover:ring-offset-2 hover:ring-offset-surface-sunken")
       }
     >
       {/* stacked-card effect: two faint layers behind the front */}

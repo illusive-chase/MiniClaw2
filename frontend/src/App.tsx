@@ -151,6 +151,7 @@ export function App() {
     () => nodes.find((n) => n.id === inspectedNodeId) ?? null,
     [nodes, inspectedNodeId],
   );
+  const selectedCanvasNodeId = useMemo(() => graphNodeIdForSelection(selection), [selection]);
 
   const activePendingGate = useMemo(
     () => keepPendingForState(pendingGate, nodes, "waiting"),
@@ -590,7 +591,7 @@ export function App() {
     } else if (sel.kind === "artifact") {
       setInspectedNodeId(sel.ownerNodeId);
     } else if (sel.kind === "none") {
-      /* leave inspectedNodeId so the panel can show last view? — no, clear */
+      setInspectedNodeId(null);
     }
   }, []);
 
@@ -776,7 +777,7 @@ export function App() {
         <main className="relative flex min-w-0 flex-1 flex-col bg-surface-sunken">
           <Canvas
             nodes={nodes}
-            selectedNodeId={inspectedNodeId}
+            selectedNodeId={selectedCanvasNodeId}
             activeNodeId={activeNodeIdRef.current}
             projectTitle={projectTitle}
             phantomFromNodeId={phantomFromNodeId}
@@ -950,4 +951,20 @@ function pendingBanner(
     nodeId: active.nodeId,
     label: `Node ${active.nodeId.slice(0, 8)} is awaiting your ${labelKind}.`,
   };
+}
+
+function graphNodeIdForSelection(selection: CanvasSelection): string | null {
+  if (selection.kind === "agent" || selection.kind === "gate" || selection.kind === "op") {
+    return selection.nodeId;
+  }
+  if (selection.kind === "artifact") {
+    return `artifact:${selection.ownerNodeId}`;
+  }
+  if (selection.kind === "context") {
+    return `ctx:${selection.identityKey}`;
+  }
+  if (selection.kind === "projectRoot") {
+    return "root";
+  }
+  return null;
 }

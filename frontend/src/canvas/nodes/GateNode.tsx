@@ -26,7 +26,9 @@ function GateNodeImpl({ data, selected }: NodeProps<GateNodeData>) {
       <div
         className={
           "absolute inset-0 transition " +
-          (selected ? "ring-2 ring-brand ring-offset-2 ring-offset-surface-sunken" : "")
+          (selected
+            ? "ring-2 ring-brand ring-offset-2 ring-offset-surface-sunken"
+            : "hover:ring-2 hover:ring-line-strong/45 hover:ring-offset-2 hover:ring-offset-surface-sunken")
         }
         style={{ clipPath: HEX_CLIP }}
       >

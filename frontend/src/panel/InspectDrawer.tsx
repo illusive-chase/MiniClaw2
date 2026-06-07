@@ -24,7 +24,10 @@ export function InspectDrawer({
     <details
       className="overflow-hidden rounded-md border border-line bg-surface-sunken"
       open={open}
-      onToggle={(e) => setOpen((e.target as HTMLDetailsElement).open)}
+      onToggle={(e) => {
+        if (e.currentTarget !== e.target) return;
+        setOpen(e.currentTarget.open);
+      }}
     >
       <summary className="flex cursor-pointer items-center justify-between gap-2 px-3 py-2 text-[10px] font-medium uppercase tracking-[0.14em] text-ink-muted transition hover:text-ink">
         <span>Inspect ▸ raw fields</span>

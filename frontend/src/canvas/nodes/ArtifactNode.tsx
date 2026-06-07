@@ -15,7 +15,9 @@ function ArtifactNodeImpl({ data, selected }: NodeProps<ArtifactNodeData>) {
       title={`${label}\n${path}`}
       className={
         "relative w-[180px] select-none transition " +
-        (selected ? "ring-2 ring-brand ring-offset-2 ring-offset-surface-sunken rounded" : "")
+        (selected
+          ? "rounded ring-2 ring-brand ring-offset-2 ring-offset-surface-sunken"
+          : "rounded hover:ring-2 hover:ring-line-strong/45 hover:ring-offset-2 hover:ring-offset-surface-sunken")
       }
     >
       <div

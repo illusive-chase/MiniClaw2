@@ -23,7 +23,7 @@ function AgentNodeImpl({ data, selected }: NodeProps<AgentNodeData>) {
         "group relative w-[224px] select-none overflow-hidden rounded-lg border text-left shadow-card transition " +
         (selected
           ? "border-brand ring-2 ring-brand ring-offset-2 ring-offset-surface-sunken"
-          : "border-line hover:border-line-strong hover:shadow-raised") +
+          : "border-line hover:border-line-strong hover:ring-2 hover:ring-line-strong/45 hover:ring-offset-2 hover:ring-offset-surface-sunken hover:shadow-raised") +
         " " +
         meta.tileBg
       }

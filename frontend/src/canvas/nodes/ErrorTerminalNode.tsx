@@ -17,7 +17,7 @@ function ErrorTerminalNodeImpl({ data, selected }: NodeProps<ErrorTerminalData>)
         "relative w-[180px] select-none rounded-md border bg-state-error-soft/60 px-2.5 py-1.5 shadow-card transition " +
         (selected
           ? "border-state-error ring-2 ring-state-error ring-offset-2 ring-offset-surface-sunken"
-          : "border-state-error/60 hover:border-state-error")
+          : "border-state-error/60 hover:border-state-error hover:ring-2 hover:ring-state-error/35 hover:ring-offset-2 hover:ring-offset-surface-sunken")
       }
     >
       <div className="flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-[0.14em] text-state-error">

@@ -2,11 +2,16 @@ import { memo } from "react";
 import { Handle, Position, type NodeProps } from "reactflow";
 import type { ProjectRootNodeData } from "../layout";
 
-function ProjectRootNodeImpl({ data }: NodeProps<ProjectRootNodeData>) {
+function ProjectRootNodeImpl({ data, selected }: NodeProps<ProjectRootNodeData>) {
   return (
     <div
       title={`Project · ${data.title}`}
-      className="relative flex h-[64px] w-[64px] select-none items-center justify-center rounded-full border border-line bg-surface-raised shadow-card"
+      className={
+        "relative flex h-[64px] w-[64px] select-none items-center justify-center rounded-full border bg-surface-raised shadow-card transition " +
+        (selected
+          ? "border-brand ring-2 ring-brand ring-offset-2 ring-offset-surface-sunken"
+          : "border-line hover:border-line-strong hover:ring-2 hover:ring-line-strong/45 hover:ring-offset-2 hover:ring-offset-surface-sunken")
+      }
     >
       <svg
         viewBox="0 0 24 24"

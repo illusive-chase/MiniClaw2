@@ -20,7 +20,7 @@ function OpNodeImpl({ data, selected }: NodeProps<OpNodeData>) {
         "relative flex h-[48px] w-[96px] select-none items-center justify-center rounded-md border bg-surface-raised text-[10px] font-medium uppercase tracking-[0.12em] text-ink-muted shadow-card transition " +
         (selected
           ? "border-brand ring-2 ring-brand ring-offset-2 ring-offset-surface-sunken"
-          : "border-line hover:border-line-strong hover:text-ink")
+          : "border-line hover:border-line-strong hover:ring-2 hover:ring-line-strong/45 hover:ring-offset-2 hover:ring-offset-surface-sunken hover:text-ink")
       }
     >
       <span className="absolute -left-1.5 top-1/2 -translate-y-1/2 text-base text-ink-subtle">
