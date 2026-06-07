@@ -1,16 +1,20 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { deleteSession, listSessions, renameSession } from "../api";
 import type { SessionInfo } from "../types";
+import { TestsPanel } from "./TestsPanel";
 import { ThemeToggle } from "./ThemeToggle";
 
 type Props = {
   onOpen: (session: SessionInfo) => void;
   onCreate: () => void;
+  /** scenario runner kicks off a new project — open the result */
+  onScenarioLaunched?: (session: SessionInfo, scenarioName: string) => void;
 };
 
-export function ProjectsLanding({ onOpen, onCreate }: Props) {
+export function ProjectsLanding({ onOpen, onCreate, onScenarioLaunched }: Props) {
   const [sessions, setSessions] = useState<SessionInfo[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [testsOpen, setTestsOpen] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -70,6 +74,14 @@ export function ProjectsLanding({ onOpen, onCreate }: Props) {
           </p>
         </div>
         <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setTestsOpen(true)}
+            className="inline-flex h-9 items-center gap-1.5 rounded-md border border-line bg-surface-raised px-3 text-[12.5px] font-medium text-ink-muted shadow-card transition hover:border-line-strong hover:text-ink"
+            title="Run a packaged scenario test"
+          >
+            Tests
+          </button>
           <button
             type="button"
             onClick={onCreate}
@@ -136,6 +148,45 @@ export function ProjectsLanding({ onOpen, onCreate }: Props) {
           </>
         )}
       </div>
+
+      {testsOpen && (
+        <div
+          className="fixed inset-0 z-40 flex items-center justify-center bg-surface-scrim/60 backdrop-blur-sm"
+          onClick={() => setTestsOpen(false)}
+        >
+          <div
+            className="flex max-h-[90vh] w-[720px] max-w-[95vw] flex-col overflow-hidden rounded-xl border border-line bg-surface-raised shadow-modal"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between gap-3 border-b border-line px-5 py-3.5">
+              <div className="min-w-0">
+                <div className="font-display text-sm font-semibold text-ink-strong">
+                  Tests
+                </div>
+                <div className="text-[11px] text-ink-muted">
+                  Run a packaged scenario; opens the resulting project on launch.
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setTestsOpen(false)}
+                className="rounded px-2 py-1 text-[11px] font-medium text-ink-muted transition hover:bg-surface-sunken hover:text-ink"
+              >
+                Esc
+              </button>
+            </div>
+            <div className="flex-1 overflow-y-auto">
+              <TestsPanel
+                onLaunched={(s, name) => {
+                  setTestsOpen(false);
+                  if (onScenarioLaunched) onScenarioLaunched(s, name);
+                  else onOpen(s);
+                }}
+              />
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

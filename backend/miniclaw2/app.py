@@ -16,9 +16,14 @@ from typing import Any
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .artifacts import load_node_artifact
+from .contextspace import (
+    bootstrap_project_contextspace,
+    describe_project_contextspace,
+    load_context_bundle_for_node,
+)
 from .domain import Node
 from .events import (
     InteractionResponse,
@@ -49,10 +54,22 @@ class CreateSessionRequest(BaseModel):
     temporary: bool = False
     scenario_name: str | None = None
     name: str | None = None
+    project_context_binding_id: str | None = None
 
 
 class RenameSessionRequest(BaseModel):
     name: str
+
+
+class UpdateSessionContextRequest(BaseModel):
+    project_context_binding_id: str | None = None
+    active_planspace_id: str | None = None
+
+
+class BootstrapSessionContextRequest(BaseModel):
+    title: str | None = None
+    planspace_slug: str | None = None
+    binding_slug: str | None = None
 
 
 class SessionInfo(BaseModel):
@@ -63,6 +80,15 @@ class SessionInfo(BaseModel):
     temporary: bool = False
     scenario_name: str | None = None
     name: str = ""
+    project_context_binding_id: str | None = None
+    # Opaque per-node canvas positions persisted from the frontend (PRD §5.1).
+    layout_hints: dict[str, dict[str, float]] = Field(default_factory=dict)
+
+
+class UpdateLayoutHintsRequest(BaseModel):
+    # Merge semantics: `updates` overwrites per-id; `remove` deletes ids.
+    updates: dict[str, dict[str, float]] = Field(default_factory=dict)
+    remove: list[str] = Field(default_factory=list)
 
 
 class EventRecord(BaseModel):
@@ -135,6 +161,7 @@ def create_app() -> FastAPI:
                 temporary=req.temporary,
                 scenario_name=req.scenario_name,
                 name=req.name or "",
+                project_context_binding_id=req.project_context_binding_id,
             )
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
@@ -148,6 +175,8 @@ def create_app() -> FastAPI:
             temporary=project.temporary,
             scenario_name=project.scenario_name,
             name=project.name,
+            project_context_binding_id=project.project_context_binding_id,
+            layout_hints=project.layout_hints,
         )
 
     @app.get("/sessions", response_model=list[SessionInfo])
@@ -161,6 +190,8 @@ def create_app() -> FastAPI:
                 temporary=p.temporary,
                 scenario_name=p.scenario_name,
                 name=p.name,
+                project_context_binding_id=p.project_context_binding_id,
+                layout_hints=p.layout_hints,
             )
             for p in registry.list_projects()
         ]
@@ -178,6 +209,28 @@ def create_app() -> FastAPI:
             temporary=project.temporary,
             scenario_name=project.scenario_name,
             name=project.name,
+            project_context_binding_id=project.project_context_binding_id,
+            layout_hints=project.layout_hints,
+        )
+
+    @app.patch("/sessions/{sid}/layout-hints", response_model=SessionInfo)
+    def update_layout_hints(
+        sid: str,
+        req: UpdateLayoutHintsRequest,
+    ) -> SessionInfo:
+        project = registry.update_layout_hints(sid, req.updates, remove=req.remove)
+        if project is None:
+            raise HTTPException(404, "session not found")
+        return SessionInfo(
+            id=project.id,
+            created_at=project.created_at,
+            turns=registry.turn_count(project.id),
+            provider=project.provider,
+            temporary=project.temporary,
+            scenario_name=project.scenario_name,
+            name=project.name,
+            project_context_binding_id=project.project_context_binding_id,
+            layout_hints=project.layout_hints,
         )
 
     @app.delete("/sessions/{sid}")
@@ -185,6 +238,54 @@ def create_app() -> FastAPI:
         if not registry.delete_project(sid):
             raise HTTPException(404, "session not found")
         return {"ok": True}
+
+    @app.get("/sessions/{sid}/contextspace", response_model=dict[str, Any])
+    def get_session_contextspace(sid: str) -> dict[str, Any]:
+        project = registry.get_project(sid)
+        if project is None:
+            raise HTTPException(404, "session not found")
+        return describe_project_contextspace(project, store_root=registry.store.root)
+
+    @app.patch("/sessions/{sid}/contextspace", response_model=dict[str, Any])
+    def update_session_contextspace(
+        sid: str,
+        req: UpdateSessionContextRequest,
+    ) -> dict[str, Any]:
+        kwargs: dict[str, Any] = {}
+        if "project_context_binding_id" in req.model_fields_set:
+            kwargs["project_context_binding_id"] = req.project_context_binding_id
+        if "active_planspace_id" in req.model_fields_set:
+            kwargs["active_planspace_id"] = req.active_planspace_id
+        project = registry.update_project_context(sid, **kwargs)
+        if project is None:
+            raise HTTPException(404, "session not found")
+        return describe_project_contextspace(project, store_root=registry.store.root)
+
+    @app.post("/sessions/{sid}/contextspace/bootstrap", response_model=dict[str, Any])
+    def bootstrap_session_contextspace(
+        sid: str,
+        req: BootstrapSessionContextRequest,
+    ) -> dict[str, Any]:
+        project = registry.get_project(sid)
+        if project is None:
+            raise HTTPException(404, "session not found")
+        result = bootstrap_project_contextspace(
+            project,
+            store_root=registry.store.root,
+            title=req.title,
+            planspace_slug=req.planspace_slug,
+            binding_slug=req.binding_slug,
+        )
+        project = registry.update_project_context(
+            sid,
+            project_context_binding_id=result["binding_id"],
+            active_planspace_id=result["planspace_id"],
+        )
+        if project is None:
+            raise HTTPException(404, "session not found")
+        response = describe_project_contextspace(project, store_root=registry.store.root)
+        response["bootstrap"] = result
+        return response
 
     @app.get("/sessions/{sid}/nodes", response_model=list[Node])
     def list_nodes(sid: str) -> list[Node]:
@@ -240,6 +341,18 @@ def create_app() -> FastAPI:
             error=artifact.error,
         )
 
+    @app.get("/sessions/{sid}/nodes/{nid}/context-bundle", response_model=dict[str, Any])
+    def get_node_context_bundle(sid: str, nid: str) -> dict[str, Any]:
+        if registry.get_project(sid) is None:
+            raise HTTPException(404, "session not found")
+        node = registry.get_node(sid, nid)
+        if node is None:
+            raise HTTPException(404, "node not found")
+        bundle = load_context_bundle_for_node(node, store_root=registry.store.root)
+        if bundle is None:
+            raise HTTPException(404, "context bundle not found")
+        return bundle
+
     @app.get("/scenarios", response_model=list[ScenarioSummary])
     def list_scenarios_endpoint() -> list[ScenarioSummary]:
         return [ScenarioSummary(**s.metadata()) for s in list_scenarios()]
@@ -273,6 +386,8 @@ def create_app() -> FastAPI:
             temporary=project.temporary,
             scenario_name=project.scenario_name,
             name=project.name,
+            project_context_binding_id=project.project_context_binding_id,
+            layout_hints=project.layout_hints,
         )
 
     @app.post("/sessions/{sid}/verify", response_model=VerifyResponse)

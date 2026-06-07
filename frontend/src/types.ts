@@ -113,6 +113,10 @@ export type SessionInfo = {
   temporary?: boolean;
   scenario_name?: string | null;
   name?: string;
+  project_context_binding_id?: string | null;
+  /** Persisted canvas positions keyed by node id (or synthetic id, e.g.
+   * `artifact:<nid>`). Optional for older sessions. */
+  layout_hints?: Record<string, { x: number; y: number }>;
 };
 
 export type ScenarioSummary = {
@@ -144,6 +148,20 @@ export type NodeState =
   | "error"
   | "cancelled";
 
+export type AcceptanceState =
+  | "not_applicable"
+  | "unreviewed"
+  | "accepted"
+  | "rejected"
+  | "blocked";
+
+export type VerdictSource =
+  | "none"
+  | "human"
+  | "deterministic"
+  | "cross_provider"
+  | "same_provider_advisory";
+
 export type NodeInfo = {
   id: string;
   project_id: string;
@@ -151,7 +169,10 @@ export type NodeInfo = {
   op_kind?: string | null;
   state: NodeState;
   parent_node_id?: string | null;
+  planspace_id?: string | null;
   context_sources: string[];
+  context_bundle_id?: string | null;
+  context_bundle_path?: string | null;
   provider: string;
   provider_session_id?: string | null;
   provider_turn_id?: string | null;
@@ -169,9 +190,94 @@ export type NodeInfo = {
   system_context_snapshot?: string;
   settings_snapshot?: Record<string, unknown>;
   scenario_step_id?: string | null;
+  review_outcome?: "approved" | "rejected" | null;
+  acceptance_state?: AcceptanceState;
+  verdict_source?: VerdictSource;
+  verdict_artifact_path?: string | null;
+  verdict_thread_id?: string | null;
+  accepted_at?: number | null;
+  rejected_at?: number | null;
   created_at: number;
   started_at?: number | null;
   finished_at?: number | null;
+};
+
+export type ContextBundleSource = {
+  scope: string;
+  kind: string;
+  path: string;
+  sha256: string;
+  chars: number;
+  raw_chars?: number;
+  injection: string;
+  plug_id?: string;
+  truncated?: boolean;
+};
+
+export type ContextBundlePlugRef = {
+  id: string;
+  role?: string;
+  injection?: string | null;
+  enabled?: boolean;
+  auto_update?: boolean;
+  source?: string;
+};
+
+export type ContextBundle = {
+  bundle_id: string;
+  created_at: number;
+  project_id?: string;
+  node_id?: string;
+  project_binding_id?: string | null;
+  active_planspace_id?: string | null;
+  active_planspace?: ContextBundlePlugRef | null;
+  sources: ContextBundleSource[];
+  system_text?: string;
+  turn_text?: string;
+};
+
+export type ContextSpacePlugSummary = {
+  id: string;
+  kind: string;
+  slug: string;
+  role?: string;
+  injection?: string | null;
+  enabled: boolean;
+  auto_update: boolean;
+  source: string;
+  active: boolean;
+  exists: boolean;
+  path?: string | null;
+  title: string;
+  description?: string | null;
+};
+
+export type ContextSpaceBindingSummary = {
+  id: string;
+  path: string;
+  title: string;
+  project_name?: string | null;
+  local_paths: string[];
+  matches_project_path: boolean;
+  active_planspace_id?: string | null;
+  binding_active_planspace_id?: string | null;
+  plugs: ContextSpacePlugSummary[];
+};
+
+export type SessionContextSpaceInfo = {
+  root: string;
+  exists: boolean;
+  project_context_binding_id?: string | null;
+  project_active_planspace_id?: string | null;
+  resolved_binding_id?: string | null;
+  active_planspace_id?: string | null;
+  bindings: ContextSpaceBindingSummary[];
+  bootstrap?: {
+    context_root: string;
+    binding_id: string;
+    planspace_id: string;
+    created: string[];
+  };
 };
 
 export type EventRecord = {

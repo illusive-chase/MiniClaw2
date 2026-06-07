@@ -136,6 +136,10 @@ body {
   background-position: -1px -1px;
 }
 
+.react-flow__handle {
+  pointer-events: none;
+}
+
 /* ───────────── animations (gated by reduced-motion) ───────────── */
 @media (prefers-reduced-motion: no-preference) {
   /* sweep: the bar is w-1/3 of its parent track. Translating by % of self,

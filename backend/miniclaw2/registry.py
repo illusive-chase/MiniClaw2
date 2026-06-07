@@ -40,6 +40,7 @@ _PLACEHOLDER_BRIEF = (
     "# Brief unavailable\n\n"
     "_The previous agent step did not produce a review brief._\n"
 )
+_UNSET: object = object()
 
 
 class ProjectRuntime:
@@ -100,6 +101,7 @@ class ProjectRegistry:
         permission_mode: str | None = None,
         approval_policy: str | None = None,
         sandbox: str | None = None,
+        project_context_binding_id: str | None = None,
         temporary: bool = False,
         scenario_name: str | None = None,
     ) -> Project:
@@ -129,6 +131,7 @@ class ProjectRegistry:
             root_path=root_path,
             name=name,
             provider=normalized_provider,
+            project_context_binding_id=project_context_binding_id,
             settings_override=settings,
             temporary=temporary,
             scenario_name=scenario_name,
@@ -149,6 +152,58 @@ class ProjectRegistry:
         if rt is None:
             return None
         rt.project.name = name
+        self.store.update_project(rt.project)
+        return rt.project
+
+    def update_project_context(
+        self,
+        pid: str,
+        *,
+        project_context_binding_id: str | None | object = _UNSET,
+        active_planspace_id: str | None | object = _UNSET,
+    ) -> Project | None:
+        rt = self._runtimes.get(pid)
+        if rt is None:
+            return None
+        if project_context_binding_id is not _UNSET:
+            rt.project.project_context_binding_id = (
+                project_context_binding_id.strip()
+                if isinstance(project_context_binding_id, str)
+                and project_context_binding_id.strip()
+                else None
+            )
+        if active_planspace_id is not _UNSET:
+            settings = dict(rt.project.settings_override)
+            if isinstance(active_planspace_id, str) and active_planspace_id.strip():
+                settings["active_planspace_id"] = active_planspace_id.strip()
+            else:
+                settings.pop("active_planspace_id", None)
+            rt.project.settings_override = settings
+        self.store.update_project(rt.project)
+        return rt.project
+
+    def update_layout_hints(
+        self,
+        pid: str,
+        updates: dict[str, dict[str, float]],
+        *,
+        remove: list[str] | None = None,
+    ) -> Project | None:
+        rt = self._runtimes.get(pid)
+        if rt is None:
+            return None
+        merged = dict(rt.project.layout_hints)
+        for nid, pos in updates.items():
+            if not isinstance(pos, dict):
+                continue
+            x = pos.get("x")
+            y = pos.get("y")
+            if not isinstance(x, (int, float)) or not isinstance(y, (int, float)):
+                continue
+            merged[nid] = {"x": float(x), "y": float(y)}
+        for nid in remove or ():
+            merged.pop(nid, None)
+        rt.project.layout_hints = merged
         self.store.update_project(rt.project)
         return rt.project
 
@@ -484,8 +539,12 @@ class ProjectRegistry:
             )
         elif next_spec.kind == "gate":
             brief = self._load_gate_brief(project, scenario, next_spec)
+            parent_node_id = self._resolve_brief_source_node_id(project, next_spec)
             self.start_gate_node(
-                project.id, brief, scenario_step_id=next_spec.id
+                project.id,
+                brief,
+                scenario_step_id=next_spec.id,
+                parent_node_id=parent_node_id,
             )
 
     def _step_when_matches(self, project: Project, spec: Any) -> bool:
@@ -520,20 +579,26 @@ class ProjectRegistry:
         """
         if not next_spec.brief_from:
             return next_spec.contract or _PLACEHOLDER_BRIEF
-        src_node_id = next(
-            (
-                h.get("node_id")
-                for h in project.scenario_step_history
-                if h.get("step_id") == next_spec.brief_from
-            ),
-            None,
-        )
+        src_node_id = self._resolve_brief_source_node_id(project, next_spec)
         if not src_node_id:
             return f"_(brief source step `{next_spec.brief_from}` not found)_\n"
         src_node = self.store.load_node(project.id, src_node_id)
         if src_node is None:
             return f"_(brief source node `{src_node_id}` missing on disk)_\n"
         return self._read_brief_from_node(project, src_node)
+
+    def _resolve_brief_source_node_id(
+        self,
+        project: Project,
+        next_spec: Any,
+    ) -> str | None:
+        if not getattr(next_spec, "brief_from", ""):
+            return None
+        for h in project.scenario_step_history:
+            if h.get("step_id") == next_spec.brief_from:
+                node_id = h.get("node_id")
+                return node_id if isinstance(node_id, str) else None
+        return None
 
     def _read_brief_from_node(self, project: Project, src_node: Node) -> str:
         target = resolve_node_output_path(project.root_path, src_node)

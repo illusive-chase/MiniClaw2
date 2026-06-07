@@ -1,8 +1,7 @@
-# MiniClaw2 testing — dashboard-launched, demo-driven, investigation-free
+# MiniClaw2 testing — UI-launched, demo-driven, investigation-free
 
-> **Status: Tier 1, Tier 2, Tier 3, and Tier 4 catalogues all landed
-> (engine + assets — live-smoke pending on Tier 3/4).** The dashboard
-> test panel, the temporary-workspace feature, the scenario
+> **Status: Tier 1, Tier 2, Tier 3, and Tier 4 catalogues are implemented.**
+> The Projects landing **Tests** modal, the temporary-workspace feature, the scenario
 > loader/launcher, the `verify.sh` runner, the three bundled Tier 1
 > scenarios (`hello-text`, `bash-uname`, `write-readme`), and the
 > three Tier 2 single-node scenarios (`permission-approve`,
@@ -27,7 +26,7 @@
 > and renders it for the human, who responds via write-json / no-op
 > as before. See `DESIGN.md §3.2` for the rationale.
 >
-> **Tier 3 + Tier 4 catalogue closed (assets pending live smoke).**
+> **Tier 3 + Tier 4 catalogue closed.**
 > `gui-calculator` is the flagship two-step demo (build agent → passive
 > review gate, `auto_commit: true`). `context-md-respected` is a
 > single-node scenario that seeds `CONTEXT.md` and checks both the
@@ -37,8 +36,8 @@
 > verify checks `scenario_step_history` recorded `decision: "rejected"`,
 > `fix.parent_node_id == build.id`, and `fix` inherited the build's
 > provider session. `reconnect-replay` is the Tier 4 resilience demo:
-> the project header grows a **Simulate WS drop** button (conditional
-> on `scenario_name === "reconnect-replay"`) that closes the live
+> the project header's `...` menu shows **Simulate WS drop** (conditional
+> on `scenario_name === "reconnect-replay"`) which closes the live
 > socket with code 1000 so `ws.ts`'s existing reconnect loop fires
 > with `(node_id, last_seq)`; verify checks `events.jsonl` is a
 > contiguous monotonic sequence and the transcript reaches the
@@ -68,30 +67,30 @@ and rewrote `test_gate_node` for the passive flow.
 
 The integration tier covers **whole demos** behaving correctly across
 both providers. Each demo is a **scenario** — a small task launched
-from the dashboard's built-in test section, run in a fresh temporary
+from the frontend's built-in Tests modal, run in a fresh temporary
 workspace, and ratified by a human after every node has reached a
 terminal state.
 
-## 2. Where it lives — the dashboard test section
+## 2. Where it lives — the Projects landing Tests modal
 
 There is **no CLI runner**. The entrypoint is a "Tests" panel in the
-dashboard:
+frontend:
 
-- The panel lists every bundled scenario discovered by the backend
+- The Projects landing page exposes a **Tests** button. It opens a
+  modal listing every bundled scenario discovered by the backend
   (`GET /scenarios`).
 - Each row shows the scenario's name, one-line brief, and a per-
   provider Run button (Claude / Codex).
 - Clicking Run creates a fresh temporary project, seeds the
   scenario's starter files into it, creates the first node, and
-  switches the dashboard into the existing single-project view.
+  opens the resulting project canvas.
 - From that point on **the scenario is just a normal project**: the
-  user supervises in the normal node timeline, chats / approves
-  gates / hits Stop as they would for their own work. Multi-step
-  scenarios will enqueue their next nodes via the same `runner_done`
-  hook the auto-commit op uses (Tier 2+ work); Tier 1 scenarios are
-  single-step so the user never has to type a follow-up prompt.
+  user supervises the normal graph canvas, answers pending requests in
+  the side panel, and hits Stop from the project header as they would
+  for their own work. Multi-step scenarios enqueue their next nodes via
+  the same `runner_done` hook the auto-commit op uses.
 - After every declared node has reached a terminal state, the
-  project view reveals a **Verify** card with two halves:
+  project canvas reveals a **Verify** card with two halves:
   - **Programmatic floor.** A "Run verify.sh" button that POSTs to
     `/sessions/{sid}/verify`; the backend runs `verify.sh` in the
     project root (60s timeout, `MINICLAW_PROJECT_ID` +
@@ -151,7 +150,6 @@ Each scenario lives under `backend/miniclaw2/scenarios/bundled/<name>/`:
       brief.md          # multi-line description (body); first non-empty line is a fallback
       scenario.yaml     # metadata: provider matrix, node spec, seed files, settings
       prompts/<id>.md   # per-node prompt files (referenced from scenario.yaml)
-      contract.md       # gate contract (when the scenario uses a gate)
       seed/             # files copied into the tempdir at launch (e.g. CONTEXT.md)
       verify.sh         # black-box programmatic check; exit 0 = floor passed
       acceptance.md     # human checklist rendered in the Verify card
@@ -169,11 +167,11 @@ nodes:
     prompt_file: prompts/turn1.md
 ```
 
-The dashboard row uses the YAML `brief:` field (terse one-liner);
+The Tests modal row uses the YAML `brief:` field (terse one-liner);
 `brief.md` is reserved for longer-form context shown elsewhere or
 to maintainers reading the directory.
 
-Extended shape (Tiers 2–4 — for forward reference, not v1 impl):
+Extended shape (Tiers 2–4 — current implementation):
 
 ```yaml
 name: gui-calculator
@@ -190,8 +188,8 @@ nodes:
     prompt_file: prompts/build.md
   - id: review
     kind: gate
-    prompt_file: prompts/review.md
-    contract_file: contract.md
+    brief_from: build             # read build's review_brief artifact as the gate contract
+    response_path: reviews/build.json
   # auto-commit ops are NOT declared here — they happen because auto_commit: true
   - id: fix                       # for resume-fix-after-reject
     kind: agent
@@ -203,17 +201,17 @@ nodes:
 The scenario engine in `backend/miniclaw2/scenarios/` parses this
 YAML, copies seed files into the tempdir, and uses
 `ProjectRegistry.start_node` / `start_gate_node` (the same registry
-APIs that drive `+ Node` agent launches and the user-gate auto-spawn)
-to launch the first step. For Tier 1 only the first step exists;
-Tier 2+ work adds a scenario-step expander on the `runner_done`
-callback (parallel to the auto-commit op's expander) so subsequent
-steps land without a scenario-specific runner — the "just runs like a
-normal node" guarantee stays.
+APIs that drive phantom-composer agent launches and the user-gate auto-spawn)
+to launch the first step. For single-step scenarios only the first step exists;
+the scenario-step expander on the `runner_done` callback (parallel to
+the auto-commit op's expander) handles subsequent steps without a
+scenario-specific runner — the "just runs like a normal node" guarantee
+stays.
 
 ## 5. Provider matrix — Claude and Codex, both, every time
 
 Every scenario runs once per provider, in independent temporary
-workspaces. The dashboard surfaces the two as separate rows under
+workspaces. The Tests modal surfaces the two provider run buttons under
 the scenario; running both is two clicks, not one. A scenario is
 "passing" only when both providers pass — both `verify.sh` exits
 and both human checklists are fully ticked.
@@ -225,9 +223,8 @@ is information we want surfaced.
 
 ## 6. Scenario catalogue
 
-Tiered from simplest to most integrated. **Tier 1 landed; Tiers 2–4
-are planned** and the YAML/contract shape accommodates them without
-churn.
+Tiered from simplest to most integrated. All bundled scenarios below
+are present under `backend/miniclaw2/scenarios/bundled/`.
 
 ### Tier 1 — basic agent (✓ landed)
 
@@ -260,12 +257,12 @@ churn.
 - `permission_mode: default`. Prompt tells the agent to run
   `python3 -c 'print("hello-from-bash")'` via Bash. The runner emits a
   `permission`-flavored `interaction_request`; the user approves once
-  from the gate tab.
+  from the selected agent's pending-response panel.
 - Verify: `events.jsonl` contains an `interaction_request` with
   `interaction_type == "permission"` **and** an `activity` with
   `result_kind == "stdout"` whose `result` contains `hello-from-bash`
   (proves the gate fired *and* the tool ran afterward).
-- Acceptance: "a permission prompt appeared in the gate tab; you
+- Acceptance: "a permission prompt appeared in the side panel; you
   clicked Allow; the agent then ran `python3 -c 'print("hello-from-bash")'` and the
   output is visible in the Bash tile."
 
@@ -279,7 +276,7 @@ churn.
   `interaction_type == "plan_approval"`; `PLAN_OK.txt` exists in the
   workspace root with the exact content; `git status --porcelain` is
   clean apart from that one file.
-- Acceptance: "a plan-approval prompt appeared in the gate tab; you
+- Acceptance: "a plan-approval prompt appeared in the side panel; you
   approved it; the diff panel then shows `PLAN_OK.txt` added with the
   correct content; no extra files were created."
 
@@ -299,7 +296,7 @@ churn.
 
 ### Tier 3 — integrated (gates + ops + edges)
 
-**gui-calculator** *(flagship visual demo — ✓ engine + assets landed; live smoke pending)*
+**gui-calculator** *(flagship visual demo — ✓ implemented)*
 > Agent builds a PySide6 / Qt Widgets calculator → passive review gate displays an agent-authored brief → user writes JSON review → auto-commit op rewrites the agent's `commit_after`.
 
 - Two declared nodes (`build` agent, `review` passive gate);
@@ -320,7 +317,7 @@ churn.
 - Verify (human acceptance): a window opens with digits 0–9 +
   operators visible and labeled, clicking `1 + 2 =` shows `3`,
   `9 / 0` shows an error indicator (not a Python traceback), `C`
-  clears, closing the window exits cleanly. Plus: the review tab
+  clears, closing the window exits cleanly. Plus: the gate side panel
   rendered an agent-authored brief naming the exact setup and run
   commands (not the generic template).
 
@@ -330,10 +327,10 @@ expander, and (c) the passive-gate + `review_brief` flow. No dedicated
 `auto-commit-only` or `passive-gate-only` scenario exists by design —
 all three are on the critical path of `gui-calculator`, so a regression
 in any of them breaks this demo's verify *and* its acceptance.
-Document this in the dashboard's test panel so a future maintainer
-knows where to look.
+Document this in the Tests modal copy if future maintainers need an
+in-product pointer.
 
-**context-md-respected** *(✓ engine + assets landed; live smoke pending)*
+**context-md-respected** *(✓ implemented)*
 > Project-neutral `CONTEXT.md` injection is honored by both providers.
 
 - Seed copies a `CONTEXT.md` containing "End every assistant reply
@@ -345,7 +342,7 @@ knows where to look.
   field matches the seeded text byte-for-byte.
 - Acceptance: "the reply ended with `[CTX-OK]`."
 
-**resume-fix-after-reject** *(✓ engine + assets landed; live smoke pending)*
+**resume-fix-after-reject** *(✓ implemented)*
 > Resume edge: agent → gate (reject) → resume agent.
 
 - Three declared nodes: `build` agent (writes `mathutils.py` with only
@@ -366,19 +363,20 @@ knows where to look.
 - Acceptance: "you saw the build node produce `mathutils.py` with
   only `add` and a brief naming the import command, rejected the
   review with `{approved: false, notes: …}`, watched the fix node
-  appear with the `↻ build` resume badge, and confirmed the final
+  appear with a `↻ <build-id>` resume badge, and confirmed the final
   `mathutils.py` contains both the original `add` and the function
   you asked for."
 
 ### Tier 4 — resilience
 
-**reconnect-replay** *(✓ engine + assets landed; live smoke pending)*
+**reconnect-replay** *(✓ implemented)*
 > WS drops mid-stream; reconnect; replay fills the gap; live tail finishes.
 
 - Single agent node with a prompt asking for "10 short facts about
   Python, one per line, each prefixed `Fact N:`, ending the last line
-  with `[END]`." The project header surfaces a **Simulate WS drop**
-  button (conditional on `scenario_name === "reconnect-replay"`) that
+  with `[END]`." The project header's `...` menu surfaces a
+  **Simulate WS drop** action (conditional on
+  `scenario_name === "reconnect-replay"`) that
   calls `useSessionSocket`'s new `simulateDrop()` — closing the active
   socket with code 1000 so `ws.ts`'s existing reconnect loop fires
   with the tracked `(node_id, last_seq)`.
@@ -388,10 +386,126 @@ knows where to look.
   side duplicate / gap behavior is *not* observable from the shell
   and is therefore deferred to the human acceptance step.
 - Acceptance: "the transcript was visibly growing line-by-line when
-  you clicked Simulate WS drop; the ws indicator briefly flickered to
+  you clicked Simulate WS drop from the `...` menu; the ws indicator briefly flickered to
   `connecting` then `open`; the transcript continued from where it
   left off (no rewind, no visibly duplicated facts); the node reached
   `done` cleanly and ended with `[END]`."
+
+### Manual case — ContextSpace bootstrap and bundle injection
+
+**contextspace-bootstrap-manual** *(manual frontend case, not a bundled scenario)*
+> Start MiniClaw2 with an isolated `MINICLAW_HOME`, bootstrap a
+> ContextSpace from the project-root side panel, launch one node, and verify that
+> project `CONTEXT.md` plus active planspace `STATUS.md` / `PLAN.md`
+> are snapshotted and injected.
+
+Setup uses a special home so the test does not touch the developer's
+real `~/.miniclaw2`:
+
+```bash
+rm -rf /private/tmp/miniclaw2-contextspace-test
+mkdir -p /private/tmp/miniclaw2-contextspace-test/workspace
+cat >/private/tmp/miniclaw2-contextspace-test/workspace/CONTEXT.md <<'EOF'
+# ContextSpace Manual Test Workspace
+
+This project exists only for MiniClaw2 ContextSpace testing.
+
+Agents should mention the phrase `contextspace-manual-test` when asked to
+summarize the project context.
+EOF
+
+cd backend
+MINICLAW_HOME=/private/tmp/miniclaw2-contextspace-test/home \
+  python -m miniclaw2 --host 127.0.0.1 --port 8000 --log-level info
+```
+
+In another shell:
+
+```bash
+cd frontend
+npm run dev
+```
+
+Create or select a session whose cwd is
+`/private/tmp/miniclaw2-contextspace-test/workspace` and provider is
+either `codex` or `claude`. The API equivalent is:
+
+```bash
+curl -s -X POST http://127.0.0.1:8000/sessions \
+  -H 'content-type: application/json' \
+  -d '{"cwd":"/private/tmp/miniclaw2-contextspace-test/workspace","provider":"codex","name":"ContextSpace Manual Test"}'
+```
+
+Frontend steps:
+
+1. Open `http://localhost:5173/`.
+2. Select `ContextSpace Manual Test`.
+3. Select the project-root node on the canvas to open `ProjectPanel`.
+4. Confirm root points at
+   `/private/tmp/miniclaw2-contextspace-test/home/contextspace`, `Root`
+   is missing, and `Resolved binding` is none.
+5. Click `Create`; use title `Manual ContextSpace Track`.
+6. Confirm root is present, resolved binding is
+   `project.manual-contextspace-track`, and active planspace is
+   `planspaces.manual-contextspace-track`.
+7. Send this prompt:
+
+   ```text
+   Summarize the loaded project/contextspace context. Mention whether you saw the phrase contextspace-manual-test.
+   ```
+
+Expected disk and UI evidence:
+
+- ContextSpace files exist under
+  `/private/tmp/miniclaw2-contextspace-test/home/contextspace`, including
+  `contextspace.yaml`,
+  `bindings/projects/project.manual-contextspace-track.yaml`,
+  `plugs/planspaces/manual-contextspace-track/manifest.yaml`,
+  `STATUS.md`, `PLAN.md`, and `SKILLS.md`.
+- The completed node has `context_bundle_id`, `context_bundle_path`,
+  `project_context_binding_id`, and `active_planspace_id` in
+  `node.json`; the agent side panel's `Inspect` drawer shows the
+  bundle/source details.
+- The context bundle sources include:
+  - `/private/tmp/miniclaw2-contextspace-test/workspace/CONTEXT.md`
+    with `injection: system`;
+  - `plugs/planspaces/manual-contextspace-track/STATUS.md` with
+    `injection: turn`;
+  - `plugs/planspaces/manual-contextspace-track/PLAN.md` with
+    `injection: turn`.
+- The assistant reply or summary artifact mentions
+  `contextspace-manual-test`.
+- Server logs show only normal `200 OK` requests and no ContextSpace
+  exception.
+
+Notes:
+
+- A permission gate may appear if the provider writes the summary
+  artifact through a shell command. Approve it; this is expected.
+
+Memory delta writeback extension:
+
+1. Launch a second node in the same session with this prompt:
+
+   ```text
+   Create a ContextSpace memory delta artifact for this completed node. Add a STATUS.md append_observation with policy auto whose text contains contextspace-memory-delta-manual-ok. Also include one PLAN.md propose_patch update with policy proposed whose patch contains do-not-apply-plan-proposal. Do not edit ContextSpace files directly.
+   ```
+
+2. After the node reaches `done`, verify:
+   - the workspace contains
+     `/private/tmp/miniclaw2-contextspace-test/workspace/.miniclaw2/outputs/<node-id>/memory-delta.json`;
+   - ContextSpace contains the copied inbox file
+     `plugs/planspaces/manual-contextspace-track/inbox/<node-id>.memory-delta.json`;
+   - `plugs/planspaces/manual-contextspace-track/STATUS.md` contains
+     `contextspace-memory-delta-manual-ok`, `node <node-id>`, and
+     `acceptance_state: unreviewed`;
+   - `plugs/planspaces/manual-contextspace-track/PLAN.md` does not contain
+     `do-not-apply-plan-proposal`;
+   - `plugs/planspaces/manual-contextspace-track/events.jsonl` contains
+     `memory_delta_applied` and records one proposal;
+   - Agent side panel -> `Inspect` -> `Settings snapshot` shows the
+     memory delta result with `applied 1` and `proposed 1`, source
+     `project_artifact`.
 
 ## 7. Out of scope for v1
 
@@ -405,7 +519,7 @@ knows where to look.
 - CI integration. The benchmark requires a display, real provider
   credentials, and human ratification by design; it is a developer-
   driven gate, not a CI gate.
-- A simulated-user (`operator.py`) framework. The dashboard makes
+- A simulated-user (`operator.py`) framework. The frontend makes
   the real user the operator. Scenarios that need scripted gate
   responses (e.g. an "auto-approve every gate" affordance for
   unattended re-runs) are reconsidered after Tier 1 has been used.
@@ -429,13 +543,12 @@ To revisit after live-smoking the Tier 3 / Tier 4 catalogue:
   earlier step, the expander resolves the matching `node_id` from
   history and passes it as `start_node`'s `resume_from_node_id`. The
   new node inherits the source's provider session.
-- **How to drive `reconnect-replay` from the dashboard.** *Resolved.*
-  A small "Simulate WS drop" button lives in the project header,
-  conditional on `session.scenario_name === "reconnect-replay"`. It
-  calls `useSessionSocket`'s `simulateDrop()` helper, which closes
-  the live socket with code 1000 so the existing reconnect path
-  fires with `(node_id, last_seq)`. No test-panel-specific UI
-  needed.
+- **How to drive `reconnect-replay` from the frontend.** *Resolved.*
+  A "Simulate WS drop" menu item lives in the project header `...`
+  menu, conditional on `session.scenario_name === "reconnect-replay"`.
+  It calls `useSessionSocket`'s `simulateDrop()` helper, which closes
+  the live socket with code 1000 so the existing reconnect path fires
+  with `(node_id, last_seq)`. No test-panel-specific UI needed.
 - **Cross-provider artifact comparison.** Same brief, two providers,
   two produced repos — is there a useful diff to surface? Likely
   yes, but the format will fall out of running a few scenarios
@@ -447,7 +560,7 @@ To revisit after live-smoking the Tier 3 / Tier 4 catalogue:
   acceptance state. Not painful enough to fix yet.
 - **Scratch-project affordance.** The `temporary: true` flag is now
   general, but no "New scratch project" button exists in the
-  dashboard. Add when ad-hoc-experiment use shows up; the wiring is
+  frontend. Add when ad-hoc-experiment use shows up; the wiring is
   one button + a `POST /sessions {temporary: true}` call.
 - **Second-review step for `resume-fix-after-reject`.** v1 ships
   three steps (build / review / fix) so the resume edge is the

@@ -1,107 +1,118 @@
 # MiniClaw2
 
-A minimal coding-agent wrapper with a web GUI. Python backend wrapping
-provider adapters for Claude Code (`claude-agent-sdk`) and Codex
-(`codex app-server`) over FastAPI + WebSocket, paired with a React +
-Vite frontend.
+A minimal coding-agent wrapper with a graph-oriented web GUI. The Python
+backend wraps provider adapters for Claude Code (`claude-agent-sdk`) and
+Codex (`codex app-server`) over FastAPI + WebSocket, paired with a React
++ Vite + React Flow frontend.
 
 ## Architecture
 
 ```
-┌────────────────┐  WebSocket   ┌──────────────────┐  provider adapter
-│ React + Vite   │ ───────────▶ │ FastAPI gateway  │ ────────────────▶ Claude SDK
-│  (frontend/)   │ ◀─────────── │  (backend/)      │ ────────────────▶ Codex app-server
-└────────────────┘   events     └──────────────────┘   tool / messages
+┌──────────────────────┐  REST / WebSocket  ┌──────────────────┐  provider adapter
+│ React Flow workspace │ ─────────────────▶ │ FastAPI gateway  │ ───────────────▶ Claude SDK
+│     (frontend/)      │ ◀───────────────── │    (backend/)    │ ───────────────▶ Codex app-server
+└──────────────────────┘      events        └──────────────────┘   tool / messages
 ```
 
-- **Backend** (`backend/miniclaw2/`) — a **Project / Node** domain
-  model persisted to disk as JSON + JSONL. Each user prompt becomes a
-  fresh agent `Node` using the project's selected provider. Provider
-  conversation continuity is explicit rather than implicit: a node
-  starts a new Claude SDK session or Codex app-server thread unless the
-  UI later adds a deliberate resume edge. A `NodeRunner` drives the
-  state machine (`queued → running [↔ waiting] → done|error|cancelled`),
-  translates provider messages into a small event union over the
-  WebSocket, persists every event to `events.jsonl` before pushing, and
-  can inject a node output contract (`freeform`, `summary`, or
-  `interface`) so completed agent nodes have a dashboard-visible result
-  artifact.
-- **Frontend** (`frontend/`) — single-project workspace with a
-  horizontal node timeline, node detail side panel, and chat surface.
-  Assistant output is markdown-rendered (`react-markdown` + GFM +
-  `highlight.js`); inline tool activity has collapsible output panels
-  (stdout/text/json and real diffs when providers supply one); the app
-  has a Stop button, a collapsible reasoning panel, repo diff
-  inspection, an explicit resume-from-node control with a visible
-  SVG connector + `↻ {id}` badge on the timeline, a collapsible
-  System-context block in the node summary tab, artifact-first summary
-  rendering for `summary`/`interface` node outputs, a read-only
-  `Settings` tab driven by `Node.settings_snapshot`, and WebSocket
-  reconnect-replay. Permission / ask-user / plan-approval and
-  checkpoint-review all share a unified `gate` tab on `NodeDetail`
-  that auto-switches when a request arrives; an amber banner above
-  the chat composer surfaces requests for nodes that aren't currently
-  selected. Gates are not user-launched directly: the `+ Node` modal's
-  Output contract dropdown exposes a `review` option that sets the
-  agent's `output_kind = review_brief`, after which a passive gate
-  auto-spawns with the agent-authored brief as its contract.
-- **Project-level context** — a `CONTEXT.md` file at the project root
-  is loaded at each node launch and injected provider-neutrally: into
-  Claude via `system_prompt.append` on the `claude_code` preset, and
-  into Codex by prepending to the `turn/start` input text on fresh
-  threads. The resolved text is snapshotted onto the Node
-  (`system_context_snapshot`) for audit.
+- **Backend** (`backend/miniclaw2/`) — a `Project` / `Node` /
+  `HumanGate` domain model persisted to disk as JSON + JSONL. Each
+  user prompt becomes a fresh agent `Node` using the project's selected
+  provider. Provider conversation continuity is explicit rather than
+  implicit: a node starts a new Claude SDK session or Codex app-server
+  thread unless it is launched with `resume_from_node_id`. A
+  `NodeRunner` drives the state machine (`queued -> running [<-> waiting]
+  -> done|error|cancelled`, with `awaiting_review` for passive gates),
+  translates provider messages into a small event union over WebSocket,
+  persists every event to `events.jsonl` before pushing, injects output
+  contracts (`freeform`, `summary`, `interface`, or `review_brief`), and
+  applies ContextSpace memory-delta artifacts after terminal transitions.
+- **Frontend** (`frontend/`) — a projects landing page plus a
+  single-project React Flow canvas. The canvas materializes project root,
+  agent, gate, op, artifact, context, and phantom-composer nodes with
+  timeline, resume, produces, reviews, and loads edges. Launching work is
+  done through the dashed `PhantomNode` composer on the canvas, not a
+  `+ Node` modal. The selected item drives a polymorphic `SidePanel`
+  (`AgentPanel`, `GatePanel`, `ArtifactPanel`, `ContextNodePanel`,
+  `OpPanel`, `ProjectPanel`) rather than the old fixed `NodeDetail`
+  tabs. Assistant output is markdown-rendered (`react-markdown` + GFM +
+  `highlight.js`); inline tool activity has collapsible output panels;
+  pending permission / ask-user / plan requests render inside the agent
+  panel; passive review gates render a response form in `GatePanel`; a
+  `VerifyCard` appears on scenario projects after nodes reach terminal
+  states; and WebSocket reconnect replay is handled by `ws.ts`.
+- **Project and ContextSpace context** — a project-root `CONTEXT.md` is
+  always loaded when present and injected provider-neutrally. If the
+  project is bound to a ContextSpace, the launch also snapshots the
+  active planspace sources (`STATUS.md`, `PLAN.md`, and enabled
+  plugs according to their manifests) into
+  `$MINICLAW_HOME/contextspace/snapshots/<bundle-id>.json`. Project
+  `CONTEXT.md` goes into system context; planspace sources are injected
+  as turn context. The node records `context_bundle_id`,
+  `context_bundle_path`, `context_sources`, and launch settings for
+  audit.
 
 ## Scope
 
-In: streaming chat with markdown rendering, tool activity with full
-result panels, permission / ask-user / plan-approval interactions,
-on-disk persistence per project & node, interrupt, extended-thinking
-surface, WebSocket reconnect replay (mid-session drops), Claude and
-initial Codex provider adapters, provider-neutral project context
-via `CONTEXT.md`, checkpoint gate nodes (markdown contract +
-write-json / no-op review), node output contracts (`summary` markdown
-or `interface` JSON artifacts), and opt-in auto-commit op nodes with
-real two-commit per-node diffs.
-Out (for now): multi-project workspace UI, vendor-specific on-disk
-context (`CLAUDE.md`, `AGENTS.md`, `.claude/settings.json`,
-`.claude/agents`, `.mcp.json`), hard-reload session survival
-(session-switcher UI), per-token streaming for Claude, auth, cost
-tracking.
+In: persistent project list, graph canvas workspace, streaming markdown
+assistant output, tool activity with result panels, permission /
+ask-user / plan-approval interactions, on-disk persistence per project
+and node, interrupt, extended-thinking surface, WebSocket reconnect
+replay, Claude and Codex provider adapters, provider-neutral project
+context via `CONTEXT.md`, ContextSpace bootstrap / binding / active
+planspace / bundle snapshots, memory-delta writeback for safe
+`STATUS.md` observations, passive checkpoint gate nodes, node output
+contracts (`summary` markdown, `interface` JSON, `review_brief`
+markdown), bundled dashboard-launched scenarios, and opt-in auto-commit
+op nodes with two-commit per-node diffs.
 
-See [`DESIGN.md`](DESIGN.md) for the long-term graph-IDE plan and
-[`PROPOSAL.md`](PROPOSAL.md) for the CLI-parity punch list (with
-landed items marked).
+Out (for now): vendor-specific on-disk context (`CLAUDE.md`,
+`AGENTS.md`, `.claude/settings.json`, `.claude/agents`, `.mcp.json`),
+per-token streaming for Claude, auth, cost tracking, model/settings
+pickers in the primary UI, multi-project lane visualization, template
+runs, fork/worktree graph operations, schema-generated review forms,
+and automatic ContextSpace git commits.
 
-## Run it
+See [`DESIGN.md`](DESIGN.md) for the long-term graph-IDE plan,
+[`PROPOSAL.md`](PROPOSAL.md) for the CLI-parity punch list, and
+[`UI_REDESIGN_PRD.md`](UI_REDESIGN_PRD.md) for the graph UI rationale
+and remaining polish gaps.
 
-**Backend** (Python ≥ 3.11):
+## Run It
+
+**Backend** (Python >= 3.11):
+
 ```bash
 cd backend
 pip install -e .
 python -m miniclaw2 --reload     # http://127.0.0.1:8000
 ```
+
 Env:
+
 - `MINICLAW_ANTHROPIC_MODEL` (default `claude-sonnet-4-6`)
 - `MINICLAW_HOME` (default `~/.miniclaw2`) — root for the on-disk store.
+- `MINICLAW_CONTEXT_HOME` (optional) — overrides the default
+  `$MINICLAW_HOME/contextspace` ContextSpace root.
 - Claude provider: whatever auth the `claude` CLI already uses on your machine.
 - Codex provider: `codex` must be on `PATH` and `codex doctor` should
-  show working auth/config. The adapter uses `codex app-server --listen stdio://`
-  and does not set `modelProvider`, `approvalPolicy`, or `sandbox` unless
-  they are explicitly provided as session overrides, so Codex keeps using
-  `$CODEX_HOME/config.toml` defaults such as your `packycode` provider/base URL.
+  show working auth/config. The adapter uses
+  `codex app-server --listen stdio://` and does not set
+  `modelProvider`, `approvalPolicy`, or `sandbox` unless they are
+  explicitly provided as session overrides, so Codex keeps using
+  `$CODEX_HOME/config.toml` defaults.
 
-The frontend has a Claude/Codex selector. You can also create a
-Codex-backed session manually:
+Create a Codex-backed project manually:
+
 ```bash
 curl -X POST http://127.0.0.1:8000/sessions \
   -H 'content-type: application/json' \
-  -d '{"cwd":"'"$PWD"'","provider":"codex"}'
+  -d '{"cwd":"'"$PWD"'","provider":"codex","name":"MiniClaw2"}'
 ```
 
-Opt a project into auto-commit (a `commit` op node appended after each
-agent/gate node reaches `done`, rewriting that node's `commit_after`
-so the per-node diff becomes a real two-commit diff):
+Opt a project into auto-commit (a `commit` op node is appended after
+each agent/gate node reaches `done`, rewriting that node's
+`commit_after` so the per-node diff becomes a real two-commit diff):
+
 ```bash
 curl -X POST http://127.0.0.1:8000/sessions \
   -H 'content-type: application/json' \
@@ -109,38 +120,60 @@ curl -X POST http://127.0.0.1:8000/sessions \
 ```
 
 **Frontend**:
+
 ```bash
 cd frontend
 npm install
 npm run dev                      # http://127.0.0.1:5173
 ```
-Vite proxies `/sessions` and `/ws` to the backend.
+
+Vite proxies `/sessions`, `/scenarios`, and `/ws` to the backend.
 
 ## Layout
 
 ```
 backend/miniclaw2/
-  domain.py     # Project, Node, HumanGate, ContextBundle (Pydantic) + state enums
-  store.py      # JSON/JSONL filesystem store under $MINICLAW_HOME
-  runner.py     # provider-neutral NodeRunner state machine
-  providers/    # Claude SDK and Codex app-server adapters
-  registry.py   # ProjectRegistry — in-memory orchestration over the store
-  events.py     # Pydantic models for the WS protocol
-  app.py        # FastAPI: REST + WebSocket gateway (legacy /sessions URL shape)
-  context.py    # CONTEXT.md loader (project-root, provider-neutral)
-  git_state.py  # small git helpers for commit ids and read-only diffs
-  replay.py     # replay/live buffering for reconnecting WS observers
-  __main__.py   # uvicorn entry
+  domain.py        # Project, Node, HumanGate, ContextBundle + state enums
+  store.py         # JSON/JSONL filesystem store under $MINICLAW_HOME
+  runner.py        # provider-neutral NodeRunner state machine
+  providers/       # Claude SDK and Codex app-server adapters
+  registry.py      # ProjectRegistry orchestration over the store
+  events.py        # Pydantic models for the WS protocol
+  app.py           # FastAPI: REST + WebSocket gateway
+  contextspace.py  # ContextSpace bindings, bundle snapshots, memory deltas
+  context.py       # legacy CONTEXT.md loader helper
+  git_state.py     # git helpers for commit ids and read-only diffs
+  artifacts.py     # output artifact loading / summarization
+  replay.py        # replay/live buffering for reconnecting WS observers
+  workspace.py     # temporary workspace creation / cleanup
+  scenarios/       # bundled scenario loader, launcher, verifier
+  __main__.py      # uvicorn entry
 
 frontend/src/
-  App.tsx       # session + chat + Stop button + interaction dispatch
-  components/ProjectTimeline.tsx  # single-project horizontal timeline
-  components/NodeDetail.tsx       # selected node transcript/events panel
-  ws.ts         # useSessionSocket hook
-  api.ts        # REST helpers
-  types.ts      # mirror of backend events
-  components/   # Chat, ToolActivity, PermissionDialog, AskUserDialog, PlanDialog,
-                # NodeLaunchModal, GateReviewPanel
+  App.tsx                  # routing, WS handling, graph workspace shell
+  canvas/
+    Canvas.tsx             # React Flow canvas
+    layout.ts              # graph materialization and layout
+    nodes/                 # Agent, Gate, Op, Artifact, Context, Phantom, Root nodes
+    edges/                 # Timeline, Resume, Produces, Reviews, Loads edges
+  panel/
+    SidePanel.tsx          # polymorphic inspector dispatch
+    AgentPanel.tsx         # result/activity/pending/Inspect drawer
+    GatePanel.tsx          # passive review response form
+    ArtifactPanel.tsx      # result.md/result.json/brief.md viewer
+    ContextNodePanel.tsx   # context source inspector
+    OpPanel.tsx            # commit-op transition + diff
+    ProjectPanel.tsx       # project settings + ContextSpace activation
+  components/
+    ProjectsLanding.tsx    # persistent project list + Tests modal
+    NewProjectModal.tsx    # create/select cwd + provider
+    TestsPanel.tsx         # bundled scenario launcher
+    VerifyCard.tsx         # verify.sh + human acceptance checklist
+    ToolActivity.tsx       # provider tool result rendering
+    PermissionDialog.tsx, AskUserDialog.tsx, PlanDialog.tsx
+  ws.ts                    # useSessionSocket + reconnect replay
+  api.ts                   # REST helpers
+  types.ts                 # mirror of backend events / models
 ```
 
 On-disk layout (under `$MINICLAW_HOME`, default `~/.miniclaw2`):
@@ -152,46 +185,64 @@ projects/<pid>/
     node.json           # full Node fields, rewritten on each state transition
     events.jsonl        # {seq, event} per line, append-only
     gates.jsonl         # {action: "created"|"resolved", gate} per line
+
+contextspace/
+  contextspace.yaml
+  bindings/projects/<binding-id>.yaml
+  plugs/planspaces/<slug>/
+    manifest.yaml
+    STATUS.md
+    PLAN.md
+    SKILLS.md
+    events.jsonl
+    inbox/<node-id>.memory-delta.json
+  snapshots/<bundle-id>.json
 ```
 
 Agent node output artifacts live in the project workspace by default:
 
 ```
-<project_root>/.miniclaw2/outputs/<nid>/result.md    # output_kind=summary
-<project_root>/.miniclaw2/outputs/<nid>/result.json  # output_kind=interface
+<project_root>/.miniclaw2/outputs/<nid>/result.md          # output_kind=summary
+<project_root>/.miniclaw2/outputs/<nid>/result.json        # output_kind=interface
+<project_root>/.miniclaw2/outputs/<nid>/brief.md           # output_kind=review_brief
+<project_root>/.miniclaw2/outputs/<nid>/memory-delta.json  # optional ContextSpace writeback
 ```
 
-## Wire protocol
+## Wire Protocol
 
-The HTTP/WS shape is the "session"-based legacy compat layer: each
-session id is a project id, and each `user_message` spawns a fresh
-agent node.
+The HTTP/WS shape is the "session"-based compat layer: each session id
+is a project id, and each `user_message` spawns a fresh agent node.
 
-- REST read APIs for the Phase 1 workspace shell:
+- Project/session REST APIs:
+  `GET /sessions`, `POST /sessions`, `PATCH /sessions/{sid}`,
+  `DELETE /sessions/{sid}`.
+- ContextSpace REST APIs:
+  `GET /sessions/{sid}/contextspace`,
+  `PATCH /sessions/{sid}/contextspace`,
+  `POST /sessions/{sid}/contextspace/bootstrap`, and
+  `GET /sessions/{sid}/nodes/{nid}/context-bundle`.
+- Node REST APIs:
   `GET /sessions/{sid}/nodes`,
-  `GET /sessions/{sid}/nodes/{nid}`, and
-  `GET /sessions/{sid}/nodes/{nid}/events`, plus
-  `GET /sessions/{sid}/nodes/{nid}/diff` and
+  `GET /sessions/{sid}/nodes/{nid}`,
+  `GET /sessions/{sid}/nodes/{nid}/events`,
+  `GET /sessions/{sid}/nodes/{nid}/diff`, and
   `GET /sessions/{sid}/nodes/{nid}/artifact`.
-- `POST /sessions` accepts an optional `auto_commit: bool` that
-  stores into `project.settings_override["auto_commit"]` and triggers
-  the commit-op auto-append.
-- Client → server: `user_message {text, resume_from_node_id?,
-  output_kind?, output_path?}` (`output_kind: "review_brief"`
-  triggers an automatic follow-up passive gate after the agent
-  completes), `interaction_response`, `interrupt`,
-  `replay_request {node_id, since_seq}`.
-- Server → client: `node_started` (carries `kind` to distinguish
-  agent/gate/op tiles and `prompt` so the chat panel can seed turns
-  for any agent node, including scenario-launched ones),
-  `node_updated`, `text_delta`,
-  `thinking`, `activity` (now with optional `result` + `result_kind`),
-  `interaction_request` (with `interaction_type` extended to include
-  `"checkpoint_review"` for gate-node contracts), `usage`, `turn_done`,
-  `error`. All carry a monotonic `seq` that
-  drives the on-disk event log and reconnect replay: clients track
-  `(activeNodeId, lastSeq)` and send `replay_request` after every
-  reconnect.
+- Scenario REST APIs:
+  `GET /scenarios`, `GET /scenarios/{name}`,
+  `POST /scenarios/{name}/run`, and
+  `POST /sessions/{sid}/verify`.
+- Client -> server:
+  `user_message {text, resume_from_node_id?, output_kind?, output_path?}`,
+  `interaction_response`, `interrupt`, and
+  `replay_request {node_id, since_seq}`. `output_kind:
+  "review_brief"` triggers an automatic follow-up passive gate after
+  the agent completes and any auto-commit op finishes.
+- Server -> client:
+  `node_started` (carries `kind` and agent `prompt`), `node_updated`,
+  `text_delta`, `thinking`, `activity` (with optional `result` +
+  `result_kind`), `interaction_request` (`permission`, `ask_user`,
+  `plan_approval`, or `checkpoint_review`), `usage`, `turn_done`, and
+  `error`. Events carry monotonic `seq` values for reconnect replay.
 
 `interaction_response` remains backward-compatible with Claude's
 `allow/message/updated_input` shape and also accepts Codex-style
@@ -202,82 +253,38 @@ and [`frontend/src/types.ts`](frontend/src/types.ts).
 
 ## Status
 
-Phase 0 spine + Phase 1 chat polish from [`DESIGN.md`](DESIGN.md) are
-in. The shifts from the initial single-file wrapper:
+The current code has moved beyond the original chat-wrapper plan:
 
 - Domain model on disk: `Project` / `Node` / `HumanGate` survive a
-  process restart (JSONL/JSON; SQLite from DESIGN §8 is deferred).
-- Node state machine with explicit transitions and an event log per node.
-- Provider layer split out of the state machine. Claude remains the
-  default provider; Codex can be selected per session.
-- [`PROPOSAL.md`](PROPOSAL.md) Phase 1 (chat polish) is landed:
-  plan-mode happy path, Stop / interrupt, `ThinkingBlock` surface,
-  tool I/O rendering (stdout/text/json and provider-supplied diffs as
-  collapsible result panels in `ToolActivity`), markdown rendering
-  for assistant text, and WebSocket reconnect replay
-  (`node_started` + `replay_request` consumes `events.jsonl` and the
-  reconnected socket re-attaches to live events).
-- DESIGN Phase 1 is now in progress: the single-project horizontal
-  timeline and selected-node side panel are in, backed by read-only
-  node/event/diff REST endpoints and explicit `node_updated` events.
-  Chat remains the launch surface for new agent nodes while the graph
-  workflow matures.
-- Per-token streaming for the Claude provider stays deferred until
-  the pinned SDK exposes partial messages; Codex already streams
-  per-delta.
+  process restart via JSON/JSONL. SQLite from `DESIGN.md` remains
+  deferred.
+- Provider layer is split out of the state machine. Claude remains the
+  default provider; Codex can be selected per project/scenario.
+- New nodes start fresh by default. Resume edges are explicit and copy
+  the parent's provider session/thread id into the child node.
+- The graph UI redesign is partially landed: persistent projects,
+  React Flow canvas, context/artifact nodes, phantom composer,
+  polymorphic side panel, project-root ContextSpace controls, and
+  scenario test modal are current. Some PRD polish remains, notably
+  op-as-edge-chevron and inline gate expansion directly inside canvas
+  tiles; today ops are still graph nodes and inline gates render in
+  the agent side panel.
+- `CONTEXT.md` plus ContextSpace bundle snapshots are in. Vendor-
+  specific loading (`CLAUDE.md` walk, `.claude/settings.json`,
+  `.claude/agents`, `.mcp.json`) is still intentionally deferred.
+- Passive `gate` node flow is in. Agents launched with
+  `output_kind=review_brief` write `brief.md`; the registry then
+  spawns a gate that renders a write-json / no-op response form.
+  Gate write-json responses stamp `review_outcome` and update the
+  source node's human `acceptance_state` / `verdict_*` fields.
+- `commit` op nodes are in. With `auto_commit:true`, a commit op is
+  appended after each successful agent/gate node and rewrites the
+  preceding node's `commit_after`.
+- The bundled scenario catalogue contains 10 scenarios:
+  `hello-text`, `bash-uname`, `write-readme`, `permission-approve`,
+  `plan-mode-approval`, `interrupt-midstream`, `context-md-respected`,
+  `resume-fix-after-reject`, `reconnect-replay`, and `gui-calculator`.
 
-A first slice of DESIGN Phase 2 also landed: a provider-neutral
-`CONTEXT.md` is loaded from the project root and injected into both
-Claude (via `system_prompt.append`) and Codex (prepended to the first
-`turn/start` input on fresh threads). The resolved text is
-snapshotted onto the Node and surfaced in the side-panel summary.
-Vendor-specific loading (CLAUDE.md walk, `.claude/settings.json`,
-custom agents, `.mcp.json`) is intentionally out of scope.
-
-The DESIGN Phase 2 centerpieces have since landed too:
-
-- **`gate` node kind.** Gate nodes are passive human checkpoints —
-  no provider call. They auto-spawn as a follow-up to an agent node
-  whose `output_kind` is `review_brief`: the agent writes a brief at
-  `.miniclaw2/outputs/<nid>/brief.md` (`# How to run` / `# What to
-  verify` / `# Response schema`) and the registry uses that file as
-  the gate's contract. The user picks `review` in the `+ Node` modal's
-  Output contract dropdown to request this handoff; scenarios drive
-  the same path via `brief_from:` in YAML. The `NodeDetail` side
-  panel's `gate` tab renders the contract via `react-markdown` plus a
-  write-json / no-op response form. Write-json validates the path
-  (project-relative only, no `..`) and loops on errors so the
-  reviewer can fix the path without restarting the node.
-- **`commit` op node.** When the project has `auto_commit:true`, a
-  `commit` op node is auto-appended after each agent/gate node that
-  reaches `done`. The op runs `git add -A && git commit -m
-  miniclaw:node:<id>`; on success it rewrites the preceding node's
-  `commit_after` to the new commit hash. Op tiles render narrower in
-  the timeline and the selection deliberately does not jump to them
-  (`node_started.kind` distinguishes agent/gate/op events).
-
-A subsequent **Phase 1/2 polish sweep** then landed three follow-ups:
-
-- **Inline gates moved into the side panel.** Permission / ask-user /
-  plan-approval and checkpoint-review share a single dynamic `gate`
-  tab on `NodeDetail`; the bottom-of-chat dialog is gone. When a
-  request fires, the timeline auto-selects the owning node and the
-  side panel auto-switches to `gate`. An amber banner above the chat
-  composer surfaces requests for nodes the user isn't currently
-  parked on.
-- **Settings tab in `NodeDetail`.** Read-only inspector for what the
-  node was launched with, backed by a new
-  `Node.settings_snapshot: dict[str, Any]` populated at runner start
-  with `project.settings_override + cwd + provider`. Pydantic default
-  keeps older on-disk records loading cleanly.
-- **Resume-edge connectors on the timeline.** `ProjectTimeline`
-  overlays an SVG bezier from each parent agent/gate tile to its
-  resume child (computed via tile refs, recomputed on scroll /
-  resize). Each resumed tile also gets a `↻ {id}` badge so the
-  relationship stays visible when the parent is off-screen. Op
-  auto-append parents are deliberately skipped — drawn edges only
-  ever mean conversation continuation.
-
-Next up: DESIGN Phase 3 (Templates — programmable graph), or the
-deferred vendor-specific on-disk context (CLAUDE.md walk,
-`.claude/settings.json`, `.claude/agents`, `.mcp.json`).
+Remaining near-term work is graph UI polish, template/programmed graph
+runs from `DESIGN.md` Phase 3, and the deferred vendor-specific context
+loading needed for tighter native CLI parity.
