@@ -21,7 +21,7 @@ Trunk: `backend/miniclaw2/domain.py`.
 - `NodeState ∈ {queued, running, waiting, awaiting_review, done, error, cancelled}`.
 - `AcceptanceState ∈ {not_applicable, unreviewed, accepted, rejected, blocked}`.
 - `VerdictSource ∈ {none, human, deterministic, cross_provider, same_provider_advisory}`.
-- `Node` fields covering ontology in `PHILOSOPHY.md` §5.1: `parent_node_id`,
+- `Node` fields covering ontology in `PHILOSOPHY.md` §6.1: `parent_node_id`,
   `planspace_id`, `context_sources`, `context_bundle_id`,
   `context_bundle_path`, `provider`, `provider_session_id`,
   `provider_turn_id`, `sdk_session_id` (legacy alias),
@@ -153,7 +153,7 @@ Trunk: `backend/miniclaw2/contextspace.py`, `backend/miniclaw2/context.py`,
 
 - ContextSpace root resolution: `$MINICLAW_CONTEXT_HOME` or
   `$MINICLAW_HOME/contextspace`. No silent bootstrap on first run.
-- On-disk layout matching `PHILOSOPHY.md` §6:
+- On-disk layout matching `PHILOSOPHY.md` §7:
   ```
   contextspace/
     contextspace.yaml
@@ -454,7 +454,7 @@ branching).
 
 ## 9. Multi-project / forks
 
-`PHILOSOPHY.md` §5.2 names forks as the concurrency model. None of the
+`PHILOSOPHY.md` §6.2 names forks as the concurrency model. None of the
 multi-project surface has been built.
 
 ### Status: not started

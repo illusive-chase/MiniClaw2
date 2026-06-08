@@ -58,7 +58,51 @@ Two surfaces inherit from this principle:
   artifact will be broken too, and that is the signal to ground on.
 
 
-## 3. The graph is the state
+## 3. Setup is concierge, not schema-entry
+
+A user of MiniClaw2 should never be asked to learn the system's
+schemas in order to start using it. Forms — "fill in a goal, a
+current_state, a list of open questions" — assume the user already
+knows what the framework needs and how each slot should read. That
+assumption is wrong on first contact and stays wrong every time the
+schema grows.
+
+The default for any setup-shaped flow is therefore an **agent acting
+as a concierge**, not a form acting as a gatekeeper. The user speaks
+their intent in natural language; the agent owns the schema, drafts
+sensible defaults, and reaches back through the standard ask-user
+inline gate when a load-bearing slot is missing.
+
+Two concrete commitments follow:
+
+- **Planspace initialization is an agent node.** The user provides a
+  paragraph of motivation. The agent extracts `goal`,
+  `current_state`, and any initial `open_questions`, and writes the
+  first STATUS.md. If the seed leaves a load-bearing slot empty, the
+  agent asks rather than guessing.
+- **Project CONTEXT initialization and refresh run from preset
+  prompts.** The user does not author the prompt; the framework
+  holds it. CONTEXT is a quick-reference handbook, not a contract —
+  the agent always rereads the repo on the next run, so light-touch
+  refresh is enough.
+
+The decision remains the user's — *"is there a meaningful new
+direction?"* is still answered by the user clicking *new direction*.
+The *structuring* of that decision into schema is the agent's job.
+The user is in command; the agent is the typist.
+
+Forms stay valid for direct-manipulation actions the user already
+understands (dragging tiles, clicking lanes, resolving gates, typing
+a follow-up prompt). The concierge model applies to flows where the
+user cannot reasonably be expected to know what the system needs.
+
+This principle is symmetric with §2: when something works, the user
+does not have to read internals; when something is being set up, the
+user does not have to learn schemas. The framework absorbs both
+costs.
+
+
+## 4. The graph is the state
 
 The principle is **direct manipulation**, borrowed from two analogies:
 
@@ -98,7 +142,7 @@ the Inspect drawer. On the canvas the user reads tiles, hexagons,
 documents, and lanes — not vocabulary.
 
 
-## 4. Three-layer scope hierarchy
+## 5. Three-layer scope hierarchy
 
 | Scope | What it holds | How it's maintained |
 |---|---|---|
@@ -119,11 +163,11 @@ Two consequences:
   job.
 
 
-## 5. Domain model
+## 6. Domain model
 
 Three primary objects. Everything else is a view over these.
 
-### 5.1 Node
+### 6.1 Node
 
 A node is one provider-backed session, one passive human checkpoint,
 or one programmatic state mutation.
@@ -140,7 +184,7 @@ Three kinds:
 - **gate** — a *passive human checkpoint with no provider call*. The
   runner short-circuits straight to `awaiting_review`. The gate
   renders a brief (markdown) and collects a free-form judgment from
-  the user (see §8).
+  the user (see §9).
 - **op** — a non-agent, fast, always-immediate state transition that
   appears on the timeline so the project's full mutation history is
   visible. MVP is `commit` (auto-appended after agent/gate done) and
@@ -159,7 +203,7 @@ oscillate `running ↔ waiting` many times. `awaiting_review` is only
 reached by gate nodes after the (skipped) session ends. Op nodes go
 `queued → running → done | error` without intermediate states.
 
-### 5.2 Project
+### 6.2 Project
 
 A workspace is `(folder + ordered nodes)`. One worktree per project;
 nodes run **one at a time** on it.
@@ -172,7 +216,7 @@ node's `commit_after` is the only state another node will start from.
 Each node records `commit_before` and `commit_after`, so the timeline
 can show a project-state diff per node.
 
-### 5.3 Edges (derived, not stored)
+### 6.3 Edges (derived, not stored)
 
 Edges are read off node/project fields, not modelled as separate
 records.
@@ -187,7 +231,7 @@ records.
 | **fork** | `parent_project_id + parent_commit` | A new project rooted at a worktree of another's snapshot |
 
 
-## 6. ContextSpace
+## 7. ContextSpace
 
 Context is a separate graph from the project graph:
 
@@ -231,7 +275,7 @@ plans, branch coordination, or transient blockers — those are
 planspace state.
 
 
-## 7. Outputs as planspace state updates
+## 8. Outputs as planspace state updates
 
 > **Every node output is an agent-facing planspace state update.**
 > When a node also needs user review, it additionally produces a
@@ -251,7 +295,7 @@ This is the unifying claim about outputs. Two consequences:
   `out_of_scope` note. If a run truly advances nothing, that run should
   not exist.
 
-### 7.1 Two purposes of context-out
+### 8.1 Two purposes of context-out
 
 A node produces context-out for one of two consumers:
 
@@ -270,7 +314,7 @@ A single node can produce both, simultaneously. They have **different
 lifetimes**: agent-facing state is durable; user-facing packets are
 transient and consumed by the gate that follows.
 
-### 7.2 STATUS.md form
+### 8.2 STATUS.md form
 
 Planspace STATUS.md is a two-part document: YAML frontmatter holding
 structured slots, plus a free markdown body.
@@ -287,7 +331,7 @@ Slots:
 The literal value `unknown` is a first-class slot value — "what we
 don't know yet" is structured, not absent.
 
-### 7.3 PLAN.md is derived
+### 8.3 PLAN.md is derived
 
 PLAN.md is not separately maintained. It is generated from STATUS.md:
 open questions and undischarged decisions become checkbox items;
@@ -296,7 +340,7 @@ out-of-scope items appear in a closing "Not addressing" section.
 The user edits STATUS; PLAN follows. Drift between "STATUS says
 decided, PLAN still asks" cannot happen.
 
-### 7.4 Anti-self-poisoning
+### 8.4 Anti-self-poisoning
 
 Durable planspace state must not absorb session noise. Categories that
 must be filtered or rewritten before commit:
@@ -317,9 +361,9 @@ of scope. Enforcement is a fixed pre-commit prompt template injected
 before every planspace state write.
 
 
-## 8. Gates as state transformers
+## 9. Gates as state transformers
 
-### 8.1 Two flavors
+### 9.1 Two flavors
 
 | | Inline gate | Passive checkpoint gate |
 |---|---|---|
@@ -330,7 +374,7 @@ before every planspace state write.
 | Continuation | Resolving resumes the same session | Resolving does not wake any agent |
 | UI signal | Pulsing animation on a running tile | Solid color on a finished hexagon |
 
-### 8.2 Type-A vs Type-B
+### 9.2 Type-A vs Type-B
 
 - **Type-A (objective)** — machine-checkable. Exit code zero? File
   exists? Test passes? The agent may self-judge — it is bookkeeping,
@@ -343,7 +387,7 @@ before every planspace state write.
 **Gates exist only for Type-B questions.** Type-A questions never
 produce gates.
 
-### 8.3 The gate as state transformer
+### 9.3 The gate as state transformer
 
 A gate-bearing node produces three things:
 
@@ -373,7 +417,7 @@ cleaner synthesis once template-merge quality becomes a problem; the
 ontology is forward-compatible because both options produce the same
 kind of output.
 
-### 8.4 Done vs accepted
+### 9.4 Done vs accepted
 
 Execution completion and acceptance are separate:
 
@@ -390,9 +434,9 @@ durable proposals from being applied. Same-provider self-review can
 be recorded as advisory but does not mark the node accepted.
 
 
-## 9. Visual grammar
+## 10. Visual grammar
 
-### 9.1 Two orthogonal axes
+### 10.1 Two orthogonal axes
 
 To make a populated graph scan-readable, two signals are kept
 separate:
@@ -413,7 +457,7 @@ accent share the planspace's hue.
 Hovering any node yields a one-line plain-language explanation. The
 legend never has to be memorized.
 
-### 9.2 Composer as phantom node
+### 10.2 Composer as phantom node
 
 The composer is not a docked bar. It is a dashed-outline node that
 materializes where the next node will appear:
@@ -430,14 +474,14 @@ from" dropdown. The only structural decision the composer surfaces is
 whether the run is gated — a single "needs review" toggle, no intent
 enum.
 
-### 9.3 Polymorphic side panel
+### 10.3 Polymorphic side panel
 
 The side panel's shape is a function of the selected node's kind. One
 collapsed Inspect drawer absorbs raw events, settings snapshot,
 context bundle source list, and schema-level fields. The vocabulary
-banned from primary surfaces (§3) lives only in Inspect.
+banned from primary surfaces (§4) lives only in Inspect.
 
-### 9.4 Planspace as layout, not containment
+### 10.4 Planspace as layout, not containment
 
 Planspaces are an implicit grouping (driven by `planspace_id`), not a
 React Flow subflow. Containment fights the graph because:
@@ -453,7 +497,7 @@ background, a tile left-edge accent, and a neutral top stripe for
 project CONTEXT (orthogonal to the planspace palette).
 
 
-## 10. Why we keep these constraints
+## 11. Why we keep these constraints
 
 The non-obvious commitments, restated as one-liners:
 
