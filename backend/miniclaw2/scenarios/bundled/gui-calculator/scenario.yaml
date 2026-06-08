@@ -9,4 +9,3 @@ nodes:
   - id: review
     kind: gate
     brief_from: build
-    response_path: reviews/build.json

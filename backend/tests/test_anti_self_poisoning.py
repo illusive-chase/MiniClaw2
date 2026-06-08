@@ -18,7 +18,7 @@ from miniclaw2.providers.base import AgentProviderEvent
 from miniclaw2.runner import NodeRunner
 from miniclaw2.store import Store
 
-from tests.test_contextspace import _write_contextspace
+from test_contextspace import _write_contextspace
 
 
 _FILTER_HEADING = "# Planspace update filter"

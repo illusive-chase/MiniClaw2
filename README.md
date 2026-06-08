@@ -274,9 +274,10 @@ The current code has moved beyond the original chat-wrapper plan:
   `.claude/agents`, `.mcp.json`) is still intentionally deferred.
 - Passive `gate` node flow is in. Agents launched with
   `output_kind=review_brief` write `brief.md`; the registry then
-  spawns a gate that renders a write-json / no-op response form.
-  Gate write-json responses stamp `review_outcome` and update the
-  source node's human `acceptance_state` / `verdict_*` fields.
+  spawns a gate that renders a free-form review form. The legacy
+  `write-json` backend path remains available for API-level flows that
+  stamp `review_outcome` and update the source node's human
+  `acceptance_state` / `verdict_*` fields.
 - `commit` op nodes are in. With `auto_commit:true`, a commit op is
   appended after each successful agent/gate node and rewrites the
   preceding node's `commit_after`.

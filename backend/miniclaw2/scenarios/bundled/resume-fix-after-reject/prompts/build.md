@@ -14,8 +14,6 @@ The reviewer should run `python3 -c "import mathutils; print(mathutils.add(2,3))
 - It exports `add(a, b)` and only `add(a, b)`.
 - Decide whether the module should also expose `subtract(a, b)`.
 
-# Response schema
-Write JSON to `reviews/build.json` with shape:
-`{ "approved": boolean, "notes": string }`. Set `approved: false` and
-put a one-sentence ask in `notes` if you'd like a follow-up turn to add
-more functions.
+# Review note
+Submit a free-form review asking for `subtract(a, b)` to be added in the
+follow-up turn.

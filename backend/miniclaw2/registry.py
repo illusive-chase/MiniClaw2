@@ -569,7 +569,7 @@ class ProjectRegistry:
         cannot be resolved so the gate still renders.
         """
         if not next_spec.brief_from:
-            return next_spec.contract or _PLACEHOLDER_BRIEF
+            return next_spec.contract or _NO_GUIDANCE
         src_node_id = self._resolve_brief_source_node_id(project, next_spec)
         if not src_node_id:
             return f"_(brief source step `{next_spec.brief_from}` not found)_\n"

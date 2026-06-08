@@ -6,4 +6,4 @@
 - Clicking `C` returned the display to its empty / zero state.
 - Closing the window exited the process cleanly (no hung interpreter or stray GUI process left behind).
 - In the build node's diff panel, you can see `calculator.py`, `requirements.txt`, and the brief markdown were added in the same commit.
-- After you submitted the review with `write-json`, `reviews/build.json` appeared in the workspace and contained your response payload.
+- After you submitted a free-form review judgment, the review gate resolved and the scenario became verifiable without requiring a JSON response file.

@@ -11,6 +11,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 from miniclaw2.domain import (
     Node,
@@ -297,7 +298,21 @@ class ScenarioExpanderTest(unittest.IsolatedAsyncioTestCase):
                 except BaseException:
                     pass
 
-    async def test_resume_fix_after_reject_branches_to_fix_on_rejected(self) -> None:
+    async def test_gate_brief_without_contract_uses_placeholder(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            store, project = _scenario_project(tmp, auto_commit=False)
+
+            registry = ProjectRegistry(store=store)
+            brief = registry._load_gate_brief(
+                project,
+                None,
+                SimpleNamespace(brief_from="", contract=""),
+            )
+
+            self.assertIn("Review handoff unavailable", brief)
+
+    async def test_resume_fix_after_review_launches_fix_without_structured_decision(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             tmp = Path(raw)
             store, project = _scenario_project(tmp, auto_commit=False)
@@ -321,7 +336,6 @@ class ScenarioExpanderTest(unittest.IsolatedAsyncioTestCase):
                     kind=NodeKind.GATE,
                     state=NodeState.DONE,
                     scenario_step_id="review",
-                    review_outcome="rejected",
                 )
             )
             project.scenario_step_history = [
@@ -338,7 +352,7 @@ class ScenarioExpanderTest(unittest.IsolatedAsyncioTestCase):
             review_entry = next(
                 h for h in refreshed.scenario_step_history if h["step_id"] == "review"
             )
-            self.assertEqual(review_entry["decision"], "rejected")
+            self.assertNotIn("decision", review_entry)
 
             nodes = store.list_nodes(project.id)
             fix = nodes[-1]
@@ -354,7 +368,7 @@ class ScenarioExpanderTest(unittest.IsolatedAsyncioTestCase):
                 except BaseException:
                     pass
 
-    async def test_resume_fix_after_reject_skips_fix_on_approved(self) -> None:
+    async def test_resume_fix_after_review_ignores_structured_approval(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             tmp = Path(raw)
             store, project = _scenario_project(tmp, auto_commit=False)
@@ -389,11 +403,12 @@ class ScenarioExpanderTest(unittest.IsolatedAsyncioTestCase):
             rt = registry._runtimes[project.id]
             registry._advance_scenario_step(rt, review)
 
-            # Only build + review exist; fix should be skipped since
-            # `when: review.rejected` does not match an approved review.
             nodes = store.list_nodes(project.id)
-            self.assertEqual(len(nodes), 2)
-            self.assertIsNone(rt.runner_task)
+            fix = nodes[-1]
+            self.assertEqual(fix.kind, NodeKind.AGENT)
+            self.assertEqual(fix.scenario_step_id, "fix")
+            self.assertEqual(fix.parent_node_id, build.id)
+            self.assertEqual(fix.provider_session_id, "claude-session-build")
 
             refreshed = store.load_project(project.id)
             assert refreshed is not None
@@ -401,6 +416,13 @@ class ScenarioExpanderTest(unittest.IsolatedAsyncioTestCase):
                 h for h in refreshed.scenario_step_history if h["step_id"] == "review"
             )
             self.assertEqual(review_entry["decision"], "approved")
+
+            if rt.runner_task is not None:
+                rt.runner_task.cancel()
+                try:
+                    await rt.runner_task
+                except BaseException:
+                    pass
 
     async def test_advance_ignores_non_scenario_nodes(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

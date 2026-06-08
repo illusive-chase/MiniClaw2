@@ -2,7 +2,6 @@
 # verify.sh runs in the scenario's project root (a temporary git workspace).
 # Programmatic floor for resume-fix-after-reject:
 #   (1) the build/review/fix scenario steps all reached `done` in history
-#       AND review's recorded decision is `"rejected"`;
 #   (2) the fix node carries parent_node_id == build.id and inherits
 #       build's provider session id (proves the resume edge was wired);
 #   (3) `mathutils.py` exists and exposes both `add` and at least one
@@ -45,10 +44,6 @@ for step in ("build", "review", "fix"):
     if h.get("terminal_state") != "done":
         print(f"step {step!r} terminal_state != done: {h}", file=sys.stderr)
         sys.exit(11)
-
-if by_step["review"].get("decision") != "rejected":
-    print(f"review decision != 'rejected': {by_step['review']}", file=sys.stderr)
-    sys.exit(12)
 
 build_node_id = by_step["build"]["node_id"]
 fix_node_id = by_step["fix"]["node_id"]

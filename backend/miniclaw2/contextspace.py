@@ -1580,24 +1580,39 @@ def _merge_extra_planspace_loads(
 ) -> list[PlugRef]:
     if not extras:
         return plug_refs
-    seen = {ref.id for ref in plug_refs}
     out = list(plug_refs)
+    index_by_id = {ref.id: idx for idx, ref in enumerate(out)}
+    seen_loaded: set[str] = set()
+    for ref in out:
+        if (
+            _plug_kind(ref.id) == "planspace"
+            and ref.source == "binding"
+            and ref.id != exclude_id
+        ):
+            continue
+        seen_loaded.add(ref.id)
     for plug_id in extras:
-        if plug_id in seen or plug_id == exclude_id:
+        if plug_id == exclude_id:
             continue
         if _plug_kind(plug_id) != "planspace":
             continue
-        seen.add(plug_id)
-        out.append(
-            PlugRef(
-                id=plug_id,
-                role="cross-lane-load",
-                injection="turn",
-                enabled=True,
-                auto_update=False,
-                source="extra",
-            )
+        if plug_id in seen_loaded:
+            continue
+        extra_ref = PlugRef(
+            id=plug_id,
+            role="cross-lane-load",
+            injection="turn",
+            enabled=True,
+            auto_update=False,
+            source="extra",
         )
+        existing_idx = index_by_id.get(plug_id)
+        if existing_idx is None:
+            out.append(extra_ref)
+            index_by_id[plug_id] = len(out) - 1
+        else:
+            out[existing_idx] = extra_ref
+        seen_loaded.add(plug_id)
     return out
 
 

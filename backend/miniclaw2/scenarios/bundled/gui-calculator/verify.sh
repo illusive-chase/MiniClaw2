@@ -8,7 +8,6 @@
 #   - git log shows at least 2 commits (auto-commit op fired at least once)
 #   - the build node's commit_after differs from commit_before (proves
 #     the auto-commit op rewrote the agent's commit_after)
-#   - reviews/build.json exists and parses as JSON
 #
 # GUI behavior (1+2=3, 9/0 error indicator, C clear, window close)
 # is human-verified in acceptance.md.
@@ -80,15 +79,6 @@ if ! python3 -c "import sys; sys.path.insert(0, '.'); import calculator" >/tmp/m
   echo "calculator.py failed to import:" >&2
   cat /tmp/miniclaw-gui-import.log >&2
   exit 6
-fi
-
-if [[ ! -f reviews/build.json ]]; then
-  echo "reviews/build.json missing — was the gate resolved with write-json?" >&2
-  exit 7
-fi
-if ! python3 -c "import json,sys; json.load(open('reviews/build.json'))" 2>/dev/null; then
-  echo "reviews/build.json is not valid JSON" >&2
-  exit 8
 fi
 
 commit_count=$(git rev-list --count HEAD 2>/dev/null || echo 0)

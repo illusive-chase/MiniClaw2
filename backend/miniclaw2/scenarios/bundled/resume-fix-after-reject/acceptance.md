@@ -1,5 +1,5 @@
 - The build node produced a `mathutils.py` with only `add(a, b)` and a review brief whose `# How to run` names the exact command to import the module.
-- You rejected the review with JSON `{"approved": false, "notes": "<your ask, e.g. 'please add subtract'>"}` and the review node turned slate (done).
+- You submitted a free-form review asking for `subtract(a, b)`, and the review node turned slate (done).
 - A `fix` node appeared after the review with the `↻ build` resume badge in the timeline.
-- The fix node finished and `mathutils.py` now contains both the original `add` and the function you asked for in `notes`.
+- The fix node finished and `mathutils.py` now contains both the original `add` and `subtract`.
 - The timeline shows the resume connector (dashed SVG curve) from the build tile to the fix tile.

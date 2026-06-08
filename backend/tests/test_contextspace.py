@@ -255,6 +255,81 @@ class ContextSpaceRunnerTest(unittest.IsolatedAsyncioTestCase):
             self.assertIn("plugs/planspaces/memory/PLAN.md", source_paths)
             self.assertIn("plugs/skills/python-testing/CONTEXT.md", source_paths)
 
+    async def test_extra_planspace_load_includes_inactive_binding_planspace(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            store = Store(root=tmp / "store")
+            project_root = tmp / "repo"
+            project_root.mkdir()
+            ctx = _write_contextspace(store.root, project_root)
+
+            other = ctx / "plugs" / "planspaces" / "other"
+            (other / "inbox").mkdir(parents=True)
+            (other / "manifest.yaml").write_text(
+                "\n".join(
+                    [
+                        "version: 1",
+                        "id: planspaces.other",
+                        "kind: planspace",
+                        "title: Other Direction",
+                        "injection:",
+                        "  STATUS.md: turn",
+                        "  PLAN.md: turn",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            (other / "STATUS.md").write_text("Other status is selected.\n", encoding="utf-8")
+            (other / "PLAN.md").write_text("Other plan is selected.\n", encoding="utf-8")
+
+            (ctx / "bindings" / "projects" / "project.test.yaml").write_text(
+                "\n".join(
+                    [
+                        "version: 1",
+                        "id: project.test",
+                        "active_planspace_id: planspaces.memory",
+                        "project:",
+                        "  name: Test Project",
+                        "  local_paths:",
+                        f"    - {project_root}",
+                        "plugs:",
+                        "  - id: planspaces.memory",
+                        "    role: status-plan",
+                        "    injection: turn",
+                        "    enabled: true",
+                        "    auto_update: true",
+                        "  - id: planspaces.other",
+                        "    role: status-plan",
+                        "    injection: turn",
+                        "    enabled: true",
+                        "    auto_update: false",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            project = Project(
+                root_path=str(project_root),
+                project_context_binding_id="project.test",
+            )
+            node = Node(
+                project_id=project.id,
+                prompt="Load another lane.",
+                settings_snapshot={"extra_planspace_loads": ["planspaces.other"]},
+            )
+
+            bundle = compose_context_bundle(project, node, store_root=store.root)
+
+            self.assertEqual(bundle.active_planspace_id, "planspaces.memory")
+            self.assertIn("Current status: implement contextspace.", bundle.turn_text)
+            self.assertIn("Other status is selected.", bundle.turn_text)
+            self.assertIn("Other plan is selected.", bundle.turn_text)
+            source_paths = {source["path"] for source in bundle.sources}
+            self.assertIn("plugs/planspaces/other/STATUS.md", source_paths)
+            self.assertIn("plugs/planspaces/other/PLAN.md", source_paths)
+
     async def test_runner_omits_planspace_update_contract_when_auto_update_disabled(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             tmp = Path(raw)

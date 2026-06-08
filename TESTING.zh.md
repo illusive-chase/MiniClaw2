@@ -453,18 +453,14 @@ verify.sh 做两件事：
 
 ### 9.1 它在测什么
 
-resume 边 + scenario 分支：三个节点 `build → review → fix`。`build` 故意只
+resume 边 + 被动 review gate：三个节点 `build → review → fix`。`build` 故意只
 写 `mathutils.py::add` 并产出一份 review brief；`review` 是被动 gate，把
-brief 渲染给人看；你必须以 `{"approved": false, "notes": "..."}` 形式 reject。
-scenario expander 把 review 的 `decision: "rejected"` 写进 history,匹配
-`fix` 节点的 `when: review.rejected` 谓词,启动 `fix` 节点并通过
-`resume_from: build` 把 `build` 的 provider 会话继承下来——所以 fix 就像「同
-一个 agent 接着写」一样能读到先前的对话上下文。这条路径串起来后,以下回归都
-会一并暴露：
+brief 渲染给人看；你提交自由文本 review，要求后续补 `subtract(a, b)`。
+scenario expander 在 review 完成后启动 `fix` 节点，并通过 `resume_from: build`
+把 `build` 的 provider 会话继承下来——所以 fix 就像「同一个 agent 接着写」一样
+能读到先前的对话上下文。这条路径串起来后,以下回归都会一并暴露：
 
-- `Node.review_outcome` 是否正确从 `{approved: bool}` 推出 `approved`/`rejected`;
-- `scenario_step_history` 是否落上 `decision`;
-- expander 的 `when:` 跳过逻辑是否正确;
+- free-form review 是否能让场景继续推进，不再依赖 JSON response file;
 - `resume_from_node_id` 是否真的把 `provider_session_id` 一路接过去;
 - 画布是否把 resume edge 和 `↻ <build-id>` 继续标识画出来。
 
@@ -474,27 +470,22 @@ scenario expander 把 review 的 `decision: "rejected"` 写进 history,匹配
 2. `build` 节点开始 streaming，最终会做两件事：
    - 在 workspace 根写出 `mathutils.py`,**只**导出 `add(a, b)`;
    - 在 `.miniclaw2/outputs/<build-id>/brief.md` 写出一份三段式 review
-     brief（`# How to run` / `# What to verify` / `# Response schema`）,
-     指明审阅者该如何 import 该模块并填什么样的 JSON。
+     brief（`# How to run` / `# What to verify` / review note）,
+     指明审阅者该如何 import 该模块，以及后续希望补什么函数。
 3. `build` 完成后,auto-commit op 节点会被自动追加,提交这次改动。
 4. 紧接着出现 `review` 被动 gate 节点，右侧 GatePanel 显示 review 表单；点击
    GatePanel 里的 brief 入口或画布上的 `brief.md` artifact 节点，可以逐字查看
    build 写的 brief（**不是模板**，是 agent 现场写的）。
-5. 在 GatePanel 表单里选 **Write a JSON response**，路径填 `reviews/build.json`（scenario
-   预设值,通常会自动带上),内容写：
-   ```json
-   {"approved": false, "notes": "请再加一个 subtract(a, b)"}
+5. 在 GatePanel 表单里提交自由文本 review，例如：
+   ```text
+   请再加一个 subtract(a, b)。
    ```
-   （`notes` 可换成别的合理要求，例如「加 multiply / divide」；fix 节点会按你
-   写的来。）
 6. 提交后 review 节点变 `done`，scenario expander 会：
-   - 落上 `decision: "rejected"` 到 history;
-   - 匹配 `fix` 节点的 `when: review.rejected`;
    - 用 `build.id` 作为 `parent_node_id` 启动 `fix` 节点。
 7. `fix` 节点开始 streaming——画布上能看到 `↻ <build-id>` 继续标识和从 build 指向
    fix 的 resume edge。
 8. `fix` 完成、其 auto-commit op 完成后,workspace 根的 `mathutils.py` 应当
-   除 `add` 外又多了一个你要的函数。下方出现 Verify 卡片。
+   除 `add` 外又多了 `subtract`。下方出现 Verify 卡片。
 
 ### 9.3 预期观察到什么
 
@@ -502,16 +493,16 @@ scenario expander 把 review 的 `decision: "rejected"` 写进 history,匹配
   里面只 `def add`。
 - `review` 节点关联的 `brief.md` artifact 是 agent **现场写的**（`# How to run`
   里命名了具体 import 命令,不是泛泛而谈)。
-- 你写 reject JSON 之后,fix 节点确实启动了,而不是 scenario 直接结束。
+- 你提交自由文本 review 之后,fix 节点确实启动了,而不是 scenario 直接结束。
 - 画布在 build 和 fix 之间画了一条 resume edge，fix tile 上有 `↻ <build-id>`
   继续标识。
-- fix 完成后,`mathutils.py` 同时存在 `def add` 和你 notes 里要求的那个函数。
+- fix 完成后,`mathutils.py` 同时存在 `def add` 和 `def subtract`。
 
 ### 9.4 跑 verify.sh
 
 verify.sh 一次性核对：
 - `scenario_step_history` 里 build / review / fix 三步都是 `terminal_state:
-  "done"`,且 review 那条带 `decision: "rejected"`;
+  "done"`;
 - fix 节点的 `node.json` 里 `parent_node_id == build.id`;
 - fix 的 `provider_session_id`(或 fallback 到 `sdk_session_id`)和 build 一致
   ——证明 resume 边把 provider 会话真的接过来了;
@@ -519,25 +510,22 @@ verify.sh 一次性核对：
 - `git rev-list --count HEAD >= 3`(seed + 至少两次 auto-commit)。
 
 可能的失败：
-- `review decision != 'rejected'`：你提交时填的不是 `approved: false`,或者
-  gate runner 没把 outcome stamp 上去。
 - `fix.parent_node_id != build.id`：resume_from 解析挂了——`history` 里也许
   没找到 build,或者 `start_node` 拒绝了 resume（最常见原因是 build 没拿到
   `provider_session_id`,适配层问题）。
 - `fix did not inherit build's provider session`:同上,resume 路径有 bug。
-- `mathutils.py only defines [...]`:fix agent 没真的按 notes 改文件,或者它
+- `mathutils.py only defines [...]`:fix agent 没真的按 review 要求改文件,或者它
   把 `add` 也覆盖掉了——后者也算失败。
 
 ### 9.5 人工验收清单
 
 - [ ] `build` 节点的 review brief 是 agent 现场写的(`# How to run` 里
       命名了 import `mathutils` 的具体命令)。
-- [ ] 你以 `{"approved": false, "notes": "..."}` 形式 reject 了 review，
-      review 节点变成深灰色(done)。
+- [ ] 你提交了要求补 `subtract(a, b)` 的自由文本 review，review 节点变成深灰色(done)。
 - [ ] `fix` 节点在 review 之后真的出现了，tile 上能看到 `↻ <build-id>` 继续标识，
       画布上有从 build 指向 fix 的 resume edge。
-- [ ] `fix` 完成后 `mathutils.py` 同时包含原有的 `add` 和你 notes 里要求的
-      新函数(没有把 `add` 删/改坏)。
+- [ ] `fix` 完成后 `mathutils.py` 同时包含原有的 `add` 和新的 `subtract`
+      函数(没有把 `add` 删/改坏)。
 
 ### 9.6 切换 provider
 
@@ -842,7 +830,7 @@ rm -rf /tmp/miniclaw2-tmp-*                # Linux
   auto-commit 改写 `commit_after`）。**它已经在仪表盘里可以跑**，运行方式
   同其它场景：点 `Run · claude` / `Run · codex`，画布上会出现 build
   agent → 自动 commit op → 被动 review gate；review brief 由 build agent
-  现场写，你在 GatePanel 里以 write-json 形式提交评审意见。GUI 行为的人工
+  现场写，你在 GatePanel 里以自由文本提交评审意见。GUI 行为的人工
   验收清单见 `backend/miniclaw2/scenarios/bundled/gui-calculator/acceptance.md`
   （计算 1+2=3、9÷0 不抛 Python traceback、C 清屏、关窗能正常退出）。
   它是验证 auto-commit op 是否正常的主路径——回归会同时打破 verify 和

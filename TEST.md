@@ -23,8 +23,8 @@
 > human checkpoint** — no agent run. The previous agent step writes a
 > brief at `.miniclaw2/outputs/<id>/brief.md` (driven by the new
 > `NodeOutputKind.REVIEW_BRIEF` contract); the gate reads that brief
-> and renders it for the human, who responds via write-json / no-op
-> as before. See `DESIGN.md §3.2` for the rationale.
+> and renders it for the human, who responds with a free-form review
+> judgment. See `DESIGN.md §3.2` for the rationale.
 >
 > **Tier 3 + Tier 4 catalogue closed.**
 > `gui-calculator` is the flagship two-step demo (build agent → passive
@@ -32,10 +32,10 @@
 > single-node scenario that seeds `CONTEXT.md` and checks both the
 > `[CTX-OK]` marker in the transcript and that `system_context_snapshot`
 > matches the seed byte-for-byte. `resume-fix-after-reject` is the
-> three-step reject-driven branch (build → reject review → fix); its
-> verify checks `scenario_step_history` recorded `decision: "rejected"`,
-> `fix.parent_node_id == build.id`, and `fix` inherited the build's
-> provider session. `reconnect-replay` is the Tier 4 resilience demo:
+> three-step resume path (build → review → fix); its verify checks
+> `scenario_step_history`, `fix.parent_node_id == build.id`, and `fix`
+> inherited the build's provider session. `reconnect-replay` is the
+> Tier 4 resilience demo:
 > the project header's `...` menu shows **Simulate WS drop** (conditional
 > on `scenario_name === "reconnect-replay"`) which closes the live
 > socket with code 1000 so `ws.ts`'s existing reconnect loop fires
@@ -44,9 +44,10 @@
 > end-of-stream marker. New scenario-engine YAML extensions: `when:
 > <step>.approved|rejected` (string predicate evaluated against the
 > recorded gate decision) and `resume_from: <step_id>` (resolved via
-> history to `start_node`'s `resume_from_node_id`). Gate completions
-> now stamp `Node.review_outcome` from the write-json payload
-> (`approved: false` → `"rejected"`, else `"approved"`). Grounded in
+> history to `start_node`'s `resume_from_node_id`). The primary gate UI
+> sends free-form review prose; the legacy backend `write-json` path
+> still stamps `Node.review_outcome` for API-level branching tests.
+> Grounded in
 > `DESIGN.md §1.1` ("investigation-free interface"): every test is a
 > small task whose **observable outcome** the human ratifies. Internal
 > correctness — gate routing, commit-op rewrite, reconnect replay — is
@@ -189,13 +190,11 @@ nodes:
   - id: review
     kind: gate
     brief_from: build             # read build's review_brief artifact as the gate contract
-    response_path: reviews/build.json
   # auto-commit ops are NOT declared here — they happen because auto_commit: true
   - id: fix                       # for resume-fix-after-reject
     kind: agent
     prompt_file: prompts/fix.md
     resume_from: build            # explicit conversation continuation
-    when: review.rejected         # scripting branch — see §8
 ```
 
 The scenario engine in `backend/miniclaw2/scenarios/` parses this
@@ -297,21 +296,20 @@ are present under `backend/miniclaw2/scenarios/bundled/`.
 ### Tier 3 — integrated (gates + ops + edges)
 
 **gui-calculator** *(flagship visual demo — ✓ implemented)*
-> Agent builds a PySide6 / Qt Widgets calculator → passive review gate displays an agent-authored brief → user writes JSON review → auto-commit op rewrites the agent's `commit_after`.
+> Agent builds a PySide6 / Qt Widgets calculator → passive review gate displays an agent-authored brief → user submits a free-form review → auto-commit op rewrites the agent's `commit_after`.
 
 - Two declared nodes (`build` agent, `review` passive gate);
   `auto_commit: true`. The `build` step's `output_kind` is auto-promoted
   to `review_brief` by the loader (because `review.brief_from: build`)
   — the build agent writes `.miniclaw2/outputs/<build-id>/brief.md`
-  with `# How to run` / `# What to verify` / `# Response schema`
+  with `# How to run` / `# What to verify` / review guidance
   sections. The gate then renders that brief verbatim; the reviewer
-  writes JSON to `reviews/build.json`.
+  submits a free-form judgment.
 - Verify (programmatic floor): `requirements.txt` declares PySide6;
   `calculator.py` references PySide6, does not import Tk libraries,
   and imports cleanly without opening a window or requiring PySide6 to
-  be installed (`python3 -c "import calculator"`);
-  `reviews/build.json` exists and parses; `git rev-list --count HEAD
-  >= 2` (initial + at least one auto-commit); the build node's
+  be installed (`python3 -c "import calculator"`); `git rev-list --count
+  HEAD >= 2` (initial + at least one auto-commit); the build node's
   `commit_after != commit_before` on disk (proves the auto-commit op
   rewrote it).
 - Verify (human acceptance): a window opens with digits 0–9 +
@@ -343,29 +341,26 @@ in-product pointer.
 - Acceptance: "the reply ended with `[CTX-OK]`."
 
 **resume-fix-after-reject** *(✓ implemented)*
-> Resume edge: agent → gate (reject) → resume agent.
+> Resume edge: agent → gate → resume agent.
 
 - Three declared nodes: `build` agent (writes `mathutils.py` with only
   `add`), `review` gate sourced via `brief_from: build`, `fix` agent
-  with `resume_from: build` and `when: review.rejected`. The first
-  gate is rejected via write-json `{approved: false, notes: "..."}`.
-  The expander records `decision: "rejected"` on the review's history
-  entry and branches into `fix`; the fix step resumes the build's
-  provider session and addresses the notes (a second review is *not*
-  declared in v1 — the verify floor + acceptance covers the resume
-  path without a second human turn).
+  with `resume_from: build`. The reviewer submits a free-form request
+  for `subtract`; the expander launches `fix`; the fix step resumes the
+  build's provider session and adds the requested function (a second
+  review is *not* declared in v1 — the verify floor + acceptance covers
+  the resume path without a second human turn).
 - Verify: `scenario_step_history` shows `build` / `review` / `fix`
-  all `terminal_state: done` and review's `decision: "rejected"`;
-  the `fix` node carries `parent_node_id == build.id` and inherits
-  `build`'s `provider_session_id`; `mathutils.py` ends up with both
-  `add` and at least one more function the reviewer asked for;
-  `git rev-list --count HEAD >= 3` (seed + per-step auto-commit ops).
+  all `terminal_state: done`; the `fix` node carries
+  `parent_node_id == build.id` and inherits `build`'s
+  `provider_session_id`; `mathutils.py` ends up with both `add` and at
+  least one more function; `git rev-list --count HEAD >= 3` (seed +
+  per-step auto-commit ops).
 - Acceptance: "you saw the build node produce `mathutils.py` with
-  only `add` and a brief naming the import command, rejected the
-  review with `{approved: false, notes: …}`, watched the fix node
-  appear with a `↻ <build-id>` resume badge, and confirmed the final
-  `mathutils.py` contains both the original `add` and the function
-  you asked for."
+  only `add` and a brief naming the import command, submitted a
+  free-form review asking for `subtract`, watched the fix node appear
+  with a `↻ <build-id>` resume badge, and confirmed the final
+  `mathutils.py` contains both the original `add` and `subtract`."
 
 ### Tier 4 — resilience
 
@@ -534,10 +529,12 @@ To revisit after live-smoking the Tier 3 / Tier 4 catalogue:
   <step>.approved|rejected` is a string predicate parsed at load
   time; `_advance_scenario_step` walks forward skipping steps whose
   predicate doesn't match the recorded gate `decision`. Gate
-  completions stamp `Node.review_outcome` from the write-json
-  payload (`approved: false` → `"rejected"`, else `"approved"`); the
-  expander mirrors that onto the history entry. YAML stays linear
-  (no DAG) until a real second use-case forces our hand.
+  completions stamp `Node.review_outcome` from the legacy backend
+  `write-json` payload (`approved: false` → `"rejected"`, else
+  `"approved"`); the expander mirrors that onto the history entry.
+  The bundled UI-facing scenarios use free-form review responses, so
+  they avoid decision-dependent branches. YAML stays linear (no DAG)
+  until a real second use-case forces our hand.
 - **`resume_from:` step field.** *Resolved.* Agent steps may declare
   `resume_from: <step_id>`; the loader validates the target is an
   earlier step, the expander resolves the matching `node_id` from

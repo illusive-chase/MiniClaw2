@@ -60,17 +60,17 @@ class ScenariosLoaderTest(unittest.TestCase):
         self.assertEqual(review.id, "review")
         self.assertEqual(review.kind, "gate")
         self.assertEqual(review.brief_from, "build")
-        self.assertEqual(review.response_path, "reviews/build.json")
+        self.assertEqual(review.response_path, "")
         self.assertTrue(scenario.auto_commit)
 
-    def test_resume_fix_after_reject_parses_resume_and_when(self) -> None:
+    def test_resume_fix_after_reject_parses_resume_after_review(self) -> None:
         scenario = load_scenario("resume-fix-after-reject")
         self.assertEqual([n.id for n in scenario.nodes], ["build", "review", "fix"])
         fix = scenario.nodes[2]
         self.assertEqual(fix.kind, "agent")
         self.assertEqual(fix.resume_from, "build")
-        self.assertEqual(fix.when_step, "review")
-        self.assertEqual(fix.when_decision, "rejected")
+        self.assertEqual(fix.when_step, "")
+        self.assertEqual(fix.when_decision, "")
         self.assertTrue(scenario.auto_commit)
 
 
