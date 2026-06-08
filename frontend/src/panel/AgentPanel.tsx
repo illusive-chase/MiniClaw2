@@ -1,13 +1,15 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
 
+import { getNodeStatusDelta } from "../api";
 import type {
   ClientMessage,
   ContextBundle,
   EventRecord,
   InteractionRequest,
+  NodeStatusDelta,
   NodeInfo,
 } from "../types";
 import { buildTurnsFromEvents } from "../transcript";
@@ -24,6 +26,7 @@ type ResolveGatePayload = Omit<
 >;
 
 export type AgentPanelProps = {
+  sessionId: string;
   node: NodeInfo;
   events: EventRecord[];
   eventsLoading: boolean;
@@ -53,6 +56,7 @@ type PlanspaceUpdateSummary = {
  * No tabs. Selection drives polymorphism.
  */
 export function AgentPanel({
+  sessionId,
   node,
   events,
   eventsLoading,
@@ -93,6 +97,32 @@ export function AgentPanel({
     }
     return out;
   }, [turns]);
+  const [statusDelta, setStatusDelta] = useState<NodeStatusDelta | null>(null);
+  const [statusDeltaLoading, setStatusDeltaLoading] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    setStatusDeltaLoading(true);
+    getNodeStatusDelta(sessionId, node.id)
+      .then((next) => {
+        if (!cancelled) setStatusDelta(next);
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          console.warn("get node status delta failed:", err);
+          setStatusDelta(null);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setStatusDeltaLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionId, node.id, node.finished_at, node.settings_snapshot]);
+
+  const activityDefaultOpen =
+    !isTerminal(node.state) || (!statusDelta && !statusDeltaLoading);
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
@@ -150,6 +180,8 @@ export function AgentPanel({
             <PlanspaceDeltaResult
               node={node}
               update={planspaceUpdate}
+              statusDelta={statusDelta}
+              loading={statusDeltaLoading}
               assistantText={lastText}
               streaming={node.state === "running"}
             />
@@ -158,26 +190,33 @@ export function AgentPanel({
 
         {/* Activity */}
         <section className="mb-5">
-          <SectionHeading
-            right={
-              <span className="text-[10px] font-normal normal-case tracking-normal text-ink-subtle">
-                {eventsLoading
-                  ? "loading…"
-                  : `${activityItems.length} tool ${activityItems.length === 1 ? "call" : "calls"} · ${events.length} events`}
-              </span>
-            }
+          <details
+            open={activityDefaultOpen}
+            className="overflow-hidden rounded-md border border-line bg-surface-sunken"
           >
-            Activity
-          </SectionHeading>
-          {activityItems.length === 0 ? (
-            <div className="mt-2 rounded-md border border-line bg-surface-sunken px-3 py-2 text-[11.5px] text-ink-muted">
-              No tool calls yet.
+            <summary className="cursor-pointer px-3 py-2">
+              <SectionHeading
+                right={
+                  <span className="text-[10px] font-normal normal-case tracking-normal text-ink-subtle">
+                    {eventsLoading
+                      ? "loading..."
+                      : `${activityItems.length} tool ${activityItems.length === 1 ? "call" : "calls"} · ${events.length} events`}
+                  </span>
+                }
+              >
+                Activity
+              </SectionHeading>
+            </summary>
+            <div className="border-t border-line px-3 py-2">
+              {activityItems.length === 0 ? (
+                <div className="rounded-md border border-line bg-surface px-3 py-2 text-[11.5px] text-ink-muted">
+                  No tool calls yet.
+                </div>
+              ) : (
+                <ToolActivity items={activityItems} />
+              )}
             </div>
-          ) : (
-            <div className="mt-2">
-              <ToolActivity items={activityItems} />
-            </div>
-          )}
+          </details>
         </section>
 
         {/* Thinking blocks — separate section, collapsed by default */}
@@ -264,14 +303,51 @@ function AssistantResult({ text, streaming }: { text: string; streaming?: boolea
 function PlanspaceDeltaResult({
   node,
   update,
+  statusDelta,
+  loading,
   assistantText,
   streaming,
 }: {
   node: NodeInfo;
   update: PlanspaceUpdateSummary | null;
+  statusDelta: NodeStatusDelta | null;
+  loading: boolean;
   assistantText: string;
   streaming: boolean;
 }) {
+  if (statusDelta) {
+    return (
+      <div className="mt-2 space-y-2">
+        <div className="rounded-md border border-line bg-surface-raised p-2 shadow-card">
+          <div className="mb-2 flex items-center justify-between gap-2 px-1">
+            <div className="font-mono text-[11px] text-ink-muted">
+              {statusDelta.planspace_id}
+            </div>
+            <div className="text-[10px] text-ink-subtle">
+              {new Date(statusDelta.applied_at * 1000).toLocaleString()}
+            </div>
+          </div>
+          <PlanspaceDeltaCards ops={statusDelta.ops} />
+          <details className="mt-2 overflow-hidden rounded border border-line bg-surface-sunken">
+            <summary className="cursor-pointer px-3 py-2 text-[10px] font-medium uppercase tracking-[0.14em] text-ink-muted hover:text-ink">
+              View raw STATUS diff
+            </summary>
+            <RawStatusDiff before={statusDelta.before} after={statusDelta.after} />
+          </details>
+        </div>
+        {assistantText && (
+          <AssistantResult text={assistantText} streaming={streaming} />
+        )}
+      </div>
+    );
+  }
+  if (loading && update && (update.applied || update.proposed)) {
+    return (
+      <div className="mt-2 rounded-md border border-line bg-surface-sunken px-3 py-2 text-[11.5px] text-ink-muted">
+        Loading STATUS delta...
+      </div>
+    );
+  }
   if (node.requires_review && update?.staged) {
     return (
       <div className="mt-2 space-y-2">
@@ -340,6 +416,71 @@ function PlanspaceDeltaResult({
   return <AssistantResult text={assistantText} streaming={streaming} />;
 }
 
+function PlanspaceDeltaCards({ ops }: { ops: NodeStatusDelta["ops"] }) {
+  if (ops.length === 0) {
+    return (
+      <div className="rounded-md border border-line bg-surface-sunken px-3 py-2 text-[12px] text-ink-muted">
+        No STATUS operations recorded.
+      </div>
+    );
+  }
+  return (
+    <div className="space-y-1.5">
+      {ops.map((op, index) => (
+        <details
+          key={`${String(op.operation ?? "op")}-${index}`}
+          className={
+            "overflow-hidden rounded-md border " +
+            toneForOperation(String(op.operation ?? ""))
+          }
+        >
+          <summary className="cursor-pointer px-3 py-2">
+            <div className="flex items-start gap-2">
+              <span className="mt-0.5 flex-none font-mono text-[11px]">
+                {symbolForOperation(String(op.operation ?? ""))}
+              </span>
+              <div className="min-w-0 flex-1">
+                <div className="text-[12px] font-medium text-ink-strong">
+                  {labelForOperation(String(op.operation ?? "STATUS update"))}
+                </div>
+                <div className="mt-0.5 line-clamp-2 text-[11.5px] text-ink-muted">
+                  {summaryForOp(op)}
+                </div>
+              </div>
+            </div>
+          </summary>
+          <pre className="border-t border-current/10 bg-surface/70 px-3 py-2 whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-ink">
+            {payloadForOp(op)}
+          </pre>
+        </details>
+      ))}
+    </div>
+  );
+}
+
+function RawStatusDiff({ before, after }: { before: string; after: string }) {
+  const rows = useMemo(() => makeLineDiff(before, after), [before, after]);
+  return (
+    <pre className="max-h-[42vh] overflow-auto whitespace-pre-wrap break-words px-3 py-2 font-mono text-[11px] leading-relaxed">
+      {rows.map((row, index) => (
+        <span
+          key={index}
+          className={
+            row.kind === "add"
+              ? "block bg-state-done-soft text-ink-strong"
+              : row.kind === "remove"
+                ? "block bg-state-error-soft text-state-error"
+                : "block text-ink-muted"
+          }
+        >
+          {row.prefix}
+          {row.text || " "}
+        </span>
+      ))}
+    </pre>
+  );
+}
+
 function ThinkingSection({ turns }: { turns: ReturnType<typeof buildTurnsFromEvents> }) {
   const thinking = useMemo(() => {
     const out: string[] = [];
@@ -371,6 +512,113 @@ function ThinkingSection({ turns }: { turns: ReturnType<typeof buildTurnsFromEve
       </details>
     </section>
   );
+}
+
+function isTerminal(state: NodeInfo["state"]): boolean {
+  return state === "done" || state === "error" || state === "cancelled";
+}
+
+function labelForOperation(operation: string): string {
+  const labels: Record<string, string> = {
+    add_open_question: "Added open question",
+    add_decision: "Added decision",
+    rewrite_current_state: "Updated current state",
+    add_out_of_scope: "Added out-of-scope note",
+    append_observation: "Appended note",
+    append_body: "Appended note",
+    append_note: "Appended note",
+  };
+  return labels[operation] ?? operation.replace(/_/g, " ");
+}
+
+function symbolForOperation(operation: string): string {
+  if (operation.startsWith("add_")) return "+";
+  if (operation === "rewrite_current_state") return "~";
+  if (operation.startsWith("append_")) return "+";
+  return "*";
+}
+
+function toneForOperation(operation: string): string {
+  if (operation === "add_open_question") {
+    return "border-state-waiting/35 bg-state-waiting-soft/25";
+  }
+  if (operation === "add_decision") {
+    return "border-state-done/35 bg-state-done-soft/35";
+  }
+  if (operation === "rewrite_current_state") {
+    return "border-state-review/35 bg-state-review-soft/25";
+  }
+  if (operation === "add_out_of_scope") {
+    return "border-state-cancelled/35 bg-state-cancelled-soft/30";
+  }
+  return "border-line bg-surface-sunken";
+}
+
+function summaryForOp(op: NodeStatusDelta["ops"][number]): string {
+  const direct = op.summary;
+  if (typeof direct === "string" && direct.trim()) return direct.trim();
+  const text = op.text;
+  if (typeof text === "string" && text.trim()) return text.trim().slice(0, 180);
+  const patch = op.patch;
+  if (typeof patch === "string" && patch.trim()) return patch.trim().slice(0, 180);
+  return String(op.operation ?? "STATUS update");
+}
+
+function payloadForOp(op: NodeStatusDelta["ops"][number]): string {
+  const text = op.text;
+  if (typeof text === "string" && text.trim()) return text.trim();
+  const summary = op.summary;
+  if (typeof summary === "string" && summary.trim()) return summary.trim();
+  const patch = op.patch;
+  if (typeof patch === "string" && patch.trim()) return patch.trim();
+  return JSON.stringify(op, null, 2);
+}
+
+type DiffRow = {
+  kind: "same" | "add" | "remove";
+  prefix: string;
+  text: string;
+};
+
+function makeLineDiff(before: string, after: string): DiffRow[] {
+  const a = before.split("\n");
+  const b = after.split("\n");
+  const table: number[][] = Array.from({ length: a.length + 1 }, () =>
+    Array(b.length + 1).fill(0),
+  );
+  for (let i = a.length - 1; i >= 0; i -= 1) {
+    for (let j = b.length - 1; j >= 0; j -= 1) {
+      table[i][j] =
+        a[i] === b[j]
+          ? table[i + 1][j + 1] + 1
+          : Math.max(table[i + 1][j], table[i][j + 1]);
+    }
+  }
+  const rows: DiffRow[] = [];
+  let i = 0;
+  let j = 0;
+  while (i < a.length && j < b.length) {
+    if (a[i] === b[j]) {
+      rows.push({ kind: "same", prefix: "  ", text: a[i] });
+      i += 1;
+      j += 1;
+    } else if (table[i + 1][j] >= table[i][j + 1]) {
+      rows.push({ kind: "remove", prefix: "- ", text: a[i] });
+      i += 1;
+    } else {
+      rows.push({ kind: "add", prefix: "+ ", text: b[j] });
+      j += 1;
+    }
+  }
+  while (i < a.length) {
+    rows.push({ kind: "remove", prefix: "- ", text: a[i] });
+    i += 1;
+  }
+  while (j < b.length) {
+    rows.push({ kind: "add", prefix: "+ ", text: b[j] });
+    j += 1;
+  }
+  return rows;
 }
 
 function PendingGateInline({

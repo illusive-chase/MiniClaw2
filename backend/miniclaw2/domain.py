@@ -94,6 +94,10 @@ class Project(BaseModel):
     # Keys are node ids (or synthetic ids like `artifact:<nid>`); values are
     # {"x": <float>, "y": <float>}. Backend treats this as a passthrough blob.
     layout_hints: dict[str, dict[str, float]] = Field(default_factory=dict)
+    # Per-project viewing preferences for bound planspace lanes. This is
+    # intentionally UI state, but it belongs in project.json so it survives
+    # reloads and other clients.
+    planspace_view: dict[str, dict[str, bool]] = Field(default_factory=dict)
 
 
 class Node(BaseModel):

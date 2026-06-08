@@ -12,6 +12,7 @@ from miniclaw2.contextspace import (
     apply_planspace_update_inbox,
     compose_context_bundle,
     load_context_bundle_for_node,
+    load_node_status_delta,
     planspace_update_output_relpath,
     review_guidance_output_relpath,
 )
@@ -549,6 +550,21 @@ class ContextSpaceRunnerTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(result["proposed"], 1)
             self.assertEqual(result["source"], "project_artifact")
             self.assertEqual(result["planspace_id"], "planspaces.memory")
+
+            status_delta = load_node_status_delta(
+                project.id,
+                node.id,
+                store_root=store.root,
+            )
+            self.assertIsNotNone(status_delta)
+            assert status_delta is not None
+            self.assertEqual(status_delta["planspace_id"], "planspaces.memory")
+            self.assertIn("Current status: implement contextspace.", status_delta["before"])
+            self.assertIn(
+                "Implemented planspace update v1 via project artifact.",
+                status_delta["after"],
+            )
+            self.assertEqual(len(status_delta["ops"]), 3)
 
     async def test_planspace_update_auto_applies_only_status_updates(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

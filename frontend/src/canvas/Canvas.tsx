@@ -61,7 +61,14 @@ const EDGE_TYPES = {
 
 export type CanvasSelection =
   | { kind: "agent" | "gate" | "op"; nodeId: string }
-  | { kind: "context"; identityKey: string; path: string }
+  | {
+      kind: "context";
+      identityKey: string;
+      path: string;
+      scope: string;
+      sourceKind: string;
+      plugId?: string | null;
+    }
   | { kind: "planspace"; planspaceId: string }
   | { kind: "projectRoot" }
   | { kind: "none" };
@@ -75,6 +82,9 @@ export type CanvasProps = {
   phantomFromNodeId: string | null | undefined;
   phantomDisabled: boolean;
   contextBundlesByNodeId: Record<string, ContextBundle | null | undefined>;
+  knownPlanspaceIds: string[];
+  hiddenPlanspaceIds: string[];
+  activePlanspaceId: string | null;
   /** Persisted positions hydrated from the session. */
   initialLayoutHints?: Record<string, { x: number; y: number }>;
   onSelectionChange: (sel: CanvasSelection) => void;
@@ -101,6 +111,9 @@ function CanvasInner({
   phantomFromNodeId,
   phantomDisabled,
   contextBundlesByNodeId,
+  knownPlanspaceIds,
+  hiddenPlanspaceIds,
+  activePlanspaceId,
   initialLayoutHints,
   onSelectionChange,
   onEmptyCanvasTap,
@@ -163,6 +176,9 @@ function CanvasInner({
         phantomDisabled,
         layoutHints: layoutHintsRef.current,
         contextBundlesByNodeId,
+        knownPlanspaceIds,
+        hiddenPlanspaceIds,
+        activePlanspaceId,
       }),
     [
       nodes,
@@ -171,6 +187,9 @@ function CanvasInner({
       phantomFromNodeId,
       phantomDisabled,
       contextBundlesByNodeId,
+      knownPlanspaceIds,
+      hiddenPlanspaceIds,
+      activePlanspaceId,
     ],
   );
 
@@ -261,6 +280,9 @@ function CanvasInner({
           kind: "context",
           identityKey: data.identityKey,
           path: data.path,
+          scope: data.scope,
+          sourceKind: data.kind,
+          plugId: data.plugId ?? null,
         });
       } else if (n.type === "projectRoot") {
         onSelectionChange({ kind: "projectRoot" });

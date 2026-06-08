@@ -37,7 +37,8 @@ Trunk: `backend/miniclaw2/domain.py`.
 - `Project` fields: `root_path`, `name`, `provider`, `head_commit`,
   `parent_project_id`, `parent_commit`, `project_context_binding_id`,
   `settings_override`, `temporary`, `scenario_name`,
-  `scenario_step_history`, `layout_hints`, `created_at`.
+  `scenario_step_history`, `layout_hints`, `planspace_view`,
+  `created_at`.
 - `HumanGate` model with `GateKind ∈ {inline, checkpoint}`,
   `GateSubtype ∈ {permission, ask_user, plan_approval, checkpoint_review}`,
   `GateState ∈ {pending, resolved}`.
@@ -178,6 +179,10 @@ Trunk: `backend/miniclaw2/contextspace.py`, `backend/miniclaw2/context.py`,
 - Context bundle snapshot persisted to
   `snapshots/<bundle-id>.json` with source paths, sha256 hashes,
   plug ids, char counts, and injection modes (`system` / `turn`).
+- ContextSpace bootstrap split into idempotent helpers:
+  `ensure_contextspace_root`, `ensure_project_binding`, and
+  `add_planspace_to_binding`. The legacy
+  `bootstrap_project_contextspace` remains as a compatibility facade.
 - Planspace `STATUS.md` auto-writer runs only when an explicit
   planspace binding exists.
 - Planspace state schema (`planspace_state.py`):
@@ -197,6 +202,25 @@ Trunk: `backend/miniclaw2/contextspace.py`, `backend/miniclaw2/context.py`,
     durable updates.
 - Passive gate write-json response stamps acceptance fields on the
   upstream source node (see §3 Gate).
+- `POST /sessions/{sid}/planspaces` creates a new bound direction,
+  activates it, and launches the concierge bootstrap agent node from a
+  preset markdown prompt.
+- Whitelisted file reads via `GET /sessions/{sid}/files?role=...` for
+  STATUS, PLAN, and project-root CONTEXT. STATUS / PLAN last-writer
+  hints come from the planspace event tail; CONTEXT hints come from
+  `.miniclaw2/context.meta.json`.
+- Per-node STATUS snapshots are written to
+  `projects/<pid>/nodes/<nid>/status-delta.json` after successful
+  STATUS updates and exposed through
+  `GET /sessions/{sid}/nodes/{nid}/status-delta`.
+- Per-project lane visibility is persisted in
+  `Project.planspace_view` and updated via
+  `PATCH /sessions/{sid}/planspace-view`.
+- Out-of-band `CONTEXT.md` init / refresh tasks live in
+  `backend/miniclaw2/context_refresh.py`, write
+  `.miniclaw2/context.meta.json`, expose in-flight state on
+  `GET /sessions/{sid}/contextspace`, and deliberately do not create
+  nodes or append node event streams.
 
 ### Memory delta JSON shape (wire-level)
 
@@ -260,6 +284,10 @@ derived from STATUS. Skill and protocol updates remain proposed.
   planspace inbox).
 - Verifier op nodes that own deterministic acceptance and write
   acceptance back to the source node.
+- Provider-backed one-shot LLM generation for `CONTEXT.md`
+  init/refresh. The current task runner has the out-of-band API,
+  metadata, and no-node semantics, but writes a deterministic repo
+  digest handbook rather than calling a model.
 
 
 ## 5. Frontend canvas
@@ -298,6 +326,11 @@ Trunk: `frontend/src/canvas/Canvas.tsx`, `frontend/src/canvas/layout.ts`,
   side panel mirrors the same form for wider chrome.
 - Planspace lanes render with persisted manifest color overrides
   (falls back to creation-order palette).
+- Planspace lane visibility is per-project and persisted; hidden lanes,
+  their nodes, and their cross-lane chips are filtered from the canvas,
+  while Project → Directions keeps a recovery row.
+- The active direction is highlighted at lane level, and fresh
+  phantoms drop on the active lane's trailing slot.
 - Project `CONTEXT.md` sits in its own neutral top stripe above the
   planspace-colored "loaded context" lane.
 - Cross-lane `↗ loaded:` chip on each tile whose context bundle pulls
@@ -306,8 +339,19 @@ Trunk: `frontend/src/canvas/Canvas.tsx`, `frontend/src/canvas/layout.ts`,
 - `AgentPanel`'s "What this run changed" section reads
   `settings_snapshot.planspace_update` and renders applied / proposed
   counts plus a staged-for-review marker.
+- `AgentPanel` reads per-node STATUS deltas when present and renders
+  operation cards plus a collapsed raw STATUS diff; Activity collapses
+  by default for terminal nodes with a state delta and stays expanded
+  for live/error/no-delta investigation.
 - STATUS.md viewer + slot-aware editor in `PlanspacePanel.tsx`,
   reachable by clicking a planspace lane header.
+- `PlanspaceFilePanel.tsx` handles STATUS.md / PLAN.md /
+  CONTEXT.md context tiles by reading real file content from disk
+  through `/files`; STATUS includes a collapsible slot editor.
+- `ProjectPanel.tsx` has Project actions (`+ New direction`,
+  initialize/refresh project notes) and a Directions section with
+  active badges and hide/show controls. The old "Set up project
+  memory" action is removed.
 - Persisted `layout_hints` round-tripped through `project.json` via
   `PATCH /sessions/{sid}/layout-hints`.
 - Tool I/O rendering: `Activity.result` (≤4 KB) + `result_kind ∈
@@ -353,6 +397,8 @@ The `OUTPUT_PLANSPACE_GATE.md` ontology has landed end-to-end.
 - Planspace lane rendering (`PlanspaceLaneNode`) — clickable header
   opens `PlanspacePanel` (STATUS viewer + slot editor).
 - Planspace-update inbox driving STATUS updates (see §4).
+- Per-node STATUS delta snapshots driving op-card rendering and raw
+  STATUS diff display in `AgentPanel`.
 - `NodeOutputKind` / `output_kind` / `output_path` /
   `output_contract_snapshot` removed; every node output flows through
   the unified planspace-commit mechanism (`needs_review` /
@@ -508,6 +554,12 @@ Quick reference; the on-disk shape is authoritative.
   `replay_request {node_id, since_seq}`.
 - REST: project CRUD, node and event introspection,
   `PATCH /sessions/{sid}/layout-hints`,
+  `PATCH /sessions/{sid}/planspace-view`,
+  `POST /sessions/{sid}/planspaces`,
+  `POST /sessions/{sid}/context/init`,
+  `POST /sessions/{sid}/context/refresh`,
+  `GET /sessions/{sid}/files`,
+  `GET /sessions/{sid}/nodes/{nid}/status-delta`,
   `GET / PATCH /sessions/{sid}/planspaces/{planspace_id}/status` for
   the STATUS viewer / slot editor, `POST /sessions {auto_commit, ...}`.
 

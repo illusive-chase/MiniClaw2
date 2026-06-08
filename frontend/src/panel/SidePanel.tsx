@@ -13,6 +13,7 @@ import { AgentPanel } from "./AgentPanel";
 import { ContextNodePanel } from "./ContextNodePanel";
 import { GatePanel } from "./GatePanel";
 import { OpPanel } from "./OpPanel";
+import { PlanspaceFilePanel } from "./PlanspaceFilePanel";
 import { PlanspacePanel } from "./PlanspacePanel";
 import { ProjectPanel } from "./ProjectPanel";
 
@@ -57,7 +58,10 @@ export type SidePanelProps = {
   onSpawnPhantomFromNode: (nodeId: string) => void;
   onActivatePlanspace: (binding_id: string, planspace_id: string) => void;
   onSelectContextBinding: (binding_id: string) => void;
-  onBootstrapContextSpace: () => void;
+  onNewDirection: (userSeed: string, needsReview: boolean) => void;
+  onContextInit: () => void;
+  onContextRefresh: () => void;
+  onTogglePlanspaceVisibility: (planspaceId: string, hidden: boolean) => void;
 };
 
 /**
@@ -99,7 +103,10 @@ function Inner(props: SidePanelProps & { nodesById: Map<string, NodeInfo> }) {
     onSpawnPhantomFromNode,
     onActivatePlanspace,
     onSelectContextBinding,
-    onBootstrapContextSpace,
+    onNewDirection,
+    onContextInit,
+    onContextRefresh,
+    onTogglePlanspaceVisibility,
     nodesById,
   } = props;
 
@@ -121,7 +128,10 @@ function Inner(props: SidePanelProps & { nodesById: Map<string, NodeInfo> }) {
         contextSpaceError={contextSpaceError}
         onActivatePlanspace={onActivatePlanspace}
         onSelectContextBinding={onSelectContextBinding}
-        onBootstrapContextSpace={onBootstrapContextSpace}
+        onNewDirection={onNewDirection}
+        onContextInit={onContextInit}
+        onContextRefresh={onContextRefresh}
+        onTogglePlanspaceVisibility={onTogglePlanspaceVisibility}
       />
     );
   }
@@ -129,8 +139,10 @@ function Inner(props: SidePanelProps & { nodesById: Map<string, NodeInfo> }) {
   if (selection.kind === "agent") {
     const node = nodesById.get(selection.nodeId);
     if (!node) return <Missing />;
+    if (!session) return <Missing />;
     return (
       <AgentPanel
+        sessionId={session.id}
         node={node}
         events={events}
         eventsLoading={eventsLoading}
@@ -182,6 +194,24 @@ function Inner(props: SidePanelProps & { nodesById: Map<string, NodeInfo> }) {
         if (!sample) sample = bundle;
       }
     }
+    if (session && isPlanspaceFileSelection(selection)) {
+      const role =
+        selection.scope === "project-root"
+          ? "context"
+          : selection.sourceKind === "plan"
+            ? "plan"
+            : "status";
+      return (
+        <PlanspaceFilePanel
+          sessionId={session.id}
+          role={role}
+          planspaceId={selection.plugId ?? null}
+          loadedByNodeIds={loadedByNodeIds}
+          nodesById={nodesById}
+          onSelectConsumer={onSelectNode}
+        />
+      );
+    }
     return (
       <ContextNodePanel
         identityKey={selection.identityKey}
@@ -205,3 +235,13 @@ function Missing() {
   );
 }
 
+function isPlanspaceFileSelection(
+  selection: Extract<CanvasSelection, { kind: "context" }>,
+): boolean {
+  if (selection.scope === "project-root") return true;
+  return (
+    !!selection.plugId &&
+    selection.plugId.startsWith("planspaces.") &&
+    (selection.sourceKind === "status" || selection.sourceKind === "plan")
+  );
+}

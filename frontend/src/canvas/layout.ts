@@ -44,6 +44,8 @@ export type ContextNodeData = {
   chars: number;
   /** ids of agent nodes that loaded this file */
   loadedByNodeIds: string[];
+  /** source plug id when this context file comes from a planspace/skill plug */
+  plugId?: string | null;
 };
 
 export type PhantomNodeData = {
@@ -74,6 +76,7 @@ export type PlanspaceLaneData = {
   width: number;
   height: number;
   color: PlanspaceColor;
+  active: boolean;
 };
 
 export type RFNodeData =
@@ -172,6 +175,12 @@ export type BuildGraphArgs = {
   layoutHints: Record<string, { x: number; y: number }>;
   /** per-node context bundles, keyed by node id, used to materialize context + loads edges */
   contextBundlesByNodeId: Record<string, ContextBundle | null | undefined>;
+  /** planspaces known from the project binding, including empty lanes */
+  knownPlanspaceIds: string[];
+  /** planspaces hidden by per-project view state */
+  hiddenPlanspaceIds: string[];
+  /** active write target */
+  activePlanspaceId: string | null;
 };
 
 export type BuildGraphResult = {
@@ -196,13 +205,27 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
     phantomDisabled,
     layoutHints,
     contextBundlesByNodeId,
+    knownPlanspaceIds,
+    hiddenPlanspaceIds,
+    activePlanspaceId,
   } = args;
 
   const rfNodes: RFNode[] = [];
   const rfEdges: RFEdge[] = [];
+  const hiddenPlanspaces = new Set(hiddenPlanspaceIds);
+  const allNodeById = new Map<string, NodeInfo>();
+  for (const n of nodes) allNodeById.set(n.id, n);
+  const visibleNodes = nodes.filter((node) => {
+    const planspaceId = resolvePlanspaceId(node, allNodeById);
+    return !planspaceId || !hiddenPlanspaces.has(planspaceId);
+  });
   const nodeById = new Map<string, NodeInfo>();
-  for (const n of nodes) nodeById.set(n.id, n);
-  const planspaceOrder = collectPlanspaceOrder(nodes, nodeById);
+  for (const n of visibleNodes) nodeById.set(n.id, n);
+  const planspaceOrder = collectPlanspaceOrder(visibleNodes, allNodeById);
+  for (const id of knownPlanspaceIds) {
+    if (!id || hiddenPlanspaces.has(id) || planspaceOrder.includes(id)) continue;
+    planspaceOrder.push(id);
+  }
   const planspaceIndex = new Map(planspaceOrder.map((id, index) => [id, index]));
   const laneBounds = new Map<
     string,
@@ -230,13 +253,13 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
    * (no child yet) keep their tile rendering so the auto-commit stays visible. */
   const opByChildId = new Map<string, NodeInfo>();
   const opsWithChild = new Set<string>();
-  for (const node of nodes) {
+  for (const node of visibleNodes) {
     if (node.kind !== "op") continue;
-    const childIdx = nodes.findIndex(
+    const childIdx = visibleNodes.findIndex(
       (n) => n.parent_node_id === node.id && n.kind !== "op",
     );
     if (childIdx >= 0) {
-      opByChildId.set(nodes[childIdx].id, node);
+      opByChildId.set(visibleNodes[childIdx].id, node);
       opsWithChild.add(node.id);
     }
   }
@@ -247,11 +270,11 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
 
   /* main timeline: agents, gates, ops along x = index*spacing */
   let cursorX = LANE.rootX + 180;
-  nodes.forEach((node, index) => {
+  visibleNodes.forEach((node, index) => {
     const resumeParent = findResumeParent(node, nodeById);
     const isActive = node.id === activeNodeId;
     const stored = layoutHints[node.id];
-    const planspaceId = resolvePlanspaceId(node, nodeById);
+    const planspaceId = resolvePlanspaceId(node, allNodeById);
     const laneY = yForPlanspace(planspaceId, planspaceIndex);
     const planspaceColor = colorForPlanspace(
       planspaceId,
@@ -264,6 +287,7 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
       contextBundlesByNodeId[node.id],
       planspaceIndex,
       planspaceColorOverrides,
+      hiddenPlanspaces,
     );
 
     if (node.kind === "op") {
@@ -362,6 +386,7 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
         width,
         height: LANE.planspaceLaneHeight,
         color: bounds.color,
+        active: planspaceId === activePlanspaceId,
       },
       selectable: true,
       draggable: false,
@@ -374,7 +399,7 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
    * The owning agent keeps its own error state; the terminal puts the failure
    * text into the graph itself so retries (resume edges back to the parent)
    * read as a visible loop instead of a banner inside a panel. */
-  nodes.forEach((node) => {
+  visibleNodes.forEach((node) => {
     if (node.kind === "op") return;
     if (node.state !== "error") return;
     if (!node.error) return;
@@ -417,11 +442,18 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
     path: string;
     chars: number;
     loadedBy: Set<string>;
+    plugId?: string | null;
   };
   const ctxAgg = new Map<string, CtxAggregate>();
   for (const [ownerId, bundle] of Object.entries(contextBundlesByNodeId)) {
+    const owner = allNodeById.get(ownerId);
+    if (owner) {
+      const ownerPlanspaceId = resolvePlanspaceId(owner, allNodeById);
+      if (ownerPlanspaceId && hiddenPlanspaces.has(ownerPlanspaceId)) continue;
+    }
     if (!bundle) continue;
     for (const src of bundle.sources) {
+      if (src.plug_id && hiddenPlanspaces.has(src.plug_id)) continue;
       const key = contextIdentityKey(src.scope, src.kind, src.path);
       const existing = ctxAgg.get(key);
       if (existing) {
@@ -435,6 +467,7 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
           path: src.path,
           chars: src.chars,
           loadedBy: new Set([ownerId]),
+          plugId: src.plug_id ?? null,
         });
       }
     }
@@ -465,6 +498,7 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
         filename: filenameOf(agg.path),
         chars: agg.chars,
         loadedByNodeIds: Array.from(agg.loadedBy),
+        plugId: agg.plugId ?? null,
       },
       draggable: true,
     });
@@ -488,7 +522,7 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
    * The source-of-truth is `settings_snapshot.planspace_update.planspace_id`,
    * resolved against the agent's own bundle so we can map planspace id →
    * the context node id we materialized above. */
-  for (const node of nodes) {
+  for (const node of visibleNodes) {
     if (node.kind !== "agent") continue;
     const update = (node.settings_snapshot?.planspace_update
       ?? node.settings_snapshot?.memory_delta) as
@@ -529,7 +563,19 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
         ? (parent.summary || parent.prompt || parent.id.slice(0, 8)).slice(0, 48)
         : null;
     } else {
-      position = { x: cursorX, y: LANE.timelineY };
+      const activeLane =
+        activePlanspaceId && !hiddenPlanspaces.has(activePlanspaceId)
+          ? laneBounds.get(activePlanspaceId)
+          : null;
+      position = activeLane
+        ? { x: activeLane.maxX + LANE.agentSpacing, y: activeLane.y }
+        : {
+            x: cursorX,
+            y:
+              activePlanspaceId && !hiddenPlanspaces.has(activePlanspaceId)
+                ? yForPlanspace(activePlanspaceId, planspaceIndex)
+                : LANE.timelineY,
+          };
     }
     rfNodes.push({
       id: phantomId,
@@ -648,6 +694,7 @@ function collectCrossLaneLoads(
   bundle: ContextBundle | null | undefined,
   planspaceIndex: Map<string, number>,
   overrides: Map<string, string>,
+  hiddenPlanspaces: Set<string>,
 ): CrossLaneLoad[] {
   if (!bundle) return [];
   const seen = new Set<string>();
@@ -655,6 +702,7 @@ function collectCrossLaneLoads(
   for (const src of bundle.sources) {
     const plugId = src.plug_id;
     if (!plugId || !plugId.startsWith("planspaces.")) continue;
+    if (hiddenPlanspaces.has(plugId)) continue;
     if (plugId === ownPlanspaceId) continue;
     if (seen.has(plugId)) continue;
     seen.add(plugId);

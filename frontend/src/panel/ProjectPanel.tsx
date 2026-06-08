@@ -1,4 +1,9 @@
+import { useMemo, useState } from "react";
+import type { ReactNode } from "react";
+
 import type {
+  ContextSpaceBindingSummary,
+  ContextSpacePlugSummary,
   SessionContextSpaceInfo,
   SessionInfo,
 } from "../types";
@@ -11,14 +16,17 @@ export type ProjectPanelProps = {
   contextSpaceError: string | null;
   onActivatePlanspace: (binding_id: string, planspace_id: string) => void;
   onSelectContextBinding: (binding_id: string) => void;
-  onBootstrapContextSpace: () => void;
+  onNewDirection: (userSeed: string, needsReview: boolean) => void;
+  onContextInit: () => void;
+  onContextRefresh: () => void;
+  onTogglePlanspaceVisibility: (planspaceId: string, hidden: boolean) => void;
 };
 
 /**
  * Side panel when the project root is selected.
  *
- * Per PRD §5.3: project settings (provider, auto-commit, scenario name) live here,
- * along with planspace-activation (click-to-activate, replacing the dropdowns).
+ * Project-root actions are concierge-style: creating a direction launches the
+ * bootstrap agent node, while CONTEXT.md init/refresh stay out of the timeline.
  */
 export function ProjectPanel({
   session,
@@ -28,8 +36,26 @@ export function ProjectPanel({
   contextSpaceError,
   onActivatePlanspace,
   onSelectContextBinding,
-  onBootstrapContextSpace,
+  onNewDirection,
+  onContextInit,
+  onContextRefresh,
+  onTogglePlanspaceVisibility,
 }: ProjectPanelProps) {
+  const [composerOpen, setComposerOpen] = useState(false);
+  const [seed, setSeed] = useState("");
+  const [needsReview, setNeedsReview] = useState(false);
+
+  const activeBinding = contextSpace?.bindings.find(
+    (b) => b.id === (contextSpace?.resolved_binding_id ?? session?.project_context_binding_id),
+  );
+  const directions = useMemo(
+    () => collectDirections(activeBinding),
+    [activeBinding],
+  );
+  const notesExist = !!contextSpace?.context_file?.exists;
+  const refreshing = !!contextSpace?.context_refresh?.running;
+  const busy = contextSpaceSaving || refreshing;
+
   if (!session) {
     return (
       <div className="flex h-full items-center justify-center px-4 text-sm text-ink-muted">
@@ -37,9 +63,16 @@ export function ProjectPanel({
       </div>
     );
   }
-  const activeBinding = contextSpace?.bindings.find(
-    (b) => b.id === (contextSpace?.resolved_binding_id ?? session.project_context_binding_id),
-  );
+
+  const submitNewDirection = () => {
+    const trimmed = seed.trim();
+    if (!trimmed || busy) return;
+    onNewDirection(trimmed, needsReview);
+    setSeed("");
+    setNeedsReview(false);
+    setComposerOpen(false);
+  };
+
   return (
     <div className="flex h-full flex-col overflow-hidden">
       <div className="border-b border-line bg-surface-raised px-4 py-3">
@@ -71,9 +104,9 @@ export function ProjectPanel({
 
         <section className="mb-5">
           <div className="flex items-baseline justify-between">
-            <SectionLabel>Active project memory</SectionLabel>
+            <SectionLabel>Project actions</SectionLabel>
             {contextSpaceLoading && (
-              <span className="text-[10px] text-ink-subtle">loading…</span>
+              <span className="text-[10px] text-ink-subtle">loading...</span>
             )}
           </div>
           {contextSpaceError && (
@@ -81,92 +114,123 @@ export function ProjectPanel({
               {contextSpaceError}
             </div>
           )}
+          {refreshing && (
+            <div className="mt-2 rounded-md border border-state-running/30 bg-state-running-soft px-3 py-2 text-[11.5px] text-state-running">
+              Refreshing project notes...
+            </div>
+          )}
+          <div className="mt-2 grid grid-cols-1 gap-2">
+            <button
+              type="button"
+              onClick={() => setComposerOpen((v) => !v)}
+              disabled={busy}
+              className="rounded-md bg-brand px-3 py-2 text-left text-[12px] font-medium text-white shadow-card transition hover:brightness-[0.95] disabled:opacity-40"
+            >
+              + New direction
+            </button>
+            <button
+              type="button"
+              onClick={notesExist ? onContextRefresh : onContextInit}
+              disabled={busy}
+              className="rounded-md border border-line bg-surface-raised px-3 py-2 text-left text-[12px] text-ink transition hover:border-line-strong disabled:opacity-40"
+            >
+              {notesExist ? "Refresh project notes" : "Initialize project notes"}
+            </button>
+          </div>
+
+          {composerOpen && (
+            <div className="mt-3 rounded-md border border-line bg-surface-sunken p-3">
+              <label className="block text-[10px] font-medium uppercase tracking-[0.14em] text-ink-subtle">
+                Direction
+              </label>
+              <textarea
+                value={seed}
+                onChange={(event) => setSeed(event.target.value)}
+                rows={5}
+                placeholder="What direction are you taking? A paragraph is fine."
+                className="mt-1 w-full resize-none rounded-md border border-line bg-surface px-3 py-2 text-[13px] leading-relaxed text-ink-strong placeholder:text-ink-subtle focus:border-brand focus:outline-none"
+              />
+              <label className="mt-2 flex items-center justify-between rounded border border-line bg-surface px-2 py-1.5 text-[11px] text-ink">
+                <span>Needs review</span>
+                <input
+                  type="checkbox"
+                  checked={needsReview}
+                  onChange={(event) => setNeedsReview(event.target.checked)}
+                  className="h-3.5 w-3.5 accent-brand"
+                />
+              </label>
+              <div className="mt-2 flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setComposerOpen(false)}
+                  className="rounded border border-line bg-surface px-2.5 py-1 text-[11px] text-ink-muted hover:text-ink"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  disabled={busy || seed.trim().length === 0}
+                  onClick={submitNewDirection}
+                  className="rounded-md bg-brand px-2.5 py-1 text-[11px] font-medium text-white shadow-card transition hover:brightness-[0.95] disabled:opacity-40"
+                >
+                  Start
+                </button>
+              </div>
+            </div>
+          )}
+        </section>
+
+        <section className="mb-5">
+          <SectionLabel>Directions</SectionLabel>
           {!contextSpace ? (
             <div className="mt-1 rounded-md border border-line bg-surface-sunken px-3 py-2 text-[11.5px] text-ink-muted">
-              Project memory not loaded.
+              Directions not loaded.
             </div>
-          ) : !contextSpace.exists ? (
-            <div className="mt-1 space-y-2 rounded-md border border-line bg-surface-sunken px-3 py-2 text-[11.5px]">
-              <p className="text-ink-muted">
-                No project memory yet. Set one up to give the agent a notebook of plans
-                and decisions that survive across runs.
-              </p>
-              <button
-                type="button"
-                onClick={onBootstrapContextSpace}
-                disabled={contextSpaceSaving}
-                className="rounded-md bg-brand px-2.5 py-1 text-[11px] font-medium text-white shadow-card transition hover:brightness-[0.95] disabled:opacity-40"
-              >
-                Set up project memory
-              </button>
-            </div>
-          ) : !activeBinding ? (
-            <div className="mt-1 space-y-3 rounded-md border border-line bg-surface-sunken px-3 py-2 text-[11.5px]">
-              <p className="text-ink-muted">
-                No memory profile is wired up to this project yet.
-              </p>
-              <button
-                type="button"
-                onClick={onBootstrapContextSpace}
-                disabled={contextSpaceSaving}
-                className="rounded-md bg-brand px-2.5 py-1 text-[11px] font-medium text-white shadow-card transition hover:brightness-[0.95] disabled:opacity-40"
-              >
-                Set up project memory
-              </button>
-              {contextSpace.bindings.length > 0 && (
-                <div>
-                  <div className="mb-1 text-[10px] font-medium uppercase tracking-[0.14em] text-ink-subtle">
-                    Existing memory profiles
-                  </div>
-                  <ul className="space-y-1">
-                    {contextSpace.bindings.map((binding) => (
-                      <li key={binding.id}>
-                        <button
-                          type="button"
-                          disabled={contextSpaceSaving}
-                          onClick={() => onSelectContextBinding(binding.id)}
-                          className="block w-full rounded-md border border-line bg-surface-raised px-3 py-2 text-left text-[12px] transition hover:border-line-strong disabled:opacity-50"
-                        >
-                          <div className="line-clamp-1 font-medium text-ink-strong">
-                            {binding.title}
-                          </div>
-                          <div className="mt-0.5 font-mono text-[10.5px] text-ink-muted">
-                            {binding.id}
-                            {binding.matches_project_path ? " · matches path" : ""}
-                          </div>
-                        </button>
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
+          ) : directions.length === 0 ? (
+            <div className="mt-1 rounded-md border border-line bg-surface-sunken px-3 py-2 text-[11.5px] text-ink-muted">
+              This project has no directions yet. Start one to give the agent a
+              notebook of plans and decisions.
             </div>
           ) : (
             <ul className="mt-1 space-y-1">
-              {activeBinding.plugs
-                .filter((p) => p.kind === "planspace")
-                .map((p) => (
-                  <li key={p.id}>
+              {directions.map((item) => (
+                <li key={item.plug.id}>
+                  <DirectionRow
+                    binding={item.binding}
+                    plug={item.plug}
+                    saving={busy}
+                    onActivatePlanspace={onActivatePlanspace}
+                    onTogglePlanspaceVisibility={onTogglePlanspaceVisibility}
+                  />
+                </li>
+              ))}
+            </ul>
+          )}
+
+          {contextSpace && !activeBinding && contextSpace.bindings.length > 0 && (
+            <div className="mt-4">
+              <SectionLabel>Existing memory profiles</SectionLabel>
+              <ul className="mt-1 space-y-1">
+                {contextSpace.bindings.map((binding) => (
+                  <li key={binding.id}>
                     <button
                       type="button"
-                      disabled={contextSpaceSaving}
-                      onClick={() => onActivatePlanspace(activeBinding.id, p.id)}
-                      className={
-                        "block w-full rounded-md border px-3 py-2 text-left text-[12px] transition disabled:opacity-50 " +
-                        (p.active
-                          ? "border-brand bg-brand-soft text-brand-ink"
-                          : "border-line bg-surface-raised text-ink hover:border-line-strong")
-                      }
+                      disabled={busy}
+                      onClick={() => onSelectContextBinding(binding.id)}
+                      className="block w-full rounded-md border border-line bg-surface-raised px-3 py-2 text-left text-[12px] transition hover:border-line-strong disabled:opacity-50"
                     >
-                      <div className="line-clamp-1 font-medium">{p.title}</div>
+                      <div className="line-clamp-1 font-medium text-ink-strong">
+                        {binding.title}
+                      </div>
                       <div className="mt-0.5 font-mono text-[10.5px] text-ink-muted">
-                        {p.slug}
-                        {p.active ? " · active" : ""}
+                        {binding.id}
+                        {binding.matches_project_path ? " · matches path" : ""}
                       </div>
                     </button>
                   </li>
                 ))}
-            </ul>
+              </ul>
+            </div>
           )}
         </section>
       </div>
@@ -174,7 +238,81 @@ export function ProjectPanel({
   );
 }
 
-function SectionLabel({ children }: { children: React.ReactNode }) {
+function DirectionRow({
+  binding,
+  plug,
+  saving,
+  onActivatePlanspace,
+  onTogglePlanspaceVisibility,
+}: {
+  binding: ContextSpaceBindingSummary;
+  plug: ContextSpacePlugSummary;
+  saving: boolean;
+  onActivatePlanspace: (binding_id: string, planspace_id: string) => void;
+  onTogglePlanspaceVisibility: (planspaceId: string, hidden: boolean) => void;
+}) {
+  const hidden = !!plug.hidden;
+  return (
+    <div
+      className={
+        "flex items-center gap-2 rounded-md border px-3 py-2 text-[12px] transition " +
+        (plug.active
+          ? "border-brand bg-brand-soft text-brand-ink"
+          : "border-line bg-surface-raised text-ink")
+      }
+    >
+      <button
+        type="button"
+        disabled={saving}
+        onClick={() => onActivatePlanspace(binding.id, plug.id)}
+        className="flex min-w-0 flex-1 items-center gap-2 text-left disabled:opacity-50"
+      >
+        <span
+          className="h-2.5 w-2.5 flex-none rounded-full border border-line"
+          style={{ background: colorSwatch(plug) }}
+          aria-hidden="true"
+        />
+        <span className="min-w-0 flex-1">
+          <span className="block truncate font-medium">{plug.title}</span>
+          <span className="mt-0.5 block truncate font-mono text-[10.5px] text-ink-muted">
+            {plug.slug}
+            {plug.active ? " · active" : ""}
+            {hidden ? " · hidden" : ""}
+          </span>
+        </span>
+      </button>
+      <button
+        type="button"
+        disabled={saving}
+        onClick={() => onTogglePlanspaceVisibility(plug.id, !hidden)}
+        className="flex-none rounded border border-line bg-surface px-2 py-1 text-[11px] text-ink-muted transition hover:border-line-strong hover:text-ink disabled:opacity-40"
+      >
+        {hidden ? "Show" : "Hide"}
+      </button>
+    </div>
+  );
+}
+
+function collectDirections(binding: ContextSpaceBindingSummary | undefined) {
+  if (!binding) return [];
+  return binding.plugs
+    .filter((plug) => plug.kind === "planspace")
+    .map((plug) => ({ binding, plug }));
+}
+
+function colorSwatch(plug: ContextSpacePlugSummary): string {
+  const colors: Record<string, string> = {
+    indigo: "rgb(95 111 149)",
+    teal: "rgb(67 132 122)",
+    rose: "rgb(166 92 110)",
+    olive: "rgb(116 128 76)",
+    steel: "rgb(82 125 154)",
+    mauve: "rgb(135 99 143)",
+  };
+  return (plug.color && colors[plug.color]) || "rgb(var(--border-strong))";
+}
+
+function SectionLabel({ children }: { children: ReactNode }) {
   return (
     <div className="text-[10px] font-medium uppercase tracking-[0.14em] text-ink-subtle">
       {children}

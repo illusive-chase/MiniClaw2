@@ -5,7 +5,7 @@ import type { ProjectRootNodeData } from "../layout";
 function ProjectRootNodeImpl({ data, selected }: NodeProps<ProjectRootNodeData>) {
   return (
     <div
-      title={`Project · ${data.title}`}
+      title={`Project · ${data.title}. Click to manage directions and project notes.`}
       className={
         "relative flex h-[64px] w-[64px] select-none items-center justify-center rounded-full border bg-surface-raised shadow-card transition " +
         (selected

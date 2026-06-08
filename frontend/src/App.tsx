@@ -1,12 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  bootstrapSessionContextSpace,
+  createPlanspace,
   getNodeContextBundle,
   getNodeDiff,
   getSessionContextSpace,
+  initProjectContext,
   listNodeEvents,
   listNodes,
+  refreshProjectContext,
   updateLayoutHints,
+  updatePlanspaceView,
   updateSessionContextSpace,
 } from "./api";
 import { Canvas, type CanvasSelection } from "./canvas/Canvas";
@@ -199,6 +202,14 @@ export function App() {
     void refreshContextSpace();
   }, [refreshContextSpace]);
 
+  useEffect(() => {
+    if (!sessionContextSpace?.context_refresh?.running) return;
+    const timer = window.setInterval(() => {
+      void refreshContextSpace();
+    }, 1200);
+    return () => window.clearInterval(timer);
+  }, [sessionContextSpace?.context_refresh?.running, refreshContextSpace]);
+
   const activatePlanspace = useCallback(
     async (binding_id: string, planspace_id: string) => {
       if (!session?.id) return;
@@ -248,24 +259,86 @@ export function App() {
     [session?.id],
   );
 
-  const bootstrapContext = useCallback(async () => {
+  const startNewDirection = useCallback(
+    async (userSeed: string, needsReview: boolean) => {
+      if (!session?.id) return;
+      setSessionContextSpaceSaving(true);
+      setSessionContextSpaceError(null);
+      setStreaming(true);
+      try {
+        const created = await createPlanspace(session.id, {
+          user_seed: userSeed,
+          needs_review: needsReview,
+        });
+        setSelection({ kind: "agent", nodeId: created.node_id });
+        setInspectedNodeId(created.node_id);
+        setPhantomFromNodeId(undefined);
+        await refreshContextSpace();
+        await refreshNodes();
+      } catch (err) {
+        setStreaming(false);
+        setSessionContextSpaceError(String(err));
+      } finally {
+        setSessionContextSpaceSaving(false);
+      }
+    },
+    [session?.id, refreshContextSpace, refreshNodes],
+  );
+
+  const runContextInit = useCallback(async () => {
     if (!session?.id) return;
     setSessionContextSpaceSaving(true);
     setSessionContextSpaceError(null);
     try {
-      const next = await bootstrapSessionContextSpace(session.id, {});
+      const next = await initProjectContext(session.id);
       setSessionContextSpace(next);
-      setSession((current) =>
-        current && current.id === session.id
-          ? { ...current, project_context_binding_id: next.project_context_binding_id ?? null }
-          : current,
-      );
     } catch (err) {
       setSessionContextSpaceError(String(err));
     } finally {
       setSessionContextSpaceSaving(false);
     }
   }, [session?.id]);
+
+  const runContextRefresh = useCallback(async () => {
+    if (!session?.id) return;
+    setSessionContextSpaceSaving(true);
+    setSessionContextSpaceError(null);
+    try {
+      const next = await refreshProjectContext(session.id);
+      setSessionContextSpace(next);
+    } catch (err) {
+      setSessionContextSpaceError(String(err));
+    } finally {
+      setSessionContextSpaceSaving(false);
+    }
+  }, [session?.id]);
+
+  const togglePlanspaceVisibility = useCallback(
+    async (planspaceId: string, hidden: boolean) => {
+      if (!session?.id) return;
+      setSessionContextSpaceSaving(true);
+      setSessionContextSpaceError(null);
+      try {
+        const next = await updatePlanspaceView(session.id, {
+          [planspaceId]: { hidden },
+        });
+        setSessionContextSpace(next);
+        setSession((current) =>
+          current && current.id === session.id
+            ? {
+                ...current,
+                planspace_view: next.planspace_view ?? current.planspace_view,
+              }
+            : current,
+        );
+      } catch (err) {
+        setSessionContextSpaceError(String(err));
+      } finally {
+        setSessionContextSpaceSaving(false);
+      }
+    },
+    [session?.id],
+  );
 
   /* events / diff / artifact / context-bundle fetch — keyed off inspectedNodeId */
   useEffect(() => {
@@ -510,6 +583,24 @@ export function App() {
     return out;
   }, [sessionContextSpace]);
 
+  const knownPlanspaceIds = useMemo(
+    () => planspaceOptions.map((opt) => opt.id),
+    [planspaceOptions],
+  );
+
+  const hiddenPlanspaceIds = useMemo(() => {
+    const hidden = new Set<string>();
+    for (const [id, pref] of Object.entries(sessionContextSpace?.planspace_view ?? {})) {
+      if (pref?.hidden) hidden.add(id);
+    }
+    for (const binding of sessionContextSpace?.bindings ?? []) {
+      for (const plug of binding.plugs) {
+        if (plug.kind === "planspace" && plug.hidden) hidden.add(plug.id);
+      }
+    }
+    return Array.from(hidden);
+  }, [sessionContextSpace]);
+
   /* Phantom callbacks wired into the module singleton */
   useEffect(() => {
     setPhantomContext({
@@ -569,8 +660,9 @@ export function App() {
         setSelection({ kind: "planspace", planspaceId });
         setInspectedNodeId(null);
       },
+      onTogglePlanspaceVisibility: togglePlanspaceVisibility,
     });
-  }, []);
+  }, [togglePlanspaceVisibility]);
 
   const onResolveGate = useCallback(
     (
@@ -615,8 +707,13 @@ export function App() {
 
   const openFreshPhantom = useCallback(() => {
     if (composerDisabled) return;
+    if (!sessionContextSpace?.active_planspace_id) {
+      setSelection({ kind: "projectRoot" });
+      setInspectedNodeId(null);
+      return;
+    }
     setPhantomFromNodeId(null);
-  }, [composerDisabled]);
+  }, [composerDisabled, sessionContextSpace?.active_planspace_id]);
 
   const onSpawnFromAgent = useCallback(
     (nodeId: string) => {
@@ -787,6 +884,9 @@ export function App() {
             phantomFromNodeId={phantomFromNodeId}
             phantomDisabled={composerDisabled}
             contextBundlesByNodeId={contextBundlesByNodeId}
+            knownPlanspaceIds={knownPlanspaceIds}
+            hiddenPlanspaceIds={hiddenPlanspaceIds}
+            activePlanspaceId={sessionContextSpace?.active_planspace_id ?? null}
             initialLayoutHints={session?.layout_hints}
             onSelectionChange={onSelectionChange}
             onEmptyCanvasTap={onEmptyCanvasTap}
@@ -824,14 +924,17 @@ export function App() {
             nodes.length === 0 && (
               <button
                 type="button"
-                onClick={openFreshPhantom}
+                onClick={() => {
+                  setSelection({ kind: "projectRoot" });
+                  setInspectedNodeId(null);
+                }}
                 className="absolute left-1/2 top-1/2 z-10 -translate-x-1/2 -translate-y-1/2 rounded-xl border-2 border-dashed border-line-strong bg-surface-raised/80 px-6 py-5 text-center text-sm text-ink-muted shadow-card transition hover:border-brand hover:bg-surface-raised hover:text-ink-strong"
               >
                 <div className="font-display text-base font-semibold text-ink-strong">
-                  Start the first run
+                  Start the first direction
                 </div>
                 <div className="mt-1 text-[12px] text-ink-muted">
-                  Click here to open the composer.
+                  Open project actions to create a notebook.
                 </div>
               </button>
             )}
@@ -874,7 +977,10 @@ export function App() {
           onSpawnPhantomFromNode={onSpawnFromAgent}
           onActivatePlanspace={activatePlanspace}
           onSelectContextBinding={selectContextBinding}
-          onBootstrapContextSpace={bootstrapContext}
+          onNewDirection={startNewDirection}
+          onContextInit={runContextInit}
+          onContextRefresh={runContextRefresh}
+          onTogglePlanspaceVisibility={togglePlanspaceVisibility}
         />
       </div>
     </div>
@@ -964,6 +1070,9 @@ function graphNodeIdForSelection(selection: CanvasSelection): string | null {
   }
   if (selection.kind === "projectRoot") {
     return "root";
+  }
+  if (selection.kind === "planspace") {
+    return `planspace:${selection.planspaceId}`;
   }
   return null;
 }

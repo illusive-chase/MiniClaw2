@@ -3,8 +3,11 @@ import type {
   EventRecord,
   NodeDiff,
   NodeInfo,
+  NodeStatusDelta,
   ScenarioDetail,
   ScenarioSummary,
+  SessionFile,
+  SessionFileRole,
   SessionInfo,
   SessionContextSpaceInfo,
   VerifyResponse,
@@ -83,6 +86,51 @@ export async function bootstrapSessionContextSpace(
   return res.json();
 }
 
+export async function createPlanspace(
+  sessionId: string,
+  body: {
+    user_seed: string;
+    needs_review?: boolean;
+  },
+): Promise<{ planspace_id: string; binding_id: string; node_id: string }> {
+  const res = await fetch(`/sessions/${sessionId}/planspaces`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`createPlanspace failed: ${res.status}`);
+  return res.json();
+}
+
+export async function updatePlanspaceView(
+  sessionId: string,
+  planspaces: Record<string, { hidden: boolean }>,
+): Promise<SessionContextSpaceInfo> {
+  const res = await fetch(`/sessions/${sessionId}/planspace-view`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ planspaces }),
+  });
+  if (!res.ok) throw new Error(`updatePlanspaceView failed: ${res.status}`);
+  return res.json();
+}
+
+export async function initProjectContext(
+  sessionId: string,
+): Promise<SessionContextSpaceInfo> {
+  const res = await fetch(`/sessions/${sessionId}/context/init`, { method: "POST" });
+  if (!res.ok) throw new Error(`initProjectContext failed: ${res.status}`);
+  return res.json();
+}
+
+export async function refreshProjectContext(
+  sessionId: string,
+): Promise<SessionContextSpaceInfo> {
+  const res = await fetch(`/sessions/${sessionId}/context/refresh`, { method: "POST" });
+  if (!res.ok) throw new Error(`refreshProjectContext failed: ${res.status}`);
+  return res.json();
+}
+
 export async function renameSession(id: string, name: string): Promise<SessionInfo> {
   const res = await fetch(`/sessions/${id}`, {
     method: "PATCH",
@@ -138,6 +186,30 @@ export async function getNodeContextBundle(
   const res = await fetch(`/sessions/${sessionId}/nodes/${nodeId}/context-bundle`);
   if (res.status === 404) return null;
   if (!res.ok) throw new Error(`getNodeContextBundle failed: ${res.status}`);
+  return res.json();
+}
+
+export async function getSessionFile(
+  sessionId: string,
+  role: SessionFileRole,
+  planspaceId?: string | null,
+): Promise<SessionFile> {
+  const params = new URLSearchParams({ role });
+  if (planspaceId) params.set("planspace_id", planspaceId);
+  const res = await fetch(`/sessions/${sessionId}/files?${params.toString()}`);
+  if (!res.ok) throw new Error(`getSessionFile failed: ${res.status}`);
+  return res.json();
+}
+
+export async function getNodeStatusDelta(
+  sessionId: string,
+  nodeId: string,
+): Promise<NodeStatusDelta | null> {
+  const res = await fetch(
+    `/sessions/${sessionId}/nodes/${encodeURIComponent(nodeId)}/status-delta`,
+  );
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`getNodeStatusDelta failed: ${res.status}`);
   return res.json();
 }
 

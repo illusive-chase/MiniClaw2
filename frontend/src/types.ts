@@ -117,6 +117,7 @@ export type SessionInfo = {
   /** Persisted canvas positions keyed by node id (or synthetic id, e.g.
    * `artifact:<nid>`). Optional for older sessions. */
   layout_hints?: Record<string, { x: number; y: number }>;
+  planspace_view?: Record<string, { hidden?: boolean }>;
 };
 
 export type ScenarioSummary = {
@@ -246,10 +247,12 @@ export type ContextSpacePlugSummary = {
   auto_update: boolean;
   source: string;
   active: boolean;
+  hidden?: boolean;
   exists: boolean;
   path?: string | null;
   title: string;
   description?: string | null;
+  color?: string | null;
 };
 
 export type ContextSpaceBindingSummary = {
@@ -271,6 +274,15 @@ export type SessionContextSpaceInfo = {
   project_active_planspace_id?: string | null;
   resolved_binding_id?: string | null;
   active_planspace_id?: string | null;
+  planspace_view?: Record<string, { hidden?: boolean }>;
+  context_file?: {
+    exists: boolean;
+  };
+  context_refresh?: {
+    running: boolean;
+    mode?: "init" | "refresh" | string;
+    started_at?: number;
+  };
   bindings: ContextSpaceBindingSummary[];
   bootstrap?: {
     context_root: string;
@@ -289,4 +301,36 @@ export type NodeDiff = {
   kind: "commit_diff" | "working_tree" | string;
   text: string;
   error?: string | null;
+};
+
+export type SessionFileRole = "status" | "plan" | "context";
+
+export type SessionFile = {
+  role: SessionFileRole;
+  path: string;
+  text: string;
+  mtime: number;
+  last_writer: {
+    kind: "node" | "context-refresh" | "hand" | string;
+    node_id?: string;
+    updated_at?: number;
+    source?: string;
+    previous?: string;
+  };
+};
+
+export type StatusDeltaOp = Record<string, unknown> & {
+  target?: string;
+  operation?: string;
+  text?: string;
+  summary?: string;
+  patch?: string;
+};
+
+export type NodeStatusDelta = {
+  planspace_id: string;
+  before: string;
+  after: string;
+  ops: StatusDeltaOp[];
+  applied_at: number;
 };

@@ -202,6 +202,31 @@ class ProjectRegistry:
         self.store.update_project(rt.project)
         return rt.project
 
+    def update_planspace_view(
+        self,
+        pid: str,
+        planspaces: dict[str, dict[str, bool]],
+    ) -> Project | None:
+        rt = self._runtimes.get(pid)
+        if rt is None:
+            return None
+        merged = dict(rt.project.planspace_view)
+        for planspace_id, pref in planspaces.items():
+            if not isinstance(planspace_id, str) or not planspace_id.strip():
+                continue
+            if not isinstance(pref, dict):
+                continue
+            current = dict(merged.get(planspace_id, {}))
+            if "hidden" in pref:
+                current["hidden"] = bool(pref["hidden"])
+            if current:
+                merged[planspace_id] = current
+            else:
+                merged.pop(planspace_id, None)
+        rt.project.planspace_view = merged
+        self.store.update_project(rt.project)
+        return rt.project
+
     def delete_project(self, pid: str) -> bool:
         rt = self._runtimes.pop(pid, None)
         if rt is None:
@@ -233,6 +258,10 @@ class ProjectRegistry:
 
     def turn_count(self, pid: str) -> int:
         return len(self.store.list_nodes(pid))
+
+    def is_running(self, pid: str) -> bool:
+        rt = self._runtimes.get(pid)
+        return bool(rt and rt.is_running())
 
     def list_nodes(self, pid: str) -> list[Node] | None:
         if pid not in self._runtimes:
