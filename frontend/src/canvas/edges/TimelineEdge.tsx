@@ -114,34 +114,7 @@ function ResumeEdgeImpl(props: EdgeProps<EdgeData>) {
 
 export const ResumeEdge = memo(ResumeEdgeImpl);
 
-/** Thin solid arrow — "this agent wrote this artifact". */
-function ProducesEdgeImpl(props: EdgeProps) {
-  const { sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, selected } = props;
-  const [path] = getBezierPath({
-    sourceX,
-    sourceY,
-    targetX,
-    targetY,
-    sourcePosition,
-    targetPosition,
-    curvature: 0.18,
-  });
-  return (
-    <BaseEdge
-      path={path}
-      style={{
-        stroke: selected ? "rgb(var(--brand))" : "rgb(var(--border-strong))",
-        strokeWidth: 1.2,
-        opacity: 0.7,
-      }}
-      markerEnd={props.markerEnd}
-    />
-  );
-}
-
-export const ProducesEdge = memo(ProducesEdgeImpl);
-
-/** Solid arrow into a gate — the brief feeds the gate. */
+/** Solid arrow into a gate — the source agent's review handoff feeds the gate. */
 function ReviewsEdgeImpl(props: EdgeProps) {
   const { sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, selected } = props;
   const [path] = getBezierPath({
@@ -308,11 +281,11 @@ function OpChevronEdgeImpl(props: EdgeProps<OpEdgeData>) {
 
 export const OpChevronEdge = memo(OpChevronEdgeImpl);
 
-/* ───────── memory delta arrow ─────────
+/* ───────── planspace update arrow ─────────
  *
  * Agent → context-node edge labeled `+Δ`, marking that the agent wrote into
- * the connected memory file. Visually thin, off to the side; stays visible
- * (unlike `loads`) because it represents an effect on shared state. */
+ * the connected planspace's STATUS. Visually thin, off to the side; stays
+ * visible (unlike `loads`) because it represents an effect on shared state. */
 
 type MemoryDeltaEdgeData = {
   applied?: number;

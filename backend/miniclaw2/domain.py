@@ -67,13 +67,6 @@ class GateState(StrEnum):
     RESOLVED = "resolved"
 
 
-class NodeOutputKind(StrEnum):
-    FREEFORM = "freeform"
-    SUMMARY = "summary"
-    INTERFACE = "interface"
-    REVIEW_BRIEF = "review_brief"
-
-
 class TokenUsage(BaseModel):
     input_tokens: int = 0
     output_tokens: int = 0
@@ -120,9 +113,7 @@ class Node(BaseModel):
     sdk_session_id: str | None = None
     commit_before: str | None = None
     commit_after: str | None = None
-    output_kind: NodeOutputKind = NodeOutputKind.FREEFORM
-    output_path: str | None = None
-    output_contract_snapshot: str = ""
+    requires_review: bool = False
     prompt: str = ""
     contract: str = ""
     summary: str | None = None
@@ -172,62 +163,3 @@ class ContextBundle(BaseModel):
     agents: list[dict[str, Any]] = Field(default_factory=list)
     allowed_tools: list[str] = Field(default_factory=list)
     created_at: float = Field(default_factory=_now)
-
-
-def default_node_output_path(node_id: str, kind: NodeOutputKind) -> str | None:
-    if kind is NodeOutputKind.SUMMARY:
-        return f".miniclaw2/outputs/{node_id}/result.md"
-    if kind is NodeOutputKind.INTERFACE:
-        return f".miniclaw2/outputs/{node_id}/result.json"
-    if kind is NodeOutputKind.REVIEW_BRIEF:
-        return f".miniclaw2/outputs/{node_id}/brief.md"
-    return None
-
-
-def node_output_contract(kind: NodeOutputKind, path: str | None) -> str:
-    if kind is NodeOutputKind.REVIEW_BRIEF:
-        output_path = path or ".miniclaw2/outputs/<node-id>/brief.md"
-        return (
-            "# Node output contract\n\n"
-            "This node will be followed by a human review checkpoint. The reviewer reads what you write here verbatim before responding. Make it concrete and minimal.\n\n"
-            "## Required output\n"
-            f"- Write a markdown file at `{output_path}`.\n"
-            "- The file must include these sections, in this order:\n"
-            "  - `# How to run`: explicit commands or steps the human should use to exercise what you built. Include exact CLI invocations and any setup. If there is no runnable artifact, say what to read instead.\n"
-            "  - `# What to verify`: a checklist of specific behaviors the human should look for (e.g., \"clicking `1 + 2 =` shows `3`\"). Be specific to what you actually built, not generic.\n"
-            "  - `# Response schema`: the JSON keys and shapes the human should put in their review response (e.g., `{ \"approved\": boolean, \"notes\": string }`). The human's response will be written to a JSON file in the repo.\n"
-            "- Your work is not done until that file exists.\n"
-        )
-    if kind is NodeOutputKind.SUMMARY:
-        output_path = path or ".miniclaw2/outputs/<node-id>/result.md"
-        return (
-            "# Node output contract\n\n"
-            "This node must produce a markdown summary file for the dashboard and any downstream human readers.\n\n"
-            "## Required output\n"
-            f"- Write a markdown file at `{output_path}`.\n"
-            "- The file must include these sections, in this order:\n"
-            "  - `# Purpose`: one concise sentence describing what this node was trying to do.\n"
-            "  - `# Method`: what it did to do it, including important tools or edits.\n"
-            "  - `# Result`: what happened, including files touched, commands run, and the final outcome.\n"
-            "- Keep the file concise but complete.\n"
-            "- The dashboard should treat this file as the primary result artifact.\n"
-        )
-    if kind is NodeOutputKind.INTERFACE:
-        output_path = path or ".miniclaw2/outputs/<node-id>/result.json"
-        return (
-            "# Node output contract\n\n"
-            "This node must produce a JSON interface file for downstream parsing.\n\n"
-            "## Required output\n"
-            f"- Write JSON to `{output_path}`.\n"
-            "- The top-level value must be an object.\n"
-            "- Include these stable keys: `kind`, `summary`, `purpose`, `method`, `result`, and `files`.\n"
-            "- `kind` must be `interface`.\n"
-            "- `summary` must be one short sentence.\n"
-            "- `result` should hold the machine-readable payload for downstream nodes or programs.\n"
-            "- `files` should list the project-relative paths this node created or changed, if any.\n"
-            "- The dashboard should treat this file as the primary result artifact.\n"
-        )
-    return (
-        "# Node output contract\n\n"
-        "This node has no required artifact. The transcript and workspace changes remain the primary evidence.\n"
-    )

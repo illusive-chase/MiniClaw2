@@ -141,6 +141,49 @@ def refresh_derived_plan(planspace_dir: Path) -> None:
     plan_path.write_text(derive_plan_markdown(status), encoding="utf-8")
 
 
+def remove_status_slot(
+    status: PlanspaceStatus,
+    operation: str,
+    target_id: str | int,
+) -> dict[str, Any] | None:
+    """Remove a single entry from one of STATUS's list slots.
+
+    Operations:
+
+    - ``remove_open_question`` / ``remove_decision`` — ``target_id`` is the
+      ``Q*`` / ``D*`` id string. The matching entry is dropped; remaining
+      ids are kept stable (no renumber) to honor the append-only id rule.
+    - ``remove_out_of_scope`` — ``target_id`` is the integer index.
+
+    Returns a summary dict the caller can echo back, or ``None`` if the
+    requested entry does not exist or the operation is unknown.
+    """
+    if operation == "remove_open_question":
+        before = len(status.open_questions)
+        status.open_questions = [
+            item for item in status.open_questions if item.get("id") != target_id
+        ]
+        if len(status.open_questions) == before:
+            return None
+        return {"target": "STATUS.md", "operation": operation, "id": target_id}
+    if operation == "remove_decision":
+        before = len(status.decisions)
+        status.decisions = [
+            item for item in status.decisions if item.get("id") != target_id
+        ]
+        if len(status.decisions) == before:
+            return None
+        return {"target": "STATUS.md", "operation": operation, "id": target_id}
+    if operation == "remove_out_of_scope":
+        if not isinstance(target_id, int):
+            return None
+        if target_id < 0 or target_id >= len(status.out_of_scope):
+            return None
+        status.out_of_scope.pop(target_id)
+        return {"target": "STATUS.md", "operation": operation, "index": target_id}
+    return None
+
+
 def apply_status_update(
     status: PlanspaceStatus,
     update: dict[str, Any],

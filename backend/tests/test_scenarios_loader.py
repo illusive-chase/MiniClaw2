@@ -48,16 +48,15 @@ class ScenariosLoaderTest(unittest.TestCase):
         with self.assertRaises(ScenarioError):
             load_scenario("does-not-exist")
 
-    def test_gui_calculator_brief_from_promotes_source_output_kind(self) -> None:
+    def test_gui_calculator_brief_from_flips_source_needs_review(self) -> None:
         scenario = load_scenario("gui-calculator")
         self.assertEqual(len(scenario.nodes), 2)
         build, review = scenario.nodes
         self.assertEqual(build.id, "build")
         self.assertEqual(build.kind, "agent")
-        # brief_from on the review gate should have promoted build's
-        # output_kind so the engine-side contract injection asks the
-        # agent to write the brief.
-        self.assertEqual(build.output_kind, "review_brief")
+        # brief_from on the review gate flips the source step's
+        # needs_review so the runner injects the review-guidance contract.
+        self.assertTrue(build.needs_review)
         self.assertEqual(review.id, "review")
         self.assertEqual(review.kind, "gate")
         self.assertEqual(review.brief_from, "build")

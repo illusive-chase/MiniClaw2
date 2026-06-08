@@ -8,29 +8,39 @@ import type { ContextNodeData } from "../layout";
  */
 function ContextNodeImpl({ data, selected }: NodeProps<ContextNodeData>) {
   const { filename, scope, kind, chars, path, loadedByNodeIds } = data;
+  const isProject = scope === "project-root";
 
   return (
     <div
       title={`${kindLabel(scope, kind)}\n${path}\n${chars} chars · loaded by ${loadedByNodeIds.length} run${loadedByNodeIds.length === 1 ? "" : "s"}`}
       className={
-        "relative w-[160px] select-none transition " +
+        "relative select-none transition " +
+        (isProject ? "w-[220px] " : "w-[160px] ") +
         (selected
           ? "rounded-md ring-2 ring-brand ring-offset-2 ring-offset-surface-sunken"
           : "rounded-md hover:ring-2 hover:ring-line-strong/45 hover:ring-offset-2 hover:ring-offset-surface-sunken")
       }
     >
-      {/* stacked-card effect: two faint layers behind the front */}
-      <span
-        aria-hidden="true"
-        className="absolute -bottom-1 -right-1 h-full w-full rounded-md border border-line/60 bg-surface-sunken"
-      />
-      <span
-        aria-hidden="true"
-        className="absolute -bottom-0.5 -right-0.5 h-full w-full rounded-md border border-line/80 bg-surface-raised/80"
-      />
+      {/* Project-root CONTEXT renders flat (no stacked-card chrome) so it
+       * reads as a neutral top stripe rather than a planspace context tile. */}
+      {!isProject && (
+        <>
+          <span
+            aria-hidden="true"
+            className="absolute -bottom-1 -right-1 h-full w-full rounded-md border border-line/60 bg-surface-sunken"
+          />
+          <span
+            aria-hidden="true"
+            className="absolute -bottom-0.5 -right-0.5 h-full w-full rounded-md border border-line/80 bg-surface-raised/80"
+          />
+        </>
+      )}
       <div
         className={
-          "relative flex h-[70px] flex-col rounded-md border bg-surface-raised pl-2.5 pr-2 py-1.5 shadow-card " +
+          "relative flex h-[70px] flex-col border pl-2.5 pr-2 py-1.5 " +
+          (isProject
+            ? "rounded-md border-dashed bg-surface-sunken/60 "
+            : "rounded-md bg-surface-raised shadow-card ") +
           (selected ? "border-brand" : "border-line hover:border-line-strong")
         }
       >

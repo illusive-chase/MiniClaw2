@@ -12,7 +12,7 @@ import { stateMeta } from "./stateMeta";
  * `+` handle on the right edge is the entry point for the phantom composer.
  */
 function AgentNodeImpl({ data, selected }: NodeProps<AgentNodeData>) {
-  const { node, index, resumeParent, isActive, planspaceColor } = data;
+  const { node, index, resumeParent, isActive, planspaceColor, crossLaneLoads } = data;
   const meta = stateMeta(node.state);
   const headline = oneLine(node.summary || node.prompt || "(empty prompt)");
 
@@ -51,6 +51,29 @@ function AgentNodeImpl({ data, selected }: NodeProps<AgentNodeData>) {
       <div className="line-clamp-3 px-3.5 pt-1.5 text-[12.5px] leading-[1.38] text-ink-strong">
         {headline}
       </div>
+
+      {/* Cross-lane "loaded from:" chips — surfaced even when the dashed
+       * loads edges are auto-hidden, so the user can see direction-crossing
+       * context at a glance. */}
+      {crossLaneLoads && crossLaneLoads.length > 0 && (
+        <div className="mt-1 flex flex-wrap gap-1 px-3.5">
+          {crossLaneLoads.map((load) => (
+            <span
+              key={load.planspaceId}
+              className="inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[9.5px]"
+              style={{
+                borderColor: load.color.border,
+                background: load.color.bg,
+                color: load.color.text,
+              }}
+              title={`Loaded planspace state from ${load.planspaceId}`}
+            >
+              <span aria-hidden="true">↗</span>
+              <span className="truncate">{load.label}</span>
+            </span>
+          ))}
+        </div>
+      )}
 
       {/* footer */}
       <div className="flex items-center justify-between gap-2 px-3.5 pb-1.5 pt-2 text-[10px] text-ink-subtle">

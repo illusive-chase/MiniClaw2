@@ -79,6 +79,34 @@ def planspace_update_output_relpath(node: Node) -> str:
     return f".miniclaw2/outputs/{node.id}/planspace-update.json"
 
 
+def review_guidance_output_relpath(node: Node) -> str:
+    """Return the project-relative transient review-guidance path for a node."""
+
+    return f".miniclaw2/outputs/{node.id}/review-guidance.md"
+
+
+def review_guidance_launch_contract(node: Node) -> str:
+    """Return turn instructions for gate-internal user-facing review guidance."""
+
+    if not node.requires_review:
+        return ""
+    output_path = review_guidance_output_relpath(node)
+    return (
+        "# Review handoff contract\n\n"
+        "This node will be followed by a passive human review checkpoint. "
+        "Before finishing, write one transient markdown review handoff at "
+        f"`{output_path}`. MiniClaw2 shows that text inside the review gate; "
+        "it is not durable planspace state and should not be treated as the "
+        "node's primary output.\n\n"
+        "Write for a human who has not been following the session. Keep it "
+        "plain, concrete, and self-contained. Include:\n\n"
+        "- `# What changed`: what you built, changed, or learned.\n"
+        "- `# How to verify`: exact commands, clicks, or files to inspect.\n"
+        "- `# What to judge`: the Type-B question the human must decide.\n\n"
+        "Do not ask the human for JSON. They will respond in free-form prose.\n"
+    )
+
+
 def planspace_update_launch_contract(
     project: Project,
     node: Node,
@@ -151,6 +179,40 @@ def memory_delta_launch_contract(
     return planspace_update_launch_contract(project, node, bundle)
 
 
+def planspace_update_filter_contract(
+    node: Node,
+    bundle: ComposedContextBundle,
+) -> str:
+    """Last-instructions filter that keeps transient noise out of STATUS writes.
+
+    Appended after :func:`planspace_update_launch_contract` so it benefits
+    from the model's last-instructions-win bias. Returns an empty string
+    when no active planspace is bound, since nothing will be committed.
+    """
+
+    if not bundle.active_planspace_id or not bundle.active_planspace_auto_update:
+        return ""
+    return (
+        "# Planspace update filter\n\n"
+        "Before you write the planspace update artifact, re-read your draft "
+        "and remove any line that describes:\n\n"
+        "- A transient tool error in this session (HTTP 5xx, timeouts, "
+        "rate limiting, retry-able crashes).\n"
+        "- A permission denial, sandbox restriction, or auth hiccup that "
+        "blocked a single call but is not a project fact.\n"
+        "- A single-run environment quirk (a flaky test that passed on "
+        "retry, a clock skew, a network blip, a once-off path issue).\n"
+        "- A claim that a tool, model, or reviewer \"cannot evaluate\" "
+        "something unless you have reproduced it twice or pinned the "
+        "underlying cause.\n"
+        "- A complaint about the harness, the prompt, or the SDK.\n\n"
+        "Keep only **stable findings**: project facts, decisions, open "
+        "questions, explicit out-of-scope notes, and the current posture "
+        "of this planspace. When in doubt, drop the line — durable state "
+        "is expensive; an extra session is cheap.\n"
+    )
+
+
 def contextspace_root(store_root: Path | None = None) -> Path:
     """Return the configured ContextSpace root.
 
@@ -210,9 +272,16 @@ def compose_context_bundle(
             active_planspace_id = active_planspace.id
             active_planspace_auto_update = active_planspace.auto_update
 
+        active_id = active_planspace.id if active_planspace is not None else None
+        plug_refs = _merge_extra_planspace_loads(
+            plug_refs,
+            _read_extra_planspace_loads(node),
+            exclude_id=active_id,
+        )
+
         for ref in plug_refs:
             kind = _plug_kind(ref.id)
-            if kind == "planspace" and (
+            if kind == "planspace" and ref.source == "binding" and (
                 active_planspace is None or ref.id != active_planspace.id
             ):
                 continue
@@ -246,7 +315,7 @@ def compose_context_bundle(
         "project_binding_id": binding.id if binding else None,
         "active_planspace_id": active_planspace_id,
         "active_planspace_auto_update": active_planspace_auto_update,
-        "active_planspace": _snapshot_planspace_ref(active_planspace),
+        "active_planspace": _snapshot_planspace_ref(active_planspace, root=root),
         "sources": sources,
         "system_text": system_text,
         "turn_text": turn_text,
@@ -470,6 +539,108 @@ def bootstrap_project_contextspace(
         "planspace_id": planspace_id,
         "created": created,
     }
+
+
+def load_planspace_view(
+    planspace_id: str,
+    *,
+    store_root: Path | None = None,
+) -> dict[str, Any] | None:
+    """Return a UI-shaped view of one planspace's STATUS + manifest color.
+
+    Returns ``None`` when the planspace directory does not exist.
+    """
+
+    root = contextspace_root(store_root)
+    plug_dir = _plug_dir(root, planspace_id)
+    if plug_dir is None or not plug_dir.exists():
+        return None
+    manifest = _plug_manifest(root, planspace_id)
+    status = load_planspace_status(plug_dir / "STATUS.md")
+    return {
+        "planspace_id": planspace_id,
+        "title": _string_value(manifest.get("title")) or planspace_id,
+        "color": _string_value(manifest.get("color")),
+        "status": {
+            "goal": status.goal,
+            "current_state": status.current_state,
+            "open_questions": status.open_questions,
+            "decisions": status.decisions,
+            "out_of_scope": status.out_of_scope,
+            "body": status.body,
+        },
+    }
+
+
+def apply_planspace_status_ops(
+    planspace_id: str,
+    operations: list[dict[str, Any]],
+    *,
+    actor: str = "user",
+    store_root: Path | None = None,
+) -> dict[str, Any] | None:
+    """Apply a list of slot operations to one planspace's STATUS.md.
+
+    ``actor`` is recorded as the ``raised_by`` / ``decided_by`` field on new
+    Q* / D* entries when the caller does not provide one explicitly.
+    Returns the post-write view dict, or ``None`` when the planspace is
+    missing.
+    """
+
+    from .planspace_state import (
+        apply_status_update as _apply,
+        remove_status_slot,
+        validate_planspace_status,
+    )
+
+    root = contextspace_root(store_root)
+    plug_dir = _plug_dir(root, planspace_id)
+    if plug_dir is None or not plug_dir.exists():
+        return None
+    status = load_planspace_status(plug_dir / "STATUS.md")
+    pseudo_node = Node(project_id="user", id=actor)
+
+    applied: list[dict[str, Any]] = []
+    for op in operations:
+        if not isinstance(op, dict):
+            continue
+        operation = op.get("operation")
+        if operation in {
+            "remove_open_question",
+            "remove_decision",
+            "remove_out_of_scope",
+        }:
+            target = op.get("id") if operation != "remove_out_of_scope" else op.get("index")
+            if operation == "remove_out_of_scope" and isinstance(target, int) is False:
+                continue
+            if operation != "remove_out_of_scope" and isinstance(target, str) is False:
+                continue
+            summary = remove_status_slot(status, operation, target)  # type: ignore[arg-type]
+            if summary is not None:
+                applied.append(summary)
+            continue
+        # Additive ops route through apply_status_update.
+        update = {"target": "STATUS.md", "policy": "auto", **op}
+        summary = _apply(status, update, pseudo_node)
+        if summary is not None:
+            applied.append(summary)
+
+    errors = validate_planspace_status(status)
+    if errors:
+        return {
+            "planspace_id": planspace_id,
+            "applied": applied,
+            "errors": errors,
+        }
+    write_planspace_status(plug_dir / "STATUS.md", status)
+    manifest = _plug_manifest(root, planspace_id)
+    if _plan_is_derived(manifest):
+        refresh_derived_plan(plug_dir)
+
+    view = load_planspace_view(planspace_id, store_root=store_root)
+    if view is not None:
+        view["applied"] = applied
+    return view
 
 
 def list_project_bindings(root: Path) -> list[ProjectBinding]:
@@ -817,6 +988,7 @@ def commit_gate_reviewed_planspace_update(
     source_node: Node | None,
     user_judgment: str,
     review_guidance: str,
+    promote_interim: bool = True,
     store_root: Path | None = None,
 ) -> dict[str, Any]:
     """Merge a staged interim update with free-form review judgment."""
@@ -877,7 +1049,11 @@ def commit_gate_reviewed_planspace_update(
         gate_node=gate_node,
         source_node=source_node,
     )
-    reviewed_updates = _carry_over_structured_updates(interim_delta)
+    reviewed_updates = (
+        _carry_over_structured_updates(interim_delta)
+        if promote_interim
+        else []
+    )
     reviewed_updates.append(
         {
             "target": "STATUS.md",
@@ -1357,10 +1533,14 @@ def _plug_ref(item: Any) -> PlugRef | None:
     )
 
 
-def _snapshot_planspace_ref(ref: PlugRef | None) -> dict[str, Any] | None:
+def _snapshot_planspace_ref(
+    ref: PlugRef | None,
+    *,
+    root: Path | None = None,
+) -> dict[str, Any] | None:
     if ref is None:
         return None
-    return {
+    snapshot: dict[str, Any] = {
         "id": ref.id,
         "role": ref.role,
         "injection": ref.injection,
@@ -1368,6 +1548,57 @@ def _snapshot_planspace_ref(ref: PlugRef | None) -> dict[str, Any] | None:
         "auto_update": ref.auto_update,
         "source": ref.source,
     }
+    if root is not None:
+        manifest = _plug_manifest(root, ref.id)
+        color = _string_value(manifest.get("color"))
+        if color:
+            snapshot["color"] = color
+        title = _string_value(manifest.get("title"))
+        if title:
+            snapshot["title"] = title
+    return snapshot
+
+
+def _read_extra_planspace_loads(node: Node) -> list[str]:
+    """Extra planspace ids the user attached via the phantom composer."""
+
+    raw = node.settings_snapshot.get("extra_planspace_loads")
+    if not isinstance(raw, list):
+        return []
+    out: list[str] = []
+    for entry in raw:
+        if isinstance(entry, str) and entry.strip():
+            out.append(entry.strip())
+    return out
+
+
+def _merge_extra_planspace_loads(
+    plug_refs: list[PlugRef],
+    extras: list[str],
+    *,
+    exclude_id: str | None,
+) -> list[PlugRef]:
+    if not extras:
+        return plug_refs
+    seen = {ref.id for ref in plug_refs}
+    out = list(plug_refs)
+    for plug_id in extras:
+        if plug_id in seen or plug_id == exclude_id:
+            continue
+        if _plug_kind(plug_id) != "planspace":
+            continue
+        seen.add(plug_id)
+        out.append(
+            PlugRef(
+                id=plug_id,
+                role="cross-lane-load",
+                injection="turn",
+                enabled=True,
+                auto_update=False,
+                source="extra",
+            )
+        )
+    return out
 
 
 def _expand_required_plugs(root: Path, plugs: list[PlugRef]) -> list[PlugRef]:

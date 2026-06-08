@@ -4,17 +4,16 @@ import type {
   ContextBundle,
   EventRecord,
   InteractionRequest,
-  NodeArtifact,
   NodeDiff,
   NodeInfo,
   SessionContextSpaceInfo,
   SessionInfo,
 } from "../types";
 import { AgentPanel } from "./AgentPanel";
-import { ArtifactPanel } from "./ArtifactPanel";
 import { ContextNodePanel } from "./ContextNodePanel";
 import { GatePanel } from "./GatePanel";
 import { OpPanel } from "./OpPanel";
+import { PlanspacePanel } from "./PlanspacePanel";
 import { ProjectPanel } from "./ProjectPanel";
 
 type ResolveGatePayload = Omit<
@@ -30,8 +29,6 @@ export type SidePanelProps = {
   /* selected-node data */
   events: EventRecord[];
   eventsLoading: boolean;
-  artifact: NodeArtifact | null;
-  artifactLoading: boolean;
   diff: NodeDiff | null;
   diffLoading: boolean;
   contextBundle: ContextBundle | null;
@@ -54,10 +51,7 @@ export type SidePanelProps = {
   onResolveGate?: (id: string, payload: ResolveGatePayload) => void;
   onResolveReview: (payload: {
     id: string;
-    decision: "write-json" | "no-op";
-    path?: string;
-    payload?: unknown;
-    notes?: string;
+    judgment: string;
   }) => void;
   onSelectNode: (nodeId: string) => void;
   onSpawnPhantomFromNode: (nodeId: string) => void;
@@ -85,12 +79,9 @@ export function SidePanel(props: SidePanelProps) {
 function Inner(props: SidePanelProps & { nodesById: Map<string, NodeInfo> }) {
   const {
     selection,
-    nodes,
     session,
     events,
     eventsLoading,
-    artifact,
-    artifactLoading,
     diff,
     diffLoading,
     contextBundle,
@@ -143,8 +134,6 @@ function Inner(props: SidePanelProps & { nodesById: Map<string, NodeInfo> }) {
         node={node}
         events={events}
         eventsLoading={eventsLoading}
-        artifact={artifact}
-        artifactLoading={artifactLoading}
         contextBundle={contextBundle}
         contextBundleLoading={contextBundleLoading}
         pendingGate={pendingGate}
@@ -157,18 +146,10 @@ function Inner(props: SidePanelProps & { nodesById: Map<string, NodeInfo> }) {
   if (selection.kind === "gate") {
     const node = nodesById.get(selection.nodeId);
     if (!node) return <Missing />;
-    /* Find upstream review_brief artifact (the producer of this gate) */
-    const briefOwner = node.parent_node_id ? nodesById.get(node.parent_node_id) : null;
-    const briefArtifact =
-      briefOwner && briefOwner.output_kind === "review_brief" && briefOwner.output_path
-        ? { ownerNodeId: briefOwner.id, path: briefOwner.output_path }
-        : null;
     return (
       <GatePanel
         node={node}
         pending={pendingReview}
-        briefArtifact={briefArtifact}
-        onSelectBrief={onSelectNode}
         onSubmit={onResolveReview}
       />
     );
@@ -180,19 +161,12 @@ function Inner(props: SidePanelProps & { nodesById: Map<string, NodeInfo> }) {
     return <OpPanel node={node} diff={diff} diffLoading={diffLoading} />;
   }
 
-  if (selection.kind === "artifact") {
-    const owner = nodesById.get(selection.ownerNodeId) ?? null;
-    const consumers = findConsumersOfPath(nodes, selection.path);
+  if (selection.kind === "planspace") {
+    if (!session) return <Missing />;
     return (
-      <ArtifactPanel
-        owner={owner}
-        artifact={artifact}
-        artifactLoading={artifactLoading}
-        path={selection.path}
-        artifactKind={selection.artifactKind}
-        consumers={consumers}
-        onSelectOwner={onSelectNode}
-        onSelectConsumer={onSelectNode}
+      <PlanspacePanel
+        sessionId={session.id}
+        planspaceId={selection.planspaceId}
       />
     );
   }
@@ -231,6 +205,3 @@ function Missing() {
   );
 }
 
-function findConsumersOfPath(nodes: NodeInfo[], path: string): NodeInfo[] {
-  return nodes.filter((n) => n.context_sources?.includes(path));
-}

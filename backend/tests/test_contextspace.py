@@ -13,6 +13,7 @@ from miniclaw2.contextspace import (
     compose_context_bundle,
     load_context_bundle_for_node,
     planspace_update_output_relpath,
+    review_guidance_output_relpath,
 )
 from miniclaw2.domain import Node, NodeState, Project
 from miniclaw2.planspace_state import parse_planspace_status
@@ -303,6 +304,47 @@ class ContextSpaceRunnerTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(bundle["active_planspace_id"], "planspaces.memory")
             self.assertFalse(bundle["active_planspace_auto_update"])
             self.assertFalse(bundle["active_planspace"]["auto_update"])
+
+    async def test_runner_injects_review_guidance_contract_when_required(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            store = Store(root=tmp / "store")
+            project_root = tmp / "repo"
+            project_root.mkdir()
+            _write_contextspace(store.root, project_root)
+
+            project = Project(
+                root_path=str(project_root),
+                project_context_binding_id="project.test",
+            )
+            store.create_project(project)
+            node = store.create_node(
+                Node(
+                    project_id=project.id,
+                    prompt="Build something reviewable.",
+                    requires_review=True,
+                )
+            )
+
+            async def on_event(payload: dict[str, object]) -> None:
+                return None
+
+            provider = _CaptureProvider()
+            with patch("miniclaw2.runner._make_provider", return_value=provider):
+                runner = NodeRunner(node, project, store, on_event)
+                await runner.run()
+
+            self.assertEqual(node.state, NodeState.DONE)
+            self.assertEqual(len(provider.contexts), 1)
+            launch_instructions = provider.contexts[0].launch_instructions
+            self.assertIn("Review handoff contract", launch_instructions)
+            self.assertIn(review_guidance_output_relpath(node), launch_instructions)
+            self.assertIn("They will respond in free-form prose", launch_instructions)
+            self.assertTrue(node.settings_snapshot["requires_review"])
+            self.assertEqual(
+                node.settings_snapshot["review_guidance_output_path"],
+                review_guidance_output_relpath(node),
+            )
 
     async def test_runner_applies_project_planspace_update_to_snapshot_planspace(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

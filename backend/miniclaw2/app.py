@@ -18,11 +18,12 @@ from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-from .artifacts import load_node_artifact
 from .contextspace import (
+    apply_planspace_status_ops,
     bootstrap_project_contextspace,
     describe_project_contextspace,
     load_context_bundle_for_node,
+    load_planspace_view,
 )
 from .domain import Node
 from .events import (
@@ -102,15 +103,6 @@ class NodeDiffResponse(BaseModel):
     error: str | None = None
 
 
-class NodeArtifactResponse(BaseModel):
-    kind: str
-    path: str | None
-    exists: bool
-    content: str | None = None
-    data: Any | None = None
-    error: str | None = None
-
-
 class ScenarioSummary(BaseModel):
     name: str
     brief: str
@@ -130,6 +122,10 @@ class ScenarioDetail(BaseModel):
 
 class ScenarioRunRequest(BaseModel):
     provider: str
+
+
+class PlanspaceStatusOpsRequest(BaseModel):
+    operations: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class VerifyResponse(BaseModel):
@@ -323,23 +319,39 @@ def create_app() -> FastAPI:
         diff = node_diff(project.root_path, node.commit_before, node.commit_after)
         return NodeDiffResponse(kind=diff.kind, text=diff.text, error=diff.error)
 
-    @app.get("/sessions/{sid}/nodes/{nid}/artifact", response_model=NodeArtifactResponse)
-    def get_node_artifact(sid: str, nid: str) -> NodeArtifactResponse:
-        project = registry.get_project(sid)
-        if project is None:
+    @app.get(
+        "/sessions/{sid}/planspaces/{planspace_id}/status",
+        response_model=dict[str, Any],
+    )
+    def get_planspace_status(sid: str, planspace_id: str) -> dict[str, Any]:
+        if registry.get_project(sid) is None:
             raise HTTPException(404, "session not found")
-        node = registry.get_node(sid, nid)
-        if node is None:
-            raise HTTPException(404, "node not found")
-        artifact = load_node_artifact(project.root_path, node)
-        return NodeArtifactResponse(
-            kind=artifact.kind,
-            path=artifact.path,
-            exists=artifact.exists,
-            content=artifact.content,
-            data=artifact.data,
-            error=artifact.error,
+        view = load_planspace_view(planspace_id, store_root=registry.store.root)
+        if view is None:
+            raise HTTPException(404, "planspace not found")
+        return view
+
+    @app.patch(
+        "/sessions/{sid}/planspaces/{planspace_id}/status",
+        response_model=dict[str, Any],
+    )
+    def patch_planspace_status(
+        sid: str,
+        planspace_id: str,
+        req: PlanspaceStatusOpsRequest,
+    ) -> dict[str, Any]:
+        if registry.get_project(sid) is None:
+            raise HTTPException(404, "session not found")
+        view = apply_planspace_status_ops(
+            planspace_id,
+            req.operations,
+            store_root=registry.store.root,
         )
+        if view is None:
+            raise HTTPException(404, "planspace not found")
+        if view.get("errors"):
+            raise HTTPException(400, "; ".join(view["errors"]))
+        return view
 
     @app.get("/sessions/{sid}/nodes/{nid}/context-bundle", response_model=dict[str, Any])
     def get_node_context_bundle(sid: str, nid: str) -> dict[str, Any]:
@@ -459,8 +471,8 @@ def create_app() -> FastAPI:
                         sid,
                         msg.text,
                         resume_from_node_id=msg.resume_from_node_id,
-                        output_kind=msg.output_kind,
-                        output_path=msg.output_path,
+                        needs_review=msg.needs_review,
+                        extra_planspace_loads=msg.extra_planspace_loads,
                     )
                     if runner is None:
                         await _send(send_now, {

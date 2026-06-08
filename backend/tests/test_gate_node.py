@@ -18,7 +18,6 @@ from miniclaw2.domain import (
     AcceptanceState,
     Node,
     NodeKind,
-    NodeOutputKind,
     NodeState,
     Project,
     VerdictSource,
@@ -354,7 +353,7 @@ class PassiveGateNodeRunnerTest(unittest.IsolatedAsyncioTestCase):
                     project_id=project.id,
                     kind=NodeKind.AGENT,
                     state=NodeState.DONE,
-                    output_kind=NodeOutputKind.REVIEW_BRIEF,
+                    requires_review=True,
                 )
             )
             bundle = compose_context_bundle(project, source, store_root=store.root)
@@ -462,7 +461,7 @@ class PassiveGateNodeRunnerTest(unittest.IsolatedAsyncioTestCase):
                     project_id=project.id,
                     kind=NodeKind.AGENT,
                     state=NodeState.DONE,
-                    output_kind=NodeOutputKind.REVIEW_BRIEF,
+                    requires_review=True,
                 )
             )
             bundle = compose_context_bundle(project, source, store_root=store.root)

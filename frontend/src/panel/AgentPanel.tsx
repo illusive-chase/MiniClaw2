@@ -8,7 +8,6 @@ import type {
   ContextBundle,
   EventRecord,
   InteractionRequest,
-  NodeArtifact,
   NodeInfo,
 } from "../types";
 import { buildTurnsFromEvents } from "../transcript";
@@ -28,13 +27,23 @@ export type AgentPanelProps = {
   node: NodeInfo;
   events: EventRecord[];
   eventsLoading: boolean;
-  artifact: NodeArtifact | null;
-  artifactLoading: boolean;
   contextBundle: ContextBundle | null;
   contextBundleLoading: boolean;
   pendingGate: InteractionRequest | null;
   onResolveGate?: (id: string, payload: ResolveGatePayload) => void;
   onSpawnPhantomFromNode: (nodeId: string) => void;
+};
+
+type PlanspaceUpdateSummary = {
+  planspace_id?: string;
+  applied?: number;
+  proposed?: number;
+  ignored?: number;
+  reason?: string;
+  source?: string;
+  event_type?: string;
+  staged?: boolean;
+  staged_path?: string;
 };
 
 /**
@@ -47,8 +56,6 @@ export function AgentPanel({
   node,
   events,
   eventsLoading,
-  artifact,
-  artifactLoading,
   contextBundle,
   contextBundleLoading,
   pendingGate,
@@ -56,8 +63,9 @@ export function AgentPanel({
   onSpawnPhantomFromNode,
 }: AgentPanelProps) {
   const turns = useMemo(() => buildTurnsFromEvents(node, events), [node, events]);
-  const outputKind = node.output_kind ?? "freeform";
-  const showArtifact = outputKind !== "freeform" && (artifact || artifactLoading);
+  const planspaceUpdate = (node.settings_snapshot?.planspace_update ?? null) as
+    | PlanspaceUpdateSummary
+    | null;
   const headline = (node.summary || node.prompt || "(no prompt)").trim();
   const resumeParentLabel = node.parent_node_id ? node.parent_node_id.slice(0, 8) : null;
 
@@ -133,19 +141,18 @@ export function AgentPanel({
 
         {/* Result */}
         <section className="mb-5">
-          <SectionHeading>Result</SectionHeading>
+          <SectionHeading>What this run changed</SectionHeading>
           {node.error ? (
             <pre className="mt-2 whitespace-pre-wrap rounded-md border border-state-error/30 bg-state-error-soft p-3 text-xs text-state-error">
               {node.error}
             </pre>
-          ) : showArtifact ? (
-            <ArtifactPreview
-              node={node}
-              artifact={artifact}
-              loading={artifactLoading}
-            />
           ) : (
-            <AssistantResult text={lastText} streaming={node.state === "running"} />
+            <PlanspaceDeltaResult
+              node={node}
+              update={planspaceUpdate}
+              assistantText={lastText}
+              streaming={node.state === "running"}
+            />
           )}
         </section>
 
@@ -254,78 +261,83 @@ function AssistantResult({ text, streaming }: { text: string; streaming?: boolea
   );
 }
 
-function ArtifactPreview({
+function PlanspaceDeltaResult({
   node,
-  artifact,
-  loading,
+  update,
+  assistantText,
+  streaming,
 }: {
   node: NodeInfo;
-  artifact: NodeArtifact | null;
-  loading: boolean;
+  update: PlanspaceUpdateSummary | null;
+  assistantText: string;
+  streaming: boolean;
 }) {
-  if (loading) {
+  if (node.requires_review && update?.staged) {
     return (
-      <div className="mt-2 rounded-md border border-line bg-surface-sunken px-3 py-3 text-[12.5px] text-ink-muted">
-        Loading artifact…
-      </div>
-    );
-  }
-  if (!artifact) {
-    return (
-      <div className="mt-2 rounded-md border border-line bg-surface-sunken px-3 py-3 text-[12.5px] text-ink-muted">
-        No artifact yet.
-      </div>
-    );
-  }
-  if (artifact.error) {
-    return (
-      <pre className="mt-2 whitespace-pre-wrap rounded-md border border-state-error/30 bg-state-error-soft px-3 py-3 text-xs text-state-error">
-        {artifact.error}
-      </pre>
-    );
-  }
-  if (!artifact.exists) {
-    return (
-      <div className="mt-2 rounded-md border border-line bg-surface-sunken px-3 py-3 text-[12.5px] text-ink-muted">
-        {artifact.path
-          ? `Expected file at ${artifact.path} — not written yet.`
-          : "No artifact path configured."}
-      </div>
-    );
-  }
-  if (node.output_kind === "interface") {
-    return (
-      <div className="mt-2 overflow-hidden rounded-md border border-line bg-surface-sunken">
-        <div className="flex items-center justify-between border-b border-line px-3 py-1.5 text-[10px] uppercase tracking-[0.14em] text-ink-subtle">
-          <span className="font-mono normal-case tracking-normal text-ink-muted">
-            {artifact.path ?? "result.json"}
-          </span>
-          <span>JSON</span>
+      <div className="mt-2 space-y-2">
+        <div className="rounded-md border border-state-waiting/30 bg-state-waiting-soft/30 px-3 py-2 text-[12px] text-ink">
+          <div className="font-medium text-ink-strong">
+            Staged for review
+          </div>
+          <div className="mt-0.5 text-[11.5px] text-ink-muted">
+            Interim update parked in{" "}
+            <span className="font-mono">{update.planspace_id ?? "—"}</span>
+            {"; "}
+            the gate's resolution will merge the user's judgment back into
+            the planspace.
+          </div>
         </div>
-        <pre className="whitespace-pre-wrap px-3 py-2 font-mono text-[11px] leading-relaxed text-ink">
-          {artifact.content || "{}"}
-        </pre>
+        {assistantText && (
+          <AssistantResult text={assistantText} streaming={streaming} />
+        )}
       </div>
     );
   }
-  return (
-    <div className="md-prose mt-2 overflow-hidden rounded-md border border-line bg-surface-raised shadow-card">
-      <div className="flex items-center justify-between border-b border-line px-3 py-1.5 text-[10px] uppercase tracking-[0.14em] text-ink-subtle">
-        <span className="font-mono normal-case tracking-normal text-ink-muted">
-          {artifact.path ?? "result.md"}
-        </span>
-        <span>Markdown</span>
+  if (update && (update.applied || update.proposed)) {
+    const planspaceId = update.planspace_id ?? "—";
+    return (
+      <div className="mt-2 space-y-2">
+        <div className="rounded-md border border-line bg-surface-raised px-3 py-2 text-[12px] text-ink-strong shadow-card">
+          <div className="text-[10px] font-medium uppercase tracking-[0.14em] text-ink-subtle">
+            Planspace
+          </div>
+          <div className="mt-0.5 font-mono text-[11.5px] text-ink-muted">
+            {planspaceId}
+          </div>
+          <div className="mt-2 flex flex-wrap gap-2 text-[11px]">
+            <span className="rounded bg-state-review-soft px-1.5 py-0.5 text-state-review">
+              applied · {update.applied ?? 0}
+            </span>
+            <span className="rounded bg-surface-sunken px-1.5 py-0.5 text-ink-muted">
+              proposed · {update.proposed ?? 0}
+            </span>
+            {update.ignored !== undefined && update.ignored > 0 && (
+              <span className="rounded bg-surface-sunken px-1.5 py-0.5 text-ink-subtle">
+                ignored · {update.ignored}
+              </span>
+            )}
+          </div>
+        </div>
+        {assistantText && (
+          <AssistantResult text={assistantText} streaming={streaming} />
+        )}
       </div>
-      <div className="px-4 py-3">
-        <ReactMarkdown
-          remarkPlugins={[remarkGfm]}
-          rehypePlugins={[[rehypeHighlight, { detect: true, ignoreMissing: true }]]}
-        >
-          {artifact.content || ""}
-        </ReactMarkdown>
+    );
+  }
+  if (update?.reason) {
+    return (
+      <div className="mt-2 space-y-2">
+        <div className="rounded-md border border-line bg-surface-sunken px-3 py-2 text-[11.5px] text-ink-muted">
+          No planspace update applied:{" "}
+          <span className="font-mono text-ink-subtle">{update.reason}</span>
+        </div>
+        {assistantText && (
+          <AssistantResult text={assistantText} streaming={streaming} />
+        )}
       </div>
-    </div>
-  );
+    );
+  }
+  return <AssistantResult text={assistantText} streaming={streaming} />;
 }
 
 function ThinkingSection({ turns }: { turns: ReturnType<typeof buildTurnsFromEvents> }) {

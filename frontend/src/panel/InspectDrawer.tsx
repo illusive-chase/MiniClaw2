@@ -43,8 +43,7 @@ export function InspectDrawer({
             ["provider", node.provider],
             ["provider session", node.provider_session_id ?? node.sdk_session_id ?? "-"],
             ["provider turn", node.provider_turn_id ?? "-"],
-            ["output kind", node.output_kind ?? "-"],
-            ["output path", node.output_path ?? "-"],
+            ["needs review", node.requires_review ? "yes" : "no"],
             ["context bundle", contextBundle?.bundle_id ?? node.context_bundle_id ?? "-"],
             ["project binding", contextBundle?.project_binding_id ?? "-"],
             ["active planspace", contextBundle?.active_planspace_id ?? "-"],
@@ -75,17 +74,6 @@ export function InspectDrawer({
             </summary>
             <pre className="whitespace-pre-wrap border-t border-line px-3 py-2 text-[11px] leading-relaxed text-ink">
               {node.system_context_snapshot}
-            </pre>
-          </details>
-        )}
-
-        {node.output_contract_snapshot && (
-          <details className="overflow-hidden rounded-md border border-line bg-surface-raised">
-            <summary className="cursor-pointer px-3 py-1.5 text-[10px] font-medium uppercase tracking-[0.14em] text-ink-muted hover:text-ink">
-              Output contract ({node.output_contract_snapshot.length} chars)
-            </summary>
-            <pre className="whitespace-pre-wrap border-t border-line px-3 py-2 text-[11px] leading-relaxed text-ink">
-              {node.output_contract_snapshot}
             </pre>
           </details>
         )}

@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   bootstrapSessionContextSpace,
-  getNodeArtifact,
   getNodeContextBundle,
   getNodeDiff,
   getSessionContextSpace,
@@ -12,6 +11,8 @@ import {
 } from "./api";
 import { Canvas, type CanvasSelection } from "./canvas/Canvas";
 import { setPhantomContext } from "./canvas/nodes/PhantomNode";
+import { setGateInlineContext } from "./canvas/nodes/GateNode";
+import { setPlanspaceLaneContext } from "./canvas/nodes/PlanspaceLaneNode";
 import { SidePanel } from "./panel/SidePanel";
 import { NewProjectModal } from "./components/NewProjectModal";
 import { ProjectsLanding } from "./components/ProjectsLanding";
@@ -23,7 +24,6 @@ import type {
   EventRecord,
   InteractionRequest,
   NodeDiff,
-  NodeArtifact,
   NodeInfo,
   ServerEvent,
   SessionContextSpaceInfo,
@@ -36,8 +36,6 @@ type PendingGateState = {
   request: InteractionRequest;
   nodeId: string;
 };
-
-type OutputKind = "freeform" | "summary" | "interface" | "review_brief";
 
 const TERMINAL_STATES = new Set<NodeInfo["state"]>(["done", "error", "cancelled"]);
 
@@ -57,8 +55,6 @@ export function App() {
   const [selectedEventsLoading, setSelectedEventsLoading] = useState(false);
   const [selectedDiff, setSelectedDiff] = useState<NodeDiff | null>(null);
   const [selectedDiffLoading, setSelectedDiffLoading] = useState(false);
-  const [selectedArtifact, setSelectedArtifact] = useState<NodeArtifact | null>(null);
-  const [selectedArtifactLoading, setSelectedArtifactLoading] = useState(false);
   const [selectedContextBundle, setSelectedContextBundle] = useState<ContextBundle | null>(null);
   const [selectedContextBundleLoading, setSelectedContextBundleLoading] = useState(false);
 
@@ -116,7 +112,6 @@ export function App() {
     setInspectedNodeId(null);
     setSelectedEvents([]);
     setSelectedDiff(null);
-    setSelectedArtifact(null);
     setSelectedContextBundle(null);
     setSelectedContextBundleLoading(false);
     setContextBundlesByNodeId({});
@@ -333,39 +328,6 @@ export function App() {
 
   useEffect(() => {
     if (!session?.id || !inspectedNodeId) {
-      setSelectedArtifact(null);
-      setSelectedArtifactLoading(false);
-      return;
-    }
-    let cancelled = false;
-    setSelectedArtifactLoading(true);
-    getNodeArtifact(session.id, inspectedNodeId)
-      .then((artifact) => {
-        if (!cancelled) setSelectedArtifact(artifact);
-      })
-      .catch((err) => {
-        if (!cancelled) {
-          console.error("get node artifact failed:", err);
-          setSelectedArtifact(null);
-        }
-      })
-      .finally(() => {
-        if (!cancelled) setSelectedArtifactLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [
-    session?.id,
-    inspectedNodeId,
-    selectedNode?.output_kind,
-    selectedNode?.output_path,
-    selectedNode?.state,
-    selectedNode?.finished_at,
-  ]);
-
-  useEffect(() => {
-    if (!session?.id || !inspectedNodeId) {
       setSelectedContextBundle(null);
       setSelectedContextBundleLoading(false);
       return;
@@ -511,60 +473,104 @@ export function App() {
 
   /* launch via the phantom */
   const launchAgentNode = useCallback(
-    (text: string, resume: string | null, outputKind: OutputKind) => {
+    (
+      text: string,
+      resume: string | null,
+      needsReview: boolean,
+      extraPlanspaceLoads: string[],
+    ) => {
       if (composerDisabled) return;
       setStreaming(true);
       send({
         type: "user_message",
         text,
         resume_from_node_id: resume,
-        output_kind: outputKind,
+        needs_review: needsReview,
+        ...(extraPlanspaceLoads.length > 0
+          ? { extra_planspace_loads: extraPlanspaceLoads }
+          : {}),
       });
     },
     [composerDisabled, send],
   );
 
+  /* Planspace ids available for cross-lane loads, sourced from the
+   * contextspace describe call. Excludes the active planspace (it loads
+   * by default via the binding). */
+  const planspaceOptions = useMemo(() => {
+    const out: { id: string; label: string }[] = [];
+    const seen = new Set<string>();
+    for (const binding of sessionContextSpace?.bindings ?? []) {
+      for (const plug of binding.plugs) {
+        if (plug.kind !== "planspace" || seen.has(plug.id)) continue;
+        seen.add(plug.id);
+        out.push({ id: plug.id, label: plug.title || plug.id });
+      }
+    }
+    return out;
+  }, [sessionContextSpace]);
+
   /* Phantom callbacks wired into the module singleton */
   useEffect(() => {
     setPhantomContext({
-      onSubmit: ({ prompt, resumeFromNodeId, outputKind }) => {
-        launchAgentNode(prompt, resumeFromNodeId, outputKind);
+      onSubmit: ({ prompt, resumeFromNodeId, needsReview, extraPlanspaceLoads }) => {
+        launchAgentNode(prompt, resumeFromNodeId, needsReview, extraPlanspaceLoads);
       },
       onDismiss: () => setPhantomFromNodeId(undefined),
       onClearResume: () => setPhantomFromNodeId(null),
       disabled: composerDisabled,
+      planspaceOptions,
+      activePlanspaceId: sessionContextSpace?.active_planspace_id ?? null,
     });
-  }, [composerDisabled, launchAgentNode]);
+  }, [
+    composerDisabled,
+    launchAgentNode,
+    planspaceOptions,
+    sessionContextSpace?.active_planspace_id,
+  ]);
 
   const onStop = () => {
     if (!streaming || status !== "open") return;
     send({ type: "interrupt" });
   };
 
-  const onResolveReview = (payload: {
-    id: string;
-    decision: "write-json" | "no-op";
-    path?: string;
-    payload?: unknown;
-    notes?: string;
-  }) => {
-    if (status !== "open") return;
-    send({
-      type: "interaction_response",
-      id: payload.id,
-      allow: true,
-      decision: payload.decision,
-      response: {
-        path: payload.path,
-        payload: payload.payload,
-        notes: payload.notes,
+  const onResolveReview = useCallback(
+    (payload: { id: string; judgment: string }) => {
+      if (status !== "open") return;
+      send({
+        type: "interaction_response",
+        id: payload.id,
+        allow: true,
+        decision: "review",
+        response: {
+          judgment: payload.judgment,
+        },
+      });
+      setPendingReview(null);
+      window.setTimeout(() => {
+        void refreshNodes();
+      }, 250);
+    },
+    [status, send, refreshNodes],
+  );
+
+  /* Wire the gate hexagon inline form to the current pending review. */
+  useEffect(() => {
+    setGateInlineContext({
+      pending: activePendingReview?.request ?? null,
+      onSubmit: onResolveReview,
+    });
+  }, [activePendingReview, onResolveReview]);
+
+  /* Wire the planspace lane header click → side-panel selection. */
+  useEffect(() => {
+    setPlanspaceLaneContext({
+      onSelectPlanspace: (planspaceId) => {
+        setSelection({ kind: "planspace", planspaceId });
+        setInspectedNodeId(null);
       },
     });
-    setPendingReview(null);
-    window.setTimeout(() => {
-      void refreshNodes();
-    }, 250);
-  };
+  }, []);
 
   const onResolveGate = useCallback(
     (
@@ -588,8 +594,6 @@ export function App() {
     setSelection(sel);
     if (sel.kind === "agent" || sel.kind === "gate" || sel.kind === "op") {
       setInspectedNodeId(sel.nodeId);
-    } else if (sel.kind === "artifact") {
-      setInspectedNodeId(sel.ownerNodeId);
     } else if (sel.kind === "none") {
       setInspectedNodeId(null);
     }
@@ -839,8 +843,6 @@ export function App() {
           session={session}
           events={selectedEvents}
           eventsLoading={selectedEventsLoading}
-          artifact={selectedArtifact}
-          artifactLoading={selectedArtifactLoading}
           diff={selectedDiff}
           diffLoading={selectedDiffLoading}
           contextBundle={selectedContextBundle}
@@ -956,9 +958,6 @@ function pendingBanner(
 function graphNodeIdForSelection(selection: CanvasSelection): string | null {
   if (selection.kind === "agent" || selection.kind === "gate" || selection.kind === "op") {
     return selection.nodeId;
-  }
-  if (selection.kind === "artifact") {
-    return `artifact:${selection.ownerNodeId}`;
   }
   if (selection.kind === "context") {
     return `ctx:${selection.identityKey}`;

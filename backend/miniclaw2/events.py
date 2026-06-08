@@ -90,8 +90,8 @@ class UserMessage(BaseModel):
     type: Literal["user_message"]
     text: str
     resume_from_node_id: str | None = None
-    output_kind: Literal["freeform", "summary", "interface", "review_brief"] | None = None
-    output_path: str | None = None
+    needs_review: bool | None = None
+    extra_planspace_loads: list[str] | None = None
 
 
 class InteractionResponse(BaseModel):

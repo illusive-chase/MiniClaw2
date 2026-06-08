@@ -13,17 +13,15 @@ from uuid import uuid4
 
 from pydantic import BaseModel
 
-from .artifacts import (
-    load_node_artifact,
-    summarize_node_artifact,
-    validate_node_output_path,
-)
 from .contextspace import (
     apply_planspace_update_artifact,
     commit_gate_reviewed_planspace_update,
     compose_context_bundle,
+    planspace_update_filter_contract,
     planspace_update_launch_contract,
     planspace_update_output_relpath,
+    review_guidance_launch_contract,
+    review_guidance_output_relpath,
     stage_planspace_update_artifact,
 )
 from .domain import (
@@ -31,17 +29,15 @@ from .domain import (
     GateKind,
     GateState,
     GateSubtype,
-    NodeOutputKind,
     HumanGate,
     Node,
     NodeKind,
     NodeState,
     Project,
-    default_node_output_path,
-    node_output_contract,
     TokenUsage,
     VerdictSource,
 )
+from .paths import validate_project_relative_path
 from .events import (
     ErrorEvent,
     InteractionRequest,
@@ -131,13 +127,13 @@ class NodeRunner:
     async def _run_agent(self) -> None:
         self.node.commit_before = git_head(self.project.root_path)
         try:
-            output_contract = self._snapshot_output_contract()
             context_bundle = self._snapshot_context_bundle()
             self._snapshot_launch_settings(context_bundle)
             launch_instructions = _compose_launch_instructions(
                 context_bundle.turn_text,
-                output_contract,
                 planspace_update_launch_contract(self.project, self.node, context_bundle),
+                review_guidance_launch_contract(self.node),
+                planspace_update_filter_contract(self.node, context_bundle),
             )
             self._transition(NodeState.RUNNING, started=True)
             await self._emit(
@@ -184,7 +180,6 @@ class NodeRunner:
                     self._provider = None
             finally:
                 self._resolve_open_gates()
-                self._finalize_output_artifact()
                 if error_msg is not None:
                     self.node.error = error_msg
                 self.node.commit_after = git_head(self.project.root_path)
@@ -216,8 +211,8 @@ class NodeRunner:
     async def _run_passive_gate(self) -> None:
         """Run a passive gate node — no provider, straight to awaiting-review.
 
-        The gate's ``contract`` is the brief the human reads (usually
-        prepared by the previous agent step via ``output_kind=review_brief``).
+        The gate's ``contract`` is the review handoff the human reads
+        (typically the previous agent's transient ``review-guidance.md``).
         """
         self.node.commit_before = git_head(self.project.root_path)
         context_bundle = self._snapshot_context_bundle()
@@ -333,9 +328,7 @@ class NodeRunner:
         snapshot: dict[str, Any] = dict(self.project.settings_override)
         snapshot["cwd"] = self.project.root_path
         snapshot["provider"] = self.node.provider or self.project.provider
-        snapshot["output_kind"] = self.node.output_kind.value
-        if self.node.output_path:
-            snapshot["output_path"] = self.node.output_path
+        snapshot["requires_review"] = self.node.requires_review
         project_binding_id = (
             getattr(context_bundle, "project_binding_id", None)
             if context_bundle is not None
@@ -358,53 +351,16 @@ class NodeRunner:
             snapshot["active_planspace_id"] = active_planspace_id
         if active_planspace_id and active_planspace_auto_update:
             snapshot["planspace_update_output_path"] = planspace_update_output_relpath(self.node)
+        if self.node.requires_review:
+            snapshot["review_guidance_output_path"] = review_guidance_output_relpath(self.node)
         if self.node.context_bundle_id:
             snapshot["context_bundle_id"] = self.node.context_bundle_id
         self.node.settings_snapshot = snapshot
 
-    def _snapshot_output_contract(self) -> str:
-        if self.node.kind is not NodeKind.AGENT:
-            self.node.output_contract_snapshot = ""
-            self.node.output_path = None
-            return ""
-        if self.node.output_kind is NodeOutputKind.FREEFORM:
-            self.node.output_contract_snapshot = ""
-            self.node.output_path = None
-            self.store.update_node(self.node)
-            return ""
-
-        if self.node.output_path is None:
-            self.node.output_path = default_node_output_path(self.node.id, self.node.output_kind)
-        path_error = validate_node_output_path(self.node.output_path)
-        if path_error:
-            self.node.output_contract_snapshot = ""
-            self.store.update_node(self.node)
-            raise ValueError(path_error)
-
-        contract = node_output_contract(self.node.output_kind, self.node.output_path)
-        self.node.output_contract_snapshot = contract
-        self.store.update_node(self.node)
-        return contract
-
-    def _finalize_output_artifact(self) -> None:
-        if self.node.kind is not NodeKind.AGENT:
-            return
-        if self.node.output_kind is NodeOutputKind.FREEFORM:
-            return
-
-        artifact = load_node_artifact(self.project.root_path, self.node)
-        summary = summarize_node_artifact(self.node, artifact)
-        if summary:
-            self.node.summary = summary
-        self.store.update_node(self.node)
-
     def _finish_planspace_update(self, final_state: NodeState) -> None:
         if self.node.kind is not NodeKind.AGENT:
             return
-        if (
-            self.node.output_kind is NodeOutputKind.REVIEW_BRIEF
-            and final_state is NodeState.DONE
-        ):
+        if self.node.requires_review and final_state is NodeState.DONE:
             self._stage_planspace_update_artifact()
             return
         self._apply_planspace_update_artifact()
@@ -688,6 +644,7 @@ class NodeRunner:
                 source_node=source,
                 user_judgment=_review_judgment_from_response(response, resp_payload),
                 review_guidance=self.node.contract,
+                promote_interim=_should_promote_interim_update(response, resp_payload),
                 store_root=self.store.root,
             )
         except Exception:  # noqa: BLE001
@@ -794,6 +751,18 @@ def _review_judgment_from_response(
         parts.append(f"Decision: {decision.strip()}")
 
     return "\n\n".join(dict.fromkeys(parts)).strip()
+
+
+def _should_promote_interim_update(
+    response: dict[str, Any],
+    payload: dict[str, Any],
+) -> bool:
+    if response.get("decision") != "write-json":
+        return False
+    body = payload.get("payload")
+    if isinstance(body, dict) and body.get("approved") is False:
+        return False
+    return True
 
 
 def _compose_launch_instructions(*parts: str) -> str:

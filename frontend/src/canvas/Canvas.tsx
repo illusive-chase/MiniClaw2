@@ -24,7 +24,6 @@ import {
 import { AgentNode } from "./nodes/AgentNode";
 import { GateNode } from "./nodes/GateNode";
 import { OpNode } from "./nodes/OpNode";
-import { ArtifactNode } from "./nodes/ArtifactNode";
 import { ContextNode } from "./nodes/ContextNode";
 import { PhantomNode } from "./nodes/PhantomNode";
 import { ProjectRootNode } from "./nodes/ProjectRootNode";
@@ -33,7 +32,6 @@ import {
   LoadsEdge,
   MemoryDeltaEdge,
   OpChevronEdge,
-  ProducesEdge,
   ResumeEdge,
   ReviewsEdge,
   TimelineEdge,
@@ -45,7 +43,6 @@ const NODE_TYPES = {
   agent: AgentNode,
   gate: GateNode,
   op: OpNode,
-  artifact: ArtifactNode,
   context: ContextNode,
   phantom: PhantomNode,
   projectRoot: ProjectRootNode,
@@ -56,7 +53,6 @@ const NODE_TYPES = {
 const EDGE_TYPES = {
   timeline: TimelineEdge,
   resume: ResumeEdge,
-  produces: ProducesEdge,
   reviews: ReviewsEdge,
   loads: LoadsEdge,
   opChevron: OpChevronEdge,
@@ -65,8 +61,8 @@ const EDGE_TYPES = {
 
 export type CanvasSelection =
   | { kind: "agent" | "gate" | "op"; nodeId: string }
-  | { kind: "artifact"; ownerNodeId: string; path: string; artifactKind: string }
   | { kind: "context"; identityKey: string; path: string }
+  | { kind: "planspace"; planspaceId: string }
   | { kind: "projectRoot" }
   | { kind: "none" };
 
@@ -259,14 +255,6 @@ function CanvasInner({
       } else if (n.type === "op") {
         const data = n.data as import("./layout").OpNodeData;
         onSelectionChange({ kind: "op", nodeId: data.node.id });
-      } else if (n.type === "artifact") {
-        const data = n.data as import("./layout").ArtifactNodeData;
-        onSelectionChange({
-          kind: "artifact",
-          ownerNodeId: data.ownerNodeId,
-          path: data.path,
-          artifactKind: data.artifactKind,
-        });
       } else if (n.type === "context") {
         const data = n.data as import("./layout").ContextNodeData;
         onSelectionChange({
@@ -276,6 +264,9 @@ function CanvasInner({
         });
       } else if (n.type === "projectRoot") {
         onSelectionChange({ kind: "projectRoot" });
+      } else if (n.type === "planspaceLane") {
+        const data = n.data as import("./layout").PlanspaceLaneData;
+        onSelectionChange({ kind: "planspace", planspaceId: data.planspaceId });
       } else if (n.type === "errorTerminal") {
         const data = n.data as import("./layout").ErrorTerminalData;
         /* The terminal itself has no panel — selecting it focuses its owner. */
@@ -383,13 +374,19 @@ function CanvasInner({
   );
 }
 
-/* Floating label so users know what the top strip means. */
+/* Floating labels so users know what the two top strips mean. */
 function ContextLaneLabel() {
   return (
-    <div className="pointer-events-none absolute left-4 top-2 z-10 inline-flex items-center gap-1.5 rounded border border-line bg-surface-raised/85 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.14em] text-ink-subtle backdrop-blur">
-      <span className="inline-block h-1 w-1 rounded-full bg-ink-subtle" />
-      Context lane
-    </div>
+    <>
+      <div className="pointer-events-none absolute left-4 top-2 z-10 inline-flex items-center gap-1.5 rounded border border-line border-dashed bg-surface-raised/85 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.14em] text-ink-subtle backdrop-blur">
+        <span className="inline-block h-1 w-1 rounded-full bg-ink-subtle" />
+        Project context
+      </div>
+      <div className="pointer-events-none absolute left-4 top-[110px] z-10 inline-flex items-center gap-1.5 rounded border border-line bg-surface-raised/85 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.14em] text-ink-subtle backdrop-blur">
+        <span className="inline-block h-1 w-1 rounded-full bg-ink-subtle" />
+        Loaded context
+      </div>
+    </>
   );
 }
 

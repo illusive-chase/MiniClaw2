@@ -86,8 +86,8 @@ export type ClientMessage =
       type: "user_message";
       text: string;
       resume_from_node_id?: string | null;
-      output_kind?: "freeform" | "summary" | "interface" | "review_brief" | null;
-      output_path?: string | null;
+      needs_review?: boolean | null;
+      extra_planspace_loads?: string[] | null;
     }
   | {
       type: "interaction_response";
@@ -179,9 +179,7 @@ export type NodeInfo = {
   sdk_session_id?: string | null;
   commit_before?: string | null;
   commit_after?: string | null;
-  output_kind?: "freeform" | "summary" | "interface" | "review_brief";
-  output_path?: string | null;
-  output_contract_snapshot?: string;
+  requires_review?: boolean;
   prompt: string;
   contract?: string;
   summary?: string | null;
@@ -221,6 +219,8 @@ export type ContextBundlePlugRef = {
   enabled?: boolean;
   auto_update?: boolean;
   source?: string;
+  color?: string;
+  title?: string;
 };
 
 export type ContextBundle = {
@@ -288,14 +288,5 @@ export type EventRecord = {
 export type NodeDiff = {
   kind: "commit_diff" | "working_tree" | string;
   text: string;
-  error?: string | null;
-};
-
-export type NodeArtifact = {
-  kind: "freeform" | "summary" | "interface" | "review_brief";
-  path?: string | null;
-  exists: boolean;
-  content?: string | null;
-  data?: unknown;
   error?: string | null;
 };

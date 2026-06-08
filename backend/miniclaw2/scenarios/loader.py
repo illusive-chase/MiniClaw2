@@ -8,7 +8,7 @@ from typing import Any
 
 import yaml
 
-from ..artifacts import validate_node_output_path
+from ..paths import validate_project_relative_path
 
 
 SCENARIOS_DIR = Path(__file__).parent / "bundled"
@@ -39,8 +39,7 @@ class NodeSpec:
     kind: str            # "agent" | "gate"
     prompt: str
     contract: str = ""
-    output_kind: str = "freeform"
-    output_path: str = ""
+    needs_review: bool = False  # flipped automatically when a later gate's brief_from references this step
     brief_from: str = ""        # for gate steps: source agent step id
     response_path: str = ""     # gate-only: default path for write-json response
     resume_from: str = ""       # agent-only: source step whose session this resumes
@@ -183,17 +182,6 @@ def load_scenario(name: str) -> Scenario:
                 )
             contract = contract_path.read_text(encoding="utf-8")
 
-        output_kind = raw.get("output_kind", "freeform")
-        if output_kind not in {"freeform", "summary", "interface", "review_brief"}:
-            raise ScenarioError(f"{name}: node {node_id} has unsupported output_kind {output_kind!r}")
-        output_path = raw.get("output_path", "")
-        if output_path is not None and not isinstance(output_path, str):
-            raise ScenarioError(f"{name}: node {node_id} output_path must be a string")
-        if validate_node_output_path(output_path):
-            raise ScenarioError(
-                f"{name}: node {node_id} output_path must be project-relative and may not contain '..'"
-            )
-
         brief_from = raw.get("brief_from", "") or ""
         if brief_from and not isinstance(brief_from, str):
             raise ScenarioError(f"{name}: node {node_id} brief_from must be a string")
@@ -205,7 +193,7 @@ def load_scenario(name: str) -> Scenario:
         response_path = raw.get("response_path", "") or ""
         if response_path and not isinstance(response_path, str):
             raise ScenarioError(f"{name}: node {node_id} response_path must be a string")
-        if validate_node_output_path(response_path):
+        if validate_project_relative_path(response_path):
             raise ScenarioError(
                 f"{name}: node {node_id} response_path must be project-relative and may not contain '..'"
             )
@@ -237,8 +225,6 @@ def load_scenario(name: str) -> Scenario:
                 kind=kind,
                 prompt=prompt,
                 contract=contract,
-                output_kind=output_kind,
-                output_path=output_path or "",
                 brief_from=brief_from,
                 response_path=response_path,
                 resume_from=resume_from,
@@ -248,9 +234,9 @@ def load_scenario(name: str) -> Scenario:
         )
 
     # Second pass: for each gate with brief_from, validate the referenced
-    # source step exists earlier in the list and is an agent, then force
-    # that agent step's effective output_kind to review_brief so the
-    # engine-side contract injection prompts it to write the brief.
+    # source step exists earlier in the list and is an agent, then flip
+    # that agent step's ``needs_review`` so the runner injects the
+    # review-guidance contract.
     by_id = {spec.id: i for i, spec in enumerate(nodes)}
     for gate_idx, spec in enumerate(nodes):
         if spec.kind != "gate" or not spec.brief_from:
@@ -269,7 +255,7 @@ def load_scenario(name: str) -> Scenario:
             raise ScenarioError(
                 f"{name}: gate {spec.id} brief_from must reference an agent step (got {src.kind})"
             )
-        src.output_kind = "review_brief"
+        src.needs_review = True
 
     # Third pass: resume_from must reference an earlier step (any kind, since
     # we capture the node id and inherit its provider session).

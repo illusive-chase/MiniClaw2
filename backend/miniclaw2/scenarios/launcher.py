@@ -49,8 +49,7 @@ def launch_scenario(
         runner = registry.start_node(
             project.id,
             first.prompt,
-            output_kind=first.output_kind,
-            output_path=first.output_path or None,
+            needs_review=first.needs_review,
             scenario_step_id=first.id,
         )
     elif first.kind == "gate":

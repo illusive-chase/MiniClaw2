@@ -17,18 +17,13 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from .artifacts import (
-    resolve_node_output_path,
-    validate_node_output_path,
-)
 from .domain import (
     Node,
     NodeKind,
-    NodeOutputKind,
     NodeState,
     Project,
-    default_node_output_path,
 )
+from .contextspace import review_guidance_output_relpath
 from .runner import NodeRunner
 from .store import Store
 from .workspace import create_temporary_root, remove_temporary_root
@@ -36,9 +31,9 @@ from .workspace import create_temporary_root, remove_temporary_root
 logger = logging.getLogger(__name__)
 
 
-_PLACEHOLDER_BRIEF = (
-    "# Brief unavailable\n\n"
-    "_The previous agent step did not produce a review brief._\n"
+_NO_GUIDANCE = (
+    "# Review handoff unavailable\n\n"
+    "_The previous agent did not write a review handoff._\n"
 )
 _UNSET: object = object()
 
@@ -274,8 +269,8 @@ class ProjectRegistry:
         prompt: str,
         *,
         resume_from_node_id: str | None = None,
-        output_kind: str | None = None,
-        output_path: str | None = None,
+        needs_review: bool | None = None,
+        extra_planspace_loads: list[str] | None = None,
         scenario_step_id: str | None = None,
     ) -> NodeRunner | None:
         """Create a new agent node and launch its runner as a task.
@@ -303,8 +298,15 @@ class ProjectRegistry:
                 return None
             if not (resume_source.provider_session_id or resume_source.sdk_session_id):
                 return None
-        if validate_node_output_path(output_path):
-            return None
+
+        extra_loads = [
+            entry.strip()
+            for entry in (extra_planspace_loads or [])
+            if isinstance(entry, str) and entry.strip()
+        ]
+        settings_snapshot: dict[str, Any] = {}
+        if extra_loads:
+            settings_snapshot["extra_planspace_loads"] = extra_loads
 
         node = Node(
             project_id=pid,
@@ -314,10 +316,10 @@ class ProjectRegistry:
             provider=resume_source.provider if resume_source else rt.project.provider,
             provider_session_id=resume_source.provider_session_id if resume_source else None,
             sdk_session_id=resume_source.sdk_session_id if resume_source else None,
-            output_kind=self._normalize_output_kind(output_kind),
-            output_path=output_path,
+            requires_review=bool(needs_review),
             prompt=prompt,
             scenario_step_id=scenario_step_id,
+            settings_snapshot=settings_snapshot,
         )
         self.store.create_node(node)
 
@@ -363,16 +365,6 @@ class ProjectRegistry:
         rt.runner_task = asyncio.create_task(runner.run())
         rt.runner_task.add_done_callback(lambda _t, _rt=rt: self._on_runner_done(_rt))
         return runner
-
-    @staticmethod
-    def _normalize_output_kind(value: str | None) -> NodeOutputKind:
-        if value == "summary":
-            return NodeOutputKind.SUMMARY
-        if value == "interface":
-            return NodeOutputKind.INTERFACE
-        if value == "review_brief":
-            return NodeOutputKind.REVIEW_BRIEF
-        return NodeOutputKind.FREEFORM
 
     def _on_runner_done(self, rt: ProjectRuntime) -> None:
         finished_node = rt.runner.node if rt.runner else None
@@ -532,8 +524,7 @@ class ProjectRegistry:
             self.start_node(
                 project.id,
                 next_spec.prompt,
-                output_kind=next_spec.output_kind,
-                output_path=next_spec.output_path or None,
+                needs_review=next_spec.needs_review,
                 scenario_step_id=next_spec.id,
                 resume_from_node_id=resume_node_id,
             )
@@ -585,7 +576,7 @@ class ProjectRegistry:
         src_node = self.store.load_node(project.id, src_node_id)
         if src_node is None:
             return f"_(brief source node `{src_node_id}` missing on disk)_\n"
-        return self._read_brief_from_node(project, src_node)
+        return self._read_review_guidance_from_node(project, src_node)
 
     def _resolve_brief_source_node_id(
         self,
@@ -600,37 +591,47 @@ class ProjectRegistry:
                 return node_id if isinstance(node_id, str) else None
         return None
 
-    def _read_brief_from_node(self, project: Project, src_node: Node) -> str:
-        target = resolve_node_output_path(project.root_path, src_node)
-        if target is None:
-            rel = src_node.output_path or default_node_output_path(
-                src_node.id, src_node.output_kind
+    def _read_review_guidance_from_node(self, project: Project, src_node: Node) -> str:
+        guidance = self._read_project_rel_text(
+            project,
+            review_guidance_output_relpath(src_node),
+        )
+        if guidance is None:
+            return (
+                f"_(review handoff file not written: "
+                f"`{review_guidance_output_relpath(src_node)}`)_\n"
             )
-            return f"_(could not resolve brief path: `{rel}`)_\n"
-        if not target.exists():
-            try:
-                rel = target.relative_to(Path(project.root_path).resolve())
-            except ValueError:
-                rel = target
-            return f"_(brief file not written: `{rel}`)_\n"
+        return guidance.strip() and guidance or _NO_GUIDANCE
+
+    def _read_project_rel_text(self, project: Project, rel_path: str) -> str | None:
+        rel = Path(rel_path)
+        if rel.is_absolute() or any(part == ".." for part in rel.parts):
+            return None
+        root = Path(project.root_path).resolve()
+        target = (root / rel).resolve()
         try:
-            text = target.read_text(encoding="utf-8")
-        except OSError as exc:
-            return f"_(could not read brief: {exc})_\n"
-        return text.strip() and text or _PLACEHOLDER_BRIEF
+            target.relative_to(root)
+        except ValueError:
+            return None
+        if not target.exists():
+            return None
+        try:
+            return target.read_text(encoding="utf-8")
+        except OSError:
+            return None
 
     def _advance_user_gate(
         self,
         rt: ProjectRuntime,
         finished_node: Node,
     ) -> None:
-        """Spawn a follow-up gate for a user-launched review_brief agent.
+        """Spawn a follow-up gate for a user-launched review-required agent.
 
-        Mirrors the scenario expander's gate handoff: when an agent
-        finishes DONE with ``output_kind == REVIEW_BRIEF`` and was not
-        part of a scenario, read its brief.md and start a passive gate
-        whose contract is that brief. With auto_commit on, the source
-        is the parent of the just-finished commit op.
+        Mirrors the scenario expander's gate handoff: when an agent finishes
+        DONE with ``requires_review`` and was not part of a scenario, read its
+        transient review guidance and start a passive gate whose contract is
+        that guidance. With auto_commit on, the source is the parent of the
+        just-finished commit op.
         """
         project = rt.project
         source = finished_node
@@ -643,7 +644,7 @@ class ProjectRegistry:
             return
         if source.scenario_step_id:
             return
-        if source.output_kind is not NodeOutputKind.REVIEW_BRIEF:
+        if not source.requires_review:
             return
         if source.state is not NodeState.DONE:
             return
@@ -656,7 +657,7 @@ class ProjectRegistry:
             ):
                 return
 
-        brief = self._read_brief_from_node(project, source)
+        brief = self._read_review_guidance_from_node(project, source)
         self.start_gate_node(project.id, brief, parent_node_id=source.id)
 
     def interrupt(self, pid: str) -> bool:

@@ -1,7 +1,6 @@
 import type {
   ContextBundle,
   EventRecord,
-  NodeArtifact,
   NodeDiff,
   NodeInfo,
   ScenarioDetail,
@@ -132,15 +131,6 @@ export async function getNodeDiff(
   return res.json();
 }
 
-export async function getNodeArtifact(
-  sessionId: string,
-  nodeId: string,
-): Promise<NodeArtifact> {
-  const res = await fetch(`/sessions/${sessionId}/nodes/${nodeId}/artifact`);
-  if (!res.ok) throw new Error(`getNodeArtifact failed: ${res.status}`);
-  return res.json();
-}
-
 export async function getNodeContextBundle(
   sessionId: string,
   nodeId: string,
@@ -173,6 +163,67 @@ export async function runScenario(
     body: JSON.stringify({ provider }),
   });
   if (!res.ok) throw new Error(`runScenario failed: ${res.status}`);
+  return res.json();
+}
+
+export type PlanspaceStatusEntry = {
+  id: string;
+  summary: string;
+  raised_at?: string;
+  decided_at?: string;
+  raised_by?: string;
+  decided_by?: string;
+};
+
+export type PlanspaceStatusView = {
+  planspace_id: string;
+  title: string;
+  color: string | null;
+  status: {
+    goal: string;
+    current_state: string;
+    open_questions: PlanspaceStatusEntry[];
+    decisions: PlanspaceStatusEntry[];
+    out_of_scope: string[];
+    body: string;
+  };
+  applied?: Array<Record<string, unknown>>;
+};
+
+export type PlanspaceStatusOp =
+  | { operation: "rewrite_current_state"; text: string }
+  | { operation: "add_open_question"; summary: string }
+  | { operation: "add_decision"; summary: string }
+  | { operation: "add_out_of_scope"; summary: string }
+  | { operation: "remove_open_question"; id: string }
+  | { operation: "remove_decision"; id: string }
+  | { operation: "remove_out_of_scope"; index: number };
+
+export async function getPlanspaceStatus(
+  sessionId: string,
+  planspaceId: string,
+): Promise<PlanspaceStatusView> {
+  const res = await fetch(
+    `/sessions/${sessionId}/planspaces/${encodeURIComponent(planspaceId)}/status`,
+  );
+  if (!res.ok) throw new Error(`getPlanspaceStatus failed: ${res.status}`);
+  return res.json();
+}
+
+export async function patchPlanspaceStatus(
+  sessionId: string,
+  planspaceId: string,
+  operations: PlanspaceStatusOp[],
+): Promise<PlanspaceStatusView> {
+  const res = await fetch(
+    `/sessions/${sessionId}/planspaces/${encodeURIComponent(planspaceId)}/status`,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ operations }),
+    },
+  );
+  if (!res.ok) throw new Error(`patchPlanspaceStatus failed: ${res.status}`);
   return res.json();
 }
 

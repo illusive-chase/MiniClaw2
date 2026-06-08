@@ -15,11 +15,10 @@ from pathlib import Path
 from miniclaw2.domain import (
     Node,
     NodeKind,
-    NodeOutputKind,
     NodeState,
     Project,
-    default_node_output_path,
 )
+from miniclaw2.contextspace import review_guidance_output_relpath
 from miniclaw2.registry import ProjectRegistry
 from miniclaw2.store import Store
 
@@ -64,10 +63,8 @@ def _scenario_project(tmp: Path, *, auto_commit: bool = True) -> tuple[Store, Pr
     return store, project
 
 
-def _write_brief(root: str, node: Node, text: str) -> Path:
-    rel = node.output_path or default_node_output_path(node.id, node.output_kind)
-    assert rel is not None
-    target = Path(root) / rel
+def _write_review_guidance(root: str, node: Node, text: str) -> Path:
+    target = Path(root) / review_guidance_output_relpath(node)
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(text, encoding="utf-8")
     return target
@@ -85,10 +82,10 @@ class ScenarioExpanderTest(unittest.IsolatedAsyncioTestCase):
                     kind=NodeKind.AGENT,
                     state=NodeState.DONE,
                     scenario_step_id="build",
-                    output_kind=NodeOutputKind.REVIEW_BRIEF,
+                    requires_review=True,
                 )
             )
-            _write_brief(
+            _write_review_guidance(
                 project.root_path,
                 build,
                 "# How to run\n`python3 -m pip install -r requirements.txt`\n`python3 calculator.py`\n# What to verify\n- it opens\n# Response schema\n`{\"approved\": bool}`\n",
@@ -124,6 +121,41 @@ class ScenarioExpanderTest(unittest.IsolatedAsyncioTestCase):
                 except BaseException:
                     pass
 
+    async def test_advance_prefers_review_guidance_over_legacy_brief(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            store, project = _scenario_project(tmp, auto_commit=False)
+
+            build = store.create_node(
+                Node(
+                    project_id=project.id,
+                    kind=NodeKind.AGENT,
+                    state=NodeState.DONE,
+                    scenario_step_id="build",
+                    requires_review=True,
+                )
+            )
+            _write_review_guidance(
+                project.root_path,
+                build,
+                "# What changed\nUse this review guidance.\n",
+            )
+
+            registry = ProjectRegistry(store=store)
+            rt = registry._runtimes[project.id]
+            registry._advance_scenario_step(rt, build)
+
+            gate = store.list_nodes(project.id)[-1]
+            self.assertEqual(gate.kind, NodeKind.GATE)
+            self.assertIn("Use this review guidance", gate.contract)
+
+            if rt.runner_task is not None:
+                rt.runner_task.cancel()
+                try:
+                    await rt.runner_task
+                except BaseException:
+                    pass
+
     async def test_advance_halts_on_non_done_terminal_state(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             tmp = Path(raw)
@@ -135,7 +167,7 @@ class ScenarioExpanderTest(unittest.IsolatedAsyncioTestCase):
                     kind=NodeKind.AGENT,
                     state=NodeState.ERROR,
                     scenario_step_id="build",
-                    output_kind=NodeOutputKind.REVIEW_BRIEF,
+                    requires_review=True,
                 )
             )
 
@@ -165,10 +197,10 @@ class ScenarioExpanderTest(unittest.IsolatedAsyncioTestCase):
                     kind=NodeKind.AGENT,
                     state=NodeState.DONE,
                     scenario_step_id="build",
-                    output_kind=NodeOutputKind.REVIEW_BRIEF,
+                    requires_review=True,
                 )
             )
-            _write_brief(project.root_path, build, "# How to run\nfoo\n")
+            _write_review_guidance(project.root_path, build, "# How to run\nfoo\n")
 
             op = store.create_node(
                 Node(
@@ -234,7 +266,7 @@ class ScenarioExpanderTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(store.list_nodes(project.id)), 1)
             self.assertIsNone(rt.runner_task)
 
-    async def test_advance_uses_placeholder_when_brief_missing(self) -> None:
+    async def test_advance_uses_placeholder_when_review_guidance_missing(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             tmp = Path(raw)
             store, project = _scenario_project(tmp, auto_commit=False)
@@ -245,7 +277,7 @@ class ScenarioExpanderTest(unittest.IsolatedAsyncioTestCase):
                     kind=NodeKind.AGENT,
                     state=NodeState.DONE,
                     scenario_step_id="build",
-                    output_kind=NodeOutputKind.REVIEW_BRIEF,
+                    requires_review=True,
                 )
             )
             # Intentionally no brief written.
@@ -256,7 +288,7 @@ class ScenarioExpanderTest(unittest.IsolatedAsyncioTestCase):
 
             gate = store.list_nodes(project.id)[-1]
             self.assertEqual(gate.kind, NodeKind.GATE)
-            self.assertIn("brief file not written", gate.contract)
+            self.assertIn("review handoff file not written", gate.contract)
 
             if rt.runner_task is not None:
                 rt.runner_task.cancel()
@@ -279,7 +311,7 @@ class ScenarioExpanderTest(unittest.IsolatedAsyncioTestCase):
                     kind=NodeKind.AGENT,
                     state=NodeState.DONE,
                     scenario_step_id="build",
-                    output_kind=NodeOutputKind.REVIEW_BRIEF,
+                    requires_review=True,
                     provider_session_id="claude-session-build",
                 )
             )
@@ -335,7 +367,7 @@ class ScenarioExpanderTest(unittest.IsolatedAsyncioTestCase):
                     kind=NodeKind.AGENT,
                     state=NodeState.DONE,
                     scenario_step_id="build",
-                    output_kind=NodeOutputKind.REVIEW_BRIEF,
+                    requires_review=True,
                     provider_session_id="claude-session-build",
                 )
             )

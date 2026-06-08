@@ -1,11 +1,17 @@
 import { memo } from "react";
 import { Handle, Position, type NodeProps } from "reactflow";
 import type { GateNodeData } from "../layout";
+import { GateReviewForm } from "../../panel/gateReview";
+import type { InteractionRequest } from "../../types";
 import { stateMeta } from "./stateMeta";
 
 /**
- * Gate tile: hexagon, ~180x110. Passive review checkpoint that inspects an
- * upstream brief and produces a reviewer JSON.
+ * Gate tile: hexagon, ~180x110 collapsed. Passive review checkpoint that
+ * inspects an upstream handoff and captures free-form human judgment.
+ *
+ * When selected AND awaiting_review, the hex expands inline to host the
+ * review handoff text and a free-form textarea — the design doc calls
+ * this the primary review surface; the side panel is a wider mirror.
  *
  * The hex shape comes from a CSS clip-path so it nests inside React Flow's
  * rectangular bounding box for drag/select math.
@@ -15,12 +21,18 @@ function GateNodeImpl({ data, selected }: NodeProps<GateNodeData>) {
   const meta = stateMeta(node.state);
   const body =
     (node.summary || node.prompt || "review checkpoint").replace(/\s+/g, " ").trim();
+  const ctx = gateInlineContext;
+  const expanded =
+    selected && node.state === "awaiting_review" && ctx.pending?.tool_name === "checkpoint_review";
+
+  const width = expanded ? 340 : 200;
+  const height = expanded ? 280 : 116;
 
   return (
     <div
       title={`Review gate · ${node.state}\n${body.slice(0, 80)}\n${node.id}`}
-      className="relative w-[200px] select-none"
-      style={{ height: 116 }}
+      className="relative select-none transition-[width,height] duration-150 ease-out"
+      style={{ width, height }}
     >
       {/* hex outline */}
       <div
@@ -77,25 +89,37 @@ function GateNodeImpl({ data, selected }: NodeProps<GateNodeData>) {
           )}
         </div>
 
-        <div className="line-clamp-2 pt-1.5 text-[12px] leading-[1.35] text-ink-strong">
-          {body}
-        </div>
-
-        <div className="mt-auto flex items-center justify-between text-[10px] text-ink-subtle">
-          <span className="font-mono">{node.id.slice(0, 8)}</span>
-          {node.review_outcome && (
-            <span
-              className={
-                "font-mono " +
-                (node.review_outcome === "approved"
-                  ? "text-state-review"
-                  : "text-state-error")
-              }
-            >
-              {node.review_outcome}
-            </span>
-          )}
-        </div>
+        {expanded ? (
+          <div className="mt-2 flex flex-1 min-h-0 flex-col">
+            <GateReviewForm
+              node={node}
+              pending={ctx.pending}
+              onSubmit={ctx.onSubmit}
+              variant="inline"
+            />
+          </div>
+        ) : (
+          <>
+            <div className="line-clamp-2 pt-1.5 text-[12px] leading-[1.35] text-ink-strong">
+              {body}
+            </div>
+            <div className="mt-auto flex items-center justify-between text-[10px] text-ink-subtle">
+              <span className="font-mono">{node.id.slice(0, 8)}</span>
+              {node.review_outcome && (
+                <span
+                  className={
+                    "font-mono " +
+                    (node.review_outcome === "approved"
+                      ? "text-state-review"
+                      : "text-state-error")
+                  }
+                >
+                  {node.review_outcome}
+                </span>
+              )}
+            </div>
+          </>
+        )}
       </div>
 
       {/* halo for awaiting review */}
@@ -135,3 +159,21 @@ export const GateNode = memo(GateNodeImpl);
 
 const HEX_CLIP =
   "polygon(12% 0%, 88% 0%, 100% 50%, 88% 100%, 12% 100%, 0% 50%)";
+
+/* Module-level singleton: App.tsx wires the current pending review +
+ * submit handler so the memoized hex can render without prop drilling
+ * through React Flow's `data`. Same pattern as PhantomNode's
+ * phantomContext. */
+export type GateInlineContext = {
+  pending: InteractionRequest | null;
+  onSubmit: (payload: { id: string; judgment: string }) => void;
+};
+
+let gateInlineContext: GateInlineContext = {
+  pending: null,
+  onSubmit: () => {},
+};
+
+export function setGateInlineContext(ctx: GateInlineContext): void {
+  gateInlineContext = ctx;
+}

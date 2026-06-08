@@ -3,6 +3,12 @@ import type { ContextBundle, NodeInfo } from "../types";
 
 /* ───────── canvas node payloads ───────── */
 
+export type CrossLaneLoad = {
+  planspaceId: string;
+  label: string;
+  color: PlanspaceColor;
+};
+
 export type AgentNodeData = {
   node: NodeInfo;
   index: number;
@@ -10,6 +16,7 @@ export type AgentNodeData = {
   /** true when this agent is currently streaming text in the live channel */
   isActive: boolean;
   planspaceColor: PlanspaceColor | null;
+  crossLaneLoads: CrossLaneLoad[];
 };
 
 export type GateNodeData = AgentNodeData;
@@ -25,18 +32,6 @@ export type ErrorTerminalData = {
   ownerNodeId: string;
   ownerKind: NodeInfo["kind"];
   message: string;
-};
-
-export type ArtifactNodeData = {
-  /** Owning agent / gate node */
-  ownerNodeId: string;
-  /** Kind of artifact: result.md, result.json, brief.md, review.json … */
-  artifactKind: "summary" | "interface" | "review_brief" | "review_response";
-  /** File label shown on the tile */
-  filename: string;
-  /** path relative to the project root (or absolute, as the backend stores it) */
-  path: string;
-  ownerState: NodeInfo["state"];
 };
 
 export type ContextNodeData = {
@@ -85,7 +80,6 @@ export type RFNodeData =
   | AgentNodeData
   | GateNodeData
   | OpNodeData
-  | ArtifactNodeData
   | ContextNodeData
   | PhantomNodeData
   | ProjectRootNodeData
@@ -100,7 +94,8 @@ export type RFEdge = Edge;
 export const LANE = {
   rootX: 40,
   timelineY: 220,
-  contextLaneY: 40,
+  projectContextLaneY: 8,
+  contextLaneY: 110,
   artifactOffsetX: 240,
   artifactOffsetY: 140,
   agentWidth: 224,
@@ -182,8 +177,6 @@ export type BuildGraphArgs = {
 export type BuildGraphResult = {
   rfNodes: RFNode[];
   rfEdges: RFEdge[];
-  /** synthetic artifact node ids per agent node id */
-  artifactsByOwnerId: Record<string, string[]>;
 };
 
 /**
@@ -207,7 +200,6 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
 
   const rfNodes: RFNode[] = [];
   const rfEdges: RFEdge[] = [];
-  const artifactsByOwnerId: Record<string, string[]> = {};
   const nodeById = new Map<string, NodeInfo>();
   for (const n of nodes) nodeById.set(n.id, n);
   const planspaceOrder = collectPlanspaceOrder(nodes, nodeById);
@@ -249,6 +241,10 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
     }
   }
 
+  const planspaceColorOverrides = collectPlanspaceColorOverrides(
+    contextBundlesByNodeId,
+  );
+
   /* main timeline: agents, gates, ops along x = index*spacing */
   let cursorX = LANE.rootX + 180;
   nodes.forEach((node, index) => {
@@ -257,7 +253,18 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
     const stored = layoutHints[node.id];
     const planspaceId = resolvePlanspaceId(node, nodeById);
     const laneY = yForPlanspace(planspaceId, planspaceIndex);
-    const planspaceColor = colorForPlanspace(planspaceId, planspaceIndex);
+    const planspaceColor = colorForPlanspace(
+      planspaceId,
+      planspaceIndex,
+      planspaceColorOverrides,
+    );
+    const crossLaneLoads = collectCrossLaneLoads(
+      node,
+      planspaceId,
+      contextBundlesByNodeId[node.id],
+      planspaceIndex,
+      planspaceColorOverrides,
+    );
 
     if (node.kind === "op") {
       /* Folded into a chevron edge — skip rendering as a tile. */
@@ -271,7 +278,7 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
         data: { node, parent, child: null },
         draggable: true,
       });
-      recordLaneBounds(laneBounds, planspaceId, position, LANE.opWidth, planspaceIndex);
+      recordLaneBounds(laneBounds, planspaceId, position, LANE.opWidth, planspaceIndex, planspaceColorOverrides);
       cursorX += LANE.opSpacing;
     } else if (node.kind === "gate") {
       const position = stored ?? { x: cursorX, y: laneY };
@@ -279,10 +286,10 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
         id: node.id,
         type: "gate",
         position,
-        data: { node, index, resumeParent, isActive, planspaceColor },
+        data: { node, index, resumeParent, isActive, planspaceColor, crossLaneLoads },
         draggable: true,
       });
-      recordLaneBounds(laneBounds, planspaceId, position, 200, planspaceIndex);
+      recordLaneBounds(laneBounds, planspaceId, position, 200, planspaceIndex, planspaceColorOverrides);
       cursorX += LANE.gateSpacing;
     } else {
       const position = stored ?? { x: cursorX, y: laneY };
@@ -290,10 +297,10 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
         id: node.id,
         type: "agent",
         position,
-        data: { node, index, resumeParent, isActive, planspaceColor },
+        data: { node, index, resumeParent, isActive, planspaceColor, crossLaneLoads },
         draggable: true,
       });
-      recordLaneBounds(laneBounds, planspaceId, position, LANE.agentWidth, planspaceIndex);
+      recordLaneBounds(laneBounds, planspaceId, position, LANE.agentWidth, planspaceIndex, planspaceColorOverrides);
       cursorX += LANE.agentSpacing;
     }
 
@@ -314,12 +321,14 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
       });
     } else if (node.parent_node_id && nodeById.has(node.parent_node_id)) {
       const parentNode = nodeById.get(node.parent_node_id)!;
-      const isResume = parentNode.kind !== "op" && node.kind !== "op";
+      const isReview = parentNode.kind === "agent" && node.kind === "gate";
+      const isResume = parentNode.kind !== "op" && node.kind === "agent";
       rfEdges.push({
         id: `tl:${node.parent_node_id}->${node.id}`,
         source: node.parent_node_id,
         target: node.id,
-        type: isResume ? "resume" : "timeline",
+        targetHandle: isReview ? "reviews" : undefined,
+        type: isReview ? "reviews" : isResume ? "resume" : "timeline",
         data: { childState: node.state },
       });
     } else if (node.parent_node_id === null || node.parent_node_id === undefined) {
@@ -354,67 +363,12 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
         height: LANE.planspaceLaneHeight,
         color: bounds.color,
       },
-      selectable: false,
+      selectable: true,
       draggable: false,
       zIndex: -20,
     });
   }
   rfNodes.splice(1, 0, ...laneNodes);
-
-  /* artifact nodes — one per agent with an output_path */
-  nodes.forEach((node) => {
-    if (node.kind === "op") return;
-    if (!node.output_kind || node.output_kind === "freeform") return;
-    if (!node.output_path) return;
-
-    const artifactKind = node.output_kind === "review_brief"
-      ? "review_brief"
-      : node.output_kind;
-    const filename = filenameOf(node.output_path);
-    const artifactId = `artifact:${node.id}`;
-    const sourceNode = rfNodes.find((n) => n.id === node.id);
-    const baseX = sourceNode?.position.x ?? LANE.rootX;
-    const baseY = sourceNode?.position.y ?? LANE.timelineY;
-    const stored = layoutHints[artifactId];
-    rfNodes.push({
-      id: artifactId,
-      type: "artifact",
-      position: stored ?? {
-        x: baseX + LANE.artifactOffsetX - 60,
-        y: baseY + LANE.artifactOffsetY,
-      },
-      data: {
-        ownerNodeId: node.id,
-        artifactKind,
-        filename,
-        path: node.output_path,
-        ownerState: node.state,
-      },
-      draggable: true,
-    });
-    artifactsByOwnerId[node.id] = [artifactId];
-    rfEdges.push({
-      id: `pr:${node.id}->${artifactId}`,
-      source: node.id,
-      target: artifactId,
-      type: "produces",
-    });
-
-    /* If this is a review_brief, find the downstream gate node that reviews it */
-    if (node.output_kind === "review_brief") {
-      const downstream = nodes.find(
-        (n) => n.kind === "gate" && n.parent_node_id === node.id,
-      );
-      if (downstream) {
-        rfEdges.push({
-          id: `rv:${artifactId}->${downstream.id}`,
-          source: artifactId,
-          target: downstream.id,
-          type: "reviews",
-        });
-      }
-    }
-  });
 
   /* error terminals — a small red-edged downstream node per failed run.
    * The owning agent keeps its own error state; the terminal puts the failure
@@ -486,14 +440,23 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
     }
   }
 
-  let ctxCursorX = LANE.rootX + 180;
+  /* Project-root CONTEXT.md occupies its own neutral top stripe; everything
+   * else (planspace STATUS/PLAN, skill CONTEXT, …) lives in the colored
+   * context lane below it. The split makes "plan-free reference" vs
+   * "planspace state" visually distinct. */
+  let projectCtxCursorX = LANE.rootX + 180;
+  let laneCtxCursorX = LANE.rootX + 180;
   for (const agg of ctxAgg.values()) {
     const ctxId = `ctx:${agg.identityKey}`;
     const stored = layoutHints[ctxId];
+    const isProject = agg.scope === "project-root";
+    const fallbackPos = isProject
+      ? { x: projectCtxCursorX, y: LANE.projectContextLaneY }
+      : { x: laneCtxCursorX, y: LANE.contextLaneY };
     rfNodes.push({
       id: ctxId,
       type: "context",
-      position: stored ?? { x: ctxCursorX, y: LANE.contextLaneY },
+      position: stored ?? fallbackPos,
       data: {
         identityKey: agg.identityKey,
         scope: agg.scope,
@@ -505,7 +468,11 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
       },
       draggable: true,
     });
-    ctxCursorX += 180;
+    if (isProject) {
+      projectCtxCursorX += 240;
+    } else {
+      laneCtxCursorX += 180;
+    }
     for (const ownerId of agg.loadedBy) {
       rfEdges.push({
         id: `ld:${ctxId}->${ownerId}`,
@@ -578,7 +545,7 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
     });
   }
 
-  return { rfNodes, rfEdges, artifactsByOwnerId };
+  return { rfNodes, rfEdges };
 }
 
 /* ───────── helpers ───────── */
@@ -644,10 +611,64 @@ function yForPlanspace(
 function colorForPlanspace(
   planspaceId: string | null,
   planspaceIndex: Map<string, number>,
+  overrides: Map<string, string> = new Map(),
 ): PlanspaceColor | null {
   if (!planspaceId) return null;
+  const named = overrides.get(planspaceId);
+  if (named) {
+    const match = PLANSPACE_PALETTE.find((c) => c.name === named);
+    if (match) return match;
+  }
   const index = planspaceIndex.get(planspaceId) ?? 0;
   return PLANSPACE_PALETTE[index % PLANSPACE_PALETTE.length];
+}
+
+function collectPlanspaceColorOverrides(
+  contextBundlesByNodeId: Record<string, ContextBundle | null | undefined>,
+): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const bundle of Object.values(contextBundlesByNodeId)) {
+    if (!bundle) continue;
+    const active = bundle.active_planspace;
+    if (
+      active &&
+      typeof active.id === "string" &&
+      typeof (active as { color?: unknown }).color === "string" &&
+      !out.has(active.id)
+    ) {
+      out.set(active.id, (active as { color: string }).color);
+    }
+  }
+  return out;
+}
+
+function collectCrossLaneLoads(
+  node: NodeInfo,
+  ownPlanspaceId: string | null,
+  bundle: ContextBundle | null | undefined,
+  planspaceIndex: Map<string, number>,
+  overrides: Map<string, string>,
+): CrossLaneLoad[] {
+  if (!bundle) return [];
+  const seen = new Set<string>();
+  const out: CrossLaneLoad[] = [];
+  for (const src of bundle.sources) {
+    const plugId = src.plug_id;
+    if (!plugId || !plugId.startsWith("planspaces.")) continue;
+    if (plugId === ownPlanspaceId) continue;
+    if (seen.has(plugId)) continue;
+    seen.add(plugId);
+    const color = colorForPlanspace(plugId, planspaceIndex, overrides);
+    if (!color) continue;
+    out.push({
+      planspaceId: plugId,
+      label: labelForPlanspace(plugId),
+      color,
+    });
+  }
+  // Silence unused-arg warning when node has nothing to add beyond its bundle.
+  void node;
+  return out;
 }
 
 function recordLaneBounds(
@@ -665,9 +686,10 @@ function recordLaneBounds(
   position: { x: number; y: number },
   width: number,
   planspaceIndex: Map<string, number>,
+  overrides: Map<string, string> = new Map(),
 ): void {
   if (!planspaceId) return;
-  const color = colorForPlanspace(planspaceId, planspaceIndex);
+  const color = colorForPlanspace(planspaceId, planspaceIndex, overrides);
   if (!color) return;
   const existing = laneBounds.get(planspaceId);
   const maxX = position.x + width;
