@@ -23,6 +23,7 @@ export type ProjectPanelProps = {
   onNewDirection: (userSeed: string, needsReview: boolean) => void;
   onContextInit: () => void;
   onContextRefresh: () => void;
+  onContextCancel: () => void;
   onTogglePlanspaceVisibility: (planspaceId: string, hidden: boolean) => void;
 };
 
@@ -46,6 +47,7 @@ export function ProjectPanel({
   onNewDirection,
   onContextInit,
   onContextRefresh,
+  onContextCancel,
   onTogglePlanspaceVisibility,
 }: ProjectPanelProps) {
   const [composerOpen, setComposerOpen] = useState(false);
@@ -144,8 +146,19 @@ export function ProjectPanel({
             </div>
           )}
           {refreshing && (
-            <div className="mt-2 rounded-md border border-state-running/30 bg-state-running-soft px-3 py-2 text-[11.5px] text-state-running">
-              Refreshing project notes...
+            <div className="mt-2 flex items-center justify-between gap-2 rounded-md border border-state-running/30 bg-state-running-soft px-3 py-2 text-[11.5px] text-state-running">
+              <span>
+                {contextSpace?.context_refresh?.mode === "init"
+                  ? "Drafting project notes..."
+                  : "Refreshing project notes..."}
+              </span>
+              <button
+                type="button"
+                onClick={onContextCancel}
+                className="rounded-sm border border-state-running/40 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-state-running transition hover:bg-state-running/10"
+              >
+                Cancel
+              </button>
             </div>
           )}
           <div className="mt-2 grid grid-cols-1 gap-2">

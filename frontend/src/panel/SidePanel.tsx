@@ -64,7 +64,12 @@ export type SidePanelProps = {
   onNewDirection: (userSeed: string, needsReview: boolean) => void;
   onContextInit: () => void;
   onContextRefresh: () => void;
+  onContextCancel: () => void;
   onTogglePlanspaceVisibility: (planspaceId: string, hidden: boolean) => void;
+
+  /* Bumped each time a CONTEXT.md refresh completes, so PlanspaceFilePanel
+     reloads the file content. */
+  contextReloadVersion?: number;
 };
 
 /**
@@ -112,7 +117,9 @@ function Inner(props: SidePanelProps & { nodesById: Map<string, NodeInfo> }) {
     onNewDirection,
     onContextInit,
     onContextRefresh,
+    onContextCancel,
     onTogglePlanspaceVisibility,
+    contextReloadVersion,
     nodesById,
   } = props;
 
@@ -140,6 +147,7 @@ function Inner(props: SidePanelProps & { nodesById: Map<string, NodeInfo> }) {
         onNewDirection={onNewDirection}
         onContextInit={onContextInit}
         onContextRefresh={onContextRefresh}
+        onContextCancel={onContextCancel}
         onTogglePlanspaceVisibility={onTogglePlanspaceVisibility}
       />
     );
@@ -218,6 +226,7 @@ function Inner(props: SidePanelProps & { nodesById: Map<string, NodeInfo> }) {
           loadedByNodeIds={loadedByNodeIds}
           nodesById={nodesById}
           onSelectConsumer={onSelectNode}
+          reloadVersion={role === "context" ? contextReloadVersion : undefined}
         />
       );
     }

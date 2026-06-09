@@ -217,10 +217,20 @@ Trunk: `backend/miniclaw2/contextspace.py`, `backend/miniclaw2/context.py`,
   `Project.planspace_view` and updated via
   `PATCH /sessions/{sid}/planspace-view`.
 - Out-of-band `CONTEXT.md` init / refresh tasks live in
-  `backend/miniclaw2/context_refresh.py`, write
-  `.miniclaw2/context.meta.json`, expose in-flight state on
-  `GET /sessions/{sid}/contextspace`, and deliberately do not create
-  nodes or append node event streams.
+  `backend/miniclaw2/context_refresh.py`. They run an agent against the
+  project's provider using framework-held preset prompts
+  (`prompts/context_init.md`, `prompts/context_refresh.md`) and a tight
+  tool allowlist (`Read`, `Glob`, `Grep`, `Write`). The agent writes
+  `CONTEXT.md` itself via `Write`; the framework only books
+  `.miniclaw2/context.meta.json` on success. In-flight state surfaces on
+  `GET /sessions/{sid}/contextspace` and can be cancelled via
+  `POST /sessions/{sid}/context/cancel`. The task deliberately does not
+  create nodes or append node event streams.
+- Provider adapters support a `minimal_mode` flag on
+  `AgentProviderContext` that skips `CONTEXT.md` self-injection, drives a
+  tool whitelist (`PermissionResultAllow` / `Deny`) on Claude, and forces
+  `approvalPolicy: "never"` on Codex. Used by the out-of-band
+  `context_refresh` agent; unused by `NodeRunner`.
 
 ### Memory delta JSON shape (wire-level)
 
@@ -284,10 +294,11 @@ derived from STATUS. Skill and protocol updates remain proposed.
   planspace inbox).
 - Verifier op nodes that own deterministic acceptance and write
   acceptance back to the source node.
-- Provider-backed one-shot LLM generation for `CONTEXT.md`
-  init/refresh. The current task runner has the out-of-band API,
-  metadata, and no-node semantics, but writes a deterministic repo
-  digest handbook rather than calling a model.
+- Codex per-tool allowlist for out-of-band agent mode. Claude's
+  `can_use_tool` callback enforces the whitelist directly; Codex has no
+  per-tool callback, so the current `context_refresh` agent relies on
+  `approvalPolicy: "never"` plus the preset prompt's self-constraint to
+  scope tool use.
 
 
 ## 5. Frontend canvas
@@ -558,6 +569,7 @@ Quick reference; the on-disk shape is authoritative.
   `POST /sessions/{sid}/planspaces`,
   `POST /sessions/{sid}/context/init`,
   `POST /sessions/{sid}/context/refresh`,
+  `POST /sessions/{sid}/context/cancel`,
   `GET /sessions/{sid}/files`,
   `GET /sessions/{sid}/nodes/{nid}/status-delta`,
   `GET / PATCH /sessions/{sid}/planspaces/{planspace_id}/status` for

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import AsyncIterator
+from pathlib import Path
 from typing import Any
 
 from claude_agent_sdk import (
@@ -161,6 +162,26 @@ class ClaudeProvider:
             return
 
     def _make_can_use_tool(self, context: AgentProviderContext) -> Any:
+        if context.minimal_mode:
+            allowlist = set(context.tool_allowlist or [])
+
+            async def minimal_callback(
+                tool_name: str,
+                tool_input: dict[str, Any],
+                permission_context: ToolPermissionContext,
+            ) -> PermissionResultAllow | PermissionResultDeny:
+                if tool_name not in allowlist:
+                    return PermissionResultDeny(
+                        message=f"tool '{tool_name}' not allowed in minimal mode",
+                    )
+                if tool_name == "Write" and not _is_root_context_write(context, tool_input):
+                    return PermissionResultDeny(
+                        message="Write is allowed only for the project root CONTEXT.md in minimal mode",
+                    )
+                return PermissionResultAllow()
+
+            return minimal_callback
+
         async def callback(
             tool_name: str,
             tool_input: dict[str, Any],
@@ -218,7 +239,10 @@ class ClaudeProvider:
             or "claude-sonnet-4-6"
         )
         system_prompt: dict[str, Any] = {"type": "preset", "preset": "claude_code"}
-        if context.system_context:
+        # Minimal mode (out-of-band framework agent) deliberately does not
+        # inject the project's own CONTEXT.md into the system prompt — the
+        # agent reads it as a tool when needed.
+        if context.system_context and not context.minimal_mode:
             system_prompt["append"] = context.system_context
         opts: dict[str, Any] = {
             "system_prompt": system_prompt,
@@ -229,15 +253,35 @@ class ClaudeProvider:
             # auto-allowing tools.
             "setting_sources": [],
         }
-        permission_mode = context.project.settings_override.get("permission_mode")
-        if isinstance(permission_mode, str) and permission_mode:
-            opts["permission_mode"] = permission_mode
-        else:
+        if context.minimal_mode:
             opts["permission_mode"] = "default"
+        else:
+            permission_mode = context.project.settings_override.get("permission_mode")
+            if isinstance(permission_mode, str) and permission_mode:
+                opts["permission_mode"] = permission_mode
+            else:
+                opts["permission_mode"] = "default"
         session_id = context.node.provider_session_id or context.node.sdk_session_id
         if session_id:
             opts["resume"] = session_id
         return ClaudeAgentOptions(**opts)
+
+
+def _is_root_context_write(
+    context: AgentProviderContext,
+    tool_input: dict[str, Any],
+) -> bool:
+    raw_path = tool_input.get("file_path")
+    if raw_path is None:
+        raw_path = tool_input.get("path")
+    if not isinstance(raw_path, str) or not raw_path:
+        return False
+
+    root = Path(context.project.root_path).resolve(strict=False)
+    target = Path(raw_path)
+    if not target.is_absolute():
+        target = root / target
+    return target.resolve(strict=False) == (root / "CONTEXT.md").resolve(strict=False)
 
 
 def _truncate(value: str, limit: int = 200) -> str:

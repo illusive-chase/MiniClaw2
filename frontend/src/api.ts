@@ -132,6 +132,14 @@ export async function refreshProjectContext(
   return res.json();
 }
 
+export async function cancelProjectContext(
+  sessionId: string,
+): Promise<SessionContextSpaceInfo> {
+  const res = await fetch(`/sessions/${sessionId}/context/cancel`, { method: "POST" });
+  if (!res.ok) throw new Error(`cancelProjectContext failed: ${res.status}`);
+  return res.json();
+}
+
 export async function renameSession(id: string, name: string): Promise<SessionInfo> {
   const res = await fetch(`/sessions/${id}`, {
     method: "PATCH",

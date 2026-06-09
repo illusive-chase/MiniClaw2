@@ -31,7 +31,7 @@ from .contextspace import (
     load_planspace_view,
     read_project_file_role,
 )
-from .context_refresh import context_refresh_status, start_context_task
+from .context_refresh import cancel_context_task, context_refresh_status, start_context_task
 from .domain import Node
 from .events import (
     InteractionResponse,
@@ -406,6 +406,14 @@ def create_app() -> FastAPI:
             raise HTTPException(409, str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
+        return describe_project_contextspace(project, store_root=registry.store.root)
+
+    @app.post("/sessions/{sid}/context/cancel", response_model=dict[str, Any])
+    async def cancel_project_context(sid: str) -> dict[str, Any]:
+        project = registry.get_project(sid)
+        if project is None:
+            raise HTTPException(404, "session not found")
+        await cancel_context_task(project.id)
         return describe_project_contextspace(project, store_root=registry.store.root)
 
     @app.get("/sessions/{sid}/nodes", response_model=list[Node])

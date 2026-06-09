@@ -20,6 +20,7 @@ export type PlanspaceFilePanelProps = {
   loadedByNodeIds: string[];
   nodesById: Map<string, NodeInfo>;
   onSelectConsumer: (nodeId: string) => void;
+  reloadVersion?: number;
 };
 
 export function PlanspaceFilePanel({
@@ -29,6 +30,7 @@ export function PlanspaceFilePanel({
   loadedByNodeIds,
   nodesById,
   onSelectConsumer,
+  reloadVersion = 0,
 }: PlanspaceFilePanelProps) {
   const [file, setFile] = useState<SessionFile | null>(null);
   const [loading, setLoading] = useState(false);
@@ -66,7 +68,7 @@ export function PlanspaceFilePanel({
     return () => {
       cancelled = true;
     };
-  }, [sessionId, role, planspaceId]);
+  }, [sessionId, role, planspaceId, reloadVersion]);
 
   const filename = role === "context" ? "CONTEXT.md" : role === "plan" ? "PLAN.md" : "STATUS.md";
 

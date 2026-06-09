@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  cancelProjectContext,
   createPlanspace,
   getNodeContextBundle,
   getNodeDiff,
@@ -74,6 +75,8 @@ export function App() {
   const [sessionContextSpaceLoading, setSessionContextSpaceLoading] = useState(false);
   const [sessionContextSpaceSaving, setSessionContextSpaceSaving] = useState(false);
   const [sessionContextSpaceError, setSessionContextSpaceError] = useState<string | null>(null);
+  const [contextReloadVersion, setContextReloadVersion] = useState(0);
+  const prevContextRefreshRunningRef = useRef(false);
   const [sessionSettingsSaving, setSessionSettingsSaving] = useState(false);
   const [sessionSettingsError, setSessionSettingsError] = useState<string | null>(null);
 
@@ -216,6 +219,16 @@ export function App() {
     return () => window.clearInterval(timer);
   }, [sessionContextSpace?.context_refresh?.running, refreshContextSpace]);
 
+  /* Bump the reload version each time the context task finishes, so the
+     CONTEXT.md viewer re-reads from disk. */
+  useEffect(() => {
+    const running = !!sessionContextSpace?.context_refresh?.running;
+    if (prevContextRefreshRunningRef.current && !running) {
+      setContextReloadVersion((v) => v + 1);
+    }
+    prevContextRefreshRunningRef.current = running;
+  }, [sessionContextSpace?.context_refresh?.running]);
+
   const activatePlanspace = useCallback(
     async (binding_id: string, planspace_id: string) => {
       if (!session?.id) return;
@@ -316,6 +329,16 @@ export function App() {
       setSessionContextSpaceError(String(err));
     } finally {
       setSessionContextSpaceSaving(false);
+    }
+  }, [session?.id]);
+
+  const runContextCancel = useCallback(async () => {
+    if (!session?.id) return;
+    try {
+      const next = await cancelProjectContext(session.id);
+      setSessionContextSpace(next);
+    } catch (err) {
+      setSessionContextSpaceError(String(err));
     }
   }, [session?.id]);
 
@@ -1016,7 +1039,9 @@ export function App() {
           onNewDirection={startNewDirection}
           onContextInit={runContextInit}
           onContextRefresh={runContextRefresh}
+          onContextCancel={runContextCancel}
           onTogglePlanspaceVisibility={togglePlanspaceVisibility}
+          contextReloadVersion={contextReloadVersion}
         />
       </div>
     </div>

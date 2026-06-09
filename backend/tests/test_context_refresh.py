@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import tempfile
 import unittest
 from pathlib import Path
@@ -9,72 +10,105 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 import miniclaw2.app as app_module
-from miniclaw2.context_refresh import (
-    _GENERATED_END,
-    _GENERATED_START,
-    _render_context,
-)
+import miniclaw2.context_refresh as context_refresh
+from miniclaw2.context_refresh import _run_agent_context_task, ContextTask
 from miniclaw2.domain import Project
+from miniclaw2.providers.base import AgentProviderContext, AgentProviderEvent
 
 
-def _digest(*items: str) -> dict[str, object]:
-    return {
-        "top_level": list(items),
-        "headers": {"README.md": "# Test Project\n\nDetails"},
-    }
+class FakeProvider:
+    """Test double that records the context it was given and emits a done event."""
+
+    name = "claude"
+
+    def __init__(self, *, write_context: bool = True, content: str = "# Context\n") -> None:
+        self.write_context = write_context
+        self.content = content
+        self.captured: AgentProviderContext | None = None
+        self.interrupted = False
+
+    async def run(self, context: AgentProviderContext):
+        self.captured = context
+        if self.write_context:
+            (Path(context.project.root_path) / "CONTEXT.md").write_text(
+                self.content, encoding="utf-8"
+            )
+        yield AgentProviderEvent(kind="done", final_state="done")
+
+    async def interrupt(self) -> None:
+        self.interrupted = True
 
 
-class ContextRefreshRenderTest(unittest.TestCase):
-    def test_refresh_preserves_unmarked_existing_context(self) -> None:
+class AgentDrivenContextTaskTest(unittest.TestCase):
+    def setUp(self) -> None:
+        # Reset module-level registry between tests.
+        context_refresh._TASKS.clear()
+
+    def _run(self, coro):
+        return asyncio.run(coro)
+
+    def test_init_runs_provider_in_minimal_mode_with_allowlist(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             project = Project(root_path=raw, name="Alpha")
-            existing = (
-                "# Hand Written Context\n\n"
-                "## Local Rules\n\n"
-                "- Keep the hand-written deployment caveat.\n"
-            )
-
-            refreshed = _render_context(
-                project,
-                mode="refresh",
-                digest=_digest("src/", "README.md"),
-                existing=existing,
-            )
-
-            self.assertIn("## Project Shape", refreshed)
-            self.assertIn("- src/", refreshed)
-            self.assertIn("## Existing Project Guidance", refreshed)
-            self.assertIn("Keep the hand-written deployment caveat.", refreshed)
-            self.assertEqual(refreshed.count(_GENERATED_START), 1)
-            self.assertEqual(refreshed.count(_GENERATED_END), 1)
-
-    def test_refresh_replaces_generated_digest_without_dropping_manual_sections(self) -> None:
-        with tempfile.TemporaryDirectory() as raw:
-            project = Project(root_path=raw, name="Alpha")
-            initial = _render_context(
-                project,
+            provider = FakeProvider()
+            record = ContextTask(
+                project_id=project.id,
                 mode="init",
-                digest=_digest("old.txt"),
-                existing="",
-            )
-            edited = (
-                initial
-                + "\n## Manual Guidance\n\n"
-                + "- Keep this section across refreshes.\n"
+                started_at=1.0,
             )
 
-            refreshed = _render_context(
-                project,
+            with patch("miniclaw2.runner._make_provider", return_value=provider):
+                self._run(_run_agent_context_task(project, record))
+
+            self.assertIsNotNone(provider.captured)
+            ctx = provider.captured
+            assert ctx is not None  # for type narrower
+            self.assertTrue(ctx.minimal_mode)
+            self.assertEqual(ctx.tool_allowlist, ["Read", "Glob", "Grep", "Write"])
+            self.assertEqual(ctx.system_context, "")
+            self.assertIn("first version of `CONTEXT.md`", ctx.node.prompt)
+            self.assertTrue((Path(raw) / "CONTEXT.md").exists())
+            meta = (Path(raw) / ".miniclaw2" / "context.meta.json").read_text(encoding="utf-8")
+            self.assertIn('"source": "init"', meta)
+            self.assertIn('"rewritten": true', meta)
+
+    def test_init_raises_when_agent_skips_writing_context(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            project = Project(root_path=raw, name="Alpha")
+            provider = FakeProvider(write_context=False)
+            record = ContextTask(
+                project_id=project.id,
+                mode="init",
+                started_at=1.0,
+            )
+
+            with patch("miniclaw2.runner._make_provider", return_value=provider):
+                with self.assertRaises(RuntimeError):
+                    self._run(_run_agent_context_task(project, record))
+
+    def test_refresh_uses_refresh_preset_and_tolerates_no_op(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            project = Project(root_path=raw, name="Alpha")
+            (Path(raw) / "CONTEXT.md").write_text("hand-written\n", encoding="utf-8")
+            provider = FakeProvider(write_context=False)
+            record = ContextTask(
+                project_id=project.id,
                 mode="refresh",
-                digest=_digest("new.txt"),
-                existing=edited,
+                started_at=1.0,
             )
 
-            self.assertIn("- new.txt", refreshed)
-            self.assertNotIn("- old.txt", refreshed)
-            self.assertIn("Keep this section across refreshes.", refreshed)
-            self.assertEqual(refreshed.count(_GENERATED_START), 1)
-            self.assertEqual(refreshed.count(_GENERATED_END), 1)
+            with patch("miniclaw2.runner._make_provider", return_value=provider):
+                self._run(_run_agent_context_task(project, record))
+
+            ctx = provider.captured
+            assert ctx is not None
+            self.assertIn("light-touch", ctx.node.prompt)
+            self.assertEqual(
+                (Path(raw) / "CONTEXT.md").read_text(encoding="utf-8"),
+                "hand-written\n",
+            )
+            meta = (Path(raw) / ".miniclaw2" / "context.meta.json").read_text(encoding="utf-8")
+            self.assertIn('"rewritten": false', meta)
 
 
 class ContextRefreshApiTest(unittest.TestCase):
@@ -139,6 +173,12 @@ class ContextRefreshApiTest(unittest.TestCase):
         self.assertEqual(res.status_code, 409, res.text)
         self.assertEqual(res.json()["detail"], "turn in progress")
         start.assert_not_called()
+
+    def test_context_cancel_is_idempotent_when_nothing_runs(self) -> None:
+        client, project = self._client_with_project(active_turn=False)
+        res = client.post(f"/sessions/{project.id}/context/cancel")
+        self.assertEqual(res.status_code, 200, res.text)
+        self.assertFalse(res.json()["context_refresh"]["running"])
 
     def test_new_direction_rejects_running_context_task(self) -> None:
         client, project = self._client_with_project(active_turn=False)

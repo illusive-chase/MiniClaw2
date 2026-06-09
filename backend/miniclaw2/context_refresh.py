@@ -1,15 +1,29 @@
-"""Out-of-band CONTEXT.md init / refresh tasks."""
+"""Out-of-band CONTEXT.md init / refresh tasks.
+
+Runs a framework-owned agent (preset prompt) against the project's provider
+without going through ``NodeRunner``: no node row, no ``events.jsonl``, no
+WebSocket broadcast. The agent writes ``CONTEXT.md`` itself via its ``Write``
+tool; the framework only books the meta file on success.
+"""
 
 from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from .domain import Project
+from .domain import Node, NodeKind, Project
+from .providers import AgentProvider, AgentProviderContext, GateRequest
+
+logger = logging.getLogger(__name__)
+
+
+_PROMPT_DIR = Path(__file__).with_name("prompts")
+_TOOL_ALLOWLIST: tuple[str, ...] = ("Read", "Glob", "Grep", "Write")
 
 
 @dataclass(slots=True)
@@ -17,30 +31,29 @@ class ContextTask:
     project_id: str
     mode: str
     started_at: float
-    task: asyncio.Task[None]
+    task: asyncio.Task[None] | None = field(default=None)
+    provider: AgentProvider | None = field(default=None)
 
 
 _TASKS: dict[str, ContextTask] = {}
-_GENERATED_START = "<!-- MINICLAW2:PROJECT-DIGEST:START -->"
-_GENERATED_END = "<!-- MINICLAW2:PROJECT-DIGEST:END -->"
 
 
 def context_refresh_status(project_id: str) -> dict[str, Any]:
-    task = _TASKS.get(project_id)
-    if task is None or task.task.done():
+    record = _TASKS.get(project_id)
+    if record is None or record.task is None or record.task.done():
         return {"running": False}
     return {
         "running": True,
-        "mode": task.mode,
-        "started_at": task.started_at,
+        "mode": record.mode,
+        "started_at": record.started_at,
     }
 
 
 def start_context_task(project: Project, *, mode: str) -> dict[str, Any]:
     """Start an async CONTEXT.md init/refresh task.
 
-    The task deliberately runs outside the node runner: no provider session,
-    no node, and no events.jsonl write.
+    The task deliberately runs outside the node runner: no provider-tracked
+    node row, no events.jsonl writes, no WebSocket broadcast.
     """
 
     if mode not in {"init", "refresh"}:
@@ -56,13 +69,12 @@ def start_context_task(project: Project, *, mode: str) -> dict[str, Any]:
         raise ValueError("CONTEXT.md does not exist")
 
     started_at = time.time()
-    task = asyncio.create_task(asyncio.to_thread(_write_context, project, mode, started_at))
     record = ContextTask(
         project_id=project.id,
         mode=mode,
         started_at=started_at,
-        task=task,
     )
+    record.task = asyncio.create_task(_run_agent_context_task(project, record))
     _TASKS[project.id] = record
 
     def cleanup(done: asyncio.Task[None], *, pid: str = project.id) -> None:
@@ -70,156 +82,111 @@ def start_context_task(project: Project, *, mode: str) -> dict[str, Any]:
         if current is not None and current.task is done:
             _TASKS.pop(pid, None)
 
-    task.add_done_callback(cleanup)
+    record.task.add_done_callback(cleanup)
     return context_refresh_status(project.id)
 
 
-def _write_context(project: Project, mode: str, started_at: float) -> None:
-    root = Path(project.root_path)
-    digest = _repo_digest(root)
-    existing = ""
-    if mode == "refresh":
+async def cancel_context_task(project_id: str) -> bool:
+    """Cancel a running context task. Returns whether anything was cancelled."""
+
+    record = _TASKS.get(project_id)
+    if record is None or record.task is None or record.task.done():
+        return False
+    if record.provider is not None:
         try:
-            existing = (root / "CONTEXT.md").read_text(encoding="utf-8")
-        except OSError:
-            existing = ""
-    text = _render_context(project, mode=mode, digest=digest, existing=existing)
-    context_path = root / "CONTEXT.md"
-    _atomic_write_text(context_path, text)
-    meta_path = root / ".miniclaw2" / "context.meta.json"
+            await record.provider.interrupt()
+        except Exception:  # noqa: BLE001
+            logger.exception("provider interrupt failed during context cancel")
+    record.task.cancel()
+    return True
+
+
+async def _run_agent_context_task(project: Project, record: ContextTask) -> None:
+    from .runner import _make_provider  # local import to avoid cycle
+
+    preset = _load_preset(record.mode)
+    provider = _make_provider(project.provider)
+    record.provider = provider
+
+    node = Node(
+        project_id=project.id,
+        kind=NodeKind.AGENT,
+        provider=project.provider,
+        prompt=preset,
+    )
+    context = AgentProviderContext(
+        node=node,
+        project=project,
+        request_gate_handler=_auto_deny_gate,
+        system_context="",
+        launch_instructions="",
+        minimal_mode=True,
+        tool_allowlist=list(_TOOL_ALLOWLIST),
+    )
+
+    context_path = Path(project.root_path) / "CONTEXT.md"
+    pre_mtime = _safe_mtime(context_path)
+
+    try:
+        async for ev in provider.run(context):
+            if ev.kind == "error":
+                raise RuntimeError(ev.error or "provider error")
+            if ev.kind == "done":
+                break
+    except asyncio.CancelledError:
+        try:
+            await provider.interrupt()
+        except Exception:  # noqa: BLE001
+            logger.exception("provider interrupt failed during cancellation")
+        raise
+
+    if record.mode == "init" and not context_path.exists():
+        raise RuntimeError(
+            "agent finished without writing CONTEXT.md during init",
+        )
+
+    post_mtime = _safe_mtime(context_path)
+    rewritten = post_mtime is not None and post_mtime != pre_mtime
+
+    _write_meta(project, mode=record.mode, started_at=record.started_at, rewritten=rewritten)
+
+
+def _load_preset(mode: str) -> str:
+    name = "context_init.md" if mode == "init" else "context_refresh.md"
+    return (_PROMPT_DIR / name).read_text(encoding="utf-8")
+
+
+async def _auto_deny_gate(_: GateRequest) -> dict[str, Any]:
+    return {"allow": False, "message": "out-of-band agent cannot prompt the user"}
+
+
+def _safe_mtime(path: Path) -> float | None:
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return None
+
+
+def _write_meta(
+    project: Project,
+    *,
+    mode: str,
+    started_at: float,
+    rewritten: bool,
+) -> None:
+    meta_path = Path(project.root_path) / ".miniclaw2" / "context.meta.json"
     _atomic_write_text(
         meta_path,
         json.dumps(
             {
                 "updated_at": started_at,
                 "source": mode,
+                "rewritten": rewritten,
             },
             ensure_ascii=False,
             indent=2,
         ),
     )
-
-
-def _repo_digest(root: Path) -> dict[str, Any]:
-    top_level: list[str] = []
-    headers: dict[str, str] = {}
-    try:
-        entries = sorted(root.iterdir(), key=lambda p: p.name.lower())
-    except OSError:
-        entries = []
-
-    for entry in entries[:80]:
-        if entry.name in {".git", ".miniclaw2", "node_modules", "__pycache__"}:
-            continue
-        suffix = "/" if entry.is_dir() else ""
-        top_level.append(f"{entry.name}{suffix}")
-
-    key_names = {
-        "README.md",
-        "pyproject.toml",
-        "package.json",
-        "vite.config.ts",
-        "tsconfig.json",
-        "Cargo.toml",
-        "go.mod",
-        "requirements.txt",
-    }
-    for name in sorted(key_names):
-        path = root / name
-        if not path.exists() or not path.is_file():
-            continue
-        try:
-            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
-        except OSError:
-            continue
-        headers[name] = "\n".join(lines[:40]).strip()
-
-    return {"top_level": top_level, "headers": headers}
-
-
-def _render_context(
-    project: Project,
-    *,
-    mode: str,
-    digest: dict[str, Any],
-    existing: str,
-) -> str:
-    title = project.name.strip() or Path(project.root_path).name or "Project"
-    top_level = digest.get("top_level") if isinstance(digest, dict) else []
-    headers = digest.get("headers") if isinstance(digest, dict) else {}
-    tree = "\n".join(f"- {item}" for item in top_level if isinstance(item, str))
-    header_notes: list[str] = []
-    if isinstance(headers, dict):
-        for name, text in headers.items():
-            if not isinstance(name, str) or not isinstance(text, str):
-                continue
-            first = next((line.strip() for line in text.splitlines() if line.strip()), "")
-            if first:
-                header_notes.append(f"- `{name}` starts with: {first[:160]}")
-            else:
-                header_notes.append(f"- `{name}` is present.")
-    header_text = "\n".join(header_notes)
-    generated = _render_generated_digest(tree=tree, header_text=header_text)
-    if mode == "refresh" and existing.strip():
-        marked = _replace_generated_digest(existing, generated)
-        if marked is not None:
-            return marked
-        return _ensure_trailing_newline(
-            (
-                f"# {title} Context\n\n"
-                "This is a plan-free project handbook loaded at the start of each run.\n\n"
-                f"{generated}\n\n"
-                "## Existing Project Guidance\n\n"
-                f"{existing.rstrip()}"
-            )
-        )
-    return _ensure_trailing_newline(
-        (
-            f"# {title} Context\n\n"
-            "This is a plan-free project handbook loaded at the start of each run.\n\n"
-            f"{generated}\n\n"
-            "## Notes For Agents\n\n"
-            "- Re-read the repository before making claims about current behavior.\n"
-            "- Keep plans, decisions, and open questions in direction notebooks, not here.\n"
-            "- Treat this file as editable project guidance.\n"
-        )
-    )
-
-
-def _render_generated_digest(*, tree: str, header_text: str) -> str:
-    return (
-        f"{_GENERATED_START}\n"
-        "<!-- This block is regenerated by MiniClaw2. Add hand-written guidance outside it. -->\n\n"
-        "## Project Shape\n\n"
-        f"{tree or '- No top-level files were readable.'}\n\n"
-        "## Useful File Signals\n\n"
-        f"{header_text or '- No standard project metadata files were found.'}\n"
-        f"{_GENERATED_END}"
-    )
-
-
-def _replace_generated_digest(existing: str, generated: str) -> str | None:
-    start = existing.find(_GENERATED_START)
-    if start < 0:
-        return None
-    end = existing.find(_GENERATED_END, start + len(_GENERATED_START))
-    if end < 0:
-        return None
-    end += len(_GENERATED_END)
-    parts = [
-        part
-        for part in (
-            existing[:start].rstrip(),
-            generated,
-            existing[end:].lstrip(),
-        )
-        if part
-    ]
-    return _ensure_trailing_newline("\n\n".join(parts))
-
-
-def _ensure_trailing_newline(text: str) -> str:
-    return text.rstrip() + "\n"
 
 
 def _atomic_write_text(path: Path, text: str) -> None:

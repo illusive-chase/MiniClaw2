@@ -8,6 +8,7 @@ import logging
 import os
 from collections import deque
 from collections.abc import AsyncIterator
+from pathlib import Path
 from typing import Any
 
 from ..domain import GateSubtype
@@ -67,20 +68,15 @@ class CodexProvider:
                     context.node.prompt,
                     getattr(context, "launch_instructions", ""),
                 )
-                if fresh_thread and context.system_context:
+                # Minimal mode (out-of-band framework agent) deliberately
+                # does not inject the project's own CONTEXT.md — the agent
+                # reads it as a tool when needed.
+                minimal_mode = getattr(context, "minimal_mode", False)
+                if fresh_thread and context.system_context and not minimal_mode:
                     turn_text = f"{context.system_context}\n\n{turn_text}"
                 turn = await client.request(
                     "turn/start",
-                    {
-                        "threadId": thread_id,
-                        "input": [
-                            {
-                                "type": "text",
-                                "text": turn_text,
-                                "text_elements": [],
-                            }
-                        ],
-                    },
+                    _turn_params(context, thread_id, turn_text),
                 )
                 turn_id = turn.get("turn", {}).get("id")
                 if not turn_id:
@@ -591,12 +587,51 @@ def _thread_params(
     _set_if_present(params, "model", settings.get("model"))
     _set_if_present(params, "modelProvider", settings.get("model_provider"))
     _set_if_present(params, "serviceTier", settings.get("service_tier"))
-    _set_if_present(params, "approvalPolicy", settings.get("approval_policy"))
-    _set_if_present(params, "sandbox", settings.get("sandbox"))
+    if getattr(context, "minimal_mode", False):
+        # Out-of-band framework agent: no UI to answer approvals on, so
+        # disable interactive approvals and avoid inheriting a project
+        # sandbox override that could be read-only or danger-full-access.
+        params["approvalPolicy"] = "never"
+        params["sandbox"] = "workspace-write"
+    else:
+        _set_if_present(params, "approvalPolicy", settings.get("approval_policy"))
+        _set_if_present(params, "sandbox", settings.get("sandbox"))
     _set_if_present(params, "config", settings.get("codex_config"))
     if "threadId" not in params:
         params["serviceName"] = "MiniClaw2"
     return params
+
+
+def _turn_params(
+    context: AgentProviderContext,
+    thread_id: str,
+    turn_text: str,
+) -> dict[str, Any]:
+    params: dict[str, Any] = {
+        "threadId": thread_id,
+        "input": [
+            {
+                "type": "text",
+                "text": turn_text,
+                "text_elements": [],
+            }
+        ],
+    }
+    if getattr(context, "minimal_mode", False):
+        params["approvalPolicy"] = "never"
+        params["sandboxPolicy"] = _minimal_context_sandbox_policy(context)
+    return params
+
+
+def _minimal_context_sandbox_policy(context: AgentProviderContext) -> dict[str, Any]:
+    project_root = Path(context.project.root_path).resolve(strict=False)
+    return {
+        "type": "workspaceWrite",
+        "writableRoots": [str(project_root)],
+        "networkAccess": False,
+        "excludeTmpdirEnvVar": True,
+        "excludeSlashTmp": True,
+    }
 
 
 def _set_if_present(target: dict[str, Any], key: str, value: Any) -> None:

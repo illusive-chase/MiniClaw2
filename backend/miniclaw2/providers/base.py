@@ -53,6 +53,8 @@ class AgentProviderContext:
     request_gate_handler: Callable[[GateRequest], Awaitable[dict[str, Any]]]
     system_context: str = ""
     launch_instructions: str = ""
+    minimal_mode: bool = False
+    tool_allowlist: list[str] | None = None
 
     async def request_gate(self, gate: GateRequest) -> dict[str, Any]:
         return await self.request_gate_handler(gate)

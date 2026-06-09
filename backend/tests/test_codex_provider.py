@@ -4,11 +4,17 @@ import asyncio
 import json
 import unittest
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
 from miniclaw2.domain import GateSubtype
-from miniclaw2.providers.codex import CodexProvider, _CodexJsonRpcClient
+from miniclaw2.providers.codex import (
+    CodexProvider,
+    _CodexJsonRpcClient,
+    _thread_params,
+    _turn_params,
+)
 
 
 class _FakeStdin:
@@ -97,6 +103,33 @@ class _FakeProviderContext:
 
 
 class CodexProviderTest(unittest.IsolatedAsyncioTestCase):
+    def test_minimal_thread_and_turn_params_pin_context_sandbox(self) -> None:
+        ctx = _FakeProviderContext(
+            settings_override={
+                "approval_policy": "untrusted",
+                "sandbox": "danger-full-access",
+            }
+        )
+        ctx.minimal_mode = True
+
+        thread_params = _thread_params(ctx, {"cwd": "/tmp/workspace"})  # type: ignore[arg-type]
+        turn_params = _turn_params(ctx, "thread-1", "refresh context")  # type: ignore[arg-type]
+
+        self.assertEqual(thread_params["approvalPolicy"], "never")
+        self.assertEqual(thread_params["sandbox"], "workspace-write")
+        self.assertEqual(turn_params["approvalPolicy"], "never")
+        expected_project_root = str(Path("/tmp/workspace").resolve(strict=False))
+        self.assertEqual(
+            turn_params["sandboxPolicy"],
+            {
+                "type": "workspaceWrite",
+                "writableRoots": [expected_project_root],
+                "networkAccess": False,
+                "excludeTmpdirEnvVar": True,
+                "excludeSlashTmp": True,
+            },
+        )
+
     async def test_initialize_fails_when_app_server_exits_before_reply(self) -> None:
         def on_request(payload: dict[str, Any]) -> None:
             fake_proc.feed_stderr("codex app-server stderr: unable to start")
