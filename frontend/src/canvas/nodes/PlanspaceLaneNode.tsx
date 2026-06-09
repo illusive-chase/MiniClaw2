@@ -3,10 +3,12 @@ import type { NodeProps } from "reactflow";
 import type { PlanspaceLaneData } from "../layout";
 
 function PlanspaceLaneNodeImpl({ data }: NodeProps<PlanspaceLaneData>) {
-  const ctx = planspaceLaneContext;
   return (
     <div
-      className="rounded-md border"
+      /* `overflow-hidden` keeps the header's hover background within the rounded
+       * border. Without it, the header's `hover:bg-...` paints past the rounded
+       * top corners of the lane outline. */
+      className="overflow-hidden rounded-md border"
       style={{
         width: data.width,
         height: data.height,
@@ -15,53 +17,30 @@ function PlanspaceLaneNodeImpl({ data }: NodeProps<PlanspaceLaneData>) {
         boxShadow: data.active ? `0 0 0 1px ${data.color.accent}` : undefined,
       }}
     >
-      {/* The header is the lane's drag handle — `dragHandle` on the rfNode
-       * points to `.planspace-lane-drag-handle` so React Flow only starts a
-       * lane drag from here. Inner buttons mark themselves `nodrag` to keep
-       * click behavior intact. */}
+      {/* The whole header is the drag handle (no inner buttons that would
+       * swallow drag-starts on the label text). Clicking the lane is handled
+       * by React Flow's onNodeClick in Canvas, which selects the planspace,
+       * so this div doesn't need its own onClick. */}
       <div
         className="planspace-lane-drag-handle flex h-8 w-full cursor-grab items-center gap-2 border-b px-3 text-[10px] font-medium uppercase tracking-[0.14em] transition hover:bg-surface-raised/40 active:cursor-grabbing"
         style={{
           borderColor: data.color.border,
           color: data.color.text,
         }}
+        title="Drag to move · click to open direction"
       >
-        <button
-          type="button"
-          onClick={(event) => {
-            event.stopPropagation();
-            ctx.onSelectPlanspace(data.planspaceId);
-          }}
-          onMouseDown={(event) => event.stopPropagation()}
-          className="nodrag flex min-w-0 flex-1 items-center gap-2 text-left"
-          title="Open direction notebook"
-        >
-          <span
-            className="inline-block h-1.5 w-1.5 flex-none rounded-full"
-            style={{ background: data.color.accent }}
-            aria-hidden="true"
-          />
-          <span className="truncate">{data.label}</span>
-          {data.active && (
-            <span className="flex-none rounded border border-current/30 px-1 py-px font-mono text-[9px] opacity-80">
-              active
-            </span>
-          )}
-          <span className="flex-none font-mono opacity-70">{data.nodeCount} nodes</span>
-        </button>
-        <button
-          type="button"
-          onClick={(event) => {
-            event.stopPropagation();
-            ctx.onTogglePlanspaceVisibility(data.planspaceId, true);
-          }}
-          onMouseDown={(event) => event.stopPropagation()}
-          className="nodrag flex-none rounded px-1 text-[12px] opacity-70 hover:bg-surface-raised hover:opacity-100"
-          title="Hide direction"
-          aria-label="Hide direction"
-        >
-          ◌
-        </button>
+        <span
+          className="inline-block h-1.5 w-1.5 flex-none rounded-full"
+          style={{ background: data.color.accent }}
+          aria-hidden="true"
+        />
+        <span className="truncate">{data.label}</span>
+        {data.active && (
+          <span className="flex-none rounded border border-current/30 px-1 py-px font-mono text-[9px] opacity-80">
+            active
+          </span>
+        )}
+        <span className="ml-auto flex-none font-mono opacity-70">{data.nodeCount} nodes</span>
       </div>
     </div>
   );
@@ -69,18 +48,15 @@ function PlanspaceLaneNodeImpl({ data }: NodeProps<PlanspaceLaneData>) {
 
 export const PlanspaceLaneNode = memo(PlanspaceLaneNodeImpl);
 
-/* Module-level singleton: App.tsx wires the selection callback so the lane
- * header can route clicks without prop-drilling through React Flow data. */
+/* Legacy singleton kept for backwards compatibility with App.tsx's
+ * setPlanspaceLaneContext call. The node no longer reads from it — selection
+ * is routed via React Flow's onNodeClick in Canvas.tsx — but removing the
+ * setter would force a churny edit in App.tsx for no behavior change. */
 export type PlanspaceLaneContext = {
   onSelectPlanspace: (planspaceId: string) => void;
   onTogglePlanspaceVisibility: (planspaceId: string, hidden: boolean) => void;
 };
 
-let planspaceLaneContext: PlanspaceLaneContext = {
-  onSelectPlanspace: () => {},
-  onTogglePlanspaceVisibility: () => {},
-};
-
-export function setPlanspaceLaneContext(ctx: PlanspaceLaneContext): void {
-  planspaceLaneContext = ctx;
+export function setPlanspaceLaneContext(_ctx: PlanspaceLaneContext): void {
+  // no-op
 }

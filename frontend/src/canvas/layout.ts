@@ -108,10 +108,15 @@ export const LANE = {
   opWidth: 96,
   opSpacing: 140,
   gateSpacing: 240,
-  planspaceLaneSpacing: 220,
-  planspaceLanePaddingX: 28,
-  planspaceLaneTopPad: 44,
-  planspaceLaneHeight: 164,
+  /* Lane is laid out vertically as: header band → ctx row → agent row → bottom pad.
+   * Y values below are RELATIVE positions inside the lane (origin = lane top-left). */
+  planspaceLaneSpacing: 360,
+  planspaceLanePaddingX: 40,
+  planspaceLaneCtxRowY: 52,
+  planspaceLaneAgentRowY: 156,
+  planspaceLaneHeight: 320,
+  /* Horizontal step between ctx tiles inside a lane (tile width ~160 + gap). */
+  planspaceCtxStep: 180,
 };
 
 export const PLANSPACE_PALETTE: PlanspaceColor[] = [
@@ -239,7 +244,7 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
     const idx = planspaceIndex.get(id) ?? 0;
     const defaultPos = {
       x: LANE.rootX + 180 - LANE.planspaceLanePaddingX,
-      y: LANE.timelineY + idx * LANE.planspaceLaneSpacing - LANE.planspaceLaneTopPad,
+      y: LANE.timelineY + idx * LANE.planspaceLaneSpacing - LANE.planspaceLaneAgentRowY,
     };
     laneAbsPos.set(id, layoutHints[`planspace:${id}`] ?? defaultPos);
   }
@@ -357,7 +362,7 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
       if (opsWithChild.has(node.id)) return;
       const parent = node.parent_node_id ? (nodeById.get(node.parent_node_id) ?? null) : null;
       const position = planspaceId
-        ? placeInLane(LANE.opSpacing, LANE.opWidth, LANE.planspaceLaneTopPad)
+        ? placeInLane(LANE.opSpacing, LANE.opWidth, LANE.planspaceLaneAgentRowY)
         : placeFree(LANE.opSpacing);
       rfNodes.push({
         id: node.id,
@@ -372,7 +377,7 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
     } else if (node.kind === "gate") {
       const isLastInLane = !hasDescendantById.has(node.id);
       const position = planspaceId
-        ? placeInLane(LANE.gateSpacing, 200, LANE.planspaceLaneTopPad)
+        ? placeInLane(LANE.gateSpacing, 200, LANE.planspaceLaneAgentRowY)
         : placeFree(LANE.gateSpacing);
       rfNodes.push({
         id: node.id,
@@ -395,7 +400,7 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
     } else {
       const isLastInLane = !hasDescendantById.has(node.id);
       const position = planspaceId
-        ? placeInLane(LANE.agentSpacing, LANE.agentWidth, LANE.planspaceLaneTopPad)
+        ? placeInLane(LANE.agentSpacing, LANE.agentWidth, LANE.planspaceLaneAgentRowY)
         : placeFree(LANE.agentSpacing);
       rfNodes.push({
         id: node.id,
@@ -455,42 +460,6 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
       });
     }
   });
-
-  const laneNodes: RFNode[] = [];
-  for (const planspaceId of planspaceOrder) {
-    const pos = laneAbsPos.get(planspaceId);
-    if (!pos) continue;
-    const maxRight = laneChildMaxX.get(planspaceId) ?? (LANE.planspaceLanePaddingX + LANE.agentWidth);
-    const width = Math.max(
-      LANE.agentWidth + LANE.planspaceLanePaddingX * 2,
-      maxRight + LANE.planspaceLanePaddingX,
-    );
-    const color =
-      laneColors.get(planspaceId) ??
-      colorForPlanspace(planspaceId, planspaceIndex, planspaceColorOverrides) ??
-      PLANSPACE_PALETTE[0];
-    laneNodes.push({
-      id: `planspace:${planspaceId}`,
-      type: "planspaceLane",
-      position: pos,
-      data: {
-        planspaceId,
-        label: labelForPlanspace(planspaceId),
-        nodeCount: laneChildCount.get(planspaceId) ?? 0,
-        width,
-        height: LANE.planspaceLaneHeight,
-        color,
-        active: planspaceId === activePlanspaceId,
-      },
-      selectable: true,
-      draggable: true,
-      /* Only the header is a drag handle. The body stays interactive for clicks
-       * on children (whose pointer events are above the lane via z-index). */
-      dragHandle: ".planspace-lane-drag-handle",
-      zIndex: -20,
-    });
-  }
-  rfNodes.splice(1, 0, ...laneNodes);
 
   /* error terminals — a small red-edged downstream node per failed run.
    * The owning agent keeps its own error state; the terminal puts the failure
@@ -575,23 +544,48 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
     }
   }
 
-  /* Project-root CONTEXT.md occupies its own neutral top stripe; everything
-   * else (planspace STATUS/PLAN, skill CONTEXT, …) lives in the colored
-   * context lane below it. The split makes "plan-free reference" vs
-   * "planspace state" visually distinct. */
+  /* Three placement regimes for ctx tiles:
+   *   - Project-root scope → neutral top stripe (project-wide reference).
+   *   - plugId names a known planspace → joins that lane as a child, so
+   *     STATUS/PLAN/CONTEXT live visually inside the planspace they belong to.
+   *   - Everything else (skill CONTEXT not bound to a planspace, …) lives in
+   *     the floating "loaded context" stripe below the top one.
+   * The split keeps project-wide references separate from planspace-owned
+   * memory while still showing free-form loads. */
   let projectCtxCursorX = LANE.rootX + 180;
   let laneCtxCursorX = LANE.rootX + 180;
+  const inLaneCtxCursor = new Map<string, number>();
   for (const agg of ctxAgg.values()) {
     const ctxId = `ctx:${agg.identityKey}`;
     const stored = layoutHints[ctxId];
     const isProject = agg.scope === "project-root";
-    const fallbackPos = isProject
-      ? { x: projectCtxCursorX, y: LANE.projectContextLaneY }
-      : { x: laneCtxCursorX, y: LANE.contextLaneY };
+    const homeLaneId =
+      !isProject && agg.plugId && planspaceOrder.includes(agg.plugId)
+        ? agg.plugId
+        : null;
+    let position: { x: number; y: number };
+    let parentNode: string | undefined;
+    let extent: "parent" | undefined;
+    if (homeLaneId) {
+      const cursor =
+        inLaneCtxCursor.get(homeLaneId) ?? LANE.planspaceLanePaddingX;
+      position = stored ?? { x: cursor, y: LANE.planspaceLaneCtxRowY };
+      inLaneCtxCursor.set(homeLaneId, cursor + LANE.planspaceCtxStep);
+      parentNode = `planspace:${homeLaneId}`;
+      extent = "parent";
+      /* Width here matches ContextNode (160 for non-project tiles). */
+      recordChildExtent(homeLaneId, position.x, 160);
+    } else if (isProject) {
+      position = stored ?? { x: projectCtxCursorX, y: LANE.projectContextLaneY };
+      projectCtxCursorX += 240;
+    } else {
+      position = stored ?? { x: laneCtxCursorX, y: LANE.contextLaneY };
+      laneCtxCursorX += 180;
+    }
     rfNodes.push({
       id: ctxId,
       type: "context",
-      position: stored ?? fallbackPos,
+      position,
       data: {
         identityKey: agg.identityKey,
         scope: agg.scope,
@@ -603,12 +597,8 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
         plugId: agg.plugId ?? null,
       },
       draggable: true,
+      ...(parentNode ? { parentNode, extent } : {}),
     });
-    if (isProject) {
-      projectCtxCursorX += 240;
-    } else {
-      laneCtxCursorX += 180;
-    }
     for (const ownerId of agg.loadedBy) {
       rfEdges.push({
         id: `ld:${ctxId}->${ownerId}`,
@@ -618,6 +608,46 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
       });
     }
   }
+
+  /* Lane swimlanes. Constructed AFTER both the main child loop and the ctx
+   * loop so the per-lane width includes the longest of (agent row, ctx row).
+   * Spliced at index 1 so lanes sit right after `root` and before all of
+   * their children in the rfNodes array — React Flow requires parents to come
+   * before their children. */
+  const laneNodes: RFNode[] = [];
+  for (const planspaceId of planspaceOrder) {
+    const pos = laneAbsPos.get(planspaceId);
+    if (!pos) continue;
+    const maxRight =
+      laneChildMaxX.get(planspaceId) ?? (LANE.planspaceLanePaddingX + LANE.agentWidth);
+    const width = Math.max(
+      LANE.agentWidth + LANE.planspaceLanePaddingX * 2,
+      maxRight + LANE.planspaceLanePaddingX,
+    );
+    const color =
+      laneColors.get(planspaceId) ??
+      colorForPlanspace(planspaceId, planspaceIndex, planspaceColorOverrides) ??
+      PLANSPACE_PALETTE[0];
+    laneNodes.push({
+      id: `planspace:${planspaceId}`,
+      type: "planspaceLane",
+      position: pos,
+      data: {
+        planspaceId,
+        label: labelForPlanspace(planspaceId),
+        nodeCount: laneChildCount.get(planspaceId) ?? 0,
+        width,
+        height: LANE.planspaceLaneHeight,
+        color,
+        active: planspaceId === activePlanspaceId,
+      },
+      selectable: true,
+      draggable: true,
+      dragHandle: ".planspace-lane-drag-handle",
+      zIndex: -20,
+    });
+  }
+  rfNodes.splice(1, 0, ...laneNodes);
 
   /* planspace-update arrows — when an agent wrote back into a context node
    * (planspace), draw a +Δ edge from the agent to that context node.
@@ -684,7 +714,7 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
         laneChildMaxX.get(activePlanspaceId) ?? LANE.planspaceLanePaddingX;
       position = {
         x: laneAbs.x + maxRight + LANE.planspaceLanePaddingX,
-        y: laneAbs.y + LANE.planspaceLaneTopPad,
+        y: laneAbs.y + LANE.planspaceLaneAgentRowY,
       };
     } else {
       position = { x: freeCursorX, y: LANE.timelineY };

@@ -27,9 +27,13 @@ function AgentNodeImpl({ data, selected }: NodeProps<AgentNodeData>) {
 
   return (
     <div className="group relative w-[224px]" title={tooltipForAgent(node, isActive)}>
+      {/* `relative` here so the rail/bar (absolute children below) treat THIS
+       * div as their containing block — otherwise they'd anchor to the outer
+       * `group relative` ancestor and escape this div's `overflow-hidden`,
+       * extending past the rounded corners. */}
       <div
         className={
-          "select-none overflow-hidden rounded-lg border text-left shadow-card transition " +
+          "relative select-none overflow-hidden rounded-lg border text-left shadow-card transition " +
           (selected
             ? "border-brand ring-2 ring-brand ring-offset-2 ring-offset-surface-sunken"
             : "border-line hover:border-line-strong hover:ring-2 hover:ring-line-strong/45 hover:ring-offset-2 hover:ring-offset-surface-sunken hover:shadow-raised") +
@@ -113,16 +117,6 @@ function AgentNodeImpl({ data, selected }: NodeProps<AgentNodeData>) {
         />
       )}
 
-      {/* resumed-from badge */}
-      {resumeParent && (
-        <span
-          className="pointer-events-none absolute -top-2 left-3 rounded-full border border-brand/40 bg-surface-raised px-1.5 py-0.5 font-mono text-[9px] text-brand-ink shadow-card"
-          title={`Resumed from ${resumeParent.id}`}
-        >
-          ↻ {resumeParent.id.slice(0, 6)}
-        </span>
-      )}
-
       {/* live streaming dot */}
       {isActive && (
         <span
@@ -155,6 +149,17 @@ function AgentNodeImpl({ data, selected }: NodeProps<AgentNodeData>) {
         className="!h-3 !w-3 !border-2 !border-line !bg-surface !opacity-0"
       />
       </div>
+
+      {/* resumed-from badge — sits OUTSIDE the inner overflow-hidden div so
+       * `-top-2` pokes above the tile instead of being clipped. */}
+      {resumeParent && (
+        <span
+          className="pointer-events-none absolute -top-2 left-3 rounded-full border border-brand/40 bg-surface-raised px-1.5 py-0.5 font-mono text-[9px] text-brand-ink shadow-card"
+          title={`Resumed from ${resumeParent.id}`}
+        >
+          ↻ {resumeParent.id.slice(0, 6)}
+        </span>
+      )}
 
       {/* Hover-only "+" affordance: only on tail tiles, opens a phantom composer
        * to the right. Half-overlapping the edge so cursor moves from tile to
