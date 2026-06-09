@@ -266,7 +266,7 @@ export function App() {
 
   const startNewDirection = useCallback(
     async (userSeed: string, needsReview: boolean) => {
-      if (!session?.id) return;
+      if (!session?.id || sessionSettingsSaving) return;
       setSessionContextSpaceSaving(true);
       setSessionContextSpaceError(null);
       setStreaming(true);
@@ -287,7 +287,7 @@ export function App() {
         setSessionContextSpaceSaving(false);
       }
     },
-    [session?.id, refreshContextSpace, refreshNodes],
+    [session?.id, sessionSettingsSaving, refreshContextSpace, refreshNodes],
   );
 
   const runContextInit = useCallback(async () => {
@@ -568,7 +568,8 @@ export function App() {
     route === "project" ? (session?.id ?? null) : null,
     handleEvent,
   );
-  const composerDisabled = composerLocked || streaming || status !== "open";
+  const composerDisabled =
+    composerLocked || streaming || sessionSettingsSaving || status !== "open";
 
   /* launch via the phantom */
   const launchAgentNode = useCallback(

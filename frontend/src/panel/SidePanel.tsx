@@ -77,7 +77,7 @@ export function SidePanel(props: SidePanelProps) {
   const nodesById = new Map(props.nodes.map((n) => [n.id, n]));
 
   return (
-    <aside className="flex w-[520px] flex-none flex-col border-l border-line bg-surface-sunken">
+    <aside className="flex w-[650px] flex-none flex-col border-l border-line bg-surface-sunken">
       <Inner {...props} nodesById={nodesById} />
     </aside>
   );

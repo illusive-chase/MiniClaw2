@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 
 from miniclaw2.app import create_app
 from miniclaw2.domain import Node, NodeState, Project
+from miniclaw2.language import project_preferred_language
 from miniclaw2.providers.base import AgentProviderEvent
 from miniclaw2.registry import ProjectRegistry
 from miniclaw2.runner import NodeRunner
@@ -112,6 +113,48 @@ class LanguagePreferenceRegistryTest(unittest.TestCase):
 
             registry2.delete_project(pid)
             self.assertFalse(root.exists())
+
+    def test_updating_preferred_language_removes_settings_fallbacks(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            store_root = Path(raw) / "store"
+            registry = ProjectRegistry(store=Store(root=store_root))
+            project = registry.create_project(cwd=None, temporary=True)
+            project.settings_override = {
+                "language": "Japanese",
+                "preferred_language": "Russian",
+                "model": "test-model",
+            }
+
+            self.assertEqual(project_preferred_language(project), "Russian")
+
+            updated = registry.update_project_preferences(
+                project.id,
+                preferred_language=None,
+            )
+
+            assert updated is not None
+            self.assertIsNone(updated.preferred_language)
+            self.assertIsNone(project_preferred_language(updated))
+            self.assertNotIn("language", updated.settings_override)
+            self.assertNotIn("preferred_language", updated.settings_override)
+            self.assertEqual(updated.settings_override["model"], "test-model")
+
+            updated.settings_override = {
+                "language": "Japanese",
+                "preferred_language": "Russian",
+                "model": "test-model",
+            }
+            updated = registry.update_project_preferences(
+                project.id,
+                preferred_language="Hindi",
+            )
+
+            assert updated is not None
+            self.assertEqual(updated.preferred_language, "Hindi")
+            self.assertEqual(project_preferred_language(updated), "Hindi")
+            self.assertNotIn("language", updated.settings_override)
+            self.assertNotIn("preferred_language", updated.settings_override)
+            self.assertEqual(updated.settings_override["model"], "test-model")
 
 
 class LanguagePreferenceRunnerTest(unittest.IsolatedAsyncioTestCase):

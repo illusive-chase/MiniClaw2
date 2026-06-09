@@ -5,8 +5,10 @@ import rehypeHighlight from "rehype-highlight";
 
 import { getNodeStatusDelta } from "../api";
 import type {
+  Activity,
   ClientMessage,
   ContextBundle,
+  ContextBundleSource,
   EventRecord,
   InteractionRequest,
   NodeStatusDelta,
@@ -52,8 +54,8 @@ type PlanspaceUpdateSummary = {
 /**
  * Single progressive panel for a selected agent run.
  *
- * Sections: headline → Result → Activity → Pending → Inspect▸
- * No tabs. Selection drives polymorphism.
+ * Three primary cards: Agent Input → Planspace Change → Activity.
+ * Thinking and raw fields live behind disclosures.
  */
 export function AgentPanel({
   sessionId,
@@ -73,30 +75,13 @@ export function AgentPanel({
   const headline = (node.summary || node.prompt || "(no prompt)").trim();
   const resumeParentLabel = node.parent_node_id ? node.parent_node_id.slice(0, 8) : null;
 
-  /* Last assistant text block — feeds the "Result" section when no artifact. */
-  const lastText = useMemo(() => {
-    for (let i = turns.length - 1; i >= 0; i--) {
-      const t = turns[i];
-      if (t.role !== "assistant") continue;
-      const direct = t.text.trim();
-      if (direct) return direct;
-      const textBlock = [...t.blocks].reverse().find((b) => b.kind === "text");
-      if (textBlock && textBlock.kind === "text") return textBlock.text.trim();
-    }
-    return "";
-  }, [turns]);
+  /* Interleaved transcript items: text + tool activity in chronological order. */
+  const transcriptItems = useMemo(() => flattenTranscript(turns), [turns]);
+  const toolCallCount = useMemo(
+    () => transcriptItems.reduce((n, item) => n + (item.kind === "tools" ? item.items.length : 0), 0),
+    [transcriptItems],
+  );
 
-  /* Tool activity — flatten across all assistant turns, collapsed by default. */
-  const activityItems = useMemo(() => {
-    const out: import("../types").Activity[] = [];
-    for (const t of turns) {
-      if (t.role !== "assistant") continue;
-      for (const block of t.blocks) {
-        if (block.kind === "activity") out.push(...block.items);
-      }
-    }
-    return out;
-  }, [turns]);
   const [statusDelta, setStatusDelta] = useState<NodeStatusDelta | null>(null);
   const [statusDeltaLoading, setStatusDeltaLoading] = useState(false);
 
@@ -121,8 +106,7 @@ export function AgentPanel({
     };
   }, [sessionId, node.id, node.finished_at, node.settings_snapshot]);
 
-  const activityDefaultOpen =
-    !isTerminal(node.state) || (!statusDelta && !statusDeltaLoading);
+  const activityDefaultOpen = !isTerminal(node.state) || transcriptItems.length > 0;
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
@@ -169,26 +153,26 @@ export function AgentPanel({
           </section>
         )}
 
-        {/* Result */}
+        {/* Agent input */}
         <section className="mb-5">
-          <SectionHeading>What this run changed</SectionHeading>
-          {node.error ? (
-            <pre className="mt-2 whitespace-pre-wrap rounded-md border border-state-error/30 bg-state-error-soft p-3 text-xs text-state-error">
-              {node.error}
-            </pre>
-          ) : (
-            <PlanspaceDeltaResult
-              node={node}
-              update={planspaceUpdate}
-              statusDelta={statusDelta}
-              loading={statusDeltaLoading}
-              assistantText={lastText}
-              streaming={node.state === "running"}
-            />
-          )}
+          <AgentInputCard
+            node={node}
+            contextBundle={contextBundle}
+            loading={contextBundleLoading}
+          />
         </section>
 
-        {/* Activity */}
+        {/* Planspace change */}
+        <section className="mb-5">
+          <PlanspaceChangeCard
+            node={node}
+            update={planspaceUpdate}
+            statusDelta={statusDelta}
+            loading={statusDeltaLoading}
+          />
+        </section>
+
+        {/* Activity — text and tool use interleaved */}
         <section className="mb-5">
           <details
             open={activityDefaultOpen}
@@ -200,21 +184,18 @@ export function AgentPanel({
                   <span className="text-[10px] font-normal normal-case tracking-normal text-ink-subtle">
                     {eventsLoading
                       ? "loading..."
-                      : `${activityItems.length} tool ${activityItems.length === 1 ? "call" : "calls"} · ${events.length} events`}
+                      : `${toolCallCount} tool ${toolCallCount === 1 ? "call" : "calls"} · ${events.length} events`}
                   </span>
                 }
               >
                 Activity
               </SectionHeading>
             </summary>
-            <div className="border-t border-line px-3 py-2">
-              {activityItems.length === 0 ? (
-                <div className="rounded-md border border-line bg-surface px-3 py-2 text-[11.5px] text-ink-muted">
-                  No tool calls yet.
-                </div>
-              ) : (
-                <ToolActivity items={activityItems} />
-              )}
+            <div className="border-t border-line px-3 py-3">
+              <ActivityTranscript
+                items={transcriptItems}
+                streaming={node.state === "running"}
+              />
             </div>
           </details>
         </section>
@@ -266,10 +247,516 @@ function SectionHeading({
   );
 }
 
-function AssistantResult({ text, streaming }: { text: string; streaming?: boolean }) {
-  if (!text) {
+/* ─────────────────────────────────────────── */
+/* Agent input card                              */
+/* ─────────────────────────────────────────── */
+
+function AgentInputCard({
+  node,
+  contextBundle,
+  loading,
+}: {
+  node: NodeInfo;
+  contextBundle: ContextBundle | null;
+  loading: boolean;
+}) {
+  const systemSources = useMemo(
+    () => (contextBundle?.sources ?? []).filter((s) => s.injection === "system"),
+    [contextBundle],
+  );
+  const turnSources = useMemo(
+    () => (contextBundle?.sources ?? []).filter((s) => s.injection === "turn"),
+    [contextBundle],
+  );
+  const systemText =
+    contextBundle?.system_text?.trim() || node.system_context_snapshot?.trim() || "";
+  const turnText = contextBundle?.turn_text?.trim() || "";
+  const userPrompt = node.prompt?.trim() || "";
+
+  return (
+    <div className="overflow-hidden rounded-md border border-line bg-surface-sunken">
+      <div className="border-b border-line px-3 py-2">
+        <SectionHeading
+          right={
+            loading ? (
+              <span className="text-[10px] font-normal normal-case tracking-normal text-ink-subtle">
+                loading…
+              </span>
+            ) : null
+          }
+        >
+          Agent input
+        </SectionHeading>
+      </div>
+      <div className="space-y-2 px-3 py-3">
+        <PromptBlock
+          label="System prompt"
+          text={systemText}
+          sources={systemSources}
+        />
+        <PromptBlock
+          label="Input prompt"
+          text={userPrompt}
+          extras={turnText ? [{ label: "turn injection", text: turnText }] : []}
+          sources={turnSources}
+        />
+      </div>
+    </div>
+  );
+}
+
+function PromptBlock({
+  label,
+  text,
+  extras = [],
+  sources = [],
+}: {
+  label: string;
+  text: string;
+  extras?: Array<{ label: string; text: string }>;
+  sources?: ContextBundleSource[];
+}) {
+  const totalChars = text.length + extras.reduce((n, e) => n + e.text.length, 0);
+  const fileSources = sources.filter((s) => s.path);
+  return (
+    <details className="overflow-hidden rounded border border-line bg-surface">
+      <summary className="flex cursor-pointer items-center justify-between gap-2 px-3 py-1.5">
+        <span className="text-[11px] font-medium text-ink">{label}</span>
+        <span className="font-mono text-[10.5px] text-ink-subtle">
+          {fileSources.length > 0 ? `${fileSources.length} file${fileSources.length === 1 ? "" : "s"} · ` : ""}
+          {totalChars} chars
+        </span>
+      </summary>
+      <div className="border-t border-line px-3 py-2">
+        {text ? (
+          <pre className="whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-ink">
+            {renderWithFootnotes(text, fileSources)}
+          </pre>
+        ) : (
+          <div className="text-[11px] text-ink-muted">No content.</div>
+        )}
+        {extras.map((extra, i) => (
+          <div key={i} className="mt-2 border-t border-line/60 pt-2">
+            <div className="mb-1 text-[10px] uppercase tracking-[0.12em] text-ink-subtle">
+              {extra.label}
+            </div>
+            <pre className="whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-ink">
+              {extra.text}
+            </pre>
+          </div>
+        ))}
+        {fileSources.length > 0 && (
+          <ol className="mt-3 list-none space-y-0.5 border-t border-line/60 pt-2 font-mono text-[10.5px] text-ink-muted">
+            {fileSources.map((src, i) => (
+              <li key={`${src.path}-${i}`} className="flex gap-2">
+                <span className="flex-none text-ink-subtle">[^{i + 1}]</span>
+                <span className="min-w-0 truncate" title={src.path}>
+                  {src.path}
+                  <span className="ml-1 text-ink-subtle">
+                    · {src.scope}/{src.kind}
+                    {src.plug_id ? ` · ${src.plug_id}` : ""}
+                  </span>
+                </span>
+              </li>
+            ))}
+          </ol>
+        )}
+      </div>
+    </details>
+  );
+}
+
+function renderWithFootnotes(text: string, sources: ContextBundleSource[]): string {
+  if (sources.length === 0) return text;
+  /* The backend writes `# Loaded Context: <plug_id or path> (<kind>)` headers
+   * above each injected source. Attach a footnote marker to the matching
+   * header so readers can jump to the references list below. */
+  let out = text;
+  sources.forEach((src, i) => {
+    const marker = `[^${i + 1}]`;
+    if (out.includes(marker)) return;
+    for (const candidate of [src.plug_id, src.path].filter(Boolean) as string[]) {
+      const re = new RegExp(
+        `^(# Loaded Context:\\s+${escapeRegExp(candidate)}[^\\n]*)$`,
+        "m",
+      );
+      if (re.test(out)) {
+        out = out.replace(re, `$1 ${marker}`);
+        break;
+      }
+    }
+  });
+  return out;
+}
+
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/* ─────────────────────────────────────────── */
+/* Planspace change card                         */
+/* ─────────────────────────────────────────── */
+
+function PlanspaceChangeCard({
+  node,
+  update,
+  statusDelta,
+  loading,
+}: {
+  node: NodeInfo;
+  update: PlanspaceUpdateSummary | null;
+  statusDelta: NodeStatusDelta | null;
+  loading: boolean;
+}) {
+  return (
+    <div className="overflow-hidden rounded-md border border-line bg-surface-sunken">
+      <div className="border-b border-line px-3 py-2">
+        <SectionHeading
+          right={
+            statusDelta ? (
+              <span className="text-[10px] font-normal normal-case tracking-normal text-ink-subtle">
+                {new Date(statusDelta.applied_at * 1000).toLocaleString()}
+              </span>
+            ) : null
+          }
+        >
+          Planspace change
+        </SectionHeading>
+      </div>
+      <div className="px-3 py-3">
+        {node.error ? (
+          <pre className="whitespace-pre-wrap rounded-md border border-state-error/30 bg-state-error-soft p-3 text-xs text-state-error">
+            {node.error}
+          </pre>
+        ) : (
+          <PlanspaceChangeBody
+            update={update}
+            statusDelta={statusDelta}
+            loading={loading}
+            node={node}
+          />
+        )}
+      </div>
+    </div>
+  );
+}
+
+function PlanspaceChangeBody({
+  node,
+  update,
+  statusDelta,
+  loading,
+}: {
+  node: NodeInfo;
+  update: PlanspaceUpdateSummary | null;
+  statusDelta: NodeStatusDelta | null;
+  loading: boolean;
+}) {
+  const fields = useMemo(
+    () =>
+      statusDelta ? buildFieldChanges(statusDelta.before, statusDelta.after) : [],
+    [statusDelta],
+  );
+  if (statusDelta) {
     return (
-      <div className="mt-2 rounded-md border border-line bg-surface-sunken px-3 py-3 text-[12.5px] text-ink-muted">
+      <div className="space-y-2">
+        <div className="flex items-center justify-between gap-2 font-mono text-[11px] text-ink-muted">
+          <span>{statusDelta.planspace_id}</span>
+        </div>
+        {fields.length === 0 ? (
+          <div className="rounded-md border border-line bg-surface px-3 py-2 text-[11.5px] text-ink-muted">
+            No field-level changes detected.
+          </div>
+        ) : (
+          <div className="space-y-1.5">
+            {fields.map((f) => (
+              <FieldChangeCard key={f.field} change={f} />
+            ))}
+          </div>
+        )}
+        <details className="mt-2 overflow-hidden rounded border border-line bg-surface">
+          <summary className="cursor-pointer px-3 py-2 text-[10px] font-medium uppercase tracking-[0.14em] text-ink-muted hover:text-ink">
+            View raw STATUS diff
+          </summary>
+          <RawStatusDiff before={statusDelta.before} after={statusDelta.after} />
+        </details>
+      </div>
+    );
+  }
+  if (loading && update && (update.applied || update.proposed)) {
+    return (
+      <div className="rounded-md border border-line bg-surface px-3 py-2 text-[11.5px] text-ink-muted">
+        Loading STATUS delta…
+      </div>
+    );
+  }
+  if (node.requires_review && update?.staged) {
+    return (
+      <div className="rounded-md border border-state-waiting/30 bg-state-waiting-soft/30 px-3 py-2 text-[12px] text-ink">
+        <div className="font-medium text-ink-strong">Staged for review</div>
+        <div className="mt-0.5 text-[11.5px] text-ink-muted">
+          Interim update parked in{" "}
+          <span className="font-mono">{update.planspace_id ?? "—"}</span>
+          {"; the gate's resolution will merge the user's judgment back into the planspace."}
+        </div>
+      </div>
+    );
+  }
+  if (update && (update.applied || update.proposed)) {
+    const planspaceId = update.planspace_id ?? "—";
+    return (
+      <div className="rounded-md border border-line bg-surface px-3 py-2 text-[12px] text-ink-strong">
+        <div className="font-mono text-[11px] text-ink-muted">{planspaceId}</div>
+        <div className="mt-2 flex flex-wrap gap-2 text-[11px]">
+          <span className="rounded bg-state-review-soft px-1.5 py-0.5 text-state-review">
+            applied · {update.applied ?? 0}
+          </span>
+          <span className="rounded bg-surface-sunken px-1.5 py-0.5 text-ink-muted">
+            proposed · {update.proposed ?? 0}
+          </span>
+          {update.ignored !== undefined && update.ignored > 0 && (
+            <span className="rounded bg-surface-sunken px-1.5 py-0.5 text-ink-subtle">
+              ignored · {update.ignored}
+            </span>
+          )}
+        </div>
+      </div>
+    );
+  }
+  if (update?.reason) {
+    return (
+      <div className="rounded-md border border-line bg-surface px-3 py-2 text-[11.5px] text-ink-muted">
+        No planspace update applied:{" "}
+        <span className="font-mono text-ink-subtle">{update.reason}</span>
+      </div>
+    );
+  }
+  return (
+    <div className="rounded-md border border-line bg-surface px-3 py-2 text-[11.5px] text-ink-muted">
+      No planspace updates recorded for this run.
+    </div>
+  );
+}
+
+type FieldChange = {
+  field: string;
+  label: string;
+  before: string;
+  after: string;
+  added: number;
+  removed: number;
+};
+
+const FIELD_LABELS: Record<string, string> = {
+  goal: "goal",
+  current_state: "current state",
+  open_questions: "open questions",
+  decisions: "decisions",
+  out_of_scope: "out of scope",
+  body: "notes",
+};
+
+const FRONTMATTER_FIELDS = [
+  "goal",
+  "current_state",
+  "open_questions",
+  "decisions",
+  "out_of_scope",
+] as const;
+
+function buildFieldChanges(before: string, after: string): FieldChange[] {
+  const a = parseStatus(before);
+  const b = parseStatus(after);
+  const out: FieldChange[] = [];
+  for (const field of FRONTMATTER_FIELDS) {
+    const beforeText = a[field] ?? "";
+    const afterText = b[field] ?? "";
+    if (beforeText === afterText) continue;
+    const { added, removed } = lineDiffStat(beforeText, afterText);
+    out.push({
+      field,
+      label: FIELD_LABELS[field] ?? field,
+      before: beforeText,
+      after: afterText,
+      added,
+      removed,
+    });
+  }
+  const beforeBody = a.body ?? "";
+  const afterBody = b.body ?? "";
+  if (beforeBody !== afterBody) {
+    const { added, removed } = lineDiffStat(beforeBody, afterBody);
+    out.push({
+      field: "body",
+      label: FIELD_LABELS.body,
+      before: beforeBody,
+      after: afterBody,
+      added,
+      removed,
+    });
+  }
+  return out;
+}
+
+function FieldChangeCard({ change }: { change: FieldChange }) {
+  return (
+    <details className="overflow-hidden rounded border border-line bg-surface">
+      <summary className="flex cursor-pointer items-center justify-between gap-2 px-3 py-2">
+        <span className="text-[12px] font-medium text-ink-strong">{change.label}</span>
+        <span className="font-mono text-[11px]">
+          <span className="text-state-review">+{change.added}</span>
+          <span className="ml-1.5 text-state-error">-{change.removed}</span>
+        </span>
+      </summary>
+      <div className="border-t border-line">
+        <div className="border-b border-line/60 px-3 py-2">
+          <div className="mb-1 text-[10px] uppercase tracking-[0.12em] text-ink-subtle">
+            raw
+          </div>
+          <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-ink-muted">
+            {change.before || <span className="italic text-ink-subtle">empty</span>}
+          </pre>
+        </div>
+        <div className="px-3 py-2">
+          <div className="mb-1 text-[10px] uppercase tracking-[0.12em] text-ink-subtle">
+            current
+          </div>
+          <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-ink">
+            {change.after || <span className="italic text-ink-subtle">empty</span>}
+          </pre>
+        </div>
+      </div>
+    </details>
+  );
+}
+
+function lineDiffStat(before: string, after: string): { added: number; removed: number } {
+  if (before === after) return { added: 0, removed: 0 };
+  const rows = makeLineDiff(before, after);
+  let added = 0;
+  let removed = 0;
+  for (const row of rows) {
+    if (row.kind === "add") added += 1;
+    else if (row.kind === "remove") removed += 1;
+  }
+  return { added, removed };
+}
+
+type ParsedStatus = {
+  goal: string;
+  current_state: string;
+  open_questions: string;
+  decisions: string;
+  out_of_scope: string;
+  body: string;
+};
+
+const FRONTMATTER_RE = /^---\n([\s\S]*?)\n---\n?([\s\S]*)$/;
+
+function parseStatus(text: string): ParsedStatus {
+  const empty: ParsedStatus = {
+    goal: "",
+    current_state: "",
+    open_questions: "",
+    decisions: "",
+    out_of_scope: "",
+    body: "",
+  };
+  if (!text) return empty;
+  const match = FRONTMATTER_RE.exec(text);
+  if (!match) {
+    return { ...empty, body: text.trim() };
+  }
+  const yaml = match[1];
+  const body = match[2].trim();
+  const parsed = parseYamlFields(yaml);
+  return {
+    goal: parsed.goal ?? "",
+    current_state: parsed.current_state ?? "",
+    open_questions: parsed.open_questions ?? "",
+    decisions: parsed.decisions ?? "",
+    out_of_scope: parsed.out_of_scope ?? "",
+    body,
+  };
+}
+
+/**
+ * Slice a YAML document into top-level field text blocks, keyed by field name.
+ *
+ * We don't actually parse YAML semantically — we just collect each top-level
+ * key's literal lines so a humanly-meaningful before/after diff can be shown
+ * per field. Works for both scalar values and list values.
+ */
+function parseYamlFields(yaml: string): Record<string, string> {
+  const lines = yaml.split("\n");
+  const out: Record<string, string[]> = {};
+  let current: string | null = null;
+  for (const raw of lines) {
+    const topKey = /^([A-Za-z_][A-Za-z0-9_]*)\s*:(.*)$/.exec(raw);
+    if (topKey) {
+      current = topKey[1];
+      const rest = topKey[2].trim();
+      out[current] = rest ? [rest] : [];
+      continue;
+    }
+    if (current) {
+      /* Continuation lines: indented or list items. Strip one level of indent
+       * for readability. */
+      const stripped = raw.replace(/^( {2}|\t)/, "");
+      out[current].push(stripped);
+    }
+  }
+  const result: Record<string, string> = {};
+  for (const [k, v] of Object.entries(out)) {
+    result[k] = v.join("\n").trim();
+  }
+  return result;
+}
+
+/* ─────────────────────────────────────────── */
+/* Activity transcript (interleaved)            */
+/* ─────────────────────────────────────────── */
+
+type TranscriptItem =
+  | { kind: "user"; id: string; text: string }
+  | { kind: "text"; id: string; text: string }
+  | { kind: "error"; id: string; text: string }
+  | { kind: "tools"; id: string; items: Activity[] };
+
+function flattenTranscript(turns: ReturnType<typeof buildTurnsFromEvents>): TranscriptItem[] {
+  const out: TranscriptItem[] = [];
+  for (const turn of turns) {
+    if (turn.role === "user") {
+      const trimmed = turn.text.trim();
+      if (trimmed) {
+        out.push({ kind: "user", id: turn.id, text: trimmed });
+      }
+      continue;
+    }
+    for (const block of turn.blocks) {
+      if (block.kind === "text") {
+        if (block.text.trim()) out.push({ kind: "text", id: block.id, text: block.text });
+      } else if (block.kind === "activity") {
+        if (block.items.length > 0) out.push({ kind: "tools", id: block.id, items: block.items });
+      } else if (block.kind === "error") {
+        out.push({ kind: "error", id: block.id, text: block.text });
+      }
+      /* thinking handled separately */
+    }
+  }
+  return out;
+}
+
+function ActivityTranscript({
+  items,
+  streaming,
+}: {
+  items: TranscriptItem[];
+  streaming: boolean;
+}) {
+  if (items.length === 0) {
+    return (
+      <div className="rounded-md border border-line bg-surface px-3 py-2 text-[11.5px] text-ink-muted">
         {streaming ? (
           <span className="inline-flex items-center gap-1 text-ink-subtle">
             <span className="stream-dot inline-block h-1.5 w-1.5 rounded-full bg-current" />
@@ -283,179 +770,53 @@ function AssistantResult({ text, streaming }: { text: string; streaming?: boolea
             />
           </span>
         ) : (
-          <span>No assistant output yet.</span>
+          "No activity yet."
         )}
       </div>
     );
   }
   return (
-    <div className="md-prose mt-2 rounded-md border border-line bg-surface-raised px-4 py-3 text-[13px] leading-relaxed text-ink-strong shadow-card">
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
-        rehypePlugins={[[rehypeHighlight, { detect: true, ignoreMissing: true }]]}
-      >
-        {text}
-      </ReactMarkdown>
-    </div>
-  );
-}
-
-function PlanspaceDeltaResult({
-  node,
-  update,
-  statusDelta,
-  loading,
-  assistantText,
-  streaming,
-}: {
-  node: NodeInfo;
-  update: PlanspaceUpdateSummary | null;
-  statusDelta: NodeStatusDelta | null;
-  loading: boolean;
-  assistantText: string;
-  streaming: boolean;
-}) {
-  if (statusDelta) {
-    return (
-      <div className="mt-2 space-y-2">
-        <div className="rounded-md border border-line bg-surface-raised p-2 shadow-card">
-          <div className="mb-2 flex items-center justify-between gap-2 px-1">
-            <div className="font-mono text-[11px] text-ink-muted">
-              {statusDelta.planspace_id}
-            </div>
-            <div className="text-[10px] text-ink-subtle">
-              {new Date(statusDelta.applied_at * 1000).toLocaleString()}
-            </div>
-          </div>
-          <PlanspaceDeltaCards ops={statusDelta.ops} />
-          <details className="mt-2 overflow-hidden rounded border border-line bg-surface-sunken">
-            <summary className="cursor-pointer px-3 py-2 text-[10px] font-medium uppercase tracking-[0.14em] text-ink-muted hover:text-ink">
-              View raw STATUS diff
-            </summary>
-            <RawStatusDiff before={statusDelta.before} after={statusDelta.after} />
-          </details>
-        </div>
-        {assistantText && (
-          <AssistantResult text={assistantText} streaming={streaming} />
-        )}
-      </div>
-    );
-  }
-  if (loading && update && (update.applied || update.proposed)) {
-    return (
-      <div className="mt-2 rounded-md border border-line bg-surface-sunken px-3 py-2 text-[11.5px] text-ink-muted">
-        Loading STATUS delta...
-      </div>
-    );
-  }
-  if (node.requires_review && update?.staged) {
-    return (
-      <div className="mt-2 space-y-2">
-        <div className="rounded-md border border-state-waiting/30 bg-state-waiting-soft/30 px-3 py-2 text-[12px] text-ink">
-          <div className="font-medium text-ink-strong">
-            Staged for review
-          </div>
-          <div className="mt-0.5 text-[11.5px] text-ink-muted">
-            Interim update parked in{" "}
-            <span className="font-mono">{update.planspace_id ?? "—"}</span>
-            {"; "}
-            the gate's resolution will merge the user's judgment back into
-            the planspace.
-          </div>
-        </div>
-        {assistantText && (
-          <AssistantResult text={assistantText} streaming={streaming} />
-        )}
-      </div>
-    );
-  }
-  if (update && (update.applied || update.proposed)) {
-    const planspaceId = update.planspace_id ?? "—";
-    return (
-      <div className="mt-2 space-y-2">
-        <div className="rounded-md border border-line bg-surface-raised px-3 py-2 text-[12px] text-ink-strong shadow-card">
-          <div className="text-[10px] font-medium uppercase tracking-[0.14em] text-ink-subtle">
-            Planspace
-          </div>
-          <div className="mt-0.5 font-mono text-[11.5px] text-ink-muted">
-            {planspaceId}
-          </div>
-          <div className="mt-2 flex flex-wrap gap-2 text-[11px]">
-            <span className="rounded bg-state-review-soft px-1.5 py-0.5 text-state-review">
-              applied · {update.applied ?? 0}
-            </span>
-            <span className="rounded bg-surface-sunken px-1.5 py-0.5 text-ink-muted">
-              proposed · {update.proposed ?? 0}
-            </span>
-            {update.ignored !== undefined && update.ignored > 0 && (
-              <span className="rounded bg-surface-sunken px-1.5 py-0.5 text-ink-subtle">
-                ignored · {update.ignored}
-              </span>
-            )}
-          </div>
-        </div>
-        {assistantText && (
-          <AssistantResult text={assistantText} streaming={streaming} />
-        )}
-      </div>
-    );
-  }
-  if (update?.reason) {
-    return (
-      <div className="mt-2 space-y-2">
-        <div className="rounded-md border border-line bg-surface-sunken px-3 py-2 text-[11.5px] text-ink-muted">
-          No planspace update applied:{" "}
-          <span className="font-mono text-ink-subtle">{update.reason}</span>
-        </div>
-        {assistantText && (
-          <AssistantResult text={assistantText} streaming={streaming} />
-        )}
-      </div>
-    );
-  }
-  return <AssistantResult text={assistantText} streaming={streaming} />;
-}
-
-function PlanspaceDeltaCards({ ops }: { ops: NodeStatusDelta["ops"] }) {
-  if (ops.length === 0) {
-    return (
-      <div className="rounded-md border border-line bg-surface-sunken px-3 py-2 text-[12px] text-ink-muted">
-        No STATUS operations recorded.
-      </div>
-    );
-  }
-  return (
-    <div className="space-y-1.5">
-      {ops.map((op, index) => (
-        <details
-          key={`${String(op.operation ?? "op")}-${index}`}
-          className={
-            "overflow-hidden rounded-md border " +
-            toneForOperation(String(op.operation ?? ""))
-          }
-        >
-          <summary className="cursor-pointer px-3 py-2">
-            <div className="flex items-start gap-2">
-              <span className="mt-0.5 flex-none font-mono text-[11px]">
-                {symbolForOperation(String(op.operation ?? ""))}
-              </span>
-              <div className="min-w-0 flex-1">
-                <div className="text-[12px] font-medium text-ink-strong">
-                  {labelForOperation(String(op.operation ?? "STATUS update"))}
-                </div>
-                <div className="mt-0.5 line-clamp-2 text-[11.5px] text-ink-muted">
-                  {summaryForOp(op)}
-                </div>
-              </div>
-            </div>
-          </summary>
-          <pre className="border-t border-current/10 bg-surface/70 px-3 py-2 whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-ink">
-            {payloadForOp(op)}
-          </pre>
-        </details>
+    <div className="space-y-2">
+      {items.map((item) => (
+        <TranscriptItemView key={item.id} item={item} />
       ))}
     </div>
   );
+}
+
+function TranscriptItemView({ item }: { item: TranscriptItem }) {
+  if (item.kind === "user") {
+    return (
+      <div className="rounded-md border border-line bg-surface px-3 py-2 text-[12px] text-ink-muted">
+        <div className="mb-1 text-[10px] uppercase tracking-[0.12em] text-ink-subtle">
+          user
+        </div>
+        <pre className="whitespace-pre-wrap break-words font-mono text-[11.5px] leading-relaxed text-ink">
+          {item.text}
+        </pre>
+      </div>
+    );
+  }
+  if (item.kind === "text") {
+    return (
+      <div className="md-prose rounded-md border border-line bg-surface-raised px-3 py-2 text-[13px] leading-relaxed text-ink-strong">
+        <ReactMarkdown
+          remarkPlugins={[remarkGfm]}
+          rehypePlugins={[[rehypeHighlight, { detect: true, ignoreMissing: true }]]}
+        >
+          {item.text}
+        </ReactMarkdown>
+      </div>
+    );
+  }
+  if (item.kind === "error") {
+    return (
+      <pre className="whitespace-pre-wrap rounded-md border border-state-error/30 bg-state-error-soft p-2 text-[11.5px] text-state-error">
+        {item.text}
+      </pre>
+    );
+  }
+  return <ToolActivity items={item.items} />;
 }
 
 function RawStatusDiff({ before, after }: { before: string; after: string }) {
@@ -516,62 +877,6 @@ function ThinkingSection({ turns }: { turns: ReturnType<typeof buildTurnsFromEve
 
 function isTerminal(state: NodeInfo["state"]): boolean {
   return state === "done" || state === "error" || state === "cancelled";
-}
-
-function labelForOperation(operation: string): string {
-  const labels: Record<string, string> = {
-    add_open_question: "Added open question",
-    add_decision: "Added decision",
-    rewrite_current_state: "Updated current state",
-    add_out_of_scope: "Added out-of-scope note",
-    append_observation: "Appended note",
-    append_body: "Appended note",
-    append_note: "Appended note",
-  };
-  return labels[operation] ?? operation.replace(/_/g, " ");
-}
-
-function symbolForOperation(operation: string): string {
-  if (operation.startsWith("add_")) return "+";
-  if (operation === "rewrite_current_state") return "~";
-  if (operation.startsWith("append_")) return "+";
-  return "*";
-}
-
-function toneForOperation(operation: string): string {
-  if (operation === "add_open_question") {
-    return "border-state-waiting/35 bg-state-waiting-soft/25";
-  }
-  if (operation === "add_decision") {
-    return "border-state-done/35 bg-state-done-soft/35";
-  }
-  if (operation === "rewrite_current_state") {
-    return "border-state-review/35 bg-state-review-soft/25";
-  }
-  if (operation === "add_out_of_scope") {
-    return "border-state-cancelled/35 bg-state-cancelled-soft/30";
-  }
-  return "border-line bg-surface-sunken";
-}
-
-function summaryForOp(op: NodeStatusDelta["ops"][number]): string {
-  const direct = op.summary;
-  if (typeof direct === "string" && direct.trim()) return direct.trim();
-  const text = op.text;
-  if (typeof text === "string" && text.trim()) return text.trim().slice(0, 180);
-  const patch = op.patch;
-  if (typeof patch === "string" && patch.trim()) return patch.trim().slice(0, 180);
-  return String(op.operation ?? "STATUS update");
-}
-
-function payloadForOp(op: NodeStatusDelta["ops"][number]): string {
-  const text = op.text;
-  if (typeof text === "string" && text.trim()) return text.trim();
-  const summary = op.summary;
-  if (typeof summary === "string" && summary.trim()) return summary.trim();
-  const patch = op.patch;
-  if (typeof patch === "string" && patch.trim()) return patch.trim();
-  return JSON.stringify(op, null, 2);
 }
 
 type DiffRow = {
@@ -734,3 +1039,4 @@ function StatePill({ state }: { state: NodeInfo["state"] }) {
     </span>
   );
 }
+

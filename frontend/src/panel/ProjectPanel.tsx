@@ -61,7 +61,7 @@ export function ProjectPanel({
   );
   const notesExist = !!contextSpace?.context_file?.exists;
   const refreshing = !!contextSpace?.context_refresh?.running;
-  const busy = contextSpaceSaving || refreshing;
+  const busy = contextSpaceSaving || refreshing || settingsSaving;
 
   if (!session) {
     return (

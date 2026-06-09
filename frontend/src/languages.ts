@@ -10,8 +10,12 @@ export const LANGUAGE_OPTIONS = [
   { value: "German", label: "German" },
   { value: "Portuguese", label: "Portuguese" },
   { value: "Italian", label: "Italian" },
+  { value: "Russian", label: "Russian" },
+  { value: "Arabic", label: "Arabic" },
+  { value: "Hindi", label: "Hindi" },
   { value: "Vietnamese", label: "Vietnamese" },
   { value: "Thai", label: "Thai" },
+  { value: "Indonesian", label: "Indonesian" },
 ] as const;
 
 export function languageLabel(language?: string | null): string {

@@ -167,6 +167,10 @@ class ProjectRegistry:
             rt.project.preferred_language = normalize_preferred_language(
                 preferred_language
             )
+            settings = dict(rt.project.settings_override)
+            settings.pop("preferred_language", None)
+            settings.pop("language", None)
+            rt.project.settings_override = settings
         self.store.update_project(rt.project)
         return rt.project
 
