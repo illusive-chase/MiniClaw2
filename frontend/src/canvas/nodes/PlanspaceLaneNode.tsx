@@ -13,15 +13,17 @@ function PlanspaceLaneNodeImpl({ data }: NodeProps<PlanspaceLaneData>) {
         background: data.color.bg,
         borderColor: data.active ? data.color.accent : data.color.border,
         boxShadow: data.active ? `0 0 0 1px ${data.color.accent}` : undefined,
-        pointerEvents: "none",
       }}
     >
+      {/* The header is the lane's drag handle — `dragHandle` on the rfNode
+       * points to `.planspace-lane-drag-handle` so React Flow only starts a
+       * lane drag from here. Inner buttons mark themselves `nodrag` to keep
+       * click behavior intact. */}
       <div
-        className="nodrag flex h-8 w-full items-center gap-2 border-b px-3 text-[10px] font-medium uppercase tracking-[0.14em] transition hover:bg-surface-raised/40"
+        className="planspace-lane-drag-handle flex h-8 w-full cursor-grab items-center gap-2 border-b px-3 text-[10px] font-medium uppercase tracking-[0.14em] transition hover:bg-surface-raised/40 active:cursor-grabbing"
         style={{
           borderColor: data.color.border,
           color: data.color.text,
-          pointerEvents: "auto",
         }}
       >
         <button
@@ -30,7 +32,8 @@ function PlanspaceLaneNodeImpl({ data }: NodeProps<PlanspaceLaneData>) {
             event.stopPropagation();
             ctx.onSelectPlanspace(data.planspaceId);
           }}
-          className="flex min-w-0 flex-1 items-center gap-2 text-left"
+          onMouseDown={(event) => event.stopPropagation()}
+          className="nodrag flex min-w-0 flex-1 items-center gap-2 text-left"
           title="Open direction notebook"
         >
           <span
@@ -52,7 +55,8 @@ function PlanspaceLaneNodeImpl({ data }: NodeProps<PlanspaceLaneData>) {
             event.stopPropagation();
             ctx.onTogglePlanspaceVisibility(data.planspaceId, true);
           }}
-          className="flex-none rounded px-1 text-[12px] opacity-70 hover:bg-surface-raised hover:opacity-100"
+          onMouseDown={(event) => event.stopPropagation()}
+          className="nodrag flex-none rounded px-1 text-[12px] opacity-70 hover:bg-surface-raised hover:opacity-100"
           title="Hide direction"
           aria-label="Hide direction"
         >

@@ -229,16 +229,24 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
     planspaceOrder.push(id);
   }
   const planspaceIndex = new Map(planspaceOrder.map((id, index) => [id, index]));
-  const laneBounds = new Map<
-    string,
-    {
-      minX: number;
-      maxX: number;
-      y: number;
-      count: number;
-      color: PlanspaceColor;
-    }
-  >();
+
+  /* Lane absolute positions: deterministic from index, overridable by a saved
+   * hint keyed `planspace:<id>`. Children inside the lane get parent-relative
+   * positions, so the lane's own abs position must be resolved BEFORE we lay
+   * out the children — otherwise a hinted lane drag would shift everything. */
+  const laneAbsPos = new Map<string, { x: number; y: number }>();
+  for (const id of planspaceOrder) {
+    const idx = planspaceIndex.get(id) ?? 0;
+    const defaultPos = {
+      x: LANE.rootX + 180 - LANE.planspaceLanePaddingX,
+      y: LANE.timelineY + idx * LANE.planspaceLaneSpacing - LANE.planspaceLaneTopPad,
+    };
+    laneAbsPos.set(id, layoutHints[`planspace:${id}`] ?? defaultPos);
+  }
+  /* Per-lane growable width + node count, harvested during the child pass. */
+  const laneChildMaxX = new Map<string, number>();
+  const laneChildCount = new Map<string, number>();
+  const laneColors = new Map<string, PlanspaceColor>();
 
   /* project root anchor */
   rfNodes.push({
@@ -291,19 +299,38 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
     }
   }
 
-  /* main timeline: agents, gates, ops along x = index*spacing */
-  let cursorX = LANE.rootX + 180;
+  /* Main timeline. Two coordinate regimes coexist:
+   *   - Nodes WITH a planspace become children of `planspace:<id>` lanes:
+   *     position is relative to lane, advanced by a per-lane cursor.
+   *   - Nodes WITHOUT a planspace stay top-level in absolute coords,
+   *     advanced by `freeCursorX`.
+   * `extent: "parent"` keeps in-lane nodes inside their swimlane, giving the
+   * group container real semantics instead of mere visuals. */
+  let freeCursorX = LANE.rootX + 180;
+  const laneCursors = new Map<string, number>();
+  const advanceLane = (laneId: string, by: number): number => {
+    const cur = laneCursors.get(laneId) ?? LANE.planspaceLanePaddingX;
+    laneCursors.set(laneId, cur + by);
+    return cur;
+  };
+  const recordChildExtent = (laneId: string, relX: number, width: number): void => {
+    const right = relX + width;
+    const prev = laneChildMaxX.get(laneId) ?? LANE.planspaceLanePaddingX;
+    if (right > prev) laneChildMaxX.set(laneId, right);
+    laneChildCount.set(laneId, (laneChildCount.get(laneId) ?? 0) + 1);
+  };
+
   visibleNodes.forEach((node, index) => {
     const resumeParent = findResumeParent(node, nodeById);
     const isActive = node.id === activeNodeId;
     const stored = layoutHints[node.id];
     const planspaceId = resolvePlanspaceId(node, allNodeById);
-    const laneY = yForPlanspace(planspaceId, planspaceIndex);
     const planspaceColor = colorForPlanspace(
       planspaceId,
       planspaceIndex,
       planspaceColorOverrides,
     );
+    if (planspaceId && planspaceColor) laneColors.set(planspaceId, planspaceColor);
     const crossLaneLoads = collectCrossLaneLoads(
       node,
       planspaceId,
@@ -313,23 +340,40 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
       hiddenPlanspaces,
     );
 
+    const placeInLane = (spacing: number, width: number, defaultY: number) => {
+      const cursor = advanceLane(planspaceId!, spacing);
+      const position = stored ?? { x: cursor, y: defaultY };
+      recordChildExtent(planspaceId!, position.x, width);
+      return position;
+    };
+    const placeFree = (spacing: number) => {
+      const position = stored ?? { x: freeCursorX, y: LANE.timelineY };
+      freeCursorX += spacing;
+      return position;
+    };
+
     if (node.kind === "op") {
       /* Folded into a chevron edge — skip rendering as a tile. */
       if (opsWithChild.has(node.id)) return;
       const parent = node.parent_node_id ? (nodeById.get(node.parent_node_id) ?? null) : null;
-      const position = stored ?? { x: cursorX, y: laneY };
+      const position = planspaceId
+        ? placeInLane(LANE.opSpacing, LANE.opWidth, LANE.planspaceLaneTopPad)
+        : placeFree(LANE.opSpacing);
       rfNodes.push({
         id: node.id,
         type: "op",
         position,
         data: { node, parent, child: null },
         draggable: true,
+        ...(planspaceId
+          ? { parentNode: `planspace:${planspaceId}`, extent: "parent" as const }
+          : {}),
       });
-      recordLaneBounds(laneBounds, planspaceId, position, LANE.opWidth, planspaceIndex, planspaceColorOverrides);
-      cursorX += LANE.opSpacing;
     } else if (node.kind === "gate") {
-      const position = stored ?? { x: cursorX, y: laneY };
       const isLastInLane = !hasDescendantById.has(node.id);
+      const position = planspaceId
+        ? placeInLane(LANE.gateSpacing, 200, LANE.planspaceLaneTopPad)
+        : placeFree(LANE.gateSpacing);
       rfNodes.push({
         id: node.id,
         type: "gate",
@@ -344,12 +388,15 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
           isLastInLane,
         },
         draggable: true,
+        ...(planspaceId
+          ? { parentNode: `planspace:${planspaceId}`, extent: "parent" as const }
+          : {}),
       });
-      recordLaneBounds(laneBounds, planspaceId, position, 200, planspaceIndex, planspaceColorOverrides);
-      cursorX += LANE.gateSpacing;
     } else {
-      const position = stored ?? { x: cursorX, y: laneY };
       const isLastInLane = !hasDescendantById.has(node.id);
+      const position = planspaceId
+        ? placeInLane(LANE.agentSpacing, LANE.agentWidth, LANE.planspaceLaneTopPad)
+        : placeFree(LANE.agentSpacing);
       rfNodes.push({
         id: node.id,
         type: "agent",
@@ -364,9 +411,10 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
           isLastInLane,
         },
         draggable: true,
+        ...(planspaceId
+          ? { parentNode: `planspace:${planspaceId}`, extent: "parent" as const }
+          : {}),
       });
-      recordLaneBounds(laneBounds, planspaceId, position, LANE.agentWidth, planspaceIndex, planspaceColorOverrides);
-      cursorX += LANE.agentSpacing;
     }
 
     /* timeline / resume / op-chevron edge from FS-parent */
@@ -409,28 +457,36 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
   });
 
   const laneNodes: RFNode[] = [];
-  for (const [planspaceId, bounds] of laneBounds) {
-    const x = bounds.minX - LANE.planspaceLanePaddingX;
-    const y = bounds.y - LANE.planspaceLaneTopPad;
+  for (const planspaceId of planspaceOrder) {
+    const pos = laneAbsPos.get(planspaceId);
+    if (!pos) continue;
+    const maxRight = laneChildMaxX.get(planspaceId) ?? (LANE.planspaceLanePaddingX + LANE.agentWidth);
     const width = Math.max(
       LANE.agentWidth + LANE.planspaceLanePaddingX * 2,
-      bounds.maxX - bounds.minX + LANE.planspaceLanePaddingX * 2,
+      maxRight + LANE.planspaceLanePaddingX,
     );
+    const color =
+      laneColors.get(planspaceId) ??
+      colorForPlanspace(planspaceId, planspaceIndex, planspaceColorOverrides) ??
+      PLANSPACE_PALETTE[0];
     laneNodes.push({
       id: `planspace:${planspaceId}`,
       type: "planspaceLane",
-      position: { x, y },
+      position: pos,
       data: {
         planspaceId,
         label: labelForPlanspace(planspaceId),
-        nodeCount: bounds.count,
+        nodeCount: laneChildCount.get(planspaceId) ?? 0,
         width,
         height: LANE.planspaceLaneHeight,
-        color: bounds.color,
+        color,
         active: planspaceId === activePlanspaceId,
       },
       selectable: true,
-      draggable: false,
+      draggable: true,
+      /* Only the header is a drag handle. The body stays interactive for clicks
+       * on children (whose pointer events are above the lane via z-index). */
+      dragHandle: ".planspace-lane-drag-handle",
       zIndex: -20,
     });
   }
@@ -449,6 +505,10 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
     const baseX = sourceNode?.position.x ?? LANE.rootX;
     const baseY = sourceNode?.position.y ?? LANE.timelineY;
     const stored = layoutHints[terminalId];
+    /* Inherit the owner's lane parent so dragging the lane keeps the failure
+     * marker tied to its agent. Owner-relative offset stays the same in both
+     * regimes. */
+    const ownerParent = sourceNode?.parentNode;
     rfNodes.push({
       id: terminalId,
       type: "errorTerminal",
@@ -465,6 +525,7 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
       },
       draggable: true,
       selectable: true,
+      ...(ownerParent ? { parentNode: ownerParent, extent: "parent" as const } : {}),
     });
     rfEdges.push({
       id: `errtl:${node.id}->${terminalId}`,
@@ -589,7 +650,9 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
     });
   }
 
-  /* phantom composer */
+  /* phantom composer — kept top-level so it can park at the lane's right edge
+   * without being clipped by `extent: "parent"`. Its absolute position is
+   * computed from the lane's abs pos + the lane's current right boundary. */
   if (phantomFreshStart || phantomFromNodeId !== undefined) {
     const phantomId = "phantom:composer";
     let position: { x: number; y: number };
@@ -597,26 +660,34 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
     if (phantomFromNodeId) {
       const parent = nodeById.get(phantomFromNodeId);
       const parentRf = rfNodes.find((n) => n.id === phantomFromNodeId);
-      const parentX = parentRf?.position.x ?? cursorX;
-      const parentY = parentRf?.position.y ?? LANE.timelineY;
-      position = { x: parentX + LANE.agentSpacing, y: parentY };
+      let parentAbsX = parentRf?.position.x ?? freeCursorX;
+      let parentAbsY = parentRf?.position.y ?? LANE.timelineY;
+      if (parentRf?.parentNode) {
+        const laneId = parentRf.parentNode.slice("planspace:".length);
+        const laneAbs = laneAbsPos.get(laneId);
+        if (laneAbs) {
+          parentAbsX = laneAbs.x + parentAbsX;
+          parentAbsY = laneAbs.y + parentAbsY;
+        }
+      }
+      position = { x: parentAbsX + LANE.agentSpacing, y: parentAbsY };
       resumeFromLabel = parent
         ? (parent.summary || parent.prompt || parent.id.slice(0, 8)).slice(0, 48)
         : null;
+    } else if (
+      activePlanspaceId &&
+      !hiddenPlanspaces.has(activePlanspaceId) &&
+      laneAbsPos.has(activePlanspaceId)
+    ) {
+      const laneAbs = laneAbsPos.get(activePlanspaceId)!;
+      const maxRight =
+        laneChildMaxX.get(activePlanspaceId) ?? LANE.planspaceLanePaddingX;
+      position = {
+        x: laneAbs.x + maxRight + LANE.planspaceLanePaddingX,
+        y: laneAbs.y + LANE.planspaceLaneTopPad,
+      };
     } else {
-      const activeLane =
-        activePlanspaceId && !hiddenPlanspaces.has(activePlanspaceId)
-          ? laneBounds.get(activePlanspaceId)
-          : null;
-      position = activeLane
-        ? { x: activeLane.maxX + LANE.agentSpacing, y: activeLane.y }
-        : {
-            x: cursorX,
-            y:
-              activePlanspaceId && !hiddenPlanspaces.has(activePlanspaceId)
-                ? yForPlanspace(activePlanspaceId, planspaceIndex)
-                : LANE.timelineY,
-          };
+      position = { x: freeCursorX, y: LANE.timelineY };
     }
     rfNodes.push({
       id: phantomId,
@@ -687,14 +758,6 @@ function resolvePlanspaceId(
   return null;
 }
 
-function yForPlanspace(
-  planspaceId: string | null,
-  planspaceIndex: Map<string, number>,
-): number {
-  if (!planspaceId) return LANE.timelineY;
-  return LANE.timelineY + (planspaceIndex.get(planspaceId) ?? 0) * LANE.planspaceLaneSpacing;
-}
-
 function colorForPlanspace(
   planspaceId: string | null,
   planspaceIndex: Map<string, number>,
@@ -758,43 +821,6 @@ function collectCrossLaneLoads(
   // Silence unused-arg warning when node has nothing to add beyond its bundle.
   void node;
   return out;
-}
-
-function recordLaneBounds(
-  laneBounds: Map<
-    string,
-    {
-      minX: number;
-      maxX: number;
-      y: number;
-      count: number;
-      color: PlanspaceColor;
-    }
-  >,
-  planspaceId: string | null,
-  position: { x: number; y: number },
-  width: number,
-  planspaceIndex: Map<string, number>,
-  overrides: Map<string, string> = new Map(),
-): void {
-  if (!planspaceId) return;
-  const color = colorForPlanspace(planspaceId, planspaceIndex, overrides);
-  if (!color) return;
-  const existing = laneBounds.get(planspaceId);
-  const maxX = position.x + width;
-  if (existing) {
-    existing.minX = Math.min(existing.minX, position.x);
-    existing.maxX = Math.max(existing.maxX, maxX);
-    existing.count += 1;
-    return;
-  }
-  laneBounds.set(planspaceId, {
-    minX: position.x,
-    maxX,
-    y: position.y,
-    count: 1,
-    color,
-  });
 }
 
 function labelForPlanspace(planspaceId: string): string {

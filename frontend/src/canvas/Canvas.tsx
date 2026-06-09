@@ -119,7 +119,7 @@ function CanvasInner({
   onLayoutHintsChange,
 }: CanvasProps) {
   const layoutHintsRef = useRef<Record<string, { x: number; y: number }>>(
-    initialLayoutHints ? { ...initialLayoutHints } : {},
+    sanitizeLayoutHints(initialLayoutHints),
   );
   const pendingHintsRef = useRef<Record<string, { x: number; y: number }>>({});
   const flushTimerRef = useRef<number | null>(null);
@@ -128,7 +128,7 @@ function CanvasInner({
   /* Re-hydrate when the session changes (initialLayoutHints prop swap). */
   useEffect(() => {
     if (initialLayoutHints) {
-      layoutHintsRef.current = { ...initialLayoutHints };
+      layoutHintsRef.current = sanitizeLayoutHints(initialLayoutHints);
     }
   }, [initialLayoutHints]);
 
@@ -426,6 +426,35 @@ function FitOnInit() {
     return () => window.clearTimeout(id);
   }, [fitView]);
   return null;
+}
+
+/**
+ * One-way migration: lane group-ization moved in-lane nodes from absolute
+ * coordinates to parent-relative ones, so any pre-migration drag hint for an
+ * agent/gate/op would land at a wildly wrong spot if applied verbatim.
+ *
+ * We don't have enough info here to tell which old hints were for top-level
+ * nodes (those would still be valid) vs in-lane ones (those would not), so we
+ * drop everything except the IDs whose coordinate regime didn't change:
+ *   - `root`            — top-level anchor
+ *   - `ctx:*`           — context lane lives above, still absolute
+ *   - `planspace:*`     — new lane drag hints, only created post-migration
+ *
+ * Users lose stored drag positions for in-lane and top-level work nodes on
+ * first load after upgrade and have to re-arrange once. Old hints in the
+ * backend store get overwritten lazily as the user re-drags.
+ */
+function sanitizeLayoutHints(
+  hints: Record<string, { x: number; y: number }> | undefined,
+): Record<string, { x: number; y: number }> {
+  if (!hints) return {};
+  const out: Record<string, { x: number; y: number }> = {};
+  for (const [id, pos] of Object.entries(hints)) {
+    if (id === "root" || id.startsWith("ctx:") || id.startsWith("planspace:")) {
+      out[id] = pos;
+    }
+  }
+  return out;
 }
 
 function decorateSelection(
