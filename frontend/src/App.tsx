@@ -14,6 +14,7 @@ import {
   updateSessionPreferences,
 } from "./api";
 import { Canvas, type CanvasSelection } from "./canvas/Canvas";
+import { setAgentNodeContext } from "./canvas/nodes/AgentNode";
 import { setPhantomContext } from "./canvas/nodes/PhantomNode";
 import { setGateInlineContext } from "./canvas/nodes/GateNode";
 import { setPlanspaceLaneContext } from "./canvas/nodes/PlanspaceLaneNode";
@@ -708,7 +709,11 @@ export function App() {
     [send, refreshNodes],
   );
 
-  /* canvas → selection */
+  /* canvas → selection. The phantom composer lives or dies by this callback:
+   * every canvas-driven selection change dismisses any open composer, so
+   * clicking empty pane or any other node cancels it. Canvas.onNodeClick
+   * deliberately swallows clicks on the phantom itself so the composer the
+   * user is editing doesn't disappear out from under them. */
   const onSelectionChange = useCallback((sel: CanvasSelection) => {
     setSelection(sel);
     if (sel.kind === "agent" || sel.kind === "gate" || sel.kind === "op") {
@@ -716,6 +721,7 @@ export function App() {
     } else if (sel.kind === "none") {
       setInspectedNodeId(null);
     }
+    setPhantomFromNodeId((prev) => (prev !== undefined ? undefined : prev));
   }, []);
 
   /* select a specific node id (used by panel "jump to" affordances) */
@@ -750,9 +756,10 @@ export function App() {
     [composerDisabled],
   );
 
-  const onEmptyCanvasTap = useCallback(() => {
-    openFreshPhantom();
-  }, [openFreshPhantom]);
+  /* Wire the per-agent "+" affordance into its module singleton. */
+  useEffect(() => {
+    setAgentNodeContext({ onSpawnFromAgent });
+  }, [onSpawnFromAgent]);
 
   /* Drag-end → push positions to the backend. Best-effort: log on failure but
    * don't surface; the client-side ref keeps working either way. */
@@ -916,7 +923,6 @@ export function App() {
             activePlanspaceId={sessionContextSpace?.active_planspace_id ?? null}
             initialLayoutHints={session?.layout_hints}
             onSelectionChange={onSelectionChange}
-            onEmptyCanvasTap={onEmptyCanvasTap}
             onSpawnFromAgent={onSpawnFromAgent}
             onLayoutHintsChange={onLayoutHintsChange}
           />

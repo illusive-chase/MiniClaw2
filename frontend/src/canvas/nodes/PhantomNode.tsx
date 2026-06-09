@@ -100,9 +100,6 @@ function PhantomNodeImpl({ data, selected }: NodeProps<PhantomNodeData>) {
           if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
             e.preventDefault();
             submit();
-          } else if (e.key === "Escape") {
-            e.preventDefault();
-            ctx.onDismiss();
           }
         }}
         rows={Math.min(8, Math.max(2, prompt.split("\n").length))}
@@ -181,7 +178,7 @@ function PhantomNodeImpl({ data, selected }: NodeProps<PhantomNodeData>) {
       )}
 
       <div className="mt-2 flex items-center justify-between text-[10px] text-ink-subtle">
-        <span>⌘/Ctrl + Enter to launch · Esc to dismiss</span>
+        <span>⌘/Ctrl + Enter to launch · click outside to dismiss</span>
         <button
           type="button"
           onClick={submit}

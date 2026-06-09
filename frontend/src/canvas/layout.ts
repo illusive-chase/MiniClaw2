@@ -17,6 +17,8 @@ export type AgentNodeData = {
   isActive: boolean;
   planspaceColor: PlanspaceColor | null;
   crossLaneLoads: CrossLaneLoad[];
+  /** true when no agent/gate node (in any lane) has this one as its agent/gate parent */
+  isLastInLane: boolean;
 };
 
 export type GateNodeData = AgentNodeData;
@@ -268,6 +270,27 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
     contextBundlesByNodeId,
   );
 
+  /* Mark agent/gate nodes that no other agent/gate descends from. The "+" hover
+   * affordance only appears on these tail tiles. Ops are transparent here: we
+   * walk through them to find the real agent/gate parent. */
+  const hasDescendantById = new Set<string>();
+  for (const candidate of visibleNodes) {
+    if (candidate.kind === "op") continue;
+    let parentId: string | null | undefined = candidate.parent_node_id;
+    while (parentId) {
+      const parent = nodeById.get(parentId);
+      if (!parent) {
+        parentId = null;
+        break;
+      }
+      if (parent.kind !== "op") break;
+      parentId = parent.parent_node_id;
+    }
+    if (parentId && nodeById.has(parentId)) {
+      hasDescendantById.add(parentId);
+    }
+  }
+
   /* main timeline: agents, gates, ops along x = index*spacing */
   let cursorX = LANE.rootX + 180;
   visibleNodes.forEach((node, index) => {
@@ -306,22 +329,40 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
       cursorX += LANE.opSpacing;
     } else if (node.kind === "gate") {
       const position = stored ?? { x: cursorX, y: laneY };
+      const isLastInLane = !hasDescendantById.has(node.id);
       rfNodes.push({
         id: node.id,
         type: "gate",
         position,
-        data: { node, index, resumeParent, isActive, planspaceColor, crossLaneLoads },
+        data: {
+          node,
+          index,
+          resumeParent,
+          isActive,
+          planspaceColor,
+          crossLaneLoads,
+          isLastInLane,
+        },
         draggable: true,
       });
       recordLaneBounds(laneBounds, planspaceId, position, 200, planspaceIndex, planspaceColorOverrides);
       cursorX += LANE.gateSpacing;
     } else {
       const position = stored ?? { x: cursorX, y: laneY };
+      const isLastInLane = !hasDescendantById.has(node.id);
       rfNodes.push({
         id: node.id,
         type: "agent",
         position,
-        data: { node, index, resumeParent, isActive, planspaceColor, crossLaneLoads },
+        data: {
+          node,
+          index,
+          resumeParent,
+          isActive,
+          planspaceColor,
+          crossLaneLoads,
+          isLastInLane,
+        },
         draggable: true,
       });
       recordLaneBounds(laneBounds, planspaceId, position, LANE.agentWidth, planspaceIndex, planspaceColorOverrides);
@@ -587,7 +628,7 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
         disabled: phantomDisabled,
       },
       draggable: false,
-      selectable: false,
+      selectable: true,
     });
   }
 

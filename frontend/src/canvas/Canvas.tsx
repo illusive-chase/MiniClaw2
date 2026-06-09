@@ -88,7 +88,6 @@ export type CanvasProps = {
   /** Persisted positions hydrated from the session. */
   initialLayoutHints?: Record<string, { x: number; y: number }>;
   onSelectionChange: (sel: CanvasSelection) => void;
-  onEmptyCanvasTap: (position: { x: number; y: number }) => void;
   /** spawn the phantom to the right of a finished agent */
   onSpawnFromAgent: (nodeId: string) => void;
   /** Called debounced after drag-end with positions that changed. */
@@ -116,7 +115,6 @@ function CanvasInner({
   activePlanspaceId,
   initialLayoutHints,
   onSelectionChange,
-  onEmptyCanvasTap,
   onSpawnFromAgent,
   onLayoutHintsChange,
 }: CanvasProps) {
@@ -193,10 +191,12 @@ function CanvasInner({
     ],
   );
 
+  const phantomVisible = phantomFromNodeId !== undefined;
+
   /* React Flow controlled state. We keep an internal copy so dragging is smooth
    * while still reflecting upstream prop changes (e.g. node_updated events). */
   const [rfNodes, setRfNodes, onNodesChange] = useNodesState(
-    decorateSelection(built.rfNodes, selectedNodeId),
+    decorateSelection(built.rfNodes, selectedNodeId, phantomVisible),
   );
   const [rfEdges, setRfEdges] = useEdgesState(
     decorateEdges(built.rfEdges, selectedNodeId, hoveredNodeId),
@@ -220,9 +220,9 @@ function CanvasInner({
         }
         return n;
       });
-      return decorateSelection(next, selectedNodeId);
+      return decorateSelection(next, selectedNodeId, phantomVisible);
     });
-  }, [built.rfNodes, selectedNodeId, setRfNodes]);
+  }, [built.rfNodes, selectedNodeId, phantomVisible, setRfNodes]);
 
   /* Edges depend on hover (the `loads` lane fades in only for the hovered or
    * selected node), so they get a separate effect. */
@@ -296,15 +296,19 @@ function CanvasInner({
           kind: data.ownerKind === "gate" ? "gate" : "agent",
           nodeId: data.ownerNodeId,
         });
+      } else if (n.type === "phantom") {
+        /* Clicks inside the composer (textarea, buttons, etc.) bubble up as a
+         * node click on the phantom. We intentionally don't propagate this to
+         * onSelectionChange — that would dismiss the very composer the user is
+         * editing. The phantom's "selected" appearance is driven directly by
+         * phantomFromNodeId in decorateSelection below. */
       }
     },
     [onSelectionChange],
   );
 
-  /* Empty-canvas tap: clear selection AND spawn a fresh-start phantom. The
-   * deselect used to happen via React Flow's onSelectionChange when the pane
-   * click cleared its internal selection; since we no longer subscribe to
-   * that callback, we do it explicitly here. */
+  /* Empty-canvas tap: clear selection. The dismiss-on-deselect logic in App
+   * uses this same `none` transition to dismiss the phantom composer. */
   const onPaneClick = useCallback(
     (event: React.MouseEvent) => {
       const target = event.target as HTMLElement;
@@ -313,12 +317,8 @@ function CanvasInner({
         target.classList.contains("react-flow__renderer");
       if (!isPane) return;
       onSelectionChange({ kind: "none" });
-      const rect = (event.currentTarget as HTMLDivElement).getBoundingClientRect();
-      const x = event.clientX - rect.left;
-      const y = event.clientY - rect.top;
-      onEmptyCanvasTap({ x, y });
     },
-    [onSelectionChange, onEmptyCanvasTap],
+    [onSelectionChange],
   );
 
   const onNodeMouseEnter = useCallback<NodeMouseHandler>((_, node) => {
@@ -428,9 +428,18 @@ function FitOnInit() {
   return null;
 }
 
-function decorateSelection(nodes: RFNode[], selectedNodeId: string | null): Node[] {
+function decorateSelection(
+  nodes: RFNode[],
+  selectedNodeId: string | null,
+  phantomVisible: boolean,
+): Node[] {
   return nodes.map((n) => {
-    const selected = n.id === selectedNodeId;
+    /* The phantom composer is the "selected" thing while it's on screen,
+     * regardless of the underlying canvas selection. That way the SidePanel
+     * keeps showing whatever the user was looking at while they author the
+     * next run. */
+    const isPhantom = n.id === "phantom:composer";
+    const selected = isPhantom ? phantomVisible : n.id === selectedNodeId;
     return n.selected === selected ? n : { ...n, selected };
   });
 }

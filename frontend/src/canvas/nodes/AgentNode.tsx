@@ -9,25 +9,34 @@ import { stateMeta } from "./stateMeta";
  *
  * Color encodes `state`; shape encodes `kind`. Shows a one-line prompt preview
  * plus a streaming sweep bar when the agent is actively running. A hover-only
- * `+` handle on the right edge is the entry point for the phantom composer.
+ * `+` handle on the right edge of a tail tile is the entry point for the
+ * phantom composer.
  */
 function AgentNodeImpl({ data, selected }: NodeProps<AgentNodeData>) {
-  const { node, index, resumeParent, isActive, planspaceColor, crossLaneLoads } = data;
+  const {
+    node,
+    index,
+    resumeParent,
+    isActive,
+    planspaceColor,
+    crossLaneLoads,
+    isLastInLane,
+  } = data;
   const meta = stateMeta(node.state);
   const headline = oneLine(node.summary || node.prompt || "(empty prompt)");
 
   return (
-    <div
-      title={tooltipForAgent(node, isActive)}
-      className={
-        "group relative w-[224px] select-none overflow-hidden rounded-lg border text-left shadow-card transition " +
-        (selected
-          ? "border-brand ring-2 ring-brand ring-offset-2 ring-offset-surface-sunken"
-          : "border-line hover:border-line-strong hover:ring-2 hover:ring-line-strong/45 hover:ring-offset-2 hover:ring-offset-surface-sunken hover:shadow-raised") +
-        " " +
-        meta.tileBg
-      }
-    >
+    <div className="group relative w-[224px]" title={tooltipForAgent(node, isActive)}>
+      <div
+        className={
+          "select-none overflow-hidden rounded-lg border text-left shadow-card transition " +
+          (selected
+            ? "border-brand ring-2 ring-brand ring-offset-2 ring-offset-surface-sunken"
+            : "border-line hover:border-line-strong hover:ring-2 hover:ring-line-strong/45 hover:ring-offset-2 hover:ring-offset-surface-sunken hover:shadow-raised") +
+          " " +
+          meta.tileBg
+        }
+      >
       {/* state rail */}
       <span
         className={
@@ -145,11 +154,47 @@ function AgentNodeImpl({ data, selected }: NodeProps<AgentNodeData>) {
         position={Position.Top}
         className="!h-3 !w-3 !border-2 !border-line !bg-surface !opacity-0"
       />
+      </div>
+
+      {/* Hover-only "+" affordance: only on tail tiles, opens a phantom composer
+       * to the right. Half-overlapping the edge so cursor moves from tile to
+       * button without losing hover; `hover:opacity-100` on the button itself
+       * keeps it visible during that transition. */}
+      {isLastInLane && (
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            agentNodeContext.onSpawnFromAgent(node.id);
+          }}
+          onMouseDown={(e) => e.stopPropagation()}
+          className="nodrag absolute -right-3 top-1/2 z-10 inline-flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-full border border-line-strong bg-surface-raised text-[15px] font-semibold leading-none text-ink-muted opacity-0 shadow-card transition hover:border-brand hover:bg-brand hover:text-white group-hover:opacity-100 hover:opacity-100"
+          title="Start a follow-up run"
+          aria-label="Start a follow-up run"
+        >
+          +
+        </button>
+      )}
     </div>
   );
 }
 
 export const AgentNode = memo(AgentNodeImpl);
+
+/* Module-level singleton: App.tsx writes the active onSpawnFromAgent callback
+ * (same pattern as PhantomNode's phantomContext) so the memoized AgentNode
+ * always reads the latest handler without stale closures. */
+export type AgentNodeContext = {
+  onSpawnFromAgent: (nodeId: string) => void;
+};
+
+let agentNodeContext: AgentNodeContext = {
+  onSpawnFromAgent: () => {},
+};
+
+export function setAgentNodeContext(ctx: AgentNodeContext): void {
+  agentNodeContext = ctx;
+}
 
 function StateChip({ state }: { state: NodeState }) {
   const meta = stateMeta(state);
