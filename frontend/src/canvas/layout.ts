@@ -311,7 +311,14 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
    *     advanced by `freeCursorX`.
    * `extent: "parent"` keeps in-lane nodes inside their swimlane, giving the
    * group container real semantics instead of mere visuals. */
-  let freeCursorX = LANE.rootX + 180;
+  let freeCursorX = initialFreeCursorX(
+    planspaceOrder,
+    laneAbsPos,
+    visibleNodes,
+    allNodeById,
+    opsWithChild,
+    layoutHints,
+  );
   const laneCursors = new Map<string, number>();
   const advanceLane = (laneId: string, by: number): number => {
     const cur = laneCursors.get(laneId) ?? LANE.planspaceLanePaddingX;
@@ -786,6 +793,62 @@ function resolvePlanspaceId(
     if (parent) return resolvePlanspaceId(parent, byId);
   }
   return null;
+}
+
+function initialFreeCursorX(
+  planspaceOrder: string[],
+  laneAbsPos: Map<string, { x: number; y: number }>,
+  visibleNodes: NodeInfo[],
+  byId: Map<string, NodeInfo>,
+  opsWithChild: Set<string>,
+  layoutHints: Record<string, { x: number; y: number }>,
+): number {
+  const base = LANE.rootX + 180;
+  const firstLaneId = planspaceOrder[0];
+  if (!firstLaneId) return base;
+  const firstLaneAbs = laneAbsPos.get(firstLaneId);
+  if (!firstLaneAbs) return base;
+
+  let laneCursor = LANE.planspaceLanePaddingX;
+  let occupiedRight = LANE.planspaceLanePaddingX + LANE.agentWidth;
+  for (const node of visibleNodes) {
+    if (resolvePlanspaceId(node, byId) !== firstLaneId) continue;
+    const geometry = renderedWorkNodeGeometry(node, opsWithChild);
+    if (!geometry) continue;
+    const position = layoutHints[node.id] ?? {
+      x: laneCursor,
+      y: LANE.planspaceLaneAgentRowY,
+    };
+    occupiedRight = Math.max(occupiedRight, position.x + geometry.width);
+    laneCursor += geometry.spacing;
+  }
+
+  /* Lane 0's agent row has the same absolute y as top-level/free nodes.
+   * Starting the free cursor after that row prevents mixed sessions from
+   * placing a free tile directly over the first in-lane tile. */
+  const nextLaneCursor = Math.max(
+    laneCursor,
+    LANE.planspaceLanePaddingX + LANE.agentSpacing,
+  );
+  return Math.max(
+    base,
+    firstLaneAbs.x + nextLaneCursor,
+    firstLaneAbs.x + occupiedRight + LANE.planspaceLanePaddingX,
+  );
+}
+
+function renderedWorkNodeGeometry(
+  node: NodeInfo,
+  opsWithChild: Set<string>,
+): { spacing: number; width: number } | null {
+  if (node.kind === "op") {
+    if (opsWithChild.has(node.id)) return null;
+    return { spacing: LANE.opSpacing, width: LANE.opWidth };
+  }
+  if (node.kind === "gate") {
+    return { spacing: LANE.gateSpacing, width: 200 };
+  }
+  return { spacing: LANE.agentSpacing, width: LANE.agentWidth };
 }
 
 function colorForPlanspace(

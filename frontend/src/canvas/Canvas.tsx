@@ -127,9 +127,7 @@ function CanvasInner({
 
   /* Re-hydrate when the session changes (initialLayoutHints prop swap). */
   useEffect(() => {
-    if (initialLayoutHints) {
-      layoutHintsRef.current = sanitizeLayoutHints(initialLayoutHints);
-    }
+    layoutHintsRef.current = sanitizeLayoutHints(initialLayoutHints);
   }, [initialLayoutHints]);
 
   const flushPendingHints = useCallback(() => {
@@ -429,29 +427,18 @@ function FitOnInit() {
 }
 
 /**
- * One-way migration: lane group-ization moved in-lane nodes from absolute
- * coordinates to parent-relative ones, so any pre-migration drag hint for an
- * agent/gate/op would land at a wildly wrong spot if applied verbatim.
- *
- * We don't have enough info here to tell which old hints were for top-level
- * nodes (those would still be valid) vs in-lane ones (those would not), so we
- * drop everything except the IDs whose coordinate regime didn't change:
- *   - `root`            — top-level anchor
- *   - `ctx:*`           — context lane lives above, still absolute
- *   - `planspace:*`     — new lane drag hints, only created post-migration
- *
- * Users lose stored drag positions for in-lane and top-level work nodes on
- * first load after upgrade and have to re-arrange once. Old hints in the
- * backend store get overwritten lazily as the user re-drags.
+ * Layout hints are an opaque frontend-owned map keyed by React Flow node id.
+ * Keep every finite coordinate so post-migration work-node drags survive
+ * refresh/reopen; this function is only a defensive clone/shape check.
  */
 function sanitizeLayoutHints(
-  hints: Record<string, { x: number; y: number }> | undefined,
+  hints: Record<string, { x: number; y: number } | null | undefined> | undefined,
 ): Record<string, { x: number; y: number }> {
   if (!hints) return {};
   const out: Record<string, { x: number; y: number }> = {};
   for (const [id, pos] of Object.entries(hints)) {
-    if (id === "root" || id.startsWith("ctx:") || id.startsWith("planspace:")) {
-      out[id] = pos;
+    if (pos && Number.isFinite(pos.x) && Number.isFinite(pos.y)) {
+      out[id] = { x: pos.x, y: pos.y };
     }
   }
   return out;
