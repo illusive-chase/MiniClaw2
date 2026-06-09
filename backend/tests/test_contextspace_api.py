@@ -8,6 +8,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from miniclaw2.app import create_app
+from miniclaw2.contextspace import add_planspace_to_binding
 
 
 def _write_contextspace(home: Path, project_root: Path) -> None:
@@ -219,6 +220,48 @@ class ContextSpaceBootstrapApiTest(unittest.TestCase):
         listed = self.client.get("/sessions").json()
         match = next(item for item in listed if item["id"] == sid)
         self.assertEqual(match["project_context_binding_id"], "project.alpha-track")
+
+    def test_delete_session_removes_owned_binding_and_planspaces(self) -> None:
+        create = self.client.post(
+            "/sessions",
+            json={
+                "cwd": self._cwd.name,
+                "provider": "claude",
+                "name": "Alpha Project",
+            },
+        )
+        self.assertEqual(create.status_code, 200, create.text)
+        sid = create.json()["id"]
+
+        boot = self.client.post(
+            f"/sessions/{sid}/contextspace/bootstrap",
+            json={"title": "Alpha Track"},
+        )
+        self.assertEqual(boot.status_code, 200, boot.text)
+        add_planspace_to_binding(
+            "project.alpha-track",
+            title="Second Track",
+            planspace_slug="second-track",
+            store_root=Path(self._home.name),
+        )
+
+        context_root = Path(self._home.name) / "contextspace"
+        binding_path = (
+            context_root / "bindings" / "projects" / "project.alpha-track.yaml"
+        )
+        first_planspace = context_root / "plugs" / "planspaces" / "alpha-track"
+        second_planspace = context_root / "plugs" / "planspaces" / "second-track"
+        self.assertTrue(binding_path.exists())
+        self.assertTrue(first_planspace.exists())
+        self.assertTrue(second_planspace.exists())
+
+        delete = self.client.delete(f"/sessions/{sid}")
+
+        self.assertEqual(delete.status_code, 200, delete.text)
+        self.assertFalse((Path(self._home.name) / "projects" / sid).exists())
+        self.assertFalse(binding_path.exists())
+        self.assertFalse(first_planspace.exists())
+        self.assertFalse(second_planspace.exists())
 
 
 if __name__ == "__main__":

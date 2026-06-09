@@ -305,7 +305,14 @@ function ProjectCard({
             </div>
           )}
         </div>
-        <div className="flex flex-none items-center gap-1 opacity-0 transition group-hover:opacity-100">
+        <div
+          className={
+            "flex flex-none items-center gap-1 transition " +
+            (confirmingDelete
+              ? "opacity-100"
+              : "opacity-0 group-hover:opacity-100")
+          }
+        >
           {!editing && (
             <button
               type="button"
@@ -322,7 +329,16 @@ function ProjectCard({
           <button
             type="button"
             onClick={handleDelete}
-            title={confirmingDelete ? "Click again to confirm" : "Delete"}
+            title={
+              confirmingDelete
+                ? "Click again to delete this project and its planspaces"
+                : "Delete"
+            }
+            aria-label={
+              confirmingDelete
+                ? "Confirm delete project and planspaces"
+                : "Delete project"
+            }
             className={
               "rounded p-1 transition hover:bg-surface-sunken " +
               (confirmingDelete
@@ -334,6 +350,13 @@ function ProjectCard({
           </button>
         </div>
       </div>
+
+      {confirmingDelete && (
+        <div className="rounded-md border border-state-error/30 bg-state-error-soft px-2.5 py-2 text-[11px] leading-snug text-state-error">
+          Click delete again to remove this project, its nodes, and all
+          associated planspaces.
+        </div>
+      )}
 
       <div className="flex flex-wrap items-center gap-1.5 text-[10px]">
         <span className="rounded border border-line bg-surface-sunken px-1.5 py-0.5 uppercase tracking-[0.12em] text-ink-muted">

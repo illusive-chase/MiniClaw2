@@ -23,7 +23,7 @@ from .domain import (
     NodeState,
     Project,
 )
-from .contextspace import review_guidance_output_relpath
+from .contextspace import delete_project_contextspace, review_guidance_output_relpath
 from .language import normalize_preferred_language
 from .runner import NodeRunner
 from .store import Store
@@ -252,15 +252,17 @@ class ProjectRegistry:
         return rt.project
 
     def delete_project(self, pid: str) -> bool:
-        rt = self._runtimes.pop(pid, None)
+        rt = self._runtimes.get(pid)
         if rt is None:
             return False
         if rt.is_running():
             assert rt.runner_task is not None
             rt.runner_task.cancel()
+        delete_project_contextspace(rt.project, store_root=self.store.root)
         if rt.project.temporary:
             remove_temporary_root(rt.project.root_path)
         self.store.delete_project(pid)
+        self._runtimes.pop(pid, None)
         return True
 
     def attach_observer(

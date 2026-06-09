@@ -13,6 +13,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -792,6 +793,80 @@ def list_project_bindings(root: Path) -> list[ProjectBinding]:
         if binding is not None:
             out.append(binding)
     return out
+
+
+def delete_project_contextspace(
+    project: Project,
+    *,
+    store_root: Path | None = None,
+) -> dict[str, Any]:
+    """Delete ContextSpace bindings and planspaces owned by a project.
+
+    Planspaces that are still referenced by another project binding are kept,
+    because ContextSpace plugs can be shared across projects.
+    """
+
+    root = contextspace_root(store_root)
+    summary: dict[str, Any] = {
+        "root": str(root),
+        "deleted_bindings": [],
+        "deleted_planspaces": [],
+        "retained_shared_planspaces": [],
+        "skipped_planspaces": [],
+    }
+    if not root.exists():
+        return summary
+
+    bindings = list_project_bindings(root)
+    target_bindings = _bindings_for_project_contextspace_delete(project, bindings)
+    if not target_bindings:
+        return summary
+
+    target_binding_ids = {binding.id for binding in target_bindings}
+    target_planspace_ids = sorted(
+        {
+            ref.id
+            for binding in target_bindings
+            for ref in binding.plugs
+            if _plug_kind(ref.id) == "planspace"
+        }
+    )
+    referenced_by_other_bindings = {
+        ref.id
+        for binding in bindings
+        if binding.id not in target_binding_ids
+        for ref in binding.plugs
+        if _plug_kind(ref.id) == "planspace"
+    }
+
+    planspaces_root = root / "plugs" / "planspaces"
+    for planspace_id in target_planspace_ids:
+        if planspace_id in referenced_by_other_bindings:
+            summary["retained_shared_planspaces"].append(planspace_id)
+            continue
+        plug_dir = _plug_dir(root, planspace_id)
+        if plug_dir is None:
+            summary["skipped_planspaces"].append(planspace_id)
+            continue
+        try:
+            resolved_dir = plug_dir.resolve()
+            resolved_root = planspaces_root.resolve()
+        except OSError:
+            summary["skipped_planspaces"].append(planspace_id)
+            continue
+        if resolved_dir.parent != resolved_root:
+            summary["skipped_planspaces"].append(planspace_id)
+            continue
+        if plug_dir.exists():
+            shutil.rmtree(plug_dir)
+            summary["deleted_planspaces"].append(planspace_id)
+
+    for binding in target_bindings:
+        if binding.path.exists():
+            binding.path.unlink()
+            summary["deleted_bindings"].append(binding.id)
+
+    return summary
 
 
 def apply_planspace_update_inbox(
@@ -1634,6 +1709,48 @@ def _merge_plug_refs(primary: list[PlugRef], expanded: list[PlugRef]) -> list[Pl
         seen.add(ref.id)
         out.append(ref)
     return out
+
+
+def _bindings_for_project_contextspace_delete(
+    project: Project,
+    bindings: list[ProjectBinding],
+) -> list[ProjectBinding]:
+    explicit_ids = _project_context_binding_ids(project)
+    out: list[ProjectBinding] = []
+    for binding in bindings:
+        owner_id = _binding_project_owner_id(binding)
+        if owner_id == project.id:
+            out.append(binding)
+            continue
+        if binding.id in explicit_ids and owner_id is None:
+            out.append(binding)
+    if out:
+        return out
+    return [
+        binding
+        for binding in bindings
+        if _binding_project_owner_id(binding) is None
+        and _binding_matches_project_path(binding, project.root_path)
+    ]
+
+
+def _project_context_binding_ids(project: Project) -> set[str]:
+    out: set[str] = set()
+    for value in (
+        project.project_context_binding_id,
+        _string_setting(project, "project_context_binding_id"),
+        _string_setting(project, "context_binding_id"),
+    ):
+        if value:
+            out.add(value)
+    return out
+
+
+def _binding_project_owner_id(binding: ProjectBinding) -> str | None:
+    project_raw = binding.raw.get("project") if isinstance(binding.raw, dict) else None
+    if not isinstance(project_raw, dict):
+        return None
+    return _string_value(project_raw.get("miniclaw_project_id"))
 
 
 def _plug_summary(
