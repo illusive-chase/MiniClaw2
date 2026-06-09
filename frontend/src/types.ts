@@ -110,6 +110,7 @@ export type SessionInfo = {
   created_at: number;
   turns: number;
   provider?: string;
+  preferred_language?: string | null;
   temporary?: boolean;
   scenario_name?: string | null;
   name?: string;

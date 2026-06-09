@@ -11,6 +11,7 @@ import {
   updateLayoutHints,
   updatePlanspaceView,
   updateSessionContextSpace,
+  updateSessionPreferences,
 } from "./api";
 import { Canvas, type CanvasSelection } from "./canvas/Canvas";
 import { setPhantomContext } from "./canvas/nodes/PhantomNode";
@@ -72,6 +73,8 @@ export function App() {
   const [sessionContextSpaceLoading, setSessionContextSpaceLoading] = useState(false);
   const [sessionContextSpaceSaving, setSessionContextSpaceSaving] = useState(false);
   const [sessionContextSpaceError, setSessionContextSpaceError] = useState<string | null>(null);
+  const [sessionSettingsSaving, setSessionSettingsSaving] = useState(false);
+  const [sessionSettingsError, setSessionSettingsError] = useState<string | null>(null);
 
   const [pendingGate, setPendingGate] = useState<PendingGateState | null>(null);
   const [pendingReview, setPendingReview] = useState<PendingGateState | null>(null);
@@ -122,6 +125,8 @@ export function App() {
     setSessionContextSpaceLoading(false);
     setSessionContextSpaceSaving(false);
     setSessionContextSpaceError(null);
+    setSessionSettingsSaving(false);
+    setSessionSettingsError(null);
     setStreaming(false);
     setPendingGate(null);
     setPendingReview(null);
@@ -335,6 +340,27 @@ export function App() {
         setSessionContextSpaceError(String(err));
       } finally {
         setSessionContextSpaceSaving(false);
+      }
+    },
+    [session?.id],
+  );
+
+  const updatePreferredLanguage = useCallback(
+    async (preferredLanguage: string | null) => {
+      if (!session?.id) return;
+      setSessionSettingsSaving(true);
+      setSessionSettingsError(null);
+      try {
+        const next = await updateSessionPreferences(session.id, {
+          preferred_language: preferredLanguage,
+        });
+        setSession((current) =>
+          current && current.id === session.id ? { ...current, ...next } : current,
+        );
+      } catch (err) {
+        setSessionSettingsError(String(err));
+      } finally {
+        setSessionSettingsSaving(false);
       }
     },
     [session?.id],
@@ -955,6 +981,8 @@ export function App() {
           contextSpaceLoading={sessionContextSpaceLoading}
           contextSpaceSaving={sessionContextSpaceSaving}
           contextSpaceError={sessionContextSpaceError}
+          settingsSaving={sessionSettingsSaving}
+          settingsError={sessionSettingsError}
           pendingGate={
             activePendingGate &&
             selectedNode &&
@@ -975,6 +1003,7 @@ export function App() {
           onResolveReview={onResolveReview}
           onSelectNode={onSelectNode}
           onSpawnPhantomFromNode={onSpawnFromAgent}
+          onPreferredLanguageChange={updatePreferredLanguage}
           onActivatePlanspace={activatePlanspace}
           onSelectContextBinding={selectContextBinding}
           onNewDirection={startNewDirection}

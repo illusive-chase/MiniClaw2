@@ -43,6 +43,8 @@ export type SidePanelProps = {
   contextSpaceLoading: boolean;
   contextSpaceSaving: boolean;
   contextSpaceError: string | null;
+  settingsSaving: boolean;
+  settingsError: string | null;
 
   /* gates */
   pendingGate: InteractionRequest | null;
@@ -56,6 +58,7 @@ export type SidePanelProps = {
   }) => void;
   onSelectNode: (nodeId: string) => void;
   onSpawnPhantomFromNode: (nodeId: string) => void;
+  onPreferredLanguageChange: (preferredLanguage: string | null) => void;
   onActivatePlanspace: (binding_id: string, planspace_id: string) => void;
   onSelectContextBinding: (binding_id: string) => void;
   onNewDirection: (userSeed: string, needsReview: boolean) => void;
@@ -95,12 +98,15 @@ function Inner(props: SidePanelProps & { nodesById: Map<string, NodeInfo> }) {
     contextSpaceLoading,
     contextSpaceSaving,
     contextSpaceError,
+    settingsSaving,
+    settingsError,
     pendingGate,
     pendingReview,
     onResolveGate,
     onResolveReview,
     onSelectNode,
     onSpawnPhantomFromNode,
+    onPreferredLanguageChange,
     onActivatePlanspace,
     onSelectContextBinding,
     onNewDirection,
@@ -126,8 +132,11 @@ function Inner(props: SidePanelProps & { nodesById: Map<string, NodeInfo> }) {
         contextSpaceLoading={contextSpaceLoading}
         contextSpaceSaving={contextSpaceSaving}
         contextSpaceError={contextSpaceError}
+        settingsSaving={settingsSaving}
+        settingsError={settingsError}
         onActivatePlanspace={onActivatePlanspace}
         onSelectContextBinding={onSelectContextBinding}
+        onPreferredLanguageChange={onPreferredLanguageChange}
         onNewDirection={onNewDirection}
         onContextInit={onContextInit}
         onContextRefresh={onContextRefresh}

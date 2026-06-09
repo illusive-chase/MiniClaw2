@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { createSession } from "../api";
+import { LANGUAGE_OPTIONS } from "../languages";
 import type { SessionInfo } from "../types";
 
 type Props = {
@@ -11,6 +12,7 @@ type Props = {
 export function NewProjectModal({ open, onCancel, onCreated }: Props) {
   const [name, setName] = useState("");
   const [provider, setProvider] = useState<"claude" | "codex">("claude");
+  const [preferredLanguage, setPreferredLanguage] = useState("");
   const [cwd, setCwd] = useState("");
   const [temporary, setTemporary] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -21,6 +23,7 @@ export function NewProjectModal({ open, onCancel, onCreated }: Props) {
     if (open) {
       setName("");
       setProvider("claude");
+      setPreferredLanguage("");
       setCwd("");
       setTemporary(false);
       setSubmitting(false);
@@ -38,6 +41,7 @@ export function NewProjectModal({ open, onCancel, onCreated }: Props) {
       const session = await createSession({
         name: name.trim() || undefined,
         provider,
+        preferred_language: preferredLanguage || null,
         cwd: temporary ? undefined : (cwd.trim() || undefined),
         temporary,
       });
@@ -95,6 +99,23 @@ export function NewProjectModal({ open, onCancel, onCreated }: Props) {
             >
               <option value="claude">Claude</option>
               <option value="codex">Codex</option>
+            </select>
+          </label>
+
+          <label className="flex flex-col gap-1">
+            <span className="text-[10px] font-medium uppercase tracking-[0.14em] text-ink-subtle">
+              Language
+            </span>
+            <select
+              value={preferredLanguage}
+              onChange={(e) => setPreferredLanguage(e.target.value)}
+              className="rounded-md border border-line bg-surface-sunken px-3 py-2 text-sm text-ink-strong focus:border-brand focus:outline-none"
+            >
+              {LANGUAGE_OPTIONS.map((option) => (
+                <option key={option.value || "none"} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
             </select>
           </label>
 

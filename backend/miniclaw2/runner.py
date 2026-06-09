@@ -47,6 +47,7 @@ from .events import (
     Usage,
 )
 from .git_state import commit_all, git_head
+from .language import language_launch_instruction, project_preferred_language
 from .providers import AgentProvider, AgentProviderContext, AgentProviderEvent, GateRequest
 from .providers.claude import ClaudeProvider
 from .providers.codex import CodexProvider
@@ -134,6 +135,7 @@ class NodeRunner:
                 planspace_update_launch_contract(self.project, self.node, context_bundle),
                 review_guidance_launch_contract(self.node),
                 planspace_update_filter_contract(self.node, context_bundle),
+                language_launch_instruction(project_preferred_language(self.project)),
             )
             self._transition(NodeState.RUNNING, started=True)
             await self._emit(
@@ -355,6 +357,9 @@ class NodeRunner:
             snapshot["review_guidance_output_path"] = review_guidance_output_relpath(self.node)
         if self.node.context_bundle_id:
             snapshot["context_bundle_id"] = self.node.context_bundle_id
+        preferred_language = project_preferred_language(self.project)
+        if preferred_language:
+            snapshot["preferred_language"] = preferred_language
         self.node.settings_snapshot = snapshot
 
     def _finish_planspace_update(self, final_state: NodeState) -> None:

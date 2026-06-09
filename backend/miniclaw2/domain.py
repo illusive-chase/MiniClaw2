@@ -81,6 +81,7 @@ class Project(BaseModel):
     root_path: str
     name: str = ""
     provider: str = "claude"
+    preferred_language: str | None = None
     head_commit: str | None = None
     parent_project_id: str | None = None
     parent_commit: str | None = None

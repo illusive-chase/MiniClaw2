@@ -59,6 +59,7 @@ class CreateSessionRequest(BaseModel):
     model_provider: str | None = None
     provider: str | None = None
     auto_commit: bool | None = None
+    preferred_language: str | None = None
     temporary: bool = False
     scenario_name: str | None = None
     name: str | None = None
@@ -67,6 +68,10 @@ class CreateSessionRequest(BaseModel):
 
 class RenameSessionRequest(BaseModel):
     name: str
+
+
+class UpdateSessionPreferencesRequest(BaseModel):
+    preferred_language: str | None = None
 
 
 class UpdateSessionContextRequest(BaseModel):
@@ -96,6 +101,7 @@ class SessionInfo(BaseModel):
     created_at: float
     turns: int
     provider: str = "claude"
+    preferred_language: str | None = None
     temporary: bool = False
     scenario_name: str | None = None
     name: str = ""
@@ -177,6 +183,7 @@ def create_app() -> FastAPI:
                 model_provider=req.model_provider,
                 provider=req.provider,
                 auto_commit=req.auto_commit,
+                preferred_language=req.preferred_language,
                 temporary=req.temporary,
                 scenario_name=req.scenario_name,
                 name=req.name or "",
@@ -186,34 +193,12 @@ def create_app() -> FastAPI:
             raise HTTPException(400, str(exc)) from exc
         except RuntimeError as exc:
             raise HTTPException(500, str(exc)) from exc
-        return SessionInfo(
-            id=project.id,
-            created_at=project.created_at,
-            turns=0,
-            provider=project.provider,
-            temporary=project.temporary,
-            scenario_name=project.scenario_name,
-            name=project.name,
-            project_context_binding_id=project.project_context_binding_id,
-            layout_hints=project.layout_hints,
-            planspace_view=project.planspace_view,
-        )
+        return _session_info(registry, project)
 
     @app.get("/sessions", response_model=list[SessionInfo])
     def list_sessions() -> list[SessionInfo]:
         return [
-            SessionInfo(
-                id=p.id,
-                created_at=p.created_at,
-                turns=registry.turn_count(p.id),
-                provider=p.provider,
-                temporary=p.temporary,
-                scenario_name=p.scenario_name,
-                name=p.name,
-                project_context_binding_id=p.project_context_binding_id,
-                layout_hints=p.layout_hints,
-                planspace_view=p.planspace_view,
-            )
+            _session_info(registry, p)
             for p in registry.list_projects()
         ]
 
@@ -222,18 +207,23 @@ def create_app() -> FastAPI:
         project = registry.rename_project(sid, req.name)
         if project is None:
             raise HTTPException(404, "session not found")
-        return SessionInfo(
-            id=project.id,
-            created_at=project.created_at,
-            turns=registry.turn_count(project.id),
-            provider=project.provider,
-            temporary=project.temporary,
-            scenario_name=project.scenario_name,
-            name=project.name,
-            project_context_binding_id=project.project_context_binding_id,
-            layout_hints=project.layout_hints,
-            planspace_view=project.planspace_view,
-        )
+        return _session_info(registry, project)
+
+    @app.patch("/sessions/{sid}/preferences", response_model=SessionInfo)
+    def update_session_preferences(
+        sid: str,
+        req: UpdateSessionPreferencesRequest,
+    ) -> SessionInfo:
+        kwargs: dict[str, Any] = {}
+        if "preferred_language" in req.model_fields_set:
+            kwargs["preferred_language"] = req.preferred_language
+        try:
+            project = registry.update_project_preferences(sid, **kwargs)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        if project is None:
+            raise HTTPException(404, "session not found")
+        return _session_info(registry, project)
 
     @app.patch("/sessions/{sid}/layout-hints", response_model=SessionInfo)
     def update_layout_hints(
@@ -243,18 +233,7 @@ def create_app() -> FastAPI:
         project = registry.update_layout_hints(sid, req.updates, remove=req.remove)
         if project is None:
             raise HTTPException(404, "session not found")
-        return SessionInfo(
-            id=project.id,
-            created_at=project.created_at,
-            turns=registry.turn_count(project.id),
-            provider=project.provider,
-            temporary=project.temporary,
-            scenario_name=project.scenario_name,
-            name=project.name,
-            project_context_binding_id=project.project_context_binding_id,
-            layout_hints=project.layout_hints,
-            planspace_view=project.planspace_view,
-        )
+        return _session_info(registry, project)
 
     @app.patch("/sessions/{sid}/planspace-view", response_model=dict[str, Any])
     def update_planspace_view(
@@ -547,18 +526,7 @@ def create_app() -> FastAPI:
             raise HTTPException(400, str(exc)) from exc
         except RuntimeError as exc:
             raise HTTPException(500, str(exc)) from exc
-        return SessionInfo(
-            id=project.id,
-            created_at=project.created_at,
-            turns=0,
-            provider=project.provider,
-            temporary=project.temporary,
-            scenario_name=project.scenario_name,
-            name=project.name,
-            project_context_binding_id=project.project_context_binding_id,
-            layout_hints=project.layout_hints,
-            planspace_view=project.planspace_view,
-        )
+        return _session_info(registry, project)
 
     @app.post("/sessions/{sid}/verify", response_model=VerifyResponse)
     async def verify_session(sid: str) -> VerifyResponse:
@@ -709,6 +677,22 @@ def create_app() -> FastAPI:
             registry.detach_observer(sid, observer_token)
 
     return app
+
+
+def _session_info(registry: ProjectRegistry, project: Any) -> SessionInfo:
+    return SessionInfo(
+        id=project.id,
+        created_at=project.created_at,
+        turns=registry.turn_count(project.id),
+        provider=project.provider,
+        preferred_language=project.preferred_language,
+        temporary=project.temporary,
+        scenario_name=project.scenario_name,
+        name=project.name,
+        project_context_binding_id=project.project_context_binding_id,
+        layout_hints=project.layout_hints,
+        planspace_view=project.planspace_view,
+    )
 
 
 async def _send(

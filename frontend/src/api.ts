@@ -19,6 +19,7 @@ export async function createSession(
     model?: string;
     model_provider?: string;
     provider?: string;
+    preferred_language?: string | null;
     temporary?: boolean;
     scenario_name?: string | null;
     name?: string;
@@ -138,6 +139,21 @@ export async function renameSession(id: string, name: string): Promise<SessionIn
     body: JSON.stringify({ name }),
   });
   if (!res.ok) throw new Error(`renameSession failed: ${res.status}`);
+  return res.json();
+}
+
+export async function updateSessionPreferences(
+  id: string,
+  body: {
+    preferred_language?: string | null;
+  },
+): Promise<SessionInfo> {
+  const res = await fetch(`/sessions/${id}/preferences`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`updateSessionPreferences failed: ${res.status}`);
   return res.json();
 }
 

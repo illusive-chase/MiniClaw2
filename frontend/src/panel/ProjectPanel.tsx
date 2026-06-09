@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import type { ReactNode } from "react";
 
+import { LANGUAGE_OPTIONS } from "../languages";
 import type {
   ContextSpaceBindingSummary,
   ContextSpacePlugSummary,
@@ -14,8 +15,11 @@ export type ProjectPanelProps = {
   contextSpaceLoading: boolean;
   contextSpaceSaving: boolean;
   contextSpaceError: string | null;
+  settingsSaving: boolean;
+  settingsError: string | null;
   onActivatePlanspace: (binding_id: string, planspace_id: string) => void;
   onSelectContextBinding: (binding_id: string) => void;
+  onPreferredLanguageChange: (preferredLanguage: string | null) => void;
   onNewDirection: (userSeed: string, needsReview: boolean) => void;
   onContextInit: () => void;
   onContextRefresh: () => void;
@@ -34,8 +38,11 @@ export function ProjectPanel({
   contextSpaceLoading,
   contextSpaceSaving,
   contextSpaceError,
+  settingsSaving,
+  settingsError,
   onActivatePlanspace,
   onSelectContextBinding,
+  onPreferredLanguageChange,
   onNewDirection,
   onContextInit,
   onContextRefresh,
@@ -100,6 +107,28 @@ export function ProjectPanel({
               value={new Date(session.created_at * 1000).toLocaleString()}
             />
           </dl>
+          <label className="mt-2 flex items-center justify-between gap-3 rounded-md border border-line bg-surface-sunken px-3 py-2 text-[11.5px]">
+            <span className="text-ink-subtle">Preferred language</span>
+            <select
+              value={session.preferred_language ?? ""}
+              disabled={settingsSaving}
+              onChange={(event) => {
+                onPreferredLanguageChange(event.target.value || null);
+              }}
+              className="min-w-[190px] rounded border border-line bg-surface px-2 py-1 text-[11.5px] text-ink-strong focus:border-brand focus:outline-none disabled:opacity-50"
+            >
+              {LANGUAGE_OPTIONS.map((option) => (
+                <option key={option.value || "none"} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          {settingsError && (
+            <div className="mt-2 rounded-md border border-state-error/30 bg-state-error-soft p-2 text-xs text-state-error">
+              {settingsError}
+            </div>
+          )}
         </section>
 
         <section className="mb-5">

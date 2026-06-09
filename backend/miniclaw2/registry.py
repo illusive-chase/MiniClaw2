@@ -24,6 +24,7 @@ from .domain import (
     Project,
 )
 from .contextspace import review_guidance_output_relpath
+from .language import normalize_preferred_language
 from .runner import NodeRunner
 from .store import Store
 from .workspace import create_temporary_root, remove_temporary_root
@@ -97,12 +98,14 @@ class ProjectRegistry:
         approval_policy: str | None = None,
         sandbox: str | None = None,
         project_context_binding_id: str | None = None,
+        preferred_language: str | None = None,
         temporary: bool = False,
         scenario_name: str | None = None,
     ) -> Project:
         normalized_provider = (provider or "claude").lower()
         if normalized_provider not in {"claude", "codex"}:
             raise ValueError(f"unknown provider: {provider}")
+        normalized_language = normalize_preferred_language(preferred_language)
         if temporary:
             root_path = create_temporary_root()
         else:
@@ -126,6 +129,7 @@ class ProjectRegistry:
             root_path=root_path,
             name=name,
             provider=normalized_provider,
+            preferred_language=normalized_language,
             project_context_binding_id=project_context_binding_id,
             settings_override=settings,
             temporary=temporary,
@@ -147,6 +151,22 @@ class ProjectRegistry:
         if rt is None:
             return None
         rt.project.name = name
+        self.store.update_project(rt.project)
+        return rt.project
+
+    def update_project_preferences(
+        self,
+        pid: str,
+        *,
+        preferred_language: str | None | object = _UNSET,
+    ) -> Project | None:
+        rt = self._runtimes.get(pid)
+        if rt is None:
+            return None
+        if preferred_language is not _UNSET:
+            rt.project.preferred_language = normalize_preferred_language(
+                preferred_language
+            )
         self.store.update_project(rt.project)
         return rt.project
 

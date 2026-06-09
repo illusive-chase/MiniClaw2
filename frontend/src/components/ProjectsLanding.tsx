@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { deleteSession, listSessions, renameSession } from "../api";
+import { languageLabel } from "../languages";
 import type { SessionInfo } from "../types";
 import { TestsPanel } from "./TestsPanel";
 import { ThemeToggle } from "./ThemeToggle";
@@ -338,6 +339,11 @@ function ProjectCard({
         <span className="rounded border border-line bg-surface-sunken px-1.5 py-0.5 uppercase tracking-[0.12em] text-ink-muted">
           {session.provider ?? "claude"}
         </span>
+        {session.preferred_language && (
+          <span className="rounded border border-line bg-surface-sunken px-1.5 py-0.5 text-ink-muted">
+            {languageLabel(session.preferred_language)}
+          </span>
+        )}
         {session.scenario_name && (
           <span className="rounded border border-brand/30 bg-brand-soft px-1.5 py-0.5 text-brand-ink dark:text-brand">
             {session.scenario_name}
