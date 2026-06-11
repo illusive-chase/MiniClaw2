@@ -87,6 +87,11 @@ export function App() {
 
   const [streaming, setStreaming] = useState(false);
 
+  /* True once both initial fetches (nodes + contextspace) have settled for the
+   * current session. The canvas is held off-screen until then so hidden-planspace
+   * nodes never briefly flash visible during the load-order race. */
+  const [initialLoadComplete, setInitialLoadComplete] = useState(false);
+
   /* Phantom composer:
    *   undefined → no phantom in the canvas
    *   null       → fresh-start phantom
@@ -104,6 +109,11 @@ export function App() {
   const lastLayoutSaveRef = useRef<Promise<SessionInfo> | null>(null);
   const layoutSaveChainRef = useRef<Promise<void>>(Promise.resolve());
   const openProjectRequestRef = useRef(0);
+  /* Node ids whose bundle prefetch is currently in flight. Each fetch
+   * resolution updates contextBundlesByNodeId, which retriggers the prefetch
+   * effect; without this guard the still-in-flight nodes would be refetched
+   * on every resolution. */
+  const inflightBundleFetchRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     inspectedNodeIdRef.current = inspectedNodeId;
@@ -140,7 +150,9 @@ export function App() {
     setPendingGate(null);
     setPendingReview(null);
     setPhantomFromNodeId(undefined);
+    setInitialLoadComplete(false);
     activeNodeIdRef.current = null;
+    inflightBundleFetchRef.current.clear();
   }, []);
 
   const waitForLayoutSaves = useCallback(async () => {
@@ -213,10 +225,6 @@ export function App() {
     }
   }, [session?.id]);
 
-  useEffect(() => {
-    void refreshNodes();
-  }, [refreshNodes]);
-
   /* context space */
   const refreshContextSpace = useCallback(async () => {
     if (!session?.id) return;
@@ -238,9 +246,25 @@ export function App() {
     }
   }, [session?.id]);
 
+  /* Coordinated bootstrap: fetch nodes and contextspace in parallel and hold
+   * the canvas off-screen until BOTH resolve. Otherwise the faster of the two
+   * wins and the canvas renders with a partial picture — when listNodes lands
+   * before getSessionContextSpace, nodes from hidden planspaces flash visible
+   * for one frame and then disappear as the hidden-planspace filter kicks in. */
   useEffect(() => {
-    void refreshContextSpace();
-  }, [refreshContextSpace]);
+    if (!session?.id) {
+      setInitialLoadComplete(false);
+      return;
+    }
+    setInitialLoadComplete(false);
+    let cancelled = false;
+    void Promise.allSettled([refreshNodes(), refreshContextSpace()]).then(() => {
+      if (!cancelled) setInitialLoadComplete(true);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [session?.id, refreshNodes, refreshContextSpace]);
 
   useEffect(() => {
     if (!sessionContextSpace?.context_refresh?.running) return;
@@ -522,30 +546,38 @@ export function App() {
   ]);
 
   /* When the node list refreshes, prefetch bundles for terminal nodes we haven't
-   * loaded yet, capped to avoid hammering the backend on big projects. */
+   * loaded yet, capped to avoid hammering the backend on big projects. The
+   * `inflightBundleFetchRef` guard prevents the self-modifying dep loop where
+   * each successful fetch updates `contextBundlesByNodeId`, retriggers this
+   * effect, and refetches the still-in-flight nodes. */
   useEffect(() => {
     if (!session?.id) return;
+    const sessionId = session.id;
     const missing = nodes
       .filter(
         (n) =>
           n.kind !== "op" &&
           TERMINAL_STATES.has(n.state) &&
           n.context_bundle_id &&
-          contextBundlesByNodeId[n.id] === undefined,
+          contextBundlesByNodeId[n.id] === undefined &&
+          !inflightBundleFetchRef.current.has(n.id),
       )
       .slice(0, 6);
     if (missing.length === 0) return;
     let cancelled = false;
+    for (const n of missing) inflightBundleFetchRef.current.add(n.id);
     void Promise.all(
       missing.map(async (n) => {
         try {
-          const bundle = await getNodeContextBundle(session.id, n.id);
+          const bundle = await getNodeContextBundle(sessionId, n.id);
           if (cancelled) return;
           setContextBundlesByNodeId((prev) =>
             prev[n.id] !== undefined ? prev : { ...prev, [n.id]: bundle },
           );
         } catch (err) {
           console.warn("prefetch bundle failed", n.id, err);
+        } finally {
+          inflightBundleFetchRef.current.delete(n.id);
         }
       }),
     );
@@ -991,24 +1023,30 @@ export function App() {
 
       <div className="flex min-h-0 flex-1">
         <main className="relative flex min-w-0 flex-1 flex-col bg-surface-sunken">
-          <Canvas
-            key={session?.id ?? "no-session"}
-            nodes={nodes}
-            selectedNodeId={selectedCanvasNodeId}
-            activeNodeId={activeNodeIdRef.current}
-            projectTitle={projectTitle}
-            phantomFromNodeId={phantomFromNodeId}
-            phantomDisabled={composerDisabled}
-            contextBundlesByNodeId={contextBundlesByNodeId}
-            knownPlanspaceIds={knownPlanspaceIds}
-            hiddenPlanspaceIds={hiddenPlanspaceIds}
-            activePlanspaceId={sessionContextSpace?.active_planspace_id ?? null}
-            initialLayoutHints={session?.layout_hints}
-            initialLayoutViewport={session?.layout_viewport ?? null}
-            onSelectionChange={onSelectionChange}
-            onSpawnFromAgent={onSpawnFromAgent}
-            onLayoutHintsChange={onLayoutHintsChange}
-          />
+          {initialLoadComplete ? (
+            <Canvas
+              key={session?.id ?? "no-session"}
+              nodes={nodes}
+              selectedNodeId={selectedCanvasNodeId}
+              activeNodeId={activeNodeIdRef.current}
+              projectTitle={projectTitle}
+              phantomFromNodeId={phantomFromNodeId}
+              phantomDisabled={composerDisabled}
+              contextBundlesByNodeId={contextBundlesByNodeId}
+              knownPlanspaceIds={knownPlanspaceIds}
+              hiddenPlanspaceIds={hiddenPlanspaceIds}
+              activePlanspaceId={sessionContextSpace?.active_planspace_id ?? null}
+              initialLayoutHints={session?.layout_hints}
+              initialLayoutViewport={session?.layout_viewport ?? null}
+              onSelectionChange={onSelectionChange}
+              onSpawnFromAgent={onSpawnFromAgent}
+              onLayoutHintsChange={onLayoutHintsChange}
+            />
+          ) : (
+            <div className="flex h-full w-full items-center justify-center text-[11px] uppercase tracking-[0.18em] text-ink-subtle">
+              Loading canvas…
+            </div>
+          )}
 
           {/* Cross-node pending banner — only show if the pending node isn't the
               one the user is currently inspecting. */}
