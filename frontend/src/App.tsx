@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   cancelProjectContext,
   createPlanspace,
+  getSession,
   getNodeContextBundle,
   getNodeDiff,
   getSessionContextSpace,
@@ -32,6 +33,7 @@ import type {
   NodeDiff,
   NodeInfo,
   ServerEvent,
+  CanvasViewport,
   SessionContextSpaceInfo,
   SessionInfo,
 } from "./types";
@@ -99,6 +101,9 @@ export function App() {
 
   const activeNodeIdRef = useRef<string | null>(null);
   const inspectedNodeIdRef = useRef<string | null>(null);
+  const lastLayoutSaveRef = useRef<Promise<SessionInfo> | null>(null);
+  const layoutSaveChainRef = useRef<Promise<void>>(Promise.resolve());
+  const openProjectRequestRef = useRef(0);
 
   useEffect(() => {
     inspectedNodeIdRef.current = inspectedNodeId;
@@ -138,16 +143,42 @@ export function App() {
     activeNodeIdRef.current = null;
   }, []);
 
+  const waitForLayoutSaves = useCallback(async () => {
+    for (;;) {
+      const save = lastLayoutSaveRef.current;
+      if (!save) return;
+      try {
+        await save;
+      } catch {
+        /* Opening should still proceed if a best-effort layout save failed. */
+      }
+      if (lastLayoutSaveRef.current === save) return;
+    }
+  }, []);
+
   const openProject = useCallback(
-    (next: SessionInfo) => {
+    async (next: SessionInfo) => {
+      const requestId = ++openProjectRequestRef.current;
+      await waitForLayoutSaves();
+      if (requestId !== openProjectRequestRef.current) return;
+      let fresh = next;
+      try {
+        const fetched = await getSession(next.id);
+        if (requestId !== openProjectRequestRef.current) return;
+        fresh = fetched;
+      } catch (err) {
+        if (requestId !== openProjectRequestRef.current) return;
+        console.warn("get session failed:", err);
+      }
       resetAllSessionState();
-      setSession(next);
+      setSession(fresh);
       setRoute("project");
     },
-    [resetAllSessionState],
+    [resetAllSessionState, waitForLayoutSaves],
   );
 
   const backToLanding = useCallback(() => {
+    openProjectRequestRef.current += 1;
     resetAllSessionState();
     setSession(null);
     setRoute("landing");
@@ -784,13 +815,40 @@ export function App() {
     setAgentNodeContext({ onSpawnFromAgent });
   }, [onSpawnFromAgent]);
 
-  /* Drag-end → push positions to the backend. Best-effort: log on failure but
-   * don't surface; the client-side ref keeps working either way. */
+  /* Canvas layout changes -> serialized backend PATCHes. Best-effort: log on
+   * failure but don't surface; the client-side ref keeps working either way. */
   const onLayoutHintsChange = useCallback(
-    (updates: Record<string, { x: number; y: number }>) => {
+    (
+      updates: Record<string, { x: number; y: number }>,
+      layoutViewport?: CanvasViewport | null,
+    ) => {
       if (!session?.id) return;
-      updateLayoutHints(session.id, updates).catch((err) => {
+      if (Object.keys(updates).length === 0 && !layoutViewport) return;
+      const sessionId = session.id;
+      const updatesSnapshot = Object.fromEntries(
+        Object.entries(updates).map(([id, pos]) => [id, { x: pos.x, y: pos.y }]),
+      );
+      const viewportSnapshot = layoutViewport ? { ...layoutViewport } : layoutViewport;
+      const save = layoutSaveChainRef.current
+        .catch(() => undefined)
+        .then(() => updateLayoutHints(sessionId, updatesSnapshot, [], viewportSnapshot))
+        .then((next) => {
+          setSession((current) =>
+            current && current.id === next.id ? { ...current, ...next } : current,
+          );
+          return next;
+        });
+      lastLayoutSaveRef.current = save;
+      layoutSaveChainRef.current = save.then(
+        () => undefined,
+        () => undefined,
+      );
+      save.catch((err) => {
         console.warn("update layout hints failed:", err);
+      }).finally(() => {
+        if (lastLayoutSaveRef.current === save) {
+          lastLayoutSaveRef.current = null;
+        }
       });
     },
     [session?.id],
@@ -934,6 +992,7 @@ export function App() {
       <div className="flex min-h-0 flex-1">
         <main className="relative flex min-w-0 flex-1 flex-col bg-surface-sunken">
           <Canvas
+            key={session?.id ?? "no-session"}
             nodes={nodes}
             selectedNodeId={selectedCanvasNodeId}
             activeNodeId={activeNodeIdRef.current}
@@ -945,6 +1004,7 @@ export function App() {
             hiddenPlanspaceIds={hiddenPlanspaceIds}
             activePlanspaceId={sessionContextSpace?.active_planspace_id ?? null}
             initialLayoutHints={session?.layout_hints}
+            initialLayoutViewport={session?.layout_viewport ?? null}
             onSelectionChange={onSelectionChange}
             onSpawnFromAgent={onSpawnFromAgent}
             onLayoutHintsChange={onLayoutHintsChange}

@@ -95,6 +95,8 @@ class Project(BaseModel):
     # Keys are node ids (or synthetic ids like `artifact:<nid>`); values are
     # {"x": <float>, "y": <float>}. Backend treats this as a passthrough blob.
     layout_hints: dict[str, dict[str, float]] = Field(default_factory=dict)
+    # React Flow viewport persisted by the frontend so pan/zoom is per-project.
+    layout_viewport: dict[str, float] | None = None
     # Per-project viewing preferences for bound planspace lanes. This is
     # intentionally UI state, but it belongs in project.json so it survives
     # reloads and other clients.

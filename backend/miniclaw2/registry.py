@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
@@ -207,6 +208,7 @@ class ProjectRegistry:
         updates: dict[str, dict[str, float]],
         *,
         remove: list[str] | None = None,
+        layout_viewport: dict[str, float] | None = None,
     ) -> Project | None:
         rt = self._runtimes.get(pid)
         if rt is None:
@@ -223,6 +225,24 @@ class ProjectRegistry:
         for nid in remove or ():
             merged.pop(nid, None)
         rt.project.layout_hints = merged
+        if layout_viewport is not None:
+            x = layout_viewport.get("x")
+            y = layout_viewport.get("y")
+            zoom = layout_viewport.get("zoom")
+            if (
+                isinstance(x, (int, float))
+                and isinstance(y, (int, float))
+                and isinstance(zoom, (int, float))
+                and math.isfinite(x)
+                and math.isfinite(y)
+                and math.isfinite(zoom)
+                and zoom > 0
+            ):
+                rt.project.layout_viewport = {
+                    "x": float(x),
+                    "y": float(y),
+                    "zoom": float(zoom),
+                }
         self.store.update_project(rt.project)
         return rt.project
 

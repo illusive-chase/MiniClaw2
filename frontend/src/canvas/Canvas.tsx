@@ -9,6 +9,7 @@ import ReactFlow, {
   type Node,
   type NodeChange,
   type NodeMouseHandler,
+  type Viewport,
   useEdgesState,
   useNodesState,
   useReactFlow,
@@ -59,6 +60,8 @@ const EDGE_TYPES = {
   memoryDelta: MemoryDeltaEdge,
 };
 
+const LAYOUT_DRAG_SAVE_DEBOUNCE_MS = 500;
+
 export type CanvasSelection =
   | { kind: "agent" | "gate" | "op"; nodeId: string }
   | {
@@ -87,11 +90,16 @@ export type CanvasProps = {
   activePlanspaceId: string | null;
   /** Persisted positions hydrated from the session. */
   initialLayoutHints?: Record<string, { x: number; y: number }>;
+  /** Persisted viewport hydrated from the session. */
+  initialLayoutViewport?: Viewport | null;
   onSelectionChange: (sel: CanvasSelection) => void;
   /** spawn the phantom to the right of a finished agent */
   onSpawnFromAgent: (nodeId: string) => void;
-  /** Called debounced after drag-end with positions that changed. */
-  onLayoutHintsChange?: (updates: Record<string, { x: number; y: number }>) => void;
+  /** Called after drag-end / pan / zoom with layout state that changed. */
+  onLayoutHintsChange?: (
+    updates: Record<string, { x: number; y: number }>,
+    viewport?: Viewport | null,
+  ) => void;
 };
 
 export function Canvas(props: CanvasProps) {
@@ -114,6 +122,7 @@ function CanvasInner({
   hiddenPlanspaceIds,
   activePlanspaceId,
   initialLayoutHints,
+  initialLayoutViewport,
   onSelectionChange,
   onSpawnFromAgent,
   onLayoutHintsChange,
@@ -121,31 +130,51 @@ function CanvasInner({
   const layoutHintsRef = useRef<Record<string, { x: number; y: number }>>(
     sanitizeLayoutHints(initialLayoutHints),
   );
+  const initialViewportRef = useRef<Viewport | null>(
+    sanitizeViewport(initialLayoutViewport),
+  );
+  const viewportRef = useRef<Viewport | null>(initialViewportRef.current);
   const pendingHintsRef = useRef<Record<string, { x: number; y: number }>>({});
+  const pendingViewportRef = useRef<Viewport | null>(null);
   const flushTimerRef = useRef<number | null>(null);
   const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
+  const { getViewport } = useReactFlow();
 
   /* Re-hydrate when the session changes (initialLayoutHints prop swap). */
   useEffect(() => {
     layoutHintsRef.current = sanitizeLayoutHints(initialLayoutHints);
   }, [initialLayoutHints]);
 
-  const flushPendingHints = useCallback(() => {
+  const flushPendingLayout = useCallback(() => {
     if (flushTimerRef.current !== null) {
       window.clearTimeout(flushTimerRef.current);
       flushTimerRef.current = null;
     }
     const pending = pendingHintsRef.current;
-    if (Object.keys(pending).length === 0) return;
+    const pendingViewport = pendingViewportRef.current;
+    if (Object.keys(pending).length === 0 && !pendingViewport) return;
     pendingHintsRef.current = {};
-    onLayoutHintsChange?.(pending);
+    pendingViewportRef.current = null;
+    onLayoutHintsChange?.(pending, pendingViewport);
   }, [onLayoutHintsChange]);
+
+  const scheduleFlushLayout = useCallback(
+    (delayMs: number) => {
+      if (flushTimerRef.current !== null) {
+        window.clearTimeout(flushTimerRef.current);
+      }
+      flushTimerRef.current = window.setTimeout(() => {
+        flushPendingLayout();
+      }, delayMs);
+    },
+    [flushPendingLayout],
+  );
 
   useEffect(() => {
     return () => {
-      flushPendingHints();
+      flushPendingLayout();
     };
-  }, [flushPendingHints]);
+  }, [flushPendingLayout]);
 
   /* Op chevrons live inside edges, so React Flow's selection callback never
    * sees their clicks. We wire the click into a module-level singleton so the
@@ -232,22 +261,43 @@ function CanvasInner({
    * debounce a push to the backend so refreshes survive too. */
   const handleNodesChange = useCallback(
     (changes: NodeChange[]) => {
+      let changed = false;
       for (const ch of changes) {
         if (ch.type === "position" && ch.position && ch.dragging === false) {
           layoutHintsRef.current[ch.id] = ch.position;
           pendingHintsRef.current[ch.id] = ch.position;
-          if (flushTimerRef.current !== null) {
-            window.clearTimeout(flushTimerRef.current);
-          }
-          flushTimerRef.current = window.setTimeout(() => {
-            flushPendingHints();
-          }, 500);
+          changed = true;
         }
       }
+      if (changed) scheduleFlushLayout(LAYOUT_DRAG_SAVE_DEBOUNCE_MS);
       onNodesChange(changes);
     },
-    [onNodesChange, flushPendingHints],
+    [onNodesChange, scheduleFlushLayout],
   );
+
+  const onMoveEnd = useCallback(
+    (event: MouseEvent | TouchEvent | null, viewport: Viewport) => {
+      /* Programmatic fitView can report a move-end without a user event. Keep
+       * saved viewports user-owned so auto-fit does not overwrite them. */
+      if (!event) return;
+      const next = sanitizeViewport(viewport);
+      if (!next || sameViewport(viewportRef.current, next)) return;
+      viewportRef.current = next;
+      pendingViewportRef.current = next;
+      scheduleFlushLayout(250);
+    },
+    [scheduleFlushLayout],
+  );
+
+  const persistCurrentViewport = useCallback(() => {
+    window.setTimeout(() => {
+      const next = sanitizeViewport(getViewport());
+      if (!next || sameViewport(viewportRef.current, next)) return;
+      viewportRef.current = next;
+      pendingViewportRef.current = next;
+      scheduleFlushLayout(0);
+    }, 0);
+  }, [getViewport, scheduleFlushLayout]);
 
   /* Click → selection. We translate the clicked React Flow node into the
    * parent's polymorphic CanvasSelection shape.
@@ -351,6 +401,7 @@ function CanvasInner({
         onNodeMouseLeave={onNodeMouseLeave}
         onNodeDoubleClick={onNodeDoubleClick}
         onPaneClick={onPaneClick}
+        onMoveEnd={onMoveEnd}
         nodeTypes={NODE_TYPES}
         edgeTypes={EDGE_TYPES}
         defaultEdgeOptions={{
@@ -361,7 +412,7 @@ function CanvasInner({
             height: 14,
           },
         }}
-        defaultViewport={{ x: 0, y: 0, zoom: 0.9 }}
+        defaultViewport={initialViewportRef.current ?? { x: 0, y: 0, zoom: 0.9 }}
         minZoom={0.3}
         maxZoom={1.6}
         panOnScroll
@@ -374,7 +425,7 @@ function CanvasInner({
         deleteKeyCode={null}
         attributionPosition="bottom-right"
         proOptions={{ hideAttribution: true }}
-        fitView
+        fitView={!initialViewportRef.current}
         fitViewOptions={{ padding: 0.2, includeHiddenNodes: false }}
       >
         <Background
@@ -383,10 +434,13 @@ function CanvasInner({
           size={1}
           color="rgb(var(--grid-line))"
         />
-        <FitOnInit />
+        <FitOnInit enabled={!initialViewportRef.current} />
         <Controls
           className="!border !border-line !bg-surface-raised !shadow-card"
           showInteractive={false}
+          onZoomIn={persistCurrentViewport}
+          onZoomOut={persistCurrentViewport}
+          onFitView={persistCurrentViewport}
         />
         <ContextLaneLabel />
       </ReactFlow>
@@ -412,17 +466,18 @@ function ContextLaneLabel() {
 
 /* React Flow fitView only runs once on mount unless we re-call it. After
  * we have nodes for the first time, fit + center. */
-function FitOnInit() {
+function FitOnInit({ enabled }: { enabled: boolean }) {
   const { fitView } = useReactFlow();
   const didFit = useRef(false);
   useEffect(() => {
+    if (!enabled) return;
     if (didFit.current) return;
     const id = window.setTimeout(() => {
       fitView({ padding: 0.2, duration: 200 });
       didFit.current = true;
     }, 50);
     return () => window.clearTimeout(id);
-  }, [fitView]);
+  }, [enabled, fitView]);
   return null;
 }
 
@@ -442,6 +497,30 @@ function sanitizeLayoutHints(
     }
   }
   return out;
+}
+
+function sanitizeViewport(
+  viewport: Viewport | null | undefined,
+): Viewport | null {
+  if (
+    viewport &&
+    Number.isFinite(viewport.x) &&
+    Number.isFinite(viewport.y) &&
+    Number.isFinite(viewport.zoom) &&
+    viewport.zoom > 0
+  ) {
+    return { x: viewport.x, y: viewport.y, zoom: viewport.zoom };
+  }
+  return null;
+}
+
+function sameViewport(a: Viewport | null, b: Viewport): boolean {
+  if (!a) return false;
+  return (
+    Math.abs(a.x - b.x) < 0.01 &&
+    Math.abs(a.y - b.y) < 0.01 &&
+    Math.abs(a.zoom - b.zoom) < 0.0001
+  );
 }
 
 function decorateSelection(

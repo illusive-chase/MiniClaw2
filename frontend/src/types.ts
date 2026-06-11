@@ -105,6 +105,12 @@ export type ClientMessage =
   | { type: "interrupt" }
   | { type: "replay_request"; node_id: string; since_seq: number };
 
+export type CanvasViewport = {
+  x: number;
+  y: number;
+  zoom: number;
+};
+
 export type SessionInfo = {
   id: string;
   created_at: number;
@@ -118,6 +124,8 @@ export type SessionInfo = {
   /** Persisted canvas positions keyed by node id (or synthetic id, e.g.
    * `artifact:<nid>`). Optional for older sessions. */
   layout_hints?: Record<string, { x: number; y: number }>;
+  /** Persisted React Flow viewport so pan/zoom survives project reopen. */
+  layout_viewport?: CanvasViewport | null;
   planspace_view?: Record<string, { hidden?: boolean }>;
 };
 

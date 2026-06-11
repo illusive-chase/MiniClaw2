@@ -8,6 +8,7 @@ import type {
   ScenarioSummary,
   SessionFile,
   SessionFileRole,
+  CanvasViewport,
   SessionInfo,
   SessionContextSpaceInfo,
   VerifyResponse,
@@ -38,6 +39,12 @@ export async function createSession(
 export async function listSessions(): Promise<SessionInfo[]> {
   const res = await fetch("/sessions");
   if (!res.ok) throw new Error(`listSessions failed: ${res.status}`);
+  return res.json();
+}
+
+export async function getSession(id: string): Promise<SessionInfo> {
+  const res = await fetch(`/sessions/${id}`);
+  if (!res.ok) throw new Error(`getSession failed: ${res.status}`);
   return res.json();
 }
 
@@ -167,13 +174,20 @@ export async function updateSessionPreferences(
 
 export async function updateLayoutHints(
   sessionId: string,
-  updates: Record<string, { x: number; y: number }>,
+  updates: Record<string, { x: number; y: number }> = {},
   remove: string[] = [],
+  layoutViewport?: CanvasViewport | null,
 ): Promise<SessionInfo> {
+  const body: {
+    updates: Record<string, { x: number; y: number }>;
+    remove: string[];
+    layout_viewport?: CanvasViewport;
+  } = { updates, remove };
+  if (layoutViewport) body.layout_viewport = layoutViewport;
   const res = await fetch(`/sessions/${sessionId}/layout-hints`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ updates, remove }),
+    body: JSON.stringify(body),
   });
   if (!res.ok) throw new Error(`updateLayoutHints failed: ${res.status}`);
   return res.json();

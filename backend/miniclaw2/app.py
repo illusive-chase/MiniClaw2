@@ -108,6 +108,7 @@ class SessionInfo(BaseModel):
     project_context_binding_id: str | None = None
     # Opaque per-node canvas positions persisted from the frontend (PRD §5.1).
     layout_hints: dict[str, dict[str, float]] = Field(default_factory=dict)
+    layout_viewport: dict[str, float] | None = None
     planspace_view: dict[str, dict[str, bool]] = Field(default_factory=dict)
 
 
@@ -115,6 +116,7 @@ class UpdateLayoutHintsRequest(BaseModel):
     # Merge semantics: `updates` overwrites per-id; `remove` deletes ids.
     updates: dict[str, dict[str, float]] = Field(default_factory=dict)
     remove: list[str] = Field(default_factory=list)
+    layout_viewport: dict[str, float] | None = None
 
 
 class UpdatePlanspaceViewRequest(BaseModel):
@@ -202,6 +204,13 @@ def create_app() -> FastAPI:
             for p in registry.list_projects()
         ]
 
+    @app.get("/sessions/{sid}", response_model=SessionInfo)
+    def get_session(sid: str) -> SessionInfo:
+        project = registry.get_project(sid)
+        if project is None:
+            raise HTTPException(404, "session not found")
+        return _session_info(registry, project)
+
     @app.patch("/sessions/{sid}", response_model=SessionInfo)
     def rename_session(sid: str, req: RenameSessionRequest) -> SessionInfo:
         project = registry.rename_project(sid, req.name)
@@ -230,7 +239,12 @@ def create_app() -> FastAPI:
         sid: str,
         req: UpdateLayoutHintsRequest,
     ) -> SessionInfo:
-        project = registry.update_layout_hints(sid, req.updates, remove=req.remove)
+        project = registry.update_layout_hints(
+            sid,
+            req.updates,
+            remove=req.remove,
+            layout_viewport=req.layout_viewport,
+        )
         if project is None:
             raise HTTPException(404, "session not found")
         return _session_info(registry, project)
@@ -699,6 +713,7 @@ def _session_info(registry: ProjectRegistry, project: Any) -> SessionInfo:
         name=project.name,
         project_context_binding_id=project.project_context_binding_id,
         layout_hints=project.layout_hints,
+        layout_viewport=project.layout_viewport,
         planspace_view=project.planspace_view,
     )
 
