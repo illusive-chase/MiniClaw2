@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" fill="none" role="img" aria-label="MiniClaw2">
+  <title>MiniClaw2</title>
+
+  <!-- background tile: brand coral, rounded -->
+  <rect width="32" height="32" rx="7" fill="#cc785c"/>
+
+  <!-- soft inner glow behind the active node -->
+  <circle cx="19.5" cy="12.5" r="7" fill="#f6e6dd" opacity="0.18"/>
+
+  <!-- cube edges: back face first so front edges overlap cleanly -->
+  <g stroke="#faf9f5" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <!-- back face (further from viewer) -->
+    <path d="M12.5 19.5 L24.5 19.5 L24.5 7.5 L12.5 7.5 Z" opacity="0.72"/>
+
+    <!-- four depth edges connecting front face to back face -->
+    <line x1="7.5"  y1="24.5" x2="12.5" y2="19.5"/>
+    <line x1="19.5" y1="24.5" x2="24.5" y2="19.5"/>
+    <line x1="7.5"  y1="12.5" x2="12.5" y2="7.5"/>
+    <line x1="19.5" y1="12.5" x2="24.5" y2="7.5"/>
+
+    <!-- front face: drawn last so it sits "on top" -->
+    <path d="M7.5 24.5 L19.5 24.5 L19.5 12.5 L7.5 12.5 Z"/>
+  </g>
+
+  <!-- nodes at the 8 vertices -->
+  <g fill="#faf9f5">
+    <!-- back vertices, slightly dimmer to reinforce depth -->
+    <circle cx="12.5" cy="19.5" r="1.9" opacity="0.78"/>
+    <circle cx="24.5" cy="19.5" r="1.9" opacity="0.78"/>
+    <circle cx="12.5" cy="7.5"  r="1.9" opacity="0.78"/>
+    <circle cx="24.5" cy="7.5"  r="1.9" opacity="0.78"/>
+    <!-- front vertices -->
+    <circle cx="7.5"  cy="24.5" r="2.2"/>
+    <circle cx="19.5" cy="24.5" r="2.2"/>
+    <circle cx="7.5"  cy="12.5" r="2.2"/>
+  </g>
+
+  <!-- "active" node — warm brand-ink ring, cream core -->
+  <circle cx="19.5" cy="12.5" r="2.9" fill="#844026"/>
+  <circle cx="19.5" cy="12.5" r="1.2" fill="#faf9f5"/>
+</svg>
