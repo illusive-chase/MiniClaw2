@@ -76,10 +76,12 @@ inline gate when a load-bearing slot is missing.
 Two concrete commitments follow:
 
 - **Planspace initialization is an agent node.** The user provides a
-  paragraph of motivation. The agent extracts `goal`,
-  `current_state`, and any initial `open_questions`, and writes the
-  first STATUS.md. If the seed leaves a load-bearing slot empty, the
-  agent asks rather than guessing.
+  paragraph of motivation. The agent drops a starter graph of three
+  to five virtual nodes onto the lane — rough prompts, declared
+  loads, reasonable dependencies. The user sees concrete next steps
+  the moment bootstrap finishes; they may edit, delete, or add. If
+  the seed leaves a load-bearing question unanswered, the agent asks
+  rather than guessing.
 - **Project CONTEXT initialization and refresh run from preset
   prompts.** The user does not author the prompt; the framework
   holds it. CONTEXT is a quick-reference handbook, not a contract —
@@ -147,8 +149,8 @@ documents, and lanes — not vocabulary.
 | Scope | What it holds | How it's maintained |
 |---|---|---|
 | **project** | Plan-free reference: principles, philosophy, current-state-of-the-world facts. `CONTEXT.md` is the textual form. | Hand-edited by user; not auto-derived from planspace activity. |
-| **planspace** | A single direction's STATUS, accumulated decisions, open questions. | Updated by every node's agent-facing state delta. |
-| **node** | One step in one planspace. | Reads planspace state on launch, writes a delta on completion. |
+| **planspace** | An ordered collection of executed and virtual nodes belonging to one direction. | Updated by adding, mutating, or obsoleting node previews. |
+| **node** | One step in one planspace. | Reads the lane's projected filesystem on launch; writes its own preview on completion (and may write new virtual previews). |
 
 Two consequences:
 
@@ -172,36 +174,34 @@ Three primary objects. Everything else is a view over these.
 A node is one provider-backed session, one passive human checkpoint,
 or one programmatic state mutation.
 
-Three kinds:
+Three kinds — and no others. Questions, decisions, and out-of-scope
+items are not separate node kinds; they are things a node may *say in
+prose* inside its preview.
 
 - **agent** — runs a provider with options assembled from project
   settings, context bundle, and per-node overrides. A normal agent
-  node starts a fresh provider session/thread; timeline adjacency
-  means only filesystem ordering, never conversation continuation.
-  Inline human gates (permission, ask-user, plan-approval) put the
-  node into `waiting`; resolving an inline gate continues the same
-  session and returns the node to `running`.
+  node starts a fresh provider session; timeline adjacency means only
+  filesystem ordering, never conversation continuation. Inline human
+  gates (permission, ask-user, plan-approval) pause the session;
+  resolving the gate continues the same session.
 - **gate** — a *passive human checkpoint with no provider call*. The
-  runner short-circuits straight to `awaiting_review`. The gate
-  renders a brief (markdown) and collects a free-form judgment from
-  the user (see §9).
+  runner short-circuits straight to a blocking-review terminal
+  substate. The gate renders a brief (markdown) and collects a
+  free-form judgment from the user (see §9).
 - **op** — a non-agent, fast, always-immediate state transition that
   appears on the timeline so the project's full mutation history is
-  visible. MVP is `commit` (auto-appended after agent/gate done) and
-  `fork-project`.
+  visible.
 
-One state machine:
+A node may also exist in a *virtual* substate — declared but not yet
+run. Virtual nodes carry a draft prompt, declared loads, declared
+produces, and scheduled dependencies. They are editable in place
+(user or agent) and may be obsoleted without ever running. Promotion
+is the user clicking the tile (or the framework resolving a scheduled
+dependency).
 
-```
-queued → running [↔ waiting via inline gate] → done | error | cancelled
-                                            ↘
-                                    awaiting_review → done   (gate only)
-```
-
-`waiting` is a substate of `running` during a session — a node may
-oscillate `running ↔ waiting` many times. `awaiting_review` is only
-reached by gate nodes after the (skipped) session ends. Op nodes go
-`queued → running → done | error` without intermediate states.
+A running session may oscillate between active execution and a paused
+substate as inline gates open and close. The blocking-review substate
+is only reached by gate nodes. Op nodes have no intermediate states.
 
 ### 6.2 Project
 
@@ -210,25 +210,25 @@ nodes run **one at a time** on it.
 
 Within a project the timeline is strictly ordered. Concurrency comes
 from forks (new projects with their own worktree), not from
-intra-project parallelism. This is what makes FS state coherent — a
-node's `commit_after` is the only state another node will start from.
+intra-project parallelism. This is what makes FS state coherent — the
+state another node starts from is exactly the state the previous node
+left behind.
 
-Each node records `commit_before` and `commit_after`, so the timeline
-can show a project-state diff per node.
+Each node records the pre- and post-state of the worktree, so the
+timeline can show a project-state diff per node.
 
 ### 6.3 Edges (derived, not stored)
 
 Edges are read off node/project fields, not modelled as separate
-records.
+records. Six relations matter:
 
-| Edge | Derived from | Means |
-|---|---|---|
-| **timeline** | `(project_id, sequence)` | FS-state dependency between adjacent nodes |
-| **resume** | `parent_node_id` | Explicit provider conversation continuation |
-| **loads** (context) | snapshotted context bundle sources | Acausal carryover; evaluated once at consumer creation |
-| **produces** | artifact path on the producing node | "This agent wrote this file" |
-| **reviews** | gate sourced from upstream brief | Gate inspects an upstream artifact |
-| **fork** | `parent_project_id + parent_commit` | A new project rooted at a worktree of another's snapshot |
+- **timeline** — FS-state dependency between adjacent nodes.
+- **resume** — explicit provider conversation continuation.
+- **loads** (context) — acausal carryover; evaluated once at consumer
+  creation.
+- **produces** — "this agent wrote this file."
+- **reviews** — a gate inspects an upstream artifact.
+- **fork** — a new project rooted at a worktree of another's snapshot.
 
 
 ## 7. ContextSpace
@@ -254,8 +254,10 @@ code project. Its layout (project-level details are in
 - **Plugs** — reusable context objects. Four types:
   - `global` — user-wide behavior and conventions.
   - `skill` — reusable tool/workflow knowledge.
-  - `planspace` — a single direction's STATUS, PLAN, accumulated
-    decisions.
+  - `planspace` — a single direction's ordered collection of nodes
+    (executed and virtual). The LLM-facing form is a synthesized
+    filesystem of node previews; there is no STATUS.md or PLAN.md on
+    disk.
   - `protocol` — reusable execution loop or output contract.
 - **Bindings** — many-to-many connections between projects and plugs.
   One project can bind several planspaces (parallel directions); one
@@ -275,74 +277,84 @@ plans, branch coordination, or transient blockers — those are
 planspace state.
 
 
-## 8. Outputs as planspace state updates
+## 8. Outputs as graph mutations
 
-> **Every node output is an agent-facing planspace state update.**
-> When a node also needs user review, it additionally produces a
-> transient user-facing review-guidance packet, opens a gate, and the
-> user's free-form judgment is merged back into the agent-facing state
-> update before that update is committed to the planspace.
+> **Every node output is a graph mutation.** Every executed node writes
+> its own preview (required to close the agentic loop) and may
+> additionally write new virtual previews or rewrite or obsolete
+> existing virtual previews in the same lane. When a node also needs
+> user review, it additionally produces a transient user-facing
+> review-guidance packet, opens a gate, and the user's free-form
+> judgment is merged into the node's preview before the preview is
+> committed.
 
-This is the unifying claim about outputs. Two consequences:
+This unifies what previous designs split into STATUS updates and
+PLAN updates: one channel, file writes under the graph filesystem.
 
-- **There is no enum of "output kinds."** Every node produces the same
-  kind of thing: a planspace state update. Per-node `result.md` /
-  `result.json` siloed files are not first-class — they are an artifact
-  of an earlier design and the implementation status tracks their
-  retirement.
-- **"No output" is not a category.** Even pure exploration accrues
-  *something* — a new finding, a new open question, an explicit
-  `out_of_scope` note. If a run truly advances nothing, that run should
-  not exist.
+Two consequences:
 
-### 8.1 Two purposes of context-out
+- **There is no enum of "output kinds."** Every node produces the
+  same kind of thing: a preview write, possibly accompanied by
+  further graph mutations. Per-node `result.md` / `result.json`
+  siloed files are not first-class.
+- **"No output" is not a category.** Every node writes a preview; a
+  run that truly advances nothing has nothing to put in `summary` or
+  `next_implications` and so should not have run.
+
+### 8.1 The preview contract
+
+Every executed node writes its own preview before reaching terminal
+state. The framework enforces this — if the agent ends without a
+valid preview, the runner re-prompts inline. A preview carries: why
+the node ran, what it did and the key outcome, what it enables or
+blocks downstream, the artifact paths it produced, and the refs it
+actually read.
+
+Cancelled or errored runs get a framework-written stub preview
+explaining the failure; the agent did not get the chance to write
+its own.
+
+Virtual nodes carry the same shape in declarative form: motivation
+explains why the node was proposed, a draft prompt replaces the
+summary, declared loads/produces replace observed loads/produces,
+plus provenance and scheduled dependencies.
+
+### 8.2 Two purposes of context-out
 
 A node produces context-out for one of two consumers:
 
-- **Agent-facing (vertical, in-scope).** A state update the next node
-  in this planspace reads. It accrues. It does not need to be
-  self-contained — the next agent has access to the same planspace
-  state. Writing style: matter-of-fact, optimized for another agent's
-  quick scan.
-- **User-facing (horizontal, out-of-scope).** A self-contained handoff
-  packet for when the agent reaches a decision boundary it cannot
-  cross alone. The recipient (a user) has no access to the planspace's
-  running state and must be brought up to speed by the packet itself.
-  Writing style: plain language, verify-steps explicit, assume nothing.
+- **Agent-facing (vertical, in-scope).** The node's own preview,
+  which becomes part of the LLM projection on every subsequent
+  launch in this lane. It accrues. It does not need to be
+  self-contained — the next agent has access to recent previews and
+  can `Read` transcripts for depth.
+- **User-facing (horizontal, out-of-scope).** A self-contained
+  handoff packet for when the agent reaches a decision boundary it
+  cannot cross alone. Lifetime: gate-internal, discarded after the
+  judgment merges into the source node's preview.
 
-A single node can produce both, simultaneously. They have **different
-lifetimes**: agent-facing state is durable; user-facing packets are
-transient and consumed by the gate that follows.
+A single node can produce both. They have **different lifetimes**:
+the preview is durable; the user-facing packet is transient.
 
-### 8.2 STATUS.md form
+### 8.3 The LLM projection
 
-Planspace STATUS.md is a two-part document: YAML frontmatter holding
-structured slots, plus a free markdown body.
+Each agent launch sees a synthesized filesystem rooted at the lane.
+Recent previews on the active lane are present as readable files;
+cross-lane previews appear only when this node's declared loads
+reference them. Transcripts and artifacts live at predictable paths
+but are not inlined — the agent reaches for them with regular `Read`
+when it needs depth. The shallow level is cheap; the deep level is
+on-demand.
 
-Slots:
-
-- `goal` — one-sentence statement of what this direction is trying to
-  achieve.
-- `current_state` — short paragraph of where this planspace stands today.
-- `open_questions` — append-only list with stable IDs (`Q1`, `Q2`, …).
-- `decisions` — append-only list with stable IDs (`D1`, `D2`, …).
-- `out_of_scope` — explicit non-goals.
-
-The literal value `unknown` is a first-class slot value — "what we
-don't know yet" is structured, not absent.
-
-### 8.3 PLAN.md is derived
-
-PLAN.md is not separately maintained. It is generated from STATUS.md:
-open questions and undischarged decisions become checkbox items;
-out-of-scope items appear in a closing "Not addressing" section.
-
-The user edits STATUS; PLAN follows. Drift between "STATUS says
-decided, PLAN still asks" cannot happen.
+There is no synthesized `current_state` paragraph and no STATUS or
+PLAN projection. The recent previews are the current state; coherence
+emerges as the next agent reads them. If a coherent paragraph is ever
+needed (for sharing, for export), it is produced on demand from the
+previews — never maintained as a durable artifact.
 
 ### 8.4 Anti-self-poisoning
 
-Durable planspace state must not absorb session noise. Categories that
+Durable previews must not absorb session noise. Categories that
 must be filtered or rewritten before commit:
 
 - **Transient errors** — "the tool returned a 500," "permission was
@@ -356,9 +368,9 @@ must be filtered or rewritten before commit:
   here." Worth keeping if reproducible; pollutes if one-off.
 
 What may be written is *stable findings* — facts about the project,
-decisions made, open questions discovered, things explicitly ruled out
-of scope. Enforcement is a fixed pre-commit prompt template injected
-before every planspace state write.
+decisions made, open questions discovered, things explicitly ruled
+out of scope. Enforcement happens at commit time — for the writing
+node's own preview and for any new virtual previews it proposes.
 
 
 ## 9. Gates as state transformers
@@ -370,7 +382,7 @@ before every planspace state write.
 | Provider call | Inside a running agent's session | None — gate has no provider call |
 | When declared | Implicit (agent calls a question tool) | Explicit at gate-node launch, with a brief |
 | When fires | Mid-session | Immediately when the gate node starts |
-| Node state | `waiting` (substate during running) | `awaiting_review` (terminal-but-blocking) |
+| Node state | Paused substate of running | Blocking-review terminal substate |
 | Continuation | Resolving resumes the same session | Resolving does not wake any agent |
 | UI signal | Pulsing animation on a running tile | Solid color on a finished hexagon |
 
@@ -391,14 +403,16 @@ produce gates.
 
 A gate-bearing node produces three things:
 
-1. **Interim agent-state-update.** The would-be planspace delta in
-   draft form. Lives in gate storage until the gate closes.
+1. **Interim preview.** The would-be `preview.json` in draft form.
+   Lives in gate storage until the gate closes.
 2. **User-facing review guidance.** Transient. Written by the agent
    to bring the user up to speed (plain language, verify steps
    explicit, self-contained).
-3. **Final agent-state-update.** Produced when the gate closes. Equals
+3. **Final preview.** Produced when the gate closes. Equals
    (interim) merged with (user's free-form judgment). This is what
-   commits to the planspace.
+   commits as `nodes/<id>/preview.json`. The merge may also add or
+   rewrite virtual previews in the same lane if the user's judgment
+   reshapes the plan.
 
 Only the third is durable. (1) and (2) are gate-internal and discarded
 after merge.
@@ -421,17 +435,18 @@ kind of output.
 
 Execution completion and acceptance are separate:
 
-- `state = done` — the runner finished without error. Bookkeeping.
-- `acceptance_state ∈ {not_applicable, unreviewed, accepted, rejected, blocked}`
-  — was the result accepted?
-- `verdict_source ∈ {none, human, deterministic, cross_provider, same_provider_advisory}`
-  — who said so?
+- **Done** — the runner finished without error. Bookkeeping.
+- **Acceptance** — was the result accepted? (Open variants:
+  not-yet-reviewed, accepted, rejected, blocked, not-applicable.)
+- **Verdict source** — who said so? (Human, deterministic check,
+  cross-provider reviewer, or same-provider advisory.)
 
-A done-but-unreviewed node may update STATUS.md as "done but
-unreviewed." It may not promote skills, protocols, or durable rules
-until accepted. Rejected review gates prevent the upstream node's
-durable proposals from being applied. Same-provider self-review can
-be recorded as advisory but does not mark the node accepted.
+A done-but-unreviewed node's preview still participates in the lane's
+projection, but the node may not promote skills, protocols, or
+durable rules until accepted. Rejected review gates prevent the
+upstream node's durable proposals from being applied. Same-provider
+self-review can be recorded as advisory but does not mark the node
+accepted.
 
 
 ## 10. Visual grammar
@@ -445,8 +460,8 @@ separate:
   across state changes. Tile (agent), hexagon (gate), document card
   (artifact), layered card (context), chevron-on-edge (op), home
   glyph (project root), dashed outline (phantom — not yet real).
-- **Color encodes state** — how it is going. `state-running`,
-  `state-waiting`, `state-done`, `state-error`, `state-review`.
+- **Color encodes state** — how it is going. Distinct colors for
+  running, paused, done, error, and awaiting review.
 
 A user scans the canvas and reads both axes at once: "two hexagons,
 one amber, one green" decodes as "two review gates, one waiting, one
@@ -457,22 +472,28 @@ accent share the planspace's hue.
 Hovering any node yields a one-line plain-language explanation. The
 legend never has to be memorized.
 
-### 10.2 Composer as phantom node
+### 10.2 Composer as virtual node
 
-The composer is not a docked bar. It is a dashed-outline node that
-materializes where the next node will appear:
+The composer is not a docked bar. Every future-intent is a **virtual
+node** on the canvas — a dashed-outline tile that persists, carries a
+draft prompt and declared loads/produces, and is editable in place.
 
-- Hover a finished agent → a phantom appears to its right.
-- Tap empty canvas → a phantom appears at the click position.
-- A brand new project → one center-anchored phantom invites the first
-  run.
+- Hover a finished agent → a virtual node appears to its right.
+- Tap empty canvas → a virtual node appears at the click position.
+- A brand new project → the concierge bootstrap drops three to five
+  virtual nodes on a fresh lane.
 
-Resume source is **implicit in which tile spawned the phantom**: if
-spawned from a finished agent, the new node resumes from that agent;
+Resume source is **implicit in which tile spawned the virtual node**:
+if spawned from a finished agent, promotion resumes from that agent;
 if spawned from empty space, it starts fresh. There is no "Resume
-from" dropdown. The only structural decision the composer surfaces is
+from" dropdown. The only structural decision the tile surfaces is
 whether the run is gated — a single "needs review" toggle, no intent
 enum.
+
+The user edits a virtual node's draft prompt, declared loads, and
+declared produces in the side panel; an agent may rewrite or obsolete
+a downstream virtual node as part of its preview write. Clicking the
+tile promotes it to `queued`.
 
 ### 10.3 Polymorphic side panel
 
@@ -483,18 +504,18 @@ banned from primary surfaces (§4) lives only in Inspect.
 
 ### 10.4 Planspace as layout, not containment
 
-Planspaces are an implicit grouping (driven by `planspace_id`), not a
-React Flow subflow. Containment fights the graph because:
+Planspaces are an implicit grouping (driven by membership), not a
+visual container. Containment fights the graph because:
 
 - Cross-planspace `loads` edges are first-class.
 - Past-commit references are inherently cross-cutting.
-- Planspace membership is mutable; subflow re-parenting is expensive.
+- Planspace membership is mutable; container re-parenting is expensive.
 - Future alternate views (by time, by commit, by importance) require
   the underlying graph to remain flat.
 
-Three render layers driven from `planspace_id`: a translucent lane
-background, a tile left-edge accent, and a neutral top stripe for
-project CONTEXT (orthogonal to the planspace palette).
+Three render layers driven from planspace membership: a translucent
+lane background, a tile left-edge accent, and a neutral top stripe
+for project CONTEXT (orthogonal to the planspace palette).
 
 
 ## 11. Why we keep these constraints
@@ -513,6 +534,9 @@ The non-obvious commitments, restated as one-liners:
   mutation history.
 - **Investigation-free interface.** Demos pass on observed effect, not
   on internal correctness.
-- **All outputs are planspace state updates.** No siloed per-node
-  result files; the next agent reads accumulated state, not a folder
-  of orphans.
+- **All outputs are graph mutations.** Every executed node writes its
+  own preview; new virtual previews are how plans accrete. No
+  STATUS.md, no PLAN.md, no markdown documents of intent — the graph
+  is total.
+- **Virtual nodes are first-class.** The plan is the upstream half
+  of the timeline, not a checklist file the user has to read.
