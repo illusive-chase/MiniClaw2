@@ -91,11 +91,13 @@ Trunk: `backend/miniclaw2/runner.py`, `backend/miniclaw2/registry.py`.
   surfaces show `↻` continuation context.
 - Inline gates (permission, ask-user, plan-approval) normalize to
   `waiting` substate; resolution returns the node to `running`.
-- Launch instructions are composed from: planspace context bundle
-  turn-text, the planspace-update contract (when an active planspace
-  with `auto_update: true` is bound), the review-handoff contract
-  (when `requires_review`), and an anti-self-poisoning filter block
-  appended last.
+- Launch instructions are composed from (in order): the category-aware
+  block from `launch_prompt.build_category_launch_block` (planning /
+  regular / agentic_review / human_interact_review), the planspace
+  context bundle turn-text, the language preference hint, and the
+  anti-self-poisoning filter block appended last. Templates live in
+  `backend/miniclaw2/prompts/category_*.md` and
+  `prompts/anti_self_poisoning.md`; covered by `test_launch_prompt.py`.
 
 ### Gate (passive checkpoint) — landed
 
@@ -416,8 +418,8 @@ The `OUTPUT_PLANSPACE_GATE.md` ontology has landed end-to-end.
   `requires_review` + transient `planspace-update.json` /
   `review-guidance.md`).
 - Anti-self-poisoning filter prompt appended last in the launch
-  instruction composition (§4 Landed; covered by
-  `test_anti_self_poisoning.py`).
+  instruction composition (see §3 Agent Landed; covered by
+  `test_launch_prompt.py::AntiSelfPoisoningTests`).
 - Peer brief / review-response artifact nodes removed from
   `layout.ts`; the gate hexagon expands inline to host the review
   handoff and free-form judgment.

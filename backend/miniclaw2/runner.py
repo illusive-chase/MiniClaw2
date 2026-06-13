@@ -51,6 +51,7 @@ from .events import (
 )
 from .git_state import commit_all, git_head
 from .language import language_launch_instruction, project_preferred_language
+from .launch_prompt import anti_self_poisoning_block, build_category_launch_block
 from .materialize import materialize_active_lane, snapshot_lane
 from .preview import render_executed_preview
 from .providers import AgentProvider, AgentProviderContext, AgentProviderEvent, GateRequest
@@ -138,8 +139,10 @@ class NodeRunner:
             self._snapshot_launch_settings(context_bundle)
             self._materialize_lane()
             launch_instructions = _compose_launch_instructions(
+                build_category_launch_block(self.node),
                 context_bundle.turn_text,
                 language_launch_instruction(project_preferred_language(self.project)),
+                anti_self_poisoning_block(),
             )
             self._transition(NodeState.RUNNING, started=True)
             await self._emit(
