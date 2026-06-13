@@ -49,17 +49,15 @@ def launch_scenario(
         runner = registry.start_node(
             project.id,
             first.prompt,
-            needs_review=first.needs_review,
             scenario_step_id=first.id,
         )
-    elif first.kind == "gate":
-        # A first-step gate has no preceding agent step to source a brief
-        # from; fall back to the YAML-declared contract text.
-        runner = registry.start_gate_node(
-            project.id, first.contract, scenario_step_id=first.id
-        )
     else:
-        raise ScenarioError(f"unsupported first-node kind: {first.kind}")
+        # Gate kinds are retired; scenarios with non-agent first steps
+        # cannot launch until the scenario is updated.
+        registry.delete_project(project.id)
+        raise ScenarioError(
+            f"scenario first-node kind {first.kind!r} is no longer supported"
+        )
 
     if runner is None:
         # Should not happen — the project was just created so nothing is running.

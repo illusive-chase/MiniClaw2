@@ -180,22 +180,6 @@ class ContextRefreshApiTest(unittest.TestCase):
         self.assertEqual(res.status_code, 200, res.text)
         self.assertFalse(res.json()["context_refresh"]["running"])
 
-    def test_new_direction_rejects_running_context_task(self) -> None:
-        client, project = self._client_with_project(active_turn=False)
-
-        with patch.object(
-            app_module,
-            "context_refresh_status",
-            return_value={"running": True},
-        ):
-            res = client.post(
-                f"/sessions/{project.id}/planspaces",
-                json={"user_seed": "Investigate startup flow"},
-            )
-
-        self.assertEqual(res.status_code, 409, res.text)
-        self.assertEqual(res.json()["detail"], "context refresh in progress")
-
     def test_websocket_user_message_rejects_running_context_task(self) -> None:
         client, project = self._client_with_project(active_turn=False)
 

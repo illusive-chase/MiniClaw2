@@ -1,4 +1,12 @@
-"""Domain models — Project, Node, HumanGate, ContextBundle."""
+"""Domain models — Project, Node, HumanGate, ContextBundle.
+
+Schema matches PHILOSOPHY §6 and PROPOSAL_VIRTUAL_NODES §3.1. The
+ontology is two-axis: ``kind`` distinguishes agent from op; ``category``
+(orthogonal, applies to agent only) distinguishes planning, regular,
+and review semantics. Reviews are agents — there is no gate node kind.
+``HumanGate`` is preserved for inline gates (permission / ask_user /
+plan_approval) only.
+"""
 
 from __future__ import annotations
 
@@ -7,7 +15,7 @@ from enum import StrEnum
 from typing import Any
 from uuid import uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 def _new_id() -> str:
@@ -20,51 +28,50 @@ def _now() -> float:
 
 class NodeKind(StrEnum):
     AGENT = "agent"
-    GATE = "gate"
     OP = "op"
 
 
 class NodeState(StrEnum):
+    VIRTUAL = "virtual"
     QUEUED = "queued"
     RUNNING = "running"
     WAITING = "waiting"
-    AWAITING_REVIEW = "awaiting_review"
+    AWAITING_HUMAN_INPUT = "awaiting_human_input"
     DONE = "done"
     ERROR = "error"
     CANCELLED = "cancelled"
 
 
-class AcceptanceState(StrEnum):
-    NOT_APPLICABLE = "not_applicable"
-    UNREVIEWED = "unreviewed"
-    ACCEPTED = "accepted"
-    REJECTED = "rejected"
-    BLOCKED = "blocked"
+class Category(StrEnum):
+    PLANNING = "planning"
+    REGULAR = "regular"
+    REVIEW = "review"
 
 
-class VerdictSource(StrEnum):
-    NONE = "none"
-    HUMAN = "human"
-    DETERMINISTIC = "deterministic"
-    CROSS_PROVIDER = "cross_provider"
-    SAME_PROVIDER_ADVISORY = "same_provider_advisory"
+class ReviewSubtype(StrEnum):
+    AGENTIC_REVIEW = "agentic_review"
+    HUMAN_INTERACT_REVIEW = "human_interact_review"
 
 
 class GateKind(StrEnum):
     INLINE = "inline"
-    CHECKPOINT = "checkpoint"
 
 
 class GateSubtype(StrEnum):
     PERMISSION = "permission"
     ASK_USER = "ask_user"
     PLAN_APPROVAL = "plan_approval"
-    CHECKPOINT_REVIEW = "checkpoint_review"
 
 
 class GateState(StrEnum):
     PENDING = "pending"
     RESOLVED = "resolved"
+
+
+class ReviewBrief(BaseModel):
+    check_what: str
+    expected: str
+    abnormal: str
 
 
 class TokenUsage(BaseModel):
@@ -91,15 +98,8 @@ class Project(BaseModel):
     scenario_name: str | None = None
     scenario_step_history: list[dict[str, Any]] = Field(default_factory=list)
     created_at: float = Field(default_factory=_now)
-    # Opaque per-node canvas positions persisted by the frontend (PRD §5.1).
-    # Keys are node ids (or synthetic ids like `artifact:<nid>`); values are
-    # {"x": <float>, "y": <float>}. Backend treats this as a passthrough blob.
     layout_hints: dict[str, dict[str, float]] = Field(default_factory=dict)
-    # React Flow viewport persisted by the frontend so pan/zoom is per-project.
     layout_viewport: dict[str, float] | None = None
-    # Per-project viewing preferences for bound planspace lanes. This is
-    # intentionally UI state, but it belongs in project.json so it survives
-    # reloads and other clients.
     planspace_view: dict[str, dict[str, bool]] = Field(default_factory=dict)
 
 
@@ -120,25 +120,54 @@ class Node(BaseModel):
     sdk_session_id: str | None = None
     commit_before: str | None = None
     commit_after: str | None = None
-    requires_review: bool = False
     prompt: str = ""
-    contract: str = ""
+    # Category axis (orthogonal to kind). Required for AGENT; must be
+    # None for OP. Defaulted to REGULAR for AGENT in the after-validator.
+    category: Category | None = None
+    subtype: ReviewSubtype | None = None
+    brief: ReviewBrief | None = None
+    # Virtual-node-only fields. ``prompt_draft`` becomes ``prompt`` at
+    # promotion; ``scheduled_deps`` are node ids that must reach a
+    # terminal state before this virtual is eligible to promote.
+    prompt_draft: str | None = None
+    scheduled_deps: list[str] = Field(default_factory=list)
+    proposed_by: str | None = None
+    obsolete_reason: str | None = None
     summary: str | None = None
     error: str | None = None
     usage: TokenUsage | None = None
     system_context_snapshot: str = ""
     settings_snapshot: dict[str, Any] = Field(default_factory=dict)
     scenario_step_id: str | None = None
-    review_outcome: str | None = None  # "approved" | "rejected" | None — gate nodes only
-    acceptance_state: AcceptanceState = AcceptanceState.UNREVIEWED
-    verdict_source: VerdictSource = VerdictSource.NONE
-    verdict_artifact_path: str | None = None
-    verdict_thread_id: str | None = None
-    accepted_at: float | None = None
-    rejected_at: float | None = None
     created_at: float = Field(default_factory=_now)
     started_at: float | None = None
     finished_at: float | None = None
+
+    @model_validator(mode="after")
+    def _check_invariants(self) -> "Node":
+        if self.kind is NodeKind.OP:
+            if self.category is not None:
+                raise ValueError("op nodes must not carry a category")
+            if self.subtype is not None or self.brief is not None:
+                raise ValueError("op nodes must not carry review fields")
+        else:
+            # AGENT — category required, default to REGULAR
+            if self.category is None:
+                object.__setattr__(self, "category", Category.REGULAR)
+            if self.category is Category.REGULAR:
+                if self.subtype is not None:
+                    raise ValueError("regular agents must not carry a subtype")
+                if self.brief is not None:
+                    raise ValueError("regular agents must not carry a brief")
+            elif self.category is Category.REVIEW:
+                if self.subtype is None:
+                    raise ValueError("review agents require a subtype")
+                if self.brief is None:
+                    raise ValueError("review agents require a brief")
+        if self.state is NodeState.VIRTUAL:
+            if self.started_at is not None or self.finished_at is not None:
+                raise ValueError("virtual nodes must not carry started_at/finished_at")
+        return self
 
 
 class HumanGate(BaseModel):
@@ -156,12 +185,7 @@ class HumanGate(BaseModel):
 
 
 class ContextBundle(BaseModel):
-    """Legacy context edge shape.
-
-    ContextSpace launch snapshots are currently persisted as JSON files
-    by ``miniclaw2.contextspace.compose_context_bundle`` and referenced
-    from ``Node.context_bundle_id`` / ``Node.context_bundle_path``.
-    """
+    """Legacy context edge shape used by ``compose_context_bundle``."""
     id: str = Field(default_factory=_new_id)
     source_node_id: str
     claude_md: str = ""

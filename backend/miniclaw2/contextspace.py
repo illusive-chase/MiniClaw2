@@ -1,10 +1,22 @@
-"""ContextSpace bindings, context bundle snapshots, and memory deltas.
+"""ContextSpace bindings, plugs, and per-launch context bundles.
 
-The first implementation slice is deliberately filesystem-first:
-bindings and plugs are small YAML/Markdown files under
-``$MINICLAW_CONTEXT_HOME`` or ``$MINICLAW_HOME/contextspace``. The
-runtime remains tolerant of missing files so projects without an
-explicit ContextSpace binding keep the legacy ``CONTEXT.md`` behavior.
+After the virtual-nodes redesign, planspace plugs are manifest-only —
+they no longer carry STATUS.md / PLAN.md / SKILLS.md. The agent-facing
+lane state is the materialized filesystem projection under the
+worktree's ``.miniclaw2/graph/lanes/`` directory (see ``materialize.py``
+and ``reap.py``). This module is responsible for:
+
+  - Resolving the contextspace root and the project's binding.
+  - Composing the per-launch ``ComposedContextBundle``: project-root
+    ``CONTEXT.md`` plus injection-mode markdown from global and skill
+    plugs. The active planspace id is propagated so the runner knows
+    which lane to materialize.
+  - Persisting an audit snapshot of every bundle under
+    ``snapshots/<bundle-id>.json``.
+
+The launch-instruction contract blocks (planspace update, review
+handoff, anti-poisoning filter) are gone — that contract now lives in
+the category-aware launch prompts (a later slice).
 """
 
 from __future__ import annotations
@@ -23,17 +35,6 @@ from uuid import uuid4
 import yaml
 
 from .domain import Node, Project
-from .planspace_state import (
-    PlanspaceStatus,
-    apply_status_update,
-    derive_plan_markdown,
-    load_planspace_status,
-    merge_reviewed_update_markdown,
-    refresh_derived_plan,
-    render_planspace_status,
-    validate_planspace_status,
-    write_planspace_status,
-)
 
 
 @dataclass(slots=True)
@@ -42,7 +43,6 @@ class PlugRef:
     role: str = ""
     injection: str | None = None
     enabled: bool = True
-    auto_update: bool = False
     source: str = "binding"
 
 
@@ -65,164 +65,10 @@ class ComposedContextBundle:
     context_root: Path
     bundle_path: Path
     active_planspace_id: str | None = None
-    active_planspace_auto_update: bool = False
-
-
-def memory_delta_output_relpath(node: Node) -> str:
-    """Return the project-relative memory delta artifact path for a node."""
-
-    return f".miniclaw2/outputs/{node.id}/memory-delta.json"
-
-
-def planspace_update_output_relpath(node: Node) -> str:
-    """Return the project-relative transient planspace update path for a node."""
-
-    return f".miniclaw2/outputs/{node.id}/planspace-update.json"
-
-
-def review_guidance_output_relpath(node: Node) -> str:
-    """Return the project-relative transient review-guidance path for a node."""
-
-    return f".miniclaw2/outputs/{node.id}/review-guidance.md"
-
-
-def review_guidance_launch_contract(node: Node) -> str:
-    """Return turn instructions for gate-internal user-facing review guidance."""
-
-    if not node.requires_review:
-        return ""
-    output_path = review_guidance_output_relpath(node)
-    return (
-        "# Review handoff contract\n\n"
-        "This node will be followed by a passive human review checkpoint. "
-        "Before finishing, write one transient markdown review handoff at "
-        f"`{output_path}`. MiniClaw2 shows that text inside the review gate; "
-        "it is not durable planspace state and should not be treated as the "
-        "node's primary output.\n\n"
-        "Write for a human who has not been following the session. Keep it "
-        "plain, concrete, and self-contained. Include:\n\n"
-        "- `# What changed`: what you built, changed, or learned.\n"
-        "- `# How to verify`: exact commands, clicks, or files to inspect.\n"
-        "- `# What to judge`: the Type-B question the human must decide.\n\n"
-        "Do not ask the human for JSON. They will respond in free-form prose.\n"
-    )
-
-
-def planspace_update_launch_contract(
-    project: Project,
-    node: Node,
-    bundle: ComposedContextBundle,
-) -> str:
-    """Return turn instructions for project-local planspace state writeback."""
-
-    if not bundle.active_planspace_id or not bundle.active_planspace_auto_update:
-        return ""
-    binding_id = bundle.project_binding_id or ""
-    output_path = planspace_update_output_relpath(node)
-    return (
-        "# Planspace update contract\n\n"
-        "MiniClaw2 loaded an active planspace for this node. Before finishing, "
-        "write one transient JSON planspace update at "
-        f"`{output_path}` if your work changes this direction's durable state. "
-        "Do not edit STATUS.md or PLAN.md directly; MiniClaw2 commits the "
-        "update after applying the planspace schema.\n\n"
-        "Write only stable findings: project facts, decisions made, open "
-        "questions discovered, explicit out-of-scope notes, and the current "
-        "posture of this planspace. Filter out transient tool errors, one-run "
-        "environment quirks, permission hiccups, service failures, and claims "
-        "that a tool or reviewer cannot evaluate something unless that is a "
-        "reproducible project fact. If there is no stable state change, omit "
-        "the artifact.\n\n"
-        "Required top-level shape:\n\n"
-        "```json\n"
-        "{\n"
-        '  "version": 1,\n'
-        f'  "node_id": "{node.id}",\n'
-        f'  "project_id": "{project.id}",\n'
-        f'  "binding_id": "{binding_id}",\n'
-        f'  "planspace_id": "{bundle.active_planspace_id}",\n'
-        '  "created_at": 1234567890,\n'
-        '  "terminal_state": "done",\n'
-        '  "acceptance_state": "unreviewed",\n'
-        '  "updates": [\n'
-        "    {\n"
-        '      "target": "STATUS.md",\n'
-        '      "operation": "append_body",\n'
-        '      "policy": "auto",\n'
-        '      "confidence": "observed",\n'
-        '      "text": "Implemented X; verified Y; remaining blocker Z."\n'
-        "    },\n"
-        "    {\n"
-        '      "target": "PLAN.md",\n'
-        '      "operation": "propose_patch",\n'
-        '      "policy": "proposed",\n'
-        '      "reason": "Why the plan should change.",\n'
-        '      "patch": "Proposed PLAN.md patch text."\n'
-        "    }\n"
-        "  ]\n"
-        "}\n"
-        "```\n\n"
-        "Supported STATUS.md operations are `append_body`, "
-        "`rewrite_current_state`, `add_open_question`, `add_decision`, and "
-        "`add_out_of_scope`. Legacy `append_observation` is accepted as an "
-        "alias for `append_body`. PLAN.md is derived from STATUS.md; PLAN "
-        "patches may be recorded as proposals but are not applied directly.\n"
-    )
-
-
-def memory_delta_launch_contract(
-    project: Project,
-    node: Node,
-    bundle: ComposedContextBundle,
-) -> str:
-    """Compatibility wrapper for the former memory-delta contract API."""
-
-    return planspace_update_launch_contract(project, node, bundle)
-
-
-def planspace_update_filter_contract(
-    node: Node,
-    bundle: ComposedContextBundle,
-) -> str:
-    """Last-instructions filter that keeps transient noise out of STATUS writes.
-
-    Appended after :func:`planspace_update_launch_contract` so it benefits
-    from the model's last-instructions-win bias. Returns an empty string
-    when no active planspace is bound, since nothing will be committed.
-    """
-
-    if not bundle.active_planspace_id or not bundle.active_planspace_auto_update:
-        return ""
-    return (
-        "# Planspace update filter\n\n"
-        "Before you write the planspace update artifact, re-read your draft "
-        "and remove any line that describes:\n\n"
-        "- A transient tool error in this session (HTTP 5xx, timeouts, "
-        "rate limiting, retry-able crashes).\n"
-        "- A permission denial, sandbox restriction, or auth hiccup that "
-        "blocked a single call but is not a project fact.\n"
-        "- A single-run environment quirk (a flaky test that passed on "
-        "retry, a clock skew, a network blip, a once-off path issue).\n"
-        "- A claim that a tool, model, or reviewer \"cannot evaluate\" "
-        "something unless you have reproduced it twice or pinned the "
-        "underlying cause.\n"
-        "- A complaint about the harness, the prompt, or the SDK.\n\n"
-        "Keep only **stable findings**: project facts, decisions, open "
-        "questions, explicit out-of-scope notes, and the current posture "
-        "of this planspace. When in doubt, drop the line — durable state "
-        "is expensive; an extra session is cheap.\n"
-    )
 
 
 def contextspace_root(store_root: Path | None = None) -> Path:
-    """Return the configured ContextSpace root.
-
-    ``MINICLAW_CONTEXT_HOME`` wins. Otherwise, when a custom Store root is
-    used (common in tests), the ContextSpace lives beside its projects
-    directory. Finally we fall back to ``$MINICLAW_HOME/contextspace`` or
-    ``~/.miniclaw2/contextspace``.
-    """
-
+    """Resolve the contextspace root from env or store root."""
     explicit = os.environ.get("MINICLAW_CONTEXT_HOME")
     if explicit:
         return Path(explicit).expanduser()
@@ -239,8 +85,14 @@ def compose_context_bundle(
     *,
     store_root: Path | None = None,
 ) -> ComposedContextBundle:
-    """Compose and persist the context bundle seen at node launch."""
+    """Compose and persist the context bundle seen at node launch.
 
+    Loads project-root ``CONTEXT.md`` and any markdown from bound
+    ``global`` / ``skill`` plugs. The active planspace id is carried in
+    the returned bundle so the runner can materialize the lane;
+    planspace plug content itself is no longer injected into the LLM
+    projection (the materialized filesystem subtree replaces that).
+    """
     root = contextspace_root(store_root)
     binding = resolve_project_binding(project, root)
 
@@ -263,37 +115,21 @@ def compose_context_bundle(
         if text:
             system_parts.append(text)
 
-    active_planspace: PlugRef | None = None
     active_planspace_id: str | None = None
-    active_planspace_auto_update = False
     if binding is not None:
         plug_refs = _expand_required_plugs(root, binding.plugs)
         active_planspace = _select_active_planspace(project, binding, plug_refs)
         if active_planspace is not None:
             active_planspace_id = active_planspace.id
-            active_planspace_auto_update = active_planspace.auto_update
-
-        active_id = active_planspace.id if active_planspace is not None else None
-        plug_refs = _merge_extra_planspace_loads(
-            plug_refs,
-            _read_extra_planspace_loads(node),
-            exclude_id=active_id,
-        )
 
         for ref in plug_refs:
             kind = _plug_kind(ref.id)
-            if kind == "planspace" and ref.source == "binding" and (
-                active_planspace is None or ref.id != active_planspace.id
-            ):
-                continue
             if kind == "planspace":
-                for source, text in _load_planspace_sources(root, ref):
-                    sources.append(source)
-                    if source.get("injection") == "system":
-                        system_parts.append(_section_text(source, text))
-                    elif source.get("injection") == "turn":
-                        turn_sections.append(_section_text(source, text))
-            elif kind in {"skill", "global"}:
+                # Planspace plugs are manifest-only after the virtual-
+                # nodes redesign. The agent reads node previews via the
+                # materialized filesystem, not from injected text.
+                continue
+            if kind in {"skill", "global"}:
                 loaded = _load_context_markdown_source(root, ref, kind)
                 if loaded is None:
                     continue
@@ -315,14 +151,14 @@ def compose_context_bundle(
         "node_id": node.id,
         "project_binding_id": binding.id if binding else None,
         "active_planspace_id": active_planspace_id,
-        "active_planspace_auto_update": active_planspace_auto_update,
-        "active_planspace": _snapshot_planspace_ref(active_planspace, root=root),
         "sources": sources,
         "system_text": system_text,
         "turn_text": turn_text,
     }
     bundle_path.parent.mkdir(parents=True, exist_ok=True)
-    bundle_path.write_text(json.dumps(bundle, ensure_ascii=False, indent=2), encoding="utf-8")
+    bundle_path.write_text(
+        json.dumps(bundle, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
 
     return ComposedContextBundle(
         bundle_id=bundle_id,
@@ -334,7 +170,6 @@ def compose_context_bundle(
         context_root=root,
         bundle_path=bundle_path,
         active_planspace_id=active_planspace_id,
-        active_planspace_auto_update=active_planspace_auto_update,
     )
 
 
@@ -344,7 +179,6 @@ def load_context_bundle_for_node(
     store_root: Path | None = None,
 ) -> dict[str, Any] | None:
     """Load a persisted context bundle referenced by ``node``."""
-
     root = contextspace_root(store_root)
     if node.context_bundle_path:
         path = Path(node.context_bundle_path)
@@ -360,47 +194,12 @@ def load_context_bundle_for_node(
         return None
 
 
-def describe_project_contextspace(
-    project: Project,
-    *,
-    store_root: Path | None = None,
-) -> dict[str, Any]:
-    """Return a UI-facing summary of the project's ContextSpace bindings."""
-
-    from .context_refresh import context_refresh_status
-
-    root = contextspace_root(store_root)
-    binding = resolve_project_binding(project, root)
-    active = resolve_active_planspace(project, root)
-    active_planspace_id = active[1].id if active is not None else None
-    project_active_planspace_id = _string_setting(project, "active_planspace_id")
-
-    return {
-        "root": str(root),
-        "exists": root.exists(),
-        "project_context_binding_id": project.project_context_binding_id,
-        "project_active_planspace_id": project_active_planspace_id,
-        "resolved_binding_id": binding.id if binding else None,
-        "active_planspace_id": active_planspace_id,
-        "planspace_view": project.planspace_view,
-        "context_file": {
-            "exists": (Path(project.root_path) / "CONTEXT.md").exists(),
-        },
-        "context_refresh": context_refresh_status(project.id),
-        "bindings": [
-            _binding_summary(project, root, item)
-            for item in list_project_bindings(root)
-        ],
-    }
-
-
 def ensure_contextspace_root(
     store_root: Path | None = None,
     *,
     created: list[str] | None = None,
 ) -> Path:
-    """Idempotently create the ContextSpace root files and return the root."""
-
+    """Idempotently create the contextspace root files."""
     root = contextspace_root(store_root)
     root.mkdir(parents=True, exist_ok=True)
     created_items = created if created is not None else []
@@ -443,7 +242,6 @@ def ensure_project_binding(
     created: list[str] | None = None,
 ) -> ProjectBinding:
     """Return the project's binding, creating an empty one when needed."""
-
     root = ensure_contextspace_root(store_root, created=created)
     existing = resolve_project_binding(project, root)
     if existing is not None:
@@ -474,315 +272,6 @@ def ensure_project_binding(
     return binding
 
 
-def add_planspace_to_binding(
-    binding_id: str,
-    *,
-    title: str,
-    planspace_slug: str | None = None,
-    store_root: Path | None = None,
-    created: list[str] | None = None,
-) -> str:
-    """Create an empty planspace plug and append it to a project binding."""
-
-    root = ensure_contextspace_root(store_root, created=created)
-    binding = _load_binding_by_id(root, binding_id)
-    if binding is None:
-        raise ValueError(f"binding not found: {binding_id}")
-
-    direction_title = title.strip() if title.strip() else "New direction"
-    base_slug = _slugify(planspace_slug or direction_title)
-    slug = _unique_child_slug(root / "plugs" / "planspaces", base_slug)
-    planspace_id = f"planspaces.{slug}"
-    planspace_dir = root / "plugs" / "planspaces" / slug
-    (planspace_dir / "inbox").mkdir(parents=True, exist_ok=True)
-    (planspace_dir / "checkpoints").mkdir(parents=True, exist_ok=True)
-
-    _write_yaml_if_missing(
-        planspace_dir / "manifest.yaml",
-        {
-            "version": 1,
-            "id": planspace_id,
-            "kind": "planspace",
-            "title": direction_title,
-            "description": "Notebook of decisions and open questions for this direction.",
-            "color": _next_planspace_color(root),
-            "write_policy": {
-                "STATUS.md": "auto",
-                "PLAN.md": "derived",
-                "SKILLS.md": "auto",
-                "events.jsonl": "auto",
-                "inbox": "auto",
-            },
-            "injection": {
-                "STATUS.md": "turn",
-                "PLAN.md": "turn",
-                "SKILLS.md": "none",
-            },
-            "max_chars": {
-                "STATUS.md": 4000,
-                "PLAN.md": 6000,
-            },
-        },
-        root,
-        created if created is not None else [],
-    )
-    initial_status = PlanspaceStatus(
-        goal="unknown",
-        current_state="This direction is being initialized...",
-        body=(
-            "# Notes\n\n"
-            "- This direction is being initialized by the concierge bootstrap.\n"
-        ),
-    )
-    _write_text_if_missing(
-        planspace_dir / "STATUS.md",
-        render_planspace_status(initial_status),
-        root,
-        created if created is not None else [],
-    )
-    _write_text_if_missing(
-        planspace_dir / "PLAN.md",
-        derive_plan_markdown(initial_status),
-        root,
-        created if created is not None else [],
-    )
-    _write_text_if_missing(
-        planspace_dir / "SKILLS.md",
-        "# Skills\n\n_No skills explicitly loaded yet._\n",
-        root,
-        created if created is not None else [],
-    )
-    _touch_if_missing(planspace_dir / "events.jsonl", root, created if created is not None else [])
-
-    raw = dict(binding.raw)
-    raw["id"] = binding.id
-    raw["active_planspace_id"] = planspace_id
-    plugs_raw = raw.get("plugs")
-    plugs: list[Any] = list(plugs_raw) if isinstance(plugs_raw, list) else []
-    if not any(isinstance(item, dict) and item.get("id") == planspace_id for item in plugs):
-        plugs.append(
-            {
-                "id": planspace_id,
-                "role": "status-plan",
-                "injection": "turn",
-                "enabled": True,
-                "auto_update": True,
-            }
-        )
-    raw["plugs"] = plugs
-    _write_yaml(binding.path, raw)
-    return planspace_id
-
-
-def bootstrap_project_contextspace(
-    project: Project,
-    *,
-    store_root: Path | None = None,
-    title: str | None = None,
-    planspace_slug: str | None = None,
-    binding_slug: str | None = None,
-) -> dict[str, Any]:
-    """Create a minimal ContextSpace planspace + project binding.
-
-    Existing files are left intact. Slug collisions get a numeric suffix.
-    The caller is responsible for writing the returned binding/planspace ids
-    back to the Project.
-    """
-
-    created: list[str] = []
-    root = ensure_contextspace_root(store_root, created=created)
-    project_title = _project_title(project, title)
-    binding = ensure_project_binding(
-        project,
-        store_root=store_root,
-        binding_slug=binding_slug or project_title,
-        created=created,
-    )
-    planspace_id = add_planspace_to_binding(
-        binding.id,
-        title=f"{project_title} Planspace",
-        planspace_slug=planspace_slug or project_title,
-        store_root=store_root,
-        created=created,
-    )
-
-    return {
-        "context_root": str(root),
-        "binding_id": binding.id,
-        "planspace_id": planspace_id,
-        "created": created,
-    }
-
-
-def load_planspace_view(
-    planspace_id: str,
-    *,
-    store_root: Path | None = None,
-) -> dict[str, Any] | None:
-    """Return a UI-shaped view of one planspace's STATUS + manifest color.
-
-    Returns ``None`` when the planspace directory does not exist.
-    """
-
-    root = contextspace_root(store_root)
-    plug_dir = _plug_dir(root, planspace_id)
-    if plug_dir is None or not plug_dir.exists():
-        return None
-    manifest = _plug_manifest(root, planspace_id)
-    status = load_planspace_status(plug_dir / "STATUS.md")
-    return {
-        "planspace_id": planspace_id,
-        "title": _string_value(manifest.get("title")) or planspace_id,
-        "color": _string_value(manifest.get("color")),
-        "status": {
-            "goal": status.goal,
-            "current_state": status.current_state,
-            "open_questions": status.open_questions,
-            "decisions": status.decisions,
-            "out_of_scope": status.out_of_scope,
-            "body": status.body,
-        },
-    }
-
-
-def read_project_file_role(
-    project: Project,
-    *,
-    role: str,
-    planspace_id: str | None = None,
-    store_root: Path | None = None,
-) -> dict[str, Any] | None:
-    """Read a UI-whitelisted project/planspace file."""
-
-    root = contextspace_root(store_root)
-    if role in {"status", "plan"}:
-        if not planspace_id:
-            return None
-        plug_dir = _plug_dir(root, planspace_id)
-        if plug_dir is None or not plug_dir.exists():
-            return None
-        filename = "STATUS.md" if role == "status" else "PLAN.md"
-        path = plug_dir / filename
-        if role == "plan" and path.exists():
-            manifest = _plug_manifest(root, planspace_id)
-            if _plan_is_derived(manifest):
-                refresh_derived_plan(plug_dir)
-        try:
-            stat = path.stat()
-            text = path.read_text(encoding="utf-8")
-        except OSError:
-            return None
-        return {
-            "role": role,
-            "path": _display_path(path, root),
-            "text": text,
-            "mtime": stat.st_mtime,
-            "last_writer": _last_planspace_writer(plug_dir / "events.jsonl"),
-        }
-
-    if role == "context":
-        path = Path(project.root_path) / "CONTEXT.md"
-        try:
-            stat = path.stat()
-            text = path.read_text(encoding="utf-8")
-        except OSError:
-            return None
-        return {
-            "role": role,
-            "path": str(path),
-            "text": text,
-            "mtime": stat.st_mtime,
-            "last_writer": _last_context_writer(project),
-        }
-
-    return None
-
-
-def load_node_status_delta(
-    project_id: str,
-    node_id: str,
-    *,
-    store_root: Path | None = None,
-) -> dict[str, Any] | None:
-    path = _status_delta_path(project_id, node_id, store_root=store_root)
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
-    return raw if isinstance(raw, dict) else None
-
-
-def apply_planspace_status_ops(
-    planspace_id: str,
-    operations: list[dict[str, Any]],
-    *,
-    actor: str = "user",
-    store_root: Path | None = None,
-) -> dict[str, Any] | None:
-    """Apply a list of slot operations to one planspace's STATUS.md.
-
-    ``actor`` is recorded as the ``raised_by`` / ``decided_by`` field on new
-    Q* / D* entries when the caller does not provide one explicitly.
-    Returns the post-write view dict, or ``None`` when the planspace is
-    missing.
-    """
-
-    from .planspace_state import (
-        apply_status_update as _apply,
-        remove_status_slot,
-        validate_planspace_status,
-    )
-
-    root = contextspace_root(store_root)
-    plug_dir = _plug_dir(root, planspace_id)
-    if plug_dir is None or not plug_dir.exists():
-        return None
-    status = load_planspace_status(plug_dir / "STATUS.md")
-    pseudo_node = Node(project_id="user", id=actor)
-
-    applied: list[dict[str, Any]] = []
-    for op in operations:
-        if not isinstance(op, dict):
-            continue
-        operation = op.get("operation")
-        if operation in {
-            "remove_open_question",
-            "remove_decision",
-            "remove_out_of_scope",
-        }:
-            target = op.get("id") if operation != "remove_out_of_scope" else op.get("index")
-            if operation == "remove_out_of_scope" and isinstance(target, int) is False:
-                continue
-            if operation != "remove_out_of_scope" and isinstance(target, str) is False:
-                continue
-            summary = remove_status_slot(status, operation, target)  # type: ignore[arg-type]
-            if summary is not None:
-                applied.append(summary)
-            continue
-        # Additive ops route through apply_status_update.
-        update = {"target": "STATUS.md", "policy": "auto", **op}
-        summary = _apply(status, update, pseudo_node)
-        if summary is not None:
-            applied.append(summary)
-
-    errors = validate_planspace_status(status)
-    if errors:
-        return {
-            "planspace_id": planspace_id,
-            "applied": applied,
-            "errors": errors,
-        }
-    write_planspace_status(plug_dir / "STATUS.md", status)
-    manifest = _plug_manifest(root, planspace_id)
-    if _plan_is_derived(manifest):
-        refresh_derived_plan(plug_dir)
-
-    view = load_planspace_view(planspace_id, store_root=store_root)
-    if view is not None:
-        view["applied"] = applied
-    return view
-
-
 def list_project_bindings(root: Path) -> list[ProjectBinding]:
     bindings_dir = root / "bindings" / "projects"
     if not bindings_dir.exists():
@@ -800,12 +289,10 @@ def delete_project_contextspace(
     *,
     store_root: Path | None = None,
 ) -> dict[str, Any]:
-    """Delete ContextSpace bindings and planspaces owned by a project.
-
-    Planspaces that are still referenced by another project binding are kept,
-    because ContextSpace plugs can be shared across projects.
+    """Delete ContextSpace bindings and (private) planspace plugs owned by
+    the project. Planspaces that another binding still references are
+    retained.
     """
-
     root = contextspace_root(store_root)
     summary: dict[str, Any] = {
         "root": str(root),
@@ -869,700 +356,57 @@ def delete_project_contextspace(
     return summary
 
 
-def apply_planspace_update_inbox(
+def describe_project_contextspace(
     project: Project,
-    node: Node,
     *,
     store_root: Path | None = None,
 ) -> dict[str, Any]:
-    """Apply auto-approved STATUS.md updates from the active planspace inbox.
+    """Return a slim UI-facing summary of the project's contextspace.
 
-    ``PLAN.md`` is derived from ``STATUS.md``; PLAN patches are recorded as
-    proposals but are not applied directly.
+    No planspace STATUS/PLAN content — planspace plugs are manifest-only
+    after the redesign. The frontend layer that consumes this is being
+    rewritten in a later slice; for now we provide just enough for the
+    init/refresh endpoints to return a useful payload.
     """
+    from .context_refresh import context_refresh_status
 
     root = contextspace_root(store_root)
-    bundle = load_context_bundle_for_node(node, store_root=store_root)
-    if bundle is None and (node.context_bundle_id or node.context_bundle_path):
-        return {"applied": 0, "proposed": 0, "reason": "context_bundle_not_found"}
-    if bundle is None:
-        active = _memory_delta_route_from_current_binding(project, root)
-        if active is None:
-            return {"applied": 0, "proposed": 0, "reason": "no_active_planspace"}
-    else:
-        active = _memory_delta_route_from_bundle(bundle, root)
-        if active is None:
-            return {
-                "applied": 0,
-                "proposed": 0,
-                "reason": "no_active_planspace_snapshot",
-            }
-
-    binding_id, planspace_id, planspace_dir, auto_update = active
-    if not auto_update:
-        return {
-            "applied": 0,
-            "proposed": 0,
-            "reason": "planspace_auto_update_disabled",
-            "binding_id": binding_id,
-            "planspace_id": planspace_id,
-        }
-
-    delta_path = planspace_dir / "inbox" / f"{node.id}.planspace-update.json"
-    if not delta_path.exists():
-        legacy_path = planspace_dir / "inbox" / f"{node.id}.memory-delta.json"
-        if legacy_path.exists():
-            delta_path = legacy_path
-    if not delta_path.exists():
-        return {
-            "applied": 0,
-            "proposed": 0,
-            "reason": "no_delta",
-            "binding_id": binding_id,
-            "planspace_id": planspace_id,
-            "delta_path": _display_path(delta_path, root),
-        }
-
-    try:
-        delta = json.loads(delta_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        return {
-            "applied": 0,
-            "proposed": 0,
-            "reason": f"invalid_delta: {exc}",
-            "binding_id": binding_id,
-            "planspace_id": planspace_id,
-            "delta_path": _display_path(delta_path, root),
-        }
-
-    return _apply_planspace_update_payload(
-        project,
-        node,
-        binding_id=binding_id,
-        planspace_id=planspace_id,
-        planspace_dir=planspace_dir,
-        delta_path=delta_path,
-        delta=delta,
-        context_root=root,
-        store_root=store_root,
-        source="contextspace_inbox",
-    )
-
-
-def apply_memory_delta_inbox(
-    project: Project,
-    node: Node,
-    *,
-    store_root: Path | None = None,
-) -> dict[str, Any]:
-    """Compatibility wrapper for the former memory-delta inbox API."""
-
-    return apply_planspace_update_inbox(project, node, store_root=store_root)
-
-
-def apply_planspace_update_artifact(
-    project: Project,
-    node: Node,
-    *,
-    store_root: Path | None = None,
-) -> dict[str, Any]:
-    """Apply a project-local planspace update artifact to the launch planspace.
-
-    Agents write to ``.miniclaw2/outputs/<node-id>/planspace-update.json`` in
-    the project workspace. MiniClaw2 validates that artifact, copies it into the
-    snapshotted active planspace inbox, then applies only safe STATUS.md
-    observations. This keeps the provider from writing ContextSpace directly.
-    """
-
-    root = contextspace_root(store_root)
-    rel_path = planspace_update_output_relpath(node)
-    source_path = _planspace_update_artifact_path(project, node)
-    legacy_rel_path = memory_delta_output_relpath(node)
-    if not source_path.exists():
-        legacy_source_path = _memory_delta_artifact_path(project, node)
-        if legacy_source_path.exists():
-            rel_path = legacy_rel_path
-            source_path = legacy_source_path
-
-    bundle = load_context_bundle_for_node(node, store_root=store_root)
-    if bundle is None:
-        return {
-            "applied": 0,
-            "proposed": 0,
-            "reason": (
-                "context_bundle_not_found"
-                if (node.context_bundle_id or node.context_bundle_path)
-                else "no_context_bundle"
-            ),
-            "source": "project_artifact",
-            "source_path": rel_path,
-        }
-
-    active = _memory_delta_route_from_bundle(bundle, root)
-    if active is None:
-        return {
-            "applied": 0,
-            "proposed": 0,
-            "reason": "no_active_planspace_snapshot",
-            "source": "project_artifact",
-            "source_path": rel_path,
-        }
-
-    binding_id, planspace_id, planspace_dir, auto_update = active
-    base = {
-        "binding_id": binding_id,
-        "planspace_id": planspace_id,
-        "source": "project_artifact",
-        "source_path": rel_path,
-    }
-    if not auto_update:
-        return {
-            "applied": 0,
-            "proposed": 0,
-            "reason": "planspace_auto_update_disabled",
-            **base,
-        }
-    if not source_path.exists():
-        return {
-            "applied": 0,
-            "proposed": 0,
-            "reason": "no_delta",
-            **base,
-        }
-
-    try:
-        delta = json.loads(source_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        return {
-            "applied": 0,
-            "proposed": 0,
-            "reason": f"invalid_delta: {exc}",
-            **base,
-        }
-
-    validation_error = _validate_planspace_update_artifact(
-        delta,
-        project,
-        node,
-        binding_id=binding_id,
-        planspace_id=planspace_id,
-    )
-    if validation_error:
-        return {
-            "applied": 0,
-            "proposed": 0,
-            "reason": f"invalid_delta: {validation_error}",
-            **base,
-        }
-
-    delta_path = planspace_dir / "inbox" / f"{node.id}.planspace-update.json"
-    try:
-        delta_path.parent.mkdir(parents=True, exist_ok=True)
-        delta_path.write_text(
-            json.dumps(delta, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-        )
-    except OSError as exc:
-        return {
-            "applied": 0,
-            "proposed": 0,
-            "reason": f"inbox_write_failed: {exc}",
-            "delta_path": _display_path(delta_path, root),
-            **base,
-        }
-
-    return _apply_planspace_update_payload(
-        project,
-        node,
-        binding_id=binding_id,
-        planspace_id=planspace_id,
-        planspace_dir=planspace_dir,
-        delta_path=delta_path,
-        delta=delta,
-        context_root=root,
-        store_root=store_root,
-        source="project_artifact",
-        source_path=rel_path,
-        copied_to_inbox=True,
-    )
-
-
-def apply_memory_delta_artifact(
-    project: Project,
-    node: Node,
-    *,
-    store_root: Path | None = None,
-) -> dict[str, Any]:
-    """Compatibility wrapper for the former memory-delta artifact API."""
-
-    return apply_planspace_update_artifact(project, node, store_root=store_root)
-
-
-def stage_planspace_update_artifact(
-    project: Project,
-    node: Node,
-    *,
-    store_root: Path | None = None,
-) -> dict[str, Any]:
-    """Stage a gate-bearing node's interim update until the review closes."""
-
-    root = contextspace_root(store_root)
-    rel_path = planspace_update_output_relpath(node)
-    source_path = _planspace_update_artifact_path(project, node)
-    if not source_path.exists():
-        legacy_source_path = _memory_delta_artifact_path(project, node)
-        if legacy_source_path.exists():
-            rel_path = memory_delta_output_relpath(node)
-            source_path = legacy_source_path
-
-    bundle = load_context_bundle_for_node(node, store_root=store_root)
-    if bundle is None:
-        return {
-            "staged": False,
-            "reason": (
-                "context_bundle_not_found"
-                if (node.context_bundle_id or node.context_bundle_path)
-                else "no_context_bundle"
-            ),
-            "source": "project_artifact",
-            "source_path": rel_path,
-        }
-
-    active = _memory_delta_route_from_bundle(bundle, root)
-    if active is None:
-        return {
-            "staged": False,
-            "reason": "no_active_planspace_snapshot",
-            "source": "project_artifact",
-            "source_path": rel_path,
-        }
-
-    binding_id, planspace_id, planspace_dir, auto_update = active
-    base = {
-        "binding_id": binding_id,
-        "planspace_id": planspace_id,
-        "source": "project_artifact",
-        "source_path": rel_path,
-    }
-    if not auto_update:
-        return {"staged": False, "reason": "planspace_auto_update_disabled", **base}
-    if not source_path.exists():
-        return {"staged": False, "reason": "no_delta", **base}
-
-    try:
-        delta = json.loads(source_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        return {"staged": False, "reason": f"invalid_delta: {exc}", **base}
-
-    validation_error = _validate_planspace_update_artifact(
-        delta,
-        project,
-        node,
-        binding_id=binding_id,
-        planspace_id=planspace_id,
-    )
-    if validation_error:
-        return {"staged": False, "reason": f"invalid_delta: {validation_error}", **base}
-
-    staged_path = planspace_dir / "checkpoints" / f"{node.id}.interim-planspace-update.json"
-    try:
-        staged_path.parent.mkdir(parents=True, exist_ok=True)
-        staged_path.write_text(
-            json.dumps(delta, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-        )
-    except OSError as exc:
-        return {
-            "staged": False,
-            "reason": f"checkpoint_write_failed: {exc}",
-            "staged_path": _display_path(staged_path, root),
-            **base,
-        }
-
-    event = {
-        "type": "planspace_update_staged",
-        "node_id": node.id,
-        "project_id": project.id,
-        "binding_id": binding_id,
-        "planspace_id": planspace_id,
-        "created_at": time.time(),
-        "source_path": rel_path,
-        "staged_path": _display_path(staged_path, root),
-    }
-    _append_planspace_event(planspace_dir / "events.jsonl", event)
+    binding = resolve_project_binding(project, root)
+    active = resolve_active_planspace(project, root)
+    active_planspace_id = active[1].id if active is not None else None
     return {
-        "staged": True,
-        "staged_path": _display_path(staged_path, root),
-        **base,
+        "root": str(root),
+        "exists": root.exists(),
+        "project_context_binding_id": project.project_context_binding_id,
+        "resolved_binding_id": binding.id if binding else None,
+        "active_planspace_id": active_planspace_id,
+        "planspace_view": project.planspace_view,
+        "context_file": {
+            "exists": (Path(project.root_path) / "CONTEXT.md").exists(),
+        },
+        "context_refresh": context_refresh_status(project.id),
     }
 
 
-def commit_gate_reviewed_planspace_update(
-    project: Project,
-    gate_node: Node,
-    *,
-    source_node: Node | None,
-    user_judgment: str,
-    review_guidance: str,
-    promote_interim: bool = True,
-    store_root: Path | None = None,
-) -> dict[str, Any]:
-    """Merge a staged interim update with free-form review judgment."""
+def read_project_context(project: Project) -> dict[str, Any] | None:
+    """Read the project-root ``CONTEXT.md`` for UI display.
 
-    root = contextspace_root(store_root)
-    route_node = source_node or gate_node
-    bundle = load_context_bundle_for_node(route_node, store_root=store_root)
-    if bundle is None:
-        return {
-            "applied": 0,
-            "proposed": 0,
-            "reason": (
-                "context_bundle_not_found"
-                if (route_node.context_bundle_id or route_node.context_bundle_path)
-                else "no_context_bundle"
-            ),
-            "source": "checkpoint_review",
-        }
-
-    active = _memory_delta_route_from_bundle(bundle, root)
-    if active is None:
-        return {
-            "applied": 0,
-            "proposed": 0,
-            "reason": "no_active_planspace_snapshot",
-            "source": "checkpoint_review",
-        }
-
-    binding_id, planspace_id, planspace_dir, auto_update = active
-    base = {
-        "binding_id": binding_id,
-        "planspace_id": planspace_id,
-        "source": "checkpoint_review",
-    }
-    if not auto_update:
-        return {
-            "applied": 0,
-            "proposed": 0,
-            "reason": "planspace_auto_update_disabled",
-            **base,
-        }
-
-    staged_path: Path | None = None
-    interim_delta: Any = None
-    if source_node is not None:
-        candidate = planspace_dir / "checkpoints" / f"{source_node.id}.interim-planspace-update.json"
-        if candidate.exists():
-            staged_path = candidate
-            try:
-                interim_delta = json.loads(candidate.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
-                interim_delta = None
-
-    merged_text = merge_reviewed_update_markdown(
-        interim_delta=interim_delta,
-        user_judgment=user_judgment,
-        review_guidance=review_guidance,
-        gate_node=gate_node,
-        source_node=source_node,
-    )
-    reviewed_updates = (
-        _carry_over_structured_updates(interim_delta)
-        if promote_interim
-        else []
-    )
-    reviewed_updates.append(
-        {
-            "target": "STATUS.md",
-            "operation": "append_body",
-            "policy": "auto",
-            "confidence": "reviewed",
-            "text": merged_text,
-        }
-    )
-    delta = {
-        "version": 1,
-        "node_id": gate_node.id,
-        "project_id": project.id,
-        "binding_id": binding_id,
-        "planspace_id": planspace_id,
-        "created_at": time.time(),
-        "terminal_state": gate_node.state.value,
-        "acceptance_state": gate_node.acceptance_state.value,
-        "updates": reviewed_updates,
-    }
-    delta_path = staged_path or planspace_dir / "checkpoints" / f"{gate_node.id}.review-merge"
-    result = _apply_planspace_update_payload(
-        project,
-        gate_node,
-        binding_id=binding_id,
-        planspace_id=planspace_id,
-        planspace_dir=planspace_dir,
-        delta_path=delta_path,
-        delta=delta,
-        context_root=root,
-        store_root=store_root,
-        source="checkpoint_review",
-    )
-    if staged_path is not None:
-        try:
-            staged_path.unlink()
-        except OSError:
-            pass
-        result["staged_discarded"] = True
-    return result
-
-
-def _apply_planspace_update_payload(
-    project: Project,
-    node: Node,
-    *,
-    binding_id: str | None,
-    planspace_id: str,
-    planspace_dir: Path,
-    delta_path: Path,
-    delta: Any,
-    context_root: Path,
-    store_root: Path | None,
-    source: str,
-    source_path: str | None = None,
-    copied_to_inbox: bool = False,
-) -> dict[str, Any]:
-    applied: list[dict[str, Any]] = []
-    applied_ops: list[dict[str, Any]] = []
-    proposed: list[dict[str, Any]] = []
-    ignored: list[dict[str, Any]] = []
-    status_changed = False
-    status_path = planspace_dir / "STATUS.md"
+    Returns ``{role, path, text, mtime}`` or ``None`` if the file is
+    missing. Status/plan roles are no longer served (deferred to the
+    materialized projection).
+    """
+    path = Path(project.root_path) / "CONTEXT.md"
     try:
-        before_status_text = status_path.read_text(encoding="utf-8")
+        stat = path.stat()
+        text = path.read_text(encoding="utf-8")
     except OSError:
-        before_status_text = ""
-    status = load_planspace_status(status_path)
-
-    updates = delta.get("updates") if isinstance(delta, dict) else None
-    if not isinstance(updates, list):
-        return {
-            "applied": 0,
-            "proposed": 0,
-            "ignored": 0,
-            "reason": "invalid_delta: updates must be a list",
-            "binding_id": binding_id,
-            "planspace_id": planspace_id,
-            "delta_path": _display_path(delta_path, context_root),
-            "source": source,
-            **({"source_path": source_path} if source_path else {}),
-            **({"copied_to_inbox": True} if copied_to_inbox else {}),
-        }
-
-    for update in updates:
-        if not isinstance(update, dict):
-            ignored.append({"reason": "update_not_object"})
-            continue
-        if _is_auto_status_update(update):
-            summary = apply_status_update(status, update, node)
-            if summary is None:
-                ignored.append(_planspace_update_summary(update))
-                continue
-            status_changed = True
-            applied.append(summary)
-            applied_ops.append(dict(update))
-            continue
-        if _is_plan_proposal(update):
-            proposed.append(_planspace_update_summary(update))
-            continue
-        ignored.append(_planspace_update_summary(update))
-
-    if status_changed:
-        validation_errors = validate_planspace_status(status)
-        if validation_errors:
-            return {
-                "applied": 0,
-                "proposed": len(proposed),
-                "ignored": len(ignored),
-                "reason": "invalid_status: " + "; ".join(validation_errors),
-                "binding_id": binding_id,
-                "planspace_id": planspace_id,
-                "delta_path": _display_path(delta_path, context_root),
-                "source": source,
-                **({"source_path": source_path} if source_path else {}),
-                **({"copied_to_inbox": True} if copied_to_inbox else {}),
-            }
-        write_planspace_status(status_path, status)
-        if _plan_is_derived(_plug_manifest(context_root, planspace_id)):
-            refresh_derived_plan(planspace_dir)
-        try:
-            after_status_text = status_path.read_text(encoding="utf-8")
-        except OSError:
-            after_status_text = render_planspace_status(status)
-        _write_status_delta_snapshot(
-            project,
-            node,
-            planspace_id=planspace_id,
-            before=before_status_text,
-            after=after_status_text,
-            ops=applied_ops,
-            store_root=store_root,
-        )
-
-    event_type: str | None = None
-    if applied or proposed:
-        event_type = "planspace_update_applied" if applied else "planspace_update_recorded"
-        event: dict[str, Any] = {
-            "type": event_type,
-            "node_id": node.id,
-            "project_id": project.id,
-            "binding_id": binding_id,
-            "planspace_id": planspace_id,
-            "created_at": time.time(),
-            "terminal_state": node.state.value,
-            "acceptance_state": node.acceptance_state.value,
-            "delta_path": _display_path(delta_path, context_root),
-            "source": source,
-            "updates": applied,
-            "proposals": proposed,
-            "ignored": ignored,
-        }
-        if source_path:
-            event["source_path"] = source_path
-        if copied_to_inbox:
-            event["copied_to_inbox"] = True
-        _append_planspace_event(planspace_dir / "events.jsonl", event)
-
-    result: dict[str, Any] = {
-        "applied": len(applied),
-        "proposed": len(proposed),
-        "ignored": len(ignored),
-        "binding_id": binding_id,
-        "planspace_id": planspace_id,
-        "delta_path": _display_path(delta_path, context_root),
-        "source": source,
+        return None
+    return {
+        "role": "context",
+        "path": str(path),
+        "text": text,
+        "mtime": stat.st_mtime,
     }
-    if source_path:
-        result["source_path"] = source_path
-    if copied_to_inbox:
-        result["copied_to_inbox"] = True
-    if event_type:
-        result["event_type"] = event_type
-    if not applied and not proposed:
-        result["reason"] = "no_applicable_updates"
-    return result
-
-
-def _memory_delta_artifact_path(project: Project, node: Node) -> Path:
-    return Path(project.root_path) / memory_delta_output_relpath(node)
-
-
-def _planspace_update_artifact_path(project: Project, node: Node) -> Path:
-    return Path(project.root_path) / planspace_update_output_relpath(node)
-
-
-def _validate_planspace_update_artifact(
-    delta: Any,
-    project: Project,
-    node: Node,
-    *,
-    binding_id: str | None,
-    planspace_id: str,
-) -> str | None:
-    if not isinstance(delta, dict):
-        return "top-level value must be an object"
-    if delta.get("version") != 1:
-        return "version must be 1"
-    if delta.get("node_id") != node.id:
-        return "node_id does not match launch node"
-    if delta.get("project_id") != project.id:
-        return "project_id does not match project"
-    if binding_id is not None and delta.get("binding_id") != binding_id:
-        return "binding_id does not match launch snapshot"
-    if delta.get("planspace_id") != planspace_id:
-        return "planspace_id does not match launch snapshot"
-    updates = delta.get("updates")
-    if not isinstance(updates, list):
-        return "updates must be a list"
-    for index, update in enumerate(updates):
-        if not isinstance(update, dict):
-            return f"updates[{index}] must be an object"
-    return None
-
-
-def _validate_memory_delta_artifact(
-    delta: Any,
-    project: Project,
-    node: Node,
-    *,
-    binding_id: str | None,
-    planspace_id: str,
-) -> str | None:
-    """Compatibility wrapper for tests/imports using the former helper name."""
-
-    return _validate_planspace_update_artifact(
-        delta,
-        project,
-        node,
-        binding_id=binding_id,
-        planspace_id=planspace_id,
-    )
-
-
-def _carry_over_structured_updates(interim_delta: Any) -> list[dict[str, Any]]:
-    if not isinstance(interim_delta, dict):
-        return []
-    updates = interim_delta.get("updates")
-    if not isinstance(updates, list):
-        return []
-    out: list[dict[str, Any]] = []
-    for update in updates:
-        if not isinstance(update, dict):
-            continue
-        if not _is_auto_status_update(update):
-            continue
-        carried = dict(update)
-        carried["confidence"] = "reviewed"
-        out.append(carried)
-    return out
-
-
-def _is_auto_status_update(update: dict[str, Any]) -> bool:
-    return (
-        update.get("target") == "STATUS.md"
-        and update.get("operation")
-        in {
-            "append_observation",
-            "append_body",
-            "append_note",
-            "rewrite_current_state",
-            "add_open_question",
-            "add_decision",
-            "add_out_of_scope",
-        }
-        and update.get("policy") == "auto"
-    )
-
-
-def _is_plan_proposal(update: dict[str, Any]) -> bool:
-    return update.get("target") == "PLAN.md" and update.get("policy") == "proposed"
-
-
-def _planspace_update_summary(update: dict[str, Any]) -> dict[str, Any]:
-    out: dict[str, Any] = {}
-    for key in ("target", "operation", "policy", "confidence", "reason"):
-        value = update.get(key)
-        if isinstance(value, str) and value:
-            out[key] = value
-    payload = update.get("text")
-    if not isinstance(payload, str):
-        payload = update.get("patch")
-    if isinstance(payload, str):
-        out["chars"] = len(payload)
-    if not out:
-        out["reason"] = "unsupported_update"
-    return out
-
-
-def _memory_delta_update_summary(update: dict[str, Any]) -> dict[str, Any]:
-    """Compatibility wrapper for the former helper name."""
-
-    return _planspace_update_summary(update)
 
 
 def resolve_project_binding(project: Project, root: Path) -> ProjectBinding | None:
@@ -1576,41 +420,6 @@ def resolve_project_binding(project: Project, root: Path) -> ProjectBinding | No
     return _find_binding_for_project_path(root, project.root_path)
 
 
-def _memory_delta_route_from_bundle(
-    bundle: dict[str, Any],
-    root: Path,
-) -> tuple[str | None, str, Path, bool] | None:
-    planspace_id = _string_value(bundle.get("active_planspace_id"))
-    if planspace_id is None:
-        return None
-    planspace_dir = _plug_dir(root, planspace_id)
-    if planspace_dir is None:
-        return None
-
-    active = bundle.get("active_planspace")
-    auto_update = False
-    if isinstance(active, dict) and active.get("id") == planspace_id:
-        auto_update = bool(active.get("auto_update", False))
-
-    return (
-        _string_value(bundle.get("project_binding_id")),
-        planspace_id,
-        planspace_dir,
-        auto_update,
-    )
-
-
-def _memory_delta_route_from_current_binding(
-    project: Project,
-    root: Path,
-) -> tuple[str | None, str, Path, bool] | None:
-    active = resolve_active_planspace(project, root)
-    if active is None:
-        return None
-    binding, ref, planspace_dir = active
-    return binding.id, ref.id, planspace_dir, ref.auto_update
-
-
 def resolve_active_planspace(
     project: Project,
     root: Path,
@@ -1622,10 +431,13 @@ def resolve_active_planspace(
     ref = _select_active_planspace(project, binding, refs)
     if ref is None:
         return None
-    planspace_dir = _plug_dir(root, ref.id)
-    if planspace_dir is None:
+    plug_dir = _plug_dir(root, ref.id)
+    if plug_dir is None:
         return None
-    return binding, ref, planspace_dir
+    return binding, ref, plug_dir
+
+
+# ----------------- internal helpers -----------------
 
 
 def _load_binding_by_id(root: Path, binding_id: str) -> ProjectBinding | None:
@@ -1660,55 +472,6 @@ def _load_binding_file(path: Path) -> ProjectBinding | None:
         plugs=[plug for plug in plugs if plug is not None],
         raw=raw,
     )
-
-
-def _binding_summary(
-    project: Project,
-    root: Path,
-    binding: ProjectBinding,
-) -> dict[str, Any]:
-    expanded_refs = _expand_required_plugs(root, binding.plugs)
-    refs = _merge_plug_refs(binding.plugs, expanded_refs)
-    active = _select_active_planspace(project, binding, expanded_refs)
-    project_raw = binding.raw.get("project") if isinstance(binding.raw, dict) else {}
-    if not isinstance(project_raw, dict):
-        project_raw = {}
-    local_paths = [
-        item for item in (project_raw.get("local_paths") or [])
-        if isinstance(item, str)
-    ]
-    return {
-        "id": binding.id,
-        "path": _display_path(binding.path, root),
-        "title": _string_value(binding.raw.get("title"))
-        or _string_value(project_raw.get("name"))
-        or binding.id,
-        "project_name": _string_value(project_raw.get("name")),
-        "local_paths": local_paths,
-        "matches_project_path": _binding_matches_project_path(binding, project.root_path),
-        "active_planspace_id": active.id if active else None,
-        "binding_active_planspace_id": _string_value(binding.raw.get("active_planspace_id")),
-        "plugs": [
-            _plug_summary(
-                root,
-                ref,
-                active.id if active else None,
-                hidden=bool(project.planspace_view.get(ref.id, {}).get("hidden")),
-            )
-            for ref in refs
-        ],
-    }
-
-
-def _merge_plug_refs(primary: list[PlugRef], expanded: list[PlugRef]) -> list[PlugRef]:
-    out: list[PlugRef] = list(primary)
-    seen = {ref.id for ref in out}
-    for ref in expanded:
-        if ref.id in seen:
-            continue
-        seen.add(ref.id)
-        out.append(ref)
-    return out
 
 
 def _bindings_for_project_contextspace_delete(
@@ -1753,35 +516,6 @@ def _binding_project_owner_id(binding: ProjectBinding) -> str | None:
     return _string_value(project_raw.get("miniclaw_project_id"))
 
 
-def _plug_summary(
-    root: Path,
-    ref: PlugRef,
-    active_planspace_id: str | None,
-    *,
-    hidden: bool = False,
-) -> dict[str, Any]:
-    manifest = _plug_manifest(root, ref.id)
-    plug_dir = _plug_dir(root, ref.id)
-    kind = _plug_kind(ref.id)
-    return {
-        "id": ref.id,
-        "kind": kind,
-        "slug": _plug_slug(ref.id),
-        "role": ref.role,
-        "injection": ref.injection,
-        "enabled": ref.enabled,
-        "auto_update": ref.auto_update,
-        "source": ref.source,
-        "active": kind == "planspace" and ref.id == active_planspace_id,
-        "hidden": hidden if kind == "planspace" else False,
-        "exists": plug_dir.exists() if plug_dir is not None else False,
-        "path": _display_path(plug_dir, root) if plug_dir is not None else None,
-        "title": _string_value(manifest.get("title")) or ref.id,
-        "description": _string_value(manifest.get("description")),
-        "color": _string_value(manifest.get("color")),
-    }
-
-
 def _binding_matches_project_path(binding: ProjectBinding, root_path: str) -> bool:
     try:
         project_root = Path(root_path).resolve()
@@ -1818,91 +552,7 @@ def _plug_ref(item: Any) -> PlugRef | None:
         role=role if isinstance(role, str) else "",
         injection=injection if isinstance(injection, str) else None,
         enabled=bool(item.get("enabled", True)),
-        auto_update=bool(item.get("auto_update", False)),
     )
-
-
-def _snapshot_planspace_ref(
-    ref: PlugRef | None,
-    *,
-    root: Path | None = None,
-) -> dict[str, Any] | None:
-    if ref is None:
-        return None
-    snapshot: dict[str, Any] = {
-        "id": ref.id,
-        "role": ref.role,
-        "injection": ref.injection,
-        "enabled": ref.enabled,
-        "auto_update": ref.auto_update,
-        "source": ref.source,
-    }
-    if root is not None:
-        manifest = _plug_manifest(root, ref.id)
-        color = _string_value(manifest.get("color"))
-        if color:
-            snapshot["color"] = color
-        title = _string_value(manifest.get("title"))
-        if title:
-            snapshot["title"] = title
-    return snapshot
-
-
-def _read_extra_planspace_loads(node: Node) -> list[str]:
-    """Extra planspace ids the user attached via the phantom composer."""
-
-    raw = node.settings_snapshot.get("extra_planspace_loads")
-    if not isinstance(raw, list):
-        return []
-    out: list[str] = []
-    for entry in raw:
-        if isinstance(entry, str) and entry.strip():
-            out.append(entry.strip())
-    return out
-
-
-def _merge_extra_planspace_loads(
-    plug_refs: list[PlugRef],
-    extras: list[str],
-    *,
-    exclude_id: str | None,
-) -> list[PlugRef]:
-    if not extras:
-        return plug_refs
-    out = list(plug_refs)
-    index_by_id = {ref.id: idx for idx, ref in enumerate(out)}
-    seen_loaded: set[str] = set()
-    for ref in out:
-        if (
-            _plug_kind(ref.id) == "planspace"
-            and ref.source == "binding"
-            and ref.id != exclude_id
-        ):
-            continue
-        seen_loaded.add(ref.id)
-    for plug_id in extras:
-        if plug_id == exclude_id:
-            continue
-        if _plug_kind(plug_id) != "planspace":
-            continue
-        if plug_id in seen_loaded:
-            continue
-        extra_ref = PlugRef(
-            id=plug_id,
-            role="cross-lane-load",
-            injection="turn",
-            enabled=True,
-            auto_update=False,
-            source="extra",
-        )
-        existing_idx = index_by_id.get(plug_id)
-        if existing_idx is None:
-            out.append(extra_ref)
-            index_by_id[plug_id] = len(out) - 1
-        else:
-            out[existing_idx] = extra_ref
-        seen_loaded.add(plug_id)
-    return out
 
 
 def _expand_required_plugs(root: Path, plugs: list[PlugRef]) -> list[PlugRef]:
@@ -1944,39 +594,6 @@ def _select_active_planspace(
     if len(planspaces) == 1:
         return planspaces[0]
     return None
-
-
-def _load_planspace_sources(root: Path, ref: PlugRef) -> list[tuple[dict[str, Any], str]]:
-    out: list[tuple[dict[str, Any], str]] = []
-    plug_dir = _plug_dir(root, ref.id)
-    if plug_dir is None:
-        return out
-    manifest = _plug_manifest(root, ref.id)
-    if _plan_is_derived(manifest):
-        refresh_derived_plan(plug_dir)
-    for filename, kind, default_limit in (
-        ("STATUS.md", "status", None),
-        ("PLAN.md", "plan", 6000),
-    ):
-        injection = _injection_for(ref, manifest, filename, "turn")
-        if injection == "none":
-            continue
-        loaded = _read_context_source(
-            plug_dir / filename,
-            scope="contextspace",
-            kind=kind,
-            injection=injection,
-            context_root=root,
-            plug_id=ref.id,
-            max_chars=(
-                None
-                if filename == "STATUS.md"
-                else _max_chars_for(manifest, filename, default_limit)
-            ),
-        )
-        if loaded is not None:
-            out.append(loaded)
-    return out
 
 
 def _load_context_markdown_source(
@@ -2039,119 +656,6 @@ def _read_context_source(
     return source, text
 
 
-def _append_status_observation(path: Path, node: Node, text: str) -> None:
-    status = load_planspace_status(path)
-    apply_status_update(
-        status,
-        {
-            "target": "STATUS.md",
-            "operation": "append_body",
-            "policy": "auto",
-            "text": text,
-        },
-        node,
-    )
-    write_planspace_status(path, status)
-
-
-def _append_planspace_event(path: Path, event: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(event, ensure_ascii=False) + "\n")
-
-
-def _last_planspace_writer(events_path: Path) -> dict[str, Any]:
-    try:
-        lines = events_path.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return {"kind": "hand"}
-    for line in reversed(lines):
-        if not line.strip():
-            continue
-        try:
-            event = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if not isinstance(event, dict):
-            continue
-        node_id = _string_value(event.get("node_id"))
-        if node_id:
-            return {
-                "kind": "node",
-                "node_id": node_id,
-                "updated_at": event.get("created_at"),
-            }
-    return {"kind": "hand"}
-
-
-def _last_context_writer(project: Project) -> dict[str, Any]:
-    meta_path = Path(project.root_path) / ".miniclaw2" / "context.meta.json"
-    context_path = Path(project.root_path) / "CONTEXT.md"
-    try:
-        mtime = context_path.stat().st_mtime
-    except OSError:
-        mtime = None
-    try:
-        raw = json.loads(meta_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {"kind": "hand"}
-    if not isinstance(raw, dict):
-        return {"kind": "hand"}
-    updated_at = raw.get("updated_at")
-    source = _string_value(raw.get("source"))
-    if (
-        isinstance(updated_at, (int, float))
-        and isinstance(mtime, (int, float))
-        and mtime > float(updated_at) + 1.0
-    ):
-        return {"kind": "hand", "previous": source or "context-refresh"}
-    return {
-        "kind": "context-refresh",
-        "source": source or "refresh",
-        "updated_at": updated_at,
-    }
-
-
-def _write_status_delta_snapshot(
-    project: Project,
-    node: Node,
-    *,
-    planspace_id: str,
-    before: str,
-    after: str,
-    ops: list[dict[str, Any]],
-    store_root: Path | None,
-) -> None:
-    if not ops:
-        return
-    path = _status_delta_path(project.id, node.id, store_root=store_root)
-    payload = {
-        "planspace_id": planspace_id,
-        "before": before,
-        "after": after,
-        "ops": ops,
-        "applied_at": time.time(),
-    }
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp.replace(path)
-
-
-def _status_delta_path(
-    project_id: str,
-    node_id: str,
-    *,
-    store_root: Path | None,
-) -> Path:
-    if store_root is not None:
-        root = Path(store_root)
-    else:
-        base = os.environ.get("MINICLAW_HOME")
-        root = Path(base).expanduser() if base else Path.home() / ".miniclaw2"
-    return root / "projects" / project_id / "nodes" / node_id / "status-delta.json"
-
-
 def _write_yaml(path: Path, data: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
@@ -2191,37 +695,12 @@ def _write_text_if_missing(
     created.append(_display_path(path, root))
 
 
-def _touch_if_missing(path: Path, root: Path, created: list[str]) -> None:
-    if path.exists():
-        return
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.touch()
-    created.append(_display_path(path, root))
-
-
 def _project_title(project: Project, override: str | None = None) -> str:
     if isinstance(override, str) and override.strip():
         return override.strip()
     if project.name.strip():
         return project.name.strip()
     return Path(project.root_path).name or "Project"
-
-
-def _next_planspace_color(root: Path) -> str:
-    palette = ["indigo", "teal", "rose", "olive", "steel", "mauve"]
-    parent = root / "plugs" / "planspaces"
-    try:
-        count = len([p for p in parent.iterdir() if p.is_dir()])
-    except OSError:
-        count = 0
-    return palette[max(0, count - 1) % len(palette)]
-
-
-def _plan_is_derived(manifest: dict[str, Any]) -> bool:
-    write_policy = manifest.get("write_policy")
-    if not isinstance(write_policy, dict):
-        return False
-    return write_policy.get("PLAN.md") == "derived"
 
 
 def _plug_manifest(root: Path, plug_id: str) -> dict[str, Any]:
@@ -2263,15 +742,6 @@ def _plug_slug(plug_id: str) -> str:
 def _slugify(value: str) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", value.strip().lower()).strip("-")
     return slug or "project"
-
-
-def _unique_child_slug(parent: Path, slug: str) -> str:
-    candidate = slug
-    index = 2
-    while (parent / candidate).exists():
-        candidate = f"{slug}-{index}"
-        index += 1
-    return candidate
 
 
 def _unique_binding_slug(root: Path, slug: str) -> str:

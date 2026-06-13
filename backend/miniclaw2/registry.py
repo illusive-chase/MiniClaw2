@@ -1,11 +1,13 @@
 """ProjectRegistry — in-memory orchestration over the disk Store.
 
-The legacy "session" id maps 1:1 to a project id. Each user prompt
-becomes a new agent :class:`Node`. New nodes start with a fresh
-provider session by default; conversation continuation is explicit, not
-inherited from timeline adjacency.
+After the virtual-nodes redesign, gate nodes are gone — reviews are
+agents with ``category=review``. The registry no longer spawns passive
+gate nodes (the ``_advance_user_gate`` path is gone). Auto-commit op
+spawning is preserved.
 
-Within a project, only one node runs at a time (DESIGN §2.2).
+Scenario step expansion stays in for agent-only scenarios. Scenario
+steps whose ``kind == "gate"`` are no longer executable; the expander
+logs and halts the scenario when it encounters one.
 """
 
 from __future__ import annotations
@@ -14,17 +16,17 @@ import asyncio
 import logging
 import math
 from collections.abc import Awaitable, Callable
-from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from .contextspace import delete_project_contextspace
 from .domain import (
+    Category,
     Node,
     NodeKind,
     NodeState,
     Project,
 )
-from .contextspace import delete_project_contextspace, review_guidance_output_relpath
 from .language import normalize_preferred_language
 from .runner import NodeRunner
 from .store import Store
@@ -33,10 +35,6 @@ from .workspace import create_temporary_root, remove_temporary_root
 logger = logging.getLogger(__name__)
 
 
-_NO_GUIDANCE = (
-    "# Review handoff unavailable\n\n"
-    "_The previous agent did not write a review handoff._\n"
-)
 _UNSET: object = object()
 
 
@@ -81,7 +79,6 @@ class ProjectRegistry:
     def __init__(self, store: Store | None = None) -> None:
         self.store = store or Store()
         self._runtimes: dict[str, ProjectRuntime] = {}
-        # Load existing projects from disk so they survive a restart.
         for project in self.store.list_projects():
             self._runtimes[project.id] = ProjectRuntime(project)
 
@@ -344,16 +341,12 @@ class ProjectRegistry:
         prompt: str,
         *,
         resume_from_node_id: str | None = None,
-        needs_review: bool | None = None,
+        needs_review: bool | None = None,  # accepted for wire compatibility; ignored
         extra_planspace_loads: list[str] | None = None,
         scenario_step_id: str | None = None,
     ) -> NodeRunner | None:
-        """Create a new agent node and launch its runner as a task.
-
-        Returns the runner, or ``None`` if the project is unknown, a
-        node is already running, or a requested resume source is
-        invalid.
-        """
+        """Create a new agent node and launch its runner as a task."""
+        del needs_review  # gate-spawn removed; flag no longer affects runtime
         rt = self._runtimes.get(pid)
         if rt is None:
             return None
@@ -386,52 +379,15 @@ class ProjectRegistry:
         node = Node(
             project_id=pid,
             kind=NodeKind.AGENT,
+            category=Category.REGULAR,
             state=NodeState.QUEUED,
             parent_node_id=resume_source.id if resume_source else None,
             provider=resume_source.provider if resume_source else rt.project.provider,
             provider_session_id=resume_source.provider_session_id if resume_source else None,
             sdk_session_id=resume_source.sdk_session_id if resume_source else None,
-            requires_review=bool(needs_review),
             prompt=prompt,
             scenario_step_id=scenario_step_id,
             settings_snapshot=settings_snapshot,
-        )
-        self.store.create_node(node)
-
-        runner = NodeRunner(node, rt.project, self.store, rt.broadcast)
-        rt.runner = runner
-        rt.runner_task = asyncio.create_task(runner.run())
-        rt.runner_task.add_done_callback(lambda _t, _rt=rt: self._on_runner_done(_rt))
-        return runner
-
-    def start_gate_node(
-        self,
-        pid: str,
-        brief: str,
-        *,
-        scenario_step_id: str | None = None,
-        parent_node_id: str | None = None,
-    ) -> NodeRunner | None:
-        """Create a passive gate node and launch its runner.
-
-        Gates are pure human checkpoints — the runner skips any provider
-        call and goes straight to ``awaiting_review`` with ``brief`` as
-        the rendered contract.
-        """
-        rt = self._runtimes.get(pid)
-        if rt is None:
-            return None
-        if rt.is_running():
-            return None
-
-        node = Node(
-            project_id=pid,
-            kind=NodeKind.GATE,
-            state=NodeState.QUEUED,
-            provider=rt.project.provider,
-            contract=brief,
-            scenario_step_id=scenario_step_id,
-            parent_node_id=parent_node_id,
         )
         self.store.create_node(node)
 
@@ -450,7 +406,7 @@ class ProjectRegistry:
             return
         spawned_op = False
         if (
-            finished_node.kind in (NodeKind.AGENT, NodeKind.GATE)
+            finished_node.kind is NodeKind.AGENT
             and finished_node.state is NodeState.DONE
             and bool(rt.project.settings_override.get("auto_commit"))
         ):
@@ -458,7 +414,6 @@ class ProjectRegistry:
             spawned_op = True
         if not spawned_op:
             self._advance_scenario_step(rt, finished_node)
-            self._advance_user_gate(rt, finished_node)
 
     def _spawn_op_commit(self, rt: ProjectRuntime, agent_node: Node) -> None:
         op_node = Node(
@@ -468,6 +423,7 @@ class ProjectRegistry:
             state=NodeState.QUEUED,
             parent_node_id=agent_node.id,
             provider=agent_node.provider,
+            planspace_id=agent_node.planspace_id,
         )
         self.store.create_node(op_node)
 
@@ -506,23 +462,16 @@ class ProjectRegistry:
         rt: ProjectRuntime,
         finished_node: Node,
     ) -> None:
-        """Advance the project's scenario cursor when a step finishes.
+        """Advance the project's scenario cursor when an agent step finishes.
 
-        Called after an agent/gate scenario step (or its auto-commit op
-        child) terminates. Records the step in
-        ``project.scenario_step_history`` and, if the step succeeded and
-        the scenario has more steps, enqueues the next one.
-
-        Non-DONE terminal states halt the scenario — the Verify card
-        still appears since all nodes are terminal, but no further
-        steps fire.
+        Scenario step kinds other than ``agent`` (notably the legacy
+        ``gate`` kind) are no longer supported; encountering one halts
+        the scenario with a logged warning.
         """
         project = rt.project
         if not project.scenario_name:
             return
 
-        # If we just finished an auto-commit op, route to its parent
-        # scenario step. Ops themselves are not scenario steps.
         step_node = finished_node
         if finished_node.kind is NodeKind.OP and finished_node.parent_node_id:
             parent = self.store.load_node(project.id, finished_node.parent_node_id)
@@ -534,8 +483,6 @@ class ProjectRegistry:
         if not step_node.scenario_step_id:
             return
 
-        # Avoid double-recording if the same step is reported twice
-        # (e.g. agent->op both arrive here).
         history = list(project.scenario_step_history)
         if any(h.get("step_id") == step_node.scenario_step_id for h in history):
             already_recorded = True
@@ -546,15 +493,10 @@ class ProjectRegistry:
                 "node_id": step_node.id,
                 "terminal_state": step_node.state.value,
             }
-            # Gate completions carry a derived decision so downstream
-            # `when:` predicates can branch on the human's response.
-            if step_node.kind is NodeKind.GATE and step_node.review_outcome:
-                entry["decision"] = step_node.review_outcome
             history.append(entry)
             project.scenario_step_history = history
             self.store.update_project(project)
 
-        # Halt the scenario on non-DONE terminal states.
         if step_node.state is not NodeState.DONE:
             return
 
@@ -576,14 +518,9 @@ class ProjectRegistry:
         if step_idx is None:
             return
 
-        # Don't double-launch if the next step was already enqueued earlier
-        # (e.g. recovered state on restart).
         if already_recorded:
             return
 
-        # Walk forward, skipping steps whose `when:` predicate doesn't
-        # match the recorded gate decision. This keeps the YAML linear
-        # (no DAG) while supporting reject-driven branches.
         next_idx = step_idx + 1
         while next_idx < len(scenario.nodes):
             cand = scenario.nodes[next_idx]
@@ -599,18 +536,14 @@ class ProjectRegistry:
             self.start_node(
                 project.id,
                 next_spec.prompt,
-                needs_review=next_spec.needs_review,
                 scenario_step_id=next_spec.id,
                 resume_from_node_id=resume_node_id,
             )
-        elif next_spec.kind == "gate":
-            brief = self._load_gate_brief(project, scenario, next_spec)
-            parent_node_id = self._resolve_brief_source_node_id(project, next_spec)
-            self.start_gate_node(
-                project.id,
-                brief,
-                scenario_step_id=next_spec.id,
-                parent_node_id=parent_node_id,
+        else:
+            logger.warning(
+                "scenario step %s has unsupported kind %r — halting scenario",
+                next_spec.id,
+                next_spec.kind,
             )
 
     def _step_when_matches(self, project: Project, spec: Any) -> bool:
@@ -631,109 +564,6 @@ class ProjectRegistry:
                 node_id = h.get("node_id")
                 return node_id if isinstance(node_id, str) else None
         return None
-
-    def _load_gate_brief(
-        self,
-        project: Project,
-        scenario: Any,
-        next_spec: Any,
-    ) -> str:
-        """Read the brief markdown the previous agent step produced.
-
-        Falls back to a placeholder when the source step or brief file
-        cannot be resolved so the gate still renders.
-        """
-        if not next_spec.brief_from:
-            return next_spec.contract or _NO_GUIDANCE
-        src_node_id = self._resolve_brief_source_node_id(project, next_spec)
-        if not src_node_id:
-            return f"_(brief source step `{next_spec.brief_from}` not found)_\n"
-        src_node = self.store.load_node(project.id, src_node_id)
-        if src_node is None:
-            return f"_(brief source node `{src_node_id}` missing on disk)_\n"
-        return self._read_review_guidance_from_node(project, src_node)
-
-    def _resolve_brief_source_node_id(
-        self,
-        project: Project,
-        next_spec: Any,
-    ) -> str | None:
-        if not getattr(next_spec, "brief_from", ""):
-            return None
-        for h in project.scenario_step_history:
-            if h.get("step_id") == next_spec.brief_from:
-                node_id = h.get("node_id")
-                return node_id if isinstance(node_id, str) else None
-        return None
-
-    def _read_review_guidance_from_node(self, project: Project, src_node: Node) -> str:
-        guidance = self._read_project_rel_text(
-            project,
-            review_guidance_output_relpath(src_node),
-        )
-        if guidance is None:
-            return (
-                f"_(review handoff file not written: "
-                f"`{review_guidance_output_relpath(src_node)}`)_\n"
-            )
-        return guidance.strip() and guidance or _NO_GUIDANCE
-
-    def _read_project_rel_text(self, project: Project, rel_path: str) -> str | None:
-        rel = Path(rel_path)
-        if rel.is_absolute() or any(part == ".." for part in rel.parts):
-            return None
-        root = Path(project.root_path).resolve()
-        target = (root / rel).resolve()
-        try:
-            target.relative_to(root)
-        except ValueError:
-            return None
-        if not target.exists():
-            return None
-        try:
-            return target.read_text(encoding="utf-8")
-        except OSError:
-            return None
-
-    def _advance_user_gate(
-        self,
-        rt: ProjectRuntime,
-        finished_node: Node,
-    ) -> None:
-        """Spawn a follow-up gate for a user-launched review-required agent.
-
-        Mirrors the scenario expander's gate handoff: when an agent finishes
-        DONE with ``requires_review`` and was not part of a scenario, read its
-        transient review guidance and start a passive gate whose contract is
-        that guidance. With auto_commit on, the source is the parent of the
-        just-finished commit op.
-        """
-        project = rt.project
-        source = finished_node
-        if finished_node.kind is NodeKind.OP and finished_node.parent_node_id:
-            parent = self.store.load_node(project.id, finished_node.parent_node_id)
-            if parent is None:
-                return
-            source = parent
-        if source.kind is not NodeKind.AGENT:
-            return
-        if source.scenario_step_id:
-            return
-        if not source.requires_review:
-            return
-        if source.state is not NodeState.DONE:
-            return
-        # Avoid double-spawn: if a gate already references this node as
-        # parent, the handoff already happened.
-        for existing in self.store.list_nodes(project.id):
-            if (
-                existing.kind is NodeKind.GATE
-                and existing.parent_node_id == source.id
-            ):
-                return
-
-        brief = self._read_review_guidance_from_node(project, source)
-        self.start_gate_node(project.id, brief, parent_node_id=source.id)
 
     def interrupt(self, pid: str) -> bool:
         rt = self._runtimes.get(pid)

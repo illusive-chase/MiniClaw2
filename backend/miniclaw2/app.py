@@ -1,9 +1,12 @@
 """FastAPI app: session-shaped REST + WebSocket gateway over ProjectRegistry.
 
-The wire protocol is intentionally unchanged from before the Phase 0
-refactor: a "session" id is a project id; each ``user_message`` spawns
-a new agent node. Conversation continuation is explicit via an
-optional resume source, not inherited from timeline adjacency.
+After the virtual-nodes redesign, the planspace-status / planspace-bootstrap
+/ status-delta endpoints are gone. The frontend pass (step 10) will
+catch up; for now those routes return 404 / are absent.
+
+The wire protocol is otherwise unchanged: a "session" id is a project
+id; each ``user_message`` spawns a new agent node; resume continuation
+is explicit via an optional resume source.
 """
 
 from __future__ import annotations
@@ -11,9 +14,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import re
 from collections.abc import Awaitable, Callable
-from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
@@ -21,15 +22,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from .contextspace import (
-    add_planspace_to_binding,
-    apply_planspace_status_ops,
-    bootstrap_project_contextspace,
     describe_project_contextspace,
-    ensure_project_binding,
     load_context_bundle_for_node,
-    load_node_status_delta,
-    load_planspace_view,
-    read_project_file_role,
+    read_project_context,
 )
 from .context_refresh import cancel_context_task, context_refresh_status, start_context_task
 from .domain import Node
@@ -79,23 +74,6 @@ class UpdateSessionContextRequest(BaseModel):
     active_planspace_id: str | None = None
 
 
-class BootstrapSessionContextRequest(BaseModel):
-    title: str | None = None
-    planspace_slug: str | None = None
-    binding_slug: str | None = None
-
-
-class CreatePlanspaceRequest(BaseModel):
-    user_seed: str
-    needs_review: bool = False
-
-
-class CreatePlanspaceResponse(BaseModel):
-    planspace_id: str
-    binding_id: str
-    node_id: str
-
-
 class SessionInfo(BaseModel):
     id: str
     created_at: float
@@ -106,14 +84,12 @@ class SessionInfo(BaseModel):
     scenario_name: str | None = None
     name: str = ""
     project_context_binding_id: str | None = None
-    # Opaque per-node canvas positions persisted from the frontend (PRD §5.1).
     layout_hints: dict[str, dict[str, float]] = Field(default_factory=dict)
     layout_viewport: dict[str, float] | None = None
     planspace_view: dict[str, dict[str, bool]] = Field(default_factory=dict)
 
 
 class UpdateLayoutHintsRequest(BaseModel):
-    # Merge semantics: `updates` overwrites per-id; `remove` deletes ids.
     updates: dict[str, dict[str, float]] = Field(default_factory=dict)
     remove: list[str] = Field(default_factory=list)
     layout_viewport: dict[str, float] | None = None
@@ -153,10 +129,6 @@ class ScenarioDetail(BaseModel):
 
 class ScenarioRunRequest(BaseModel):
     provider: str
-
-
-class PlanspaceStatusOpsRequest(BaseModel):
-    operations: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class VerifyResponse(BaseModel):
@@ -199,10 +171,7 @@ def create_app() -> FastAPI:
 
     @app.get("/sessions", response_model=list[SessionInfo])
     def list_sessions() -> list[SessionInfo]:
-        return [
-            _session_info(registry, p)
-            for p in registry.list_projects()
-        ]
+        return [_session_info(registry, p) for p in registry.list_projects()]
 
     @app.get("/sessions/{sid}", response_model=SessionInfo)
     def get_session(sid: str) -> SessionInfo:
@@ -287,107 +256,14 @@ def create_app() -> FastAPI:
             raise HTTPException(404, "session not found")
         return describe_project_contextspace(project, store_root=registry.store.root)
 
-    @app.post("/sessions/{sid}/contextspace/bootstrap", response_model=dict[str, Any])
-    def bootstrap_session_contextspace(
-        sid: str,
-        req: BootstrapSessionContextRequest,
-    ) -> dict[str, Any]:
-        project = registry.get_project(sid)
-        if project is None:
-            raise HTTPException(404, "session not found")
-        result = bootstrap_project_contextspace(
-            project,
-            store_root=registry.store.root,
-            title=req.title,
-            planspace_slug=req.planspace_slug,
-            binding_slug=req.binding_slug,
-        )
-        project = registry.update_project_context(
-            sid,
-            project_context_binding_id=result["binding_id"],
-            active_planspace_id=result["planspace_id"],
-        )
-        if project is None:
-            raise HTTPException(404, "session not found")
-        response = describe_project_contextspace(project, store_root=registry.store.root)
-        response["bootstrap"] = result
-        return response
-
-    @app.post("/sessions/{sid}/planspaces", response_model=CreatePlanspaceResponse)
-    async def create_planspace(
-        sid: str,
-        req: CreatePlanspaceRequest,
-    ) -> CreatePlanspaceResponse:
-        project = registry.get_project(sid)
-        if project is None:
-            raise HTTPException(404, "session not found")
-        user_seed = req.user_seed.strip()
-        if not user_seed:
-            raise HTTPException(400, "user_seed is required")
-        if registry.is_running(sid):
-            raise HTTPException(409, "turn in progress")
-        if _context_task_running(project.id):
-            raise HTTPException(409, "context refresh in progress")
-        created: list[str] = []
-        try:
-            binding = ensure_project_binding(
-                project,
-                store_root=registry.store.root,
-                created=created,
-            )
-            title = _direction_title_from_seed(user_seed)
-            planspace_id = add_planspace_to_binding(
-                binding.id,
-                title=title,
-                planspace_slug=title,
-                store_root=registry.store.root,
-                created=created,
-            )
-        except ValueError as exc:
-            raise HTTPException(400, str(exc)) from exc
-        except RuntimeError as exc:
-            raise HTTPException(500, str(exc)) from exc
-
-        updated = registry.update_project_context(
-            sid,
-            project_context_binding_id=binding.id,
-            active_planspace_id=planspace_id,
-        )
-        if updated is None:
-            raise HTTPException(404, "session not found")
-
-        runner = registry.start_node(
-            sid,
-            _concierge_bootstrap_prompt(user_seed),
-            needs_review=req.needs_review,
-        )
-        if runner is None:
-            raise HTTPException(409, "turn in progress or invalid project")
-        return CreatePlanspaceResponse(
-            planspace_id=planspace_id,
-            binding_id=binding.id,
-            node_id=runner.node.id,
-        )
-
     @app.get("/sessions/{sid}/files", response_model=dict[str, Any])
-    def get_session_file(
-        sid: str,
-        role: str,
-        planspace_id: str | None = None,
-    ) -> dict[str, Any]:
+    def get_session_file(sid: str, role: str) -> dict[str, Any]:
         project = registry.get_project(sid)
         if project is None:
             raise HTTPException(404, "session not found")
-        if role not in {"status", "plan", "context"}:
-            raise HTTPException(400, "role must be status, plan, or context")
-        if role in {"status", "plan"} and not planspace_id:
-            raise HTTPException(400, "planspace_id is required for this role")
-        result = read_project_file_role(
-            project,
-            role=role,
-            planspace_id=planspace_id,
-            store_root=registry.store.root,
-        )
+        if role != "context":
+            raise HTTPException(400, "role must be 'context'")
+        result = read_project_context(project)
         if result is None:
             raise HTTPException(404, "file not found")
         return result
@@ -466,50 +342,16 @@ def create_app() -> FastAPI:
         diff = node_diff(project.root_path, node.commit_before, node.commit_after)
         return NodeDiffResponse(kind=diff.kind, text=diff.text, error=diff.error)
 
-    @app.get("/sessions/{sid}/nodes/{nid}/status-delta", response_model=dict[str, Any])
-    def get_node_status_delta(sid: str, nid: str) -> dict[str, Any]:
+    @app.get("/sessions/{sid}/nodes/{nid}/preview", response_model=dict[str, Any])
+    def get_node_preview(sid: str, nid: str) -> dict[str, Any]:
         if registry.get_project(sid) is None:
             raise HTTPException(404, "session not found")
         if registry.get_node(sid, nid) is None:
             raise HTTPException(404, "node not found")
-        delta = load_node_status_delta(sid, nid, store_root=registry.store.root)
-        if delta is None:
-            raise HTTPException(404, "status delta not found")
-        return delta
-
-    @app.get(
-        "/sessions/{sid}/planspaces/{planspace_id}/status",
-        response_model=dict[str, Any],
-    )
-    def get_planspace_status(sid: str, planspace_id: str) -> dict[str, Any]:
-        if registry.get_project(sid) is None:
-            raise HTTPException(404, "session not found")
-        view = load_planspace_view(planspace_id, store_root=registry.store.root)
-        if view is None:
-            raise HTTPException(404, "planspace not found")
-        return view
-
-    @app.patch(
-        "/sessions/{sid}/planspaces/{planspace_id}/status",
-        response_model=dict[str, Any],
-    )
-    def patch_planspace_status(
-        sid: str,
-        planspace_id: str,
-        req: PlanspaceStatusOpsRequest,
-    ) -> dict[str, Any]:
-        if registry.get_project(sid) is None:
-            raise HTTPException(404, "session not found")
-        view = apply_planspace_status_ops(
-            planspace_id,
-            req.operations,
-            store_root=registry.store.root,
-        )
-        if view is None:
-            raise HTTPException(404, "planspace not found")
-        if view.get("errors"):
-            raise HTTPException(400, "; ".join(view["errors"]))
-        return view
+        text = registry.store.read_node_preview(sid, nid)
+        if text is None:
+            raise HTTPException(404, "preview not yet written")
+        return {"text": text}
 
     @app.get("/sessions/{sid}/nodes/{nid}/context-bundle", response_model=dict[str, Any])
     def get_node_context_bundle(sid: str, nid: str) -> dict[str, Any]:
@@ -538,8 +380,6 @@ def create_app() -> FastAPI:
 
     @app.post("/scenarios/{name}/run", response_model=SessionInfo)
     async def run_scenario(name: str, req: ScenarioRunRequest) -> SessionInfo:
-        # async so that registry.start_node's asyncio.create_task sees an
-        # active event loop (the runner runs concurrently with the request).
         try:
             project, _ = launch_scenario(name, req.provider, registry)
         except ScenarioError as exc:
@@ -558,8 +398,6 @@ def create_app() -> FastAPI:
         if not project.scenario_name:
             raise HTTPException(400, "project has no associated scenario")
         try:
-            # run_verify blocks on subprocess.run; offload so the event loop
-            # stays responsive for WS observers.
             result = await asyncio.to_thread(run_verify, project)
         except ScenarioError as exc:
             raise HTTPException(404, str(exc)) from exc
@@ -660,7 +498,7 @@ def create_app() -> FastAPI:
 
                 elif msg_type == "interrupt":
                     await mark_live_ready()
-                    Interrupt(**raw)  # validate shape
+                    Interrupt(**raw)
                     registry.interrupt(sid)
 
                 elif msg_type == "replay_request":
@@ -693,9 +531,6 @@ def create_app() -> FastAPI:
         except WebSocketDisconnect:
             pass
         finally:
-            # Don't cancel the runner on WS disconnect — it should finish
-            # and persist final state. A reconnect attaches a fresh observer
-            # and uses replay_request to fill any gap from the JSONL log.
             registry.detach_observer(sid, observer_token)
 
     return app
@@ -730,35 +565,6 @@ async def _send(
 
 def _context_task_running(project_id: str) -> bool:
     return bool(context_refresh_status(project_id).get("running"))
-
-
-def _direction_title_from_seed(user_seed: str) -> str:
-    first_line = next((line.strip() for line in user_seed.splitlines() if line.strip()), "")
-    text = re.sub(r"\s+", " ", first_line).strip()
-    if not text:
-        return "New direction"
-    words = text.split(" ")
-    title = " ".join(words[:8]).strip(" .,:;")
-    return title[:72] or "New direction"
-
-
-def _concierge_bootstrap_prompt(user_seed: str) -> str:
-    prompt_path = Path(__file__).with_name("prompts") / "concierge_bootstrap.md"
-    try:
-        template = prompt_path.read_text(encoding="utf-8")
-    except OSError:
-        template = (
-            "# Direction concierge bootstrap\n\n"
-            "The user is starting a new direction. Read <user_seed>, infer the "
-            "goal, current state, initial open questions, and any decisions. "
-            "Use the standard ask-user inline gate only for load-bearing facts "
-            "you cannot infer. Before finishing, write the required "
-            "planspace-update JSON artifact with STATUS.md operations: "
-            "rewrite_current_state, add_open_question, add_decision, "
-            "add_out_of_scope, or append_body.\n\n"
-            "<user_seed>\n{user_seed}\n</user_seed>\n"
-        )
-    return template.replace("{user_seed}", user_seed.strip())
 
 
 app = create_app()

@@ -1,9 +1,26 @@
-"""NodeRunner — provider-neutral agent node state machine."""
+"""NodeRunner — provider-neutral agent node state machine.
+
+After the virtual-nodes redesign, the runner:
+
+  - Materializes the active lane to ``.miniclaw2/graph/lanes/<lane>/``
+    before launching the provider (read by the agent via native
+    ``Read``).
+  - Snapshots the lane's filesystem state for later walk-diff.
+  - Runs the provider exactly as before.
+  - At terminal, walk-diffs the lane against the pre-launch snapshot
+    via :func:`reap.reap_lane`, validates preview writes, persists new
+    or mutated virtuals atomically.
+  - Writes the running node's own ``preview.json`` to the durable node
+    store (or a framework stub if reap fails).
+
+Inline gates (permission / ask_user / plan_approval) are unchanged. The
+passive-gate / checkpoint-review path is gone — reviews are now agents
+with ``category=review`` (a later slice).
+"""
 
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import time
 from collections.abc import Awaitable, Callable
@@ -13,31 +30,17 @@ from uuid import uuid4
 
 from pydantic import BaseModel
 
-from .contextspace import (
-    apply_planspace_update_artifact,
-    commit_gate_reviewed_planspace_update,
-    compose_context_bundle,
-    planspace_update_filter_contract,
-    planspace_update_launch_contract,
-    planspace_update_output_relpath,
-    review_guidance_launch_contract,
-    review_guidance_output_relpath,
-    stage_planspace_update_artifact,
-)
+from .contextspace import compose_context_bundle
 from .domain import (
-    AcceptanceState,
     GateKind,
     GateState,
-    GateSubtype,
     HumanGate,
     Node,
     NodeKind,
     NodeState,
     Project,
     TokenUsage,
-    VerdictSource,
 )
-from .paths import validate_project_relative_path
 from .events import (
     ErrorEvent,
     InteractionRequest,
@@ -48,9 +51,12 @@ from .events import (
 )
 from .git_state import commit_all, git_head
 from .language import language_launch_instruction, project_preferred_language
+from .materialize import materialize_active_lane, snapshot_lane
+from .preview import render_executed_preview
 from .providers import AgentProvider, AgentProviderContext, AgentProviderEvent, GateRequest
 from .providers.claude import ClaudeProvider
 from .providers.codex import CodexProvider
+from .reap import reap_lane
 from .store import Store
 
 logger = logging.getLogger(__name__)
@@ -75,6 +81,8 @@ class NodeRunner:
         self._gates: dict[str, asyncio.Future[dict[str, Any]]] = {}
         self._gate_records: dict[str, HumanGate] = {}
         self._provider: AgentProvider | None = None
+        self._lane_root: Path | None = None
+        self._pre_snapshot: dict[str, str] = {}
 
     # ---- public surface (used by the WS layer via ProjectRuntime) ----
 
@@ -120,8 +128,6 @@ class NodeRunner:
     async def run(self) -> None:
         if self.node.kind is NodeKind.OP:
             await self._run_op()
-        elif self.node.kind is NodeKind.GATE:
-            await self._run_passive_gate()
         else:
             await self._run_agent()
 
@@ -130,11 +136,9 @@ class NodeRunner:
         try:
             context_bundle = self._snapshot_context_bundle()
             self._snapshot_launch_settings(context_bundle)
+            self._materialize_lane()
             launch_instructions = _compose_launch_instructions(
                 context_bundle.turn_text,
-                planspace_update_launch_contract(self.project, self.node, context_bundle),
-                review_guidance_launch_contract(self.node),
-                planspace_update_filter_contract(self.node, context_bundle),
                 language_launch_instruction(project_preferred_language(self.project)),
             )
             self._transition(NodeState.RUNNING, started=True)
@@ -185,8 +189,8 @@ class NodeRunner:
                 if error_msg is not None:
                     self.node.error = error_msg
                 self.node.commit_after = git_head(self.project.root_path)
+                final_state = self._reap_and_finalize(final_state)
                 self._transition(final_state, finished=True)
-                self._finish_planspace_update(final_state)
                 await self._emit_node_updated()
                 await self._emit(TurnDone())
         except asyncio.CancelledError:
@@ -196,8 +200,8 @@ class NodeRunner:
             error_msg = f"Unexpected runner error: {exc}"
             self.node.error = error_msg
             self.node.commit_after = git_head(self.project.root_path)
+            self._write_stub_preview(NodeState.ERROR, reason=error_msg)
             self._transition(NodeState.ERROR, started=True, finished=True)
-            self._finish_planspace_update(NodeState.ERROR)
             await self._emit(
                 NodeStarted(
                     node_id=self.node.id,
@@ -210,50 +214,13 @@ class NodeRunner:
             await self._emit_node_updated()
             await self._emit(TurnDone())
 
-    async def _run_passive_gate(self) -> None:
-        """Run a passive gate node — no provider, straight to awaiting-review.
-
-        The gate's ``contract`` is the review handoff the human reads
-        (typically the previous agent's transient ``review-guidance.md``).
-        """
-        self.node.commit_before = git_head(self.project.root_path)
-        context_bundle = self._snapshot_context_bundle()
-        self._snapshot_launch_settings(context_bundle)
-        self._transition(NodeState.RUNNING, started=True)
-        await self._emit(
-            NodeStarted(
-                node_id=self.node.id,
-                parent_node_id=self.node.parent_node_id,
-                kind=self.node.kind.value,
-            )
-        )
-        await self._emit_node_updated()
-
-        final_state: NodeState = NodeState.DONE
-        error_msg: str | None = None
-
-        try:
-            try:
-                await self._handle_checkpoint_review()
-            except asyncio.CancelledError:
-                final_state = NodeState.CANCELLED
-            except Exception as exc:  # noqa: BLE001
-                logger.exception("checkpoint review failed")
-                error_msg = f"checkpoint review error: {exc}"
-                final_state = NodeState.ERROR
-                await self._emit(ErrorEvent(message=error_msg))
-        finally:
-            self._resolve_open_gates()
-            if error_msg is not None:
-                self.node.error = error_msg
-            self.node.commit_after = git_head(self.project.root_path)
-            self._transition(final_state, finished=True)
-            self._finish_planspace_update(final_state)
-            await self._emit_node_updated()
-            await self._emit(TurnDone())
-
     async def _run_op(self) -> None:
-        """Run a non-provider op node (currently only ``commit``)."""
+        """Run a non-provider op node (currently only ``commit``).
+
+        Ops do not participate in the reap pipeline. The op runner
+        writes its own ``preview.json`` to the durable store directly so
+        the lane projection has a complete record.
+        """
         self.node.commit_before = git_head(self.project.root_path)
         context_bundle = self._snapshot_context_bundle()
         self._snapshot_launch_settings(context_bundle)
@@ -293,15 +260,113 @@ class NodeRunner:
             error_msg = f"Unexpected op runner error: {exc}"
             final_state = NodeState.ERROR
             await self._emit(ErrorEvent(message=error_msg))
+        if error_msg is not None:
+            self.node.error = error_msg
+        if self.node.commit_after is None:
+            self.node.commit_after = git_head(self.project.root_path)
+        self._write_op_preview(final_state)
+        self._transition(final_state, finished=True)
+        await self._emit_node_updated()
+        await self._emit(TurnDone())
+
+    # ---- materialization + reap ----
+
+    def _materialize_lane(self) -> None:
+        lane_id = self.node.planspace_id or ""
+        if not lane_id:
+            self._lane_root = None
+            self._pre_snapshot = {}
+            return
+        self._lane_root = materialize_active_lane(self.project, lane_id, self.store)
+        self._pre_snapshot = snapshot_lane(self._lane_root)
+
+    def _append_error(self, reason: str) -> None:
+        self.node.error = (self.node.error + "\n" if self.node.error else "") + reason
+
+    def _reap_and_finalize(self, provider_final_state: NodeState) -> NodeState:
+        """Run reap (when applicable) and persist the node's own preview.
+
+        Returns the effective terminal state. Cancelled / error runs
+        skip reap entirely — virtual writes from failed sessions are
+        discarded.
+        """
+        if provider_final_state is not NodeState.DONE or self._lane_root is None:
+            self._write_stub_preview(provider_final_state)
+            return provider_final_state
+        try:
+            result = reap_lane(
+                self.project, self.node, self._lane_root, self._pre_snapshot, self.store
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("reap pipeline raised")
+            reason = f"reap pipeline error: {exc}"
+            self._append_error(reason)
+            self._write_stub_preview(NodeState.ERROR, reason=reason)
+            return NodeState.ERROR
+        if result.fatal:
+            reason = "; ".join(result.rejection_reasons)
+            self._append_error(f"Reap fatal: {reason}")
+            self._write_stub_preview(NodeState.ERROR, reason=reason)
+            return NodeState.ERROR
+        if not result.own_preview_ok:
+            reason = "; ".join(result.rejection_reasons)
+            self._append_error(f"Missing own preview: {reason}")
+            self._write_stub_preview(NodeState.ERROR, reason=reason)
+            return NodeState.ERROR
+        # Accepted. Promote the agent's own preview into the durable store.
+        own_path = self._lane_root / "nodes" / self.node.id / "preview.json"
+        try:
+            text = own_path.read_text(encoding="utf-8")
+            self.store.write_node_preview(self.project.id, self.node.id, text)
+        except OSError:
+            logger.exception("failed to persist own preview to durable store")
+        # Emit updates for new and mutated virtuals so the canvas refreshes.
+        for virtual in result.new_virtuals + result.modified_virtuals:
+            self.store.update_node(virtual)
+        return provider_final_state
+
+    def _persist_executed_preview(
+        self,
+        final_state: NodeState,
+        *,
+        motivation: str,
+        summary: str,
+        next_implications: str,
+    ) -> None:
+        original_state = self.node.state
+        if final_state not in (NodeState.DONE, NodeState.ERROR, NodeState.CANCELLED):
+            final_state = NodeState.ERROR
+        self.node.state = final_state
+        try:
+            text = render_executed_preview(
+                self.node,
+                motivation=motivation,
+                summary=summary,
+                next_implications=next_implications,
+            )
+            self.store.write_node_preview(self.project.id, self.node.id, text)
+        except Exception:  # noqa: BLE001
+            logger.exception("failed to write preview")
         finally:
-            if error_msg is not None:
-                self.node.error = error_msg
-            if self.node.commit_after is None:
-                self.node.commit_after = git_head(self.project.root_path)
-            self._transition(final_state, finished=True)
-            self._finish_planspace_update(final_state)
-            await self._emit_node_updated()
-            await self._emit(TurnDone())
+            self.node.state = original_state
+
+    def _write_stub_preview(self, final_state: NodeState, *, reason: str = "") -> None:
+        self._persist_executed_preview(
+            final_state,
+            motivation=self.node.prompt[:200] if self.node.prompt else "(no motivation recorded)",
+            summary=reason or "(framework stub — agent did not write its own preview)",
+            next_implications="(framework stub — agent did not record next implications)",
+        )
+
+    def _write_op_preview(self, final_state: NodeState) -> None:
+        self._persist_executed_preview(
+            final_state,
+            motivation=f"Auto-commit op for parent {self.node.parent_node_id or 'unknown'}",
+            summary=self.node.summary or self.node.error or "op completed",
+            next_implications="(commit op — completes the lane's filesystem record)",
+        )
+
+    # ---- bundle + settings snapshots ----
 
     def _snapshot_context_bundle(self):
         bundle = compose_context_bundle(
@@ -321,7 +386,6 @@ class NodeRunner:
             for source in bundle.sources
             if source.get("path")
         ]
-        # Backward compatibility: keep this field scoped to root CONTEXT.md.
         self.node.system_context_snapshot = bundle.project_context
         self.store.update_node(self.node)
         return bundle
@@ -330,7 +394,6 @@ class NodeRunner:
         snapshot: dict[str, Any] = dict(self.project.settings_override)
         snapshot["cwd"] = self.project.root_path
         snapshot["provider"] = self.node.provider or self.project.provider
-        snapshot["requires_review"] = self.node.requires_review
         project_binding_id = (
             getattr(context_bundle, "project_binding_id", None)
             if context_bundle is not None
@@ -341,66 +404,19 @@ class NodeRunner:
             if context_bundle is not None
             else None
         )
-        active_planspace_auto_update = (
-            bool(getattr(context_bundle, "active_planspace_auto_update", False))
-            if context_bundle is not None
-            else False
-        )
         if project_binding_id:
             snapshot["project_context_binding_id"] = project_binding_id
         if active_planspace_id:
             self.node.planspace_id = active_planspace_id
             snapshot["active_planspace_id"] = active_planspace_id
-        if active_planspace_id and active_planspace_auto_update:
-            snapshot["planspace_update_output_path"] = planspace_update_output_relpath(self.node)
-        if self.node.requires_review:
-            snapshot["review_guidance_output_path"] = review_guidance_output_relpath(self.node)
         if self.node.context_bundle_id:
             snapshot["context_bundle_id"] = self.node.context_bundle_id
         preferred_language = project_preferred_language(self.project)
         if preferred_language:
             snapshot["preferred_language"] = preferred_language
+        if self.node.category is not None:
+            snapshot["category"] = self.node.category.value
         self.node.settings_snapshot = snapshot
-
-    def _finish_planspace_update(self, final_state: NodeState) -> None:
-        if self.node.kind is not NodeKind.AGENT:
-            return
-        if self.node.requires_review and final_state is NodeState.DONE:
-            self._stage_planspace_update_artifact()
-            return
-        self._apply_planspace_update_artifact()
-
-    def _apply_planspace_update_artifact(self) -> None:
-        try:
-            result = apply_planspace_update_artifact(
-                self.project,
-                self.node,
-                store_root=self.store.root,
-            )
-        except Exception:  # noqa: BLE001
-            logger.exception("failed to apply planspace update")
-            return
-        if result.get("planspace_id"):
-            snapshot = dict(self.node.settings_snapshot)
-            snapshot["planspace_update"] = result
-            self.node.settings_snapshot = snapshot
-            self.store.update_node(self.node)
-
-    def _stage_planspace_update_artifact(self) -> None:
-        try:
-            result = stage_planspace_update_artifact(
-                self.project,
-                self.node,
-                store_root=self.store.root,
-            )
-        except Exception:  # noqa: BLE001
-            logger.exception("failed to stage planspace update")
-            return
-        if result.get("planspace_id"):
-            snapshot = dict(self.node.settings_snapshot)
-            snapshot["planspace_update"] = result
-            self.node.settings_snapshot = snapshot
-            self.store.update_node(self.node)
 
     # ---- state transitions ----
 
@@ -521,146 +537,6 @@ class NodeRunner:
         self._gate_records.pop(gate.id, None)
         return response
 
-    # ---- checkpoint gate flow ----
-
-    async def _handle_checkpoint_review(self) -> None:
-        """Block on a user response to a checkpoint contract.
-
-        Loops on path-traversal / file-write errors so the user can fix
-        the path and resubmit without restarting the node.
-        """
-        self._transition(NodeState.AWAITING_REVIEW)
-        await self._emit_node_updated()
-
-        gate_id = uuid4().hex[:12]
-        gate = HumanGate(
-            id=gate_id,
-            node_id=self.node.id,
-            kind=GateKind.CHECKPOINT,
-            subtype=GateSubtype.CHECKPOINT_REVIEW,
-            tool_name="checkpoint_review",
-            tool_input={
-                "contract": self.node.contract,
-                "review_guidance": self.node.contract,
-                "response_mode": "freeform",
-            },
-        )
-        self.store.append_gate(self.project.id, gate, "created")
-        self._gate_records[gate_id] = gate
-
-        loop = asyncio.get_running_loop()
-        last_error: str | None = None
-        while True:
-            future: asyncio.Future[dict[str, Any]] = loop.create_future()
-            self._gates[gate_id] = future
-
-            tool_input: dict[str, Any] = {
-                "contract": self.node.contract,
-                "review_guidance": self.node.contract,
-                "response_mode": "freeform",
-            }
-            if last_error is not None:
-                tool_input["last_error"] = last_error
-            await self._emit(
-                InteractionRequest(
-                    id=gate_id,
-                    interaction_type="checkpoint_review",
-                    tool_name="checkpoint_review",
-                    tool_input=tool_input,
-                )
-            )
-
-            try:
-                response = await future
-            finally:
-                self._gates.pop(gate_id, None)
-
-            decision = response.get("decision")
-            resp_payload = response.get("response") or {}
-            if not isinstance(resp_payload, dict):
-                resp_payload = {}
-
-            if decision == "write-json":
-                err = _write_review_json(
-                    self.project.root_path,
-                    resp_payload.get("path"),
-                    resp_payload.get("payload"),
-                )
-                if err is not None:
-                    last_error = err
-                    await self._emit(ErrorEvent(message=err))
-                    continue
-
-            gate.state = GateState.RESOLVED
-            gate.resolved_at = time.time()
-            gate.response = response
-            self.store.append_gate(self.project.id, gate, "resolved")
-            self._gate_records.pop(gate_id, None)
-            self.node.review_outcome = _review_outcome_from_payload(decision, resp_payload)
-            await self._stamp_source_acceptance(resp_payload)
-            self.node.state = NodeState.DONE
-            self._commit_reviewed_planspace_update(response, resp_payload)
-            return
-
-    async def _stamp_source_acceptance(
-        self,
-        resp_payload: dict[str, Any],
-    ) -> None:
-        if self.node.kind is not NodeKind.GATE:
-            return
-        if not self.node.parent_node_id:
-            return
-        if self.node.review_outcome not in {"approved", "rejected"}:
-            return
-        source = self.store.load_node(self.project.id, self.node.parent_node_id)
-        if source is None:
-            return
-        now = time.time()
-        if self.node.review_outcome == "approved":
-            source.acceptance_state = AcceptanceState.ACCEPTED
-            source.accepted_at = now
-            source.rejected_at = None
-        else:
-            source.acceptance_state = AcceptanceState.REJECTED
-            source.rejected_at = now
-            source.accepted_at = None
-        source.verdict_source = VerdictSource.HUMAN
-        source.verdict_thread_id = self.node.id
-        path = resp_payload.get("path")
-        if isinstance(path, str) and path:
-            source.verdict_artifact_path = path
-        self.store.update_node(source)
-        await self._emit(NodeUpdated(node=source.model_dump()))
-
-    def _commit_reviewed_planspace_update(
-        self,
-        response: dict[str, Any],
-        resp_payload: dict[str, Any],
-    ) -> None:
-        source = (
-            self.store.load_node(self.project.id, self.node.parent_node_id)
-            if self.node.parent_node_id
-            else None
-        )
-        try:
-            result = commit_gate_reviewed_planspace_update(
-                self.project,
-                self.node,
-                source_node=source,
-                user_judgment=_review_judgment_from_response(response, resp_payload),
-                review_guidance=self.node.contract,
-                promote_interim=_should_promote_interim_update(response, resp_payload),
-                store_root=self.store.root,
-            )
-        except Exception:  # noqa: BLE001
-            logger.exception("failed to commit reviewed planspace update")
-            return
-        if result.get("planspace_id"):
-            snapshot = dict(self.node.settings_snapshot)
-            snapshot["planspace_update"] = result
-            self.node.settings_snapshot = snapshot
-            self.store.update_node(self.node)
-
     def _resolve_open_gates(self) -> None:
         for gate_id, fut in list(self._gates.items()):
             if not fut.done():
@@ -684,99 +560,9 @@ def _make_provider(provider: str) -> AgentProvider:
     raise ValueError(f"unknown provider: {provider}")
 
 
-def _write_review_json(root: str, path_str: Any, payload: Any) -> str | None:
-    """Write ``payload`` as JSON to ``root/path_str``. Returns an error string or None."""
-    if not isinstance(path_str, str) or not path_str:
-        return "write-json requires a 'path' string"
-    if payload is None:
-        return "write-json requires a 'payload'"
-    rel = Path(path_str)
-    if rel.is_absolute():
-        return f"path must be project-relative: {path_str}"
-    root_path = Path(root).resolve()
-    target = (root_path / rel).resolve()
-    try:
-        target.relative_to(root_path)
-    except ValueError:
-        return f"path escapes project root: {path_str}"
-    try:
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(
-            json.dumps(payload, indent=2, ensure_ascii=False),
-            encoding="utf-8",
-        )
-    except OSError as exc:
-        return f"failed to write {path_str}: {exc}"
-    return None
-
-
-def _review_outcome_from_payload(decision: Any, payload: dict[str, Any]) -> str | None:
-    """Derive scenario-branching outcome from a resolved checkpoint-review gate.
-
-    A ``write-json`` response with ``approved: false`` in its payload is
-    treated as ``"rejected"``; any other ``write-json`` (including missing
-    ``approved`` or non-bool values) is treated as ``"approved"``. A
-    ``no-op`` resolution carries no decision and returns ``None``.
-    """
-    if decision != "write-json":
-        return None
-    body = payload.get("payload")
-    if isinstance(body, dict) and body.get("approved") is False:
-        return "rejected"
-    return "approved"
-
-
-def _review_judgment_from_response(
-    response: dict[str, Any],
-    payload: dict[str, Any],
-) -> str:
-    parts: list[str] = []
-    message = response.get("message")
-    if isinstance(message, str) and message.strip():
-        parts.append(message.strip())
-
-    for key in ("judgment", "notes", "text"):
-        value = payload.get(key)
-        if isinstance(value, str) and value.strip():
-            parts.append(value.strip())
-
-    body = payload.get("payload")
-    if isinstance(body, dict):
-        for key in ("judgment", "notes", "text"):
-            value = body.get(key)
-            if isinstance(value, str) and value.strip():
-                parts.append(value.strip())
-        if body:
-            parts.append("Structured review payload:\n" + json.dumps(body, indent=2, ensure_ascii=False))
-    elif isinstance(body, str) and body.strip():
-        parts.append(body.strip())
-
-    decision = response.get("decision")
-    if isinstance(decision, str) and decision.strip() and decision != "write-json":
-        parts.append(f"Decision: {decision.strip()}")
-
-    return "\n\n".join(dict.fromkeys(parts)).strip()
-
-
-def _should_promote_interim_update(
-    response: dict[str, Any],
-    payload: dict[str, Any],
-) -> bool:
-    if response.get("decision") != "write-json":
-        return False
-    body = payload.get("payload")
-    if isinstance(body, dict) and body.get("approved") is False:
-        return False
-    return True
-
-
 def _compose_launch_instructions(*parts: str) -> str:
-    parts = [
-        part.strip()
-        for part in parts
-        if part and part.strip()
-    ]
-    return "\n\n---\n\n".join(parts)
+    cleaned = [part.strip() for part in parts if part and part.strip()]
+    return "\n\n---\n\n".join(cleaned)
 
 
 def _state_from_provider(value: str | None) -> NodeState | None:

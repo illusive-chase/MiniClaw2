@@ -46,17 +46,20 @@ class Store:
     def _project_file(self, pid: str) -> Path:
         return self._project_dir(pid) / "project.json"
 
-    def _node_dir(self, pid: str, nid: str) -> Path:
+    def node_dir(self, pid: str, nid: str) -> Path:
         return self._project_dir(pid) / "nodes" / nid
 
     def _node_file(self, pid: str, nid: str) -> Path:
-        return self._node_dir(pid, nid) / "node.json"
+        return self.node_dir(pid, nid) / "node.json"
 
     def _events_file(self, pid: str, nid: str) -> Path:
-        return self._node_dir(pid, nid) / "events.jsonl"
+        return self.node_dir(pid, nid) / "events.jsonl"
 
     def _gates_file(self, pid: str, nid: str) -> Path:
-        return self._node_dir(pid, nid) / "gates.jsonl"
+        return self.node_dir(pid, nid) / "gates.jsonl"
+
+    def _preview_file(self, pid: str, nid: str) -> Path:
+        return self.node_dir(pid, nid) / "preview.json"
 
     # ---- project ----
 
@@ -98,7 +101,7 @@ class Store:
     # ---- node ----
 
     def create_node(self, node: Node) -> Node:
-        d = self._node_dir(node.project_id, node.id)
+        d = self.node_dir(node.project_id, node.id)
         d.mkdir(parents=True, exist_ok=True)
         self._write_json(self._node_file(node.project_id, node.id), node.model_dump())
         return node
@@ -127,6 +130,21 @@ class Store:
     def latest_node(self, pid: str) -> Node | None:
         nodes = self.list_nodes(pid)
         return nodes[-1] if nodes else None
+
+    # ---- node preview ----
+
+    def write_node_preview(self, pid: str, nid: str, text: str) -> None:
+        path = self._preview_file(pid, nid)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(text, encoding="utf-8")
+        tmp.replace(path)
+
+    def read_node_preview(self, pid: str, nid: str) -> str | None:
+        path = self._preview_file(pid, nid)
+        if not path.exists():
+            return None
+        return path.read_text(encoding="utf-8")
 
     # ---- events ----
 

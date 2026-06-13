@@ -1,0 +1,287 @@
+"""Tests for the reap pipeline."""
+
+from __future__ import annotations
+
+import json
+import tempfile
+import unittest
+from pathlib import Path
+
+from miniclaw2.domain import (
+    Category,
+    Node,
+    NodeKind,
+    NodeState,
+    Project,
+)
+from miniclaw2.materialize import materialize_active_lane, snapshot_lane
+from miniclaw2.reap import reap_lane
+from miniclaw2.store import Store
+
+
+def _write_preview(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def _executed_payload(node_id: str, lane: str, category: str = "regular") -> dict:
+    return {
+        "id": node_id,
+        "kind": "agent",
+        "category": category,
+        "state": "done",
+        "ran_at": "2026-06-13T14:22:00+00:00",
+        "lane": lane,
+        "motivation": "m",
+        "summary": "s",
+        "next_implications": "ni",
+    }
+
+
+def _virtual_payload(slug: str, lane: str, deps: list[str] | None = None,
+                     category: str = "regular") -> dict:
+    payload: dict = {
+        "id": slug,
+        "kind": "agent",
+        "category": category,
+        "state": "virtual",
+        "lane": lane,
+        "proposed_by": "node:source",
+        "motivation": "m",
+        "prompt_draft": "Do thing",
+    }
+    if deps is not None:
+        payload["scheduled_deps"] = deps
+    return payload
+
+
+class ReapTestBase(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        tmp_path = Path(self.tmp.name)
+        self.store_root = tmp_path / "store"
+        self.project_root = tmp_path / "project"
+        self.project_root.mkdir()
+        self.store = Store(root=self.store_root)
+        self.project = Project(
+            id="p1",
+            root_path=str(self.project_root),
+            provider="claude",
+        )
+        self.store.create_project(self.project)
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def _make_running_node(self, category: Category = Category.REGULAR) -> Node:
+        node = Node(
+            id="n1",
+            project_id="p1",
+            kind=NodeKind.AGENT,
+            category=category,
+            state=NodeState.DONE,
+            planspace_id="lane-A",
+            started_at=1.0,
+            finished_at=2.0,
+        )
+        self.store.create_node(node)
+        return node
+
+    def _setup_lane(self, node: Node) -> tuple[Path, dict[str, str]]:
+        lane_root = materialize_active_lane(self.project, node.planspace_id, self.store)
+        pre = snapshot_lane(lane_root)
+        return lane_root, pre
+
+
+class ReapHappyPathTests(ReapTestBase):
+    def test_regular_agent_writes_own_preview(self) -> None:
+        node = self._make_running_node()
+        lane_root, pre = self._setup_lane(node)
+        _write_preview(
+            lane_root / "nodes" / "n1" / "preview.json",
+            _executed_payload("n1", "lane-A"),
+        )
+        result = reap_lane(self.project, node, lane_root, pre, self.store)
+        self.assertTrue(result.own_preview_ok)
+        self.assertFalse(result.fatal)
+        self.assertEqual(result.new_virtuals, [])
+
+    def test_planning_agent_proposes_virtual(self) -> None:
+        node = self._make_running_node(category=Category.PLANNING)
+        lane_root, pre = self._setup_lane(node)
+        _write_preview(
+            lane_root / "nodes" / "n1" / "preview.json",
+            _executed_payload("n1", "lane-A", category="planning"),
+        )
+        _write_preview(
+            lane_root / "nodes" / "V_foo" / "preview.json",
+            _virtual_payload("V_foo", "lane-A"),
+        )
+        result = reap_lane(self.project, node, lane_root, pre, self.store)
+        self.assertTrue(result.ok())
+        self.assertEqual(len(result.new_virtuals), 1)
+        new = result.new_virtuals[0]
+        self.assertEqual(new.state, NodeState.VIRTUAL)
+        self.assertEqual(new.proposed_by, "node:n1")
+        self.assertNotEqual(new.id, "V_foo")  # canonicalized
+        # And the new node is in the store
+        self.assertIsNotNone(self.store.load_node("p1", new.id))
+
+
+class ReapCategoryEnforcementTests(ReapTestBase):
+    def test_regular_agent_proposing_virtual_is_fatal(self) -> None:
+        node = self._make_running_node()
+        lane_root, pre = self._setup_lane(node)
+        _write_preview(
+            lane_root / "nodes" / "n1" / "preview.json",
+            _executed_payload("n1", "lane-A"),
+        )
+        _write_preview(
+            lane_root / "nodes" / "V_x" / "preview.json",
+            _virtual_payload("V_x", "lane-A"),
+        )
+        result = reap_lane(self.project, node, lane_root, pre, self.store)
+        self.assertTrue(result.fatal)
+        # No virtual persisted.
+        self.assertEqual(self.store.list_nodes("p1"), [node] if False else self.store.list_nodes("p1"))
+        ids = {n.id for n in self.store.list_nodes("p1")}
+        self.assertEqual(ids, {"n1"})
+
+
+class ReapMissingOwnPreviewTests(ReapTestBase):
+    def test_missing_own_preview_signals_for_reprompt(self) -> None:
+        node = self._make_running_node()
+        lane_root, pre = self._setup_lane(node)
+        # No write at all.
+        result = reap_lane(self.project, node, lane_root, pre, self.store)
+        self.assertFalse(result.own_preview_ok)
+        self.assertFalse(result.fatal)
+        self.assertTrue(result.rejection_reasons)
+
+
+class ReapSlugCanonicalizationTests(ReapTestBase):
+    def test_sibling_slug_references_resolve(self) -> None:
+        node = self._make_running_node(category=Category.PLANNING)
+        lane_root, pre = self._setup_lane(node)
+        _write_preview(
+            lane_root / "nodes" / "n1" / "preview.json",
+            _executed_payload("n1", "lane-A", category="planning"),
+        )
+        _write_preview(
+            lane_root / "nodes" / "V_a" / "preview.json",
+            _virtual_payload("V_a", "lane-A"),
+        )
+        _write_preview(
+            lane_root / "nodes" / "V_b" / "preview.json",
+            _virtual_payload("V_b", "lane-A", deps=["V_a"]),
+        )
+        result = reap_lane(self.project, node, lane_root, pre, self.store)
+        self.assertTrue(result.ok())
+        self.assertEqual(len(result.new_virtuals), 2)
+        by_initial_slug = {n.id: n for n in result.new_virtuals}
+        # Find V_b's canonical (the one with non-empty deps)
+        v_b = next(n for n in result.new_virtuals if n.scheduled_deps)
+        v_a = next(n for n in result.new_virtuals if not n.scheduled_deps)
+        self.assertEqual(v_b.scheduled_deps, [v_a.id])
+
+    def test_unknown_dep_is_fatal(self) -> None:
+        node = self._make_running_node(category=Category.PLANNING)
+        lane_root, pre = self._setup_lane(node)
+        _write_preview(
+            lane_root / "nodes" / "n1" / "preview.json",
+            _executed_payload("n1", "lane-A", category="planning"),
+        )
+        _write_preview(
+            lane_root / "nodes" / "V_a" / "preview.json",
+            _virtual_payload("V_a", "lane-A", deps=["does_not_exist"]),
+        )
+        result = reap_lane(self.project, node, lane_root, pre, self.store)
+        self.assertTrue(result.fatal)
+
+
+class ReapCycleDetectionTests(ReapTestBase):
+    def test_self_loop_is_fatal(self) -> None:
+        node = self._make_running_node(category=Category.PLANNING)
+        # Pre-exists in the store as a virtual to give us something to reference.
+        prior = Node(
+            id="v-existing",
+            project_id="p1",
+            kind=NodeKind.AGENT,
+            category=Category.REGULAR,
+            state=NodeState.VIRTUAL,
+            planspace_id="lane-A",
+            prompt_draft="x",
+            proposed_by="user",
+            summary="m",
+        )
+        self.store.create_node(prior)
+        lane_root, pre = self._setup_lane(node)
+        _write_preview(
+            lane_root / "nodes" / "n1" / "preview.json",
+            _executed_payload("n1", "lane-A", category="planning"),
+        )
+        # Mutate the pre-existing virtual to depend on a new one that depends back on it.
+        _write_preview(
+            lane_root / "nodes" / "v-existing" / "preview.json",
+            _virtual_payload("v-existing", "lane-A", deps=["V_new"]),
+        )
+        _write_preview(
+            lane_root / "nodes" / "V_new" / "preview.json",
+            _virtual_payload("V_new", "lane-A", deps=["v-existing"]),
+        )
+        result = reap_lane(self.project, node, lane_root, pre, self.store)
+        self.assertTrue(result.fatal)
+
+
+class ReapDeletionTests(ReapTestBase):
+    def test_deleted_preview_is_fatal(self) -> None:
+        node = self._make_running_node(category=Category.PLANNING)
+        prior = Node(
+            id="v-existing",
+            project_id="p1",
+            kind=NodeKind.AGENT,
+            category=Category.REGULAR,
+            state=NodeState.VIRTUAL,
+            planspace_id="lane-A",
+            prompt_draft="x",
+            proposed_by="user",
+            summary="m",
+        )
+        self.store.create_node(prior)
+        lane_root, pre = self._setup_lane(node)
+        # Delete v-existing's preview file.
+        (lane_root / "nodes" / "v-existing" / "preview.json").unlink()
+        _write_preview(
+            lane_root / "nodes" / "n1" / "preview.json",
+            _executed_payload("n1", "lane-A", category="planning"),
+        )
+        result = reap_lane(self.project, node, lane_root, pre, self.store)
+        self.assertTrue(result.fatal)
+
+
+class ReapAtomicityTests(ReapTestBase):
+    def test_fatal_batch_persists_nothing(self) -> None:
+        node = self._make_running_node(category=Category.PLANNING)
+        lane_root, pre = self._setup_lane(node)
+        _write_preview(
+            lane_root / "nodes" / "n1" / "preview.json",
+            _executed_payload("n1", "lane-A", category="planning"),
+        )
+        # Valid virtual + invalid dep → fatal whole batch.
+        _write_preview(
+            lane_root / "nodes" / "V_valid" / "preview.json",
+            _virtual_payload("V_valid", "lane-A"),
+        )
+        _write_preview(
+            lane_root / "nodes" / "V_invalid" / "preview.json",
+            _virtual_payload("V_invalid", "lane-A", deps=["nonexistent"]),
+        )
+        ids_before = {n.id for n in self.store.list_nodes("p1")}
+        result = reap_lane(self.project, node, lane_root, pre, self.store)
+        ids_after = {n.id for n in self.store.list_nodes("p1")}
+        self.assertTrue(result.fatal)
+        self.assertEqual(ids_before, ids_after)
+
+
+if __name__ == "__main__":
+    unittest.main()
