@@ -115,8 +115,14 @@ def materialize_active_lane(
     shutil.rmtree(root, ignore_errors=True)
     root.mkdir(parents=True, exist_ok=True)
 
+    terminal_states = (NodeState.DONE, NodeState.ERROR, NodeState.CANCELLED)
     nodes = [n for n in store.list_nodes(project.id) if (n.planspace_id or "") == lane_id]
     for node in nodes:
+        # In-flight nodes (QUEUED/RUNNING/WAITING/AWAITING_HUMAN_INPUT)
+        # are not materialized — the running agent writes its own
+        # preview.json from inside its session.
+        if node.state is not NodeState.VIRTUAL and node.state not in terminal_states:
+            continue
         ndir = node_dir(root, node.id)
         ndir.mkdir(parents=True, exist_ok=True)
         # Prefer durable agent-written preview when present; otherwise

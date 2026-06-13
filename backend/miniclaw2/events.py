@@ -37,7 +37,11 @@ class InteractionRequest(BaseModel):
     type: Literal["interaction_request"] = "interaction_request"
     id: str
     interaction_type: Literal[
-        "permission", "ask_user", "plan_approval", "checkpoint_review"
+        "permission",
+        "ask_user",
+        "plan_approval",
+        "checkpoint_review",
+        "human_review_prose",
     ]
     tool_name: str
     tool_input: dict[str, Any] = Field(default_factory=dict)

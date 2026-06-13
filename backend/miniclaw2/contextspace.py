@@ -409,6 +409,81 @@ def read_project_context(project: Project) -> dict[str, Any] | None:
     }
 
 
+def read_planspace_mode(
+    project: Project,
+    lane_id: str,
+    *,
+    store_root: Path | None = None,
+) -> str:
+    """Return the planspace plug's ``mode`` (``auto`` or ``manual``).
+
+    ``lane_id`` is the plug id (e.g. ``planspaces.foo``). Defaults to
+    ``manual`` when the manifest is missing or the field is unset.
+    """
+    del project  # reserved for future per-project override
+    if not lane_id:
+        return "manual"
+    root = contextspace_root(store_root)
+    manifest = _plug_manifest(root, lane_id)
+    raw = manifest.get("mode") if isinstance(manifest, dict) else None
+    if isinstance(raw, str) and raw.lower() in {"auto", "manual"}:
+        return raw.lower()
+    return "manual"
+
+
+def create_planspace(
+    project: Project,
+    *,
+    title: str,
+    mode: str = "manual",
+    store_root: Path | None = None,
+    seed_text: str | None = None,
+) -> str:
+    """Create a new planspace plug + add it to the project's binding.
+
+    Returns the new plug id (``planspaces.<slug>``). The binding is
+    created if it does not exist. Manifest carries ``mode`` (``auto`` |
+    ``manual``) for the auto-promotion scheduler.
+    """
+    if mode not in {"auto", "manual"}:
+        raise ValueError(f"unknown planspace mode: {mode!r}")
+    binding = ensure_project_binding(project, store_root=store_root)
+    root = contextspace_root(store_root)
+    slug = _unique_planspace_slug(root, _slugify(title or "direction"))
+    plug_id = f"planspaces.{slug}"
+    plug_dir = root / "plugs" / "planspaces" / slug
+    plug_dir.mkdir(parents=True, exist_ok=True)
+    manifest: dict[str, Any] = {
+        "version": 1,
+        "kind": "planspace",
+        "id": plug_id,
+        "title": title,
+        "mode": mode,
+        "created_at": time.time(),
+    }
+    if isinstance(seed_text, str) and seed_text.strip():
+        manifest["seed"] = seed_text
+    _write_yaml(plug_dir / "manifest.yaml", manifest)
+    add_planspace_to_binding(binding, plug_id)
+    return plug_id
+
+
+def add_planspace_to_binding(
+    binding: ProjectBinding,
+    plug_id: str,
+) -> None:
+    """Append a planspace plug ref to ``binding`` if not already present."""
+    raw = dict(binding.raw)
+    plugs = list(raw.get("plugs") or [])
+    if any(_extract_plug_id(item) == plug_id for item in plugs):
+        return
+    plugs.append({"id": plug_id, "enabled": True})
+    raw["plugs"] = plugs
+    binding.raw = raw
+    binding.plugs.append(PlugRef(id=plug_id))
+    _write_yaml(binding.path, raw)
+
+
 def resolve_project_binding(project: Project, root: Path) -> ProjectBinding | None:
     explicit = (
         project.project_context_binding_id
@@ -752,6 +827,26 @@ def _unique_binding_slug(root: Path, slug: str) -> str:
         candidate = f"{slug}-{index}"
         index += 1
     return candidate
+
+
+def _unique_planspace_slug(root: Path, slug: str) -> str:
+    planspaces_dir = root / "plugs" / "planspaces"
+    candidate = slug
+    index = 2
+    while (planspaces_dir / candidate).exists():
+        candidate = f"{slug}-{index}"
+        index += 1
+    return candidate
+
+
+def _extract_plug_id(item: Any) -> str | None:
+    if isinstance(item, str):
+        return item
+    if isinstance(item, dict):
+        value = item.get("id")
+        if isinstance(value, str) and value:
+            return value
+    return None
 
 
 def _injection_for(

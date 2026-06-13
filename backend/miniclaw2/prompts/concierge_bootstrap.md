@@ -49,5 +49,5 @@ agent reading the lane sees the intended sequence.
 ## The user's seed
 
 <user_seed>
-{user_seed}
+<<user_seed>>
 </user_seed>

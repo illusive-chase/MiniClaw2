@@ -32,6 +32,7 @@ from pydantic import BaseModel
 
 from .contextspace import compose_context_bundle
 from .domain import (
+    Category,
     GateKind,
     GateState,
     HumanGate,
@@ -39,6 +40,7 @@ from .domain import (
     NodeKind,
     NodeState,
     Project,
+    ReviewSubtype,
     TokenUsage,
 )
 from .events import (
@@ -138,13 +140,14 @@ class NodeRunner:
             context_bundle = self._snapshot_context_bundle()
             self._snapshot_launch_settings(context_bundle)
             self._materialize_lane()
-            launch_instructions = _compose_launch_instructions(
-                build_category_launch_block(self.node),
-                context_bundle.turn_text,
-                language_launch_instruction(project_preferred_language(self.project)),
-                anti_self_poisoning_block(),
+
+            is_human_review = self._is_human_interact_review()
+            first_state = (
+                NodeState.AWAITING_HUMAN_INPUT
+                if is_human_review
+                else NodeState.RUNNING
             )
-            self._transition(NodeState.RUNNING, started=True)
+            self._transition(first_state, started=True)
             await self._emit(
                 NodeStarted(
                     node_id=self.node.id,
@@ -154,29 +157,56 @@ class NodeRunner:
                 )
             )
             await self._emit_node_updated()
+
             final_state: NodeState = NodeState.DONE
             error_msg: str | None = None
 
             try:
                 try:
-                    provider = _make_provider(self.node.provider or self.project.provider)
-                    self._provider = provider
-                    context = AgentProviderContext(
-                        node=self.node,
-                        project=self.project,
-                        request_gate_handler=self._request_gate,
-                        system_context=context_bundle.system_text,
-                        launch_instructions=launch_instructions,
-                    )
-                    async for ev in provider.run(context):
-                        await self._handle_provider_event(ev)
-                        if ev.kind == "done":
-                            final_state = _state_from_provider(ev.final_state) or NodeState.DONE
-                            break
-                        if ev.kind == "error":
-                            error_msg = ev.error or "provider error"
-                            final_state = NodeState.ERROR
-                            break
+                    if is_human_review:
+                        prose = await self._request_human_review_prose()
+                        if not prose.strip():
+                            final_state = NodeState.CANCELLED
+                            error_msg = "human reviewer provided no prose"
+                        else:
+                            self._write_human_review_prose(prose)
+
+                    if final_state is NodeState.DONE:
+                        self._take_pre_snapshot()
+                        if is_human_review:
+                            self._transition(NodeState.RUNNING)
+                            await self._emit_node_updated()
+                        launch_instructions = _compose_launch_instructions(
+                            build_category_launch_block(self.node),
+                            context_bundle.turn_text,
+                            language_launch_instruction(
+                                project_preferred_language(self.project)
+                            ),
+                            anti_self_poisoning_block(),
+                        )
+                        provider = _make_provider(
+                            self.node.provider or self.project.provider
+                        )
+                        self._provider = provider
+                        context = AgentProviderContext(
+                            node=self.node,
+                            project=self.project,
+                            request_gate_handler=self._request_gate,
+                            system_context=context_bundle.system_text,
+                            launch_instructions=launch_instructions,
+                        )
+                        async for ev in provider.run(context):
+                            await self._handle_provider_event(ev)
+                            if ev.kind == "done":
+                                final_state = (
+                                    _state_from_provider(ev.final_state)
+                                    or NodeState.DONE
+                                )
+                                break
+                            if ev.kind == "error":
+                                error_msg = ev.error or "provider error"
+                                final_state = NodeState.ERROR
+                                break
                 except asyncio.CancelledError:
                     final_state = NodeState.CANCELLED
                     await self.interrupt()
@@ -280,8 +310,71 @@ class NodeRunner:
             self._lane_root = None
             self._pre_snapshot = {}
             return
-        self._lane_root = materialize_active_lane(self.project, lane_id, self.store)
+        self._lane_root = materialize_active_lane(
+            self.project, lane_id, self.store
+        )
+
+    def _take_pre_snapshot(self) -> None:
+        if self._lane_root is None:
+            self._pre_snapshot = {}
+            return
         self._pre_snapshot = snapshot_lane(self._lane_root)
+
+    def _is_human_interact_review(self) -> bool:
+        return (
+            self.node.kind is NodeKind.AGENT
+            and self.node.category is Category.REVIEW
+            and self.node.subtype is ReviewSubtype.HUMAN_INTERACT_REVIEW
+        )
+
+    async def _request_human_review_prose(self) -> str:
+        """Emit a ``human_review_prose`` interaction and await the user's
+        free-form prose.
+
+        Returns the prose (stripped). An empty return signals abort —
+        the caller treats the node as cancelled and stub-previews.
+        """
+        interaction_id = uuid4().hex[:12]
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future[dict[str, Any]] = loop.create_future()
+        self._gates[interaction_id] = future
+
+        tool_input: dict[str, Any] = {}
+        if self.node.brief is not None:
+            tool_input["brief"] = self.node.brief.model_dump()
+        if self.node.planspace_id:
+            tool_input["human_review_path"] = (
+                f".miniclaw2/graph/lanes/{self.node.planspace_id}/"
+                f"nodes/{self.node.id}/human-review.md"
+            )
+
+        await self._emit(
+            InteractionRequest(
+                id=interaction_id,
+                interaction_type="human_review_prose",  # type: ignore[arg-type]
+                tool_name="human_review_prose",
+                tool_input=tool_input,
+            )
+        )
+        try:
+            response = await future
+        finally:
+            self._gates.pop(interaction_id, None)
+        return _extract_prose_response(response).strip()
+
+    def _write_human_review_prose(self, prose: str) -> None:
+        """Persist the prose to the durable node store AND the
+        materialized lane subtree so the reviewer agent can ``Read`` it.
+        """
+        durable_dir = self.store.node_dir(self.project.id, self.node.id)
+        durable_dir.mkdir(parents=True, exist_ok=True)
+        (durable_dir / "human-review.md").write_text(prose, encoding="utf-8")
+        if self._lane_root is not None:
+            materialized_dir = self._lane_root / "nodes" / self.node.id
+            materialized_dir.mkdir(parents=True, exist_ok=True)
+            (materialized_dir / "human-review.md").write_text(
+                prose, encoding="utf-8"
+            )
 
     def _append_error(self, reason: str) -> None:
         self.node.error = (self.node.error + "\n" if self.node.error else "") + reason
@@ -576,3 +669,25 @@ def _state_from_provider(value: str | None) -> NodeState | None:
     if value == "done":
         return NodeState.DONE
     return None
+
+
+def _extract_prose_response(response: Any) -> str:
+    """Pull a prose string out of an InteractionResponse-shaped dict.
+
+    Tolerates ``message``, ``response.text``, ``response.prose``, or
+    ``response.message`` carriers. Returns ``""`` if none present.
+    """
+    if not isinstance(response, dict):
+        return ""
+    message = response.get("message")
+    if isinstance(message, str) and message.strip():
+        return message
+    nested = response.get("response")
+    if isinstance(nested, dict):
+        for key in ("text", "prose", "message"):
+            value = nested.get(key)
+            if isinstance(value, str) and value.strip():
+                return value
+    if isinstance(message, str):
+        return message
+    return ""

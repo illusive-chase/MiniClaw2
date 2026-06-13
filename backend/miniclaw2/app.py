@@ -99,6 +99,12 @@ class UpdatePlanspaceViewRequest(BaseModel):
     planspaces: dict[str, dict[str, bool]] = Field(default_factory=dict)
 
 
+class CreatePlanspaceRequest(BaseModel):
+    title: str = ""
+    seed: str
+    mode: str | None = None
+
+
 class EventRecord(BaseModel):
     seq: int
     event: dict[str, Any]
@@ -297,6 +303,50 @@ def create_app() -> FastAPI:
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
         return describe_project_contextspace(project, store_root=registry.store.root)
+
+    @app.post("/sessions/{sid}/planspaces", response_model=dict[str, Any])
+    async def create_planspace(
+        sid: str, req: CreatePlanspaceRequest
+    ) -> dict[str, Any]:
+        project = registry.get_project(sid)
+        if project is None:
+            raise HTTPException(404, "session not found")
+        if registry.is_running(sid):
+            raise HTTPException(409, "turn in progress")
+        if _context_task_running(project.id):
+            raise HTTPException(409, "context refresh in progress")
+        if not req.seed.strip():
+            raise HTTPException(400, "seed must be non-empty")
+        try:
+            runner = registry.create_planspace_and_launch_concierge(
+                sid,
+                title=req.title.strip(),
+                seed=req.seed,
+                mode=req.mode,
+            )
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        if runner is None:
+            raise HTTPException(409, "failed to launch concierge")
+        return describe_project_contextspace(project, store_root=registry.store.root)
+
+    @app.post(
+        "/sessions/{sid}/virtuals/{vid}/promote", response_model=dict[str, Any]
+    )
+    async def promote_virtual(sid: str, vid: str) -> dict[str, Any]:
+        project = registry.get_project(sid)
+        if project is None:
+            raise HTTPException(404, "session not found")
+        if registry.is_running(sid):
+            raise HTTPException(409, "turn in progress")
+        runner = registry.promote_virtual(sid, vid)
+        if runner is None:
+            raise HTTPException(
+                409,
+                "virtual cannot be promoted (missing, obsolete, deps not "
+                "terminal, or project busy)",
+            )
+        return {"ok": True, "node_id": runner.node.id}
 
     @app.post("/sessions/{sid}/context/cancel", response_model=dict[str, Any])
     async def cancel_project_context(sid: str) -> dict[str, Any]:

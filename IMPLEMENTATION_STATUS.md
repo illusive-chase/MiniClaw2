@@ -11,6 +11,50 @@ split into **Landed** and **Pending**. Pending items are not
 sequenced — dependencies are noted inline where they matter.
 
 
+## 0. Virtual-nodes redesign progress
+
+Per `PROPOSAL_VIRTUAL_NODES.md` §11 sequencing:
+
+- [x] Step 1 — Domain types: `NodeKind = {agent, op}`, `VIRTUAL` /
+      `AWAITING_HUMAN_INPUT` states, category / subtype / brief.
+- [x] Step 2 — Preview module (parse/validate/persist;
+      `backend/miniclaw2/preview.py`).
+- [x] Step 3 — Materialization
+      (`materialize_active_lane`; in-flight nodes skipped, agent
+      writes its own).
+- [x] Step 4 — Reap pipeline (`reap_lane`).
+- [x] Step 5 — Auto-promotion scheduler. Per-planspace `mode`
+      (`auto` | `manual`, default `manual`) in plug manifest.
+      `read_planspace_mode` reads it. `_on_runner_done` invokes
+      `_auto_promote_next_virtual`, which picks the earliest-created
+      eligible virtual on the active lane. `promote_virtual(pid, vid)`
+      is the public method (manual mode = REST call).
+- [x] Step 6 — Category-aware launch prompts (planning / regular /
+      agentic_review / human_interact_review).
+- [x] Step 7 — Human-interact substate. Runner enters
+      `AWAITING_HUMAN_INPUT` before the provider runs for
+      `human_interact_review` nodes, emits an
+      `interaction_request {interaction_type: "human_review_prose"}`,
+      writes the user's prose to both
+      `projects/<pid>/nodes/<nid>/human-review.md` (durable) and
+      `.miniclaw2/graph/lanes/<lane>/nodes/<nid>/human-review.md`
+      (materialized) before launching the reviewer agent. Empty prose
+      cancels the node without invoking the provider.
+- [x] Step 8 — Concierge bootstrap.
+      `POST /sessions/{sid}/planspaces {title, seed, mode?}` creates a
+      planspace plug, attaches it to the project's binding, activates
+      it, and launches a planning-category agent whose prompt is the
+      rendered `prompts/concierge_bootstrap.md` with the seed
+      substituted into `<<user_seed>>`.
+- [ ] Step 9 — Remove legacy paths (passive gate runner,
+      `planspace_state.py`, memory-delta inbox). Already mostly gone
+      from `5069c5b`; clean-up pass pending.
+- [ ] Step 10 — Frontend pass (virtual tiles, category badges, mode
+      toggle, drop PlanspacePanel STATUS UI, etc.).
+- [ ] Step 11 — Remaining wire envelopes (frontend `node_started`
+      carries `category` / `subtype`, lane-state events for promotions).
+
+
 ## 1. Backend domain model
 
 Trunk: `backend/miniclaw2/domain.py`.
@@ -559,23 +603,29 @@ Quick reference; the on-disk shape is authoritative.
 
 - Server → client: `node_started {node_id, parent_node_id, kind, prompt}`,
   `node_updated`, `interaction_request {interaction_type, ...}` with
-  `interaction_type = "checkpoint_review"` carrying brief as
-  `tool_input.contract`, `text_delta`, `thinking`, `tool_use`,
-  `tool_result`, `activity`, `usage`, `state_change`, `error`.
+  `interaction_type ∈ {"permission", "ask_user", "plan_approval",
+  "checkpoint_review", "human_review_prose"}` (the last carrying the
+  review brief as `tool_input.brief` and the materialized prose path
+  as `tool_input.human_review_path`), `text_delta`, `thinking`,
+  `tool_use`, `tool_result`, `activity`, `usage`, `state_change`,
+  `error`.
 - Client → server: user prompt with optional `needs_review` /
   `extra_planspace_loads`, `interrupt`, gate response,
   `replay_request {node_id, since_seq}`.
 - REST: project CRUD, node and event introspection,
   `PATCH /sessions/{sid}/layout-hints`,
   `PATCH /sessions/{sid}/planspace-view`,
-  `POST /sessions/{sid}/planspaces`,
+  `POST /sessions/{sid}/planspaces {title, seed, mode?}` (creates a
+  new planspace + activates it + launches the concierge planning
+  agent),
+  `POST /sessions/{sid}/virtuals/{vid}/promote` (manual promotion of
+  a virtual node),
   `POST /sessions/{sid}/context/init`,
   `POST /sessions/{sid}/context/refresh`,
   `POST /sessions/{sid}/context/cancel`,
   `GET /sessions/{sid}/files`,
-  `GET /sessions/{sid}/nodes/{nid}/status-delta`,
-  `GET / PATCH /sessions/{sid}/planspaces/{planspace_id}/status` for
-  the STATUS viewer / slot editor, `POST /sessions {auto_commit, ...}`.
+  `GET /sessions/{sid}/nodes/{nid}/preview` (durable preview text),
+  `POST /sessions {auto_commit, ...}`.
 
 No client-facing `start_gate_node` envelope; gates are auto-spawned
 server-side when an upstream agent with `requires_review` reaches
