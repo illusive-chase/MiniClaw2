@@ -53,8 +53,9 @@ export function stateMeta(state: NodeState): StateMeta {
         ring: false,
       };
     case "awaiting_review":
+    case "awaiting_human_input":
       return {
-        label: "review",
+        label: state === "awaiting_human_input" ? "human input" : "review",
         Icon: RingIcon,
         chipBg: "bg-state-review-soft",
         chipText: "text-state-review dark:text-state-review",
@@ -112,6 +113,7 @@ export function stateStroke(state: NodeState): string {
     case "waiting":
       return "rgb(var(--state-waiting))";
     case "awaiting_review":
+    case "awaiting_human_input":
       return "rgb(var(--state-review))";
     case "error":
       return "rgb(var(--state-error))";

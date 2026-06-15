@@ -94,7 +94,11 @@ def _project_artifacts_dir(project: Project, node_id: str) -> Path:
 
 
 def materialize_active_lane(
-    project: Project, lane_id: str, store: Store
+    project: Project,
+    lane_id: str,
+    store: Store,
+    *,
+    current_node_id: str | None = None,
 ) -> Path:
     """Build ``.miniclaw2/graph/lanes/<lane_id>/nodes/<nid>/`` for every
     node in the lane and return the lane root path.
@@ -116,17 +120,41 @@ def materialize_active_lane(
     terminal_states = (NodeState.DONE, NodeState.ERROR, NodeState.CANCELLED)
     nodes = [n for n in store.list_nodes(project.id) if (n.planspace_id or "") == lane_id]
     for node in nodes:
-        # In-flight nodes (QUEUED/RUNNING/WAITING/AWAITING_HUMAN_INPUT)
-        # are not materialized — the running agent writes its own
-        # preview.json from inside its session.
-        if node.state is not NodeState.VIRTUAL and node.state not in terminal_states:
+        # In-flight nodes are usually skipped: the running agent writes
+        # its own preview.json from inside its session. The current
+        # node is the exception for promoted virtuals: keep its virtual
+        # preview metadata (especially scheduled_deps) available until
+        # the provider overwrites it with an executed preview.
+        is_inflight = (
+            node.state is not NodeState.VIRTUAL
+            and node.state not in terminal_states
+        )
+        current_inflight = current_node_id is not None and node.id == current_node_id
+        durable = (
+            store.read_node_preview(project.id, node.id)
+            if node.state is not NodeState.VIRTUAL
+            else None
+        )
+        render_current_virtual_preview = (
+            is_inflight
+            and current_inflight
+            and durable is None
+            and node.prompt_draft is not None
+        )
+        if is_inflight and not current_inflight:
+            continue
+        if is_inflight and durable is None and not render_current_virtual_preview:
             continue
         ndir = node_dir(root, node.id)
         ndir.mkdir(parents=True, exist_ok=True)
         # Prefer durable agent-written preview when present; otherwise
         # render a stub from Node fields.
-        durable = store.read_node_preview(project.id, node.id) if node.state is not NodeState.VIRTUAL else None
-        text = durable if durable is not None else render_node_preview(node)
+        if durable is not None:
+            text = durable
+        elif render_current_virtual_preview:
+            text = render_virtual_preview(node)
+        else:
+            text = render_node_preview(node)
         (ndir / "preview.json").write_text(text, encoding="utf-8")
         if node.state is not NodeState.VIRTUAL and node.kind is NodeKind.AGENT:
             transcript = _build_transcript(store, project.id, node.id)

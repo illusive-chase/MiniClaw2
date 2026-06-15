@@ -300,7 +300,10 @@ class NodeRunner:
             self._pre_snapshot = {}
             return
         self._lane_root = materialize_active_lane(
-            self.project, lane_id, self.store
+            self.project,
+            lane_id,
+            self.store,
+            current_node_id=self.node.id,
         )
 
     def _take_pre_snapshot(self) -> None:

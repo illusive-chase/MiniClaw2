@@ -9,7 +9,7 @@ import { stateMeta } from "./stateMeta";
  * Gate tile: hexagon, ~180x110 collapsed. Passive review checkpoint that
  * inspects an upstream handoff and captures free-form human judgment.
  *
- * When selected AND awaiting_review, the hex expands inline to host the
+ * When selected and awaiting review/input, the hex expands inline to host the
  * review handoff text and a free-form textarea — the design doc calls
  * this the primary review surface; the side panel is a wider mirror.
  *
@@ -23,7 +23,9 @@ function GateNodeImpl({ data, selected }: NodeProps<GateNodeData>) {
     (node.summary || node.prompt || "review checkpoint").replace(/\s+/g, " ").trim();
   const ctx = gateInlineContext;
   const expanded =
-    selected && node.state === "awaiting_review" && ctx.pending?.tool_name === "checkpoint_review";
+    selected &&
+    (node.state === "awaiting_review" || node.state === "awaiting_human_input") &&
+    !!ctx.pending;
 
   const width = expanded ? 340 : 200;
   const height = expanded ? 280 : 116;

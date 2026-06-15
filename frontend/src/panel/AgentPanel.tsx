@@ -1012,6 +1012,11 @@ function StatePill({ state }: { state: NodeInfo["state"] }) {
       text: "text-state-waiting",
       label: "waiting",
     },
+    awaiting_human_input: {
+      bg: "bg-state-review-soft",
+      text: "text-state-review",
+      label: "human input",
+    },
     awaiting_review: {
       bg: "bg-state-review-soft",
       text: "text-state-review",
@@ -1039,4 +1044,3 @@ function StatePill({ state }: { state: NodeInfo["state"] }) {
     </span>
   );
 }
-

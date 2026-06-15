@@ -10,7 +10,12 @@ import { stateStroke } from "../nodes/stateMeta";
 
 type EdgeData = { childState?: NodeState };
 
-const ACTIVE: NodeState[] = ["running", "waiting", "awaiting_review"];
+const ACTIVE: NodeState[] = [
+  "running",
+  "waiting",
+  "awaiting_review",
+  "awaiting_human_input",
+];
 
 /** Solid spine — FS ordering between adjacent timeline nodes. */
 function TimelineEdgeImpl(props: EdgeProps<EdgeData>) {

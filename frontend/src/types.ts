@@ -25,7 +25,8 @@ export type InteractionRequest = {
     | "permission"
     | "ask_user"
     | "plan_approval"
-    | "checkpoint_review";
+    | "checkpoint_review"
+    | "human_review_prose";
   tool_name: string;
   tool_input: Record<string, unknown>;
   suggestions: unknown[];
@@ -153,6 +154,7 @@ export type NodeState =
   | "queued"
   | "running"
   | "waiting"
+  | "awaiting_human_input"
   | "awaiting_review"
   | "done"
   | "error"

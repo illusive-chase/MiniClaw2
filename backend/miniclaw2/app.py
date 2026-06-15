@@ -97,7 +97,9 @@ class UpdatePlanspaceViewRequest(BaseModel):
 
 class CreatePlanspaceRequest(BaseModel):
     title: str = ""
-    seed: str
+    seed: str | None = None
+    user_seed: str | None = None
+    needs_review: bool | None = None
     mode: str | None = None
 
 
@@ -311,20 +313,27 @@ def create_app() -> FastAPI:
             raise HTTPException(409, "turn in progress")
         if _context_task_running(project.id):
             raise HTTPException(409, "context refresh in progress")
-        if not req.seed.strip():
+        seed = req.seed if req.seed is not None else req.user_seed
+        if seed is None or not seed.strip():
             raise HTTPException(400, "seed must be non-empty")
         try:
             runner = registry.create_planspace_and_launch_concierge(
                 sid,
                 title=req.title.strip(),
-                seed=req.seed,
+                seed=seed,
                 mode=req.mode,
             )
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
         if runner is None:
             raise HTTPException(409, "failed to launch concierge")
-        return describe_project_contextspace(project, store_root=registry.store.root)
+        contextspace = describe_project_contextspace(
+            project, store_root=registry.store.root
+        )
+        contextspace["node_id"] = runner.node.id
+        contextspace["planspace_id"] = runner.node.planspace_id
+        contextspace["binding_id"] = contextspace.get("resolved_binding_id")
+        return contextspace
 
     @app.post(
         "/sessions/{sid}/virtuals/{vid}/promote", response_model=dict[str, Any]
@@ -335,6 +344,8 @@ def create_app() -> FastAPI:
             raise HTTPException(404, "session not found")
         if registry.is_running(sid):
             raise HTTPException(409, "turn in progress")
+        if _context_task_running(project.id):
+            raise HTTPException(409, "context refresh in progress")
         runner = registry.promote_virtual(sid, vid)
         if runner is None:
             raise HTTPException(

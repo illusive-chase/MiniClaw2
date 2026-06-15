@@ -118,6 +118,77 @@ class MaterializeTests(unittest.TestCase):
         materialized = (root / "nodes" / "ex1" / "preview.json").read_text()
         self.assertEqual(materialized, durable_text)
 
+    def test_skips_inflight_nodes_by_default(self) -> None:
+        node = Node(
+            id="q1",
+            project_id="p1",
+            kind=NodeKind.AGENT,
+            category=Category.REGULAR,
+            state=NodeState.QUEUED,
+            planspace_id="lane-A",
+        )
+        self.store.create_node(node)
+        self.store.write_node_preview(
+            "p1",
+            node.id,
+            json.dumps(
+                {
+                    "id": "q1",
+                    "kind": "agent",
+                    "category": "regular",
+                    "state": "virtual",
+                    "lane": "lane-A",
+                    "proposed_by": "node:parent",
+                    "motivation": "review",
+                    "prompt_draft": "review things",
+                    "scheduled_deps": ["parent"],
+                }
+            ),
+        )
+
+        root = materialize_active_lane(self.project, "lane-A", self.store)
+
+        self.assertFalse((root / "nodes" / "q1").exists())
+
+    def test_materializes_current_inflight_durable_preview(self) -> None:
+        node = Node(
+            id="q1",
+            project_id="p1",
+            kind=NodeKind.AGENT,
+            category=Category.REGULAR,
+            state=NodeState.QUEUED,
+            planspace_id="lane-A",
+        )
+        self.store.create_node(node)
+        self.store.write_node_preview(
+            "p1",
+            node.id,
+            json.dumps(
+                {
+                    "id": "q1",
+                    "kind": "agent",
+                    "category": "regular",
+                    "state": "virtual",
+                    "lane": "lane-A",
+                    "proposed_by": "node:parent",
+                    "motivation": "review",
+                    "prompt_draft": "review things",
+                    "scheduled_deps": ["parent"],
+                }
+            ),
+        )
+
+        root = materialize_active_lane(
+            self.project,
+            "lane-A",
+            self.store,
+            current_node_id="q1",
+        )
+
+        preview = json.loads((root / "nodes" / "q1" / "preview.json").read_text())
+        self.assertEqual(preview["state"], "virtual")
+        self.assertEqual(preview["scheduled_deps"], ["parent"])
+
 
 class SnapshotDiffTests(unittest.TestCase):
     def setUp(self) -> None:

@@ -12,9 +12,11 @@ from typing import Any
 from uuid import uuid4
 
 from .contextspace import (
+    contextspace_root,
     create_planspace,
     delete_project_contextspace,
     read_planspace_mode,
+    resolve_active_planspace,
 )
 from .domain import (
     TERMINAL_NODE_STATES,
@@ -27,6 +29,7 @@ from .domain import (
     normalize_planspace_mode,
 )
 from .language import normalize_preferred_language
+from .preview import render_virtual_preview
 from .runner import NodeRunner
 from .store import Store
 from .workspace import create_temporary_root, remove_temporary_root
@@ -562,6 +565,13 @@ class ProjectRegistry:
             return None
         if node.state is not NodeState.VIRTUAL or node.obsolete_reason:
             return None
+        active = resolve_active_planspace(
+            rt.project, contextspace_root(self.store.root)
+        )
+        active_lane = active[1].id if active is not None else ""
+        node_lane = node.planspace_id or ""
+        if node_lane != active_lane:
+            return None
         for dep in node.scheduled_deps:
             parent = self.store.load_node(pid, dep)
             if parent is None:
@@ -570,6 +580,11 @@ class ProjectRegistry:
                 continue
             if parent.state is NodeState.VIRTUAL and parent.obsolete_reason:
                 continue
+            return None
+        try:
+            self.store.write_node_preview(pid, node.id, render_virtual_preview(node))
+        except Exception:  # noqa: BLE001
+            logger.exception("failed to preserve virtual preview before promotion")
             return None
         node.state = NodeState.QUEUED
         node.prompt = node.prompt_draft or node.prompt

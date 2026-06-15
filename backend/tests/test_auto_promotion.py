@@ -274,6 +274,56 @@ class AutoPromoteOnRunnerDoneTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotEqual(reloaded.state, NodeState.VIRTUAL)
         self.assertEqual(reloaded.prompt, "follow up")
 
+    async def test_promote_virtual_rejects_non_active_lane(self) -> None:
+        active_lane = create_planspace(
+            self.project, title="active", mode="manual"
+        )
+        other_lane = create_planspace(
+            self.project, title="other", mode="manual"
+        )
+        rt = self.registry._runtimes[self.project.id]
+        settings = dict(rt.project.settings_override)
+        settings["active_planspace_id"] = active_lane
+        rt.project.settings_override = settings
+        self.store.update_project(rt.project)
+        virtual = self._make_virtual(other_lane, prompt_draft="wrong lane")
+
+        runner = self.registry.promote_virtual(self.project.id, virtual.id)
+
+        self.assertIsNone(runner)
+        reloaded = self.store.load_node(self.project.id, virtual.id)
+        assert reloaded is not None
+        self.assertEqual(reloaded.state, NodeState.VIRTUAL)
+
+    async def test_promote_virtual_preserves_virtual_preview(self) -> None:
+        plug_id = create_planspace(
+            self.project, title="active", mode="manual"
+        )
+        rt = self.registry._runtimes[self.project.id]
+        settings = dict(rt.project.settings_override)
+        settings["active_planspace_id"] = plug_id
+        rt.project.settings_override = settings
+        self.store.update_project(rt.project)
+        parent = self._make_finished_agent(plug_id)
+        virtual = self._make_virtual(
+            plug_id,
+            deps=[parent.id],
+            prompt_draft="review parent",
+        )
+
+        runner = self.registry.promote_virtual(self.project.id, virtual.id)
+
+        self.assertIsNotNone(runner)
+        await self._drain_task(rt.runner_task)
+        preview_text = self.store.read_node_preview(self.project.id, virtual.id)
+        self.assertIsNotNone(preview_text)
+        assert preview_text is not None
+        self.assertIn(parent.id, preview_text)
+        reloaded = self.store.load_node(self.project.id, virtual.id)
+        assert reloaded is not None
+        self.assertEqual(reloaded.prompt, "review parent")
+        self.assertIsNone(reloaded.prompt_draft)
+
     async def test_auto_mode_skips_virtual_with_unresolved_deps(self) -> None:
         plug_id = create_planspace(
             self.project, title="auto-deps", mode="auto"

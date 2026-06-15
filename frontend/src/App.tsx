@@ -208,7 +208,11 @@ export function App() {
     [nodes, pendingGate],
   );
   const activePendingReview = useMemo(
-    () => keepPendingForState(pendingReview, nodes, "awaiting_review"),
+    () =>
+      keepPendingForStates(pendingReview, nodes, [
+        "awaiting_review",
+        "awaiting_human_input",
+      ]),
     [nodes, pendingReview],
   );
   const composerLocked = !!activePendingGate || !!activePendingReview;
@@ -604,14 +608,14 @@ export function App() {
       if (ev.type === "interaction_request") {
         const ownerNodeId = activeNodeIdRef.current;
         if (ownerNodeId) {
-          if (ev.interaction_type === "checkpoint_review") {
+          if (isReviewInteraction(ev)) {
             setPendingReview({ request: ev, nodeId: ownerNodeId });
           } else {
             setPendingGate({ request: ev, nodeId: ownerNodeId });
           }
           setInspectedNodeId(ownerNodeId);
           setSelection({
-            kind: ev.interaction_type === "checkpoint_review" ? "gate" : "agent",
+            kind: isReviewInteraction(ev) ? "gate" : "agent",
             nodeId: ownerNodeId,
           });
         }
@@ -642,7 +646,7 @@ export function App() {
         if (ev.node.state !== "waiting") {
           setPendingGate((prev) => (prev?.nodeId === ev.node.id ? null : prev));
         }
-        if (ev.node.state !== "awaiting_review") {
+        if (ev.node.state !== "awaiting_review" && ev.node.state !== "awaiting_human_input") {
           setPendingReview((prev) => (prev?.nodeId === ev.node.id ? null : prev));
         }
       }
@@ -742,21 +746,30 @@ export function App() {
   const onResolveReview = useCallback(
     (payload: { id: string; judgment: string }) => {
       if (status !== "open") return;
+      const interactionType =
+        activePendingReview?.request.id === payload.id
+          ? activePendingReview.request.interaction_type
+          : "checkpoint_review";
+      const response =
+        interactionType === "human_review_prose"
+          ? { prose: payload.judgment }
+          : { judgment: payload.judgment };
       send({
         type: "interaction_response",
         id: payload.id,
         allow: true,
-        decision: "review",
-        response: {
-          judgment: payload.judgment,
-        },
+        decision:
+          interactionType === "human_review_prose"
+            ? "human_review_prose"
+            : "review",
+        response,
       });
       setPendingReview(null);
       window.setTimeout(() => {
         void refreshNodes();
       }, 250);
     },
-    [status, send, refreshNodes],
+    [activePendingReview, status, send, refreshNodes],
   );
 
   /* Wire the gate hexagon inline form to the current pending review. */
@@ -1122,7 +1135,8 @@ export function App() {
           pendingReview={
             activePendingReview &&
             selectedNode &&
-            selectedNode.state === "awaiting_review" &&
+            (selectedNode.state === "awaiting_review" ||
+              selectedNode.state === "awaiting_human_input") &&
             activePendingReview.nodeId === selectedNode.id
               ? activePendingReview.request
               : null
@@ -1199,10 +1213,25 @@ function keepPendingForState(
   nodes: NodeInfo[],
   state: NodeInfo["state"],
 ): PendingGateState | null {
+  return keepPendingForStates(pending, nodes, [state]);
+}
+
+function keepPendingForStates(
+  pending: PendingGateState | null,
+  nodes: NodeInfo[],
+  states: NodeInfo["state"][],
+): PendingGateState | null {
   if (!pending) return null;
   const owner = nodes.find((node) => node.id === pending.nodeId);
-  if (owner && owner.state !== state) return null;
+  if (owner && !states.includes(owner.state)) return null;
   return pending;
+}
+
+function isReviewInteraction(request: InteractionRequest): boolean {
+  return (
+    request.interaction_type === "checkpoint_review" ||
+    request.interaction_type === "human_review_prose"
+  );
 }
 
 function pendingBanner(
@@ -1212,8 +1241,7 @@ function pendingBanner(
 ): { nodeId: string; label: string } | null {
   const active = review ?? gate;
   if (!active || active.nodeId === selectedId) return null;
-  const labelKind =
-    active.request.interaction_type === "checkpoint_review" ? "review" : "response";
+  const labelKind = isReviewInteraction(active.request) ? "review" : "response";
   return {
     nodeId: active.nodeId,
     label: `Node ${active.nodeId.slice(0, 8)} is awaiting your ${labelKind}.`,
