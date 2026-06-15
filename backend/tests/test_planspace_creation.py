@@ -12,9 +12,11 @@ import yaml
 from miniclaw2.contextspace import (
     add_planspace_to_binding,
     create_planspace,
+    describe_project_contextspace,
     ensure_project_binding,
     read_planspace_mode,
     resolve_project_binding,
+    set_planspace_mode,
 )
 from miniclaw2.domain import Project
 
@@ -111,6 +113,60 @@ class ReadPlanspaceModeTests(unittest.TestCase):
             self.project, title="manual-lane", mode="manual"
         )
         self.assertEqual(read_planspace_mode(self.project, plug_id), "manual")
+
+    def test_set_planspace_mode_updates_manifest(self) -> None:
+        plug_id = create_planspace(
+            self.project, title="lane", mode="manual"
+        )
+
+        written = set_planspace_mode(self.project, plug_id, "auto")
+
+        self.assertEqual(written, "auto")
+        self.assertEqual(read_planspace_mode(self.project, plug_id), "auto")
+
+    def test_describe_project_contextspace_includes_bindings_and_mode(self) -> None:
+        plug_id = create_planspace(
+            self.project, title="Auto lane", mode="auto"
+        )
+        self.project.settings_override["active_planspace_id"] = plug_id
+
+        summary = describe_project_contextspace(self.project)
+
+        self.assertEqual(summary["active_planspace_id"], plug_id)
+        self.assertEqual(len(summary["bindings"]), 1)
+        binding = summary["bindings"][0]
+        self.assertEqual(binding["active_planspace_id"], plug_id)
+        plugs = {plug["id"]: plug for plug in binding["plugs"]}
+        self.assertIn(plug_id, plugs)
+        self.assertEqual(plugs[plug_id]["mode"], "auto")
+        self.assertTrue(plugs[plug_id]["active"])
+
+    def test_describe_project_contextspace_only_returns_current_project_binding(self) -> None:
+        other = Project(
+            root_path=str(Path(self.tmp.name) / "other-repo"),
+            name="billing",
+        )
+        Path(other.root_path).mkdir(parents=True, exist_ok=True)
+        current_plug = create_planspace(
+            self.project, title="Auth lane", mode="manual"
+        )
+        other_plug = create_planspace(
+            other, title="Billing lane", mode="manual"
+        )
+
+        summary = describe_project_contextspace(self.project)
+
+        self.assertEqual(len(summary["bindings"]), 1)
+        binding = summary["bindings"][0]
+        self.assertEqual(binding["id"], summary["resolved_binding_id"])
+        plug_ids = {plug["id"] for plug in binding["plugs"]}
+        self.assertIn(current_plug, plug_ids)
+        self.assertNotIn(other_plug, plug_ids)
+        selectable_ids = {
+            selectable["id"] for selectable in summary["selectable_bindings"]
+        }
+        self.assertIn(binding["id"], selectable_ids)
+        self.assertIn("project.billing", selectable_ids)
 
 
 if __name__ == "__main__":

@@ -3,7 +3,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
 
-import { getNodeStatusDelta } from "../api";
+import { getNodePreview } from "../api";
 import type {
   Activity,
   ClientMessage,
@@ -11,7 +11,6 @@ import type {
   ContextBundleSource,
   EventRecord,
   InteractionRequest,
-  NodeStatusDelta,
   NodeInfo,
 } from "../types";
 import { buildTurnsFromEvents } from "../transcript";
@@ -20,6 +19,7 @@ import { AskUserDialog } from "../components/AskUserDialog";
 import { PermissionDialog } from "../components/PermissionDialog";
 import { PlanDialog } from "../components/PlanDialog";
 import { canResumeNode } from "../nodeUtil";
+import { GateReviewForm } from "./gateReview";
 import { InspectDrawer } from "./InspectDrawer";
 
 type ResolveGatePayload = Omit<
@@ -30,188 +30,210 @@ type ResolveGatePayload = Omit<
 export type AgentPanelProps = {
   sessionId: string;
   node: NodeInfo;
+  nodesById: Map<string, NodeInfo>;
   events: EventRecord[];
   eventsLoading: boolean;
   contextBundle: ContextBundle | null;
   contextBundleLoading: boolean;
   pendingGate: InteractionRequest | null;
+  pendingReview: InteractionRequest | null;
   onResolveGate?: (id: string, payload: ResolveGatePayload) => void;
+  onResolveReview: (payload: { id: string; judgment: string }) => void;
   onSpawnPhantomFromNode: (nodeId: string) => void;
+  onPromoteVirtual: (nodeId: string) => void;
 };
 
-type PlanspaceUpdateSummary = {
-  planspace_id?: string;
-  applied?: number;
-  proposed?: number;
-  ignored?: number;
-  reason?: string;
-  source?: string;
-  event_type?: string;
-  staged?: boolean;
-  staged_path?: string;
-};
-
-/**
- * Single progressive panel for a selected agent run.
- *
- * Three primary cards: Agent Input → Planspace Change → Activity.
- * Thinking and raw fields live behind disclosures.
- */
 export function AgentPanel({
   sessionId,
   node,
+  nodesById,
   events,
   eventsLoading,
   contextBundle,
   contextBundleLoading,
   pendingGate,
+  pendingReview,
   onResolveGate,
+  onResolveReview,
   onSpawnPhantomFromNode,
+  onPromoteVirtual,
 }: AgentPanelProps) {
-  const turns = useMemo(() => buildTurnsFromEvents(node, events), [node, events]);
-  const planspaceUpdate = (node.settings_snapshot?.planspace_update ?? null) as
-    | PlanspaceUpdateSummary
-    | null;
-  const headline = (node.summary || node.prompt || "(no prompt)").trim();
+  const headline = (
+    node.summary ||
+    node.prompt_draft ||
+    node.prompt ||
+    "(no prompt)"
+  ).trim();
   const resumeParentLabel = node.parent_node_id ? node.parent_node_id.slice(0, 8) : null;
-
-  /* Interleaved transcript items: text + tool activity in chronological order. */
+  const turns = useMemo(() => buildTurnsFromEvents(node, events), [node, events]);
   const transcriptItems = useMemo(() => flattenTranscript(turns), [turns]);
+  const readyToPromote = useMemo(
+    () => virtualReady(node, nodesById),
+    [node, nodesById],
+  );
   const toolCallCount = useMemo(
     () => transcriptItems.reduce((n, item) => n + (item.kind === "tools" ? item.items.length : 0), 0),
     [transcriptItems],
   );
+  const activityDefaultOpen = !isTerminal(node.state) || transcriptItems.length > 0;
 
-  const [statusDelta, setStatusDelta] = useState<NodeStatusDelta | null>(null);
-  const [statusDeltaLoading, setStatusDeltaLoading] = useState(false);
+  const [preview, setPreview] = useState<string | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
 
   useEffect(() => {
+    if (node.state === "virtual") {
+      setPreview(null);
+      setPreviewLoading(false);
+      return;
+    }
     let cancelled = false;
-    setStatusDeltaLoading(true);
-    getNodeStatusDelta(sessionId, node.id)
+    setPreviewLoading(true);
+    getNodePreview(sessionId, node.id)
       .then((next) => {
-        if (!cancelled) setStatusDelta(next);
+        if (!cancelled) setPreview(next?.text ?? null);
       })
       .catch((err) => {
         if (!cancelled) {
-          console.warn("get node status delta failed:", err);
-          setStatusDelta(null);
+          console.warn("get node preview failed:", err);
+          setPreview(null);
         }
       })
       .finally(() => {
-        if (!cancelled) setStatusDeltaLoading(false);
+        if (!cancelled) setPreviewLoading(false);
       });
     return () => {
       cancelled = true;
     };
-  }, [sessionId, node.id, node.finished_at, node.settings_snapshot]);
-
-  const activityDefaultOpen = !isTerminal(node.state) || transcriptItems.length > 0;
+  }, [sessionId, node.id, node.state, node.finished_at]);
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
-      {/* Headline */}
       <div className="border-b border-line bg-surface-raised px-4 py-3">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
-            <StatePill state={node.state} />
+            <div className="flex flex-wrap items-center gap-1.5">
+              <StatePill state={node.state} />
+              <CategoryPill node={node} />
+            </div>
             <h2 className="mt-1.5 line-clamp-2 font-display text-[15px] font-semibold leading-snug text-ink-strong">
               {headline}
             </h2>
             {resumeParentLabel && node.parent_node_id && (
               <div className="mt-1 text-[11px] text-ink-muted">
-                ↻ continuing from{" "}
-                <span className="font-mono">{resumeParentLabel}</span>
+                continuing from <span className="font-mono">{resumeParentLabel}</span>
               </div>
             )}
           </div>
-          {canResumeNode(node) && (
+          {node.state === "virtual" ? (
+            <button
+              type="button"
+              onClick={() => onPromoteVirtual(node.id)}
+              disabled={!readyToPromote}
+              className="flex-none rounded-md bg-brand px-2.5 py-1 text-[11px] font-medium text-white shadow-card transition hover:brightness-[0.95] disabled:cursor-not-allowed disabled:opacity-40"
+              title={readyToPromote ? "Promote virtual node" : "Dependencies are not terminal"}
+            >
+              Promote
+            </button>
+          ) : canResumeNode(node) ? (
             <button
               type="button"
               onClick={() => onSpawnPhantomFromNode(node.id)}
               className="flex-none rounded-md border border-line bg-surface px-2.5 py-1 text-[11px] text-ink-muted transition hover:border-line-strong hover:text-ink"
               title="Start a follow-up run continuing this conversation"
             >
-              ↻ Follow up
+              Follow up
             </button>
-          )}
+          ) : null}
         </div>
       </div>
 
       <div className="flex-1 overflow-y-auto bg-surface px-4 py-3 text-sm">
-        {/* Pending gate (rendered inline at top when present) */}
-        {pendingGate && (
-          <section className="mb-4 rounded-md border border-state-waiting/40 bg-state-waiting-soft/40 p-3">
-            <SectionHeading tone="waiting">Pending response</SectionHeading>
-            <div className="mt-2">
-              <PendingGateInline
+        {node.state === "virtual" ? (
+          <VirtualNodeBody node={node} />
+        ) : (
+          <>
+            {pendingReview && (
+              <section className="mb-4 rounded-md border border-state-review/40 bg-state-review-soft/35 p-3">
+                <SectionHeading tone="review">Human review</SectionHeading>
+                <div className="mt-2">
+                  <GateReviewForm
+                    node={node}
+                    pending={pendingReview}
+                    onSubmit={onResolveReview}
+                    variant="panel"
+                  />
+                </div>
+              </section>
+            )}
+
+            {pendingGate && (
+              <section className="mb-4 rounded-md border border-state-waiting/40 bg-state-waiting-soft/40 p-3">
+                <SectionHeading tone="waiting">Pending response</SectionHeading>
+                <div className="mt-2">
+                  <PendingGateInline
+                    node={node}
+                    pending={pendingGate}
+                    onResolve={(payload) => onResolveGate?.(pendingGate.id, payload)}
+                  />
+                </div>
+              </section>
+            )}
+
+            <section className="mb-5">
+              <AgentInputCard
                 node={node}
-                pending={pendingGate}
-                onResolve={(payload) => onResolveGate?.(pendingGate.id, payload)}
+                contextBundle={contextBundle}
+                loading={contextBundleLoading}
               />
-            </div>
-          </section>
-        )}
+            </section>
 
-        {/* Agent input */}
-        <section className="mb-5">
-          <AgentInputCard
-            node={node}
-            contextBundle={contextBundle}
-            loading={contextBundleLoading}
-          />
-        </section>
+            <section className="mb-5">
+              <PreviewCard
+                preview={preview}
+                loading={previewLoading}
+                node={node}
+              />
+            </section>
 
-        {/* Planspace change */}
-        <section className="mb-5">
-          <PlanspaceChangeCard
-            node={node}
-            update={planspaceUpdate}
-            statusDelta={statusDelta}
-            loading={statusDeltaLoading}
-          />
-        </section>
-
-        {/* Activity — text and tool use interleaved */}
-        <section className="mb-5">
-          <details
-            open={activityDefaultOpen}
-            className="overflow-hidden rounded-md border border-line bg-surface-sunken"
-          >
-            <summary className="cursor-pointer px-3 py-2">
-              <SectionHeading
-                right={
-                  <span className="text-[10px] font-normal normal-case tracking-normal text-ink-subtle">
-                    {eventsLoading
-                      ? "loading..."
-                      : `${toolCallCount} tool ${toolCallCount === 1 ? "call" : "calls"} · ${events.length} events`}
-                  </span>
-                }
+            <section className="mb-5">
+              <details
+                open={activityDefaultOpen}
+                className="overflow-hidden rounded-md border border-line bg-surface-sunken"
               >
-                Activity
-              </SectionHeading>
-            </summary>
-            <div className="border-t border-line px-3 py-3">
-              <ActivityTranscript
-                items={transcriptItems}
-                streaming={node.state === "running"}
+                <summary className="cursor-pointer px-3 py-2">
+                  <SectionHeading
+                    right={
+                      <span className="text-[10px] font-normal normal-case tracking-normal text-ink-subtle">
+                        {eventsLoading
+                          ? "loading..."
+                          : `${toolCallCount} tool ${toolCallCount === 1 ? "call" : "calls"} · ${events.length} events`}
+                      </span>
+                    }
+                  >
+                    Activity
+                  </SectionHeading>
+                </summary>
+                <div className="border-t border-line px-3 py-3">
+                  <ActivityTranscript
+                    items={transcriptItems}
+                    streaming={node.state === "running"}
+                  />
+                </div>
+              </details>
+            </section>
+
+            <ThinkingSection turns={turns} />
+
+            <section className="mb-2">
+              <InspectDrawer
+                node={node}
+                contextBundle={contextBundle}
+                contextBundleLoading={contextBundleLoading}
+                eventCount={events.length}
               />
-            </div>
-          </details>
-        </section>
-
-        {/* Thinking blocks — separate section, collapsed by default */}
-        <ThinkingSection turns={turns} />
-
-        {/* Inspect drawer */}
-        <section className="mb-2">
-          <InspectDrawer
-            node={node}
-            contextBundle={contextBundle}
-            contextBundleLoading={contextBundleLoading}
-            eventCount={events.length}
-          />
-        </section>
+            </section>
+          </>
+        )}
       </div>
     </div>
   );
@@ -247,9 +269,49 @@ function SectionHeading({
   );
 }
 
-/* ─────────────────────────────────────────── */
-/* Agent input card                              */
-/* ─────────────────────────────────────────── */
+function VirtualNodeBody({ node }: { node: NodeInfo }) {
+  return (
+    <>
+      <section className="mb-5">
+        <div className="overflow-hidden rounded-md border border-line bg-surface-sunken">
+          <div className="border-b border-line px-3 py-2">
+            <SectionHeading>Draft</SectionHeading>
+          </div>
+          <div className="space-y-3 px-3 py-3">
+            <KVGrid
+              rows={[
+                ["Proposed by", node.proposed_by ?? "-"],
+                ["Dependencies", (node.scheduled_deps ?? []).join(", ") || "-"],
+                ["Obsolete", node.obsolete_reason ?? "-"],
+              ]}
+            />
+            <pre className="max-h-[36vh] overflow-auto whitespace-pre-wrap break-words rounded-md border border-line bg-surface px-3 py-2 font-mono text-[11.5px] leading-relaxed text-ink">
+              {node.prompt_draft || node.prompt || "(empty draft)"}
+            </pre>
+          </div>
+        </div>
+      </section>
+
+      {node.brief && (
+        <section className="mb-5">
+          <div className="overflow-hidden rounded-md border border-state-review/25 bg-state-review-soft/20">
+            <div className="border-b border-state-review/25 px-3 py-2">
+              <SectionHeading tone="review">Review brief</SectionHeading>
+            </div>
+            <KVGrid
+              className="px-3 py-3"
+              rows={[
+                ["Check", node.brief.check_what],
+                ["Expected", node.brief.expected],
+                ["Abnormal", node.brief.abnormal],
+              ]}
+            />
+          </div>
+        </section>
+      )}
+    </>
+  );
+}
 
 function AgentInputCard({
   node,
@@ -280,7 +342,7 @@ function AgentInputCard({
           right={
             loading ? (
               <span className="text-[10px] font-normal normal-case tracking-normal text-ink-subtle">
-                loading…
+                loading...
               </span>
             ) : null
           }
@@ -368,9 +430,6 @@ function PromptBlock({
 
 function renderWithFootnotes(text: string, sources: ContextBundleSource[]): string {
   if (sources.length === 0) return text;
-  /* The backend writes `# Loaded Context: <plug_id or path> (<kind>)` headers
-   * above each injected source. Attach a footnote marker to the matching
-   * header so readers can jump to the references list below. */
   let out = text;
   sources.forEach((src, i) => {
     const marker = `[^${i + 1}]`;
@@ -393,34 +452,28 @@ function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-/* ─────────────────────────────────────────── */
-/* Planspace change card                         */
-/* ─────────────────────────────────────────── */
-
-function PlanspaceChangeCard({
-  node,
-  update,
-  statusDelta,
+function PreviewCard({
+  preview,
   loading,
+  node,
 }: {
-  node: NodeInfo;
-  update: PlanspaceUpdateSummary | null;
-  statusDelta: NodeStatusDelta | null;
+  preview: string | null;
   loading: boolean;
+  node: NodeInfo;
 }) {
   return (
     <div className="overflow-hidden rounded-md border border-line bg-surface-sunken">
       <div className="border-b border-line px-3 py-2">
         <SectionHeading
           right={
-            statusDelta ? (
+            loading ? (
               <span className="text-[10px] font-normal normal-case tracking-normal text-ink-subtle">
-                {new Date(statusDelta.applied_at * 1000).toLocaleString()}
+                loading...
               </span>
             ) : null
           }
         >
-          Planspace change
+          Preview
         </SectionHeading>
       </div>
       <div className="px-3 py-3">
@@ -428,294 +481,19 @@ function PlanspaceChangeCard({
           <pre className="whitespace-pre-wrap rounded-md border border-state-error/30 bg-state-error-soft p-3 text-xs text-state-error">
             {node.error}
           </pre>
+        ) : preview ? (
+          <pre className="max-h-[42vh] overflow-auto whitespace-pre-wrap break-words rounded-md border border-line bg-surface px-3 py-2 font-mono text-[11px] leading-relaxed text-ink">
+            {preview}
+          </pre>
         ) : (
-          <PlanspaceChangeBody
-            update={update}
-            statusDelta={statusDelta}
-            loading={loading}
-            node={node}
-          />
-        )}
-      </div>
-    </div>
-  );
-}
-
-function PlanspaceChangeBody({
-  node,
-  update,
-  statusDelta,
-  loading,
-}: {
-  node: NodeInfo;
-  update: PlanspaceUpdateSummary | null;
-  statusDelta: NodeStatusDelta | null;
-  loading: boolean;
-}) {
-  const fields = useMemo(
-    () =>
-      statusDelta ? buildFieldChanges(statusDelta.before, statusDelta.after) : [],
-    [statusDelta],
-  );
-  if (statusDelta) {
-    return (
-      <div className="space-y-2">
-        <div className="flex items-center justify-between gap-2 font-mono text-[11px] text-ink-muted">
-          <span>{statusDelta.planspace_id}</span>
-        </div>
-        {fields.length === 0 ? (
           <div className="rounded-md border border-line bg-surface px-3 py-2 text-[11.5px] text-ink-muted">
-            No field-level changes detected.
-          </div>
-        ) : (
-          <div className="space-y-1.5">
-            {fields.map((f) => (
-              <FieldChangeCard key={f.field} change={f} />
-            ))}
+            No preview recorded.
           </div>
         )}
-        <details className="mt-2 overflow-hidden rounded border border-line bg-surface">
-          <summary className="cursor-pointer px-3 py-2 text-[10px] font-medium uppercase tracking-[0.14em] text-ink-muted hover:text-ink">
-            View raw STATUS diff
-          </summary>
-          <RawStatusDiff before={statusDelta.before} after={statusDelta.after} />
-        </details>
       </div>
-    );
-  }
-  if (loading && update && (update.applied || update.proposed)) {
-    return (
-      <div className="rounded-md border border-line bg-surface px-3 py-2 text-[11.5px] text-ink-muted">
-        Loading STATUS delta…
-      </div>
-    );
-  }
-  if (node.requires_review && update?.staged) {
-    return (
-      <div className="rounded-md border border-state-waiting/30 bg-state-waiting-soft/30 px-3 py-2 text-[12px] text-ink">
-        <div className="font-medium text-ink-strong">Staged for review</div>
-        <div className="mt-0.5 text-[11.5px] text-ink-muted">
-          Interim update parked in{" "}
-          <span className="font-mono">{update.planspace_id ?? "—"}</span>
-          {"; the gate's resolution will merge the user's judgment back into the planspace."}
-        </div>
-      </div>
-    );
-  }
-  if (update && (update.applied || update.proposed)) {
-    const planspaceId = update.planspace_id ?? "—";
-    return (
-      <div className="rounded-md border border-line bg-surface px-3 py-2 text-[12px] text-ink-strong">
-        <div className="font-mono text-[11px] text-ink-muted">{planspaceId}</div>
-        <div className="mt-2 flex flex-wrap gap-2 text-[11px]">
-          <span className="rounded bg-state-review-soft px-1.5 py-0.5 text-state-review">
-            applied · {update.applied ?? 0}
-          </span>
-          <span className="rounded bg-surface-sunken px-1.5 py-0.5 text-ink-muted">
-            proposed · {update.proposed ?? 0}
-          </span>
-          {update.ignored !== undefined && update.ignored > 0 && (
-            <span className="rounded bg-surface-sunken px-1.5 py-0.5 text-ink-subtle">
-              ignored · {update.ignored}
-            </span>
-          )}
-        </div>
-      </div>
-    );
-  }
-  if (update?.reason) {
-    return (
-      <div className="rounded-md border border-line bg-surface px-3 py-2 text-[11.5px] text-ink-muted">
-        No planspace update applied:{" "}
-        <span className="font-mono text-ink-subtle">{update.reason}</span>
-      </div>
-    );
-  }
-  return (
-    <div className="rounded-md border border-line bg-surface px-3 py-2 text-[11.5px] text-ink-muted">
-      No planspace updates recorded for this run.
     </div>
   );
 }
-
-type FieldChange = {
-  field: string;
-  label: string;
-  before: string;
-  after: string;
-  added: number;
-  removed: number;
-};
-
-const FIELD_LABELS: Record<string, string> = {
-  goal: "goal",
-  current_state: "current state",
-  open_questions: "open questions",
-  decisions: "decisions",
-  out_of_scope: "out of scope",
-  body: "notes",
-};
-
-const FRONTMATTER_FIELDS = [
-  "goal",
-  "current_state",
-  "open_questions",
-  "decisions",
-  "out_of_scope",
-] as const;
-
-function buildFieldChanges(before: string, after: string): FieldChange[] {
-  const a = parseStatus(before);
-  const b = parseStatus(after);
-  const out: FieldChange[] = [];
-  for (const field of FRONTMATTER_FIELDS) {
-    const beforeText = a[field] ?? "";
-    const afterText = b[field] ?? "";
-    if (beforeText === afterText) continue;
-    const { added, removed } = lineDiffStat(beforeText, afterText);
-    out.push({
-      field,
-      label: FIELD_LABELS[field] ?? field,
-      before: beforeText,
-      after: afterText,
-      added,
-      removed,
-    });
-  }
-  const beforeBody = a.body ?? "";
-  const afterBody = b.body ?? "";
-  if (beforeBody !== afterBody) {
-    const { added, removed } = lineDiffStat(beforeBody, afterBody);
-    out.push({
-      field: "body",
-      label: FIELD_LABELS.body,
-      before: beforeBody,
-      after: afterBody,
-      added,
-      removed,
-    });
-  }
-  return out;
-}
-
-function FieldChangeCard({ change }: { change: FieldChange }) {
-  return (
-    <details className="overflow-hidden rounded border border-line bg-surface">
-      <summary className="flex cursor-pointer items-center justify-between gap-2 px-3 py-2">
-        <span className="text-[12px] font-medium text-ink-strong">{change.label}</span>
-        <span className="font-mono text-[11px]">
-          <span className="text-state-review">+{change.added}</span>
-          <span className="ml-1.5 text-state-error">-{change.removed}</span>
-        </span>
-      </summary>
-      <div className="border-t border-line">
-        <div className="border-b border-line/60 px-3 py-2">
-          <div className="mb-1 text-[10px] uppercase tracking-[0.12em] text-ink-subtle">
-            raw
-          </div>
-          <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-ink-muted">
-            {change.before || <span className="italic text-ink-subtle">empty</span>}
-          </pre>
-        </div>
-        <div className="px-3 py-2">
-          <div className="mb-1 text-[10px] uppercase tracking-[0.12em] text-ink-subtle">
-            current
-          </div>
-          <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-ink">
-            {change.after || <span className="italic text-ink-subtle">empty</span>}
-          </pre>
-        </div>
-      </div>
-    </details>
-  );
-}
-
-function lineDiffStat(before: string, after: string): { added: number; removed: number } {
-  if (before === after) return { added: 0, removed: 0 };
-  const rows = makeLineDiff(before, after);
-  let added = 0;
-  let removed = 0;
-  for (const row of rows) {
-    if (row.kind === "add") added += 1;
-    else if (row.kind === "remove") removed += 1;
-  }
-  return { added, removed };
-}
-
-type ParsedStatus = {
-  goal: string;
-  current_state: string;
-  open_questions: string;
-  decisions: string;
-  out_of_scope: string;
-  body: string;
-};
-
-const FRONTMATTER_RE = /^---\n([\s\S]*?)\n---\n?([\s\S]*)$/;
-
-function parseStatus(text: string): ParsedStatus {
-  const empty: ParsedStatus = {
-    goal: "",
-    current_state: "",
-    open_questions: "",
-    decisions: "",
-    out_of_scope: "",
-    body: "",
-  };
-  if (!text) return empty;
-  const match = FRONTMATTER_RE.exec(text);
-  if (!match) {
-    return { ...empty, body: text.trim() };
-  }
-  const yaml = match[1];
-  const body = match[2].trim();
-  const parsed = parseYamlFields(yaml);
-  return {
-    goal: parsed.goal ?? "",
-    current_state: parsed.current_state ?? "",
-    open_questions: parsed.open_questions ?? "",
-    decisions: parsed.decisions ?? "",
-    out_of_scope: parsed.out_of_scope ?? "",
-    body,
-  };
-}
-
-/**
- * Slice a YAML document into top-level field text blocks, keyed by field name.
- *
- * We don't actually parse YAML semantically — we just collect each top-level
- * key's literal lines so a humanly-meaningful before/after diff can be shown
- * per field. Works for both scalar values and list values.
- */
-function parseYamlFields(yaml: string): Record<string, string> {
-  const lines = yaml.split("\n");
-  const out: Record<string, string[]> = {};
-  let current: string | null = null;
-  for (const raw of lines) {
-    const topKey = /^([A-Za-z_][A-Za-z0-9_]*)\s*:(.*)$/.exec(raw);
-    if (topKey) {
-      current = topKey[1];
-      const rest = topKey[2].trim();
-      out[current] = rest ? [rest] : [];
-      continue;
-    }
-    if (current) {
-      /* Continuation lines: indented or list items. Strip one level of indent
-       * for readability. */
-      const stripped = raw.replace(/^( {2}|\t)/, "");
-      out[current].push(stripped);
-    }
-  }
-  const result: Record<string, string> = {};
-  for (const [k, v] of Object.entries(out)) {
-    result[k] = v.join("\n").trim();
-  }
-  return result;
-}
-
-/* ─────────────────────────────────────────── */
-/* Activity transcript (interleaved)            */
-/* ─────────────────────────────────────────── */
 
 type TranscriptItem =
   | { kind: "user"; id: string; text: string }
@@ -728,9 +506,7 @@ function flattenTranscript(turns: ReturnType<typeof buildTurnsFromEvents>): Tran
   for (const turn of turns) {
     if (turn.role === "user") {
       const trimmed = turn.text.trim();
-      if (trimmed) {
-        out.push({ kind: "user", id: turn.id, text: trimmed });
-      }
+      if (trimmed) out.push({ kind: "user", id: turn.id, text: trimmed });
       continue;
     }
     for (const block of turn.blocks) {
@@ -741,7 +517,6 @@ function flattenTranscript(turns: ReturnType<typeof buildTurnsFromEvents>): Tran
       } else if (block.kind === "error") {
         out.push({ kind: "error", id: block.id, text: block.text });
       }
-      /* thinking handled separately */
     }
   }
   return out;
@@ -819,29 +594,6 @@ function TranscriptItemView({ item }: { item: TranscriptItem }) {
   return <ToolActivity items={item.items} />;
 }
 
-function RawStatusDiff({ before, after }: { before: string; after: string }) {
-  const rows = useMemo(() => makeLineDiff(before, after), [before, after]);
-  return (
-    <pre className="max-h-[42vh] overflow-auto whitespace-pre-wrap break-words px-3 py-2 font-mono text-[11px] leading-relaxed">
-      {rows.map((row, index) => (
-        <span
-          key={index}
-          className={
-            row.kind === "add"
-              ? "block bg-state-done-soft text-ink-strong"
-              : row.kind === "remove"
-                ? "block bg-state-error-soft text-state-error"
-                : "block text-ink-muted"
-          }
-        >
-          {row.prefix}
-          {row.text || " "}
-        </span>
-      ))}
-    </pre>
-  );
-}
-
 function ThinkingSection({ turns }: { turns: ReturnType<typeof buildTurnsFromEvents> }) {
   const thinking = useMemo(() => {
     const out: string[] = [];
@@ -873,57 +625,6 @@ function ThinkingSection({ turns }: { turns: ReturnType<typeof buildTurnsFromEve
       </details>
     </section>
   );
-}
-
-function isTerminal(state: NodeInfo["state"]): boolean {
-  return state === "done" || state === "error" || state === "cancelled";
-}
-
-type DiffRow = {
-  kind: "same" | "add" | "remove";
-  prefix: string;
-  text: string;
-};
-
-function makeLineDiff(before: string, after: string): DiffRow[] {
-  const a = before.split("\n");
-  const b = after.split("\n");
-  const table: number[][] = Array.from({ length: a.length + 1 }, () =>
-    Array(b.length + 1).fill(0),
-  );
-  for (let i = a.length - 1; i >= 0; i -= 1) {
-    for (let j = b.length - 1; j >= 0; j -= 1) {
-      table[i][j] =
-        a[i] === b[j]
-          ? table[i + 1][j + 1] + 1
-          : Math.max(table[i + 1][j], table[i][j + 1]);
-    }
-  }
-  const rows: DiffRow[] = [];
-  let i = 0;
-  let j = 0;
-  while (i < a.length && j < b.length) {
-    if (a[i] === b[j]) {
-      rows.push({ kind: "same", prefix: "  ", text: a[i] });
-      i += 1;
-      j += 1;
-    } else if (table[i + 1][j] >= table[i][j + 1]) {
-      rows.push({ kind: "remove", prefix: "- ", text: a[i] });
-      i += 1;
-    } else {
-      rows.push({ kind: "add", prefix: "+ ", text: b[j] });
-      j += 1;
-    }
-  }
-  while (i < a.length) {
-    rows.push({ kind: "remove", prefix: "- ", text: a[i] });
-    i += 1;
-  }
-  while (j < b.length) {
-    rows.push({ kind: "add", prefix: "+ ", text: b[j] });
-    j += 1;
-  }
-  return rows;
 }
 
 function PendingGateInline({
@@ -985,7 +686,7 @@ function PendingGateInline({
   }
   return (
     <div className="text-[12px] text-ink-muted">
-      Pending {pending.interaction_type} on {node.id.slice(0, 8)} — open the matching review handler.
+      Pending {pending.interaction_type} on {node.id.slice(0, 8)}.
     </div>
   );
 }
@@ -1001,6 +702,7 @@ function toLegacyAnswers(answers: Record<string, { answers: string[] }>) {
 
 function StatePill({ state }: { state: NodeInfo["state"] }) {
   const map: Record<NodeInfo["state"], { bg: string; text: string; label: string }> = {
+    virtual: { bg: "bg-surface-sunken", text: "text-ink-muted", label: "virtual" },
     queued: { bg: "bg-state-queued-soft", text: "text-ink-muted", label: "queued" },
     running: {
       bg: "bg-state-running-soft",
@@ -1016,11 +718,6 @@ function StatePill({ state }: { state: NodeInfo["state"] }) {
       bg: "bg-state-review-soft",
       text: "text-state-review",
       label: "human input",
-    },
-    awaiting_review: {
-      bg: "bg-state-review-soft",
-      text: "text-state-review",
-      label: "review",
     },
     done: { bg: "bg-state-done-soft", text: "text-ink-muted", label: "done" },
     error: { bg: "bg-state-error-soft", text: "text-state-error", label: "error" },
@@ -1043,4 +740,55 @@ function StatePill({ state }: { state: NodeInfo["state"] }) {
       {m.label}
     </span>
   );
+}
+
+function CategoryPill({ node }: { node: NodeInfo }) {
+  const label =
+    node.category === "planning"
+      ? "planning"
+      : node.category === "review"
+        ? node.subtype === "human_interact_review"
+          ? "human review"
+          : "review"
+        : "regular";
+  return (
+    <span className="inline-block rounded border border-line bg-surface px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.12em] text-ink-muted">
+      {label}
+    </span>
+  );
+}
+
+function KVGrid({
+  rows,
+  className,
+}: {
+  rows: Array<[string, string]>;
+  className?: string;
+}) {
+  return (
+    <dl className={"grid grid-cols-[120px_1fr] gap-x-3 gap-y-1.5 text-[11.5px] " + (className ?? "")}>
+      {rows.map(([k, v]) => (
+        <div key={k} className="contents">
+          <dt className="text-ink-subtle">{k}</dt>
+          <dd className="whitespace-pre-wrap break-words font-mono text-ink">{v || "-"}</dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
+
+function isTerminal(state: NodeInfo["state"]): boolean {
+  return state === "done" || state === "error" || state === "cancelled";
+}
+
+function virtualReady(node: NodeInfo, byId: Map<string, NodeInfo>): boolean {
+  if (node.state !== "virtual" || node.obsolete_reason) return false;
+  for (const depId of node.scheduled_deps ?? []) {
+    const dep = byId.get(depId);
+    if (!dep) continue;
+    if (isTerminal(dep.state)) continue;
+    if (dep.state === "virtual" && dep.obsolete_reason) continue;
+    return false;
+  }
+  return true;
 }

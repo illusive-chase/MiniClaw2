@@ -5,8 +5,6 @@ import type { PhantomNodeData } from "../layout";
 export type PhantomSubmit = {
   prompt: string;
   resumeFromNodeId: string | null;
-  needsReview: boolean;
-  extraPlanspaceLoads: string[];
 };
 
 export type PhantomPlanspaceOption = {
@@ -20,7 +18,7 @@ export type PhantomNodeContext = {
   /** clear resume source (convert into fresh-start) */
   onClearResume: () => void;
   disabled: boolean;
-  /** Other planspaces the user can pull context from on this run. */
+  /** Kept for compatibility while the composer no longer exposes cross-lane loads. */
   planspaceOptions: PhantomPlanspaceOption[];
   /** Planspace id the active binding will inject by default. */
   activePlanspaceId: string | null;
@@ -38,9 +36,6 @@ export type PhantomNodeContext = {
 function PhantomNodeImpl({ data, selected }: NodeProps<PhantomNodeData>) {
   const ctx = phantomContext;
   const [prompt, setPrompt] = useState("");
-  const [needsReview, setNeedsReview] = useState(false);
-  const [extraLoads, setExtraLoads] = useState<string[]>([]);
-  const [pickerOpen, setPickerOpen] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const disabled = data.disabled || ctx.disabled;
 
@@ -58,15 +53,8 @@ function PhantomNodeImpl({ data, selected }: NodeProps<PhantomNodeData>) {
     latest.onSubmit({
       prompt: prompt.trim(),
       resumeFromNodeId: data.resumeFromNodeId,
-      needsReview,
-      extraPlanspaceLoads: extraLoads,
     });
   };
-
-  const availableLoads = ctx.planspaceOptions.filter(
-    (opt) => opt.id !== ctx.activePlanspaceId && !extraLoads.includes(opt.id),
-  );
-  const labelById = new Map(ctx.planspaceOptions.map((o) => [o.id, o.label]));
 
   return (
     <div
@@ -111,71 +99,6 @@ function PhantomNodeImpl({ data, selected }: NodeProps<PhantomNodeData>) {
         disabled={disabled}
         className="nodrag w-full resize-none rounded-md bg-transparent text-[13px] leading-relaxed text-ink-strong placeholder:text-ink-subtle focus:outline-none"
       />
-
-      <label className="nodrag mt-2 flex items-center justify-between gap-3 rounded border border-line bg-surface-sunken/60 px-2 py-1.5 text-[11px] text-ink">
-        <span>Needs review</span>
-        <input
-          type="checkbox"
-          checked={needsReview}
-          onChange={(e) => setNeedsReview(e.target.checked)}
-          className="h-3.5 w-3.5 accent-brand"
-        />
-      </label>
-
-      {(extraLoads.length > 0 || availableLoads.length > 0) && (
-        <div className="nodrag mt-2 space-y-1">
-          {extraLoads.length > 0 && (
-            <div className="flex flex-wrap gap-1">
-              {extraLoads.map((id) => (
-                <span
-                  key={id}
-                  className="inline-flex items-center gap-1 rounded border border-line bg-surface-sunken px-1.5 py-0.5 text-[10px] text-ink-muted"
-                >
-                  <span>↗ {labelById.get(id) ?? id}</span>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setExtraLoads((prev) => prev.filter((x) => x !== id))
-                    }
-                    className="text-ink-subtle hover:text-state-error"
-                    title="Remove"
-                  >
-                    ×
-                  </button>
-                </span>
-              ))}
-            </div>
-          )}
-          {availableLoads.length > 0 && (
-            <div className="relative">
-              <button
-                type="button"
-                onClick={() => setPickerOpen((o) => !o)}
-                className="rounded border border-dashed border-line bg-surface px-2 py-0.5 text-[10px] text-ink-muted hover:border-brand hover:text-ink-strong"
-              >
-                + load from another direction
-              </button>
-              {pickerOpen && (
-                <div className="absolute z-20 mt-1 max-h-48 w-full overflow-auto rounded-md border border-line bg-surface-raised text-[11px] shadow-card">
-                  {availableLoads.map((opt) => (
-                    <button
-                      key={opt.id}
-                      type="button"
-                      onClick={() => {
-                        setExtraLoads((prev) => [...prev, opt.id]);
-                        setPickerOpen(false);
-                      }}
-                      className="block w-full px-2 py-1 text-left hover:bg-surface-sunken"
-                    >
-                      {opt.label}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-      )}
 
       <div className="mt-2 flex items-center justify-between text-[10px] text-ink-subtle">
         <span>⌘/Ctrl + Enter to launch · click outside to dismiss</span>

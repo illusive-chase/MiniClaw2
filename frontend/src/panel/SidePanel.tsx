@@ -6,15 +6,14 @@ import type {
   InteractionRequest,
   NodeDiff,
   NodeInfo,
+  PlanspaceMode,
   SessionContextSpaceInfo,
   SessionInfo,
 } from "../types";
 import { AgentPanel } from "./AgentPanel";
 import { ContextNodePanel } from "./ContextNodePanel";
-import { GatePanel } from "./GatePanel";
 import { OpPanel } from "./OpPanel";
 import { PlanspaceFilePanel } from "./PlanspaceFilePanel";
-import { PlanspacePanel } from "./PlanspacePanel";
 import { ProjectPanel } from "./ProjectPanel";
 
 type ResolveGatePayload = Omit<
@@ -61,7 +60,9 @@ export type SidePanelProps = {
   onPreferredLanguageChange: (preferredLanguage: string | null) => void;
   onActivatePlanspace: (binding_id: string, planspace_id: string) => void;
   onSelectContextBinding: (binding_id: string) => void;
-  onNewDirection: (userSeed: string, needsReview: boolean) => void;
+  onNewDirection: (userSeed: string, mode: PlanspaceMode) => void;
+  onPromoteVirtual: (nodeId: string) => void;
+  onPlanspaceModeChange: (planspaceId: string, mode: PlanspaceMode) => void;
   onContextInit: () => void;
   onContextRefresh: () => void;
   onContextCancel: () => void;
@@ -115,6 +116,8 @@ function Inner(props: SidePanelProps & { nodesById: Map<string, NodeInfo> }) {
     onActivatePlanspace,
     onSelectContextBinding,
     onNewDirection,
+    onPromoteVirtual,
+    onPlanspaceModeChange,
     onContextInit,
     onContextRefresh,
     onContextCancel,
@@ -161,25 +164,17 @@ function Inner(props: SidePanelProps & { nodesById: Map<string, NodeInfo> }) {
       <AgentPanel
         sessionId={session.id}
         node={node}
+        nodesById={nodesById}
         events={events}
         eventsLoading={eventsLoading}
         contextBundle={contextBundle}
         contextBundleLoading={contextBundleLoading}
         pendingGate={pendingGate}
+        pendingReview={pendingReview}
         onResolveGate={onResolveGate}
+        onResolveReview={onResolveReview}
         onSpawnPhantomFromNode={onSpawnPhantomFromNode}
-      />
-    );
-  }
-
-  if (selection.kind === "gate") {
-    const node = nodesById.get(selection.nodeId);
-    if (!node) return <Missing />;
-    return (
-      <GatePanel
-        node={node}
-        pending={pendingReview}
-        onSubmit={onResolveReview}
+        onPromoteVirtual={onPromoteVirtual}
       />
     );
   }
@@ -191,11 +186,12 @@ function Inner(props: SidePanelProps & { nodesById: Map<string, NodeInfo> }) {
   }
 
   if (selection.kind === "planspace") {
-    if (!session) return <Missing />;
     return (
-      <PlanspacePanel
-        sessionId={session.id}
+      <PlanspaceLanePanel
         planspaceId={selection.planspaceId}
+        contextSpace={contextSpace}
+        saving={contextSpaceSaving}
+        onModeChange={onPlanspaceModeChange}
       />
     );
   }
@@ -212,21 +208,13 @@ function Inner(props: SidePanelProps & { nodesById: Map<string, NodeInfo> }) {
       }
     }
     if (session && isPlanspaceFileSelection(selection)) {
-      const role =
-        selection.scope === "project-root"
-          ? "context"
-          : selection.sourceKind === "plan"
-            ? "plan"
-            : "status";
       return (
         <PlanspaceFilePanel
           sessionId={session.id}
-          role={role}
-          planspaceId={selection.plugId ?? null}
           loadedByNodeIds={loadedByNodeIds}
           nodesById={nodesById}
           onSelectConsumer={onSelectNode}
-          reloadVersion={role === "context" ? contextReloadVersion : undefined}
+          reloadVersion={contextReloadVersion}
         />
       );
     }
@@ -253,13 +241,72 @@ function Missing() {
   );
 }
 
+function PlanspaceLanePanel({
+  planspaceId,
+  contextSpace,
+  saving,
+  onModeChange,
+}: {
+  planspaceId: string;
+  contextSpace: SessionContextSpaceInfo | null;
+  saving: boolean;
+  onModeChange: (planspaceId: string, mode: PlanspaceMode) => void;
+}) {
+  const plug = contextSpace?.bindings
+    .flatMap((binding) => binding.plugs)
+    .find((candidate) => candidate.id === planspaceId);
+  const mode = plug?.mode ?? "manual";
+  return (
+    <div className="flex h-full flex-col overflow-hidden">
+      <div className="border-b border-line bg-surface-raised px-4 py-3">
+        <div className="text-[10px] font-medium uppercase tracking-[0.14em] text-ink-subtle">
+          Direction
+        </div>
+        <h2 className="mt-1 truncate font-display text-[15px] font-semibold leading-snug text-ink-strong">
+          {plug?.title || planspaceId}
+        </h2>
+        <div className="mt-1 font-mono text-[10.5px] text-ink-muted">
+          {planspaceId}
+        </div>
+      </div>
+      <div className="flex-1 overflow-y-auto bg-surface px-4 py-3 text-sm">
+        <section className="mb-5">
+          <div className="text-[10px] font-medium uppercase tracking-[0.14em] text-ink-subtle">
+            Promotion mode
+          </div>
+          <div className="mt-2 inline-flex rounded-md border border-line bg-surface-sunken p-0.5">
+            {(["manual", "auto"] as const).map((option) => (
+              <button
+                key={option}
+                type="button"
+                disabled={saving || mode === option}
+                onClick={() => onModeChange(planspaceId, option)}
+                className={
+                  "rounded px-3 py-1.5 text-[12px] font-medium transition disabled:cursor-default " +
+                  (mode === option
+                    ? "bg-surface-raised text-ink-strong shadow-card"
+                    : "text-ink-muted hover:text-ink")
+                }
+              >
+                {option}
+              </button>
+            ))}
+          </div>
+        </section>
+
+        <dl className="rounded-md border border-line bg-surface-sunken px-3 py-2 text-[11.5px]">
+          <div className="grid grid-cols-[120px_1fr] gap-3">
+            <dt className="text-ink-subtle">Current mode</dt>
+            <dd className="font-mono text-ink">{mode}</dd>
+          </div>
+        </dl>
+      </div>
+    </div>
+  );
+}
+
 function isPlanspaceFileSelection(
   selection: Extract<CanvasSelection, { kind: "context" }>,
 ): boolean {
-  if (selection.scope === "project-root") return true;
-  return (
-    !!selection.plugId &&
-    selection.plugId.startsWith("planspaces.") &&
-    (selection.sourceKind === "status" || selection.sourceKind === "plan")
-  );
+  return selection.scope === "project-root";
 }

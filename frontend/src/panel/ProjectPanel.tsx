@@ -5,6 +5,7 @@ import { LANGUAGE_OPTIONS } from "../languages";
 import type {
   ContextSpaceBindingSummary,
   ContextSpacePlugSummary,
+  PlanspaceMode,
   SessionContextSpaceInfo,
   SessionInfo,
 } from "../types";
@@ -20,7 +21,7 @@ export type ProjectPanelProps = {
   onActivatePlanspace: (binding_id: string, planspace_id: string) => void;
   onSelectContextBinding: (binding_id: string) => void;
   onPreferredLanguageChange: (preferredLanguage: string | null) => void;
-  onNewDirection: (userSeed: string, needsReview: boolean) => void;
+  onNewDirection: (userSeed: string, mode: PlanspaceMode) => void;
   onContextInit: () => void;
   onContextRefresh: () => void;
   onContextCancel: () => void;
@@ -52,11 +53,12 @@ export function ProjectPanel({
 }: ProjectPanelProps) {
   const [composerOpen, setComposerOpen] = useState(false);
   const [seed, setSeed] = useState("");
-  const [needsReview, setNeedsReview] = useState(false);
+  const [newDirectionMode, setNewDirectionMode] = useState<PlanspaceMode>("manual");
 
   const activeBinding = contextSpace?.bindings.find(
     (b) => b.id === (contextSpace?.resolved_binding_id ?? session?.project_context_binding_id),
   );
+  const selectableBindings = contextSpace?.selectable_bindings ?? contextSpace?.bindings ?? [];
   const directions = useMemo(
     () => collectDirections(activeBinding),
     [activeBinding],
@@ -76,9 +78,9 @@ export function ProjectPanel({
   const submitNewDirection = () => {
     const trimmed = seed.trim();
     if (!trimmed || busy) return;
-    onNewDirection(trimmed, needsReview);
+    onNewDirection(trimmed, newDirectionMode);
     setSeed("");
-    setNeedsReview(false);
+    setNewDirectionMode("manual");
     setComposerOpen(false);
   };
 
@@ -192,15 +194,23 @@ export function ProjectPanel({
                 placeholder="What direction are you taking? A paragraph is fine."
                 className="mt-1 w-full resize-none rounded-md border border-line bg-surface px-3 py-2 text-[13px] leading-relaxed text-ink-strong placeholder:text-ink-subtle focus:border-brand focus:outline-none"
               />
-              <label className="mt-2 flex items-center justify-between rounded border border-line bg-surface px-2 py-1.5 text-[11px] text-ink">
-                <span>Needs review</span>
-                <input
-                  type="checkbox"
-                  checked={needsReview}
-                  onChange={(event) => setNeedsReview(event.target.checked)}
-                  className="h-3.5 w-3.5 accent-brand"
-                />
-              </label>
+              <div className="mt-2 inline-flex rounded-md border border-line bg-surface p-0.5">
+                {(["manual", "auto"] as const).map((mode) => (
+                  <button
+                    key={mode}
+                    type="button"
+                    onClick={() => setNewDirectionMode(mode)}
+                    className={
+                      "rounded px-2.5 py-1 text-[11px] font-medium transition " +
+                      (newDirectionMode === mode
+                        ? "bg-surface-raised text-ink-strong shadow-card"
+                        : "text-ink-muted hover:text-ink")
+                    }
+                  >
+                    {mode}
+                  </button>
+                ))}
+              </div>
               <div className="mt-2 flex justify-end gap-2">
                 <button
                   type="button"
@@ -249,11 +259,11 @@ export function ProjectPanel({
             </ul>
           )}
 
-          {contextSpace && !activeBinding && contextSpace.bindings.length > 0 && (
+          {contextSpace && !activeBinding && selectableBindings.length > 0 && (
             <div className="mt-4">
               <SectionLabel>Existing memory profiles</SectionLabel>
               <ul className="mt-1 space-y-1">
-                {contextSpace.bindings.map((binding) => (
+                {selectableBindings.map((binding) => (
                   <li key={binding.id}>
                     <button
                       type="button"
@@ -318,6 +328,7 @@ function DirectionRow({
           <span className="block truncate font-medium">{plug.title}</span>
           <span className="mt-0.5 block truncate font-mono text-[10.5px] text-ink-muted">
             {plug.slug}
+            {plug.mode ? ` · ${plug.mode}` : ""}
             {plug.active ? " · active" : ""}
             {hidden ? " · hidden" : ""}
           </span>

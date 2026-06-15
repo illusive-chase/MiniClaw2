@@ -142,6 +142,12 @@ class NodeRunner:
                     node_id=self.node.id,
                     parent_node_id=self.node.parent_node_id,
                     kind=self.node.kind.value,
+                    category=(
+                        self.node.category.value if self.node.category is not None else None
+                    ),
+                    subtype=(
+                        self.node.subtype.value if self.node.subtype is not None else None
+                    ),
                     prompt=self.node.prompt,
                 )
             )
@@ -229,6 +235,12 @@ class NodeRunner:
                     node_id=self.node.id,
                     parent_node_id=self.node.parent_node_id,
                     kind=self.node.kind.value,
+                    category=(
+                        self.node.category.value if self.node.category is not None else None
+                    ),
+                    subtype=(
+                        self.node.subtype.value if self.node.subtype is not None else None
+                    ),
                     prompt=self.node.prompt,
                 )
             )
@@ -252,6 +264,12 @@ class NodeRunner:
                 node_id=self.node.id,
                 parent_node_id=self.node.parent_node_id,
                 kind=self.node.kind.value,
+                category=(
+                    self.node.category.value if self.node.category is not None else None
+                ),
+                subtype=(
+                    self.node.subtype.value if self.node.subtype is not None else None
+                ),
             )
         )
         await self._emit_node_updated()

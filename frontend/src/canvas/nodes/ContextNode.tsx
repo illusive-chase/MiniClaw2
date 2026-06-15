@@ -61,19 +61,11 @@ function ContextNodeImpl({ data, selected }: NodeProps<ContextNodeData>) {
         </div>
       </div>
 
-      {/* Read (loads) exits from the LEFT; write (memoryDelta) lands on the RIGHT.
-       * Split sides so the two semantically opposite edges read at a glance
-       * instead of stacking on the same bottom edge. */}
+      {/* Read (loads) exits from the left. */}
       <Handle
         type="source"
         id="loads"
         position={Position.Left}
-        className="!h-3 !w-3 !border-2 !border-line !bg-surface !opacity-0"
-      />
-      <Handle
-        type="target"
-        id="writes"
-        position={Position.Right}
         className="!h-3 !w-3 !border-2 !border-line !bg-surface !opacity-0"
       />
     </div>

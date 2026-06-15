@@ -13,7 +13,6 @@ type EdgeData = { childState?: NodeState };
 const ACTIVE: NodeState[] = [
   "running",
   "waiting",
-  "awaiting_review",
   "awaiting_human_input",
 ];
 
@@ -119,7 +118,7 @@ function ResumeEdgeImpl(props: EdgeProps<EdgeData>) {
 
 export const ResumeEdge = memo(ResumeEdgeImpl);
 
-/** Solid arrow into a gate — the source agent's review handoff feeds the gate. */
+/** Solid arrow into a review agent. */
 function ReviewsEdgeImpl(props: EdgeProps) {
   const { sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, selected } = props;
   const [path] = getBezierPath({
@@ -285,84 +284,6 @@ function OpChevronEdgeImpl(props: EdgeProps<OpEdgeData>) {
 }
 
 export const OpChevronEdge = memo(OpChevronEdgeImpl);
-
-/* ───────── planspace update arrow ─────────
- *
- * Agent → context-node edge labeled `+Δ`, marking that the agent wrote into
- * the connected planspace's STATUS. Visually thin, off to the side; stays
- * visible (unlike `loads`) because it represents an effect on shared state. */
-
-type MemoryDeltaEdgeData = {
-  applied?: number;
-  proposed?: number;
-};
-
-function MemoryDeltaEdgeImpl(props: EdgeProps<MemoryDeltaEdgeData>) {
-  const {
-    sourceX,
-    sourceY,
-    targetX,
-    targetY,
-    sourcePosition,
-    targetPosition,
-    data,
-    selected,
-  } = props;
-  const [path, labelX, labelY] = getBezierPath({
-    sourceX,
-    sourceY,
-    targetX,
-    targetY,
-    sourcePosition,
-    targetPosition,
-    curvature: 0.45,
-  });
-  const applied = data?.applied ?? 0;
-  const proposed = data?.proposed ?? 0;
-  const stroke = selected ? "rgb(var(--brand))" : "rgb(var(--state-review))";
-
-  return (
-    <>
-      <BaseEdge
-        path={path}
-        style={{
-          stroke,
-          strokeWidth: 1.2,
-          opacity: 0.8,
-          strokeDasharray: "5 3",
-        }}
-        markerEnd={props.markerEnd}
-      />
-      <EdgeLabelRenderer>
-        <div
-          className="nodrag nopan absolute"
-          style={{
-            transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)`,
-            pointerEvents: "all",
-          }}
-          title={`Wrote back into memory · ${applied} applied${proposed ? ` · ${proposed} proposed` : ""}`}
-        >
-          <span
-            className={
-              "inline-flex h-[18px] items-center gap-1 rounded-full border px-1.5 text-[10px] font-medium tracking-tight shadow-card " +
-              "border-state-review/40 bg-state-review-soft text-state-review"
-            }
-          >
-            +Δ
-            {(applied || proposed) > 0 && (
-              <span className="font-mono text-[9px] tracking-normal">
-                {applied}
-                {proposed ? `+${proposed}?` : ""}
-              </span>
-            )}
-          </span>
-        </div>
-      </EdgeLabelRenderer>
-    </>
-  );
-}
-
-export const MemoryDeltaEdge = memo(MemoryDeltaEdgeImpl);
 
 function ChevronGlyph() {
   return (

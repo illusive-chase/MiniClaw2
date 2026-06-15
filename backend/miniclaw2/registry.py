@@ -17,6 +17,7 @@ from .contextspace import (
     delete_project_contextspace,
     read_planspace_mode,
     resolve_active_planspace,
+    set_planspace_mode,
 )
 from .domain import (
     TERMINAL_NODE_STATES,
@@ -281,6 +282,33 @@ class ProjectRegistry:
         rt.project.planspace_view = merged
         self.store.update_project(rt.project)
         return rt.project
+
+    def update_planspace_mode(
+        self,
+        pid: str,
+        planspace_id: str,
+        mode: str,
+    ) -> PlanspaceMode | None:
+        rt = self._runtimes.get(pid)
+        if rt is None:
+            return None
+        written = set_planspace_mode(
+            rt.project,
+            planspace_id,
+            mode,
+            store_root=self.store.root,
+        )
+        active = resolve_active_planspace(
+            rt.project, contextspace_root(self.store.root)
+        )
+        active_lane = active[1].id if active is not None else ""
+        if (
+            written is PlanspaceMode.AUTO
+            and planspace_id == active_lane
+            and not rt.is_running()
+        ):
+            self._auto_promote_next_virtual(rt)
+        return written
 
     def delete_project(self, pid: str) -> bool:
         rt = self._runtimes.get(pid)
@@ -593,6 +621,14 @@ class ProjectRegistry:
 
         runner = NodeRunner(node, rt.project, self.store, rt.broadcast)
         self._launch_runner(rt, runner)
+        try:
+            asyncio.get_running_loop().create_task(rt.broadcast({
+                "type": "node_updated",
+                "node": node.model_dump(),
+                "seq": 0,
+            }))
+        except RuntimeError:
+            pass
         return runner
 
     def _spawn_op_commit(self, rt: ProjectRuntime, agent_node: Node) -> None:

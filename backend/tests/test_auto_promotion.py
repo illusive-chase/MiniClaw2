@@ -274,6 +274,31 @@ class AutoPromoteOnRunnerDoneTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotEqual(reloaded.state, NodeState.VIRTUAL)
         self.assertEqual(reloaded.prompt, "follow up")
 
+    async def test_enabling_auto_mode_promotes_existing_eligible_virtual(self) -> None:
+        plug_id = create_planspace(
+            self.project, title="manual-first", mode="manual"
+        )
+        rt = self.registry._runtimes[self.project.id]
+        settings = dict(rt.project.settings_override)
+        settings["active_planspace_id"] = plug_id
+        rt.project.settings_override = settings
+        self.store.update_project(rt.project)
+        virtual = self._make_virtual(plug_id, prompt_draft="already ready")
+
+        mode = self.registry.update_planspace_mode(
+            self.project.id,
+            plug_id,
+            "auto",
+        )
+
+        self.assertEqual(mode, "auto")
+        self.assertIsNotNone(rt.runner_task)
+        await self._drain_task(rt.runner_task)
+        reloaded = self.store.load_node(self.project.id, virtual.id)
+        assert reloaded is not None
+        self.assertNotEqual(reloaded.state, NodeState.VIRTUAL)
+        self.assertEqual(reloaded.prompt, "already ready")
+
     async def test_promote_virtual_rejects_non_active_lane(self) -> None:
         active_lane = create_planspace(
             self.project, title="active", mode="manual"

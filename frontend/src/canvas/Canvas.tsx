@@ -23,7 +23,6 @@ import {
   type RFEdge,
 } from "./layout";
 import { AgentNode } from "./nodes/AgentNode";
-import { GateNode } from "./nodes/GateNode";
 import { OpNode } from "./nodes/OpNode";
 import { ContextNode } from "./nodes/ContextNode";
 import { PhantomNode } from "./nodes/PhantomNode";
@@ -31,7 +30,6 @@ import { ProjectRootNode } from "./nodes/ProjectRootNode";
 import { PlanspaceLaneNode } from "./nodes/PlanspaceLaneNode";
 import {
   LoadsEdge,
-  MemoryDeltaEdge,
   OpChevronEdge,
   ResumeEdge,
   ReviewsEdge,
@@ -42,7 +40,6 @@ import { ErrorTerminalNode } from "./nodes/ErrorTerminalNode";
 
 const NODE_TYPES = {
   agent: AgentNode,
-  gate: GateNode,
   op: OpNode,
   context: ContextNode,
   phantom: PhantomNode,
@@ -57,13 +54,12 @@ const EDGE_TYPES = {
   reviews: ReviewsEdge,
   loads: LoadsEdge,
   opChevron: OpChevronEdge,
-  memoryDelta: MemoryDeltaEdge,
 };
 
 const LAYOUT_DRAG_SAVE_DEBOUNCE_MS = 500;
 
 export type CanvasSelection =
-  | { kind: "agent" | "gate" | "op"; nodeId: string }
+  | { kind: "agent" | "op"; nodeId: string }
   | {
       kind: "context";
       identityKey: string;
@@ -316,9 +312,6 @@ function CanvasInner({
       if (n.type === "agent") {
         const data = n.data as import("./layout").AgentNodeData;
         onSelectionChange({ kind: "agent", nodeId: data.node.id });
-      } else if (n.type === "gate") {
-        const data = n.data as import("./layout").GateNodeData;
-        onSelectionChange({ kind: "gate", nodeId: data.node.id });
       } else if (n.type === "op") {
         const data = n.data as import("./layout").OpNodeData;
         onSelectionChange({ kind: "op", nodeId: data.node.id });
@@ -341,7 +334,7 @@ function CanvasInner({
         const data = n.data as import("./layout").ErrorTerminalData;
         /* The terminal itself has no panel — selecting it focuses its owner. */
         onSelectionChange({
-          kind: data.ownerKind === "gate" ? "gate" : "agent",
+          kind: "agent",
           nodeId: data.ownerNodeId,
         });
       } else if (n.type === "phantom") {

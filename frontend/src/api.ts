@@ -3,7 +3,7 @@ import type {
   EventRecord,
   NodeDiff,
   NodeInfo,
-  NodeStatusDelta,
+  PlanspaceMode,
   ScenarioDetail,
   ScenarioSummary,
   SessionFile,
@@ -98,7 +98,7 @@ export async function createPlanspace(
   sessionId: string,
   body: {
     user_seed: string;
-    needs_review?: boolean;
+    mode?: PlanspaceMode;
   },
 ): Promise<{ planspace_id: string; binding_id: string; node_id: string }> {
   const res = await fetch(`/sessions/${sessionId}/planspaces`, {
@@ -107,6 +107,35 @@ export async function createPlanspace(
     body: JSON.stringify(body),
   });
   if (!res.ok) throw new Error(`createPlanspace failed: ${res.status}`);
+  return res.json();
+}
+
+export async function updatePlanspaceMode(
+  sessionId: string,
+  planspaceId: string,
+  mode: PlanspaceMode,
+): Promise<SessionContextSpaceInfo> {
+  const res = await fetch(
+    `/sessions/${sessionId}/planspaces/${encodeURIComponent(planspaceId)}/mode`,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode }),
+    },
+  );
+  if (!res.ok) throw new Error(`updatePlanspaceMode failed: ${res.status}`);
+  return res.json();
+}
+
+export async function promoteVirtual(
+  sessionId: string,
+  nodeId: string,
+): Promise<{ ok: boolean; node_id: string; node: NodeInfo }> {
+  const res = await fetch(
+    `/sessions/${sessionId}/virtuals/${encodeURIComponent(nodeId)}/promote`,
+    { method: "POST" },
+  );
+  if (!res.ok) throw new Error(`promoteVirtual failed: ${res.status}`);
   return res.json();
 }
 
@@ -227,6 +256,18 @@ export async function getNodeContextBundle(
   return res.json();
 }
 
+export async function getNodePreview(
+  sessionId: string,
+  nodeId: string,
+): Promise<{ text: string } | null> {
+  const res = await fetch(
+    `/sessions/${sessionId}/nodes/${encodeURIComponent(nodeId)}/preview`,
+  );
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`getNodePreview failed: ${res.status}`);
+  return res.json();
+}
+
 export async function getSessionFile(
   sessionId: string,
   role: SessionFileRole,
@@ -236,18 +277,6 @@ export async function getSessionFile(
   if (planspaceId) params.set("planspace_id", planspaceId);
   const res = await fetch(`/sessions/${sessionId}/files?${params.toString()}`);
   if (!res.ok) throw new Error(`getSessionFile failed: ${res.status}`);
-  return res.json();
-}
-
-export async function getNodeStatusDelta(
-  sessionId: string,
-  nodeId: string,
-): Promise<NodeStatusDelta | null> {
-  const res = await fetch(
-    `/sessions/${sessionId}/nodes/${encodeURIComponent(nodeId)}/status-delta`,
-  );
-  if (res.status === 404) return null;
-  if (!res.ok) throw new Error(`getNodeStatusDelta failed: ${res.status}`);
   return res.json();
 }
 
@@ -273,67 +302,6 @@ export async function runScenario(
     body: JSON.stringify({ provider }),
   });
   if (!res.ok) throw new Error(`runScenario failed: ${res.status}`);
-  return res.json();
-}
-
-export type PlanspaceStatusEntry = {
-  id: string;
-  summary: string;
-  raised_at?: string;
-  decided_at?: string;
-  raised_by?: string;
-  decided_by?: string;
-};
-
-export type PlanspaceStatusView = {
-  planspace_id: string;
-  title: string;
-  color: string | null;
-  status: {
-    goal: string;
-    current_state: string;
-    open_questions: PlanspaceStatusEntry[];
-    decisions: PlanspaceStatusEntry[];
-    out_of_scope: string[];
-    body: string;
-  };
-  applied?: Array<Record<string, unknown>>;
-};
-
-export type PlanspaceStatusOp =
-  | { operation: "rewrite_current_state"; text: string }
-  | { operation: "add_open_question"; summary: string }
-  | { operation: "add_decision"; summary: string }
-  | { operation: "add_out_of_scope"; summary: string }
-  | { operation: "remove_open_question"; id: string }
-  | { operation: "remove_decision"; id: string }
-  | { operation: "remove_out_of_scope"; index: number };
-
-export async function getPlanspaceStatus(
-  sessionId: string,
-  planspaceId: string,
-): Promise<PlanspaceStatusView> {
-  const res = await fetch(
-    `/sessions/${sessionId}/planspaces/${encodeURIComponent(planspaceId)}/status`,
-  );
-  if (!res.ok) throw new Error(`getPlanspaceStatus failed: ${res.status}`);
-  return res.json();
-}
-
-export async function patchPlanspaceStatus(
-  sessionId: string,
-  planspaceId: string,
-  operations: PlanspaceStatusOp[],
-): Promise<PlanspaceStatusView> {
-  const res = await fetch(
-    `/sessions/${sessionId}/planspaces/${encodeURIComponent(planspaceId)}/status`,
-    {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ operations }),
-    },
-  );
-  if (!res.ok) throw new Error(`patchPlanspaceStatus failed: ${res.status}`);
   return res.json();
 }
 

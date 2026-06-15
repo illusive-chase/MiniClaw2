@@ -9,7 +9,7 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 import miniclaw2.app as app_module
-from miniclaw2.domain import Node, Project
+from miniclaw2.domain import Node, NodeState, Project
 
 
 class PlanspaceApiTest(unittest.TestCase):
@@ -67,7 +67,7 @@ class PlanspaceApiTest(unittest.TestCase):
                             f"/sessions/{project.id}/planspaces",
                             json={
                                 "user_seed": "Build auth",
-                                "needs_review": True,
+                                "mode": "manual",
                             },
                         )
                     finally:
@@ -78,12 +78,127 @@ class PlanspaceApiTest(unittest.TestCase):
                 "sid": project.id,
                 "title": "",
                 "seed": "Build auth",
-                "mode": None,
+                "mode": "manual",
             }])
             body = res.json()
             self.assertEqual(body["node_id"], "node-123")
             self.assertEqual(body["planspace_id"], "planspaces.auth")
             self.assertEqual(body["binding_id"], "project.project")
+
+    def test_update_planspace_mode_forwards_to_registry(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            project = Project(root_path=raw, name="Project")
+            calls: list[dict[str, object]] = []
+
+            class _Registry:
+                store = SimpleNamespace(root=Path(raw) / "store")
+
+                def get_project(self, sid: str) -> Project | None:
+                    return project if sid == project.id else None
+
+                def update_planspace_mode(
+                    self, sid: str, planspace_id: str, mode: str
+                ) -> str | None:
+                    calls.append({
+                        "sid": sid,
+                        "planspace_id": planspace_id,
+                        "mode": mode,
+                    })
+                    return "auto"
+
+            with patch.object(app_module, "ProjectRegistry", return_value=_Registry()):
+                with patch.object(
+                    app_module,
+                    "describe_project_contextspace",
+                    return_value={
+                        "root": raw,
+                        "exists": True,
+                        "resolved_binding_id": "project.project",
+                        "active_planspace_id": "planspaces.auth",
+                        "bindings": [
+                            {
+                                "id": "project.project",
+                                "path": "bindings/projects/project.project.yaml",
+                                "title": "Project",
+                                "local_paths": [raw],
+                                "matches_project_path": True,
+                                "active_planspace_id": "planspaces.auth",
+                                "plugs": [
+                                    {
+                                        "id": "planspaces.auth",
+                                        "kind": "planspace",
+                                        "slug": "auth",
+                                        "enabled": True,
+                                        "auto_update": False,
+                                        "source": "binding",
+                                        "active": True,
+                                        "exists": True,
+                                        "title": "Auth",
+                                        "mode": "auto",
+                                    }
+                                ],
+                            }
+                        ],
+                    },
+                ):
+                    client = TestClient(app_module.create_app())
+                    try:
+                        res = client.patch(
+                            f"/sessions/{project.id}/planspaces/planspaces.auth/mode",
+                            json={"mode": "auto"},
+                        )
+                    finally:
+                        client.close()
+
+            self.assertEqual(res.status_code, 200, res.text)
+            self.assertEqual(calls, [{
+                "sid": project.id,
+                "planspace_id": "planspaces.auth",
+                "mode": "auto",
+            }])
+            body = res.json()
+            self.assertEqual(body["active_planspace_id"], "planspaces.auth")
+            self.assertEqual(body["bindings"][0]["plugs"][0]["mode"], "auto")
+
+    def test_promote_virtual_returns_node_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            project = Project(root_path=raw, name="Project")
+            node = Node(
+                id="virt-1",
+                project_id=project.id,
+                state=NodeState.QUEUED,
+                planspace_id="planspaces.auth",
+                prompt="run this",
+            )
+
+            class _Registry:
+                store = SimpleNamespace(root=Path(raw) / "store")
+
+                def get_project(self, sid: str) -> Project | None:
+                    return project if sid == project.id else None
+
+                def is_running(self, sid: str) -> bool:
+                    return False
+
+                def promote_virtual(self, sid: str, vid: str) -> object | None:
+                    if sid != project.id or vid != node.id:
+                        return None
+                    return SimpleNamespace(node=node)
+
+            with patch.object(app_module, "ProjectRegistry", return_value=_Registry()):
+                client = TestClient(app_module.create_app())
+                try:
+                    res = client.post(
+                        f"/sessions/{project.id}/virtuals/{node.id}/promote"
+                    )
+                finally:
+                    client.close()
+
+            self.assertEqual(res.status_code, 200, res.text)
+            body = res.json()
+            self.assertTrue(body["ok"])
+            self.assertEqual(body["node_id"], "virt-1")
+            self.assertEqual(body["node"]["state"], "queued")
 
 
 if __name__ == "__main__":

@@ -361,10 +361,15 @@ def describe_project_contextspace(
     binding = resolve_project_binding(project, root)
     active = resolve_active_planspace(project, root)
     active_planspace_id = active[1].id if active is not None else None
+    all_bindings = list_project_bindings(root)
+    bindings = [binding] if binding is not None else []
     return {
         "root": str(root),
         "exists": root.exists(),
         "project_context_binding_id": project.project_context_binding_id,
+        "project_active_planspace_id": _string_setting(
+            project, "active_planspace_id"
+        ),
         "resolved_binding_id": binding.id if binding else None,
         "active_planspace_id": active_planspace_id,
         "planspace_view": project.planspace_view,
@@ -372,6 +377,26 @@ def describe_project_contextspace(
             "exists": (Path(project.root_path) / "CONTEXT.md").exists(),
         },
         "context_refresh": context_refresh_status(project.id),
+        "bindings": [
+            _binding_summary(
+                root,
+                project,
+                item,
+                resolved_binding_id=binding.id if binding else None,
+                active_planspace_id=active_planspace_id,
+            )
+            for item in bindings
+        ],
+        "selectable_bindings": [
+            _binding_summary(
+                root,
+                project,
+                item,
+                resolved_binding_id=binding.id if binding else None,
+                active_planspace_id=active_planspace_id,
+            )
+            for item in all_bindings
+        ],
     }
 
 
@@ -416,6 +441,33 @@ def read_planspace_mode(
         return normalize_planspace_mode(raw if isinstance(raw, str) else None)
     except ValueError:
         return PlanspaceMode.MANUAL
+
+
+def set_planspace_mode(
+    project: Project,
+    lane_id: str,
+    mode: PlanspaceMode | str,
+    *,
+    store_root: Path | None = None,
+) -> PlanspaceMode:
+    """Persist ``mode`` to a planspace plug manifest and return it."""
+    del project  # reserved for future per-project override
+    if not lane_id:
+        raise ValueError("planspace id is required")
+    normalized = (
+        mode if isinstance(mode, PlanspaceMode) else normalize_planspace_mode(mode)
+    )
+    root = contextspace_root(store_root)
+    plug_dir = _plug_dir(root, lane_id)
+    if plug_dir is None or _plug_kind(lane_id) != "planspace":
+        raise ValueError(f"unknown planspace: {lane_id}")
+    manifest_path = plug_dir / "manifest.yaml"
+    raw = _read_yaml(manifest_path)
+    if not isinstance(raw, dict):
+        raise ValueError(f"unknown planspace: {lane_id}")
+    raw["mode"] = normalized.value
+    _write_yaml(manifest_path, raw)
+    return normalized
 
 
 def create_planspace(
@@ -657,6 +709,99 @@ def _select_active_planspace(
     if len(planspaces) == 1:
         return planspaces[0]
     return None
+
+
+def _binding_summary(
+    root: Path,
+    project: Project,
+    binding: ProjectBinding,
+    *,
+    resolved_binding_id: str | None,
+    active_planspace_id: str | None,
+) -> dict[str, Any]:
+    project_raw = binding.raw.get("project")
+    if not isinstance(project_raw, dict):
+        project_raw = {}
+    local_paths = [
+        value for value in (project_raw.get("local_paths") or [])
+        if isinstance(value, str)
+    ]
+    binding_active = _string_value(binding.raw.get("active_planspace_id"))
+    is_resolved = binding.id == resolved_binding_id
+    active_for_binding = active_planspace_id if is_resolved else binding_active
+    plug_refs = _expand_required_plugs(root, binding.plugs)
+    return {
+        "id": binding.id,
+        "path": _display_path(binding.path, root),
+        "title": (
+            _string_value(binding.raw.get("title"))
+            or _string_value(project_raw.get("name"))
+            or binding.id
+        ),
+        "project_name": _string_value(project_raw.get("name")),
+        "local_paths": local_paths,
+        "matches_project_path": _binding_matches_project_path(
+            binding, project.root_path
+        ),
+        "active_planspace_id": active_for_binding,
+        "binding_active_planspace_id": binding_active,
+        "plugs": [
+            _plug_summary(
+                root,
+                project,
+                ref,
+                active=(ref.id == active_for_binding),
+            )
+            for ref in plug_refs
+        ],
+    }
+
+
+def _plug_summary(
+    root: Path,
+    project: Project,
+    ref: PlugRef,
+    *,
+    active: bool,
+) -> dict[str, Any]:
+    kind = _plug_kind(ref.id)
+    slug = _plug_slug(ref.id)
+    plug_dir = _plug_dir(root, ref.id)
+    manifest = _plug_manifest(root, ref.id)
+    title = (
+        _string_value(manifest.get("title"))
+        or _string_value(manifest.get("name"))
+        or slug
+    )
+    mode: str | None = None
+    if kind == "planspace":
+        raw_mode = manifest.get("mode") if isinstance(manifest, dict) else None
+        try:
+            mode = normalize_planspace_mode(
+                raw_mode if isinstance(raw_mode, str) else None
+            ).value
+        except ValueError:
+            mode = PlanspaceMode.MANUAL.value
+    summary: dict[str, Any] = {
+        "id": ref.id,
+        "kind": kind,
+        "slug": slug,
+        "role": ref.role,
+        "injection": ref.injection,
+        "enabled": ref.enabled,
+        "auto_update": False,
+        "source": ref.source,
+        "active": active,
+        "hidden": bool(project.planspace_view.get(ref.id, {}).get("hidden")),
+        "exists": bool(plug_dir and plug_dir.exists()),
+        "path": _display_path(plug_dir, root) if plug_dir is not None else None,
+        "title": title,
+        "description": _string_value(manifest.get("description")),
+        "color": _string_value(manifest.get("color")),
+    }
+    if mode is not None:
+        summary["mode"] = mode
+    return summary
 
 
 def _load_context_markdown_source(

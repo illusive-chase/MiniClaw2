@@ -17,13 +17,7 @@ export type GateReviewFormProps = {
   variant: "panel" | "inline";
 };
 
-/**
- * Shared review form for the side panel and the gate hexagon.
- *
- * The hex variant runs inside the clipped polygon, so its chrome is
- * lighter; both share the same controlled-textarea behavior and pending
- * gate lifecycle.
- */
+/** Shared review form for human-interact review agents. */
 export function GateReviewForm({
   node,
   pending,
@@ -41,8 +35,8 @@ export function GateReviewForm({
       textValue(pending?.tool_input?.review_guidance) ||
       textValue(pending?.tool_input?.contract) ||
       humanReviewGuidance(pending);
-    return fromRequest || node.contract || "";
-  }, [node.contract, pending?.tool_input]);
+    return fromRequest || reviewBriefGuidance(node);
+  }, [node, pending]);
 
   const lastError =
     pending && typeof pending.tool_input?.last_error === "string"
@@ -168,8 +162,7 @@ export function GateReviewForm({
         </section>
       ) : (
         <div className="rounded-md border border-line bg-surface-sunken px-3 py-3 text-[12px] text-ink-muted">
-          No pending response. The gate may already be resolved or the
-          upstream agent did not complete.
+          No pending response.
         </div>
       )}
     </div>
@@ -202,6 +195,15 @@ function humanReviewGuidance(pending: InteractionRequest | null): string {
   }
   const path = textValue(pending.tool_input?.human_review_path);
   if (path) lines.push(`Your notes will be saved to ${path}.`);
+  return lines.join("\n\n");
+}
+
+function reviewBriefGuidance(node: NodeInfo): string {
+  if (!node.brief) return "";
+  const lines = ["Review brief"];
+  if (node.brief.check_what) lines.push(`Check: ${node.brief.check_what}`);
+  if (node.brief.expected) lines.push(`Expected: ${node.brief.expected}`);
+  if (node.brief.abnormal) lines.push(`Flag as abnormal: ${node.brief.abnormal}`);
   return lines.join("\n\n");
 }
 

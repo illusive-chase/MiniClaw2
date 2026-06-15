@@ -99,8 +99,11 @@ class CreatePlanspaceRequest(BaseModel):
     title: str = ""
     seed: str | None = None
     user_seed: str | None = None
-    needs_review: bool | None = None
     mode: str | None = None
+
+
+class UpdatePlanspaceModeRequest(BaseModel):
+    mode: str
 
 
 class EventRecord(BaseModel):
@@ -335,6 +338,23 @@ def create_app() -> FastAPI:
         contextspace["binding_id"] = contextspace.get("resolved_binding_id")
         return contextspace
 
+    @app.patch("/sessions/{sid}/planspaces/{planspace_id}/mode", response_model=dict[str, Any])
+    async def update_planspace_mode(
+        sid: str,
+        planspace_id: str,
+        req: UpdatePlanspaceModeRequest,
+    ) -> dict[str, Any]:
+        project = registry.get_project(sid)
+        if project is None:
+            raise HTTPException(404, "session not found")
+        try:
+            mode = registry.update_planspace_mode(sid, planspace_id, req.mode)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        if mode is None:
+            raise HTTPException(404, "session not found")
+        return describe_project_contextspace(project, store_root=registry.store.root)
+
     @app.post(
         "/sessions/{sid}/virtuals/{vid}/promote", response_model=dict[str, Any]
     )
@@ -353,7 +373,11 @@ def create_app() -> FastAPI:
                 "virtual cannot be promoted (missing, obsolete, deps not "
                 "terminal, or project busy)",
             )
-        return {"ok": True, "node_id": runner.node.id}
+        return {
+            "ok": True,
+            "node_id": runner.node.id,
+            "node": runner.node.model_dump(),
+        }
 
     @app.post("/sessions/{sid}/context/cancel", response_model=dict[str, Any])
     async def cancel_project_context(sid: str) -> dict[str, Any]:

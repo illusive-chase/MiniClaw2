@@ -19,11 +19,17 @@ function AgentNodeImpl({ data, selected }: NodeProps<AgentNodeData>) {
     resumeParent,
     isActive,
     planspaceColor,
-    crossLaneLoads,
     isLastInLane,
+    readyToPromote,
   } = data;
   const meta = stateMeta(node.state);
-  const headline = oneLine(node.summary || node.prompt || "(empty prompt)");
+  const headline = oneLine(
+    node.summary ||
+      node.prompt_draft ||
+      node.prompt ||
+      (node.state === "virtual" ? "(draft prompt missing)" : "(empty prompt)"),
+  );
+  const isVirtual = node.state === "virtual";
 
   return (
     <div className="group relative w-[224px]" title={tooltipForAgent(node, isActive)}>
@@ -36,7 +42,9 @@ function AgentNodeImpl({ data, selected }: NodeProps<AgentNodeData>) {
           "relative select-none overflow-hidden rounded-lg border text-left shadow-card transition " +
           (selected
             ? "border-brand ring-2 ring-brand ring-offset-2 ring-offset-surface-sunken"
-            : "border-line hover:border-line-strong hover:ring-2 hover:ring-line-strong/45 hover:ring-offset-2 hover:ring-offset-surface-sunken hover:shadow-raised") +
+            : isVirtual
+              ? "border-dashed border-line-strong hover:border-brand hover:ring-2 hover:ring-brand/20 hover:ring-offset-2 hover:ring-offset-surface-sunken hover:shadow-raised"
+              : "border-line hover:border-line-strong hover:ring-2 hover:ring-line-strong/45 hover:ring-offset-2 hover:ring-offset-surface-sunken hover:shadow-raised") +
           " " +
           meta.tileBg
         }
@@ -53,10 +61,13 @@ function AgentNodeImpl({ data, selected }: NodeProps<AgentNodeData>) {
 
       {/* header row */}
       <div className="flex items-center justify-between gap-2 pl-3.5 pr-2.5 pt-2">
-        <StateChip state={node.state} />
+        <div className="flex min-w-0 items-center gap-1">
+          <StateChip state={node.state} />
+          <CategoryChip node={node} />
+        </div>
         <span className="font-mono text-[10px] text-ink-subtle">
           {index + 1}
-          <span className="text-ink-subtle/70"> · run</span>
+          <span className="text-ink-subtle/70"> · {isVirtual ? "plan" : "run"}</span>
         </span>
       </div>
 
@@ -65,33 +76,14 @@ function AgentNodeImpl({ data, selected }: NodeProps<AgentNodeData>) {
         {headline}
       </div>
 
-      {/* Cross-lane "loaded from:" chips — surfaced even when the dashed
-       * loads edges are auto-hidden, so the user can see direction-crossing
-       * context at a glance. */}
-      {crossLaneLoads && crossLaneLoads.length > 0 && (
-        <div className="mt-1 flex flex-wrap gap-1 px-3.5">
-          {crossLaneLoads.map((load) => (
-            <span
-              key={load.planspaceId}
-              className="inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[9.5px]"
-              style={{
-                borderColor: load.color.border,
-                background: load.color.bg,
-                color: load.color.text,
-              }}
-              title={`Loaded planspace state from ${load.planspaceId}`}
-            >
-              <span aria-hidden="true">↗</span>
-              <span className="truncate">{load.label}</span>
-            </span>
-          ))}
-        </div>
-      )}
-
       {/* footer */}
       <div className="flex items-center justify-between gap-2 px-3.5 pb-1.5 pt-2 text-[10px] text-ink-subtle">
         <span className="font-mono">{node.id.slice(0, 8)}</span>
-        {node.usage ? (
+        {isVirtual ? (
+          <span className={readyToPromote ? "font-mono text-brand" : "font-mono text-ink-muted"}>
+            {node.obsolete_reason ? "obsolete" : readyToPromote ? "ready" : `${node.scheduled_deps?.length ?? 0} deps`}
+          </span>
+        ) : node.usage ? (
           <span className="font-mono text-ink-muted">
             ↑{compactTokens(node.usage.input_tokens)} ↓
             {compactTokens(node.usage.output_tokens)}
@@ -109,7 +101,7 @@ function AgentNodeImpl({ data, selected }: NodeProps<AgentNodeData>) {
         <span className={"absolute inset-y-0 " + meta.barFill} />
       </span>
 
-      {/* awaiting_review halo */}
+      {/* human-input halo */}
       {meta.ring && (
         <span
           className="pointer-events-none absolute inset-0 rounded-lg review-ring"
@@ -165,7 +157,23 @@ function AgentNodeImpl({ data, selected }: NodeProps<AgentNodeData>) {
        * to the right. Half-overlapping the edge so cursor moves from tile to
        * button without losing hover; `hover:opacity-100` on the button itself
        * keeps it visible during that transition. */}
-      {isLastInLane && (
+      {isVirtual && readyToPromote && !node.obsolete_reason && (
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            agentNodeContext.onPromoteVirtual(node.id);
+          }}
+          onMouseDown={(e) => e.stopPropagation()}
+          className="nodrag absolute -right-3 top-1/2 z-10 inline-flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-full border border-brand bg-brand text-[14px] font-semibold leading-none text-white opacity-0 shadow-card transition hover:brightness-[0.95] group-hover:opacity-100 hover:opacity-100"
+          title="Promote virtual node"
+          aria-label="Promote virtual node"
+        >
+          &gt;
+        </button>
+      )}
+
+      {isLastInLane && !isVirtual && (
         <button
           type="button"
           onClick={(e) => {
@@ -191,10 +199,12 @@ export const AgentNode = memo(AgentNodeImpl);
  * always reads the latest handler without stale closures. */
 export type AgentNodeContext = {
   onSpawnFromAgent: (nodeId: string) => void;
+  onPromoteVirtual: (nodeId: string) => void;
 };
 
 let agentNodeContext: AgentNodeContext = {
   onSpawnFromAgent: () => {},
+  onPromoteVirtual: () => {},
 };
 
 export function setAgentNodeContext(ctx: AgentNodeContext): void {
@@ -220,6 +230,31 @@ function StateChip({ state }: { state: NodeState }) {
   );
 }
 
+function CategoryChip({ node }: { node: NodeInfo }) {
+  const label =
+    node.category === "planning"
+      ? "plan"
+      : node.category === "review"
+        ? node.subtype === "human_interact_review"
+          ? "human"
+          : "review"
+        : "work";
+  const tone =
+    node.category === "planning"
+      ? "border-brand/30 bg-brand-soft text-brand-ink"
+      : node.category === "review"
+        ? "border-state-review/30 bg-state-review-soft text-state-review"
+        : "border-line bg-surface text-ink-muted";
+  return (
+    <span
+      className={"inline-flex items-center rounded border px-1 py-0.5 text-[9px] font-medium uppercase tracking-[0.12em] " + tone}
+      title={node.subtype ?? node.category ?? "regular"}
+    >
+      {label}
+    </span>
+  );
+}
+
 function oneLine(s: string): string {
   return s.replace(/\s+/g, " ").trim();
 }
@@ -238,7 +273,9 @@ function formatStartTime(node: NodeInfo): string {
 }
 
 function tooltipForAgent(node: NodeInfo, isActive: boolean): string {
-  const prompt = node.prompt ? `"${node.prompt.slice(0, 80)}"` : "(no prompt)";
+  const promptText = node.prompt_draft || node.prompt;
+  const prompt = promptText ? `"${promptText.slice(0, 80)}"` : "(no prompt)";
   const status = isActive ? " · streaming" : "";
-  return `Agent run · ${node.state}${status}\n${prompt}\n${node.id}`;
+  const category = node.category ? ` · ${node.category}` : "";
+  return `Agent ${node.state}${category}${status}\n${prompt}\n${node.id}`;
 }

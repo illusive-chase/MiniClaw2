@@ -15,6 +15,18 @@ export type StateMeta = {
 
 export function stateMeta(state: NodeState): StateMeta {
   switch (state) {
+    case "virtual":
+      return {
+        label: "virtual",
+        Icon: DotIcon,
+        chipBg: "bg-surface-sunken",
+        chipText: "text-ink-muted",
+        railBg: "bg-line-strong",
+        tileBg: "bg-surface-raised/70",
+        barTrack: "bg-transparent",
+        barFill: "w-0 bg-transparent",
+        ring: false,
+      };
     case "queued":
       return {
         label: "queued",
@@ -52,10 +64,9 @@ export function stateMeta(state: NodeState): StateMeta {
         barFill: "w-1/2 bg-state-waiting/70 pulse-slow",
         ring: false,
       };
-    case "awaiting_review":
     case "awaiting_human_input":
       return {
-        label: state === "awaiting_human_input" ? "human input" : "review",
+        label: "human input",
         Icon: RingIcon,
         chipBg: "bg-state-review-soft",
         chipText: "text-state-review dark:text-state-review",
@@ -112,7 +123,6 @@ export function stateStroke(state: NodeState): string {
       return "rgb(var(--state-running))";
     case "waiting":
       return "rgb(var(--state-waiting))";
-    case "awaiting_review":
     case "awaiting_human_input":
       return "rgb(var(--state-review))";
     case "error":

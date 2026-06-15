@@ -9,8 +9,10 @@ import {
   initProjectContext,
   listNodeEvents,
   listNodes,
+  promoteVirtual,
   refreshProjectContext,
   updateLayoutHints,
+  updatePlanspaceMode,
   updatePlanspaceView,
   updateSessionContextSpace,
   updateSessionPreferences,
@@ -18,7 +20,6 @@ import {
 import { Canvas, type CanvasSelection } from "./canvas/Canvas";
 import { setAgentNodeContext } from "./canvas/nodes/AgentNode";
 import { setPhantomContext } from "./canvas/nodes/PhantomNode";
-import { setGateInlineContext } from "./canvas/nodes/GateNode";
 import { setPlanspaceLaneContext } from "./canvas/nodes/PlanspaceLaneNode";
 import { SidePanel } from "./panel/SidePanel";
 import { NewProjectModal } from "./components/NewProjectModal";
@@ -36,6 +37,7 @@ import type {
   CanvasViewport,
   SessionContextSpaceInfo,
   SessionInfo,
+  PlanspaceMode,
 } from "./types";
 import { useSessionSocket } from "./ws";
 
@@ -54,7 +56,7 @@ export function App() {
 
   const [selection, setSelection] = useState<CanvasSelection>({ kind: "none" });
   /* For data-fetching purposes we track the "currently inspected nodeId" — the
-   * agent/gate/op whose events/diff/bundle we should load. For artifact and
+   * agent/op whose events/diff/bundle we should load. For artifact and
    * context selections, this stays pointed at the owning node so the artifact
    * panel can render the file content. */
   const [inspectedNodeId, setInspectedNodeId] = useState<string | null>(null);
@@ -209,10 +211,7 @@ export function App() {
   );
   const activePendingReview = useMemo(
     () =>
-      keepPendingForStates(pendingReview, nodes, [
-        "awaiting_review",
-        "awaiting_human_input",
-      ]),
+      keepPendingForStates(pendingReview, nodes, ["awaiting_human_input"]),
     [nodes, pendingReview],
   );
   const composerLocked = !!activePendingGate || !!activePendingReview;
@@ -338,7 +337,7 @@ export function App() {
   );
 
   const startNewDirection = useCallback(
-    async (userSeed: string, needsReview: boolean) => {
+    async (userSeed: string, mode: PlanspaceMode) => {
       if (!session?.id || sessionSettingsSaving) return;
       setSessionContextSpaceSaving(true);
       setSessionContextSpaceError(null);
@@ -346,7 +345,7 @@ export function App() {
       try {
         const created = await createPlanspace(session.id, {
           user_seed: userSeed,
-          needs_review: needsReview,
+          mode,
         });
         setSelection({ kind: "agent", nodeId: created.node_id });
         setInspectedNodeId(created.node_id);
@@ -361,6 +360,42 @@ export function App() {
       }
     },
     [session?.id, sessionSettingsSaving, refreshContextSpace, refreshNodes],
+  );
+
+  const changePlanspaceMode = useCallback(
+    async (planspaceId: string, mode: PlanspaceMode) => {
+      if (!session?.id) return;
+      setSessionContextSpaceSaving(true);
+      setSessionContextSpaceError(null);
+      try {
+        const next = await updatePlanspaceMode(session.id, planspaceId, mode);
+        setSessionContextSpace(next);
+      } catch (err) {
+        setSessionContextSpaceError(String(err));
+      } finally {
+        setSessionContextSpaceSaving(false);
+      }
+    },
+    [session?.id],
+  );
+
+  const promoteVirtualNode = useCallback(
+    async (nodeId: string) => {
+      if (!session?.id || streaming || composerLocked) return;
+      setStreaming(true);
+      setSessionContextSpaceError(null);
+      try {
+        const result = await promoteVirtual(session.id, nodeId);
+        setNodes((prev) => upsertNode(prev, result.node));
+        setSelection({ kind: "agent", nodeId: result.node.id });
+        setInspectedNodeId(result.node.id);
+        await refreshNodes();
+      } catch (err) {
+        setStreaming(false);
+        setSessionContextSpaceError(String(err));
+      }
+    },
+    [session?.id, streaming, composerLocked, refreshNodes],
   );
 
   const runContextInit = useCallback(async () => {
@@ -451,7 +486,7 @@ export function App() {
 
   /* events / diff / artifact / context-bundle fetch — keyed off inspectedNodeId */
   useEffect(() => {
-    if (!session?.id || !inspectedNodeId) {
+    if (!session?.id || !inspectedNodeId || selectedNode?.state === "virtual") {
       setSelectedEvents([]);
       setSelectedEventsLoading(false);
       return;
@@ -474,10 +509,10 @@ export function App() {
     return () => {
       cancelled = true;
     };
-  }, [session?.id, inspectedNodeId]);
+  }, [session?.id, inspectedNodeId, selectedNode?.state]);
 
   useEffect(() => {
-    if (!session?.id || !inspectedNodeId) {
+    if (!session?.id || !inspectedNodeId || selectedNode?.state === "virtual") {
       setSelectedDiff(null);
       setSelectedDiffLoading(false);
       return;
@@ -509,7 +544,7 @@ export function App() {
   ]);
 
   useEffect(() => {
-    if (!session?.id || !inspectedNodeId) {
+    if (!session?.id || !inspectedNodeId || selectedNode?.state === "virtual") {
       setSelectedContextBundle(null);
       setSelectedContextBundleLoading(false);
       return;
@@ -615,7 +650,7 @@ export function App() {
           }
           setInspectedNodeId(ownerNodeId);
           setSelection({
-            kind: isReviewInteraction(ev) ? "gate" : "agent",
+            kind: "agent",
             nodeId: ownerNodeId,
           });
         }
@@ -633,7 +668,7 @@ export function App() {
         if (startedKind !== "op") {
           setInspectedNodeId(ev.node_id);
           setSelection({
-            kind: startedKind === "gate" ? "gate" : "agent",
+            kind: "agent",
             nodeId: ev.node_id,
           });
         }
@@ -646,7 +681,7 @@ export function App() {
         if (ev.node.state !== "waiting") {
           setPendingGate((prev) => (prev?.nodeId === ev.node.id ? null : prev));
         }
-        if (ev.node.state !== "awaiting_review" && ev.node.state !== "awaiting_human_input") {
+        if (ev.node.state !== "awaiting_human_input") {
           setPendingReview((prev) => (prev?.nodeId === ev.node.id ? null : prev));
         }
       }
@@ -664,22 +699,13 @@ export function App() {
 
   /* launch via the phantom */
   const launchAgentNode = useCallback(
-    (
-      text: string,
-      resume: string | null,
-      needsReview: boolean,
-      extraPlanspaceLoads: string[],
-    ) => {
+    (text: string, resume: string | null) => {
       if (composerDisabled) return;
       setStreaming(true);
       send({
         type: "user_message",
         text,
         resume_from_node_id: resume,
-        needs_review: needsReview,
-        ...(extraPlanspaceLoads.length > 0
-          ? { extra_planspace_loads: extraPlanspaceLoads }
-          : {}),
       });
     },
     [composerDisabled, send],
@@ -722,8 +748,8 @@ export function App() {
   /* Phantom callbacks wired into the module singleton */
   useEffect(() => {
     setPhantomContext({
-      onSubmit: ({ prompt, resumeFromNodeId, needsReview, extraPlanspaceLoads }) => {
-        launchAgentNode(prompt, resumeFromNodeId, needsReview, extraPlanspaceLoads);
+      onSubmit: ({ prompt, resumeFromNodeId }) => {
+        launchAgentNode(prompt, resumeFromNodeId);
       },
       onDismiss: () => setPhantomFromNodeId(undefined),
       onClearResume: () => setPhantomFromNodeId(null),
@@ -749,7 +775,7 @@ export function App() {
       const interactionType =
         activePendingReview?.request.id === payload.id
           ? activePendingReview.request.interaction_type
-          : "checkpoint_review";
+          : "human_review_prose";
       const response =
         interactionType === "human_review_prose"
           ? { prose: payload.judgment }
@@ -771,14 +797,6 @@ export function App() {
     },
     [activePendingReview, status, send, refreshNodes],
   );
-
-  /* Wire the gate hexagon inline form to the current pending review. */
-  useEffect(() => {
-    setGateInlineContext({
-      pending: activePendingReview?.request ?? null,
-      onSubmit: onResolveReview,
-    });
-  }, [activePendingReview, onResolveReview]);
 
   /* Wire the planspace lane header click → side-panel selection. */
   useEffect(() => {
@@ -815,7 +833,7 @@ export function App() {
    * user is editing doesn't disappear out from under them. */
   const onSelectionChange = useCallback((sel: CanvasSelection) => {
     setSelection(sel);
-    if (sel.kind === "agent" || sel.kind === "gate" || sel.kind === "op") {
+    if (sel.kind === "agent" || sel.kind === "op") {
       setInspectedNodeId(sel.nodeId);
     } else if (sel.kind === "none") {
       setInspectedNodeId(null);
@@ -829,7 +847,7 @@ export function App() {
       const node = nodes.find((n) => n.id === nodeId);
       if (!node) return;
       setSelection({
-        kind: node.kind === "gate" ? "gate" : node.kind === "op" ? "op" : "agent",
+        kind: node.kind === "op" ? "op" : "agent",
         nodeId,
       });
       setInspectedNodeId(nodeId);
@@ -857,8 +875,11 @@ export function App() {
 
   /* Wire the per-agent "+" affordance into its module singleton. */
   useEffect(() => {
-    setAgentNodeContext({ onSpawnFromAgent });
-  }, [onSpawnFromAgent]);
+    setAgentNodeContext({
+      onSpawnFromAgent,
+      onPromoteVirtual: promoteVirtualNode,
+    });
+  }, [onSpawnFromAgent, promoteVirtualNode]);
 
   /* Canvas layout changes -> serialized backend PATCHes. Best-effort: log on
    * failure but don't surface; the client-side ref keeps working either way. */
@@ -1135,8 +1156,7 @@ export function App() {
           pendingReview={
             activePendingReview &&
             selectedNode &&
-            (selectedNode.state === "awaiting_review" ||
-              selectedNode.state === "awaiting_human_input") &&
+            selectedNode.state === "awaiting_human_input" &&
             activePendingReview.nodeId === selectedNode.id
               ? activePendingReview.request
               : null
@@ -1149,6 +1169,8 @@ export function App() {
           onActivatePlanspace={activatePlanspace}
           onSelectContextBinding={selectContextBinding}
           onNewDirection={startNewDirection}
+          onPromoteVirtual={promoteVirtualNode}
+          onPlanspaceModeChange={changePlanspaceMode}
           onContextInit={runContextInit}
           onContextRefresh={runContextRefresh}
           onContextCancel={runContextCancel}
@@ -1249,7 +1271,7 @@ function pendingBanner(
 }
 
 function graphNodeIdForSelection(selection: CanvasSelection): string | null {
-  if (selection.kind === "agent" || selection.kind === "gate" || selection.kind === "op") {
+  if (selection.kind === "agent" || selection.kind === "op") {
     return selection.nodeId;
   }
   if (selection.kind === "context") {

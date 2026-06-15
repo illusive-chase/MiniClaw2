@@ -46,13 +46,19 @@ Per `PROPOSAL_VIRTUAL_NODES.md` §11 sequencing:
       it, and launches a planning-category agent whose prompt is the
       rendered `prompts/concierge_bootstrap.md` with the seed
       substituted into `<<user_seed>>`.
-- [ ] Step 9 — Remove legacy paths (passive gate runner,
-      `planspace_state.py`, memory-delta inbox). Already mostly gone
-      from `5069c5b`; clean-up pass pending.
-- [ ] Step 10 — Frontend pass (virtual tiles, category badges, mode
-      toggle, drop PlanspacePanel STATUS UI, etc.).
-- [ ] Step 11 — Remaining wire envelopes (frontend `node_started`
-      carries `category` / `subtype`, lane-state events for promotions).
+- [ ] Step 9 — Remove legacy paths. Product/runtime passive gates,
+      `planspace_state.py`, STATUS/PLAN UI, and memory-delta frontend
+      paths are gone; scenario-loader vocabulary still carries legacy
+      `gate` / `needs_review` names and needs a separate scenario pass.
+- [x] Step 10 — Frontend pass. Virtual tiles render with dashed
+      outlines, category badges, ready-to-promote affordances, virtual
+      side-panel detail, project/direction mode controls, and the old
+      `PlanspacePanel` / gate-node UI has been removed. Phantom composer
+      no longer exposes `needs_review` or cross-lane load controls.
+- [x] Step 11 — Remaining wire envelopes. `node_started` carries
+      `category` / `subtype`; manual promotion returns the promoted
+      node and also broadcasts `node_updated`; `PATCH
+      /sessions/{sid}/planspaces/{planspace_id}/mode` updates lane mode.
 
 
 ## 1. Backend domain model
@@ -61,31 +67,26 @@ Trunk: `backend/miniclaw2/domain.py`.
 
 ### Landed
 
-- `NodeKind ∈ {agent, gate, op}`.
-- `NodeState ∈ {queued, running, waiting, awaiting_review, done, error, cancelled}`.
-- `AcceptanceState ∈ {not_applicable, unreviewed, accepted, rejected, blocked}`.
-- `VerdictSource ∈ {none, human, deterministic, cross_provider, same_provider_advisory}`.
+- `NodeKind ∈ {agent, op}`.
+- `NodeState ∈ {virtual, queued, running, waiting, awaiting_human_input, done, error, cancelled}`.
+- `Category ∈ {planning, regular, review}` and
+  `ReviewSubtype ∈ {agentic_review, human_interact_review}`.
 - `Node` fields covering ontology in `PHILOSOPHY.md` §6.1: `parent_node_id`,
   `planspace_id`, `context_sources`, `context_bundle_id`,
   `context_bundle_path`, `provider`, `provider_session_id`,
   `provider_turn_id`, `sdk_session_id` (legacy alias),
-  `commit_before`, `commit_after`, `requires_review`, `prompt`,
-  `contract`, `summary`, `error`, `usage`, `system_context_snapshot`,
-  `settings_snapshot`, `scenario_step_id`, `review_outcome`,
-  `acceptance_state`, `verdict_source`, `verdict_artifact_path`,
-  `verdict_thread_id`, `accepted_at`, `rejected_at`, `created_at`,
-  `started_at`, `finished_at`. **The legacy `NodeOutputKind` enum and
-  the `output_kind` / `output_path` / `output_contract_snapshot` fields
-  have been removed**; every node output now flows through the
-  planspace-update artifact pipeline.
+  `commit_before`, `commit_after`, `prompt`, `category`, `subtype`,
+  `brief`, `prompt_draft`, `scheduled_deps`, `proposed_by`,
+  `obsolete_reason`, `summary`, `error`, `usage`,
+  `system_context_snapshot`, `settings_snapshot`, `scenario_step_id`,
+  `created_at`, `started_at`, `finished_at`.
 - `Project` fields: `root_path`, `name`, `provider`, `head_commit`,
   `parent_project_id`, `parent_commit`, `project_context_binding_id`,
   `settings_override`, `temporary`, `scenario_name`,
   `scenario_step_history`, `layout_hints`, `planspace_view`,
   `created_at`.
-- `HumanGate` model with `GateKind ∈ {inline, checkpoint}`,
-  `GateSubtype ∈ {permission, ask_user, plan_approval, checkpoint_review}`,
-  `GateState ∈ {pending, resolved}`.
+- `HumanGate` model is inline-only:
+  `GateSubtype ∈ {permission, ask_user, plan_approval}`.
 - Atomic JSON write (tmp + rename) via `store.py`; per-node JSONL
   event log; gates.jsonl audit trail.
 
@@ -143,38 +144,22 @@ Trunk: `backend/miniclaw2/runner.py`, `backend/miniclaw2/registry.py`.
   `backend/miniclaw2/prompts/category_*.md` and
   `prompts/anti_self_poisoning.md`; covered by `test_launch_prompt.py`.
 
-### Gate (passive checkpoint) — landed
+### Review agents — landed
 
-- `NodeRunner._run_passive_gate` skips the provider entirely and goes
-  straight to `awaiting_review`.
-- `InteractionRequest.interaction_type = "checkpoint_review"` carries
-  the brief as `tool_input.contract`.
-- Write-json response validates project-relative paths (rejects
-  absolute, parent-traversal); loops on write errors so the user can
-  retry without restarting the node. No-op response marks done.
-- No client-facing `start_gate_node` envelope. `registry.start_gate_node`
-  is an internal API used by the scenario expander and the
-  user-launched-gate auto-spawner.
-- Review handoff is uniform: the WebSocket accepts `needs_review`, the
-  runner persists `requires_review` and injects a transient
-  `review-guidance.md` contract, and `registry._advance_user_gate`
-  reads that guidance to spawn a passive gate. Routes through the
-  commit op's `parent_node_id` when `auto_commit` is on. Double-spawn
-  is guarded by checking for an existing `GATE` child.
-- Passive gate write-json response stamps acceptance fields
-  (`acceptance_state`, `verdict_source`, `verdict_artifact_path`,
-  `accepted_at` / `rejected_at`) on the **upstream source node**, not
-  the gate node.
-- Passive gate primary UI response is free-form prose. The backend
-  keeps the legacy `write-json` path for scenario branching and
-  acceptance stamping, but the product surface sends
-  `response.judgment` and merges that prose into planspace state.
-  Scenario branches that depend on `approved` / `rejected` remain on
-  the legacy backend path rather than the primary gate UI.
+- Reviews are `agent` nodes with `category=review`.
+- `agentic_review` launches like any other agent with the review brief
+  in the category-aware launch block.
+- `human_interact_review` first transitions to
+  `awaiting_human_input`, emits
+  `interaction_request {interaction_type: "human_review_prose"}`, writes
+  the user's prose to durable and materialized `human-review.md`, then
+  launches the reviewer agent.
+- The reviewer's verdict is represented by its preview and any virtual
+  graph mutations reaped from `.miniclaw2/graph/`.
 
 ### Op — landed
 
-- `commit` op only. Auto-appended after any `agent` / `gate` node that
+- `commit` op only. Auto-appended after any `agent` node that
   reaches `done` when `project.settings_override.auto_commit` is
   truthy. Runs `git add -A && git commit -m miniclaw:node:<id>`.
 - On success the preceding node's `commit_after` is rewritten to the
@@ -193,8 +178,7 @@ Trunk: `backend/miniclaw2/runner.py`, `backend/miniclaw2/registry.py`.
 
 ## 4. ContextSpace
 
-Trunk: `backend/miniclaw2/contextspace.py`, `backend/miniclaw2/context.py`,
-`backend/miniclaw2/planspace_state.py`.
+Trunk: `backend/miniclaw2/contextspace.py`, `backend/miniclaw2/context.py`.
 
 ### Landed
 
@@ -207,13 +191,12 @@ Trunk: `backend/miniclaw2/contextspace.py`, `backend/miniclaw2/context.py`,
     bindings/projects/<binding-id>.yaml
     plugs/global/{manifest.yaml, CONTEXT.md}
     plugs/skills/<id>/{manifest.yaml, CONTEXT.md, assets/}
-    plugs/planspaces/<id>/{manifest.yaml, STATUS.md, PLAN.md,
-                           SKILLS.md, events.jsonl,
-                           inbox/<node-id>.memory-delta.json}
+    plugs/planspaces/<id>/{manifest.yaml, events.jsonl}
     snapshots/<bundle-id>.json
   ```
-- Plug loaders for project-root `CONTEXT.md`, planspace STATUS/PLAN,
-  and skill `CONTEXT.md`.
+- Plug loaders for project-root `CONTEXT.md`, global `CONTEXT.md`, and
+  skill `CONTEXT.md`. Planspace plugs are manifest-only; lane state is
+  read through `.miniclaw2/graph/lanes/<lane>/`.
 - `ProjectBinding`, `PlugRef`, `ComposedContextBundle` carry binding
   resolution; `Project.project_context_binding_id` references the
   current binding; active planspace lives in
@@ -229,36 +212,15 @@ Trunk: `backend/miniclaw2/contextspace.py`, `backend/miniclaw2/context.py`,
   `ensure_contextspace_root`, `ensure_project_binding`, and
   `add_planspace_to_binding`. The legacy
   `bootstrap_project_contextspace` remains as a compatibility facade.
-- Planspace `STATUS.md` auto-writer runs only when an explicit
-  planspace binding exists.
-- Planspace state schema (`planspace_state.py`):
-  - YAML frontmatter slots — `goal`, `current_state`, `open_questions`,
-    `decisions`, `out_of_scope`. `unknown` is a first-class slot value.
-  - Append-only `Q1 / Q2 / …`, `D1 / D2 / …` IDs.
-  - `derive_plan_markdown()` regenerates PLAN.md from STATUS on every
-    refresh; PLAN.md is never edited directly.
-- Memory delta inbox:
-  - Agents write a project-local artifact at
-    `.miniclaw2/outputs/<node-id>/memory-delta.json`.
-  - On terminal transition the runner validates the file and copies
-    it into the snapshotted planspace's
-    `inbox/<node-id>.memory-delta.json`.
-  - Only `STATUS.md`-targeted updates are auto-applied.
-  - Failed / cancelled / rejected-review nodes do not promote
-    durable updates.
-- Passive gate write-json response stamps acceptance fields on the
-  upstream source node (see §3 Gate).
 - `POST /sessions/{sid}/planspaces` creates a new bound direction,
   activates it, and launches the concierge bootstrap agent node from a
   preset markdown prompt.
-- Whitelisted file reads via `GET /sessions/{sid}/files?role=...` for
-  STATUS, PLAN, and project-root CONTEXT. STATUS / PLAN last-writer
-  hints come from the planspace event tail; CONTEXT hints come from
-  `.miniclaw2/context.meta.json`.
-- Per-node STATUS snapshots are written to
-  `projects/<pid>/nodes/<nid>/status-delta.json` after successful
-  STATUS updates and exposed through
-  `GET /sessions/{sid}/nodes/{nid}/status-delta`.
+- Per-planspace mode lives in the planspace manifest and is read /
+  written through `read_planspace_mode` / `set_planspace_mode`.
+- `GET /sessions/{sid}/contextspace` returns binding and plug summaries
+  including planspace mode, active lane, and hidden-lane state.
+- Whitelisted file reads via `GET /sessions/{sid}/files?role=context`
+  expose project-root `CONTEXT.md` for the UI.
 - Per-project lane visibility is persisted in
   `Project.planspace_view` and updated via
   `PATCH /sessions/{sid}/planspace-view`.
@@ -278,52 +240,6 @@ Trunk: `backend/miniclaw2/contextspace.py`, `backend/miniclaw2/context.py`,
   `approvalPolicy: "never"` on Codex. Used by the out-of-band
   `context_refresh` agent; unused by `NodeRunner`.
 
-### Memory delta JSON shape (wire-level)
-
-```json
-{
-  "version": 1,
-  "node_id": "<node id>",
-  "project_id": "<project id>",
-  "binding_id": "<binding id>",
-  "created_at": 1234567890,
-  "terminal_state": "done",
-  "acceptance_state": "unreviewed",
-  "updates": [
-    {
-      "target": "STATUS.md",
-      "operation": "append_observation",
-      "policy": "auto",
-      "confidence": "observed",
-      "evidence": {
-        "artifact": ".miniclaw2/outputs/<node-id>/result.md",
-        "event_seq": 42
-      },
-      "text": "Implemented X; tests Y passed; blocker Z remains."
-    },
-    {
-      "target": "PLAN.md",
-      "operation": "propose_patch",
-      "policy": "proposed",
-      "reason": "The next milestone changed after implementation.",
-      "patch": "..."
-    }
-  ]
-}
-```
-
-Supported `STATUS.md` operations (auto-applied):
-
-- `append_observation` / `append_body` / `append_note` — append text to
-  the body.
-- `rewrite_current_state` — replace the `current_state` slot.
-- `add_open_question` — append a new `Q*` entry.
-- `add_decision` — append a new `D*` entry.
-- `add_out_of_scope` — append an out-of-scope note.
-
-`PLAN.md` updates are recorded as proposed and not applied — PLAN is
-derived from STATUS. Skill and protocol updates remain proposed.
-
 ### Pending
 
 - Vendor-specific on-disk context loading: `CLAUDE.md` walk
@@ -333,13 +249,9 @@ derived from STATUS. Skill and protocol updates remain proposed.
 - Drag-and-drop plug UX; skill authoring UI; manifest editor for
   injection-mode and `max_chars`.
 - Automatic ContextSpace git commits (v1 keeps changes visible).
-- `query_pack` compressed STATUS view for context-budget pressure.
-- Cross-provider reviewer nodes (the ontology supports the
-  `cross_provider` verdict source; no UI to invoke it).
-- Fork merge semantics (importing fork planspace deltas into parent
-  planspace inbox).
-- Verifier op nodes that own deterministic acceptance and write
-  acceptance back to the source node.
+- Cross-provider reviewer nodes (the ontology supports review agents;
+  no UI to configure provider override yet).
+- Fork merge semantics.
 - Codex per-tool allowlist for out-of-band agent mode. Claude's
   `can_use_tool` callback enforces the whitelist directly; Codex has no
   per-tool callback, so the current `context_refresh` agent relies on
@@ -356,59 +268,45 @@ Trunk: `frontend/src/canvas/Canvas.tsx`, `frontend/src/canvas/layout.ts`,
 ### Landed
 
 - React Flow canvas; one canvas per project; pan/zoom per-project.
-- Node kinds rendered: `AgentNode`, `GateNode`, `OpNode`,
-  `ContextNode`, `ErrorTerminalNode`, `PhantomNode`,
-  `PlanspaceLaneNode`, `ProjectRootNode`. (The legacy `ArtifactNode`
-  has been removed — every node output now writes back to the
-  planspace.)
-- Polymorphic side panel: `AgentPanel`, `GatePanel`,
-  `ContextNodePanel`, `OpPanel`, `PlanspacePanel`, `ProjectPanel`
-  switched by selection (`SidePanel.tsx`).
+- Node kinds rendered: `AgentNode`, `OpNode`, `ContextNode`,
+  `ErrorTerminalNode`, `PhantomNode`, `PlanspaceLaneNode`,
+  `ProjectRootNode`. Passive `GateNode` and `ArtifactNode` have been
+  removed.
+- Polymorphic side panel: `AgentPanel`, `ContextNodePanel`, `OpPanel`,
+  lane panel, `ProjectPanel` switched by selection (`SidePanel.tsx`).
 - Phantom composer replaces the old launch modal. Resume source is
-  implicit in spawn site. It exposes a `Needs review` checkbox plus a
-  `+ load from another direction` picker for cross-lane planspace
-  loads; the run intent lives in the prompt text.
-- Edges: timeline spine, resume (`↻` mid-glyph), reviews (gate ←
-  upstream agent), loads (dashed, auto-hidden unless endpoint
-  hovered/selected).
+  implicit in spawn site; it now launches regular agent runs only.
+- Virtual agent tiles render as dashed plan tiles with category badges,
+  draft prompt text, ready/obsolete/dependency footer state, and a
+  hover promote affordance.
+- Agent tiles show category badges for planning / regular / review /
+  human-interact review nodes.
+- Edges: timeline spine, resume (`↻` mid-glyph), review-agent edges,
+  loads (dashed, auto-hidden unless endpoint hovered/selected).
 - Op as edge chevron when the op has a downstream child; trailing
   ops without a child fall back to a tile.
 - Error terminal nodes downstream of failed runs carry the `error`
   text in red.
-- Planspace-update `+Δ` arrow from an agent into the context node it
-  updated (badge shows applied / proposed counts).
-- Review edges connect an upstream agent directly to its passive gate.
-- Gate hexagon expands inline (when selected and `awaiting_review`) to
-  host the review handoff text plus a free-form judgment textarea; the
-  side panel mirrors the same form for wider chrome.
 - Planspace lanes render with persisted manifest color overrides
   (falls back to creation-order palette).
 - Planspace lane visibility is per-project and persisted; hidden lanes,
-  their nodes, and their cross-lane chips are filtered from the canvas,
-  while Project → Directions keeps a recovery row.
+  and their nodes are filtered from the canvas, while Project →
+  Directions keeps a recovery row.
 - The active direction is highlighted at lane level, and fresh
   phantoms drop on the active lane's trailing slot.
 - Project `CONTEXT.md` sits in its own neutral top stripe above the
   planspace-colored "loaded context" lane.
-- Cross-lane `↗ loaded:` chip on each tile whose context bundle pulls
-  another planspace's STATUS, even when the dashed `loads` edge is
-  auto-hidden.
-- `AgentPanel`'s "What this run changed" section reads
-  `settings_snapshot.planspace_update` and renders applied / proposed
-  counts plus a staged-for-review marker.
-- `AgentPanel` reads per-node STATUS deltas when present and renders
-  operation cards plus a collapsed raw STATUS diff; Activity collapses
-  by default for terminal nodes with a state delta and stays expanded
-  for live/error/no-delta investigation.
-- STATUS.md viewer + slot-aware editor in `PlanspacePanel.tsx`,
-  reachable by clicking a planspace lane header.
-- `PlanspaceFilePanel.tsx` handles STATUS.md / PLAN.md /
-  CONTEXT.md context tiles by reading real file content from disk
-  through `/files`; STATUS includes a collapsible slot editor.
+- `AgentPanel` shows virtual node draft/provenance/dependencies/brief
+  for virtuals; executed nodes show agent input, persisted
+  `preview.json`, activity, thinking, and inspect drawer.
+- Human-interact review prose form renders inside `AgentPanel` while
+  the review node is in `awaiting_human_input`.
+- Clicking a lane header opens a lane panel with manual/auto mode
+  controls; Project → Directions also shows mode and hide/show.
+- `PlanspaceFilePanel.tsx` now handles project-root `CONTEXT.md` only.
 - `ProjectPanel.tsx` has Project actions (`+ New direction`,
   initialize/refresh project notes) and a Directions section with
-  active badges and hide/show controls. The old "Set up project
-  memory" action is removed.
+  active badges, mode labels, and hide/show controls.
 - Persisted `layout_hints` round-tripped through `project.json` via
   `PATCH /sessions/{sid}/layout-hints`.
 - Tool I/O rendering: `Activity.result` (≤4 KB) + `result_kind ∈
@@ -430,61 +328,41 @@ Trunk: `frontend/src/canvas/Canvas.tsx`, `frontend/src/canvas/layout.ts`,
 ### Pending
 
 - Inline agent-tile expansion for permission / ask-user / plan-approval
-  gates (today these render in the AgentPanel; the gate hexagon's
-  inline expansion only handles checkpoint review).
+  gates (today these render in `AgentPanel`).
 - Phantom future scenario steps (dashed phantoms ahead of the cursor,
   alternate paths for `on_state` branches).
 - Schema-aware review forms (PRD §8.7). Cancelled — user judgment is
   free-form by design; left here as a documented non-goal.
 
 
-## 6. Planspace / output redesign
+## 6. Preview / virtual-node output model
 
-The `OUTPUT_PLANSPACE_GATE.md` ontology has landed end-to-end.
+The `PROPOSAL_VIRTUAL_NODES.md` output model has replaced the
+STATUS/PLAN update harness for the product runtime.
 
 ### Landed
 
-- STATUS.md frontmatter + body schema (see §4 above).
-- PLAN.md as derived view.
-- `merge_reviewed_update_markdown()` performs the template-driven
-  merge of interim delta + free-form user judgment when a passive
-  gate resolves.
-- `Node.acceptance_state` and `verdict_*` fields decouple "done" from
-  "accepted."
-- Planspace lane rendering (`PlanspaceLaneNode`) — clickable header
-  opens `PlanspacePanel` (STATUS viewer + slot editor).
-- Planspace-update inbox driving STATUS updates (see §4).
-- Per-node STATUS delta snapshots driving op-card rendering and raw
-  STATUS diff display in `AgentPanel`.
-- `NodeOutputKind` / `output_kind` / `output_path` /
-  `output_contract_snapshot` removed; every node output flows through
-  the unified planspace-commit mechanism (`needs_review` /
-  `requires_review` + transient `planspace-update.json` /
-  `review-guidance.md`).
-- Anti-self-poisoning filter prompt appended last in the launch
-  instruction composition (see §3 Agent Landed; covered by
-  `test_launch_prompt.py::AntiSelfPoisoningTests`).
-- Peer brief / review-response artifact nodes removed from
-  `layout.ts`; the gate hexagon expands inline to host the review
-  handoff and free-form judgment.
-- `AgentPanel` "What this run changed" rendering keyed on
-  `settings_snapshot.planspace_update`.
-- Cross-lane `↗ loaded:` chip on agent / gate tiles whose context
-  bundle pulls a different planspace's STATUS.
-- Neutral project-CONTEXT top stripe distinct from the planspace
-  palette.
-- Planspace palette persistence — manifest `color:` override applied
-  when present; falls back to creation-order palette.
-- Primary surfaces use the new vocabulary (planspace update / review
-  handoff / send to next agent). Schema field names (`verdict_*`,
-  `acceptance_state`) remain in `InspectDrawer.tsx`.
+- Every executed node is expected to write its own
+  `.miniclaw2/graph/lanes/<lane>/nodes/<nid>/preview.json`; the runner
+  reaps it into `projects/<pid>/nodes/<nid>/preview.json`.
+- Planning and review agents may create or mutate virtual previews in
+  the materialized graph; regular agents are rejected if they write
+  virtuals.
+- Virtual preview writes are validated, canonicalized from slugs to
+  node ids, cycle-checked, persisted atomically, and surfaced on the
+  canvas after reap.
+- Missing/malformed own preview ends the node as `error` with a
+  framework-written stub preview.
+- Cancelled/error runs skip virtual reap and get framework stub
+  previews.
+- Anti-self-poisoning prompt is appended last in launch instruction
+  composition and applies to preview content.
 
 ### Deferred
 
-- Compressed `query_pack` view (defer until context-budget pressure is
-  measurable).
-- Micro-agent merge for paragraph-scale user verdicts (defer until
-  template-merge quality degrades).
+- Inline re-prompt retries before stub preview. Current enforcement
+  records the error/stub rather than driving a multi-round repair loop.
+- Live mid-session graph-write canvas updates; v1 remains reap-only.
 
 
 ## 7. CLI-parity gaps
@@ -593,7 +471,7 @@ Trunk: `backend/miniclaw2/store.py`.
 ### Pending
 
 - SQLite migration. Deferred until cross-project queries (e.g. "list
-  all nodes in `awaiting_review` across the workspace") actually
+  all nodes in `awaiting_human_input` across the workspace") actually
   become hot.
 
 
@@ -601,25 +479,25 @@ Trunk: `backend/miniclaw2/store.py`.
 
 Quick reference; the on-disk shape is authoritative.
 
-- Server → client: `node_started {node_id, parent_node_id, kind, prompt}`,
+- Server → client:
+  `node_started {node_id, parent_node_id, kind, category, subtype, prompt}`,
   `node_updated`, `interaction_request {interaction_type, ...}` with
   `interaction_type ∈ {"permission", "ask_user", "plan_approval",
-  "checkpoint_review", "human_review_prose"}` (the last carrying the
-  review brief as `tool_input.brief` and the materialized prose path
-  as `tool_input.human_review_path`), `text_delta`, `thinking`,
-  `tool_use`, `tool_result`, `activity`, `usage`, `state_change`,
-  `error`.
-- Client → server: user prompt with optional `needs_review` /
-  `extra_planspace_loads`, `interrupt`, gate response,
+  "human_review_prose"}` (`checkpoint_review` remains accepted in
+  legacy replay/client types only), `text_delta`, `thinking`,
+  `activity`, `usage`, `turn_done`, `error`.
+- Client → server: user prompt with optional `resume_from_node_id`,
+  `interrupt`, interaction response,
   `replay_request {node_id, since_seq}`.
 - REST: project CRUD, node and event introspection,
   `PATCH /sessions/{sid}/layout-hints`,
   `PATCH /sessions/{sid}/planspace-view`,
+  `PATCH /sessions/{sid}/planspaces/{planspace_id}/mode`,
   `POST /sessions/{sid}/planspaces {title, seed, mode?}` (creates a
   new planspace + activates it + launches the concierge planning
   agent),
-  `POST /sessions/{sid}/virtuals/{vid}/promote` (manual promotion of
-  a virtual node),
+  `POST /sessions/{sid}/virtuals/{vid}/promote` (manual promotion,
+  returns and broadcasts the promoted node),
   `POST /sessions/{sid}/context/init`,
   `POST /sessions/{sid}/context/refresh`,
   `POST /sessions/{sid}/context/cancel`,
@@ -627,6 +505,5 @@ Quick reference; the on-disk shape is authoritative.
   `GET /sessions/{sid}/nodes/{nid}/preview` (durable preview text),
   `POST /sessions {auto_commit, ...}`.
 
-No client-facing `start_gate_node` envelope; gates are auto-spawned
-server-side when an upstream agent with `requires_review` reaches
-`done`.
+No client-facing `start_gate_node` envelope remains; reviews are
+ordinary agent nodes with `category=review`.

@@ -67,6 +67,8 @@ class NodeStarted(BaseModel):
     node_id: str
     parent_node_id: str | None = None
     kind: str = "agent"
+    category: str | None = None
+    subtype: str | None = None
     prompt: str = ""
     seq: int = 0
 

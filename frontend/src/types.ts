@@ -62,6 +62,8 @@ export type NodeStarted = {
   node_id: string;
   parent_node_id?: string | null;
   kind?: string;
+  category?: NodeCategory | null;
+  subtype?: ReviewSubtype | null;
   prompt?: string;
   seq?: number;
 };
@@ -83,11 +85,10 @@ export type ServerEvent =
   | NodeUpdated;
 
 export type ClientMessage =
-  | {
+    | {
       type: "user_message";
       text: string;
       resume_from_node_id?: string | null;
-      needs_review?: boolean | null;
       extra_planspace_loads?: string[] | null;
     }
   | {
@@ -149,30 +150,24 @@ export type VerifyResponse = {
   timed_out: boolean;
 };
 
-export type NodeKind = "agent" | "gate" | "op";
+export type NodeKind = "agent" | "op";
+export type NodeCategory = "planning" | "regular" | "review";
+export type ReviewSubtype = "agentic_review" | "human_interact_review";
+export type PlanspaceMode = "auto" | "manual";
+export type ReviewBrief = {
+  check_what: string;
+  expected: string;
+  abnormal: string;
+};
 export type NodeState =
+  | "virtual"
   | "queued"
   | "running"
   | "waiting"
   | "awaiting_human_input"
-  | "awaiting_review"
   | "done"
   | "error"
   | "cancelled";
-
-export type AcceptanceState =
-  | "not_applicable"
-  | "unreviewed"
-  | "accepted"
-  | "rejected"
-  | "blocked";
-
-export type VerdictSource =
-  | "none"
-  | "human"
-  | "deterministic"
-  | "cross_provider"
-  | "same_provider_advisory";
 
 export type NodeInfo = {
   id: string;
@@ -191,22 +186,20 @@ export type NodeInfo = {
   sdk_session_id?: string | null;
   commit_before?: string | null;
   commit_after?: string | null;
-  requires_review?: boolean;
   prompt: string;
-  contract?: string;
+  category?: NodeCategory | null;
+  subtype?: ReviewSubtype | null;
+  brief?: ReviewBrief | null;
+  prompt_draft?: string | null;
+  scheduled_deps?: string[];
+  proposed_by?: string | null;
+  obsolete_reason?: string | null;
   summary?: string | null;
   error?: string | null;
   usage?: TokenUsage | null;
   system_context_snapshot?: string;
   settings_snapshot?: Record<string, unknown>;
   scenario_step_id?: string | null;
-  review_outcome?: "approved" | "rejected" | null;
-  acceptance_state?: AcceptanceState;
-  verdict_source?: VerdictSource;
-  verdict_artifact_path?: string | null;
-  verdict_thread_id?: string | null;
-  accepted_at?: number | null;
-  rejected_at?: number | null;
   created_at: number;
   started_at?: number | null;
   finished_at?: number | null;
@@ -264,6 +257,7 @@ export type ContextSpacePlugSummary = {
   title: string;
   description?: string | null;
   color?: string | null;
+  mode?: PlanspaceMode;
 };
 
 export type ContextSpaceBindingSummary = {
@@ -295,6 +289,7 @@ export type SessionContextSpaceInfo = {
     started_at?: number;
   };
   bindings: ContextSpaceBindingSummary[];
+  selectable_bindings?: ContextSpaceBindingSummary[];
   bootstrap?: {
     context_root: string;
     binding_id: string;
@@ -314,7 +309,7 @@ export type NodeDiff = {
   error?: string | null;
 };
 
-export type SessionFileRole = "status" | "plan" | "context";
+export type SessionFileRole = "context";
 
 export type SessionFile = {
   role: SessionFileRole;
@@ -328,20 +323,4 @@ export type SessionFile = {
     source?: string;
     previous?: string;
   };
-};
-
-export type StatusDeltaOp = Record<string, unknown> & {
-  target?: string;
-  operation?: string;
-  text?: string;
-  summary?: string;
-  patch?: string;
-};
-
-export type NodeStatusDelta = {
-  planspace_id: string;
-  before: string;
-  after: string;
-  ops: StatusDeltaOp[];
-  applied_at: number;
 };

@@ -3,12 +3,6 @@ import type { ContextBundle, NodeInfo } from "../types";
 
 /* ───────── canvas node payloads ───────── */
 
-export type CrossLaneLoad = {
-  planspaceId: string;
-  label: string;
-  color: PlanspaceColor;
-};
-
 export type AgentNodeData = {
   node: NodeInfo;
   index: number;
@@ -16,12 +10,10 @@ export type AgentNodeData = {
   /** true when this agent is currently streaming text in the live channel */
   isActive: boolean;
   planspaceColor: PlanspaceColor | null;
-  crossLaneLoads: CrossLaneLoad[];
-  /** true when no agent/gate node (in any lane) has this one as its agent/gate parent */
+  /** true when no agent node (in any lane) has this one as its agent parent */
   isLastInLane: boolean;
+  readyToPromote: boolean;
 };
-
-export type GateNodeData = AgentNodeData;
 
 export type OpNodeData = {
   node: NodeInfo;
@@ -30,9 +22,8 @@ export type OpNodeData = {
 };
 
 export type ErrorTerminalData = {
-  /** The owning agent / gate node whose error this surfaces. */
+  /** The owning agent node whose error this surfaces. */
   ownerNodeId: string;
-  ownerKind: NodeInfo["kind"];
   message: string;
 };
 
@@ -83,7 +74,6 @@ export type PlanspaceLaneData = {
 
 export type RFNodeData =
   | AgentNodeData
-  | GateNodeData
   | OpNodeData
   | ContextNodeData
   | PhantomNodeData
@@ -107,7 +97,6 @@ export const LANE = {
   agentSpacing: 280,
   opWidth: 96,
   opSpacing: 140,
-  gateSpacing: 240,
   /* Lane is laid out vertically as: header band → ctx row → agent row → bottom pad.
    * Y values below are RELATIVE positions inside the lane (origin = lane top-left). */
   planspaceLaneSpacing: 360,
@@ -283,9 +272,9 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
     contextBundlesByNodeId,
   );
 
-  /* Mark agent/gate nodes that no other agent/gate descends from. The "+" hover
+  /* Mark agent nodes that no other agent descends from. The "+" hover
    * affordance only appears on these tail tiles. Ops are transparent here: we
-   * walk through them to find the real agent/gate parent. */
+   * walk through them to find the real agent parent. */
   const hasDescendantById = new Set<string>();
   for (const candidate of visibleNodes) {
     if (candidate.kind === "op") continue;
@@ -343,15 +332,6 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
       planspaceColorOverrides,
     );
     if (planspaceId && planspaceColor) laneColors.set(planspaceId, planspaceColor);
-    const crossLaneLoads = collectCrossLaneLoads(
-      node,
-      planspaceId,
-      contextBundlesByNodeId[node.id],
-      planspaceIndex,
-      planspaceColorOverrides,
-      hiddenPlanspaces,
-    );
-
     const placeInLane = (spacing: number, width: number, defaultY: number) => {
       const cursor = advanceLane(planspaceId!, spacing);
       const position = stored ?? { x: cursor, y: defaultY };
@@ -381,29 +361,6 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
           ? { parentNode: `planspace:${planspaceId}`, extent: "parent" as const }
           : {}),
       });
-    } else if (node.kind === "gate") {
-      const isLastInLane = !hasDescendantById.has(node.id);
-      const position = planspaceId
-        ? placeInLane(LANE.gateSpacing, 200, LANE.planspaceLaneAgentRowY)
-        : placeFree(LANE.gateSpacing);
-      rfNodes.push({
-        id: node.id,
-        type: "gate",
-        position,
-        data: {
-          node,
-          index,
-          resumeParent,
-          isActive,
-          planspaceColor,
-          crossLaneLoads,
-          isLastInLane,
-        },
-        draggable: true,
-        ...(planspaceId
-          ? { parentNode: `planspace:${planspaceId}`, extent: "parent" as const }
-          : {}),
-      });
     } else {
       const isLastInLane = !hasDescendantById.has(node.id);
       const position = planspaceId
@@ -419,8 +376,8 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
           resumeParent,
           isActive,
           planspaceColor,
-          crossLaneLoads,
           isLastInLane,
+          readyToPromote: isVirtualReady(node, nodeById),
         },
         draggable: true,
         ...(planspaceId
@@ -446,8 +403,8 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
       });
     } else if (node.parent_node_id && nodeById.has(node.parent_node_id)) {
       const parentNode = nodeById.get(node.parent_node_id)!;
-      const isReview = parentNode.kind === "agent" && node.kind === "gate";
-      const isResume = parentNode.kind !== "op" && node.kind === "agent";
+      const isReview = parentNode.kind === "agent" && node.category === "review";
+      const isResume = parentNode.kind !== "op" && node.kind === "agent" && !isReview;
       rfEdges.push({
         id: `tl:${node.parent_node_id}->${node.id}`,
         source: node.parent_node_id,
@@ -496,7 +453,6 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
       },
       data: {
         ownerNodeId: node.id,
-        ownerKind: node.kind,
         message: node.error,
       },
       draggable: true,
@@ -656,37 +612,6 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
   }
   rfNodes.splice(1, 0, ...laneNodes);
 
-  /* planspace-update arrows — when an agent wrote back into a context node
-   * (planspace), draw a +Δ edge from the agent to that context node.
-   * The source-of-truth is `settings_snapshot.planspace_update.planspace_id`,
-   * resolved against the agent's own bundle so we can map planspace id →
-   * the context node id we materialized above. */
-  for (const node of visibleNodes) {
-    if (node.kind !== "agent") continue;
-    const update = (node.settings_snapshot?.planspace_update
-      ?? node.settings_snapshot?.memory_delta) as
-      | { planspace_id?: string; applied?: number; proposed?: number }
-      | undefined;
-    if (!update || !update.planspace_id) continue;
-    if (!(update.applied ?? 0) && !(update.proposed ?? 0)) continue;
-    const bundle = contextBundlesByNodeId[node.id];
-    if (!bundle) continue;
-    const src = bundle.sources.find((s) => s.plug_id === update.planspace_id);
-    if (!src) continue;
-    const ctxId = `ctx:${contextIdentityKey(src.scope, src.kind, src.path)}`;
-    rfEdges.push({
-      id: `md:${node.id}->${ctxId}`,
-      source: node.id,
-      target: ctxId,
-      targetHandle: "writes",
-      type: "memoryDelta",
-      data: {
-        applied: update.applied ?? 0,
-        proposed: update.proposed ?? 0,
-      },
-    });
-  }
-
   /* phantom composer — kept top-level so it can park at the lane's right edge
    * without being clipped by `extent: "parent"`. Its absolute position is
    * computed from the lane's abs pos + the lane's current right boundary. */
@@ -845,10 +770,24 @@ function renderedWorkNodeGeometry(
     if (opsWithChild.has(node.id)) return null;
     return { spacing: LANE.opSpacing, width: LANE.opWidth };
   }
-  if (node.kind === "gate") {
-    return { spacing: LANE.gateSpacing, width: 200 };
-  }
   return { spacing: LANE.agentSpacing, width: LANE.agentWidth };
+}
+
+function isVirtualReady(
+  node: NodeInfo,
+  byId: Map<string, NodeInfo>,
+): boolean {
+  if (node.state !== "virtual" || node.obsolete_reason) return false;
+  for (const depId of node.scheduled_deps ?? []) {
+    const dep = byId.get(depId);
+    if (!dep) continue;
+    if (dep.state === "done" || dep.state === "error" || dep.state === "cancelled") {
+      continue;
+    }
+    if (dep.state === "virtual" && dep.obsolete_reason) continue;
+    return false;
+  }
+  return true;
 }
 
 function colorForPlanspace(
@@ -882,37 +821,6 @@ function collectPlanspaceColorOverrides(
       out.set(active.id, (active as { color: string }).color);
     }
   }
-  return out;
-}
-
-function collectCrossLaneLoads(
-  node: NodeInfo,
-  ownPlanspaceId: string | null,
-  bundle: ContextBundle | null | undefined,
-  planspaceIndex: Map<string, number>,
-  overrides: Map<string, string>,
-  hiddenPlanspaces: Set<string>,
-): CrossLaneLoad[] {
-  if (!bundle) return [];
-  const seen = new Set<string>();
-  const out: CrossLaneLoad[] = [];
-  for (const src of bundle.sources) {
-    const plugId = src.plug_id;
-    if (!plugId || !plugId.startsWith("planspaces.")) continue;
-    if (hiddenPlanspaces.has(plugId)) continue;
-    if (plugId === ownPlanspaceId) continue;
-    if (seen.has(plugId)) continue;
-    seen.add(plugId);
-    const color = colorForPlanspace(plugId, planspaceIndex, overrides);
-    if (!color) continue;
-    out.push({
-      planspaceId: plugId,
-      label: labelForPlanspace(plugId),
-      color,
-    });
-  }
-  // Silence unused-arg warning when node has nothing to add beyond its bundle.
-  void node;
   return out;
 }
 
