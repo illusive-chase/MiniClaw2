@@ -1,14 +1,4 @@
-"""ProjectRegistry — in-memory orchestration over the disk Store.
-
-After the virtual-nodes redesign, gate nodes are gone — reviews are
-agents with ``category=review``. The registry no longer spawns passive
-gate nodes (the ``_advance_user_gate`` path is gone). Auto-commit op
-spawning is preserved.
-
-Scenario step expansion stays in for agent-only scenarios. Scenario
-steps whose ``kind == "gate"`` are no longer executable; the expander
-logs and halts the scenario when it encounters one.
-"""
+"""ProjectRegistry — in-memory orchestration over the disk Store."""
 
 from __future__ import annotations
 
@@ -16,16 +6,25 @@ import asyncio
 import logging
 import math
 from collections.abc import Awaitable, Callable
+from functools import lru_cache
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from .contextspace import delete_project_contextspace
+from .contextspace import (
+    create_planspace,
+    delete_project_contextspace,
+    read_planspace_mode,
+)
 from .domain import (
+    TERMINAL_NODE_STATES,
     Category,
     Node,
     NodeKind,
     NodeState,
+    PlanspaceMode,
     Project,
+    normalize_planspace_mode,
 )
 from .language import normalize_preferred_language
 from .runner import NodeRunner
@@ -36,6 +35,18 @@ logger = logging.getLogger(__name__)
 
 
 _UNSET: object = object()
+
+_PROMPTS_DIR = Path(__file__).with_name("prompts")
+_CONCIERGE_TEMPLATE = "concierge_bootstrap.md"
+
+
+@lru_cache(maxsize=1)
+def _concierge_template() -> str:
+    return (_PROMPTS_DIR / _CONCIERGE_TEMPLATE).read_text(encoding="utf-8")
+
+
+def _render_concierge_prompt(seed: str) -> str:
+    return _concierge_template().replace("<<user_seed>>", seed)
 
 
 class ProjectRuntime:
@@ -341,12 +352,10 @@ class ProjectRegistry:
         prompt: str,
         *,
         resume_from_node_id: str | None = None,
-        needs_review: bool | None = None,  # accepted for wire compatibility; ignored
         extra_planspace_loads: list[str] | None = None,
         scenario_step_id: str | None = None,
     ) -> NodeRunner | None:
         """Create a new agent node and launch its runner as a task."""
-        del needs_review  # gate-spawn removed; flag no longer affects runtime
         rt = self._runtimes.get(pid)
         if rt is None:
             return None
@@ -358,11 +367,7 @@ class ProjectRegistry:
             resume_source = self.store.load_node(pid, resume_from_node_id)
             if resume_source is None:
                 return None
-            if resume_source.state not in {
-                NodeState.DONE,
-                NodeState.ERROR,
-                NodeState.CANCELLED,
-            }:
+            if resume_source.state not in TERMINAL_NODE_STATES:
                 return None
             if not (resume_source.provider_session_id or resume_source.sdk_session_id):
                 return None
@@ -392,10 +397,19 @@ class ProjectRegistry:
         self.store.create_node(node)
 
         runner = NodeRunner(node, rt.project, self.store, rt.broadcast)
-        rt.runner = runner
-        rt.runner_task = asyncio.create_task(runner.run())
-        rt.runner_task.add_done_callback(lambda _t, _rt=rt: self._on_runner_done(_rt))
+        self._launch_runner(rt, runner)
         return runner
+
+    def _launch_runner(
+        self,
+        rt: ProjectRuntime,
+        runner: NodeRunner,
+        *,
+        coro: Awaitable[None] | None = None,
+    ) -> None:
+        rt.runner = runner
+        rt.runner_task = asyncio.create_task(coro if coro is not None else runner.run())
+        rt.runner_task.add_done_callback(lambda _t, _rt=rt: self._on_runner_done(_rt))
 
     def _on_runner_done(self, rt: ProjectRuntime) -> None:
         finished_node = rt.runner.node if rt.runner else None
@@ -412,8 +426,159 @@ class ProjectRegistry:
         ):
             self._spawn_op_commit(rt, finished_node)
             spawned_op = True
-        if not spawned_op:
-            self._advance_scenario_step(rt, finished_node)
+        if spawned_op:
+            return
+        self._advance_scenario_step(rt, finished_node)
+        if rt.is_running():
+            return
+        if finished_node.state is not NodeState.DONE:
+            return
+        if not rt.project.settings_override.get("active_planspace_id"):
+            return
+        self._auto_promote_next_virtual(rt)
+
+    def create_planspace_and_launch_concierge(
+        self,
+        pid: str,
+        *,
+        title: str,
+        seed: str,
+        mode: str | None = None,
+    ) -> NodeRunner | None:
+        """Create a new planspace, activate it, and launch the concierge.
+
+        The concierge is a planning-category agent node whose prompt is
+        the rendered ``concierge_bootstrap.md`` template with the user's
+        free-form ``seed`` substituted in. Returns the runner on
+        success, ``None`` if the project is already running.
+        """
+        rt = self._runtimes.get(pid)
+        if rt is None or rt.is_running():
+            return None
+        if not seed.strip():
+            raise ValueError("seed must be non-empty")
+        normalized_mode = normalize_planspace_mode(mode)
+        plug_id = create_planspace(
+            rt.project,
+            title=title or "Direction",
+            mode=normalized_mode,
+            store_root=self.store.root,
+            seed_text=seed,
+        )
+        settings = dict(rt.project.settings_override)
+        settings["active_planspace_id"] = plug_id
+        rt.project.settings_override = settings
+        self.store.update_project(rt.project)
+
+        prompt_text = _render_concierge_prompt(seed.strip())
+        node = Node(
+            project_id=pid,
+            kind=NodeKind.AGENT,
+            category=Category.PLANNING,
+            state=NodeState.QUEUED,
+            planspace_id=plug_id,
+            provider=rt.project.provider,
+            prompt=prompt_text,
+        )
+        self.store.create_node(node)
+
+        runner = NodeRunner(node, rt.project, self.store, rt.broadcast)
+        self._launch_runner(rt, runner)
+        return runner
+
+    # ---- auto-promotion ----
+
+    def _auto_promote_next_virtual(self, rt: ProjectRuntime) -> None:
+        """Promote the next eligible virtual on the active lane if mode=auto."""
+        project = rt.project
+        active_lane = project.settings_override.get("active_planspace_id") or ""
+        if not active_lane:
+            return
+        try:
+            mode = read_planspace_mode(
+                project, active_lane, store_root=self.store.root
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("planspace mode lookup failed")
+            return
+        if mode is not PlanspaceMode.AUTO:
+            return
+        candidate = self._next_promotion_candidate(project.id, active_lane)
+        if candidate is None:
+            return
+        self.promote_virtual(project.id, candidate.id)
+
+    def _next_promotion_candidate(
+        self, pid: str, lane_id: str
+    ) -> Node | None:
+        """Return the earliest-created eligible virtual on ``lane_id``.
+
+        Eligible = ``state == VIRTUAL``, no ``obsolete_reason``, and every
+        ``scheduled_deps`` parent is terminal (``DONE`` / ``ERROR`` /
+        ``CANCELLED``) or an obsoleted virtual.
+        """
+        nodes = self.store.list_nodes(pid)
+        lane_nodes = [n for n in nodes if (n.planspace_id or "") == lane_id]
+        by_id: dict[str, Node] = {n.id: n for n in lane_nodes}
+
+        def is_dep_terminal(dep_id: str) -> bool:
+            parent = by_id.get(dep_id)
+            if parent is None:
+                parent = self.store.load_node(pid, dep_id)
+            if parent is None:
+                return True
+            if parent.state in TERMINAL_NODE_STATES:
+                return True
+            if parent.state is NodeState.VIRTUAL and parent.obsolete_reason:
+                return True
+            return False
+
+        eligible: list[Node] = []
+        for n in lane_nodes:
+            if n.state is not NodeState.VIRTUAL:
+                continue
+            if n.obsolete_reason:
+                continue
+            if not all(is_dep_terminal(dep) for dep in n.scheduled_deps):
+                continue
+            eligible.append(n)
+        if not eligible:
+            return None
+        eligible.sort(key=lambda n: (n.created_at, n.id))
+        return eligible[0]
+
+    def promote_virtual(self, pid: str, vid: str) -> NodeRunner | None:
+        """Promote a virtual node to ``queued`` and launch its runner.
+
+        Returns the runner or ``None`` if the node cannot be promoted
+        (already executed, obsoleted, unresolved deps, or another node
+        is currently running on the project).
+        """
+        rt = self._runtimes.get(pid)
+        if rt is None or rt.is_running():
+            return None
+        node = self.store.load_node(pid, vid)
+        if node is None:
+            return None
+        if node.state is not NodeState.VIRTUAL or node.obsolete_reason:
+            return None
+        for dep in node.scheduled_deps:
+            parent = self.store.load_node(pid, dep)
+            if parent is None:
+                continue
+            if parent.state in TERMINAL_NODE_STATES:
+                continue
+            if parent.state is NodeState.VIRTUAL and parent.obsolete_reason:
+                continue
+            return None
+        node.state = NodeState.QUEUED
+        node.prompt = node.prompt_draft or node.prompt
+        node.prompt_draft = None
+        self.store.update_node(node)
+
+        runner = NodeRunner(node, rt.project, self.store, rt.broadcast)
+        self._launch_runner(rt, runner)
+        return runner
 
     def _spawn_op_commit(self, rt: ProjectRuntime, agent_node: Node) -> None:
         op_node = Node(
@@ -428,11 +593,9 @@ class ProjectRegistry:
         self.store.create_node(op_node)
 
         runner = NodeRunner(op_node, rt.project, self.store, rt.broadcast)
-        rt.runner = runner
-        rt.runner_task = asyncio.create_task(
-            self._run_op_and_rewrite(rt, runner, agent_node.id)
+        self._launch_runner(
+            rt, runner, coro=self._run_op_and_rewrite(rt, runner, agent_node.id)
         )
-        rt.runner_task.add_done_callback(lambda _t, _rt=rt: self._on_runner_done(_rt))
 
     async def _run_op_and_rewrite(
         self,

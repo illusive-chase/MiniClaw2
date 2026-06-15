@@ -1,22 +1,16 @@
 """ContextSpace bindings, plugs, and per-launch context bundles.
 
-After the virtual-nodes redesign, planspace plugs are manifest-only —
-they no longer carry STATUS.md / PLAN.md / SKILLS.md. The agent-facing
-lane state is the materialized filesystem projection under the
-worktree's ``.miniclaw2/graph/lanes/`` directory (see ``materialize.py``
-and ``reap.py``). This module is responsible for:
+Planspace plugs are manifest-only; the agent-facing lane state is the
+materialized filesystem projection under ``.miniclaw2/graph/lanes/``
+(see ``materialize.py`` / ``reap.py``). This module:
 
-  - Resolving the contextspace root and the project's binding.
-  - Composing the per-launch ``ComposedContextBundle``: project-root
+  - Resolves the contextspace root and the project's binding.
+  - Composes the per-launch ``ComposedContextBundle``: project-root
     ``CONTEXT.md`` plus injection-mode markdown from global and skill
     plugs. The active planspace id is propagated so the runner knows
     which lane to materialize.
-  - Persisting an audit snapshot of every bundle under
+  - Persists an audit snapshot of every bundle under
     ``snapshots/<bundle-id>.json``.
-
-The launch-instruction contract blocks (planspace update, review
-handoff, anti-poisoning filter) are gone — that contract now lives in
-the category-aware launch prompts (a later slice).
 """
 
 from __future__ import annotations
@@ -34,7 +28,7 @@ from uuid import uuid4
 
 import yaml
 
-from .domain import Node, Project
+from .domain import Node, PlanspaceMode, Project, normalize_planspace_mode
 
 
 @dataclass(slots=True)
@@ -125,9 +119,8 @@ def compose_context_bundle(
         for ref in plug_refs:
             kind = _plug_kind(ref.id)
             if kind == "planspace":
-                # Planspace plugs are manifest-only after the virtual-
-                # nodes redesign. The agent reads node previews via the
-                # materialized filesystem, not from injected text.
+                # Planspace plugs are manifest-only — the agent reads
+                # node previews via the materialized filesystem.
                 continue
             if kind in {"skill", "global"}:
                 loaded = _load_context_markdown_source(root, ref, kind)
@@ -361,13 +354,7 @@ def describe_project_contextspace(
     *,
     store_root: Path | None = None,
 ) -> dict[str, Any]:
-    """Return a slim UI-facing summary of the project's contextspace.
-
-    No planspace STATUS/PLAN content — planspace plugs are manifest-only
-    after the redesign. The frontend layer that consumes this is being
-    rewritten in a later slice; for now we provide just enough for the
-    init/refresh endpoints to return a useful payload.
-    """
+    """Return a slim UI-facing summary of the project's contextspace."""
     from .context_refresh import context_refresh_status
 
     root = contextspace_root(store_root)
@@ -392,8 +379,7 @@ def read_project_context(project: Project) -> dict[str, Any] | None:
     """Read the project-root ``CONTEXT.md`` for UI display.
 
     Returns ``{role, path, text, mtime}`` or ``None`` if the file is
-    missing. Status/plan roles are no longer served (deferred to the
-    materialized projection).
+    missing.
     """
     path = Path(project.root_path) / "CONTEXT.md"
     try:
@@ -407,6 +393,83 @@ def read_project_context(project: Project) -> dict[str, Any] | None:
         "text": text,
         "mtime": stat.st_mtime,
     }
+
+
+def read_planspace_mode(
+    project: Project,
+    lane_id: str,
+    *,
+    store_root: Path | None = None,
+) -> PlanspaceMode:
+    """Return the planspace plug's ``mode``.
+
+    ``lane_id`` is the plug id (e.g. ``planspaces.foo``). Defaults to
+    ``MANUAL`` when the manifest is missing or the field is unset.
+    """
+    del project  # reserved for future per-project override
+    if not lane_id:
+        return PlanspaceMode.MANUAL
+    root = contextspace_root(store_root)
+    manifest = _plug_manifest(root, lane_id)
+    raw = manifest.get("mode") if isinstance(manifest, dict) else None
+    try:
+        return normalize_planspace_mode(raw if isinstance(raw, str) else None)
+    except ValueError:
+        return PlanspaceMode.MANUAL
+
+
+def create_planspace(
+    project: Project,
+    *,
+    title: str,
+    mode: PlanspaceMode | str = PlanspaceMode.MANUAL,
+    store_root: Path | None = None,
+    seed_text: str | None = None,
+) -> str:
+    """Create a new planspace plug + add it to the project's binding.
+
+    Returns the new plug id (``planspaces.<slug>``). The binding is
+    created if it does not exist. Manifest carries ``mode`` for the
+    auto-promotion scheduler.
+    """
+    mode_value = (
+        mode if isinstance(mode, PlanspaceMode) else normalize_planspace_mode(mode)
+    )
+    binding = ensure_project_binding(project, store_root=store_root)
+    root = contextspace_root(store_root)
+    slug = _unique_planspace_slug(root, _slugify(title or "direction"))
+    plug_id = f"planspaces.{slug}"
+    plug_dir = root / "plugs" / "planspaces" / slug
+    plug_dir.mkdir(parents=True, exist_ok=True)
+    manifest: dict[str, Any] = {
+        "version": 1,
+        "kind": "planspace",
+        "id": plug_id,
+        "title": title,
+        "mode": mode_value.value,
+        "created_at": time.time(),
+    }
+    if isinstance(seed_text, str) and seed_text.strip():
+        manifest["seed"] = seed_text
+    _write_yaml(plug_dir / "manifest.yaml", manifest)
+    add_planspace_to_binding(binding, plug_id)
+    return plug_id
+
+
+def add_planspace_to_binding(
+    binding: ProjectBinding,
+    plug_id: str,
+) -> None:
+    """Append a planspace plug ref to ``binding`` if not already present."""
+    raw = dict(binding.raw)
+    plugs = list(raw.get("plugs") or [])
+    if any(_extract_plug_id(item) == plug_id for item in plugs):
+        return
+    plugs.append({"id": plug_id, "enabled": True})
+    raw["plugs"] = plugs
+    binding.raw = raw
+    binding.plugs.append(PlugRef(id=plug_id))
+    _write_yaml(binding.path, raw)
 
 
 def resolve_project_binding(project: Project, root: Path) -> ProjectBinding | None:
@@ -752,6 +815,26 @@ def _unique_binding_slug(root: Path, slug: str) -> str:
         candidate = f"{slug}-{index}"
         index += 1
     return candidate
+
+
+def _unique_planspace_slug(root: Path, slug: str) -> str:
+    planspaces_dir = root / "plugs" / "planspaces"
+    candidate = slug
+    index = 2
+    while (planspaces_dir / candidate).exists():
+        candidate = f"{slug}-{index}"
+        index += 1
+    return candidate
+
+
+def _extract_plug_id(item: Any) -> str | None:
+    if isinstance(item, str):
+        return item
+    if isinstance(item, dict):
+        value = item.get("id")
+        if isinstance(value, str) and value:
+            return value
+    return None
 
 
 def _injection_for(

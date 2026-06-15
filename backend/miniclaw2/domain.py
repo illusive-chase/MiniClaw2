@@ -53,6 +53,30 @@ class ReviewSubtype(StrEnum):
     HUMAN_INTERACT_REVIEW = "human_interact_review"
 
 
+class PlanspaceMode(StrEnum):
+    AUTO = "auto"
+    MANUAL = "manual"
+
+
+TERMINAL_NODE_STATES: frozenset[NodeState] = frozenset({
+    NodeState.DONE,
+    NodeState.ERROR,
+    NodeState.CANCELLED,
+})
+
+
+def normalize_planspace_mode(value: str | None) -> PlanspaceMode:
+    """Return a ``PlanspaceMode`` from a string; ``None`` → ``MANUAL``."""
+    if value is None:
+        return PlanspaceMode.MANUAL
+    if not isinstance(value, str):
+        raise ValueError(f"unknown planspace mode: {value!r}")
+    try:
+        return PlanspaceMode(value.lower())
+    except ValueError as exc:
+        raise ValueError(f"unknown planspace mode: {value!r}") from exc
+
+
 class GateKind(StrEnum):
     INLINE = "inline"
 

@@ -1,14 +1,12 @@
 """Per-launch filesystem projection of the active lane.
 
-Per PROPOSAL_VIRTUAL_NODES §3.4: before each agent launch, the framework
-copies the durable lane state into a real subtree under the worktree at
-``.miniclaw2/graph/lanes/<lane_id>/``. The agent reads previews,
-transcripts, and artifacts with native ``Read``; writes its own
-``preview.json`` and (if planning/review) virtual previews with native
-``Write``. At terminal, the runner walk-diffs against a pre-launch
-snapshot and feeds the diff to ``reap.reap_lane``.
-
-This module is library code; the runner integration is in ``runner.py``.
+Before each agent launch the framework copies the durable lane state
+into ``.miniclaw2/graph/lanes/<lane_id>/`` so the agent can read
+previews, transcripts, and artifacts with native ``Read`` and write
+its own ``preview.json`` (plus virtual previews for planning / review
+categories) with native ``Write``. At terminal, ``runner.py`` walk-
+diffs against a pre-launch snapshot and feeds the diff to
+``reap.reap_lane``.
 """
 
 from __future__ import annotations
@@ -115,8 +113,14 @@ def materialize_active_lane(
     shutil.rmtree(root, ignore_errors=True)
     root.mkdir(parents=True, exist_ok=True)
 
+    terminal_states = (NodeState.DONE, NodeState.ERROR, NodeState.CANCELLED)
     nodes = [n for n in store.list_nodes(project.id) if (n.planspace_id or "") == lane_id]
     for node in nodes:
+        # In-flight nodes (QUEUED/RUNNING/WAITING/AWAITING_HUMAN_INPUT)
+        # are not materialized — the running agent writes its own
+        # preview.json from inside its session.
+        if node.state is not NodeState.VIRTUAL and node.state not in terminal_states:
+            continue
         ndir = node_dir(root, node.id)
         ndir.mkdir(parents=True, exist_ok=True)
         # Prefer durable agent-written preview when present; otherwise
@@ -128,11 +132,15 @@ def materialize_active_lane(
             transcript = _build_transcript(store, project.id, node.id)
             _write_transcript(ndir / "transcript.json", transcript)
             artifacts_src = _project_artifacts_dir(project, node.id)
-            if artifacts_src.exists():
+            try:
                 shutil.copytree(artifacts_src, ndir / "artifacts", dirs_exist_ok=True)
+            except FileNotFoundError:
+                pass
         durable_review = store.node_dir(project.id, node.id) / "human-review.md"
-        if durable_review.exists():
+        try:
             shutil.copy(durable_review, ndir / "human-review.md")
+        except FileNotFoundError:
+            pass
     return root
 
 
