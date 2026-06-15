@@ -1,6 +1,10 @@
 import { memo } from "react";
 import { Handle, Position, type NodeProps } from "reactflow";
-import type { NodeInfo, NodeState } from "../../types";
+import type { InteractionRequest, NodeInfo, NodeState } from "../../types";
+import {
+  PendingGateInline,
+  type ResolveGatePayload,
+} from "../../components/PendingGateInline";
 import type { AgentNodeData } from "../layout";
 import { stateMeta } from "./stateMeta";
 
@@ -23,6 +27,7 @@ function AgentNodeImpl({ data, selected }: NodeProps<AgentNodeData>) {
     readyToPromote,
   } = data;
   const meta = stateMeta(node.state);
+  const pendingGate = agentNodeContext.pendingGateForNode(node.id);
   const headline = oneLine(
     node.summary ||
       node.prompt_draft ||
@@ -142,6 +147,29 @@ function AgentNodeImpl({ data, selected }: NodeProps<AgentNodeData>) {
       />
       </div>
 
+      {pendingGate && (
+        <div
+          className="nodrag absolute left-0 top-[calc(100%+8px)] z-30 w-[300px] rounded-md border border-state-waiting/45 bg-surface-raised p-2 shadow-modal"
+          onClick={(e) => e.stopPropagation()}
+          onMouseDown={(e) => e.stopPropagation()}
+        >
+          <div className="mb-1.5 flex items-center justify-between gap-2">
+            <span className="text-[10px] font-medium uppercase tracking-[0.12em] text-state-waiting">
+              Waiting for response
+            </span>
+            <span className="font-mono text-[9px] text-ink-subtle">
+              {pendingGate.interaction_type}
+            </span>
+          </div>
+          <PendingGateInline
+            node={node}
+            pending={pendingGate}
+            compact
+            onResolve={(payload) => agentNodeContext.onResolveGate(pendingGate.id, payload)}
+          />
+        </div>
+      )}
+
       {/* resumed-from badge — sits OUTSIDE the inner overflow-hidden div so
        * `-top-2` pokes above the tile instead of being clipped. */}
       {resumeParent && (
@@ -200,11 +228,15 @@ export const AgentNode = memo(AgentNodeImpl);
 export type AgentNodeContext = {
   onSpawnFromAgent: (nodeId: string) => void;
   onPromoteVirtual: (nodeId: string) => void;
+  pendingGateForNode: (nodeId: string) => InteractionRequest | null;
+  onResolveGate: (id: string, payload: ResolveGatePayload) => void;
 };
 
 let agentNodeContext: AgentNodeContext = {
   onSpawnFromAgent: () => {},
   onPromoteVirtual: () => {},
+  pendingGateForNode: () => null,
+  onResolveGate: () => {},
 };
 
 export function setAgentNodeContext(ctx: AgentNodeContext): void {

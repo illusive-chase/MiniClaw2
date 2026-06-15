@@ -27,6 +27,8 @@ from .domain import (
     NodeState,
     PlanspaceMode,
     Project,
+    ReviewBrief,
+    ReviewSubtype,
     normalize_planspace_mode,
 )
 from .language import normalize_preferred_language
@@ -385,6 +387,11 @@ class ProjectRegistry:
         resume_from_node_id: str | None = None,
         extra_planspace_loads: list[str] | None = None,
         scenario_step_id: str | None = None,
+        category: Category = Category.REGULAR,
+        subtype: ReviewSubtype | None = None,
+        brief: ReviewBrief | None = None,
+        parent_node_id: str | None = None,
+        scheduled_deps: list[str] | None = None,
     ) -> NodeRunner | None:
         """Create a new agent node and launch its runner as a task."""
         rt = self._runtimes.get(pid)
@@ -412,20 +419,48 @@ class ProjectRegistry:
         if extra_loads:
             settings_snapshot["extra_planspace_loads"] = extra_loads
 
+        active = resolve_active_planspace(
+            rt.project, contextspace_root(self.store.root)
+        )
+        active_lane = active[1].id if active is not None else None
+        actual_parent_id = resume_source.id if resume_source else parent_node_id
         node = Node(
             project_id=pid,
             kind=NodeKind.AGENT,
-            category=Category.REGULAR,
+            category=category,
+            subtype=subtype,
+            brief=brief,
             state=NodeState.QUEUED,
-            parent_node_id=resume_source.id if resume_source else None,
+            parent_node_id=actual_parent_id,
+            planspace_id=active_lane,
             provider=resume_source.provider if resume_source else rt.project.provider,
             provider_session_id=resume_source.provider_session_id if resume_source else None,
             sdk_session_id=resume_source.sdk_session_id if resume_source else None,
             prompt=prompt,
+            scheduled_deps=list(scheduled_deps or []),
             scenario_step_id=scenario_step_id,
             settings_snapshot=settings_snapshot,
         )
         self.store.create_node(node)
+        if node.category is Category.REVIEW:
+            try:
+                virtual_preview_node = node.model_copy(
+                    update={
+                        "state": NodeState.VIRTUAL,
+                        "prompt_draft": node.prompt,
+                        "proposed_by": (
+                            f"node:{actual_parent_id}"
+                            if actual_parent_id
+                            else f"scenario:{scenario_step_id or node.id}"
+                        ),
+                        "summary": node.brief.check_what if node.brief else node.prompt[:200],
+                    }
+                )
+                self.store.write_node_preview(
+                    pid, node.id, render_virtual_preview(virtual_preview_node)
+                )
+            except Exception:  # noqa: BLE001
+                logger.exception("failed to seed review node virtual preview")
 
         runner = NodeRunner(node, rt.project, self.store, rt.broadcast)
         self._launch_runner(rt, runner)
@@ -678,9 +713,9 @@ class ProjectRegistry:
     ) -> None:
         """Advance the project's scenario cursor when an agent step finishes.
 
-        Scenario step kinds other than ``agent`` (notably the legacy
-        ``gate`` kind) are no longer supported; encountering one halts
-        the scenario with a logged warning.
+        Scenario steps are all agent nodes; review steps use
+        ``category=review`` and are launched through the ordinary
+        NodeRunner review path.
         """
         project = rt.project
         if not project.scenario_name:
@@ -707,6 +742,8 @@ class ProjectRegistry:
                 "node_id": step_node.id,
                 "terminal_state": step_node.state.value,
             }
+            if step_node.category is Category.REVIEW:
+                entry["outcome"] = self._infer_review_outcome(step_node)
             history.append(entry)
             project.scenario_step_history = history
             self.store.update_project(project)
@@ -745,20 +782,20 @@ class ProjectRegistry:
             return
 
         next_spec = scenario.nodes[next_idx]
-        if next_spec.kind == "agent":
-            resume_node_id = self._resolve_resume_node(project, next_spec)
-            self.start_node(
-                project.id,
-                next_spec.prompt,
-                scenario_step_id=next_spec.id,
-                resume_from_node_id=resume_node_id,
-            )
-        else:
-            logger.warning(
-                "scenario step %s has unsupported kind %r — halting scenario",
-                next_spec.id,
-                next_spec.kind,
-            )
+        resume_node_id = self._resolve_resume_node(project, next_spec)
+        review_source_id = self._resolve_review_source_node(project, next_spec)
+        scheduled_deps = [review_source_id] if review_source_id else []
+        self.start_node(
+            project.id,
+            next_spec.prompt,
+            scenario_step_id=next_spec.id,
+            resume_from_node_id=resume_node_id,
+            category=next_spec.category,
+            subtype=next_spec.subtype,
+            brief=next_spec.brief,
+            parent_node_id=review_source_id,
+            scheduled_deps=scheduled_deps,
+        )
 
     def _step_when_matches(self, project: Project, spec: Any) -> bool:
         """True if ``spec`` has no `when:` or its predicate matches history."""
@@ -766,7 +803,7 @@ class ProjectRegistry:
             return True
         for h in project.scenario_step_history:
             if h.get("step_id") == spec.when_step:
-                return h.get("decision") == spec.when_decision
+                return h.get("outcome") == spec.when_outcome
         return False
 
     def _resolve_resume_node(self, project: Project, spec: Any) -> str | None:
@@ -778,6 +815,30 @@ class ProjectRegistry:
                 node_id = h.get("node_id")
                 return node_id if isinstance(node_id, str) else None
         return None
+
+    def _resolve_review_source_node(self, project: Project, spec: Any) -> str | None:
+        """Return the node id matching ``spec.review_source`` from history."""
+        if not getattr(spec, "review_source", ""):
+            return None
+        for h in project.scenario_step_history:
+            if h.get("step_id") == spec.review_source:
+                node_id = h.get("node_id")
+                return node_id if isinstance(node_id, str) else None
+        return None
+
+    def _infer_review_outcome(self, review_node: Node) -> str:
+        """Infer scenario branching outcome from review graph mutations.
+
+        Scenario predicates are a thin convenience layer over the new
+        review-as-agent model: if the review proposed any live virtuals,
+        treat that as a rejection/follow-up; otherwise it accepted the
+        upstream without plan changes.
+        """
+        proposed_by = f"node:{review_node.id}"
+        for node in self.store.list_nodes(review_node.project_id):
+            if node.proposed_by == proposed_by and not node.obsolete_reason:
+                return "rejected"
+        return "approved"
 
     def interrupt(self, pid: str) -> bool:
         rt = self._runtimes.get(pid)

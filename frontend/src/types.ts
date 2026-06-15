@@ -137,10 +137,24 @@ export type ScenarioSummary = {
   providers: string[];
   auto_commit: boolean;
   node_count: number;
+  nodes?: ScenarioNodeSpec[];
 };
 
 export type ScenarioDetail = ScenarioSummary & {
   acceptance: string;
+};
+
+export type ScenarioNodeSpec = {
+  id: string;
+  kind: "agent";
+  category: NodeCategory;
+  subtype?: ReviewSubtype | null;
+  review_source?: string | null;
+  resume_from?: string | null;
+  when_step?: string | null;
+  when_outcome?: "approved" | "rejected" | null;
+  prompt_preview: string;
+  brief?: ReviewBrief | null;
 };
 
 export type VerifyResponse = {

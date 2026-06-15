@@ -8,8 +8,15 @@ nodes:
     kind: agent
     prompt_file: prompts/build.md
   - id: review
-    kind: gate
-    brief_from: build
+    kind: agent
+    category: review
+    subtype: human_interact_review
+    review_source: build
+    prompt_file: prompts/review.md
+    brief:
+      check_what: "Inspect mathutils.py after the build step and decide whether it should add subtract(a, b)."
+      expected: "mathutils.py currently exports add(a, b); the human reviewer can request subtract(a, b) as follow-up work."
+      abnormal: "mathutils.py is missing, add(a, b) is wrong, or the module already contains extra functions before review."
   - id: fix
     kind: agent
     resume_from: build

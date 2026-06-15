@@ -46,10 +46,11 @@ Per `PROPOSAL_VIRTUAL_NODES.md` §11 sequencing:
       it, and launches a planning-category agent whose prompt is the
       rendered `prompts/concierge_bootstrap.md` with the seed
       substituted into `<<user_seed>>`.
-- [ ] Step 9 — Remove legacy paths. Product/runtime passive gates,
-      `planspace_state.py`, STATUS/PLAN UI, and memory-delta frontend
-      paths are gone; scenario-loader vocabulary still carries legacy
-      `gate` / `needs_review` names and needs a separate scenario pass.
+- [x] Step 9 — Remove legacy paths. Product/runtime passive gates,
+      `planspace_state.py`, STATUS/PLAN UI, memory-delta frontend
+      paths, and scenario-loader `gate` / `needs_review` vocabulary are
+      gone. Bundled review scenarios now declare `category=review`
+      agent steps with `review_source`.
 - [x] Step 10 — Frontend pass. Virtual tiles render with dashed
       outlines, category badges, ready-to-promote affordances, virtual
       side-panel detail, project/direction mode controls, and the old
@@ -322,15 +323,17 @@ Trunk: `frontend/src/canvas/Canvas.tsx`, `frontend/src/canvas/layout.ts`,
   render at the top of `AgentPanel`. An amber canvas banner surfaces
   "Node X is awaiting your response" when the user is inspecting a
   different node.
+- Inline pending requests (permission / ask-user / plan-approval)
+  also expand directly under the waiting agent tile on the canvas,
+  using the same response mapping as `AgentPanel`.
+- Scenario future steps render as dashed read-only phantoms ahead of
+  the current scenario cursor.
 - Projects landing page (`ProjectsLanding`) with rename/delete; Tests
   modal.
 
 ### Pending
 
-- Inline agent-tile expansion for permission / ask-user / plan-approval
-  gates (today these render in `AgentPanel`).
-- Phantom future scenario steps (dashed phantoms ahead of the cursor,
-  alternate paths for `on_state` branches).
+- Alternate-path scenario future phantoms for conditional branches.
 - Schema-aware review forms (PRD §8.7). Cancelled — user judgment is
   free-form by design; left here as a documented non-goal.
 
@@ -351,8 +354,10 @@ STATUS/PLAN update harness for the product runtime.
 - Virtual preview writes are validated, canonicalized from slugs to
   node ids, cycle-checked, persisted atomically, and surfaced on the
   canvas after reap.
-- Missing/malformed own preview ends the node as `error` with a
-  framework-written stub preview.
+- Missing/malformed own preview or invalid graph writes drive up to
+  three inline repair turns in the same provider session; only after
+  the retry bound is exhausted does the runner end the node as `error`
+  with a framework-written "preview contract abandoned" stub preview.
 - Cancelled/error runs skip virtual reap and get framework stub
   previews.
 - Anti-self-poisoning prompt is appended last in launch instruction
@@ -360,8 +365,6 @@ STATUS/PLAN update harness for the product runtime.
 
 ### Deferred
 
-- Inline re-prompt retries before stub preview. Current enforcement
-  records the error/stub rather than driving a multi-round repair loop.
 - Live mid-session graph-write canvas updates; v1 remains reap-only.
 
 

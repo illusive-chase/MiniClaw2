@@ -31,9 +31,11 @@ class _StubProvider:
 
     def __init__(self) -> None:
         self.last_context: AgentProviderContext | None = None
+        self.contexts: list[AgentProviderContext] = []
 
     async def run(self, context: AgentProviderContext):
         self.last_context = context
+        self.contexts.append(context)
         yield AgentProviderEvent(kind="done", final_state="done")
 
     async def interrupt(self) -> None:
@@ -99,8 +101,9 @@ class ConciergeBootstrapTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Direction concierge bootstrap", node.prompt)
         # Provider was actually invoked.
         self.assertIsNotNone(stub.last_context)
+        self.assertGreaterEqual(len(stub.contexts), 1)
         # Planning category came through to the launch instructions.
-        ctx = stub.last_context
+        ctx = stub.contexts[0]
         assert ctx is not None
         self.assertIn("planning", ctx.launch_instructions.lower())
 

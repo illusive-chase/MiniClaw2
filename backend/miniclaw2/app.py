@@ -123,6 +123,7 @@ class ScenarioSummary(BaseModel):
     providers: list[str]
     auto_commit: bool
     node_count: int
+    nodes: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class ScenarioDetail(BaseModel):
@@ -131,6 +132,7 @@ class ScenarioDetail(BaseModel):
     providers: list[str]
     auto_commit: bool
     node_count: int
+    nodes: list[dict[str, Any]] = Field(default_factory=list)
     acceptance: str
 
 

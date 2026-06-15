@@ -3,8 +3,10 @@ exports a single function `add(a, b)` returning `a + b`. Do not add any
 other functions — the reviewer will ask for the rest in a follow-up
 turn if they want it.
 
-Then write your review brief to `.miniclaw2/outputs/<this node id>/brief.md`
-with these three sections (markdown):
+In your `preview.json`, summarize that the module intentionally only
+contains `add(a, b)` and that the follow-up review should decide
+whether to add `subtract(a, b)`. Do not write a separate review brief
+file.
 
 # How to run
 The reviewer should run `python3 -c "import mathutils; print(mathutils.add(2,3))"` and confirm it prints `5`.

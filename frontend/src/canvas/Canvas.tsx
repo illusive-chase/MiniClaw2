@@ -16,7 +16,7 @@ import ReactFlow, {
 } from "reactflow";
 import "reactflow/dist/style.css";
 
-import type { ContextBundle, NodeInfo } from "../types";
+import type { ContextBundle, NodeInfo, ScenarioNodeSpec } from "../types";
 import {
   buildGraph,
   type RFNode,
@@ -37,6 +37,7 @@ import {
   setOpChevronContext,
 } from "./edges/TimelineEdge";
 import { ErrorTerminalNode } from "./nodes/ErrorTerminalNode";
+import { ScenarioFutureNode } from "./nodes/ScenarioFutureNode";
 
 const NODE_TYPES = {
   agent: AgentNode,
@@ -46,6 +47,7 @@ const NODE_TYPES = {
   projectRoot: ProjectRootNode,
   planspaceLane: PlanspaceLaneNode,
   errorTerminal: ErrorTerminalNode,
+  scenarioFuture: ScenarioFutureNode,
 };
 
 const EDGE_TYPES = {
@@ -84,6 +86,7 @@ export type CanvasProps = {
   knownPlanspaceIds: string[];
   hiddenPlanspaceIds: string[];
   activePlanspaceId: string | null;
+  scenarioNodes: ScenarioNodeSpec[];
   /** Persisted positions hydrated from the session. */
   initialLayoutHints?: Record<string, { x: number; y: number }>;
   /** Persisted viewport hydrated from the session. */
@@ -117,6 +120,7 @@ function CanvasInner({
   knownPlanspaceIds,
   hiddenPlanspaceIds,
   activePlanspaceId,
+  scenarioNodes,
   initialLayoutHints,
   initialLayoutViewport,
   onSelectionChange,
@@ -200,6 +204,7 @@ function CanvasInner({
         knownPlanspaceIds,
         hiddenPlanspaceIds,
         activePlanspaceId,
+        scenarioNodes,
       }),
     [
       nodes,
@@ -211,6 +216,7 @@ function CanvasInner({
       knownPlanspaceIds,
       hiddenPlanspaceIds,
       activePlanspaceId,
+      scenarioNodes,
     ],
   );
 

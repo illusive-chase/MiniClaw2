@@ -5,6 +5,8 @@ from __future__ import annotations
 import shutil
 from pathlib import Path
 
+from ..contextspace import create_planspace
+from ..domain import PlanspaceMode
 from ..domain import Project
 from ..registry import ProjectRegistry
 from .loader import Scenario, ScenarioError, load_scenario
@@ -42,22 +44,29 @@ def launch_scenario(
         scenario_name=name,
     )
 
+    planspace_id = create_planspace(
+        project,
+        title=f"Scenario: {scenario.name}",
+        mode=PlanspaceMode.MANUAL,
+        store_root=registry.store.root,
+        seed_text=scenario.brief,
+    )
+    settings = dict(project.settings_override)
+    settings["active_planspace_id"] = planspace_id
+    project.settings_override = settings
+    registry.store.update_project(project)
+
     _seed_workspace(scenario, Path(project.root_path))
 
     first = scenario.nodes[0]
-    if first.kind == "agent":
-        runner = registry.start_node(
-            project.id,
-            first.prompt,
-            scenario_step_id=first.id,
-        )
-    else:
-        # Gate kinds are retired; scenarios with non-agent first steps
-        # cannot launch until the scenario is updated.
-        registry.delete_project(project.id)
-        raise ScenarioError(
-            f"scenario first-node kind {first.kind!r} is no longer supported"
-        )
+    runner = registry.start_node(
+        project.id,
+        first.prompt,
+        scenario_step_id=first.id,
+        category=first.category,
+        subtype=first.subtype,
+        brief=first.brief,
+    )
 
     if runner is None:
         # Should not happen — the project was just created so nothing is running.

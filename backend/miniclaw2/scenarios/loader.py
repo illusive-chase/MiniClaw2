@@ -8,9 +8,7 @@ from typing import Any
 
 import yaml
 
-from ..paths import validate_project_relative_path
-
-
+from ..domain import Category, ReviewBrief, ReviewSubtype
 SCENARIOS_DIR = Path(__file__).parent / "bundled"
 SCENARIO_ORDER = [
     "hello-text",
@@ -33,18 +31,34 @@ class ScenarioError(Exception):
 
 @dataclass(slots=True)
 class NodeSpec:
-    """One step in a scenario — a node to enqueue."""
+    """One step in a scenario — an agent node to enqueue."""
 
     id: str
-    kind: str            # "agent" | "gate"
     prompt: str
+    kind: str = "agent"
+    category: Category = Category.REGULAR
+    subtype: ReviewSubtype | None = None
+    brief: ReviewBrief | None = None
     contract: str = ""
-    needs_review: bool = False  # flipped automatically when a later gate's brief_from references this step
-    brief_from: str = ""        # for gate steps: source agent step id
-    response_path: str = ""     # gate-only: default path for write-json response
-    resume_from: str = ""       # agent-only: source step whose session this resumes
-    when_step: str = ""         # predicate target — must be an earlier gate step
-    when_decision: str = ""     # "approved" | "rejected" — required iff when_step set
+    review_source: str = ""      # review-only: source step id this reviews
+    resume_from: str = ""        # source step whose session this resumes
+    when_step: str = ""          # predicate target — must be an earlier review step
+    when_outcome: str = ""       # "approved" | "rejected" — required iff when_step set
+
+    def metadata(self) -> dict[str, Any]:
+        """Frontend-shaped summary for scenario future phantoms."""
+        return {
+            "id": self.id,
+            "kind": self.kind,
+            "category": self.category.value,
+            "subtype": self.subtype.value if self.subtype else None,
+            "review_source": self.review_source or None,
+            "resume_from": self.resume_from or None,
+            "when_step": self.when_step or None,
+            "when_outcome": self.when_outcome or None,
+            "prompt_preview": _strip(self.prompt).replace("\n", " ")[:160],
+            "brief": self.brief.model_dump() if self.brief else None,
+        }
 
 
 @dataclass(slots=True)
@@ -70,6 +84,7 @@ class Scenario:
             "providers": list(self.providers),
             "auto_commit": self.auto_commit,
             "node_count": len(self.nodes),
+            "nodes": [node.metadata() for node in self.nodes],
         }
 
 
@@ -155,7 +170,7 @@ def load_scenario(name: str) -> Scenario:
             raise ScenarioError(f"{name}: duplicate node id {node_id!r}")
         seen_ids.add(node_id)
         kind = raw.get("kind", "agent")
-        if kind not in {"agent", "gate"}:
+        if kind != "agent":
             raise ScenarioError(f"{name}: unsupported node kind {kind!r}")
 
         prompt = ""
@@ -169,8 +184,53 @@ def load_scenario(name: str) -> Scenario:
                     f"{name}: node {node_id} prompt_file not found: {prompt_file}"
                 )
             prompt = prompt_path.read_text(encoding="utf-8")
-        elif kind == "agent":
+        else:
             raise ScenarioError(f"{name}: agent node {node_id} missing prompt_file")
+
+        category_raw = raw.get("category", "regular")
+        if not isinstance(category_raw, str):
+            raise ScenarioError(f"{name}: node {node_id} category must be a string")
+        try:
+            category = Category(category_raw)
+        except ValueError as exc:
+            raise ScenarioError(
+                f"{name}: node {node_id} category must be planning, regular, or review"
+            ) from exc
+
+        subtype: ReviewSubtype | None = None
+        subtype_raw = raw.get("subtype")
+        if subtype_raw is not None:
+            if not isinstance(subtype_raw, str):
+                raise ScenarioError(f"{name}: node {node_id} subtype must be a string")
+            try:
+                subtype = ReviewSubtype(subtype_raw)
+            except ValueError as exc:
+                raise ScenarioError(
+                    f"{name}: node {node_id} subtype must be agentic_review or human_interact_review"
+                ) from exc
+        node_brief: ReviewBrief | None = None
+        brief_raw = raw.get("brief")
+        if brief_raw is not None:
+            if not isinstance(brief_raw, dict):
+                raise ScenarioError(f"{name}: node {node_id} brief must be a mapping")
+            try:
+                node_brief = ReviewBrief.model_validate(brief_raw)
+            except Exception as exc:  # noqa: BLE001
+                raise ScenarioError(f"{name}: node {node_id} invalid brief: {exc}") from exc
+        if category is Category.REVIEW:
+            if subtype is None:
+                raise ScenarioError(f"{name}: review node {node_id} missing subtype")
+            if node_brief is None:
+                raise ScenarioError(f"{name}: review node {node_id} missing brief")
+        else:
+            if subtype is not None:
+                raise ScenarioError(
+                    f"{name}: non-review node {node_id} must not carry subtype"
+                )
+            if node_brief is not None:
+                raise ScenarioError(
+                    f"{name}: non-review node {node_id} must not carry brief"
+                )
 
         contract = ""
         contract_file = raw.get("contract_file")
@@ -182,33 +242,21 @@ def load_scenario(name: str) -> Scenario:
                 )
             contract = contract_path.read_text(encoding="utf-8")
 
-        brief_from = raw.get("brief_from", "") or ""
-        if brief_from and not isinstance(brief_from, str):
-            raise ScenarioError(f"{name}: node {node_id} brief_from must be a string")
-        if brief_from and kind != "gate":
+        review_source = raw.get("review_source", "") or ""
+        if review_source and not isinstance(review_source, str):
+            raise ScenarioError(f"{name}: node {node_id} review_source must be a string")
+        if review_source and category is not Category.REVIEW:
             raise ScenarioError(
-                f"{name}: node {node_id} has brief_from but is not a gate"
-            )
-
-        response_path = raw.get("response_path", "") or ""
-        if response_path and not isinstance(response_path, str):
-            raise ScenarioError(f"{name}: node {node_id} response_path must be a string")
-        if validate_project_relative_path(response_path):
-            raise ScenarioError(
-                f"{name}: node {node_id} response_path must be project-relative and may not contain '..'"
+                f"{name}: node {node_id} has review_source but is not category=review"
             )
 
         resume_from = raw.get("resume_from", "") or ""
         if resume_from and not isinstance(resume_from, str):
             raise ScenarioError(f"{name}: node {node_id} resume_from must be a string")
-        if resume_from and kind != "agent":
-            raise ScenarioError(
-                f"{name}: node {node_id} has resume_from but is not an agent"
-            )
 
         when_raw = raw.get("when", "") or ""
         when_step = ""
-        when_decision = ""
+        when_outcome = ""
         if when_raw:
             if not isinstance(when_raw, str):
                 raise ScenarioError(f"{name}: node {node_id} when must be a string")
@@ -217,47 +265,46 @@ def load_scenario(name: str) -> Scenario:
                 raise ScenarioError(
                     f"{name}: node {node_id} when must be '<step>.approved' or '<step>.rejected' (got {when_raw!r})"
                 )
-            when_step, when_decision = parts[0], parts[1]
+            when_step, when_outcome = parts[0], parts[1]
 
         nodes.append(
             NodeSpec(
                 id=node_id,
                 kind=kind,
+                category=category,
+                subtype=subtype,
+                brief=node_brief,
                 prompt=prompt,
                 contract=contract,
-                brief_from=brief_from,
-                response_path=response_path,
+                review_source=review_source,
                 resume_from=resume_from,
                 when_step=when_step,
-                when_decision=when_decision,
+                when_outcome=when_outcome,
             )
         )
 
-    # Second pass: for each gate with brief_from, validate the referenced
-    # source step exists earlier in the list and is an agent, then flip
-    # that agent step's ``needs_review`` so the runner injects the
-    # review-guidance contract.
+    # Second pass: for each review_source, validate the referenced
+    # source step exists earlier in the list and is an agent.
     by_id = {spec.id: i for i, spec in enumerate(nodes)}
-    for gate_idx, spec in enumerate(nodes):
-        if spec.kind != "gate" or not spec.brief_from:
+    for review_idx, spec in enumerate(nodes):
+        if not spec.review_source:
             continue
-        src_idx = by_id.get(spec.brief_from)
+        src_idx = by_id.get(spec.review_source)
         if src_idx is None:
             raise ScenarioError(
-                f"{name}: gate {spec.id} brief_from references unknown step {spec.brief_from!r}"
+                f"{name}: review step {spec.id} review_source references unknown step {spec.review_source!r}"
             )
-        if src_idx >= gate_idx:
+        if src_idx >= review_idx:
             raise ScenarioError(
-                f"{name}: gate {spec.id} brief_from must reference an earlier step"
+                f"{name}: review step {spec.id} review_source must reference an earlier step"
             )
         src = nodes[src_idx]
         if src.kind != "agent":
             raise ScenarioError(
-                f"{name}: gate {spec.id} brief_from must reference an agent step (got {src.kind})"
+                f"{name}: review step {spec.id} review_source must reference an agent step (got {src.kind})"
             )
-        src.needs_review = True
 
-    # Third pass: resume_from must reference an earlier step (any kind, since
+    # Third pass: resume_from must reference an earlier step (any category, since
     # we capture the node id and inherit its provider session).
     for cur_idx, spec in enumerate(nodes):
         if not spec.resume_from:
@@ -272,8 +319,8 @@ def load_scenario(name: str) -> Scenario:
                 f"{name}: step {spec.id} resume_from must reference an earlier step"
             )
 
-    # Fourth pass: when_step must reference an earlier gate step. The
-    # decision is recorded on gate completions only.
+    # Fourth pass: when_step must reference an earlier review step. The
+    # outcome is inferred from review-node graph mutations.
     for cur_idx, spec in enumerate(nodes):
         if not spec.when_step:
             continue
@@ -286,9 +333,9 @@ def load_scenario(name: str) -> Scenario:
             raise ScenarioError(
                 f"{name}: step {spec.id} when must reference an earlier step"
             )
-        if nodes[src_idx].kind != "gate":
+        if nodes[src_idx].category is not Category.REVIEW:
             raise ScenarioError(
-                f"{name}: step {spec.id} when must reference a gate step (got {nodes[src_idx].kind})"
+                f"{name}: step {spec.id} when must reference a review step (got {nodes[src_idx].category.value})"
             )
 
     seed_entries: list[tuple[Path, str]] = []

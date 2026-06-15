@@ -31,7 +31,7 @@ Requirements for `calculator.py`:
 - `C` resets the display to an empty / zero state.
 - Closing the window exits the process cleanly.
 
-After your work is done you will be followed by a passive review gate
-that the human will use to ratify the result. Write the review brief at
-the path indicated in your output contract — be specific about how the
-human should run the program and exactly what to click.
+After your work is done you will be followed by a human-interact review
+agent. Put any verification notes the reviewer should see in your
+`preview.json` summary or next_implications; do not write a separate
+brief file.

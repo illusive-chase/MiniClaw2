@@ -5,6 +5,7 @@ import {
   getSession,
   getNodeContextBundle,
   getNodeDiff,
+  getScenario,
   getSessionContextSpace,
   initProjectContext,
   listNodeEvents,
@@ -38,6 +39,7 @@ import type {
   SessionContextSpaceInfo,
   SessionInfo,
   PlanspaceMode,
+  ScenarioDetail,
 } from "./types";
 import { useSessionSocket } from "./ws";
 
@@ -76,6 +78,7 @@ export function App() {
   const [sessionContextSpace, setSessionContextSpace] = useState<SessionContextSpaceInfo | null>(
     null,
   );
+  const [scenarioDetail, setScenarioDetail] = useState<ScenarioDetail | null>(null);
   const [sessionContextSpaceLoading, setSessionContextSpaceLoading] = useState(false);
   const [sessionContextSpaceSaving, setSessionContextSpaceSaving] = useState(false);
   const [sessionContextSpaceError, setSessionContextSpaceError] = useState<string | null>(null);
@@ -121,6 +124,27 @@ export function App() {
     inspectedNodeIdRef.current = inspectedNodeId;
   }, [inspectedNodeId]);
 
+  useEffect(() => {
+    if (!session?.scenario_name) {
+      setScenarioDetail(null);
+      return;
+    }
+    let cancelled = false;
+    getScenario(session.scenario_name)
+      .then((next) => {
+        if (!cancelled) setScenarioDetail(next);
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          console.warn("getScenario failed:", err);
+          setScenarioDetail(null);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [session?.scenario_name]);
+
   /* close the ⋯ menu on outside click */
   useEffect(() => {
     if (!menuOpen) return;
@@ -143,6 +167,7 @@ export function App() {
     setSelectedContextBundleLoading(false);
     setContextBundlesByNodeId({});
     setSessionContextSpace(null);
+    setScenarioDetail(null);
     setSessionContextSpaceLoading(false);
     setSessionContextSpaceSaving(false);
     setSessionContextSpaceError(null);
@@ -873,13 +898,17 @@ export function App() {
     [composerDisabled],
   );
 
-  /* Wire the per-agent "+" affordance into its module singleton. */
+  /* Wire per-agent canvas affordances and inline pending-response tiles into
+   * the AgentNode module singleton. */
   useEffect(() => {
     setAgentNodeContext({
       onSpawnFromAgent,
       onPromoteVirtual: promoteVirtualNode,
+      pendingGateForNode: (nodeId) =>
+        activePendingGate?.nodeId === nodeId ? activePendingGate.request : null,
+      onResolveGate,
     });
-  }, [onSpawnFromAgent, promoteVirtualNode]);
+  }, [activePendingGate, onResolveGate, onSpawnFromAgent, promoteVirtualNode]);
 
   /* Canvas layout changes -> serialized backend PATCHes. Best-effort: log on
    * failure but don't surface; the client-side ref keeps working either way. */
@@ -1070,6 +1099,7 @@ export function App() {
               knownPlanspaceIds={knownPlanspaceIds}
               hiddenPlanspaceIds={hiddenPlanspaceIds}
               activePlanspaceId={sessionContextSpace?.active_planspace_id ?? null}
+              scenarioNodes={scenarioDetail?.nodes ?? []}
               initialLayoutHints={session?.layout_hints}
               initialLayoutViewport={session?.layout_viewport ?? null}
               onSelectionChange={onSelectionChange}

@@ -6,7 +6,6 @@ import rehypeHighlight from "rehype-highlight";
 import { getNodePreview } from "../api";
 import type {
   Activity,
-  ClientMessage,
   ContextBundle,
   ContextBundleSource,
   EventRecord,
@@ -15,17 +14,13 @@ import type {
 } from "../types";
 import { buildTurnsFromEvents } from "../transcript";
 import { ToolActivity } from "../components/ToolActivity";
-import { AskUserDialog } from "../components/AskUserDialog";
-import { PermissionDialog } from "../components/PermissionDialog";
-import { PlanDialog } from "../components/PlanDialog";
+import {
+  PendingGateInline,
+  type ResolveGatePayload,
+} from "../components/PendingGateInline";
 import { canResumeNode } from "../nodeUtil";
 import { GateReviewForm } from "./gateReview";
 import { InspectDrawer } from "./InspectDrawer";
-
-type ResolveGatePayload = Omit<
-  Extract<ClientMessage, { type: "interaction_response" }>,
-  "type" | "id"
->;
 
 export type AgentPanelProps = {
   sessionId: string;
@@ -624,79 +619,6 @@ function ThinkingSection({ turns }: { turns: ReturnType<typeof buildTurnsFromEve
         </div>
       </details>
     </section>
-  );
-}
-
-function PendingGateInline({
-  node,
-  pending,
-  onResolve,
-}: {
-  node: NodeInfo;
-  pending: InteractionRequest;
-  onResolve: (payload: ResolveGatePayload) => void;
-}) {
-  if (pending.interaction_type === "permission") {
-    return (
-      <PermissionDialog
-        request={pending}
-        onRespond={(args) =>
-          onResolve({
-            allow: args.allow,
-            decision: args.decision ?? null,
-            scope: args.scope ?? null,
-            interrupt: args.interrupt ?? false,
-            message: args.message ?? "",
-          })
-        }
-      />
-    );
-  }
-  if (pending.interaction_type === "ask_user") {
-    return (
-      <AskUserDialog
-        request={pending}
-        onRespond={(answers) =>
-          onResolve({
-            allow: true,
-            updated_input: {
-              ...pending.tool_input,
-              answers: toLegacyAnswers(answers),
-            },
-            response: { answers },
-          })
-        }
-      />
-    );
-  }
-  if (pending.interaction_type === "plan_approval") {
-    return (
-      <PlanDialog
-        request={pending}
-        onRespond={(args) =>
-          onResolve({
-            allow: args.allow,
-            clear_context: args.clearContext ?? false,
-            permission_mode: args.permissionMode ?? null,
-            message: args.message ?? "",
-          })
-        }
-      />
-    );
-  }
-  return (
-    <div className="text-[12px] text-ink-muted">
-      Pending {pending.interaction_type} on {node.id.slice(0, 8)}.
-    </div>
-  );
-}
-
-function toLegacyAnswers(answers: Record<string, { answers: string[] }>) {
-  return Object.fromEntries(
-    Object.entries(answers).map(([key, value]) => [
-      key,
-      value.answers.length <= 1 ? (value.answers[0] ?? "") : value.answers,
-    ]),
   );
 }
 

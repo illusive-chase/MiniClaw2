@@ -1,5 +1,5 @@
 name: gui-calculator
-brief: "Build a PySide6 Qt calculator, then review it via a passive gate fed by the agent's brief."
+brief: "Build a PySide6 Qt calculator, then review it via a human-interact review agent."
 providers: [claude, codex]
 auto_commit: true
 nodes:
@@ -7,5 +7,12 @@ nodes:
     kind: agent
     prompt_file: prompts/build.md
   - id: review
-    kind: gate
-    brief_from: build
+    kind: agent
+    category: review
+    subtype: human_interact_review
+    review_source: build
+    prompt_file: prompts/review.md
+    brief:
+      check_what: "Run/import the generated calculator and inspect the GUI behavior named by the build prompt."
+      expected: "calculator.py imports without opening a window, requirements.txt names PySide6, and running calculator.py opens a usable Calculator window with digits, operators, equals, clear, and divide-by-zero handling."
+      abnormal: "Top-level PySide6 import blocks importability, tkinter is used, missing requirements.txt, the window cannot launch, or basic button/error behavior is broken."

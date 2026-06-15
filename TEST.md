@@ -16,19 +16,17 @@
 > through op parents, records each step in
 > `Project.scenario_step_history`, halts on non-DONE terminal states,
 > and enqueues the next step. Nodes grew `scenario_step_id`; the
-> scenario loader gained `brief_from:` (gate-only) which auto-promotes
-> the source agent step's `output_kind` to `review_brief`.
+> scenario loader supports review-agent steps via `category: review`,
+> `subtype: human_interact_review`, and `review_source: <step_id>`.
 >
-> **Gate semantics changed.** The `gate` node is now a **passive
-> human checkpoint** — no agent run. The previous agent step writes a
-> brief at `.miniclaw2/outputs/<id>/brief.md` (driven by the new
-> `NodeOutputKind.REVIEW_BRIEF` contract); the gate reads that brief
-> and renders it for the human, who responds with a free-form review
-> judgment. See `DESIGN.md §3.2` for the rationale.
+> **Review semantics changed.** Scenario review steps are ordinary
+> review-category agent nodes. Human-interact reviews first collect
+> free-form prose into `human-review.md`, then launch the reviewer
+> agent; the reviewer's preview and graph mutations are the verdict.
 >
 > **Tier 3 + Tier 4 catalogue closed.**
-> `gui-calculator` is the flagship two-step demo (build agent → passive
-> review gate, `auto_commit: true`). `context-md-respected` is a
+> `gui-calculator` is the flagship two-step demo (build agent → human
+> review agent, `auto_commit: true`). `context-md-respected` is a
 > single-node scenario that seeds `CONTEXT.md` and checks both the
 > `[CTX-OK]` marker in the transcript and that `system_context_snapshot`
 > matches the seed byte-for-byte. `resume-fix-after-reject` is the
@@ -41,12 +39,12 @@
 > socket with code 1000 so `ws.ts`'s existing reconnect loop fires
 > with `(node_id, last_seq)`; verify checks `events.jsonl` is a
 > contiguous monotonic sequence and the transcript reaches the
-> end-of-stream marker. New scenario-engine YAML extensions: `when:
-> <step>.approved|rejected` (string predicate evaluated against the
-> recorded gate decision) and `resume_from: <step_id>` (resolved via
-> history to `start_node`'s `resume_from_node_id`). The primary gate UI
-> sends free-form review prose; the legacy backend `write-json` path
-> still stamps `Node.review_outcome` for API-level branching tests.
+> end-of-stream marker. New scenario-engine YAML extensions:
+> `review_source: <step_id>`, `when: <step>.approved|rejected`
+> (string predicate evaluated against the review node's inferred
+> graph-mutation outcome), and `resume_from: <step_id>` (resolved via
+> history to `start_node`'s `resume_from_node_id`). The human-review UI
+> sends free-form review prose.
 > Grounded in
 > `DESIGN.md §1.1` ("investigation-free interface"): every test is a
 > small task whose **observable outcome** the human ratifies. Internal
@@ -57,14 +55,14 @@
 ## 1. What this document is
 
 This is the integration-test tier. Engineer-facing unit tests under
-`backend/tests/` (`test_context`, `test_gate_node`, `test_op_node`,
+`backend/tests/` (`test_context`, `test_human_interact_runner`, `test_op_node`,
 `test_replay`, `test_temporary_project`, `test_scenarios_loader`,
-`test_scenarios_launch`, `test_scenarios_expander`) exist for backend
+`test_scenarios_launch`, scenario advancement tests) exist for backend
 hygiene during development and are **separate** from this document
 — they live on as the fast inner loop for refactors. Tier 1 added the
 loader / launcher tests when the scenario module landed; the
-gate-redesign + multi-step expander work added `test_scenarios_expander`
-and rewrote `test_gate_node` for the passive flow.
+review-redesign + multi-step expander work added human-interact runner
+coverage and rewrote scenario loader/launcher tests for review agents.
 
 The integration tier covers **whole demos** behaving correctly across
 both providers. Each demo is a **scenario** — a small task launched
@@ -86,8 +84,8 @@ frontend:
   scenario's starter files into it, creates the first node, and
   opens the resulting project canvas.
 - From that point on **the scenario is just a normal project**: the
-  user supervises the normal graph canvas, answers pending requests in
-  the side panel, and hits Stop from the project header as they would
+  user supervises the normal graph canvas, answers pending requests on
+  the tile or side panel, and hits Stop from the project header as they would
   for their own work. Multi-step scenarios enqueue their next nodes via
   the same `runner_done` hook the auto-commit op uses.
 - After every declared node has reached a terminal state, the
@@ -188,8 +186,15 @@ nodes:
     kind: agent
     prompt_file: prompts/build.md
   - id: review
-    kind: gate
-    brief_from: build             # read build's review_brief artifact as the gate contract
+    kind: agent
+    category: review
+    subtype: human_interact_review
+    review_source: build
+    prompt_file: prompts/review.md
+    brief:
+      check_what: "What the human/reviewer should inspect."
+      expected: "What acceptable work looks like."
+      abnormal: "What should trigger follow-up work."
   # auto-commit ops are NOT declared here — they happen because auto_commit: true
   - id: fix                       # for resume-fix-after-reject
     kind: agent
@@ -199,9 +204,9 @@ nodes:
 
 The scenario engine in `backend/miniclaw2/scenarios/` parses this
 YAML, copies seed files into the tempdir, and uses
-`ProjectRegistry.start_node` / `start_gate_node` (the same registry
-APIs that drive phantom-composer agent launches and the user-gate auto-spawn)
-to launch the first step. For single-step scenarios only the first step exists;
+`ProjectRegistry.start_node` (the same registry API that drives
+phantom-composer agent launches) to launch the first step. For
+single-step scenarios only the first step exists;
 the scenario-step expander on the `runner_done` callback (parallel to
 the auto-commit op's expander) handles subsequent steps without a
 scenario-specific runner — the "just runs like a normal node" guarantee
@@ -293,18 +298,16 @@ are present under `backend/miniclaw2/scenarios/bundled/`.
   muted-grey (cancelled); the partial Bash output is still in the
   tool tile; no follow-up assistant turn fired after the cancel."
 
-### Tier 3 — integrated (gates + ops + edges)
+### Tier 3 — integrated (reviews + ops + edges)
 
 **gui-calculator** *(flagship visual demo — ✓ implemented)*
-> Agent builds a PySide6 / Qt Widgets calculator → passive review gate displays an agent-authored brief → user submits a free-form review → auto-commit op rewrites the agent's `commit_after`.
+> Agent builds a PySide6 / Qt Widgets calculator → human-interact review collects free-form prose → reviewer agent writes a preview/verdict → auto-commit op rewrites the agent's `commit_after`.
 
-- Two declared nodes (`build` agent, `review` passive gate);
-  `auto_commit: true`. The `build` step's `output_kind` is auto-promoted
-  to `review_brief` by the loader (because `review.brief_from: build`)
-  — the build agent writes `.miniclaw2/outputs/<build-id>/brief.md`
-  with `# How to run` / `# What to verify` / review guidance
-  sections. The gate then renders that brief verbatim; the reviewer
-  submits a free-form judgment.
+- Two declared nodes (`build` regular agent, `review` human-interact
+  review agent); `auto_commit: true`. The review step carries
+  `review_source: build` and a structured brief. The UI collects
+  free-form human prose, then the reviewer agent synthesizes it into
+  its own preview and optional graph mutations.
 - Verify (programmatic floor): `requirements.txt` declares PySide6;
   `calculator.py` references PySide6, does not import Tk libraries,
   and imports cleanly without opening a window or requiring PySide6 to
@@ -341,10 +344,11 @@ in-product pointer.
 - Acceptance: "the reply ended with `[CTX-OK]`."
 
 **resume-fix-after-reject** *(✓ implemented)*
-> Resume edge: agent → gate → resume agent.
+> Resume edge: agent → review agent → resume agent.
 
 - Three declared nodes: `build` agent (writes `mathutils.py` with only
-  `add`), `review` gate sourced via `brief_from: build`, `fix` agent
+  `add`), `review` human-interact review sourced via
+  `review_source: build`, `fix` agent
   with `resume_from: build`. The reviewer submits a free-form request
   for `subtract`; the expander launches `fix`; the fix step resumes the
   build's provider session and adds the requested function (a second
@@ -528,13 +532,10 @@ To revisit after live-smoking the Tier 3 / Tier 4 catalogue:
 - **Branching in `scenario.yaml`.** *Resolved.* `when:
   <step>.approved|rejected` is a string predicate parsed at load
   time; `_advance_scenario_step` walks forward skipping steps whose
-  predicate doesn't match the recorded gate `decision`. Gate
-  completions stamp `Node.review_outcome` from the legacy backend
-  `write-json` payload (`approved: false` → `"rejected"`, else
-  `"approved"`); the expander mirrors that onto the history entry.
-  The bundled UI-facing scenarios use free-form review responses, so
-  they avoid decision-dependent branches. YAML stays linear (no DAG)
-  until a real second use-case forces our hand.
+  predicate doesn't match the review node's inferred outcome. A review
+  that proposes live virtual follow-up nodes is treated as `"rejected"`;
+  a review with no graph mutation is treated as `"approved"`. YAML
+  stays linear (no DAG) until a real second use-case forces our hand.
 - **`resume_from:` step field.** *Resolved.* Agent steps may declare
   `resume_from: <step_id>`; the loader validates the target is an
   earlier step, the expander resolves the matching `node_id` from

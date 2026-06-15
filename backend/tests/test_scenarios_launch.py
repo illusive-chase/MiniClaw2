@@ -50,11 +50,16 @@ class LaunchScenarioTest(unittest.TestCase):
                     project.settings_override.get("permission_mode"),
                     "bypassPermissions",
                 )
+                self.assertTrue(project.settings_override.get("active_planspace_id"))
 
                 nodes = store.list_nodes(project.id)
                 self.assertEqual(len(nodes), 1)
                 first = nodes[0]
                 self.assertEqual(first.kind, "agent")
+                self.assertEqual(
+                    first.planspace_id,
+                    project.settings_override.get("active_planspace_id"),
+                )
                 self.assertIn("[OK]", first.prompt)
 
                 root = Path(project.root_path)

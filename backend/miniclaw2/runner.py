@@ -33,6 +33,7 @@ from .domain import (
     TokenUsage,
 )
 from .events import (
+    Activity,
     ErrorEvent,
     InteractionRequest,
     NodeStarted,
@@ -52,6 +53,8 @@ from .reap import reap_lane
 from .store import Store
 
 logger = logging.getLogger(__name__)
+
+_PREVIEW_REPAIR_RETRIES = 3
 
 
 class NodeRunner:
@@ -179,29 +182,11 @@ class NodeRunner:
                             ),
                             anti_self_poisoning_block(),
                         )
-                        provider = _make_provider(
-                            self.node.provider or self.project.provider
-                        )
-                        self._provider = provider
-                        context = AgentProviderContext(
-                            node=self.node,
-                            project=self.project,
-                            request_gate_handler=self._request_gate,
-                            system_context=context_bundle.system_text,
+                        final_state, error_msg = await self._run_provider_turn(
+                            self.node.prompt,
                             launch_instructions=launch_instructions,
+                            system_context=context_bundle.system_text,
                         )
-                        async for ev in provider.run(context):
-                            await self._handle_provider_event(ev)
-                            if ev.kind == "done":
-                                final_state = (
-                                    _state_from_provider(ev.final_state)
-                                    or NodeState.DONE
-                                )
-                                break
-                            if ev.kind == "error":
-                                error_msg = ev.error or "provider error"
-                                final_state = NodeState.ERROR
-                                break
                 except asyncio.CancelledError:
                     final_state = NodeState.CANCELLED
                     await self.interrupt()
@@ -217,7 +202,20 @@ class NodeRunner:
                 if error_msg is not None:
                     self.node.error = error_msg
                 self.node.commit_after = git_head(self.project.root_path)
-                final_state = self._reap_and_finalize(final_state)
+                if final_state is NodeState.DONE and self._lane_root is not None:
+                    try:
+                        final_state = await self._reap_with_preview_repairs(
+                            context_bundle.system_text
+                        )
+                    except asyncio.CancelledError:
+                        final_state = NodeState.CANCELLED
+                        await self.interrupt()
+                        self._write_stub_preview(
+                            NodeState.CANCELLED,
+                            reason="preview repair cancelled",
+                        )
+                else:
+                    final_state = self._reap_and_finalize(final_state)
                 self._transition(final_state, finished=True)
                 await self._emit_node_updated()
                 await self._emit(TurnDone())
@@ -309,6 +307,49 @@ class NodeRunner:
         await self._emit_node_updated()
         await self._emit(TurnDone())
 
+    async def _run_provider_turn(
+        self,
+        prompt: str,
+        *,
+        launch_instructions: str,
+        system_context: str = "",
+    ) -> tuple[NodeState, str | None]:
+        """Run one provider turn for this node.
+
+        Repair prompts reuse the same node id and provider session, but
+        should not mutate ``self.node.prompt``. A shallow node copy
+        carries the per-turn prompt into the provider context while
+        provider metadata events still update the canonical node.
+        """
+        provider = _make_provider(self.node.provider or self.project.provider)
+        self._provider = provider
+        turn_node = self.node.model_copy(update={"prompt": prompt})
+        context = AgentProviderContext(
+            node=turn_node,
+            project=self.project,
+            request_gate_handler=self._request_gate,
+            system_context=system_context,
+            launch_instructions=launch_instructions,
+        )
+        final_state: NodeState = NodeState.DONE
+        error_msg: str | None = None
+        try:
+            async for ev in provider.run(context):
+                await self._handle_provider_event(ev)
+                if ev.kind == "done":
+                    final_state = (
+                        _state_from_provider(ev.final_state)
+                        or NodeState.DONE
+                    )
+                    break
+                if ev.kind == "error":
+                    error_msg = ev.error or "provider error"
+                    final_state = NodeState.ERROR
+                    break
+        finally:
+            self._provider = None
+        return final_state, error_msg
+
     # ---- materialization + reap ----
 
     def _materialize_lane(self) -> None:
@@ -389,6 +430,84 @@ class NodeRunner:
     def _append_error(self, reason: str) -> None:
         self.node.error = (self.node.error + "\n" if self.node.error else "") + reason
 
+    async def _reap_with_preview_repairs(self, system_context: str) -> NodeState:
+        """Reap the lane, re-prompting inline for preview repair up to
+        the proposal's retry bound before writing the framework stub.
+        """
+        ok, reason = self._try_reap_and_persist()
+        if ok:
+            return NodeState.DONE
+
+        last_reason = reason
+        for attempt in range(1, _PREVIEW_REPAIR_RETRIES + 1):
+            prompt = _preview_repair_prompt(self.node, last_reason, attempt)
+            await self._emit(
+                Activity(
+                    kind="agent",
+                    status="progress",
+                    id=f"preview-repair:{self.node.id}:{attempt}",
+                    name="Preview contract repair",
+                    summary=(
+                        f"{attempt}/{_PREVIEW_REPAIR_RETRIES}: {last_reason}"
+                    ),
+                )
+            )
+            repair_state, repair_error = await self._run_provider_turn(
+                prompt,
+                launch_instructions="",
+                system_context=system_context,
+            )
+            if repair_error is not None:
+                self.node.error = repair_error
+                self._write_stub_preview(NodeState.ERROR, reason=repair_error)
+                return NodeState.ERROR
+            if repair_state is not NodeState.DONE:
+                self._write_stub_preview(
+                    repair_state,
+                    reason=(
+                        "preview repair turn ended before producing a valid "
+                        f"preview (state={repair_state.value})"
+                    ),
+                )
+                return repair_state
+            ok, reason = self._try_reap_and_persist()
+            if ok:
+                return NodeState.DONE
+            last_reason = reason
+
+        reason = (
+            "preview contract abandoned after "
+            f"{_PREVIEW_REPAIR_RETRIES} repair attempts: {last_reason}"
+        )
+        self._append_error(reason)
+        self._write_stub_preview(NodeState.ERROR, reason=reason)
+        return NodeState.ERROR
+
+    def _try_reap_and_persist(self) -> tuple[bool, str]:
+        if self._lane_root is None:
+            return False, "no materialized lane exists for this node"
+        try:
+            result = reap_lane(
+                self.project, self.node, self._lane_root, self._pre_snapshot, self.store
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("reap pipeline raised")
+            return False, f"reap pipeline error: {exc}"
+        if result.fatal:
+            return False, "; ".join(result.rejection_reasons)
+        if not result.own_preview_ok:
+            return False, "; ".join(result.rejection_reasons)
+        own_path = node_dir(self._lane_root, self.node.id) / "preview.json"
+        try:
+            text = own_path.read_text(encoding="utf-8")
+            self.store.write_node_preview(self.project.id, self.node.id, text)
+        except OSError as exc:
+            logger.exception("failed to persist own preview to durable store")
+            return False, f"failed to persist own preview: {exc}"
+        for virtual in result.new_virtuals + result.modified_virtuals:
+            self.store.update_node(virtual)
+        return True, ""
+
     def _reap_and_finalize(self, provider_final_state: NodeState) -> NodeState:
         """Run reap (when applicable) and persist the node's own preview.
 
@@ -399,36 +518,11 @@ class NodeRunner:
         if provider_final_state is not NodeState.DONE or self._lane_root is None:
             self._write_stub_preview(provider_final_state)
             return provider_final_state
-        try:
-            result = reap_lane(
-                self.project, self.node, self._lane_root, self._pre_snapshot, self.store
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("reap pipeline raised")
-            reason = f"reap pipeline error: {exc}"
-            self._append_error(reason)
-            self._write_stub_preview(NodeState.ERROR, reason=reason)
-            return NodeState.ERROR
-        if result.fatal:
-            reason = "; ".join(result.rejection_reasons)
+        ok, reason = self._try_reap_and_persist()
+        if not ok:
             self._append_error(f"Reap fatal: {reason}")
             self._write_stub_preview(NodeState.ERROR, reason=reason)
             return NodeState.ERROR
-        if not result.own_preview_ok:
-            reason = "; ".join(result.rejection_reasons)
-            self._append_error(f"Missing own preview: {reason}")
-            self._write_stub_preview(NodeState.ERROR, reason=reason)
-            return NodeState.ERROR
-        # Accepted. Promote the agent's own preview into the durable store.
-        own_path = node_dir(self._lane_root, self.node.id) / "preview.json"
-        try:
-            text = own_path.read_text(encoding="utf-8")
-            self.store.write_node_preview(self.project.id, self.node.id, text)
-        except OSError:
-            logger.exception("failed to persist own preview to durable store")
-        # Emit updates for new and mutated virtuals so the canvas refreshes.
-        for virtual in result.new_virtuals + result.modified_virtuals:
-            self.store.update_node(virtual)
         return provider_final_state
 
     def _persist_executed_preview(
@@ -669,6 +763,42 @@ def _make_provider(provider: str) -> AgentProvider:
 def _compose_launch_instructions(*parts: str) -> str:
     cleaned = [part.strip() for part in parts if part and part.strip()]
     return "\n\n---\n\n".join(cleaned)
+
+
+def _preview_repair_prompt(node: Node, reason: str, attempt: int) -> str:
+    lane = node.planspace_id or ""
+    category = node.category.value if node.category is not None else "regular"
+    lines = [
+        "MiniClaw2 could not accept your graph preview writes.",
+        "",
+        f"Repair attempt {attempt} of {_PREVIEW_REPAIR_RETRIES}.",
+        "",
+        "Validation failure:",
+        reason or "(no structured reason recorded)",
+        "",
+        "You must now write a valid executed preview JSON file at:",
+        f".miniclaw2/graph/lanes/{lane}/nodes/{node.id}/preview.json",
+        "",
+        "Use exactly this schema, with no unknown fields:",
+        "{",
+        f'  "id": "{node.id}",',
+        '  "kind": "agent",',
+        f'  "category": "{category}",',
+    ]
+    if node.category is Category.REVIEW and node.subtype is not None:
+        lines.append(f'  "subtype": "{node.subtype.value}",')
+    lines.extend([
+        '  "state": "done",',
+        '  "ran_at": "<ISO 8601 UTC timestamp>",',
+        f'  "lane": "{lane}",',
+        '  "motivation": "<why this node ran>",',
+        '  "summary": "<what happened and the key outcome>",',
+        '  "next_implications": "<what this enables or blocks downstream>"',
+        "}",
+        "",
+        "If the failure mentions virtual previews, repair or remove only the invalid graph-preview writes under this lane. Do not modify ordinary worktree files unless the validation failure explicitly requires it.",
+    ])
+    return "\n".join(lines)
 
 
 def _state_from_provider(value: str | None) -> NodeState | None:
