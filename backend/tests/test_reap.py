@@ -259,6 +259,56 @@ class ReapSlugCanonicalizationTests(ReapTestBase):
             any("outside this lane" in reason for reason in result.rejection_reasons)
         )
 
+    def test_virtual_mutation_preserves_resume_edge(self) -> None:
+        node = self._make_running_node(category=Category.PLANNING)
+        resume_source = Node(
+            id="build",
+            project_id="p1",
+            kind=NodeKind.AGENT,
+            category=Category.REGULAR,
+            state=NodeState.DONE,
+            planspace_id="lane-A",
+            started_at=1.0,
+            finished_at=2.0,
+        )
+        existing_virtual = Node(
+            id="fix",
+            project_id="p1",
+            kind=NodeKind.AGENT,
+            category=Category.REGULAR,
+            state=NodeState.VIRTUAL,
+            planspace_id="lane-A",
+            prompt_draft="initial fix",
+            scheduled_deps=[resume_source.id],
+            resume_from_node_id=resume_source.id,
+            proposed_by="template:resume-fix-after-reject",
+            summary="initial motivation",
+        )
+        self.store.create_node(resume_source)
+        self.store.create_node(existing_virtual)
+        lane_root, pre = self._setup_lane(node)
+        _write_preview(
+            lane_root / "nodes" / "n1" / "preview.json",
+            _executed_payload("n1", "lane-A", category="planning"),
+        )
+        rewritten = _virtual_payload("fix", "lane-A", deps=[resume_source.id])
+        rewritten["prompt_draft"] = "edited fix"
+        _write_preview(
+            lane_root / "nodes" / "fix" / "preview.json",
+            rewritten,
+        )
+
+        result = reap_lane(self.project, node, lane_root, pre, self.store)
+
+        self.assertTrue(result.ok())
+        self.assertEqual(len(result.modified_virtuals), 1)
+        self.assertEqual(result.modified_virtuals[0].resume_from_node_id, "build")
+        persisted = self.store.load_node("p1", "fix")
+        self.assertIsNotNone(persisted)
+        assert persisted is not None
+        self.assertEqual(persisted.resume_from_node_id, "build")
+        self.assertEqual(persisted.prompt_draft, "edited fix")
+
 
 class ReapCycleDetectionTests(ReapTestBase):
     def test_self_loop_is_fatal(self) -> None:

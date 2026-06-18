@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # interrupt-midstream programmatic floor:
-#   - the latest node's node.json has state == "cancelled"
+#   - the interrupted turn1 node's node.json has state == "cancelled"
 #   - events.jsonl has at least one text_delta or activity event (proves
 #     we got partway before the interrupt — the regression we care about
 #     is "cancel wiped the in-flight buffer")
@@ -26,7 +26,9 @@ import json, os, sys
 project_dir = sys.argv[1]
 nodes_dir = os.path.join(project_dir, "nodes")
 
-# Find the most recently created node by created_at in node.json.
+# Templates pre-create all lane entries as virtual nodes, so the newest
+# node is usually a later verify/accept virtual. Select the template's
+# first regular agent node instead.
 candidates = []
 for entry in os.listdir(nodes_dir):
     nf = os.path.join(nodes_dir, entry, "node.json")
@@ -37,15 +39,23 @@ for entry in os.listdir(nodes_dir):
             data = json.load(f)
     except (OSError, json.JSONDecodeError):
         continue
+    if data.get("proposed_by") != "template:interrupt-midstream":
+        continue
+    if data.get("kind") != "agent":
+        continue
+    if data.get("category") != "regular":
+        continue
+    if data.get("scheduled_deps") not in (None, []):
+        continue
     candidates.append((data.get("created_at") or 0, entry, data))
 if not candidates:
-    print("no nodes on disk", file=sys.stderr)
+    print("could not find interrupt-midstream turn1 node on disk", file=sys.stderr)
     sys.exit(4)
 candidates.sort(key=lambda x: x[0])
-_, nid, node = candidates[-1]
+_, nid, node = candidates[0]
 
 if node.get("state") != "cancelled":
-    print(f"latest node {nid} state is {node.get('state')!r}, expected 'cancelled'", file=sys.stderr)
+    print(f"turn1 node {nid} state is {node.get('state')!r}, expected 'cancelled'", file=sys.stderr)
     sys.exit(5)
 
 events_path = os.path.join(nodes_dir, nid, "events.jsonl")

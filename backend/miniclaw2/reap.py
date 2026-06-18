@@ -252,10 +252,11 @@ def reap_lane(
             canonical_id=existing.id,
             verify_script_ref=existing.verify_script_ref,
         )
-        # Provenance + lane + creation time follow the original, not the rewritten preview.
+        # Framework-controlled metadata follows the original, not the rewritten preview.
         updated.proposed_by = existing.proposed_by
         updated.created_at = existing.created_at
         updated.planspace_id = existing.planspace_id
+        updated.resume_from_node_id = existing.resume_from_node_id
         updated.scheduled_deps = _rewrite_scheduled_deps(
             updated.scheduled_deps,
             slug_to_canonical,
