@@ -1,0 +1,30 @@
+nodes:
+- id: turn1
+  kind: agent
+  prompt_file: prompts/turn1.md
+- id: verify
+  kind: verifier
+  script_ref: scripts/verify.sh
+  scheduled_deps:
+  - turn1
+  brief:
+    check_what: Run the bundled programmatic verifier for this template.
+    expected: verify.sh exits 0.
+    abnormal: verify.sh exits non-zero, times out, or reports missing expected artifacts.
+- id: accept
+  kind: agent
+  category: review
+  subtype: human_interact_review
+  scheduled_deps:
+  - turn1
+  - verify
+  prompt_file: prompts/accept.md
+  brief:
+    check_what: "- A plan-approval prompt appeared in the gate tab showing the agent's\
+      \ proposed plan (you had to click Approve \u2014 it did not auto-execute).\n\
+      - After you approved, the agent's diff panel shows `PLAN_OK.txt` added at the\
+      \ project root with content `plan-approved`.\n- The agent's confirmation sentence\
+      \ is not a lie \u2014 it really wrote the file (the diff confirms).\n- No extra\
+      \ files (e.g. notes, scratch) were created alongside it."
+    expected: All acceptance bullets hold.
+    abnormal: Any acceptance bullet fails; describe which one and how.

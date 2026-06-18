@@ -1,21 +1,21 @@
 import { useEffect, useState } from "react";
-import { listScenarios, runScenario } from "../api";
-import type { ScenarioSummary, SessionInfo } from "../types";
+import { listTemplates, runTemplate } from "../api";
+import type { TemplateSummary, SessionInfo } from "../types";
 
 type Props = {
-  onLaunched: (session: SessionInfo, scenarioName: string) => void;
+  onLaunched: (session: SessionInfo, templateName: string) => void;
 };
 
 export function TestsPanel({ onLaunched }: Props) {
-  const [scenarios, setScenarios] = useState<ScenarioSummary[] | null>(null);
+  const [templates, setTemplates] = useState<TemplateSummary[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [launching, setLaunching] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
-    listScenarios()
+    listTemplates()
       .then((next) => {
-        if (!cancelled) setScenarios(next);
+        if (!cancelled) setTemplates(next);
       })
       .catch((err) => {
         if (!cancelled) setError(String(err));
@@ -30,7 +30,7 @@ export function TestsPanel({ onLaunched }: Props) {
     setLaunching(key);
     setError(null);
     try {
-      const session = await runScenario(name, provider);
+      const session = await runTemplate(name, provider);
       onLaunched(session, name);
     } catch (err) {
       setError(String(err));
@@ -46,11 +46,9 @@ export function TestsPanel({ onLaunched }: Props) {
           Tests
         </h1>
         <p className="mt-1 text-xs leading-relaxed text-ink-muted">
-          Each scenario runs in a fresh temporary git workspace. Click a
-          provider button to launch; you'll supervise it in the normal
-          project view. After every node reaches a terminal state, a
-          Verify card appears at the bottom of the chat — run the
-          programmatic floor and tick the human acceptance checklist.
+          Each template runs in a fresh temporary git workspace and opens as a
+          normal virtual-node lane. Use the regular canvas controls to promote
+          work, inspect verifier results, and complete human-review steps.
         </p>
       </div>
 
@@ -60,16 +58,16 @@ export function TestsPanel({ onLaunched }: Props) {
         </div>
       )}
 
-      {scenarios === null && !error && (
+      {templates === null && !error && (
         <div className="text-xs text-ink-muted">Loading…</div>
       )}
 
-      {scenarios && scenarios.length === 0 && (
-        <div className="text-xs text-ink-muted">No scenarios are bundled.</div>
+      {templates && templates.length === 0 && (
+        <div className="text-xs text-ink-muted">No templates are bundled.</div>
       )}
 
       <div className="grid max-w-3xl grid-cols-1 gap-3">
-        {scenarios?.map((s) => (
+        {templates?.map((s) => (
           <div
             key={s.name}
             className="rounded-lg border border-line bg-surface-raised px-4 py-3 shadow-card transition hover:border-line-strong"

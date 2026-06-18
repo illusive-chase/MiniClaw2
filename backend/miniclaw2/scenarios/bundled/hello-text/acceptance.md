@@ -1,3 +1,0 @@
-- The reply reads like a sensible sentence about Python (not a refusal, not gibberish, not just `[OK]` on its own).
-- The `[OK]` marker is visible at the end of the assistant message.
-- No tool activity appeared in the timeline (no Bash, Edit, or other tool tiles).

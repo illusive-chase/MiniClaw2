@@ -38,7 +38,7 @@ class ExecutedPreview(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     id: str
-    kind: Literal["agent", "op"]
+    kind: Literal["agent", "op", "verifier"]
     category: Literal["planning", "regular", "review"] | None = None
     state: Literal["done", "error", "cancelled"]
     ran_at: str
@@ -46,17 +46,27 @@ class ExecutedPreview(BaseModel):
     motivation: str
     summary: str
     next_implications: str
-    subtype: Literal["agentic_review", "human_interact_review"] | None = None
+    subtype: Literal[
+        "agentic_review",
+        "human_interact_review",
+        "programmatic_review",
+    ] | None = None
 
     @model_validator(mode="after")
     def _check(self) -> "ExecutedPreview":
-        if self.kind == "agent":
+        if self.kind in {"agent", "verifier"}:
             if self.category is None:
-                raise ValueError("executed agent previews require a category")
+                raise ValueError("executed agent/verifier previews require a category")
             if self.category == "review" and self.subtype is None:
                 raise ValueError("review previews require a subtype")
             if self.category != "review" and self.subtype is not None:
                 raise ValueError("non-review previews must not carry a subtype")
+            if self.kind == "verifier" and self.subtype != "programmatic_review":
+                raise ValueError(
+                    "verifier previews require subtype=programmatic_review"
+                )
+            if self.kind == "agent" and self.subtype == "programmatic_review":
+                raise ValueError("programmatic_review previews require kind=verifier")
         else:
             if self.category is not None:
                 raise ValueError("op previews must not carry a category")
@@ -77,20 +87,38 @@ class VirtualPreview(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     id: str
-    kind: Literal["agent"] = "agent"
+    kind: Literal["agent", "verifier"] = "agent"
     category: Literal["planning", "regular", "review"]
     state: Literal["virtual"]
     lane: str
     proposed_by: str
     motivation: str
-    prompt_draft: str
-    subtype: Literal["agentic_review", "human_interact_review"] | None = None
+    prompt_draft: str = ""
+    subtype: Literal[
+        "agentic_review",
+        "human_interact_review",
+        "programmatic_review",
+    ] | None = None
     brief: ExecutedPreviewBrief | None = None
     scheduled_deps: list[str] = []
     obsolete_reason: str | None = None
 
     @model_validator(mode="after")
     def _check(self) -> "VirtualPreview":
+        if self.kind == "verifier":
+            if self.category != "review":
+                raise ValueError("verifier virtuals require category=review")
+            if self.subtype != "programmatic_review":
+                raise ValueError(
+                    "verifier virtuals require subtype=programmatic_review"
+                )
+            if self.brief is None:
+                raise ValueError("verifier virtuals require a brief")
+            if self.prompt_draft:
+                raise ValueError("verifier virtuals must not carry prompt_draft")
+            return self
+        if self.subtype == "programmatic_review":
+            raise ValueError("programmatic_review virtuals require kind=verifier")
         if self.category == "review":
             if self.subtype is None:
                 raise ValueError("review virtuals require a subtype")
@@ -148,13 +176,13 @@ def validate_preview_for_node(preview: Preview, node: Node) -> list[str]:
     if isinstance(preview, ExecutedPreview):
         if preview.kind != node.kind.value:
             issues.append(f"preview.kind {preview.kind!r} does not match node.kind {node.kind.value!r}")
-        if node.kind is NodeKind.AGENT:
+        if node.kind in {NodeKind.AGENT, NodeKind.VERIFIER}:
             expected = node.category.value if node.category else None
             if preview.category != expected:
                 issues.append(
                     f"preview.category {preview.category!r} does not match node.category {expected!r}"
                 )
-        if node.kind is NodeKind.AGENT and node.category is Category.REVIEW:
+        if node.kind in {NodeKind.AGENT, NodeKind.VERIFIER} and node.category is Category.REVIEW:
             expected_sub = node.subtype.value if node.subtype else None
             if preview.subtype != expected_sub:
                 issues.append(
@@ -187,7 +215,7 @@ def render_executed_preview(node: Node, *, motivation: str, summary: str,
         "summary": summary,
         "next_implications": next_implications,
     }
-    if node.kind is NodeKind.AGENT:
+    if node.kind in {NodeKind.AGENT, NodeKind.VERIFIER}:
         payload["category"] = (node.category or Category.REGULAR).value
         if node.category is Category.REVIEW and node.subtype is not None:
             payload["subtype"] = node.subtype.value
@@ -203,7 +231,7 @@ def render_virtual_preview(node: Node) -> str:
         raise ValueError("virtual node must have a category")
     payload: dict[str, Any] = {
         "id": node.id,
-        "kind": "agent",
+        "kind": node.kind.value,
         "category": node.category.value,
         "state": "virtual",
         "lane": node.planspace_id or "",
@@ -229,15 +257,17 @@ def virtual_preview_to_node(
     project_id: str,
     provider: str,
     canonical_id: str,
+    verify_script_ref: str | None = None,
 ) -> Node:
     """Promote a parsed VirtualPreview into a persistable ``Node`` with
     a framework-assigned canonical id."""
     brief = ReviewBrief.model_validate(preview.brief.model_dump()) if preview.brief else None
     subtype = ReviewSubtype(preview.subtype) if preview.subtype else None
+    kind = NodeKind(preview.kind)
     return Node(
         id=canonical_id,
         project_id=project_id,
-        kind=NodeKind.AGENT,
+        kind=kind,
         state=NodeState.VIRTUAL,
         planspace_id=preview.lane or None,
         provider=provider,
@@ -247,6 +277,7 @@ def virtual_preview_to_node(
         subtype=subtype,
         brief=brief,
         scheduled_deps=list(preview.scheduled_deps),
+        verify_script_ref=verify_script_ref,
         proposed_by=preview.proposed_by,
         obsolete_reason=preview.obsolete_reason,
         summary=preview.motivation,

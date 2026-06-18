@@ -1,0 +1,8 @@
+name: interrupt-midstream
+brief: Long-running Bash; user hits Stop; node ends cancelled; partial output preserved.
+providers:
+- claude
+- codex
+auto_commit: false
+permission_mode: bypassPermissions
+lane_mode: manual

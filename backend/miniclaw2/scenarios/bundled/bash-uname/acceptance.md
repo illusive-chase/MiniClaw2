@@ -1,3 +1,0 @@
-- Expanding the Bash tool tile shows a real `uname -a` output (a path-like string mentioning Darwin, Linux, or another Unix variant — not a stub or hallucination).
-- The assistant's sentence is consistent with that output (does not claim Linux when the output says Darwin, or vice versa).
-- Only one Bash tool activity appears in the timeline.

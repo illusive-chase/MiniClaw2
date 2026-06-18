@@ -211,6 +211,12 @@ def reap_lane(
     slug_to_canonical: dict[str, str] = {}
     new_node_drafts: dict[str, Node] = {}
     for slug, preview in new_virtuals:
+        if preview.kind == NodeKind.VERIFIER.value:
+            result.rejection_reasons.append(
+                f"new virtual {slug}: verifier virtuals may only come from templates"
+            )
+            result.fatal = True
+            return result
         canonical = _new_id()
         slug_to_canonical[slug] = canonical
         draft = virtual_preview_to_node(
@@ -244,6 +250,7 @@ def reap_lane(
             project_id=project.id,
             provider=existing.provider,
             canonical_id=existing.id,
+            verify_script_ref=existing.verify_script_ref,
         )
         # Provenance + lane + creation time follow the original, not the rewritten preview.
         updated.proposed_by = existing.proposed_by

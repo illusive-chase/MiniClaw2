@@ -1,9 +1,9 @@
 # Proposal: Test scenarios become virtual-node templates
 
-Status: design proposal, not yet landed.
+Status: landed in the current implementation.
 Companion to `PROPOSAL_VIRTUAL_NODES.md` (the virtual-node ontology this
-builds on) and `IMPLEMENTATION_STATUS.md` (which still lists the scenario
-engine and the deferred templates layer as separate).
+builds on) and `IMPLEMENTATION_STATUS.md` (which tracks the current
+runtime state).
 
 This proposal collapses the bundled-scenario engine into the virtual-node
 graph the rest of the system already runs on. A "test scenario" becomes a
@@ -15,9 +15,9 @@ away.
 
 The proposal also introduces a third `NodeKind` — **`verifier`** — for
 programmatic review steps. A verifier runs a deterministic script (no
-provider call), reaps a preview the same way a review agent does, and
-emits a follow-up virtual on failure so the failure has a place on the
-canvas to triage from.
+provider call), writes a framework preview the same way an op node does,
+and surfaces failure as `state=ERROR` so downstream human review can
+triage from the verifier tile.
 
 This is the bridge between the bundled-scenarios machinery
 (`backend/miniclaw2/scenarios/`, `VerifyCard.tsx`, `/sessions/{sid}/verify`,
@@ -749,10 +749,11 @@ Horizontal backend-first, mirroring `PROPOSAL_VIRTUAL_NODES.md` §11:
    existing DONE-only gate (this is current behavior — no code
    change, but pin a test).
 5. **REST surface.** Add `/templates` + `/templates/{name}/run`.
-   Remove `/sessions/{sid}/verify`. Keep `/scenarios/*` temporarily.
-6. **Frontend pass.** Add `VerifierNode.tsx` (⚙ glyph, exit-code
-   badge, red ✗ on failure). Switch `TestsPanel` to `/templates`.
-   Drop `VerifyCard.tsx`, `ScenarioFutureNode.tsx`, and the
+   Remove `/sessions/{sid}/verify` and `/scenarios/*`.
+6. **Frontend pass.** Render verifier nodes through the existing
+   agent/review tile and panel branches, with a read-only
+   programmatic-review body for verifier virtuals. Switch `TestsPanel`
+   to `/templates`. Drop `VerifyCard.tsx`, `ScenarioFutureNode.tsx`, and the
    `Simulate WS drop` menu item with its `scenario_name === …`
    conditional. No new wire envelope fields land in this step;
    `SessionInfo` only changes by renaming `scenario_name` →
@@ -765,6 +766,4 @@ Horizontal backend-first, mirroring `PROPOSAL_VIRTUAL_NODES.md` §11:
    `ScenarioSummary` / `ScenarioDetail` / `ScenarioRunRequest` /
    `VerifyResponse` Pydantic models, `/scenarios/*` REST endpoints,
    `Project.scenario_name` references in `app.py`, the
-   `scenario_step_id` argument on `start_node`. This step must be
-   last; until it lands the two paths can coexist briefly so the
-   bundled-scenario rewrite isn't atomic with the removal.
+   `scenario_step_id` argument on `start_node`.

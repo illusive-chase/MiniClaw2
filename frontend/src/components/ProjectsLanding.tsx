@@ -8,11 +8,11 @@ import { ThemeToggle } from "./ThemeToggle";
 type Props = {
   onOpen: (session: SessionInfo) => void;
   onCreate: () => void;
-  /** scenario runner kicks off a new project — open the result */
-  onScenarioLaunched?: (session: SessionInfo, scenarioName: string) => void;
+  /** template runner kicks off a new project — open the result */
+  onTemplateLaunched?: (session: SessionInfo, templateName: string) => void;
 };
 
-export function ProjectsLanding({ onOpen, onCreate, onScenarioLaunched }: Props) {
+export function ProjectsLanding({ onOpen, onCreate, onTemplateLaunched }: Props) {
   const [sessions, setSessions] = useState<SessionInfo[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [testsOpen, setTestsOpen] = useState(false);
@@ -79,7 +79,7 @@ export function ProjectsLanding({ onOpen, onCreate, onScenarioLaunched }: Props)
             type="button"
             onClick={() => setTestsOpen(true)}
             className="inline-flex h-9 items-center gap-1.5 rounded-md border border-line bg-surface-raised px-3 text-[12.5px] font-medium text-ink-muted shadow-card transition hover:border-line-strong hover:text-ink"
-            title="Run a packaged scenario test"
+            title="Run a packaged template test"
           >
             Tests
           </button>
@@ -165,7 +165,7 @@ export function ProjectsLanding({ onOpen, onCreate, onScenarioLaunched }: Props)
                   Tests
                 </div>
                 <div className="text-[11px] text-ink-muted">
-                  Run a packaged scenario; opens the resulting project on launch.
+                  Run a packaged template; opens the resulting project on launch.
                 </div>
               </div>
               <button
@@ -180,7 +180,7 @@ export function ProjectsLanding({ onOpen, onCreate, onScenarioLaunched }: Props)
               <TestsPanel
                 onLaunched={(s, name) => {
                   setTestsOpen(false);
-                  if (onScenarioLaunched) onScenarioLaunched(s, name);
+                  if (onTemplateLaunched) onTemplateLaunched(s, name);
                   else onOpen(s);
                 }}
               />
@@ -367,9 +367,9 @@ function ProjectCard({
             {languageLabel(session.preferred_language)}
           </span>
         )}
-        {session.scenario_name && (
+        {session.template_id && (
           <span className="rounded border border-brand/30 bg-brand-soft px-1.5 py-0.5 text-brand-ink dark:text-brand">
-            {session.scenario_name}
+            {session.template_id}
           </span>
         )}
         {session.temporary && (

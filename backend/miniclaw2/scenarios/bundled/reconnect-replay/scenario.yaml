@@ -1,9 +1,0 @@
-name: reconnect-replay
-brief: "Drop WS mid-stream; reconnect; replay fills the gap; node finishes cleanly."
-providers: [claude, codex]
-auto_commit: false
-permission_mode: bypassPermissions
-nodes:
-  - id: stream
-    kind: agent
-    prompt_file: prompts/stream.md

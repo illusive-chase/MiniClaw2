@@ -1,0 +1,53 @@
+nodes:
+- id: build
+  kind: agent
+  prompt_file: prompts/build.md
+- id: review
+  kind: agent
+  prompt_file: prompts/review.md
+  category: review
+  subtype: human_interact_review
+  brief:
+    check_what: Inspect mathutils.py after the build step and decide whether it should
+      add subtract(a, b).
+    expected: mathutils.py currently exports add(a, b); the human reviewer can request
+      subtract(a, b) as follow-up work.
+    abnormal: mathutils.py is missing, add(a, b) is wrong, or the module already contains
+      extra functions before review.
+  scheduled_deps:
+  - build
+- id: fix
+  kind: agent
+  prompt_file: prompts/fix.md
+  resume_from: build
+  scheduled_deps:
+  - build
+  - review
+- id: verify
+  kind: verifier
+  script_ref: scripts/verify.sh
+  scheduled_deps:
+  - fix
+  brief:
+    check_what: Run the bundled programmatic verifier for this template.
+    expected: verify.sh exits 0.
+    abnormal: verify.sh exits non-zero, times out, or reports missing expected artifacts.
+- id: accept
+  kind: agent
+  category: review
+  subtype: human_interact_review
+  scheduled_deps:
+  - fix
+  - verify
+  prompt_file: prompts/accept.md
+  brief:
+    check_what: "- The build node produced a `mathutils.py` with only `add(a, b)`\
+      \ and its preview noted that review should decide whether to add `subtract(a,\
+      \ b)`.\n- You submitted a free-form review asking for `subtract(a, b)`, and\
+      \ the review node turned slate (done).\n- A `fix` node appeared after the review\
+      \ with the `\u21BB build` resume badge in the timeline.\n- The fix node finished\
+      \ and `mathutils.py` now contains both the original `add` and `subtract`.\n\
+      - The timeline shows the resume connector (dashed SVG curve) from the build\
+      \ tile to the fix tile."
+    expected: All acceptance bullets hold.
+    abnormal: Any acceptance bullet fails; describe which one and how.

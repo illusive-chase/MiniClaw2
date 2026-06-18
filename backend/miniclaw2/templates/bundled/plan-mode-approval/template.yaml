@@ -1,0 +1,8 @@
+name: plan-mode-approval
+brief: Project is in plan permission mode; agent plans; user approves; one file lands.
+providers:
+- claude
+- codex
+auto_commit: false
+permission_mode: plan
+lane_mode: manual

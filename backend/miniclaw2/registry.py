@@ -116,7 +116,7 @@ class ProjectRegistry:
         project_context_binding_id: str | None = None,
         preferred_language: str | None = None,
         temporary: bool = False,
-        scenario_name: str | None = None,
+        template_id: str | None = None,
     ) -> Project:
         normalized_provider = (provider or "claude").lower()
         if normalized_provider not in {"claude", "codex"}:
@@ -149,7 +149,7 @@ class ProjectRegistry:
             project_context_binding_id=project_context_binding_id,
             settings_override=settings,
             temporary=temporary,
-            scenario_name=scenario_name,
+            template_id=template_id,
         )
         self.store.create_project(project)
         self._runtimes[project.id] = ProjectRuntime(project)
@@ -387,7 +387,6 @@ class ProjectRegistry:
         *,
         resume_from_node_id: str | None = None,
         extra_planspace_loads: list[str] | None = None,
-        scenario_step_id: str | None = None,
         category: Category = Category.REGULAR,
         subtype: ReviewSubtype | None = None,
         brief: ReviewBrief | None = None,
@@ -439,7 +438,6 @@ class ProjectRegistry:
             sdk_session_id=resume_source.sdk_session_id if resume_source else None,
             prompt=prompt,
             scheduled_deps=list(scheduled_deps or []),
-            scenario_step_id=scenario_step_id,
             settings_snapshot=settings_snapshot,
         )
         self.store.create_node(node)
@@ -452,7 +450,7 @@ class ProjectRegistry:
                         "proposed_by": (
                             f"node:{actual_parent_id}"
                             if actual_parent_id
-                            else f"scenario:{scenario_step_id or node.id}"
+                            else f"user:{node.id}"
                         ),
                         "summary": node.brief.check_what if node.brief else node.prompt[:200],
                     }
@@ -494,9 +492,6 @@ class ProjectRegistry:
             self._spawn_op_commit(rt, finished_node)
             spawned_op = True
         if spawned_op:
-            return
-        self._advance_scenario_step(rt, finished_node)
-        if rt.is_running():
             return
         if finished_node.state is not NodeState.DONE:
             return
@@ -575,26 +570,34 @@ class ProjectRegistry:
             return
         self.promote_virtual(project.id, candidate.id)
 
+    def promote_next_virtual(self, pid: str) -> None:
+        """Run one auto-promotion pass for callers that just seeded a lane."""
+        rt = self._runtimes.get(pid)
+        if rt is None or rt.is_running():
+            return
+        self._auto_promote_next_virtual(rt)
+
     def _next_promotion_candidate(
         self, pid: str, lane_id: str
     ) -> Node | None:
         """Return the earliest-created eligible virtual on ``lane_id``.
 
         Eligible = ``state == VIRTUAL``, no ``obsolete_reason``, and every
-        ``scheduled_deps`` parent is terminal (``DONE`` / ``ERROR`` /
-        ``CANCELLED``) or an obsoleted virtual.
+        ``scheduled_deps`` parent is ``DONE`` or an obsoleted virtual.
+        Manual promotion is allowed to inspect failed/cancelled upstream
+        nodes, but auto mode must not advance past a failed verifier/review.
         """
         nodes = self.store.list_nodes(pid)
         lane_nodes = [n for n in nodes if (n.planspace_id or "") == lane_id]
         by_id: dict[str, Node] = {n.id: n for n in lane_nodes}
 
-        def is_dep_terminal(dep_id: str) -> bool:
+        def is_dep_auto_ready(dep_id: str) -> bool:
             parent = by_id.get(dep_id)
             if parent is None:
                 parent = self.store.load_node(pid, dep_id)
             if parent is None:
                 return True
-            if parent.state in TERMINAL_NODE_STATES:
+            if parent.state is NodeState.DONE:
                 return True
             if parent.state is NodeState.VIRTUAL and parent.obsolete_reason:
                 return True
@@ -606,7 +609,7 @@ class ProjectRegistry:
                 continue
             if n.obsolete_reason:
                 continue
-            if not all(is_dep_terminal(dep) for dep in n.scheduled_deps):
+            if not all(is_dep_auto_ready(dep) for dep in n.scheduled_deps):
                 continue
             eligible.append(n)
         if not eligible:
@@ -645,13 +648,26 @@ class ProjectRegistry:
             if parent.state is NodeState.VIRTUAL and parent.obsolete_reason:
                 continue
             return None
+        if node.resume_from_node_id:
+            resume_parent = self.store.load_node(pid, node.resume_from_node_id)
+            if resume_parent is None:
+                return None
+            if resume_parent.state is not NodeState.DONE:
+                return None
+            if not (resume_parent.provider_session_id or resume_parent.sdk_session_id):
+                return None
+            node.provider = resume_parent.provider
+            node.provider_session_id = resume_parent.provider_session_id
+            node.sdk_session_id = resume_parent.sdk_session_id
+            node.parent_node_id = resume_parent.id
         try:
             self.store.write_node_preview(pid, node.id, render_virtual_preview(node))
         except Exception:  # noqa: BLE001
             logger.exception("failed to preserve virtual preview before promotion")
             return None
         node.state = NodeState.QUEUED
-        node.prompt = node.prompt_draft or node.prompt
+        if node.kind is NodeKind.AGENT:
+            node.prompt = node.prompt_draft or node.prompt
         node.prompt_draft = None
         self.store.update_node(node)
 
@@ -866,140 +882,6 @@ class ProjectRegistry:
                     "node": fresh_agent.model_dump(),
                     "seq": 0,
                 })
-
-    def _advance_scenario_step(
-        self,
-        rt: ProjectRuntime,
-        finished_node: Node,
-    ) -> None:
-        """Advance the project's scenario cursor when an agent step finishes.
-
-        Scenario steps are all agent nodes; review steps use
-        ``category=review`` and are launched through the ordinary
-        NodeRunner review path.
-        """
-        project = rt.project
-        if not project.scenario_name:
-            return
-
-        step_node = finished_node
-        if finished_node.kind is NodeKind.OP and finished_node.parent_node_id:
-            parent = self.store.load_node(project.id, finished_node.parent_node_id)
-            if parent is not None and parent.scenario_step_id:
-                step_node = parent
-            else:
-                return
-
-        if not step_node.scenario_step_id:
-            return
-
-        history = list(project.scenario_step_history)
-        if any(h.get("step_id") == step_node.scenario_step_id for h in history):
-            already_recorded = True
-        else:
-            already_recorded = False
-            entry: dict[str, Any] = {
-                "step_id": step_node.scenario_step_id,
-                "node_id": step_node.id,
-                "terminal_state": step_node.state.value,
-            }
-            if step_node.category is Category.REVIEW:
-                entry["outcome"] = self._infer_review_outcome(step_node)
-            history.append(entry)
-            project.scenario_step_history = history
-            self.store.update_project(project)
-
-        if step_node.state is not NodeState.DONE:
-            return
-
-        try:
-            from .scenarios import load_scenario as _load_scenario
-            scenario = _load_scenario(project.scenario_name)
-        except Exception:  # noqa: BLE001
-            logger.exception("scenario load failed during step advance")
-            return
-
-        step_idx = next(
-            (
-                i
-                for i, spec in enumerate(scenario.nodes)
-                if spec.id == step_node.scenario_step_id
-            ),
-            None,
-        )
-        if step_idx is None:
-            return
-
-        if already_recorded:
-            return
-
-        next_idx = step_idx + 1
-        while next_idx < len(scenario.nodes):
-            cand = scenario.nodes[next_idx]
-            if self._step_when_matches(project, cand):
-                break
-            next_idx += 1
-        if next_idx >= len(scenario.nodes):
-            return
-
-        next_spec = scenario.nodes[next_idx]
-        resume_node_id = self._resolve_resume_node(project, next_spec)
-        review_source_id = self._resolve_review_source_node(project, next_spec)
-        scheduled_deps = [review_source_id] if review_source_id else []
-        self.start_node(
-            project.id,
-            next_spec.prompt,
-            scenario_step_id=next_spec.id,
-            resume_from_node_id=resume_node_id,
-            category=next_spec.category,
-            subtype=next_spec.subtype,
-            brief=next_spec.brief,
-            parent_node_id=review_source_id,
-            scheduled_deps=scheduled_deps,
-        )
-
-    def _step_when_matches(self, project: Project, spec: Any) -> bool:
-        """True if ``spec`` has no `when:` or its predicate matches history."""
-        if not spec.when_step:
-            return True
-        for h in project.scenario_step_history:
-            if h.get("step_id") == spec.when_step:
-                return h.get("outcome") == spec.when_outcome
-        return False
-
-    def _resolve_resume_node(self, project: Project, spec: Any) -> str | None:
-        """Return the node id matching ``spec.resume_from`` from history, if any."""
-        if not spec.resume_from:
-            return None
-        for h in project.scenario_step_history:
-            if h.get("step_id") == spec.resume_from:
-                node_id = h.get("node_id")
-                return node_id if isinstance(node_id, str) else None
-        return None
-
-    def _resolve_review_source_node(self, project: Project, spec: Any) -> str | None:
-        """Return the node id matching ``spec.review_source`` from history."""
-        if not getattr(spec, "review_source", ""):
-            return None
-        for h in project.scenario_step_history:
-            if h.get("step_id") == spec.review_source:
-                node_id = h.get("node_id")
-                return node_id if isinstance(node_id, str) else None
-        return None
-
-    def _infer_review_outcome(self, review_node: Node) -> str:
-        """Infer scenario branching outcome from review graph mutations.
-
-        Scenario predicates are a thin convenience layer over the new
-        review-as-agent model: if the review proposed any live virtuals,
-        treat that as a rejection/follow-up; otherwise it accepted the
-        upstream without plan changes.
-        """
-        proposed_by = f"node:{review_node.id}"
-        for node in self.store.list_nodes(review_node.project_id):
-            if node.proposed_by == proposed_by and not node.obsolete_reason:
-                return "rejected"
-        return "approved"
 
     def interrupt(self, pid: str) -> bool:
         rt = self._runtimes.get(pid)

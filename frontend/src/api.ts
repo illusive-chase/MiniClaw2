@@ -7,14 +7,13 @@ import type {
   NodeCategory,
   ReviewSubtype,
   PlanspaceMode,
-  ScenarioDetail,
-  ScenarioSummary,
+  TemplateDetail,
+  TemplateSummary,
   SessionFile,
   SessionFileRole,
   CanvasViewport,
   SessionInfo,
   SessionContextSpaceInfo,
-  VerifyResponse,
 } from "./types";
 
 export async function createSession(
@@ -25,7 +24,6 @@ export async function createSession(
     provider?: string;
     preferred_language?: string | null;
     temporary?: boolean;
-    scenario_name?: string | null;
     name?: string;
     project_context_binding_id?: string | null;
   } = {},
@@ -319,33 +317,27 @@ export async function getSessionFile(
   return res.json();
 }
 
-export async function listScenarios(): Promise<ScenarioSummary[]> {
-  const res = await fetch("/scenarios");
-  if (!res.ok) throw new Error(`listScenarios failed: ${res.status}`);
+export async function listTemplates(): Promise<TemplateSummary[]> {
+  const res = await fetch("/templates");
+  if (!res.ok) throw new Error(`listTemplates failed: ${res.status}`);
   return res.json();
 }
 
-export async function getScenario(name: string): Promise<ScenarioDetail> {
-  const res = await fetch(`/scenarios/${encodeURIComponent(name)}`);
-  if (!res.ok) throw new Error(`getScenario failed: ${res.status}`);
+export async function getTemplate(name: string): Promise<TemplateDetail> {
+  const res = await fetch(`/templates/${encodeURIComponent(name)}`);
+  if (!res.ok) throw new Error(`getTemplate failed: ${res.status}`);
   return res.json();
 }
 
-export async function runScenario(
+export async function runTemplate(
   name: string,
   provider: "claude" | "codex",
 ): Promise<SessionInfo> {
-  const res = await fetch(`/scenarios/${encodeURIComponent(name)}/run`, {
+  const res = await fetch(`/templates/${encodeURIComponent(name)}/run`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ provider }),
   });
-  if (!res.ok) throw new Error(`runScenario failed: ${res.status}`);
-  return res.json();
-}
-
-export async function verifySession(sessionId: string): Promise<VerifyResponse> {
-  const res = await fetch(`/sessions/${sessionId}/verify`, { method: "POST" });
-  if (!res.ok) throw new Error(`verifySession failed: ${res.status}`);
+  if (!res.ok) throw new Error(`runTemplate failed: ${res.status}`);
   return res.json();
 }

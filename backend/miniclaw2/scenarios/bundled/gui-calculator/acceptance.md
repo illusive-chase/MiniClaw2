@@ -1,9 +1,0 @@
-- In the timeline you saw two distinct steps: `build` (regular agent) and `review` (human-interact review agent); the review tile asked for human prose once the build finished.
-- The review form showed the scenario review brief and accepted free-form notes before the reviewer agent ran.
-- Running that command from the project root opened a window titled `Calculator` with digits 0–9, the four operators (`+`, `-`, `*`, `/`), `=`, and `C` all visible and labeled.
-- Clicking `1`, `+`, `2`, `=` showed `3` in the display.
-- Clicking `9`, `/`, `0`, `=` showed a visible error indicator (e.g. the literal text `Error`) and did NOT raise a Python traceback in the terminal.
-- Clicking `C` returned the display to its empty / zero state.
-- Closing the window exited the process cleanly (no hung interpreter or stray GUI process left behind).
-- In the build node's diff panel, you can see `calculator.py` and `requirements.txt` were added.
-- After you submitted a free-form review judgment, the review agent finished and the scenario became verifiable without requiring a JSON response file.

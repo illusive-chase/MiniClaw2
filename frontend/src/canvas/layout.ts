@@ -1,5 +1,5 @@
 import type { Edge, Node } from "reactflow";
-import type { ContextBundle, NodeInfo, ScenarioNodeSpec } from "../types";
+import type { ContextBundle, NodeInfo } from "../types";
 
 /* ───────── canvas node payloads ───────── */
 
@@ -25,11 +25,6 @@ export type ErrorTerminalData = {
   /** The owning agent node whose error this surfaces. */
   ownerNodeId: string;
   message: string;
-};
-
-export type ScenarioFutureData = {
-  spec: ScenarioNodeSpec;
-  index: number;
 };
 
 export type ContextNodeData = {
@@ -84,8 +79,7 @@ export type RFNodeData =
   | PhantomNodeData
   | ProjectRootNodeData
   | PlanspaceLaneData
-  | ErrorTerminalData
-  | ScenarioFutureData;
+  | ErrorTerminalData;
 
 export type RFNode = Node<RFNodeData>;
 export type RFEdge = Edge;
@@ -183,8 +177,6 @@ export type BuildGraphArgs = {
   hiddenPlanspaceIds: string[];
   /** active write target */
   activePlanspaceId: string | null;
-  /** Declared scenario steps not yet backed by real nodes. */
-  scenarioNodes: ScenarioNodeSpec[];
 };
 
 export type BuildGraphResult = {
@@ -212,7 +204,6 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
     knownPlanspaceIds,
     hiddenPlanspaceIds,
     activePlanspaceId,
-    scenarioNodes,
   } = args;
 
   const rfNodes: RFNode[] = [];
@@ -433,52 +424,6 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
       });
     }
   });
-
-  /* Scenario future phantoms — read-only dashed tiles for declared steps that
-   * the expander has not reached yet. They make bundled scenarios visible as a
-   * path without adding another launch surface.
-   */
-  const completedScenarioSteps = new Set(
-    nodes
-      .map((node) => node.scenario_step_id)
-      .filter((value): value is string => Boolean(value)),
-  );
-  const scenarioLaneId = activePlanspaceId || planspaceOrder[0] || null;
-  const scenarioLaneHidden = Boolean(
-    scenarioLaneId && hiddenPlanspaces.has(scenarioLaneId),
-  );
-  const scenarioLanePos =
-    scenarioLaneId && !scenarioLaneHidden ? laneAbsPos.get(scenarioLaneId) : null;
-  let futureIndex = 0;
-  if (!scenarioLaneHidden) {
-    for (const spec of scenarioNodes) {
-      if (completedScenarioSteps.has(spec.id)) continue;
-      const x =
-        (scenarioLaneId
-          ? (laneCursors.get(scenarioLaneId) ?? LANE.planspaceLanePaddingX)
-          : freeCursorX) + futureIndex * LANE.agentSpacing;
-      const defaultPosition = scenarioLaneId && scenarioLanePos
-        ? { x, y: LANE.planspaceLaneAgentRowY }
-        : { x, y: LANE.timelineY + 150 };
-      const nodeId = `scenario:${spec.id}`;
-      const stored = layoutHints[nodeId];
-      rfNodes.push({
-        id: nodeId,
-        type: "scenarioFuture",
-        position: stored ?? defaultPosition,
-        data: { spec, index: futureIndex },
-        draggable: true,
-        selectable: false,
-        ...(scenarioLaneId && scenarioLanePos
-          ? { parentNode: `planspace:${scenarioLaneId}`, extent: "parent" as const }
-          : {}),
-      });
-      if (scenarioLaneId) {
-        recordChildExtent(scenarioLaneId, (stored ?? defaultPosition).x, LANE.agentWidth);
-      }
-      futureIndex += 1;
-    }
-  }
 
   /* error terminals — a small red-edged downstream node per failed run.
    * The owning agent keeps its own error state; the terminal puts the failure

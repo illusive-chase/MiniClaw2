@@ -10,7 +10,7 @@ export default defineConfig({
     port: 5173,
     proxy: {
       "/sessions": backendUrl,
-      "/scenarios": backendUrl,
+      "/templates": backendUrl,
       "/ws": {
         target: backendWsUrl,
         ws: true,

@@ -1,0 +1,7 @@
+name: gui-calculator
+brief: Build a PySide6 Qt calculator, then review it via a human-interact review agent.
+providers:
+- claude
+- codex
+auto_commit: true
+lane_mode: manual

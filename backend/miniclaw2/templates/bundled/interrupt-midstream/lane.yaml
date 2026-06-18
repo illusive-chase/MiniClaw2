@@ -1,0 +1,31 @@
+nodes:
+- id: turn1
+  kind: agent
+  prompt_file: prompts/turn1.md
+- id: verify
+  kind: verifier
+  script_ref: scripts/verify.sh
+  scheduled_deps:
+  - turn1
+  brief:
+    check_what: Run the bundled programmatic verifier for this template.
+    expected: verify.sh exits 0.
+    abnormal: verify.sh exits non-zero, times out, or reports missing expected artifacts.
+- id: accept
+  kind: agent
+  category: review
+  subtype: human_interact_review
+  scheduled_deps:
+  - turn1
+  - verify
+  prompt_file: prompts/accept.md
+  brief:
+    check_what: "- You hit the Stop button after a few seconds of streaming output\
+      \ (not before the first line, not after the loop finishes on its own).\n- The\
+      \ node tile turned muted-grey (cancelled state) \u2014 not red (error), not\
+      \ green (done).\n- The partial Bash output that arrived before you hit Stop\
+      \ is still visible in the tool tile after cancellation (it was not wiped or\
+      \ replaced with an error placeholder).\n- No follow-up assistant turn fired\
+      \ after the cancel."
+    expected: All acceptance bullets hold.
+    abnormal: Any acceptance bullet fails; describe which one and how.

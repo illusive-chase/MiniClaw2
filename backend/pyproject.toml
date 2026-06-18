@@ -22,19 +22,17 @@ miniclaw2 = "miniclaw2.__main__:main"
 packages = [
     "miniclaw2",
     "miniclaw2.providers",
-    "miniclaw2.scenarios",
+    "miniclaw2.templates",
 ]
 
 [tool.setuptools.package-data]
 "miniclaw2" = [
     "prompts/*.md",
 ]
-"miniclaw2.scenarios" = [
-    "bundled/*/scenario.yaml",
-    "bundled/*/brief.md",
-    "bundled/*/acceptance.md",
-    "bundled/*/contract.md",
-    "bundled/*/verify.sh",
+"miniclaw2.templates" = [
+    "bundled/*/template.yaml",
+    "bundled/*/lane.yaml",
     "bundled/*/prompts/*.md",
+    "bundled/*/scripts/*.sh",
     "bundled/*/seed/**/*",
 ]

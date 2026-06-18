@@ -1,11 +1,11 @@
 """Domain models — Project, Node, HumanGate, ContextBundle.
 
 Schema matches PHILOSOPHY §6 and PROPOSAL_VIRTUAL_NODES §3.1. The
-ontology is two-axis: ``kind`` distinguishes agent from op; ``category``
-(orthogonal, applies to agent only) distinguishes planning, regular,
-and review semantics. Reviews are agents — there is no gate node kind.
-``HumanGate`` is preserved for inline gates (permission / ask_user /
-plan_approval) only.
+ontology is two-axis: ``kind`` distinguishes agent, op, and verifier;
+``category`` (orthogonal, applies to agent/verifier) distinguishes
+planning, regular, and review semantics. Agentic and human reviews are
+agents; programmatic reviews are verifiers. ``HumanGate`` is preserved
+for inline gates (permission / ask_user / plan_approval) only.
 """
 
 from __future__ import annotations
@@ -29,6 +29,7 @@ def _now() -> float:
 class NodeKind(StrEnum):
     AGENT = "agent"
     OP = "op"
+    VERIFIER = "verifier"
 
 
 class NodeState(StrEnum):
@@ -51,6 +52,7 @@ class Category(StrEnum):
 class ReviewSubtype(StrEnum):
     AGENTIC_REVIEW = "agentic_review"
     HUMAN_INTERACT_REVIEW = "human_interact_review"
+    PROGRAMMATIC_REVIEW = "programmatic_review"
 
 
 class PlanspaceMode(StrEnum):
@@ -119,8 +121,7 @@ class Project(BaseModel):
     project_context_binding_id: str | None = None
     settings_override: dict[str, Any] = Field(default_factory=dict)
     temporary: bool = False
-    scenario_name: str | None = None
-    scenario_step_history: list[dict[str, Any]] = Field(default_factory=list)
+    template_id: str | None = None
     created_at: float = Field(default_factory=_now)
     layout_hints: dict[str, dict[str, float]] = Field(default_factory=dict)
     layout_viewport: dict[str, float] | None = None
@@ -155,6 +156,8 @@ class Node(BaseModel):
     # terminal state before this virtual is eligible to promote.
     prompt_draft: str | None = None
     scheduled_deps: list[str] = Field(default_factory=list)
+    resume_from_node_id: str | None = None
+    verify_script_ref: str | None = None
     proposed_by: str | None = None
     obsolete_reason: str | None = None
     summary: str | None = None
@@ -162,7 +165,6 @@ class Node(BaseModel):
     usage: TokenUsage | None = None
     system_context_snapshot: str = ""
     settings_snapshot: dict[str, Any] = Field(default_factory=dict)
-    scenario_step_id: str | None = None
     created_at: float = Field(default_factory=_now)
     started_at: float | None = None
     finished_at: float | None = None
@@ -174,6 +176,21 @@ class Node(BaseModel):
                 raise ValueError("op nodes must not carry a category")
             if self.subtype is not None or self.brief is not None:
                 raise ValueError("op nodes must not carry review fields")
+            if self.verify_script_ref is not None:
+                raise ValueError("op nodes must not carry verify_script_ref")
+        elif self.kind is NodeKind.VERIFIER:
+            if self.category is not Category.REVIEW:
+                raise ValueError("verifier nodes must be category=review")
+            if self.subtype is not ReviewSubtype.PROGRAMMATIC_REVIEW:
+                raise ValueError(
+                    "verifier nodes require subtype=programmatic_review"
+                )
+            if self.brief is None:
+                raise ValueError("verifier nodes require a brief")
+            if self.prompt or self.prompt_draft:
+                raise ValueError("verifier nodes must not carry prompt text")
+            if not self.verify_script_ref:
+                raise ValueError("verifier nodes require verify_script_ref")
         else:
             # AGENT — category required, default to REGULAR
             if self.category is None:
@@ -186,8 +203,12 @@ class Node(BaseModel):
             elif self.category is Category.REVIEW:
                 if self.subtype is None:
                     raise ValueError("review agents require a subtype")
+                if self.subtype is ReviewSubtype.PROGRAMMATIC_REVIEW:
+                    raise ValueError("programmatic_review requires kind=verifier")
                 if self.brief is None:
                     raise ValueError("review agents require a brief")
+            if self.verify_script_ref is not None:
+                raise ValueError("agent nodes must not carry verify_script_ref")
         if self.state is NodeState.VIRTUAL:
             if self.started_at is not None or self.finished_at is not None:
                 raise ValueError("virtual nodes must not carry started_at/finished_at")

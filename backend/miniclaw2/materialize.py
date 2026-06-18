@@ -156,7 +156,10 @@ def materialize_active_lane(
         else:
             text = render_node_preview(node)
         (ndir / "preview.json").write_text(text, encoding="utf-8")
-        if node.state is not NodeState.VIRTUAL and node.kind is NodeKind.AGENT:
+        if node.state is not NodeState.VIRTUAL and node.kind in {
+            NodeKind.AGENT,
+            NodeKind.VERIFIER,
+        }:
             transcript = _build_transcript(store, project.id, node.id)
             _write_transcript(ndir / "transcript.json", transcript)
             artifacts_src = _project_artifacts_dir(project, node.id)

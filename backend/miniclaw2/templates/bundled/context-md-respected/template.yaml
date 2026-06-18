@@ -1,0 +1,11 @@
+name: context-md-respected
+brief: Project-neutral CONTEXT.md is honored by both providers.
+providers:
+- claude
+- codex
+auto_commit: false
+permission_mode: bypassPermissions
+seed:
+- from: seed/CONTEXT.md
+  to: CONTEXT.md
+lane_mode: manual

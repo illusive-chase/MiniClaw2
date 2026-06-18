@@ -1,4 +1,4 @@
-"""Temporary workspace helper — general feature, first used by test scenarios.
+"""Temporary workspace helper — general feature, first used by test templates.
 
 Creates a fresh git-initialised tempdir to serve as a Project's ``root_path``.
 The empty initial commit guarantees that downstream commit-op nodes can

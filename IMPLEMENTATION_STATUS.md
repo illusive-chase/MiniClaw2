@@ -15,7 +15,7 @@ sequenced — dependencies are noted inline where they matter.
 
 Per `PROPOSAL_VIRTUAL_NODES.md` §11 sequencing:
 
-- [x] Step 1 — Domain types: `NodeKind = {agent, op}`, `VIRTUAL` /
+- [x] Step 1 — Domain types: `NodeKind = {agent, op, verifier}`, `VIRTUAL` /
       `AWAITING_HUMAN_INPUT` states, category / subtype / brief.
 - [x] Step 2 — Preview module (parse/validate/persist;
       `backend/miniclaw2/preview.py`).
@@ -49,8 +49,8 @@ Per `PROPOSAL_VIRTUAL_NODES.md` §11 sequencing:
 - [x] Step 9 — Remove legacy paths. Product/runtime passive gates,
       `planspace_state.py`, STATUS/PLAN UI, memory-delta frontend
       paths, and scenario-loader `gate` / `needs_review` vocabulary are
-      gone. Bundled review scenarios now declare `category=review`
-      agent steps with `review_source`.
+      gone. Bundled tests now declare template lanes with review agents
+      and verifier nodes.
 - [x] Step 10 — Frontend pass. Virtual tiles render with dashed
       outlines, category badges, ready-to-promote affordances, virtual
       side-panel detail, project/direction mode controls, and the old
@@ -63,11 +63,9 @@ Per `PROPOSAL_VIRTUAL_NODES.md` §11 sequencing:
 
 Known gaps against the proposal:
 
-- User-authored edits to existing virtual nodes are not exposed through
-  REST or the frontend. Planning / review agents can create, mutate, and
-  obsolete virtual previews through the materialized graph, but users can
-  currently promote virtuals rather than directly editing
-  `prompt_draft`, `category`, `brief`, or `scheduled_deps`.
+- User-authored edits to verifier virtuals are intentionally not
+  exposed. Verifier virtuals are template-only because the missing
+  script carrier cannot be represented by an agent-authored preview.
 
 
 ## 1. Backend domain model
@@ -76,23 +74,23 @@ Trunk: `backend/miniclaw2/domain.py`.
 
 ### Landed
 
-- `NodeKind ∈ {agent, op}`.
+- `NodeKind ∈ {agent, op, verifier}`.
 - `NodeState ∈ {virtual, queued, running, waiting, awaiting_human_input, done, error, cancelled}`.
 - `Category ∈ {planning, regular, review}` and
-  `ReviewSubtype ∈ {agentic_review, human_interact_review}`.
+  `ReviewSubtype ∈ {agentic_review, human_interact_review, programmatic_review}`.
 - `Node` fields covering ontology in `PHILOSOPHY.md` §6.1: `parent_node_id`,
   `planspace_id`, `context_sources`, `context_bundle_id`,
   `context_bundle_path`, `provider`, `provider_session_id`,
   `provider_turn_id`, `sdk_session_id` (legacy alias),
   `commit_before`, `commit_after`, `prompt`, `category`, `subtype`,
-  `brief`, `prompt_draft`, `scheduled_deps`, `proposed_by`,
-  `obsolete_reason`, `summary`, `error`, `usage`,
-  `system_context_snapshot`, `settings_snapshot`, `scenario_step_id`,
+  `brief`, `prompt_draft`, `scheduled_deps`, `resume_from_node_id`,
+  `verify_script_ref`, `proposed_by`, `obsolete_reason`, `summary`,
+  `error`, `usage`, `system_context_snapshot`, `settings_snapshot`,
   `created_at`, `started_at`, `finished_at`.
 - `Project` fields: `root_path`, `name`, `provider`, `head_commit`,
   `parent_project_id`, `parent_commit`, `project_context_binding_id`,
-  `settings_override`, `temporary`, `scenario_name`,
-  `scenario_step_history`, `layout_hints`, `planspace_view`,
+  `settings_override`, `temporary`, `template_id`,
+  `layout_hints`, `layout_viewport`, `planspace_view`,
   `created_at`.
 - `HumanGate` model is inline-only:
   `GateSubtype ∈ {permission, ask_user, plan_approval}`.
@@ -165,6 +163,21 @@ Trunk: `backend/miniclaw2/runner.py`, `backend/miniclaw2/registry.py`.
   launches the reviewer agent.
 - The reviewer's verdict is represented by its preview and any virtual
   graph mutations reaped from `.miniclaw2/graph/`.
+
+### Verifier — landed
+
+- Verifiers are `kind=verifier`, `category=review`,
+  `subtype=programmatic_review` nodes.
+- A verifier runs `bash <verify_script_ref>` in the project root with
+  `CI=1`, `MINICLAW_HOME`, and `MINICLAW_PROJECT_ID`; it does not start
+  a provider session.
+- Exit 0 writes an executed preview with `summary="verify passed"` and
+  transitions to `done`. Non-zero exit or timeout writes stderr/stdout
+  tail into the preview, stores `node.error`, and transitions to
+  `error`. Cancellation transitions to `cancelled`.
+- Verifier virtuals are template-only. Agent-authored verifier virtuals
+  are rejected by reap because they cannot safely supply
+  `verify_script_ref`.
 
 ### Op — landed
 
@@ -288,8 +301,13 @@ Trunk: `frontend/src/canvas/Canvas.tsx`, `frontend/src/canvas/layout.ts`,
 - Virtual agent tiles render as dashed plan tiles with category badges,
   draft prompt text, ready/obsolete/dependency footer state, and a
   hover promote affordance.
+- Virtual agent nodes can be edited from the side panel
+  (`prompt_draft`, category/subtype/brief, motivation, dependencies,
+  and obsoletion); verifier virtuals render as read-only
+  programmatic-review steps.
 - Agent tiles show category badges for planning / regular / review /
-  human-interact review nodes.
+  human-interact review nodes; verifier tiles use the review tone and
+  a programmatic label.
 - Edges: timeline spine, resume (`↻` mid-glyph), review-agent edges,
   loads (dashed, auto-hidden unless endpoint hovered/selected).
 - Op as edge chevron when the op has a downstream child; trailing
@@ -334,18 +352,14 @@ Trunk: `frontend/src/canvas/Canvas.tsx`, `frontend/src/canvas/layout.ts`,
 - Inline pending requests (permission / ask-user / plan-approval)
   also expand directly under the waiting agent tile on the canvas,
   using the same response mapping as `AgentPanel`.
-- Scenario future steps render as dashed read-only phantoms ahead of
-  the current scenario cursor.
 - Projects landing page (`ProjectsLanding`) with rename/delete; Tests
-  modal.
+  modal for bundled templates.
 
 ### Pending
 
-- Alternate-path scenario future phantoms for conditional branches.
-- User-editable virtual-node controls. The side panel displays virtual
-  draft/provenance/dependencies/brief and can promote ready virtuals, but
-  it does not yet let the user edit `prompt_draft`, `category`, `brief`,
-  `scheduled_deps`, or `obsolete_reason`.
+- User-editable verifier virtual controls. Agent virtual editing is in,
+  but verifier virtuals remain read-only because script selection is a
+  template-owned concern.
 - Schema-aware review forms (PRD §8.7). Cancelled — user judgment is
   free-form by design; left here as a documented non-goal.
 
@@ -425,27 +439,49 @@ Vendor-specific config loading is the largest remaining drift.
 - Cost estimate (per-model rates × token counts).
 
 
-## 8. Templates (deferred)
+## 8. Templates
 
-A declarative recipe layer for canned multi-step launches ("build →
-review → fix → snapshot"). The earlier design sketched YAML templates
-with slot interpolation, `on_state` branching, and `next:` loops, plus
-a registry-level `TemplateExpander` invoked on `runner_done`.
+A bundled recipe layer for canned multi-step launches. The landed scope
+is the frozen-DAG design from `PROPOSAL_TEMPLATES.md`: a template stamps
+a complete lane of virtual nodes into a fresh temporary project, then
+normal virtual-node promotion drives the run. Parameterized templates,
+slot interpolation, `on_state` branching, and `next:` loops remain
+deferred.
 
-### Status: not started
+### Landed
 
-- No `backend/miniclaw2/templates/` package, no `TemplateDefinition`,
-  `TemplateInstance`, or `TemplateExpander` classes.
-- `Node.created_by` and `Node.template_step_id` fields are not
-  present (would be added when the engine ships).
-- No composer UI template picker; no ghost-step rendering.
+- `backend/miniclaw2/templates/` provides `loader.py`, `launcher.py`,
+  and `bundled/` template definitions with `template.yaml`,
+  `lane.yaml`, `prompts/`, `scripts/`, and optional `seed/`.
+- REST exposes `GET /templates`, `GET /templates/{name}`, and
+  `POST /templates/{name}/run`. The old `/scenarios` and
+  `/sessions/{sid}/verify` endpoints have been removed.
+- `Project.template_id` records provenance for projects launched from a
+  template. The old `scenario_name`, `scenario_step_history`, and
+  `scenario_step_id` fields are gone.
+- Template launch creates a temporary git workspace, applies
+  provider/permission/auto-commit settings, creates a planspace, writes
+  every lane entry as a virtual node, persists each virtual preview, and
+  performs one auto-promotion pass.
+- `lane.yaml` supports `agent` and `verifier` steps,
+  `scheduled_deps`, review briefs, and `resume_from` for agent
+  continuations. `promote_virtual` copies provider session/thread ids
+  from the done resume parent.
+- The Tests modal now lists bundled templates and opens the resulting
+  project. There is no template-specific verify card or scenario-future
+  node renderer; templates use the normal canvas, side panel, virtual
+  editing, human-review form, and interrupt controls.
+- Bundled templates: `hello-text`, `bash-uname`, `write-readme`,
+  `permission-approve`, `plan-mode-approval`, `interrupt-midstream`,
+  `context-md-respected`, `resume-fix-after-reject`, and
+  `gui-calculator`. `reconnect-replay` was intentionally dropped
+  because it required a test-only UI hook.
 
-`backend/miniclaw2/scenarios/` (loader + launcher + verify) provides
-adjacent machinery for multi-step demo flows used by the Tests modal.
-The scenario expander (`_advance_scenario_step`) overlaps with what a
-template engine would do but is intentionally narrower (single hand-
-written YAML per demo, no slot interpolation, no `on_state`
-branching).
+### Pending
+
+- User-authored templates from the UI.
+- Template parameters / slot interpolation / branching DSL.
+- Template versioning beyond the instantiated node snapshots.
 
 
 ## 9. Multi-project / forks

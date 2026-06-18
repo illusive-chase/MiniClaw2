@@ -1,0 +1,28 @@
+nodes:
+- id: turn1
+  kind: agent
+  prompt_file: prompts/turn1.md
+- id: verify
+  kind: verifier
+  script_ref: scripts/verify.sh
+  scheduled_deps:
+  - turn1
+  brief:
+    check_what: Run the bundled programmatic verifier for this template.
+    expected: verify.sh exits 0.
+    abnormal: verify.sh exits non-zero, times out, or reports missing expected artifacts.
+- id: accept
+  kind: agent
+  category: review
+  subtype: human_interact_review
+  scheduled_deps:
+  - turn1
+  - verify
+  prompt_file: prompts/accept.md
+  brief:
+    check_what: "- The node's diff panel shows a single new file `README.md` added\
+      \ with content `# scratch`.\n- The agent's confirmation sentence is not a lie\
+      \ \u2014 it actually wrote the file (the diff confirms).\n- No extra files (e.g.\
+      \ `.gitignore`, `notes.md`) were created on the side."
+    expected: All acceptance bullets hold.
+    abnormal: Any acceptance bullet fails; describe which one and how.

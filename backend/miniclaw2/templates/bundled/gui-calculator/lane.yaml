@@ -1,0 +1,39 @@
+nodes:
+- id: build
+  kind: agent
+  prompt_file: prompts/build.md
+- id: verify
+  kind: verifier
+  script_ref: scripts/verify.sh
+  scheduled_deps:
+  - build
+  brief:
+    check_what: Run the bundled programmatic verifier for this template.
+    expected: verify.sh exits 0.
+    abnormal: verify.sh exits non-zero, times out, or reports missing expected artifacts.
+- id: accept
+  kind: agent
+  category: review
+  subtype: human_interact_review
+  scheduled_deps:
+  - build
+  - verify
+  prompt_file: prompts/review.md
+  brief:
+    check_what: "- In the timeline you saw two distinct steps: `build` (regular agent)\
+      \ and `review` (human-interact review agent); the review tile asked for human\
+      \ prose once the build finished.\n- The review form showed the template review\
+      \ brief and accepted free-form notes before the reviewer agent ran.\n- Running\
+      \ that command from the project root opened a window titled `Calculator` with\
+      \ digits 0\u20139, the four operators (`+`, `-`, `*`, `/`), `=`, and `C` all\
+      \ visible and labeled.\n- Clicking `1`, `+`, `2`, `=` showed `3` in the display.\n\
+      - Clicking `9`, `/`, `0`, `=` showed a visible error indicator (e.g. the literal\
+      \ text `Error`) and did NOT raise a Python traceback in the terminal.\n- Clicking\
+      \ `C` returned the display to its empty / zero state.\n- Closing the window\
+      \ exited the process cleanly (no hung interpreter or stray GUI process left\
+      \ behind).\n- In the build node's diff panel, you can see `calculator.py` and\
+      \ `requirements.txt` were added.\n- After you submitted a free-form review judgment,\
+      \ the review agent finished and the template lane became verifiable without requiring\
+      \ a JSON response file."
+    expected: All acceptance bullets hold.
+    abnormal: Any acceptance bullet fails; describe which one and how.

@@ -21,30 +21,32 @@ Codex (`codex app-server`) over FastAPI + WebSocket, paired with a React
   implicit: a node starts a new Claude SDK session or Codex app-server
   thread unless it is launched with `resume_from_node_id`. A
   `NodeRunner` drives the state machine (`queued -> running [<-> waiting]
-  -> done|error|cancelled`, with `awaiting_review` for passive gates),
+  -> done|error|cancelled`, with `awaiting_human_input` for human
+  review nodes),
   translates provider messages into a small event union over WebSocket,
   persists every event to `events.jsonl` before pushing, injects output
   contracts (`freeform`, `summary`, `interface`, or `review_brief`), and
-  applies ContextSpace memory-delta artifacts after terminal transitions.
+  reaps graph previews after terminal transitions. Programmatic checks
+  run as `verifier` nodes: deterministic scripts with normal node
+  previews and error states.
 - **Frontend** (`frontend/`) — a projects landing page plus a
   single-project React Flow canvas. The canvas materializes project root,
-  agent, gate, op, artifact, context, and phantom-composer nodes with
-  timeline, resume, produces, reviews, and loads edges. Launching work is
+  agent/verifier, op, context, error-terminal, planspace, and
+  phantom-composer nodes with timeline, resume, reviews, loads, and
+  op-chevron edges. Launching work is
   done through the dashed `PhantomNode` composer on the canvas, not a
   `+ Node` modal. The selected item drives a polymorphic `SidePanel`
-  (`AgentPanel`, `GatePanel`, `ArtifactPanel`, `ContextNodePanel`,
-  `OpPanel`, `ProjectPanel`) rather than the old fixed `NodeDetail`
+  (`AgentPanel`, `ContextNodePanel`, `PlanspaceFilePanel`, `OpPanel`,
+  `ProjectPanel`) rather than the old fixed `NodeDetail`
   tabs. Assistant output is markdown-rendered (`react-markdown` + GFM +
   `highlight.js`); inline tool activity has collapsible output panels;
   pending permission / ask-user / plan requests render inside the agent
-  panel; passive review gates render a response form in `GatePanel`; a
-  `VerifyCard` appears on scenario projects after nodes reach terminal
-  states; and WebSocket reconnect replay is handled by `ws.ts`.
+  panel; human-review prose requests render in the node surface; and
+  WebSocket reconnect replay is handled by `ws.ts`.
 - **Project and ContextSpace context** — a project-root `CONTEXT.md` is
   always loaded when present and injected provider-neutrally. If the
   project is bound to a ContextSpace, the launch also snapshots the
-  active planspace sources (`STATUS.md`, `PLAN.md`, and enabled
-  plugs according to their manifests) into
+  active ContextSpace sources according to their manifests into
   `$MINICLAW_HOME/contextspace/snapshots/<bundle-id>.json`. Project
   `CONTEXT.md` goes into system context; planspace sources are injected
   as turn context. The node records `context_bundle_id`,
@@ -60,16 +62,15 @@ and node, interrupt, extended-thinking surface, WebSocket reconnect
 replay, Claude and Codex provider adapters, provider-neutral project
 context via `CONTEXT.md`, ContextSpace bootstrap / binding / active
 planspace / bundle snapshots, memory-delta writeback for safe
-`STATUS.md` observations, passive checkpoint gate nodes, node output
-contracts (`summary` markdown, `interface` JSON, `review_brief`
-markdown), bundled dashboard-launched scenarios, and opt-in auto-commit
-op nodes with two-commit per-node diffs.
+  `STATUS.md` observations, virtual-node lanes, review agents,
+  programmatic verifier nodes, bundled dashboard-launched templates, and
+  opt-in auto-commit op nodes with two-commit per-node diffs.
 
 Out (for now): vendor-specific on-disk context (`CLAUDE.md`,
 `AGENTS.md`, `.claude/settings.json`, `.claude/agents`, `.mcp.json`),
 per-token streaming for Claude, auth, cost tracking, model/settings
-pickers in the primary UI, multi-project lane visualization, template
-runs, fork/worktree graph operations, schema-generated review forms,
+pickers in the primary UI, multi-project lane visualization,
+fork/worktree graph operations, schema-generated review forms,
 and automatic ContextSpace git commits.
 
 See [`DESIGN.md`](DESIGN.md) for the long-term graph-IDE plan,
@@ -127,7 +128,7 @@ npm install
 npm run dev                      # http://127.0.0.1:5173
 ```
 
-Vite proxies `/sessions`, `/scenarios`, and `/ws` to the backend.
+Vite proxies `/sessions`, `/templates`, and `/ws` to the backend.
 
 ## Layout
 
@@ -146,7 +147,7 @@ backend/miniclaw2/
   artifacts.py     # output artifact loading / summarization
   replay.py        # replay/live buffering for reconnecting WS observers
   workspace.py     # temporary workspace creation / cleanup
-  scenarios/       # bundled scenario loader, launcher, verifier
+  templates/       # bundled template loader, launcher, verifier scripts
   __main__.py      # uvicorn entry
 
 frontend/src/
@@ -167,8 +168,7 @@ frontend/src/
   components/
     ProjectsLanding.tsx    # persistent project list + Tests modal
     NewProjectModal.tsx    # create/select cwd + provider
-    TestsPanel.tsx         # bundled scenario launcher
-    VerifyCard.tsx         # verify.sh + human acceptance checklist
+    TestsPanel.tsx         # bundled template launcher
     ToolActivity.tsx       # provider tool result rendering
     PermissionDialog.tsx, AskUserDialog.tsx, PlanDialog.tsx
   ws.ts                    # useSessionSocket + reconnect replay
@@ -227,22 +227,21 @@ is a project id, and each `user_message` spawns a fresh agent node.
   `GET /sessions/{sid}/nodes/{nid}/events`,
   `GET /sessions/{sid}/nodes/{nid}/diff`, and
   `GET /sessions/{sid}/nodes/{nid}/artifact`.
-- Scenario REST APIs:
-  `GET /scenarios`, `GET /scenarios/{name}`,
-  `POST /scenarios/{name}/run`, and
-  `POST /sessions/{sid}/verify`.
+- Template REST APIs:
+  `GET /templates`, `GET /templates/{name}`, and
+  `POST /templates/{name}/run`.
 - Client -> server:
-  `user_message {text, resume_from_node_id?, output_kind?, output_path?}`,
+  `user_message {text, resume_from_node_id?, extra_planspace_loads?}`,
   `interaction_response`, `interrupt`, and
-  `replay_request {node_id, since_seq}`. `output_kind:
-  "review_brief"` triggers an automatic follow-up passive gate after
-  the agent completes and any auto-commit op finishes.
+  `replay_request {node_id, since_seq}`.
 - Server -> client:
-  `node_started` (carries `kind` and agent `prompt`), `node_updated`,
+  `node_started` (carries `kind`, `category`, `subtype`, and agent
+  `prompt`), `node_updated`,
   `text_delta`, `thinking`, `activity` (with optional `result` +
   `result_kind`), `interaction_request` (`permission`, `ask_user`,
-  `plan_approval`, or `checkpoint_review`), `usage`, `turn_done`, and
-  `error`. Events carry monotonic `seq` values for reconnect replay.
+  `plan_approval`, `checkpoint_review`, or `human_review_prose`),
+  `usage`, `turn_done`, and `error`. Events carry monotonic `seq`
+  values for reconnect replay.
 
 `interaction_response` remains backward-compatible with Claude's
 `allow/message/updated_input` shape and also accepts Codex-style
@@ -259,33 +258,25 @@ The current code has moved beyond the original chat-wrapper plan:
   process restart via JSON/JSONL. SQLite from `DESIGN.md` remains
   deferred.
 - Provider layer is split out of the state machine. Claude remains the
-  default provider; Codex can be selected per project/scenario.
+  default provider; Codex can be selected per project/template.
 - New nodes start fresh by default. Resume edges are explicit and copy
   the parent's provider session/thread id into the child node.
 - The graph UI redesign is partially landed: persistent projects,
   React Flow canvas, context/artifact nodes, phantom composer,
   polymorphic side panel, project-root ContextSpace controls, and
-  scenario test modal are current. Some PRD polish remains, notably
-  op-as-edge-chevron and inline gate expansion directly inside canvas
-  tiles; today ops are still graph nodes and inline gates render in
-  the agent side panel.
+  template test modal are current. Some PRD polish remains.
 - `CONTEXT.md` plus ContextSpace bundle snapshots are in. Vendor-
   specific loading (`CLAUDE.md` walk, `.claude/settings.json`,
   `.claude/agents`, `.mcp.json`) is still intentionally deferred.
-- Passive `gate` node flow is in. Agents launched with
-  `output_kind=review_brief` write `brief.md`; the registry then
-  spawns a gate that renders a free-form review form. The legacy
-  `write-json` backend path remains available for API-level flows that
-  stamp `review_outcome` and update the source node's human
-  `acceptance_state` / `verdict_*` fields.
 - `commit` op nodes are in. With `auto_commit:true`, a commit op is
-  appended after each successful agent/gate node and rewrites the
+  appended after each successful agent node and rewrites the
   preceding node's `commit_after`.
-- The bundled scenario catalogue contains 10 scenarios:
+- The bundled template catalogue contains 9 templates:
   `hello-text`, `bash-uname`, `write-readme`, `permission-approve`,
   `plan-mode-approval`, `interrupt-midstream`, `context-md-respected`,
-  `resume-fix-after-reject`, `reconnect-replay`, and `gui-calculator`.
+  `resume-fix-after-reject`, and `gui-calculator`. `reconnect-replay`
+  was intentionally dropped because it required a test-only UI hook.
 
-Remaining near-term work is graph UI polish, template/programmed graph
-runs from `DESIGN.md` Phase 3, and the deferred vendor-specific context
-loading needed for tighter native CLI parity.
+Remaining near-term work is graph UI polish, fork/worktree graph ops,
+and the deferred vendor-specific context loading needed for tighter
+native CLI parity.

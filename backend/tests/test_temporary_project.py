@@ -62,7 +62,7 @@ class TemporaryProjectTest(unittest.TestCase):
             store = Store(root=store_root)
             registry = ProjectRegistry(store=store)
             project = registry.create_project(
-                cwd=None, temporary=True, scenario_name="hello-text"
+                cwd=None, temporary=True, template_id="hello-text"
             )
             pid = project.id
             root = Path(project.root_path)
@@ -71,7 +71,7 @@ class TemporaryProjectTest(unittest.TestCase):
             reloaded = registry2.get_project(pid)
             assert reloaded is not None
             self.assertTrue(reloaded.temporary)
-            self.assertEqual(reloaded.scenario_name, "hello-text")
+            self.assertEqual(reloaded.template_id, "hello-text")
 
             registry2.delete_project(pid)
             self.assertFalse(root.exists())

@@ -100,6 +100,17 @@ class ParsePreviewTests(unittest.TestCase):
         assert preview.brief is not None
         self.assertEqual(preview.brief.check_what, "a")
 
+    def test_verifier_virtual_accepts_programmatic_review(self) -> None:
+        payload = _virtual_payload(
+            kind="verifier",
+            category="review",
+            subtype="programmatic_review",
+            prompt_draft="",
+            brief={"check_what": "a", "expected": "b", "abnormal": "c"},
+        )
+        preview = parse_preview(json.dumps(payload))
+        self.assertIsInstance(preview, VirtualPreview)
+
 
 class ValidatePreviewForNodeTests(unittest.TestCase):
     def _node(self, **over) -> Node:
@@ -179,6 +190,25 @@ class RenderPreviewTests(unittest.TestCase):
         self.assertIsInstance(preview, VirtualPreview)
         self.assertEqual(preview.prompt_draft, "Do X")
 
+    def test_render_verifier_virtual_round_trip(self) -> None:
+        node = Node(
+            id="v-check",
+            project_id="p1",
+            kind=NodeKind.VERIFIER,
+            category=Category.REVIEW,
+            subtype=ReviewSubtype.PROGRAMMATIC_REVIEW,
+            brief=ReviewBrief(check_what="a", expected="b", abnormal="c"),
+            state=NodeState.VIRTUAL,
+            planspace_id="auth-flow",
+            proposed_by="template:t",
+            summary="verify",
+            verify_script_ref="/tmp/check.sh",
+        )
+        text = render_virtual_preview(node)
+        preview = parse_preview(text)
+        self.assertIsInstance(preview, VirtualPreview)
+        self.assertEqual(preview.kind, "verifier")
+
 
 class VirtualPreviewToNodeTests(unittest.TestCase):
     def test_regular_virtual_promotes_to_node(self) -> None:
@@ -207,6 +237,26 @@ class VirtualPreviewToNodeTests(unittest.TestCase):
         self.assertEqual(node.subtype, ReviewSubtype.AGENTIC_REVIEW)
         assert node.brief is not None
         self.assertEqual(node.brief.expected, "b")
+
+    def test_verifier_virtual_promotes_with_script_ref(self) -> None:
+        payload = _virtual_payload(
+            kind="verifier",
+            category="review",
+            subtype="programmatic_review",
+            prompt_draft="",
+            brief={"check_what": "a", "expected": "b", "abnormal": "c"},
+        )
+        preview = parse_preview(json.dumps(payload))
+        assert isinstance(preview, VirtualPreview)
+        node = virtual_preview_to_node(
+            preview,
+            project_id="p1",
+            provider="claude",
+            canonical_id="canon-3",
+            verify_script_ref="/tmp/check.sh",
+        )
+        self.assertEqual(node.kind, NodeKind.VERIFIER)
+        self.assertEqual(node.verify_script_ref, "/tmp/check.sh")
 
 
 if __name__ == "__main__":

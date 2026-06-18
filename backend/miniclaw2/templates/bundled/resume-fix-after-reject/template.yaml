@@ -1,0 +1,8 @@
+name: resume-fix-after-reject
+brief: "Resume edge: build -> review -> fix step resumes the build's session."
+providers:
+- claude
+- codex
+auto_commit: true
+permission_mode: bypassPermissions
+lane_mode: manual

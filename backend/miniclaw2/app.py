@@ -33,12 +33,11 @@ from .events import (
 from .git_state import node_diff
 from .registry import ProjectRegistry
 from .replay import LiveReplayBuffer
-from .scenarios import (
-    ScenarioError,
-    launch_scenario,
-    list_scenarios,
-    load_scenario,
-    run_verify,
+from .templates import (
+    TemplateError,
+    launch_template,
+    list_templates,
+    load_template,
 )
 
 logger = logging.getLogger(__name__)
@@ -52,7 +51,6 @@ class CreateSessionRequest(BaseModel):
     auto_commit: bool | None = None
     preferred_language: str | None = None
     temporary: bool = False
-    scenario_name: str | None = None
     name: str | None = None
     project_context_binding_id: str | None = None
 
@@ -77,7 +75,7 @@ class SessionInfo(BaseModel):
     provider: str = "claude"
     preferred_language: str | None = None
     temporary: bool = False
-    scenario_name: str | None = None
+    template_id: str | None = None
     name: str = ""
     project_context_binding_id: str | None = None
     layout_hints: dict[str, dict[str, float]] = Field(default_factory=dict)
@@ -127,7 +125,7 @@ class NodeDiffResponse(BaseModel):
     error: str | None = None
 
 
-class ScenarioSummary(BaseModel):
+class TemplateSummary(BaseModel):
     name: str
     brief: str
     providers: list[str]
@@ -136,25 +134,17 @@ class ScenarioSummary(BaseModel):
     nodes: list[dict[str, Any]] = Field(default_factory=list)
 
 
-class ScenarioDetail(BaseModel):
+class TemplateDetail(BaseModel):
     name: str
     brief: str
     providers: list[str]
     auto_commit: bool
     node_count: int
     nodes: list[dict[str, Any]] = Field(default_factory=list)
-    acceptance: str
 
 
-class ScenarioRunRequest(BaseModel):
+class TemplateRunRequest(BaseModel):
     provider: str
-
-
-class VerifyResponse(BaseModel):
-    exit_code: int
-    stdout: str
-    stderr: str
-    timed_out: bool
 
 
 def create_app() -> FastAPI:
@@ -178,7 +168,6 @@ def create_app() -> FastAPI:
                 auto_commit=req.auto_commit,
                 preferred_language=req.preferred_language,
                 temporary=req.temporary,
-                scenario_name=req.scenario_name,
                 name=req.name or "",
                 project_context_binding_id=req.project_context_binding_id,
             )
@@ -486,50 +475,29 @@ def create_app() -> FastAPI:
             raise HTTPException(404, "context bundle not found")
         return bundle
 
-    @app.get("/scenarios", response_model=list[ScenarioSummary])
-    def list_scenarios_endpoint() -> list[ScenarioSummary]:
-        return [ScenarioSummary(**s.metadata()) for s in list_scenarios()]
+    @app.get("/templates", response_model=list[TemplateSummary])
+    def list_templates_endpoint() -> list[TemplateSummary]:
+        return [TemplateSummary(**s.metadata()) for s in list_templates()]
 
-    @app.get("/scenarios/{name}", response_model=ScenarioDetail)
-    def get_scenario(name: str) -> ScenarioDetail:
+    @app.get("/templates/{name}", response_model=TemplateDetail)
+    def get_template(name: str) -> TemplateDetail:
         try:
-            scenario = load_scenario(name)
-        except ScenarioError as exc:
+            template = load_template(name)
+        except TemplateError as exc:
             raise HTTPException(404, str(exc)) from exc
-        meta = scenario.metadata()
-        return ScenarioDetail(**meta, acceptance=scenario.acceptance)
+        return TemplateDetail(**template.metadata())
 
-    @app.post("/scenarios/{name}/run", response_model=SessionInfo)
-    async def run_scenario(name: str, req: ScenarioRunRequest) -> SessionInfo:
+    @app.post("/templates/{name}/run", response_model=SessionInfo)
+    async def run_template(name: str, req: TemplateRunRequest) -> SessionInfo:
         try:
-            project, _ = launch_scenario(name, req.provider, registry)
-        except ScenarioError as exc:
+            project, _ = launch_template(name, req.provider, registry)
+        except TemplateError as exc:
             raise HTTPException(400, str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
         except RuntimeError as exc:
             raise HTTPException(500, str(exc)) from exc
         return _session_info(registry, project)
-
-    @app.post("/sessions/{sid}/verify", response_model=VerifyResponse)
-    async def verify_session(sid: str) -> VerifyResponse:
-        project = registry.get_project(sid)
-        if project is None:
-            raise HTTPException(404, "session not found")
-        if not project.scenario_name:
-            raise HTTPException(400, "project has no associated scenario")
-        try:
-            result = await asyncio.to_thread(run_verify, project)
-        except ScenarioError as exc:
-            raise HTTPException(404, str(exc)) from exc
-        except ValueError as exc:
-            raise HTTPException(400, str(exc)) from exc
-        return VerifyResponse(
-            exit_code=result.exit_code,
-            stdout=result.stdout,
-            stderr=result.stderr,
-            timed_out=result.timed_out,
-        )
 
     @app.websocket("/ws/{sid}")
     async def ws(websocket: WebSocket, sid: str) -> None:
@@ -664,7 +632,7 @@ def _session_info(registry: ProjectRegistry, project: Any) -> SessionInfo:
         provider=project.provider,
         preferred_language=project.preferred_language,
         temporary=project.temporary,
-        scenario_name=project.scenario_name,
+        template_id=project.template_id,
         name=project.name,
         project_context_binding_id=project.project_context_binding_id,
         layout_hints=project.layout_hints,

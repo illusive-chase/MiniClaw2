@@ -1,4 +1,0 @@
-- The transcript was visibly growing line-by-line (`Fact 1:`, `Fact 2:`, …) when you clicked **Simulate WS drop** in the project header.
-- After the click, the `ws` indicator briefly turned "connecting" then went back to "open".
-- The transcript continued from roughly where it left off — it did not rewind to the start and did not visibly duplicate any of the previously rendered facts.
-- The node reached `done` cleanly (slate tile, no error banner) and the final transcript ended with the `[END]` token.

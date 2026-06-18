@@ -136,6 +136,55 @@ class PromotionCandidateTests(unittest.TestCase):
         assert candidate is not None
         self.assertEqual(candidate.id, child.id)
 
+    def test_auto_candidate_waits_when_dep_failed_or_cancelled(self) -> None:
+        for state in (NodeState.ERROR, NodeState.CANCELLED):
+            with self.subTest(state=state):
+                tmp = tempfile.TemporaryDirectory()
+                try:
+                    store = Store(root=Path(tmp.name) / "store")
+                    project = Project(root_path=str(Path(tmp.name) / "repo"))
+                    store.create_project(project)
+                    registry = ProjectRegistry(store=store)
+                    failed_dep = Node(
+                        id=f"dep-{state.value}",
+                        project_id=project.id,
+                        kind=NodeKind.AGENT,
+                        category=Category.REVIEW,
+                        subtype=ReviewSubtype.AGENTIC_REVIEW,
+                        brief=ReviewBrief(
+                            check_what="check",
+                            expected="pass",
+                            abnormal="fail",
+                        ),
+                        state=state,
+                        planspace_id=self.lane,
+                        started_at=1.0,
+                        finished_at=2.0,
+                        created_at=1.0,
+                    )
+                    store.create_node(failed_dep)
+                    child = Node(
+                        id=f"child-{state.value}",
+                        project_id=project.id,
+                        kind=NodeKind.AGENT,
+                        category=Category.REGULAR,
+                        state=NodeState.VIRTUAL,
+                        planspace_id=self.lane,
+                        prompt_draft="follow up",
+                        proposed_by="user",
+                        scheduled_deps=[failed_dep.id],
+                        created_at=2.0,
+                        summary="m",
+                    )
+                    store.create_node(child)
+
+                    candidate = registry._next_promotion_candidate(
+                        project.id, self.lane
+                    )
+                    self.assertIsNone(candidate)
+                finally:
+                    tmp.cleanup()
+
     def test_obsoleted_dep_counts_as_terminal(self) -> None:
         self._virtual(nid="v-parent", created_at=1.0, obsolete="abandoned")
         child = self._virtual(

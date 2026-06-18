@@ -5,7 +5,6 @@ import {
   getSession,
   getNodeContextBundle,
   getNodeDiff,
-  getScenario,
   getSessionContextSpace,
   initProjectContext,
   listNodeEvents,
@@ -29,7 +28,6 @@ import { NewProjectModal } from "./components/NewProjectModal";
 import { ProjectsLanding } from "./components/ProjectsLanding";
 import { ThemeToggle } from "./components/ThemeToggle";
 import { UsageStrip } from "./components/UsageStrip";
-import { VerifyCard } from "./components/VerifyCard";
 import type {
   ContextBundle,
   EventRecord,
@@ -41,7 +39,6 @@ import type {
   SessionContextSpaceInfo,
   SessionInfo,
   PlanspaceMode,
-  ScenarioDetail,
 } from "./types";
 import { useSessionSocket } from "./ws";
 
@@ -80,7 +77,6 @@ export function App() {
   const [sessionContextSpace, setSessionContextSpace] = useState<SessionContextSpaceInfo | null>(
     null,
   );
-  const [scenarioDetail, setScenarioDetail] = useState<ScenarioDetail | null>(null);
   const [sessionContextSpaceLoading, setSessionContextSpaceLoading] = useState(false);
   const [sessionContextSpaceSaving, setSessionContextSpaceSaving] = useState(false);
   const [sessionContextSpaceError, setSessionContextSpaceError] = useState<string | null>(null);
@@ -126,27 +122,6 @@ export function App() {
     inspectedNodeIdRef.current = inspectedNodeId;
   }, [inspectedNodeId]);
 
-  useEffect(() => {
-    if (!session?.scenario_name) {
-      setScenarioDetail(null);
-      return;
-    }
-    let cancelled = false;
-    getScenario(session.scenario_name)
-      .then((next) => {
-        if (!cancelled) setScenarioDetail(next);
-      })
-      .catch((err) => {
-        if (!cancelled) {
-          console.warn("getScenario failed:", err);
-          setScenarioDetail(null);
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [session?.scenario_name]);
-
   /* close the ⋯ menu on outside click */
   useEffect(() => {
     if (!menuOpen) return;
@@ -169,7 +144,6 @@ export function App() {
     setSelectedContextBundleLoading(false);
     setContextBundlesByNodeId({});
     setSessionContextSpace(null);
-    setScenarioDetail(null);
     setSessionContextSpaceLoading(false);
     setSessionContextSpaceSaving(false);
     setSessionContextSpaceError(null);
@@ -732,7 +706,7 @@ export function App() {
     [appendSelectedEvent, refreshNodes],
   );
 
-  const { status, send, simulateDrop } = useSessionSocket(
+  const { status, send } = useSessionSocket(
     route === "project" ? (session?.id ?? null) : null,
     handleEvent,
   );
@@ -966,21 +940,13 @@ export function App() {
     [session?.id],
   );
 
-  const allNodesTerminal = useMemo(
-    () => nodes.length > 0 && nodes.every((n) => TERMINAL_STATES.has(n.state)),
-    [nodes],
-  );
-
-  const showVerifyCard =
-    !!session?.scenario_name && allNodesTerminal && !streaming;
-
   if (route === "landing") {
     return (
       <>
         <ProjectsLanding
           onOpen={openProject}
           onCreate={() => setNewProjectModalOpen(true)}
-          onScenarioLaunched={(s) => openProject(s)}
+          onTemplateLaunched={(s) => openProject(s)}
         />
         <NewProjectModal
           open={newProjectModalOpen}
@@ -1069,17 +1035,6 @@ export function App() {
                 role="menu"
                 className="absolute right-0 top-full z-30 mt-1 w-56 rounded-md border border-line bg-surface-raised p-1 shadow-modal"
               >
-                {session?.scenario_name === "reconnect-replay" && (
-                  <MenuItem
-                    onClick={() => {
-                      simulateDrop();
-                      setMenuOpen(false);
-                    }}
-                    disabled={status !== "open"}
-                    label="Simulate WS drop"
-                    hint="Test reconnect-replay"
-                  />
-                )}
                 <MenuItem
                   onClick={() => {
                     /* If no node selected and no phantom, open a fresh-start phantom. */
@@ -1116,7 +1071,6 @@ export function App() {
               knownPlanspaceIds={knownPlanspaceIds}
               hiddenPlanspaceIds={hiddenPlanspaceIds}
               activePlanspaceId={sessionContextSpace?.active_planspace_id ?? null}
-              scenarioNodes={scenarioDetail?.nodes ?? []}
               initialLayoutHints={session?.layout_hints}
               initialLayoutViewport={session?.layout_viewport ?? null}
               onSelectionChange={onSelectionChange}
@@ -1142,15 +1096,6 @@ export function App() {
                 onSelectNode(target);
               }}
             />
-          )}
-
-          {showVerifyCard && session && session.scenario_name && (
-            <div className="absolute bottom-3 left-3 z-10 max-w-md">
-              <VerifyCard
-                sessionId={session.id}
-                scenarioName={session.scenario_name}
-              />
-            </div>
           )}
 
           {!streaming &&

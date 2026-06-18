@@ -293,6 +293,28 @@ function VirtualNodeBody({
   nodesById: Map<string, NodeInfo>;
   onUpdateVirtual: (nodeId: string, payload: UpdateVirtualPayload) => Promise<void>;
 }) {
+  if (node.kind === "verifier") {
+    return <VerifierVirtualBody node={node} nodesById={nodesById} />;
+  }
+  return (
+    <EditableVirtualNodeBody
+      node={node}
+      nodesById={nodesById}
+      onUpdateVirtual={onUpdateVirtual}
+    />
+  );
+}
+
+function EditableVirtualNodeBody({
+  node,
+  nodesById,
+  onUpdateVirtual,
+}: {
+  node: NodeInfo;
+  nodesById: Map<string, NodeInfo>;
+  onUpdateVirtual: (nodeId: string, payload: UpdateVirtualPayload) => Promise<void>;
+}) {
+
   const [draft, setDraft] = useState<VirtualDraft>(() => virtualDraftFromNode(node));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -631,6 +653,85 @@ function VirtualNodeBody({
         </div>
       </section>
     </>
+  );
+}
+
+function VerifierVirtualBody({
+  node,
+  nodesById,
+}: {
+  node: NodeInfo;
+  nodesById: Map<string, NodeInfo>;
+}) {
+  const deps = (node.scheduled_deps ?? [])
+    .map((id) => nodesById.get(id))
+    .filter((dep): dep is NodeInfo => Boolean(dep));
+  return (
+    <>
+      <section className="mb-5">
+        <div className="overflow-hidden rounded-md border border-line bg-surface-sunken">
+          <div className="border-b border-line px-3 py-2">
+            <SectionHeading>Programmatic Review</SectionHeading>
+          </div>
+          <div className="space-y-3 px-3 py-3">
+            <KVGrid
+              rows={[
+                ["Proposed by", node.proposed_by ?? "-"],
+                ["Lane", node.planspace_id ?? "-"],
+                ["Script", node.verify_script_ref ?? "-"],
+              ]}
+            />
+            {node.brief && (
+              <div className="space-y-2 rounded-md border border-state-review/25 bg-state-review-soft/20 p-3">
+                <BriefBlock label="Check" text={node.brief.check_what} />
+                <BriefBlock label="Expected" text={node.brief.expected} />
+                <BriefBlock label="Abnormal" text={node.brief.abnormal} />
+              </div>
+            )}
+          </div>
+        </div>
+      </section>
+
+      <section className="mb-5">
+        <div className="overflow-hidden rounded-md border border-line bg-surface-sunken">
+          <div className="border-b border-line px-3 py-2">
+            <SectionHeading>Dependencies</SectionHeading>
+          </div>
+          <div className="space-y-2 px-3 py-3">
+            {deps.length === 0 ? (
+              <div className="rounded-md border border-line bg-surface px-3 py-2 text-[11.5px] text-ink-muted">
+                No dependencies.
+              </div>
+            ) : (
+              deps.map((dep) => (
+                <div
+                  key={dep.id}
+                  className="rounded-md border border-line bg-surface px-3 py-2 text-[11.5px]"
+                >
+                  <span className="font-mono text-ink-muted">{dep.id.slice(0, 8)}</span>
+                  <span className="ml-2 text-ink">
+                    {oneLine(dep.summary || dep.prompt_draft || dep.prompt || dep.state).slice(0, 120)}
+                  </span>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+      </section>
+    </>
+  );
+}
+
+function BriefBlock({ label, text }: { label: string; text: string }) {
+  return (
+    <div>
+      <div className="mb-1 text-[10px] font-medium uppercase tracking-[0.12em] text-state-review">
+        {label}
+      </div>
+      <div className="whitespace-pre-wrap text-[12px] leading-relaxed text-ink">
+        {text}
+      </div>
+    </div>
   );
 }
 
@@ -1057,7 +1158,9 @@ function StatePill({ state }: { state: NodeInfo["state"] }) {
 
 function CategoryPill({ node }: { node: NodeInfo }) {
   const label =
-    node.category === "planning"
+    node.kind === "verifier"
+      ? "programmatic"
+      : node.category === "planning"
       ? "planning"
       : node.category === "review"
         ? node.subtype === "human_interact_review"

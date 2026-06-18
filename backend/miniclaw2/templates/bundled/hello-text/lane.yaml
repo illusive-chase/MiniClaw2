@@ -1,0 +1,30 @@
+nodes:
+- id: turn1
+  kind: agent
+  prompt_file: prompts/turn1.md
+- id: verify
+  kind: verifier
+  script_ref: scripts/verify.sh
+  scheduled_deps:
+  - turn1
+  brief:
+    check_what: Run the bundled programmatic verifier for this template.
+    expected: verify.sh exits 0.
+    abnormal: verify.sh exits non-zero, times out, or reports missing expected artifacts.
+- id: accept
+  kind: agent
+  category: review
+  subtype: human_interact_review
+  scheduled_deps:
+  - turn1
+  - verify
+  prompt_file: prompts/accept.md
+  brief:
+    check_what: '- The reply reads like a sensible sentence about Python (not a refusal,
+      not gibberish, not just `[OK]` on its own).
+
+      - The `[OK]` marker is visible at the end of the assistant message.
+
+      - No tool activity appeared in the timeline (no Bash, Edit, or other tool tiles).'
+    expected: All acceptance bullets hold.
+    abnormal: Any acceptance bullet fails; describe which one and how.

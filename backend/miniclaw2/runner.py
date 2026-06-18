@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -76,6 +77,7 @@ class NodeRunner:
         self._gates: dict[str, asyncio.Future[dict[str, Any]]] = {}
         self._gate_records: dict[str, HumanGate] = {}
         self._provider: AgentProvider | None = None
+        self._process: asyncio.subprocess.Process | None = None
         self._lane_root: Path | None = None
         self._pre_snapshot: dict[str, str] = {}
 
@@ -117,12 +119,21 @@ class NodeRunner:
     async def interrupt(self) -> None:
         if self._provider is not None:
             await self._provider.interrupt()
+        if self._process is not None and self._process.returncode is None:
+            self._process.terminate()
+            try:
+                await asyncio.wait_for(self._process.wait(), timeout=2.0)
+            except asyncio.TimeoutError:
+                self._process.kill()
+                await self._process.wait()
 
     # ---- main entry point ----
 
     async def run(self) -> None:
         if self.node.kind is NodeKind.OP:
             await self._run_op()
+        elif self.node.kind is NodeKind.VERIFIER:
+            await self._run_verifier()
         else:
             await self._run_agent()
 
@@ -303,6 +314,156 @@ class NodeRunner:
         if self.node.commit_after is None:
             self.node.commit_after = git_head(self.project.root_path)
         self._write_op_preview(final_state)
+        self._transition(final_state, finished=True)
+        await self._emit_node_updated()
+        await self._emit(TurnDone())
+
+    async def _run_verifier(self) -> None:
+        """Run a deterministic verifier script and write an executed preview."""
+        self.node.commit_before = git_head(self.project.root_path)
+        context_bundle = self._snapshot_context_bundle()
+        self._snapshot_launch_settings(context_bundle)
+        self._transition(NodeState.RUNNING, started=True)
+        await self._emit(
+            NodeStarted(
+                node_id=self.node.id,
+                parent_node_id=self.node.parent_node_id,
+                kind=self.node.kind.value,
+                category=(
+                    self.node.category.value if self.node.category is not None else None
+                ),
+                subtype=(
+                    self.node.subtype.value if self.node.subtype is not None else None
+                ),
+            )
+        )
+        await self._emit_node_updated()
+
+        final_state = NodeState.DONE
+        error_msg: str | None = None
+        exit_code: int | None = None
+        timed_out = False
+        stdout_parts: list[str] = []
+        stderr_parts: list[str] = []
+
+        script = self.node.verify_script_ref or ""
+        try:
+            if not script:
+                raise ValueError("missing verify_script_ref")
+            script_path = Path(script)
+            if not script_path.exists():
+                raise ValueError(f"verify script not found: {script}")
+            await self._emit(
+                Activity(
+                    kind="tool",
+                    status="start",
+                    id=f"verifier:{self.node.id}",
+                    name="verifier",
+                    summary=str(script_path),
+                )
+            )
+            env = dict(os.environ)
+            env["CI"] = "1"
+            env["MINICLAW_PROJECT_ID"] = self.project.id
+            env["MINICLAW_HOME"] = str(self.store.root)
+            self._process = await asyncio.create_subprocess_exec(
+                "bash",
+                str(script_path),
+                cwd=self.project.root_path,
+                env=env,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            try:
+                stdout_raw, stderr_raw = await asyncio.wait_for(
+                    self._process.communicate(),
+                    timeout=60.0,
+                )
+            except asyncio.TimeoutError:
+                timed_out = True
+                self._process.terminate()
+                try:
+                    stdout_raw, stderr_raw = await asyncio.wait_for(
+                        self._process.communicate(),
+                        timeout=2.0,
+                    )
+                except asyncio.TimeoutError:
+                    self._process.kill()
+                    stdout_raw, stderr_raw = await self._process.communicate()
+                exit_code = 124
+            else:
+                exit_code = int(self._process.returncode or 0)
+            stdout = _decode_process_output(stdout_raw)
+            stderr = _decode_process_output(stderr_raw)
+            stdout_parts.append(stdout)
+            stderr_parts.append(stderr)
+            if stdout:
+                await self._emit(
+                    Activity(
+                        kind="tool",
+                        status="progress",
+                        id=f"verifier:{self.node.id}:stdout",
+                        name="verifier stdout",
+                        summary=_tail_text(stdout, 240),
+                        result=stdout,
+                        result_kind="stdout",
+                    )
+                )
+            if stderr:
+                await self._emit(
+                    Activity(
+                        kind="tool",
+                        status="progress",
+                        id=f"verifier:{self.node.id}:stderr",
+                        name="verifier stderr",
+                        summary=_tail_text(stderr, 240),
+                        result=stderr,
+                        result_kind="stdout",
+                    )
+                )
+            if timed_out or exit_code != 0:
+                final_state = NodeState.ERROR
+                tail = _tail_text(stderr or stdout, 2048)
+                error_msg = tail or (
+                    "verifier timed out" if timed_out else f"verifier exited {exit_code}"
+                )
+                await self._emit(ErrorEvent(message=error_msg))
+            await self._emit(
+                Activity(
+                    kind="tool",
+                    status="finish" if final_state is NodeState.DONE else "failed",
+                    id=f"verifier:{self.node.id}",
+                    name="verifier",
+                    summary=(
+                        "verify passed"
+                        if final_state is NodeState.DONE
+                        else f"verify failed: exit {exit_code}"
+                    ),
+                    result="\n".join(part for part in [stdout, stderr] if part),
+                    result_kind="stdout",
+                )
+            )
+        except asyncio.CancelledError:
+            final_state = NodeState.CANCELLED
+            await self.interrupt()
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("verifier runner failed")
+            final_state = NodeState.ERROR
+            error_msg = f"Unexpected verifier error: {exc}"
+            await self._emit(ErrorEvent(message=error_msg))
+        finally:
+            self._process = None
+
+        if error_msg is not None:
+            self.node.error = error_msg
+        self.node.commit_after = git_head(self.project.root_path)
+        self._write_verifier_preview(
+            final_state,
+            exit_code=exit_code,
+            timed_out=timed_out,
+            stdout="".join(stdout_parts),
+            stderr="".join(stderr_parts),
+        )
         self._transition(final_state, finished=True)
         await self._emit_node_updated()
         await self._emit(TurnDone())
@@ -564,6 +725,35 @@ class NodeRunner:
             motivation=f"Auto-commit op for parent {self.node.parent_node_id or 'unknown'}",
             summary=self.node.summary or self.node.error or "op completed",
             next_implications="(commit op — completes the lane's filesystem record)",
+        )
+
+    def _write_verifier_preview(
+        self,
+        final_state: NodeState,
+        *,
+        exit_code: int | None,
+        timed_out: bool,
+        stdout: str,
+        stderr: str,
+    ) -> None:
+        if final_state is NodeState.DONE:
+            summary = "verify passed"
+            next_implications = ""
+        elif final_state is NodeState.CANCELLED:
+            summary = "verify cancelled"
+            next_implications = "verifier cancelled before a verdict"
+        else:
+            code = exit_code if exit_code is not None else "unknown"
+            summary = f"verify failed: exit {code}"
+            body = _tail_text(stderr or stdout or self.node.error or "", 2048)
+            if timed_out:
+                body = (body + "\n" if body else "") + "timed out"
+            next_implications = body
+        self._persist_executed_preview(
+            final_state,
+            motivation=self.node.brief.check_what if self.node.brief else "programmatic verifier",
+            summary=summary,
+            next_implications=next_implications,
         )
 
     # ---- bundle + settings snapshots ----
@@ -831,3 +1021,17 @@ def _extract_prose_response(response: Any) -> str:
     if isinstance(message, str):
         return message
     return ""
+
+
+def _decode_process_output(raw: bytes | str | None) -> str:
+    if raw is None:
+        return ""
+    if isinstance(raw, str):
+        return raw
+    return raw.decode("utf-8", errors="replace")
+
+
+def _tail_text(text: str, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+    return text[-limit:]

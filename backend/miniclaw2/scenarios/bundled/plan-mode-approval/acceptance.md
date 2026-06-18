@@ -1,4 +1,0 @@
-- A plan-approval prompt appeared in the gate tab showing the agent's proposed plan (you had to click Approve — it did not auto-execute).
-- After you approved, the agent's diff panel shows `PLAN_OK.txt` added at the project root with content `plan-approved`.
-- The agent's confirmation sentence is not a lie — it really wrote the file (the diff confirms).
-- No extra files (e.g. notes, scratch) were created alongside it.

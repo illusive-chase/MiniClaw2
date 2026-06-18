@@ -264,7 +264,9 @@ function StateChip({ state }: { state: NodeState }) {
 
 function CategoryChip({ node }: { node: NodeInfo }) {
   const label =
-    node.category === "planning"
+    node.kind === "verifier"
+      ? "verify"
+      : node.category === "planning"
       ? "plan"
       : node.category === "review"
         ? node.subtype === "human_interact_review"

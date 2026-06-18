@@ -120,7 +120,7 @@ export type SessionInfo = {
   provider?: string;
   preferred_language?: string | null;
   temporary?: boolean;
-  scenario_name?: string | null;
+  template_id?: string | null;
   name?: string;
   project_context_binding_id?: string | null;
   /** Persisted canvas positions keyed by node id (or synthetic id, e.g.
@@ -131,42 +131,34 @@ export type SessionInfo = {
   planspace_view?: Record<string, { hidden?: boolean }>;
 };
 
-export type ScenarioSummary = {
+export type TemplateSummary = {
   name: string;
   brief: string;
   providers: string[];
   auto_commit: boolean;
   node_count: number;
-  nodes?: ScenarioNodeSpec[];
+  nodes?: TemplateNodeSpec[];
 };
 
-export type ScenarioDetail = ScenarioSummary & {
-  acceptance: string;
-};
+export type TemplateDetail = TemplateSummary;
 
-export type ScenarioNodeSpec = {
+export type TemplateNodeSpec = {
   id: string;
-  kind: "agent";
+  kind: NodeKind;
   category: NodeCategory;
   subtype?: ReviewSubtype | null;
-  review_source?: string | null;
+  scheduled_deps?: string[];
   resume_from?: string | null;
-  when_step?: string | null;
-  when_outcome?: "approved" | "rejected" | null;
   prompt_preview: string;
   brief?: ReviewBrief | null;
 };
 
-export type VerifyResponse = {
-  exit_code: number;
-  stdout: string;
-  stderr: string;
-  timed_out: boolean;
-};
-
-export type NodeKind = "agent" | "op";
+export type NodeKind = "agent" | "op" | "verifier";
 export type NodeCategory = "planning" | "regular" | "review";
-export type ReviewSubtype = "agentic_review" | "human_interact_review";
+export type ReviewSubtype =
+  | "agentic_review"
+  | "human_interact_review"
+  | "programmatic_review";
 export type PlanspaceMode = "auto" | "manual";
 export type ReviewBrief = {
   check_what: string;
@@ -206,6 +198,8 @@ export type NodeInfo = {
   brief?: ReviewBrief | null;
   prompt_draft?: string | null;
   scheduled_deps?: string[];
+  resume_from_node_id?: string | null;
+  verify_script_ref?: string | null;
   proposed_by?: string | null;
   obsolete_reason?: string | null;
   summary?: string | null;
@@ -213,7 +207,6 @@ export type NodeInfo = {
   usage?: TokenUsage | null;
   system_context_snapshot?: string;
   settings_snapshot?: Record<string, unknown>;
-  scenario_step_id?: string | null;
   created_at: number;
   started_at?: number | null;
   finished_at?: number | null;

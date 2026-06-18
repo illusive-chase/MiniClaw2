@@ -1,4 +1,4 @@
-"""Project-relative path validation shared by the runner and scenarios."""
+"""Project-relative path validation shared by runner helpers."""
 
 from __future__ import annotations
 

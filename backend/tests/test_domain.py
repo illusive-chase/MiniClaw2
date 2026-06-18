@@ -57,6 +57,26 @@ class NodeInvariantTests(unittest.TestCase):
         self.assertIs(node.subtype, ReviewSubtype.AGENTIC_REVIEW)
         self.assertEqual(node.brief.check_what, "a")
 
+    def test_verifier_requires_programmatic_review_fields(self) -> None:
+        brief = ReviewBrief(check_what="a", expected="b", abnormal="c")
+        node = Node(
+            project_id="p1",
+            kind=NodeKind.VERIFIER,
+            category=Category.REVIEW,
+            subtype=ReviewSubtype.PROGRAMMATIC_REVIEW,
+            brief=brief,
+            verify_script_ref="/tmp/check.sh",
+        )
+        self.assertIs(node.subtype, ReviewSubtype.PROGRAMMATIC_REVIEW)
+        with self.assertRaises(ValidationError):
+            Node(
+                project_id="p1",
+                kind=NodeKind.AGENT,
+                category=Category.REVIEW,
+                subtype=ReviewSubtype.PROGRAMMATIC_REVIEW,
+                brief=brief,
+            )
+
     def test_regular_agent_rejects_subtype(self) -> None:
         with self.assertRaises(ValidationError):
             Node(
