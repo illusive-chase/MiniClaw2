@@ -136,7 +136,7 @@ class AntiSelfPoisoningTests(unittest.TestCase):
 class RunnerCompositionTests(unittest.TestCase):
     """Smoke test that the runner's launch instruction composition
     places the category block first and the anti-self-poisoning
-    footer last (per IMPLEMENTATION_STATUS §4 contract)."""
+    guidance footer last (per IMPLEMENTATION_STATUS §4 contract)."""
 
     def test_compose_order(self) -> None:
         from miniclaw2.runner import _compose_launch_instructions

@@ -14,9 +14,6 @@ The reap pipeline:
 6. Validates that every ``scheduled_deps`` reference resolves.
 7. Detects cycles in the lane's dep DAG.
 8. Persists atomically — all-or-nothing — to the durable node store.
-
-Anti-self-poisoning filtering is *not* implemented in this slice; it
-ships with the category-aware launch prompts in a later step.
 """
 
 from __future__ import annotations
@@ -37,6 +34,7 @@ from .preview import (
     virtual_preview_to_node,
 )
 from .store import Store
+from .virtual_graph import has_cycle
 
 
 _PREVIEW_RE = re.compile(r"^nodes/([^/]+)/preview\.json$")
@@ -256,7 +254,7 @@ def reap_lane(
     for updated in mutated_node_updates:
         by_id[updated.id] = updated
 
-    if _has_cycle(by_id):
+    if has_cycle(by_id):
         result.rejection_reasons.append("scheduled_deps would introduce a cycle in the lane DAG")
         result.fatal = True
         return result
@@ -271,27 +269,3 @@ def reap_lane(
         result.modified_virtuals.append(updated)
 
     return result
-
-
-def _has_cycle(by_id: dict[str, Node]) -> bool:
-    """Detect a cycle in the lane's scheduled_deps DAG."""
-    color: dict[str, int] = {nid: 0 for nid in by_id}  # 0=white, 1=gray, 2=black
-
-    def visit(nid: str) -> bool:
-        if color.get(nid, 2) == 2:
-            return False
-        if color.get(nid) == 1:
-            return True
-        color[nid] = 1
-        node = by_id.get(nid)
-        if node is not None:
-            for dep in node.scheduled_deps:
-                if visit(dep):
-                    return True
-        color[nid] = 2
-        return False
-
-    for nid in list(by_id.keys()):
-        if color[nid] == 0 and visit(nid):
-            return True
-    return False

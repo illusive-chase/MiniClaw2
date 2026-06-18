@@ -35,6 +35,7 @@ from .language import normalize_preferred_language
 from .preview import render_virtual_preview
 from .runner import NodeRunner
 from .store import Store
+from .virtual_graph import has_cycle
 from .workspace import create_temporary_root, remove_temporary_root
 
 logger = logging.getLogger(__name__)
@@ -665,6 +666,148 @@ class ProjectRegistry:
         except RuntimeError:
             pass
         return runner
+
+    def update_virtual(
+        self,
+        pid: str,
+        vid: str,
+        *,
+        prompt_draft: str | None | object = _UNSET,
+        category: str | Category | None | object = _UNSET,
+        subtype: str | ReviewSubtype | None | object = _UNSET,
+        brief: dict[str, Any] | ReviewBrief | None | object = _UNSET,
+        motivation: str | None | object = _UNSET,
+        scheduled_deps: list[str] | None | object = _UNSET,
+        obsolete_reason: str | None | object = _UNSET,
+    ) -> Node | None:
+        """Update a virtual node in place.
+
+        Returns the updated node. ``None`` means the project/node is missing, the
+        project is busy, or the target is not an editable virtual. Validation
+        failures raise ``ValueError`` with a client-facing message.
+        """
+        rt = self._runtimes.get(pid)
+        if rt is None or rt.is_running():
+            return None
+        existing = self.store.load_node(pid, vid)
+        if existing is None:
+            return None
+        if existing.kind is not NodeKind.AGENT or existing.state is not NodeState.VIRTUAL:
+            return None
+
+        update: dict[str, Any] = {}
+        if prompt_draft is not _UNSET:
+            if prompt_draft is None or not str(prompt_draft).strip():
+                raise ValueError("prompt_draft must be non-empty")
+            update["prompt_draft"] = str(prompt_draft)
+        if motivation is not _UNSET:
+            update["summary"] = "" if motivation is None else str(motivation)
+        if obsolete_reason is not _UNSET:
+            normalized_obsolete = (
+                str(obsolete_reason).strip()
+                if obsolete_reason is not None
+                else ""
+            )
+            update["obsolete_reason"] = normalized_obsolete or None
+
+        next_category = existing.category or Category.REGULAR
+        if category is not _UNSET:
+            if category is None:
+                raise ValueError("category is required")
+            try:
+                next_category = category if isinstance(category, Category) else Category(str(category))
+            except ValueError as exc:
+                raise ValueError(f"unknown category: {category!r}") from exc
+            update["category"] = next_category
+
+        next_subtype = existing.subtype
+        if subtype is not _UNSET:
+            if subtype is None or subtype == "":
+                next_subtype = None
+            else:
+                try:
+                    next_subtype = (
+                        subtype
+                        if isinstance(subtype, ReviewSubtype)
+                        else ReviewSubtype(str(subtype))
+                    )
+                except ValueError as exc:
+                    raise ValueError(f"unknown review subtype: {subtype!r}") from exc
+            update["subtype"] = next_subtype
+
+        next_brief = existing.brief
+        if brief is not _UNSET:
+            if brief is None:
+                next_brief = None
+            elif isinstance(brief, ReviewBrief):
+                next_brief = brief
+            else:
+                try:
+                    next_brief = ReviewBrief.model_validate(brief)
+                except Exception as exc:  # noqa: BLE001
+                    raise ValueError(f"invalid review brief: {exc}") from exc
+            update["brief"] = next_brief
+
+        if next_category is not Category.REVIEW:
+            update["subtype"] = None
+            update["brief"] = None
+        else:
+            if next_subtype is None:
+                raise ValueError("review virtuals require a subtype")
+            if next_brief is None:
+                raise ValueError("review virtuals require a brief")
+            update["subtype"] = next_subtype
+            update["brief"] = next_brief
+
+        if scheduled_deps is not _UNSET:
+            if scheduled_deps is None:
+                deps: list[str] = []
+            elif not isinstance(scheduled_deps, list):
+                raise ValueError("scheduled_deps must be a list")
+            else:
+                deps = []
+                seen: set[str] = set()
+                for raw_dep in scheduled_deps:
+                    if not isinstance(raw_dep, str) or not raw_dep.strip():
+                        raise ValueError("scheduled_deps entries must be non-empty strings")
+                    dep = raw_dep.strip()
+                    if dep == existing.id:
+                        raise ValueError("scheduled_deps must not include the virtual itself")
+                    if dep in seen:
+                        continue
+                    if self.store.load_node(pid, dep) is None:
+                        raise ValueError(f"scheduled_dep {dep!r} does not resolve")
+                    seen.add(dep)
+                    deps.append(dep)
+            update["scheduled_deps"] = deps
+
+        updated = existing.model_copy(update=update)
+        updated = Node.model_validate(updated.model_dump())
+        lane_id = updated.planspace_id or ""
+        lane_nodes = [
+            n
+            for n in self.store.list_nodes(pid)
+            if (n.planspace_id or "") == lane_id
+        ]
+        by_id: dict[str, Node] = {n.id: n for n in lane_nodes}
+        by_id[updated.id] = updated
+        if has_cycle(by_id):
+            raise ValueError("scheduled_deps would introduce a cycle in the lane DAG")
+
+        self.store.update_node(updated)
+        try:
+            self.store.write_node_preview(pid, updated.id, render_virtual_preview(updated))
+        except Exception:  # noqa: BLE001
+            logger.exception("failed to write virtual preview after user edit")
+        try:
+            asyncio.get_running_loop().create_task(rt.broadcast({
+                "type": "node_updated",
+                "node": updated.model_dump(),
+                "seq": 0,
+            }))
+        except RuntimeError:
+            pass
+        return updated
 
     def _spawn_op_commit(self, rt: ProjectRuntime, agent_node: Node) -> None:
         op_node = Node(

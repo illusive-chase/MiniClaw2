@@ -34,6 +34,7 @@ export function PendingGateInline({
             scope: args.scope ?? null,
             interrupt: args.interrupt ?? false,
             message: args.message ?? "",
+            updated_input: args.updatedInput ?? null,
           })
         }
       />

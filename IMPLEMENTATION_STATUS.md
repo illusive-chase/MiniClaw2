@@ -61,6 +61,14 @@ Per `PROPOSAL_VIRTUAL_NODES.md` §11 sequencing:
       node and also broadcasts `node_updated`; `PATCH
       /sessions/{sid}/planspaces/{planspace_id}/mode` updates lane mode.
 
+Known gaps against the proposal:
+
+- User-authored edits to existing virtual nodes are not exposed through
+  REST or the frontend. Planning / review agents can create, mutate, and
+  obsolete virtual previews through the materialized graph, but users can
+  currently promote virtuals rather than directly editing
+  `prompt_draft`, `category`, `brief`, or `scheduled_deps`.
+
 
 ## 1. Backend domain model
 
@@ -141,7 +149,7 @@ Trunk: `backend/miniclaw2/runner.py`, `backend/miniclaw2/registry.py`.
   block from `launch_prompt.build_category_launch_block` (planning /
   regular / agentic_review / human_interact_review), the planspace
   context bundle turn-text, the language preference hint, and the
-  anti-self-poisoning filter block appended last. Templates live in
+  anti-self-poisoning guidance block appended last. Templates live in
   `backend/miniclaw2/prompts/category_*.md` and
   `prompts/anti_self_poisoning.md`; covered by `test_launch_prompt.py`.
 
@@ -334,6 +342,10 @@ Trunk: `frontend/src/canvas/Canvas.tsx`, `frontend/src/canvas/layout.ts`,
 ### Pending
 
 - Alternate-path scenario future phantoms for conditional branches.
+- User-editable virtual-node controls. The side panel displays virtual
+  draft/provenance/dependencies/brief and can promote ready virtuals, but
+  it does not yet let the user edit `prompt_draft`, `category`, `brief`,
+  `scheduled_deps`, or `obsolete_reason`.
 - Schema-aware review forms (PRD §8.7). Cancelled — user judgment is
   free-form by design; left here as a documented non-goal.
 
@@ -361,7 +373,7 @@ STATUS/PLAN update harness for the product runtime.
 - Cancelled/error runs skip virtual reap and get framework stub
   previews.
 - Anti-self-poisoning prompt is appended last in launch instruction
-  composition and applies to preview content.
+  composition and applies to preview content as guidance.
 
 ### Deferred
 

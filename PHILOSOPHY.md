@@ -426,8 +426,9 @@ artifact.
 
 ### 8.4 Anti-self-poisoning
 
-Durable previews must not absorb session noise. Categories that
-must be filtered or rewritten before commit:
+Durable previews should not absorb session noise. The framework keeps
+this as launch-prompt guidance, not as a programmatic reap-time filter.
+Agents are instructed not to commit these as durable findings:
 
 - **Transient errors** — "the tool returned a 500," "permission was
   denied on this single call." Facts about one session, not facts
@@ -441,8 +442,9 @@ must be filtered or rewritten before commit:
 
 What may be written is *stable findings* — facts about the project,
 decisions made, open questions discovered, things explicitly ruled
-out of scope. Enforcement happens at commit time — for the writing
-node's own preview and for any new virtual previews it proposes.
+out of scope. The framework does not rewrite, strip, or reject preview
+content for this reason; user review and virtual-node editing are the
+correction mechanisms when a preview over-commits session noise.
 
 
 ## 9. Gates as virtual review nodes

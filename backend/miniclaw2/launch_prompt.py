@@ -5,7 +5,7 @@ materialized lane filesystem, the preview contract the node must
 satisfy, the category-specific write rights (regular / planning /
 review), and — for review nodes — the brief inline plus a pointer to
 ``human-review.md`` for human-interact reviews. The anti-self-poisoning
-footer is appended last by the runner's launch composition.
+guidance footer is appended last by the runner's launch composition.
 
 Templates use ``<<TOKEN>>`` placeholders so literal JSON braces in
 the examples render verbatim. Substitution is plain ``str.replace``.
@@ -80,10 +80,10 @@ def build_category_launch_block(node: Node) -> str:
 
 
 def anti_self_poisoning_block() -> str:
-    """Return the durable-preview filter footer.
+    """Return the durable-preview guidance footer.
 
     Appended last in the launch instruction composition so the
-    constraint is fresh in the agent's context when it sits down to
+    guidance is fresh in the agent's context when it sits down to
     write previews.
     """
     return _load_template(_ANTI_SELF_POISONING).strip()

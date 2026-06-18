@@ -10,6 +10,7 @@ import type {
   SessionContextSpaceInfo,
   SessionInfo,
 } from "../types";
+import type { UpdateVirtualPayload } from "../api";
 import { AgentPanel } from "./AgentPanel";
 import { ContextNodePanel } from "./ContextNodePanel";
 import { OpPanel } from "./OpPanel";
@@ -62,6 +63,7 @@ export type SidePanelProps = {
   onSelectContextBinding: (binding_id: string) => void;
   onNewDirection: (userSeed: string, mode: PlanspaceMode) => void;
   onPromoteVirtual: (nodeId: string) => void;
+  onUpdateVirtual: (nodeId: string, payload: UpdateVirtualPayload) => Promise<void>;
   onPlanspaceModeChange: (planspaceId: string, mode: PlanspaceMode) => void;
   onContextInit: () => void;
   onContextRefresh: () => void;
@@ -117,6 +119,7 @@ function Inner(props: SidePanelProps & { nodesById: Map<string, NodeInfo> }) {
     onSelectContextBinding,
     onNewDirection,
     onPromoteVirtual,
+    onUpdateVirtual,
     onPlanspaceModeChange,
     onContextInit,
     onContextRefresh,
@@ -175,6 +178,7 @@ function Inner(props: SidePanelProps & { nodesById: Map<string, NodeInfo> }) {
         onResolveReview={onResolveReview}
         onSpawnPhantomFromNode={onSpawnPhantomFromNode}
         onPromoteVirtual={onPromoteVirtual}
+        onUpdateVirtual={onUpdateVirtual}
       />
     );
   }

@@ -3,6 +3,9 @@ import type {
   EventRecord,
   NodeDiff,
   NodeInfo,
+  ReviewBrief,
+  NodeCategory,
+  ReviewSubtype,
   PlanspaceMode,
   ScenarioDetail,
   ScenarioSummary,
@@ -136,6 +139,42 @@ export async function promoteVirtual(
     { method: "POST" },
   );
   if (!res.ok) throw new Error(`promoteVirtual failed: ${res.status}`);
+  return res.json();
+}
+
+export type UpdateVirtualPayload = {
+  prompt_draft?: string;
+  category?: NodeCategory;
+  subtype?: ReviewSubtype | null;
+  brief?: ReviewBrief | null;
+  motivation?: string | null;
+  scheduled_deps?: string[];
+  obsolete_reason?: string | null;
+};
+
+export async function updateVirtual(
+  sessionId: string,
+  nodeId: string,
+  body: UpdateVirtualPayload,
+): Promise<{ ok: boolean; node_id: string; node: NodeInfo }> {
+  const res = await fetch(
+    `/sessions/${sessionId}/virtuals/${encodeURIComponent(nodeId)}`,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    },
+  );
+  if (!res.ok) {
+    let detail = `${res.status}`;
+    try {
+      const body = await res.json();
+      if (typeof body?.detail === "string") detail = `${res.status}: ${body.detail}`;
+    } catch {
+      /* keep status-only detail */
+    }
+    throw new Error(`updateVirtual failed: ${detail}`);
+  }
   return res.json();
 }
 

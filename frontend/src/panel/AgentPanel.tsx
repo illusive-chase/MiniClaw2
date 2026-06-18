@@ -10,8 +10,12 @@ import type {
   ContextBundleSource,
   EventRecord,
   InteractionRequest,
+  NodeCategory,
   NodeInfo,
+  ReviewBrief,
+  ReviewSubtype,
 } from "../types";
+import type { UpdateVirtualPayload } from "../api";
 import { buildTurnsFromEvents } from "../transcript";
 import { ToolActivity } from "../components/ToolActivity";
 import {
@@ -36,6 +40,7 @@ export type AgentPanelProps = {
   onResolveReview: (payload: { id: string; judgment: string }) => void;
   onSpawnPhantomFromNode: (nodeId: string) => void;
   onPromoteVirtual: (nodeId: string) => void;
+  onUpdateVirtual: (nodeId: string, payload: UpdateVirtualPayload) => Promise<void>;
 };
 
 export function AgentPanel({
@@ -52,6 +57,7 @@ export function AgentPanel({
   onResolveReview,
   onSpawnPhantomFromNode,
   onPromoteVirtual,
+  onUpdateVirtual,
 }: AgentPanelProps) {
   const headline = (
     node.summary ||
@@ -144,7 +150,11 @@ export function AgentPanel({
 
       <div className="flex-1 overflow-y-auto bg-surface px-4 py-3 text-sm">
         {node.state === "virtual" ? (
-          <VirtualNodeBody node={node} />
+          <VirtualNodeBody
+            node={node}
+            nodesById={nodesById}
+            onUpdateVirtual={onUpdateVirtual}
+          />
         ) : (
           <>
             {pendingReview && (
@@ -264,48 +274,429 @@ function SectionHeading({
   );
 }
 
-function VirtualNodeBody({ node }: { node: NodeInfo }) {
+type VirtualDraft = {
+  promptDraft: string;
+  motivation: string;
+  category: NodeCategory;
+  subtype: ReviewSubtype;
+  brief: ReviewBrief;
+  scheduledDeps: string[];
+  obsoleteReason: string;
+};
+
+function VirtualNodeBody({
+  node,
+  nodesById,
+  onUpdateVirtual,
+}: {
+  node: NodeInfo;
+  nodesById: Map<string, NodeInfo>;
+  onUpdateVirtual: (nodeId: string, payload: UpdateVirtualPayload) => Promise<void>;
+}) {
+  const [draft, setDraft] = useState<VirtualDraft>(() => virtualDraftFromNode(node));
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const candidateDeps = useMemo(
+    () =>
+      Array.from(nodesById.values()).filter(
+        (candidate) =>
+          candidate.id !== node.id &&
+          (candidate.planspace_id ?? "") === (node.planspace_id ?? ""),
+      ),
+    [nodesById, node.id, node.planspace_id],
+  );
+  const dirty = useMemo(
+    () => JSON.stringify(draft) !== JSON.stringify(virtualDraftFromNode(node)),
+    [draft, node],
+  );
+
+  useEffect(() => {
+    setDraft(virtualDraftFromNode(node));
+    setError(null);
+  }, [
+    node.id,
+    node.prompt_draft,
+    node.summary,
+    node.category,
+    node.subtype,
+    node.brief,
+    node.scheduled_deps,
+    node.obsolete_reason,
+  ]);
+
+  const save = async () => {
+    setSaving(true);
+    setError(null);
+    try {
+      await onUpdateVirtual(node.id, virtualPayloadFromDraft(draft));
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const toggleObsolete = async () => {
+    const nextReason = draft.obsoleteReason.trim()
+      ? ""
+      : "Obsoleted by user";
+    const nextDraft = { ...draft, obsoleteReason: nextReason };
+    setDraft(nextDraft);
+    setSaving(true);
+    setError(null);
+    try {
+      await onUpdateVirtual(node.id, {
+        obsolete_reason: nextReason || null,
+      });
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setSaving(false);
+    }
+  };
+
   return (
     <>
       <section className="mb-5">
         <div className="overflow-hidden rounded-md border border-line bg-surface-sunken">
           <div className="border-b border-line px-3 py-2">
-            <SectionHeading>Draft</SectionHeading>
+            <SectionHeading
+              right={
+                dirty ? (
+                  <span className="text-[10px] font-normal normal-case tracking-normal text-state-waiting">
+                    unsaved
+                  </span>
+                ) : null
+              }
+            >
+              Draft
+            </SectionHeading>
           </div>
           <div className="space-y-3 px-3 py-3">
             <KVGrid
               rows={[
                 ["Proposed by", node.proposed_by ?? "-"],
-                ["Dependencies", (node.scheduled_deps ?? []).join(", ") || "-"],
-                ["Obsolete", node.obsolete_reason ?? "-"],
+                ["Lane", node.planspace_id ?? "-"],
               ]}
             />
-            <pre className="max-h-[36vh] overflow-auto whitespace-pre-wrap break-words rounded-md border border-line bg-surface px-3 py-2 font-mono text-[11.5px] leading-relaxed text-ink">
-              {node.prompt_draft || node.prompt || "(empty draft)"}
-            </pre>
+            <FieldLabel label="Motivation">
+              <textarea
+                value={draft.motivation}
+                onChange={(e) =>
+                  setDraft((current) => ({
+                    ...current,
+                    motivation: e.target.value,
+                  }))
+                }
+                rows={3}
+                className={fieldClassName}
+              />
+            </FieldLabel>
+            <FieldLabel label="Prompt draft">
+              <textarea
+                value={draft.promptDraft}
+                onChange={(e) =>
+                  setDraft((current) => ({
+                    ...current,
+                    promptDraft: e.target.value,
+                  }))
+                }
+                rows={8}
+                className={fieldClassName + " font-mono text-[11.5px]"}
+              />
+            </FieldLabel>
           </div>
         </div>
       </section>
 
-      {node.brief && (
-        <section className="mb-5">
-          <div className="overflow-hidden rounded-md border border-state-review/25 bg-state-review-soft/20">
-            <div className="border-b border-state-review/25 px-3 py-2">
-              <SectionHeading tone="review">Review brief</SectionHeading>
-            </div>
-            <KVGrid
-              className="px-3 py-3"
-              rows={[
-                ["Check", node.brief.check_what],
-                ["Expected", node.brief.expected],
-                ["Abnormal", node.brief.abnormal],
-              ]}
-            />
+      <section className="mb-5">
+        <div className="overflow-hidden rounded-md border border-line bg-surface-sunken">
+          <div className="border-b border-line px-3 py-2">
+            <SectionHeading>Classification</SectionHeading>
           </div>
-        </section>
-      )}
+          <div className="space-y-3 px-3 py-3">
+            <div className="inline-flex rounded-md border border-line bg-surface p-0.5">
+              {([
+                ["regular", "Work"],
+                ["planning", "Plan"],
+                ["review", "Review"],
+              ] as const).map(([value, label]) => (
+                <button
+                  key={value}
+                  type="button"
+                  onClick={() =>
+                    setDraft((current) => ({
+                      ...current,
+                      category: value,
+                    }))
+                  }
+                  className={
+                    "rounded px-3 py-1.5 text-[12px] font-medium transition " +
+                    (draft.category === value
+                      ? "bg-surface-raised text-ink-strong shadow-card"
+                      : "text-ink-muted hover:text-ink")
+                  }
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+
+            {draft.category === "review" && (
+              <div className="space-y-3 rounded-md border border-state-review/25 bg-state-review-soft/20 p-3">
+                <div className="inline-flex rounded-md border border-state-review/25 bg-surface p-0.5">
+                  {([
+                    ["agentic_review", "Agentic"],
+                    ["human_interact_review", "Human"],
+                  ] as const).map(([value, label]) => (
+                    <button
+                      key={value}
+                      type="button"
+                      onClick={() =>
+                        setDraft((current) => ({
+                          ...current,
+                          subtype: value,
+                        }))
+                      }
+                      className={
+                        "rounded px-3 py-1.5 text-[12px] font-medium transition " +
+                        (draft.subtype === value
+                          ? "bg-surface-raised text-state-review shadow-card"
+                          : "text-ink-muted hover:text-ink")
+                      }
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+                <FieldLabel label="Check">
+                  <textarea
+                    value={draft.brief.check_what}
+                    onChange={(e) =>
+                      setDraft((current) => ({
+                        ...current,
+                        brief: {
+                          ...current.brief,
+                          check_what: e.target.value,
+                        },
+                      }))
+                    }
+                    rows={2}
+                    className={fieldClassName}
+                  />
+                </FieldLabel>
+                <FieldLabel label="Expected">
+                  <textarea
+                    value={draft.brief.expected}
+                    onChange={(e) =>
+                      setDraft((current) => ({
+                        ...current,
+                        brief: {
+                          ...current.brief,
+                          expected: e.target.value,
+                        },
+                      }))
+                    }
+                    rows={2}
+                    className={fieldClassName}
+                  />
+                </FieldLabel>
+                <FieldLabel label="Abnormal">
+                  <textarea
+                    value={draft.brief.abnormal}
+                    onChange={(e) =>
+                      setDraft((current) => ({
+                        ...current,
+                        brief: {
+                          ...current.brief,
+                          abnormal: e.target.value,
+                        },
+                      }))
+                    }
+                    rows={2}
+                    className={fieldClassName}
+                  />
+                </FieldLabel>
+              </div>
+            )}
+          </div>
+        </div>
+      </section>
+
+      <section className="mb-5">
+        <div className="overflow-hidden rounded-md border border-line bg-surface-sunken">
+          <div className="border-b border-line px-3 py-2">
+            <SectionHeading>Dependencies</SectionHeading>
+          </div>
+          <div className="space-y-2 px-3 py-3">
+            {candidateDeps.length === 0 ? (
+              <div className="rounded-md border border-line bg-surface px-3 py-2 text-[11.5px] text-ink-muted">
+                No eligible dependencies in this direction.
+              </div>
+            ) : (
+              <div className="max-h-44 space-y-1 overflow-auto rounded-md border border-line bg-surface p-2">
+                {candidateDeps.map((candidate) => {
+                  const checked = draft.scheduledDeps.includes(candidate.id);
+                  return (
+                    <label
+                      key={candidate.id}
+                      className="flex cursor-pointer items-start gap-2 rounded px-2 py-1 text-[11.5px] hover:bg-surface-sunken"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() =>
+                          setDraft((current) => ({
+                            ...current,
+                            scheduledDeps: checked
+                              ? current.scheduledDeps.filter((id) => id !== candidate.id)
+                              : [...current.scheduledDeps, candidate.id],
+                          }))
+                        }
+                        className="mt-0.5"
+                      />
+                      <span className="min-w-0">
+                        <span className="font-mono text-ink-muted">
+                          {candidate.id.slice(0, 8)}
+                        </span>
+                        <span className="ml-2 text-ink">
+                          {oneLine(candidate.summary || candidate.prompt_draft || candidate.prompt || candidate.state).slice(0, 96)}
+                        </span>
+                      </span>
+                    </label>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </div>
+      </section>
+
+      <section className="mb-2">
+        <div className="overflow-hidden rounded-md border border-line bg-surface-sunken">
+          <div className="border-b border-line px-3 py-2">
+            <SectionHeading>State</SectionHeading>
+          </div>
+          <div className="space-y-3 px-3 py-3">
+            <FieldLabel label="Obsolete reason">
+              <input
+                value={draft.obsoleteReason}
+                onChange={(e) =>
+                  setDraft((current) => ({
+                    ...current,
+                    obsoleteReason: e.target.value,
+                  }))
+                }
+                className={inputClassName}
+                placeholder="Leave blank to keep promotable"
+              />
+            </FieldLabel>
+            {error && (
+              <div className="rounded-md border border-state-error/30 bg-state-error-soft px-3 py-2 text-[11.5px] text-state-error">
+                {error}
+              </div>
+            )}
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={save}
+                disabled={saving || !dirty || !draft.promptDraft.trim()}
+                className="rounded-md bg-brand px-3 py-1.5 text-[12px] font-medium text-white shadow-card transition hover:brightness-[0.95] disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                {saving ? "Saving..." : "Save changes"}
+              </button>
+              <button
+                type="button"
+                onClick={() => setDraft(virtualDraftFromNode(node))}
+                disabled={saving || !dirty}
+                className="rounded-md border border-line bg-surface px-3 py-1.5 text-[12px] font-medium text-ink-muted transition hover:border-line-strong hover:text-ink disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                Revert
+              </button>
+              <button
+                type="button"
+                onClick={toggleObsolete}
+                disabled={saving}
+                className={
+                  "rounded-md border px-3 py-1.5 text-[12px] font-medium transition disabled:cursor-not-allowed disabled:opacity-40 " +
+                  (node.obsolete_reason
+                    ? "border-state-review/40 bg-state-review-soft text-state-review hover:border-state-review/70"
+                    : "border-state-error/40 text-state-error hover:bg-state-error-soft")
+                }
+              >
+                {node.obsolete_reason ? "Restore" : "Mark obsolete"}
+              </button>
+            </div>
+          </div>
+        </div>
+      </section>
     </>
   );
+}
+
+const inputClassName =
+  "w-full rounded-md border border-line bg-surface px-2 py-1.5 text-[12px] text-ink-strong placeholder:text-ink-subtle focus:border-brand focus:outline-none";
+
+const fieldClassName =
+  "w-full resize-y rounded-md border border-line bg-surface px-2 py-1.5 text-[12px] leading-relaxed text-ink-strong placeholder:text-ink-subtle focus:border-brand focus:outline-none";
+
+function FieldLabel({
+  label,
+  children,
+}: {
+  label: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <label className="block">
+      <div className="mb-1 text-[10px] font-medium uppercase tracking-[0.12em] text-ink-subtle">
+        {label}
+      </div>
+      {children}
+    </label>
+  );
+}
+
+function virtualDraftFromNode(node: NodeInfo): VirtualDraft {
+  return {
+    promptDraft: node.prompt_draft || node.prompt || "",
+    motivation: node.summary || "",
+    category: node.category || "regular",
+    subtype: node.subtype || "agentic_review",
+    brief: node.brief || {
+      check_what: "",
+      expected: "",
+      abnormal: "",
+    },
+    scheduledDeps: [...(node.scheduled_deps ?? [])],
+    obsoleteReason: node.obsolete_reason || "",
+  };
+}
+
+function virtualPayloadFromDraft(draft: VirtualDraft): UpdateVirtualPayload {
+  const payload: UpdateVirtualPayload = {
+    prompt_draft: draft.promptDraft,
+    motivation: draft.motivation,
+    category: draft.category,
+    scheduled_deps: draft.scheduledDeps,
+    obsolete_reason: draft.obsoleteReason.trim() || null,
+  };
+  if (draft.category === "review") {
+    payload.subtype = draft.subtype;
+    payload.brief = draft.brief;
+  } else {
+    payload.subtype = null;
+    payload.brief = null;
+  }
+  return payload;
+}
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+function oneLine(s: string): string {
+  return s.replace(/\s+/g, " ").trim();
 }
 
 function AgentInputCard({

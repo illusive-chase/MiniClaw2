@@ -17,6 +17,8 @@ import {
   updatePlanspaceView,
   updateSessionContextSpace,
   updateSessionPreferences,
+  updateVirtual,
+  type UpdateVirtualPayload,
 } from "./api";
 import { Canvas, type CanvasSelection } from "./canvas/Canvas";
 import { setAgentNodeContext } from "./canvas/nodes/AgentNode";
@@ -421,6 +423,21 @@ export function App() {
       }
     },
     [session?.id, streaming, composerLocked, refreshNodes],
+  );
+
+  const updateVirtualNode = useCallback(
+    async (nodeId: string, payload: UpdateVirtualPayload) => {
+      if (!session?.id || streaming || composerLocked) return;
+      setSessionContextSpaceError(null);
+      try {
+        const result = await updateVirtual(session.id, nodeId, payload);
+        setNodes((prev) => upsertNode(prev, result.node));
+      } catch (err) {
+        setSessionContextSpaceError(String(err));
+        throw err;
+      }
+    },
+    [session?.id, streaming, composerLocked],
   );
 
   const runContextInit = useCallback(async () => {
@@ -1200,6 +1217,7 @@ export function App() {
           onSelectContextBinding={selectContextBinding}
           onNewDirection={startNewDirection}
           onPromoteVirtual={promoteVirtualNode}
+          onUpdateVirtual={updateVirtualNode}
           onPlanspaceModeChange={changePlanspaceMode}
           onContextInit={runContextInit}
           onContextRefresh={runContextRefresh}

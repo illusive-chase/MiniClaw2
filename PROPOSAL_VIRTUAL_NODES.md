@@ -275,10 +275,9 @@ Three operations expressed as ordinary file writes:
 1. Diff the `.miniclaw2/graph/` subtree against the pre-launch
    snapshot.
 2. For each new or changed `preview.json`: validate the schema
-   (strict whitelist); run the anti-self-poisoning filter; assign
-   canonical ids for new virtuals; persist into the durable node
-   store. New virtuals get `proposed_by: "node:<this-id>"`
-   stamped.
+   (strict whitelist); assign canonical ids for new virtuals;
+   persist into the durable node store. New virtuals get
+   `proposed_by: "node:<this-id>"` stamped.
 3. **Category enforcement:** if a regular agent wrote any virtual
    previews, hard-fail and re-prompt.
 4. **Cycle detection:** walk the dep DAG forward from each new or
@@ -384,20 +383,20 @@ empty-result parent.
 
 ### 3.8 Anti-self-poisoning
 
-The existing filter contract applies to **all** preview writes
-reaped from `.miniclaw2/graph/` — the writing node's own, plus any
-new virtual previews. Same categories:
+Anti-self-poisoning is launch-prompt guidance for **all** preview
+writes reaped from `.miniclaw2/graph/` — the writing node's own,
+plus any new virtual previews. Agents are told not to commit:
 
 - Transient errors not commited as durable findings.
 - Negative tool claims not committed as durable facts.
 - Single-run environment quirks not committed unless reproducible.
-- For category-aware enforcement: planning nodes must not propose
-  virtual workarounds for transient failures ("the test flaked, so
-  let's plan around it" is rejected).
+- Virtual workarounds whose motivation is only to plan around a
+  transient failure.
 
-The filter runs at reap, not at write time. The agent is briefed
-in the launch system prompt about what categories not to commit;
-if it slips, the filter rewrites or strips the content at commit.
+The framework does **not** perform reap-time semantic filtering for
+these categories. It validates schemas, category rights, dependency
+references, and cycles; it does not rewrite, strip, or reject preview
+content because of anti-self-poisoning guidance.
 
 
 ## 4. What this replaces
@@ -460,7 +459,7 @@ if it slips, the filter rewrites or strips the content at commit.
 - ContextSpace plug layout for `global`, `skill`, `protocol`
   plugs. Planspace plug's contents transform from STATUS/PLAN to
   a node collection.
-- Anti-self-poisoning enforcement at reap.
+- Anti-self-poisoning guidance in the launch prompt.
 - Auto-commit op as framework-injected, outside the virtual
   pipeline. Appears as edge chevron or trailing tile.
 - One node at a time per project. FS state coherence via linear
@@ -646,7 +645,7 @@ backend-first**. Order:
    remove `AcceptanceState` / `verdict_*` / `requires_review` /
    `output_*`.
 2. Preview module: parse / validate / persist preview.json (both
-   schemas). Strict whitelist. Anti-self-poisoning filter at reap.
+   schemas). Strict whitelist.
 3. Materialization: pre-launch copy of active lane into
    `.miniclaw2/graph/lanes/<active-lane>/`.
 4. Reap pipeline: walk-diff, schema validation, category

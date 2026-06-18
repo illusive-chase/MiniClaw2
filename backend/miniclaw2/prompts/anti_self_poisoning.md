@@ -1,4 +1,4 @@
-# Anti-self-poisoning filter
+# Anti-self-poisoning guidance
 
 Every preview you write — your own, and any virtuals you propose —
 becomes part of the durable record that future agents will read on

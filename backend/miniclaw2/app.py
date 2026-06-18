@@ -106,6 +106,16 @@ class UpdatePlanspaceModeRequest(BaseModel):
     mode: str
 
 
+class UpdateVirtualRequest(BaseModel):
+    prompt_draft: str | None = None
+    category: str | None = None
+    subtype: str | None = None
+    brief: dict[str, Any] | None = None
+    motivation: str | None = None
+    scheduled_deps: list[str] | None = None
+    obsolete_reason: str | None = None
+
+
 class EventRecord(BaseModel):
     seq: int
     event: dict[str, Any]
@@ -380,6 +390,34 @@ def create_app() -> FastAPI:
             "node_id": runner.node.id,
             "node": runner.node.model_dump(),
         }
+
+    @app.patch(
+        "/sessions/{sid}/virtuals/{vid}", response_model=dict[str, Any]
+    )
+    async def update_virtual(
+        sid: str,
+        vid: str,
+        req: UpdateVirtualRequest,
+    ) -> dict[str, Any]:
+        project = registry.get_project(sid)
+        if project is None:
+            raise HTTPException(404, "session not found")
+        if registry.is_running(sid):
+            raise HTTPException(409, "turn in progress")
+        if _context_task_running(project.id):
+            raise HTTPException(409, "context refresh in progress")
+        kwargs: dict[str, Any] = {}
+        for field in req.model_fields_set:
+            kwargs[field] = getattr(req, field)
+        try:
+            node = registry.update_virtual(sid, vid, **kwargs)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        if node is None:
+            if registry.get_node(sid, vid) is None:
+                raise HTTPException(404, "virtual not found")
+            raise HTTPException(409, "node is not an editable virtual or project is busy")
+        return {"ok": True, "node_id": node.id, "node": node.model_dump()}
 
     @app.post("/sessions/{sid}/context/cancel", response_model=dict[str, Any])
     async def cancel_project_context(sid: str) -> dict[str, Any]:
