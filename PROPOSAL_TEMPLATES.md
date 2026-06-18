@@ -92,61 +92,72 @@ subtypes.
 ### 3.1 The verifier node kind
 
 ```
-NodeKind = {agent, op, verifier}
+NodeKind     = {agent, op, verifier}
+ReviewSubtype = {agentic_review, human_interact_review, programmatic_review}
 ```
 
 A verifier node:
 
-- Has `category = review` implicitly (the field still exists on the
-  Node model for ontology continuity, but the kind pins it).
-- Carries `verify.script_ref` — a path *inside the template directory*
-  the framework resolves at instantiation. The path is copied into the
-  durable node record as an absolute filesystem path; runtime mutations
-  to the template do not affect already-instantiated runs.
+- Has `category = review` and `subtype = programmatic_review` —
+  ontology slot for "this review is deterministic; no provider in the
+  loop." The `Node._check_invariants` validator gains a `VERIFIER`
+  branch: `brief` required, `subtype` must be `programmatic_review`,
+  `prompt` and `prompt_draft` must be empty, `verify_script_ref` must
+  be set.
+- Carries `verify_script_ref` on the Node model (new optional field;
+  required when `kind = verifier`). At template instantiation the
+  framework resolves the YAML's relative `script_ref` to an absolute
+  filesystem path and writes it durably. Runtime mutations to the
+  template do not affect already-instantiated runs.
 - Carries a standard `brief` (`check_what` / `expected` / `abnormal`).
   The brief is the operator-facing explanation of what the script
-  checks; it renders on the tile and side panel exactly like a review
-  agent's brief.
+  checks; it renders on the tile and side panel exactly like an
+  agent review's brief.
 - Runs no provider call. The runner subprocesses the script with the
   same env current `verify.sh` gets (`CI=1`, `MINICLAW_HOME`,
-  `MINICLAW_PROJECT_ID`, `cwd = project.root_path`, 60s timeout).
+  `MINICLAW_PROJECT_ID`, `cwd = project.root_path`, 60 s timeout).
 
-**Verdict semantics:**
+**Verdict semantics — the state distinction does the work; no virtual
+writes ever come out of a verifier:**
 
-- **Exit 0 → preview state=done.** Framework writes a stub preview
-  whose `summary` is "verify passed" and whose `next_implications` is
-  empty. No virtuals written. The tile renders green ✓.
-- **Exit non-zero or timeout → preview state=done.** Framework writes
-  a stub preview whose `summary` contains the exit code + last 2 KB
-  of stderr. *Plus* one virtual is auto-written:
-  ```json
-  {
-    "kind": "agent",
-    "category": "planning",
-    "state": "virtual",
-    "proposed_by": "node:<verifier-id>",
-    "motivation": "verify failed: <one-line summary>",
-    "prompt_draft": "Investigate the verify failure above and
-                     propose a fix or revised plan.",
-    "scheduled_deps": ["<verifier-id>"]
-  }
-  ```
-  The tile renders red ✗ with the exit code visible. The auto-written
-  planning virtual surfaces on the canvas dashed; the user can promote
-  it directly or edit its prompt.
+- **Exit 0 → `state = DONE`.** Framework writes a framework-authored
+  executed preview (same shape `_run_op` writes today): `summary =
+  "verify passed"`, `next_implications = ""`. The tile renders in the
+  state-review tone (green ✓).
+- **Exit non-zero or timeout → `state = ERROR`.** Framework writes
+  `node.error = <last 2 KB of stderr>` and an executed preview whose
+  `summary = "verify failed: exit <N>"` (with the stderr tail in the
+  preview body for triage). The tile renders red automatically via
+  the existing `state-error` tone. **Crucially**, because `state` is
+  ERROR — not DONE — `_on_runner_done`'s existing DONE-only gate
+  (`registry.py:501-502`) halts auto-promotion. The downstream
+  `accept` (human-interact review) sits dashed until the user clicks
+  it, at which point the human reviews the failure context (the
+  verifier's preview is upstream) and decides.
+- **Cancellation → `state = CANCELLED`.** The verifier runner's
+  `interrupt()` calls `process.terminate()` then `process.kill()`
+  after a 2 s grace period; the preview is stubbed with
+  `state=cancelled`.
 
 The verifier never enters `awaiting_human_input` — there is no user
-interaction. Cancellation kills the subprocess and stubs the preview
-with `state=cancelled`.
+interaction. The verifier never writes virtuals; the lane's downstream
+review nodes are the only place where verdicts become graph mutations.
 
 **Why a new kind rather than an op subtype:** ops today are pure side
 effects (`commit`) and explicitly do not participate in review
 verdicts. Verifiers participate the same way agent reviews do
-(preview-with-judgment, mutation-as-verdict). Collapsing them into
-`op` would force the runner to branch on op subtype where it currently
-branches on kind, and would put review semantics on a kind that was
-designed to be verdict-free. Splitting them keeps each kind's job
-small.
+(preview-with-judgment). Collapsing them into `op` would force the
+runner to branch on op subtype where it currently branches on kind,
+and would put review semantics on a kind that was designed to be
+verdict-free. Splitting them keeps each kind's job small.
+
+**Why a new ReviewSubtype rather than relaxing the
+"review requires subtype" invariant:** the invariant
+(`domain.py:187-190`) exists so every review surfaces a subtype-shaped
+tile and side-panel branch on the frontend. Adding
+`PROGRAMMATIC_REVIEW` keeps that contract intact and gives the
+frontend an obvious switch point (no human prose form, no reviewer
+agent — just a script-result panel).
 
 ### 3.2 The template
 
@@ -217,24 +228,70 @@ nodes:
       abnormal: "any bullet fails — note which and how."
 ```
 
-`brief.check_what` on the `accept` node *is* what `acceptance.md` used
-to render in the `VerifyCard` checklist. Bullet form is fine; the
-human-interact review prose form already handles arbitrary text.
+`brief.check_what` on the `accept` node *is* what `acceptance.md`
+used to render in the `VerifyCard` checklist. Bullets from each
+scenario's `acceptance.md` fold into the corresponding template's
+`accept` node `brief.check_what` as multi-line text (joined with
+`\n`). The existing `ReviewBrief` model (`domain.py:95-98`) accepts
+arbitrary strings; no schema change needed.
 
-`resume_from`, `review_source`, `when` from the old scenario YAML drop
-entirely:
+For lanes with a fix-after-review pattern, the spec carries
+`resume_from` as a sibling of `scheduled_deps`:
 
-- `resume_from` becomes a `scheduled_deps` entry plus the framework's
-  existing resume-from-terminal-parent behavior, which already wires
-  the new node's `parent_node_id` and inherits the provider session
-  when the parent reached `done` with a live session.
+```yaml
+nodes:
+  - id: build
+    kind: agent
+    prompt_file: prompts/build.md
+
+  - id: review
+    kind: agent
+    category: review
+    subtype: human_interact_review
+    scheduled_deps: [build]
+    prompt_file: prompts/review.md
+    brief: { check_what: …, expected: …, abnormal: … }
+
+  - id: fix
+    kind: agent
+    scheduled_deps: [build, review]
+    resume_from: build              # inherit build's provider session
+    prompt_file: prompts/fix.md
+```
+
+`review_source` and `when` from the old scenario YAML drop entirely:
+
 - `review_source` was the same shape as `scheduled_deps` always; one
-  field, not two.
+  field, not two. Review virtuals now declare their source via
+  `scheduled_deps` alone.
 - `when: <step>.approved | rejected` drops because the review
   verdict's graph mutations *are* the branch. A reviewer that proposes
   no follow-up virtuals leaves the lane to continue as planned; a
   reviewer that proposes follow-up virtuals naturally diverts the
   promotion order. There is no separate `when` predicate to maintain.
+
+`resume_from` survives as an explicit `lane.yaml` field on agent specs
+— *not* derived from `scheduled_deps`. It lands as a new optional
+`Node.resume_from_node_id` field (kept distinct from `parent_node_id`,
+which review virtuals already overload for review-source provenance —
+see `registry.py:957`). Validation at instantiation:
+
+- The named step must exist earlier in the lane.
+- It must also appear in this node's `scheduled_deps` (so the resume
+  parent is guaranteed terminal before promote).
+
+The session-inheritance hop happens at promote time, not at
+instantiation (the parent hasn't run yet). See §3.4 for the
+`promote_virtual` change.
+
+**Lane mode guidance.** `lane_mode: auto` is for happy-path templates
+whose normal flow terminates every node in DONE state. Any template
+whose normal flow includes a non-DONE termination — `interrupt-midstream`
+expects the user to hit Stop during `build`; the verifier intentionally
+ERRORs on failed checks — declares `manual`, because `_on_runner_done`
+(correctly) halts auto-promotion on non-DONE terminals
+(`registry.py:501-502`). The default is `manual`, and most bundled
+templates should keep it.
 
 ### 3.3 Template instantiation
 
@@ -255,11 +312,22 @@ entirely:
    entry resolves, no cycles. (The reap pipeline already enforces
    these; this is the same code path, run once at instantiation.)
 6. For each node in `lane.yaml`, persist a `Node` with
-   `state=virtual`, `proposed_by=f"template:{name}"`,
-   `prompt_draft` taken from `prompt_file` for agent nodes (verifier
-   nodes have no prompt), `brief` taken from the spec, `category` /
-   `subtype` set per the spec, `scheduled_deps` pinned to the
-   canonical node ids in the same pass.
+   `state=virtual`, `proposed_by=f"template:{name}"`, and
+   `scheduled_deps` pinned to the canonical node ids in the same pass.
+   Then per kind:
+   - **Agent virtuals:** `prompt_draft` from `prompt_file`; `brief` /
+     `category` / `subtype` from the spec. If the spec carries
+     `resume_from`, set `Node.resume_from_node_id` to the canonical
+     id of the named step.
+   - **Verifier virtuals:** `prompt_draft = None`; `category = review`;
+     `subtype = programmatic_review`; `brief` from the spec;
+     `verify_script_ref` set to the absolute resolved script path.
+
+   For every node, render and persist a `preview.json` via
+   `render_virtual_preview(node)` so the brief and dependency
+   structure show on the canvas before any node has promoted — this
+   generalizes what `start_node` does today for review virtuals
+   (`registry.py:446-465`) to the whole lane.
 7. Trigger one round of `_auto_promote_next_virtual`. In `auto` mode
    the first eligible virtual launches; in `manual` mode it sits
    ready-to-promote on the canvas waiting for the user's click.
@@ -271,16 +339,40 @@ the same way they advance their own work. The only durable trace that
 
 ### 3.4 Auto-promotion through the template lane
 
-Unchanged. `_auto_promote_next_virtual` already walks
-`scheduled_deps`, already picks the earliest-created eligible virtual,
-already broadcasts `node_updated` on promotion. The scenario-step
-expander and all its helpers are deleted; no replacement is needed.
+`_auto_promote_next_virtual` is unchanged — it already walks
+`scheduled_deps`, picks the earliest-created eligible virtual, and
+broadcasts `node_updated` on promotion. The scenario-step expander and
+all its helpers are deleted; no replacement is needed.
+
+`promote_virtual` (`registry.py:617-668`) gains one step to support
+the `resume_from` carrier. After validating the virtual is promotable
+but before flipping `state = QUEUED`:
+
+- If `node.resume_from_node_id` is set, load the resume parent.
+- If the parent terminated in `DONE` and carries a live
+  `provider_session_id` / `sdk_session_id`, copy `provider`,
+  `provider_session_id`, `sdk_session_id` onto the virtual — identical
+  to what `start_node` does today at `registry.py:437-439`.
+- If the parent did not terminate in `DONE` or has no live session,
+  refuse to promote. The lane halts. The user inspects, edits the
+  virtual to drop the `resume_from` if appropriate, or fixes the
+  upstream and retries.
+
+`resume_from_node_id` is required to also appear in `scheduled_deps`,
+so the parent is guaranteed terminal when the virtual becomes
+eligible. The "parent in DONE with session" check at promote time is
+the final guard; in the happy path it always passes.
 
 ### 3.5 The Tests modal entry point
 
 `GET /templates` lists bundled templates; `POST /templates/{name}/run`
 launches one. The frontend `TestsPanel` reads `/templates` instead of
 `/scenarios`. The Run button per provider stays exactly as it is.
+
+The optional `scenario_name` slot on `CreateSessionRequest`
+(`app.py:55, 181`) drops entirely — templates only come into existence
+via `POST /templates/{name}/run`. There is no `template_id` slot on
+the session-create path. One fewer entry point, one fewer migration.
 
 That is the entire frontend change for templates. There is no test-
 only menu item, no test-only canvas affordance, no test-only WebSocket
@@ -302,13 +394,18 @@ User clicks **Run · claude** on `gui-calculator` in the Tests modal:
 3. `build` runs, writes its preview, commits, transitions to done.
    `verify_files` becomes eligible.
 4. `verify_files` promotes. The framework runs `scripts/verify_files.sh`
-   in the project root. The tile updates with exit code; preview is
-   written; if non-zero, a planning virtual ("Investigate the verify
-   failure …") appears below.
-5. `accept` becomes eligible. It enters `awaiting_human_input`. The
-   side panel renders the brief inline: "Open the calculator; click
-   1 + 2 =; confirm 3 shows. …" The user follows the instructions,
-   types free-form prose (`all good` or itemized notes) into the
+   in the project root. On exit 0 the tile turns green (`state=DONE`)
+   and `accept` becomes eligible. On non-zero exit the tile turns red
+   (`state=ERROR`, exit code + stderr tail in the preview), and
+   auto-promotion halts at the DONE-only gate — `accept` sits dashed
+   waiting for the user's click. Either way, no virtual is auto-written;
+   the downstream review is the only place where verdicts become graph
+   mutations.
+5. `accept` becomes eligible (or is hand-promoted by the user after a
+   verifier failure). It enters `awaiting_human_input`. The side panel
+   renders the brief inline: "Open the calculator; click 1 + 2 =;
+   confirm 3 shows. …" The user follows the instructions, types
+   free-form prose (`all good` or itemized notes) into the
    `human-review.md` form, submits.
 6. The reviewer agent launches, reads the brief + the user's prose +
    upstream previews, writes its preview, optionally proposes follow-
@@ -326,6 +423,11 @@ User clicks **Run · claude** on `gui-calculator` in the Tests modal:
   widens from "this project was launched from a scenario" to "this
   project was instantiated from a template". The existing field is
   renamed in place (nuke-and-restart migration; no rows survive).
+- **`CreateSessionRequest.scenario_name`** (`app.py:55, 181`) →
+  removed entirely. Templates only come into existence via
+  `POST /templates/{name}/run`; the session-create path no longer
+  touches the template/scenario axis. No `template_id` slot is added
+  to the session-create model.
 - **`Project.scenario_step_history`** → removed. The graph IS the
   history.
 - **`Node.scenario_step_id`** → removed. Virtual nodes are addressed
@@ -386,7 +488,11 @@ User clicks **Run · claude** on `gui-calculator` in the Tests modal:
   new third branch in the kind switch, not a modification of the
   existing two.
 - **Auto-commit op.** Still framework-injected after agent done; not
-  declared in `lane.yaml`. The verifier never auto-commits.
+  declared in `lane.yaml`. The verifier never auto-commits — the
+  existing `_on_runner_done` check (`registry.py:489-495`) only spawns
+  the commit op when `finished_node.kind is NodeKind.AGENT`, so
+  `kind=VERIFIER` is excluded by accident-already and needs no extra
+  guard.
 - **Materialization and reap.** The verifier writes its own preview
   through the same `.miniclaw2/graph/lanes/<lane>/nodes/<id>/preview.json`
   path; the framework is the writer instead of the provider, but the
@@ -434,8 +540,10 @@ Concrete steps at impl time:
      `interrupt-midstream`): same shape; gate behavior is provider-
      level, not template-level. ~15 min each.
    - Tier 3 (`gui-calculator`, `context-md-respected`,
-     `resume-fix-after-reject`): full multi-node lanes; resume becomes
-     `scheduled_deps` + native resume edge. ~30 min each.
+     `resume-fix-after-reject`): full multi-node lanes;
+     `resume-fix-after-reject` uses `scheduled_deps` plus the new
+     `resume_from` field on the `fix` virtual to inherit `build`'s
+     provider session at promote time. ~30 min each.
 4. Drop the `scenarios/` package, `VerifyCard.tsx`,
    `ScenarioFutureNode.tsx`, the `Simulate WS drop` menu item, and
    the legacy fields in one commit after the templates land.
@@ -475,11 +583,12 @@ doesn't need to be atomic.
   IS that kind. If more variants emerge (HTTP probe, JSON schema
   check, screenshot diff), they extend verifier's `script_ref`
   protocol; the kind stays one.
-- **Verifier participation in the planning category.** A verifier may
-  *propose* a planning virtual on failure (the auto-written
-  investigate-the-failure one), but it does not itself plan, and its
-  prompt cannot be edited mid-run (there is no prompt — it's a script
-  path).
+- **Verifier writing to the graph.** A verifier never proposes
+  virtuals. It writes one framework-authored executed preview per
+  run and that is all. Its prompt cannot be edited mid-run (there is
+  no prompt — it's a script path). Failure surfaces via `state=ERROR`
+  on the verifier tile; the downstream review node is where any
+  follow-up planning happens.
 - **Recovering `scenario_step_history` as a frontend audit.** The
   graph IS the audit. The canvas shows what happened.
 - **Live mid-script verifier output streaming.** v1 captures the
@@ -489,15 +598,11 @@ doesn't need to be atomic.
 - **A template-level pre-flight check.** Validation happens at
   instantiation; `lane.yaml` parse errors fail the
   `POST /templates/{name}/run` call before any side effects land.
-- **Frontend rendering of the auto-written failure virtual as
-  anything special.** It renders as a normal dashed planning tile;
-  the verifier's red ✗ + the dep edge are enough orientation.
 
 
 ## 9. Resolved questions
 
-These were the four tradeoffs called out before this proposal landed;
-settled here:
+Tradeoffs called out across drafts of this proposal, settled here:
 
 - **Q1 (verify as op subtype vs new kind):** new kind. Verifier
   carries review semantics (preview-with-judgment, mutation-as-
@@ -515,11 +620,36 @@ settled here:
   test-only button or envelope (today only `reconnect-replay`) drops
   from the catalogue rather than earning a frontend hook. Confirmed
   by the user.
-- **Q4 (verifier failure surfaces):** the verifier's own preview
-  captures exit code + stderr (last 2 KB); plus the framework auto-
-  writes one planning virtual prompting the next agent to
-  investigate. The failure has a place on the canvas to triage from
-  without forcing the user to write the follow-up themselves.
+- **Q4 (verifier failure surfaces):** the verifier terminates in
+  `state=ERROR` on non-zero exit, with the last 2 KB of stderr in
+  `node.error` and the exit code + stderr tail in its preview. No
+  framework-authored follow-up virtual is written. The downstream
+  human-interact review node is the canonical place where verdicts
+  about the failure become graph mutations. The state distinction
+  (ERROR vs DONE) gives the tile its red render and halts
+  auto-promotion at `_on_runner_done`'s DONE-only gate
+  (`registry.py:501-502`) — the user has to acknowledge the failure
+  before the lane continues. Settled with the user after rejecting
+  an earlier sketch that auto-wrote a planning virtual.
+- **Q5 (`resume_from` carrier — overload `parent_node_id` or new
+  field?):** new field. `Node.resume_from_node_id: str | None` is
+  added (optional; set by template instantiation when a `lane.yaml`
+  step declares `resume_from`). `parent_node_id` stays semantically
+  clean as the review-source pointer (`registry.py:957` already
+  overloads it for that). `promote_virtual` reads
+  `resume_from_node_id` at promote time and copies the parent's
+  provider session before flipping `state=QUEUED`. Confirmed by the
+  user.
+- **Q6 (verifier subtype — new `PROGRAMMATIC_REVIEW` or relax
+  invariant?):** new subtype. Adds `ReviewSubtype.PROGRAMMATIC_REVIEW`.
+  The `Node._check_invariants` validator gains a `VERIFIER` branch
+  rather than relaxing the "review requires subtype" rule. The
+  frontend gets a clean branch point (no human form, no reviewer
+  agent — just a script-result panel). Confirmed by the user.
+- **Q7 (`CreateSessionRequest.scenario_name` — drop or rename to
+  `template_id`?):** drop. Templates only enter the system via
+  `POST /templates/{name}/run`. The session-create path no longer
+  touches the template axis. Confirmed by the user.
 
 
 ## 10. Why we keep these constraints
@@ -541,11 +671,18 @@ settled here:
   drops from the catalogue) to keep the frontend free of test-shaped
   code; this matches PHILOSOPHY §3's "the framework should not know
   it is being tested."
-- **Auto-written failure virtual on verify exit ≠ 0.** Without it,
-  the canvas after a failed verify looks the same as after a passed
-  verify (one extra tile, terminal). Forcing the user to read the
-  preview to know there's something to do is a regression. The
-  follow-up virtual is the visual handle.
+- **Verifier failure surfaces as `state=ERROR`, not as a follow-up
+  virtual.** The state distinction does double duty: the tile
+  renders red automatically via the existing `state-error` tone, and
+  `_on_runner_done`'s existing DONE-only gate
+  (`registry.py:501-502`) halts auto-promotion. The downstream review
+  is the sole locus for "what next" — it sees the verifier's preview
+  as upstream context and decides. Keeping the verifier verdict-
+  carrying without giving it write-rights to the graph means only
+  one node kind (review) proposes virtuals. Earlier drafts had the
+  verifier auto-write a planning virtual on failure; the user
+  rejected that path as parallel-failure-vocabulary that the
+  downstream review already covers.
 - **Templates instantiate up-front, not lazily.** Lazy
   materialization is what the scenario engine does today; it's the
   source of the parallel scheduler. Up-front instantiation makes the
@@ -563,11 +700,19 @@ settled here:
 
 Horizontal backend-first, mirroring `PROPOSAL_VIRTUAL_NODES.md` §11:
 
-1. **Domain types.** Add `NodeKind.VERIFIER`. Rename
-   `Project.scenario_name → template_id`. Drop
-   `Project.scenario_step_history` and `Node.scenario_step_id`. Add a
-   `verify_script_ref` field on `Node` (optional; required when
-   `kind=verifier`).
+1. **Domain types.** Add `NodeKind.VERIFIER` and
+   `ReviewSubtype.PROGRAMMATIC_REVIEW`. Add two `Node` fields:
+   `resume_from_node_id: str | None` (optional; carries the
+   `lane.yaml` `resume_from` semantic) and
+   `verify_script_ref: str | None` (optional; required when
+   `kind=verifier`). Extend `Node._check_invariants` with a
+   `VERIFIER` branch: `brief` required, `subtype` must be
+   `programmatic_review`, `category` is `review`, `prompt` and
+   `prompt_draft` must be empty, `verify_script_ref` must be set.
+   Rename `Project.scenario_name → template_id`. Drop
+   `Project.scenario_step_history` and `Node.scenario_step_id`. Drop
+   `CreateSessionRequest.scenario_name` entirely — no `template_id`
+   slot is added to the session-create path.
 2. **Templates module.** Create `backend/miniclaw2/templates/` with
    `loader.py` (parses `template.yaml` + `lane.yaml`),
    `launcher.py` (project create + seed + lane instantiation),
@@ -575,13 +720,34 @@ Horizontal backend-first, mirroring `PROPOSAL_VIRTUAL_NODES.md` §11:
    `backend/miniclaw2/scenarios/` package stays in place during this
    step.
 3. **Verifier runner.** A new branch in `NodeRunner` switched on
-   `NodeKind.VERIFIER`: subprocess the script, capture stdout/stderr,
-   write framework-authored `preview.json`, on failure write the
-   auto-investigate virtual through the existing reap pipeline.
-4. **Auto-promotion confirmation.** Verify
-   `_auto_promote_next_virtual` correctly handles a verifier-then-
-   review chain (the verifier is just a terminal-state node from the
-   scheduler's POV, same as agents).
+   `NodeKind.VERIFIER`: subprocess the script with the existing
+   verify.sh env (`CI=1`, `MINICLAW_HOME`, `MINICLAW_PROJECT_ID`,
+   `cwd = project.root_path`, 60 s timeout); capture stdout/stderr;
+   write a framework-authored `preview.json` directly to the store
+   (bypassing the reap pipeline, the same way `_run_op` does today).
+   Verdict mapping:
+   - Exit 0 → `state=DONE`, preview `summary="verify passed"`.
+   - Non-zero exit / timeout → `state=ERROR`, `node.error = <last
+     2 KB of stderr>`, preview `summary="verify failed: exit <N>"`
+     with the stderr tail in the preview body.
+   - Cancellation → `state=CANCELLED`, stub preview.
+
+   Verifier `interrupt()` terminates the subprocess (`SIGTERM` then
+   `SIGKILL` after a 2 s grace), distinct from agent `interrupt()`
+   which calls `provider.interrupt()`.
+4. **Promote-virtual + auto-promotion changes.** Extend
+   `promote_virtual` (`registry.py:617-668`) to read
+   `Node.resume_from_node_id` and copy the parent's
+   `provider` / `provider_session_id` / `sdk_session_id` onto the
+   virtual before flipping `state=QUEUED`. Refuse to promote if the
+   resume parent did not terminate in `DONE` with a live session;
+   the lane halts and the user must inspect.
+   Verify `_auto_promote_next_virtual` correctly handles a
+   verifier-then-review chain (the verifier is just a terminal-state
+   node from the scheduler's POV, same as agents); confirm that a
+   verifier in `state=ERROR` correctly halts auto-promotion at the
+   existing DONE-only gate (this is current behavior — no code
+   change, but pin a test).
 5. **REST surface.** Add `/templates` + `/templates/{name}/run`.
    Remove `/sessions/{sid}/verify`. Keep `/scenarios/*` temporarily.
 6. **Frontend pass.** Add `VerifierNode.tsx` (⚙ glyph, exit-code
