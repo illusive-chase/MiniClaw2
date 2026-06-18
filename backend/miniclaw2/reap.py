@@ -57,6 +57,7 @@ def _rewrite_scheduled_deps(
     slug_to_canonical: dict[str, str],
     store: Store,
     project_id: str,
+    lane_id: str,
     label: str,
     result: ReapResult,
 ) -> list[str]:
@@ -65,13 +66,20 @@ def _rewrite_scheduled_deps(
     for dep in deps:
         if dep in slug_to_canonical:
             rewritten.append(slug_to_canonical[dep])
-        elif store.load_node(project_id, dep) is not None:
-            rewritten.append(dep)
         else:
-            result.rejection_reasons.append(
-                f"{label}: scheduled_dep {dep!r} does not resolve"
-            )
-            result.fatal = True
+            dep_node = store.load_node(project_id, dep)
+            if dep_node is None:
+                result.rejection_reasons.append(
+                    f"{label}: scheduled_dep {dep!r} does not resolve"
+                )
+                result.fatal = True
+            elif (dep_node.planspace_id or "") != lane_id:
+                result.rejection_reasons.append(
+                    f"{label}: scheduled_dep {dep!r} is outside this lane"
+                )
+                result.fatal = True
+            else:
+                rewritten.append(dep)
     return rewritten
 
 
@@ -173,6 +181,13 @@ def reap_lane(
                 )
                 result.fatal = True
                 return result
+            lane_id = node.planspace_id or ""
+            if (existing.planspace_id or "") != lane_id:
+                result.rejection_reasons.append(
+                    f"{rel}: cannot modify virtual {existing.id} outside this lane"
+                )
+                result.fatal = True
+                return result
             if not isinstance(preview, VirtualPreview):
                 result.rejection_reasons.append(
                     f"{rel}: existing virtual {existing.id} cannot be rewritten as executed"
@@ -215,6 +230,7 @@ def reap_lane(
             slug_to_canonical,
             store,
             project.id,
+            lane_id,
             f"new virtual {canonical}",
             result,
         )
@@ -238,6 +254,7 @@ def reap_lane(
             slug_to_canonical,
             store,
             project.id,
+            lane_id,
             f"modified virtual {existing.id}",
             result,
         )

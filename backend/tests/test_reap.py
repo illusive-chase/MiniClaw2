@@ -198,6 +198,67 @@ class ReapSlugCanonicalizationTests(ReapTestBase):
         result = reap_lane(self.project, node, lane_root, pre, self.store)
         self.assertTrue(result.fatal)
 
+    def test_existing_cross_lane_dep_is_fatal(self) -> None:
+        node = self._make_running_node(category=Category.PLANNING)
+        other_lane_parent = Node(
+            id="other-parent",
+            project_id="p1",
+            kind=NodeKind.AGENT,
+            category=Category.REGULAR,
+            state=NodeState.DONE,
+            planspace_id="lane-B",
+            started_at=1.0,
+            finished_at=2.0,
+        )
+        self.store.create_node(other_lane_parent)
+        lane_root, pre = self._setup_lane(node)
+        _write_preview(
+            lane_root / "nodes" / "n1" / "preview.json",
+            _executed_payload("n1", "lane-A", category="planning"),
+        )
+        _write_preview(
+            lane_root / "nodes" / "V_a" / "preview.json",
+            _virtual_payload("V_a", "lane-A", deps=[other_lane_parent.id]),
+        )
+
+        result = reap_lane(self.project, node, lane_root, pre, self.store)
+
+        self.assertTrue(result.fatal)
+        self.assertTrue(
+            any("outside this lane" in reason for reason in result.rejection_reasons)
+        )
+
+    def test_cross_lane_virtual_mutation_is_fatal(self) -> None:
+        node = self._make_running_node(category=Category.PLANNING)
+        other_lane_virtual = Node(
+            id="other-virtual",
+            project_id="p1",
+            kind=NodeKind.AGENT,
+            category=Category.REGULAR,
+            state=NodeState.VIRTUAL,
+            planspace_id="lane-B",
+            prompt_draft="x",
+            proposed_by="user",
+            summary="m",
+        )
+        self.store.create_node(other_lane_virtual)
+        lane_root, pre = self._setup_lane(node)
+        _write_preview(
+            lane_root / "nodes" / "n1" / "preview.json",
+            _executed_payload("n1", "lane-A", category="planning"),
+        )
+        _write_preview(
+            lane_root / "nodes" / "other-virtual" / "preview.json",
+            _virtual_payload("other-virtual", "lane-A"),
+        )
+
+        result = reap_lane(self.project, node, lane_root, pre, self.store)
+
+        self.assertTrue(result.fatal)
+        self.assertTrue(
+            any("outside this lane" in reason for reason in result.rejection_reasons)
+        )
+
 
 class ReapCycleDetectionTests(ReapTestBase):
     def test_self_loop_is_fatal(self) -> None:

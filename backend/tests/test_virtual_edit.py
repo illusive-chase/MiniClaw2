@@ -99,6 +99,23 @@ class VirtualEditRegistryTests(unittest.TestCase):
         assert reloaded is not None
         self.assertEqual(reloaded.scheduled_deps, [])
 
+    def test_update_virtual_rejects_cross_lane_dependency(self) -> None:
+        parent = self._virtual("other-parent")
+        parent.planspace_id = "planspaces.other"
+        self.store.update_node(parent)
+        child = self._virtual("child")
+
+        with self.assertRaisesRegex(ValueError, "outside this lane"):
+            self.registry.update_virtual(
+                self.project.id,
+                child.id,
+                scheduled_deps=[parent.id],
+            )
+
+        reloaded = self.store.load_node(self.project.id, child.id)
+        assert reloaded is not None
+        self.assertEqual(reloaded.scheduled_deps, [])
+
     def test_update_virtual_review_requires_brief(self) -> None:
         node = self._virtual("review-me")
 

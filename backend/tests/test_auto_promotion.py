@@ -377,6 +377,38 @@ class AutoPromoteOnRunnerDoneTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotEqual(gating_now.state, NodeState.VIRTUAL)
         self.assertEqual(blocked_now.state, NodeState.VIRTUAL)
 
+    async def test_editing_virtual_triggers_auto_promotion_when_eligible(self) -> None:
+        plug_id = create_planspace(
+            self.project, title="auto-edit", mode="auto"
+        )
+        rt = self.registry._runtimes[self.project.id]
+        settings = dict(rt.project.settings_override)
+        settings["active_planspace_id"] = plug_id
+        rt.project.settings_override = settings
+        self.store.update_project(rt.project)
+
+        blocking = self._make_finished_agent(plug_id, finished=False)
+        virtual = self._make_virtual(
+            plug_id,
+            nid="v-edited",
+            deps=[blocking.id],
+            prompt_draft="run after edit",
+        )
+
+        updated = self.registry.update_virtual(
+            self.project.id,
+            virtual.id,
+            scheduled_deps=[],
+        )
+
+        self.assertIsNotNone(updated)
+        self.assertIsNotNone(rt.runner_task)
+        await self._drain_task(rt.runner_task)
+        reloaded = self.store.load_node(self.project.id, virtual.id)
+        assert reloaded is not None
+        self.assertNotEqual(reloaded.state, NodeState.VIRTUAL)
+        self.assertEqual(reloaded.prompt, "run after edit")
+
     async def _drain_task(self, task: asyncio.Task[None] | None) -> None:
         if task is None:
             return

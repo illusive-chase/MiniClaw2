@@ -767,6 +767,7 @@ class ProjectRegistry:
             else:
                 deps = []
                 seen: set[str] = set()
+                lane_id = existing.planspace_id or ""
                 for raw_dep in scheduled_deps:
                     if not isinstance(raw_dep, str) or not raw_dep.strip():
                         raise ValueError("scheduled_deps entries must be non-empty strings")
@@ -775,8 +776,13 @@ class ProjectRegistry:
                         raise ValueError("scheduled_deps must not include the virtual itself")
                     if dep in seen:
                         continue
-                    if self.store.load_node(pid, dep) is None:
+                    dep_node = self.store.load_node(pid, dep)
+                    if dep_node is None:
                         raise ValueError(f"scheduled_dep {dep!r} does not resolve")
+                    if (dep_node.planspace_id or "") != lane_id:
+                        raise ValueError(
+                            f"scheduled_dep {dep!r} is outside this lane"
+                        )
                     seen.add(dep)
                     deps.append(dep)
             update["scheduled_deps"] = deps
@@ -807,6 +813,18 @@ class ProjectRegistry:
             }))
         except RuntimeError:
             pass
+        active_lane = rt.project.settings_override.get("active_planspace_id") or ""
+        if active_lane == lane_id:
+            try:
+                mode = read_planspace_mode(
+                    rt.project, active_lane, store_root=self.store.root
+                )
+            except Exception:  # noqa: BLE001
+                logger.exception("planspace mode lookup failed")
+            else:
+                if mode is PlanspaceMode.AUTO and not rt.is_running():
+                    self._auto_promote_next_virtual(rt)
+                    return self.store.load_node(pid, updated.id) or updated
         return updated
 
     def _spawn_op_commit(self, rt: ProjectRuntime, agent_node: Node) -> None:
