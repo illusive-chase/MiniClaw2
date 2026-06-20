@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   cancelProjectContext,
   createPlanspace,
+  createVirtual,
   getSession,
   getNodeContextBundle,
   getNodeDiff,
@@ -17,6 +18,7 @@ import {
   updateSessionContextSpace,
   updateSessionPreferences,
   updateVirtual,
+  type CreateVirtualPayload,
   type UpdateVirtualPayload,
 } from "./api";
 import { Canvas, type CanvasSelection } from "./canvas/Canvas";
@@ -39,6 +41,9 @@ import type {
   SessionContextSpaceInfo,
   SessionInfo,
   PlanspaceMode,
+  NodeCategory,
+  ReviewBrief,
+  ReviewSubtype,
 } from "./types";
 import { useSessionSocket } from "./ws";
 
@@ -100,6 +105,7 @@ export function App() {
    *   null       → fresh-start phantom
    *   string     → phantom continuing from that node */
   const [phantomFromNodeId, setPhantomFromNodeId] = useState<string | null | undefined>(undefined);
+  const [virtualComposerLaneId, setVirtualComposerLaneId] = useState<string | null>(null);
 
   const [newProjectModalOpen, setNewProjectModalOpen] = useState(false);
 
@@ -153,6 +159,7 @@ export function App() {
     setPendingGate(null);
     setPendingReview(null);
     setPhantomFromNodeId(undefined);
+    setVirtualComposerLaneId(null);
     setInitialLoadComplete(false);
     activeNodeIdRef.current = null;
     inflightBundleFetchRef.current.clear();
@@ -216,6 +223,11 @@ export function App() {
     [nodes, pendingReview],
   );
   const composerLocked = !!activePendingGate || !!activePendingReview;
+  const virtualCreateDisabled =
+    composerLocked ||
+    streaming ||
+    sessionSettingsSaving ||
+    !!sessionContextSpace?.context_refresh?.running;
 
   /* refresh node list */
   const refreshNodes = useCallback(async () => {
@@ -412,6 +424,46 @@ export function App() {
       }
     },
     [session?.id, streaming, composerLocked],
+  );
+
+  const openVirtualComposer = useCallback(
+    (planspaceId: string) => {
+      if (virtualCreateDisabled) return;
+      setVirtualComposerLaneId(planspaceId);
+      setSelection({ kind: "planspace", planspaceId });
+      setInspectedNodeId(null);
+      setPhantomFromNodeId(undefined);
+    },
+    [virtualCreateDisabled],
+  );
+
+  const createVirtualNode = useCallback(
+    async (
+      planspaceId: string,
+      payload: Omit<CreateVirtualPayload, "planspace_id">,
+    ) => {
+      if (!session?.id || virtualCreateDisabled) return;
+      setSessionContextSpaceError(null);
+      try {
+        const result = await createVirtual(session.id, {
+          planspace_id: planspaceId,
+          ...payload,
+        });
+        setNodes((prev) => upsertNode(prev, result.node));
+        setSelection({ kind: "agent", nodeId: result.node.id });
+        setInspectedNodeId(result.node.id);
+        if (result.node.state !== "virtual") {
+          activeNodeIdRef.current = result.node.id;
+          setStreaming(true);
+        }
+        setPhantomFromNodeId(undefined);
+        setVirtualComposerLaneId(null);
+      } catch (err) {
+        setSessionContextSpaceError(String(err));
+        throw err;
+      }
+    },
+    [session?.id, virtualCreateDisabled],
   );
 
   const runContextInit = useCallback(async () => {
@@ -690,6 +742,7 @@ export function App() {
         }
         /* Dismiss any phantom — the run has materialized. */
         setPhantomFromNodeId(undefined);
+        setVirtualComposerLaneId(null);
         void refreshNodes();
       } else if (ev.type === "node_updated") {
         eventNodeId = ev.node.id;
@@ -822,8 +875,9 @@ export function App() {
         setInspectedNodeId(null);
       },
       onTogglePlanspaceVisibility: togglePlanspaceVisibility,
+      onCreateVirtual: openVirtualComposer,
     });
-  }, [togglePlanspaceVisibility]);
+  }, [togglePlanspaceVisibility, openVirtualComposer]);
 
   const onResolveGate = useCallback(
     (
@@ -1071,6 +1125,7 @@ export function App() {
               knownPlanspaceIds={knownPlanspaceIds}
               hiddenPlanspaceIds={hiddenPlanspaceIds}
               activePlanspaceId={sessionContextSpace?.active_planspace_id ?? null}
+              canCreateVirtual={!virtualCreateDisabled}
               initialLayoutHints={session?.layout_hints}
               initialLayoutViewport={session?.layout_viewport ?? null}
               onSelectionChange={onSelectionChange}
@@ -1171,6 +1226,16 @@ export function App() {
           contextReloadVersion={contextReloadVersion}
         />
       </div>
+
+      {virtualComposerLaneId && (
+        <VirtualDraftModal
+          planspaceId={virtualComposerLaneId}
+          planspaceLabel={labelForPlanspace(sessionContextSpace, virtualComposerLaneId)}
+          disabled={virtualCreateDisabled}
+          onCancel={() => setVirtualComposerLaneId(null)}
+          onCreate={(payload) => createVirtualNode(virtualComposerLaneId, payload)}
+        />
+      )}
     </div>
   );
 }
@@ -1214,6 +1279,291 @@ function PendingBanner({ label, onJump }: { label: string; onJump: () => void })
     </div>
   );
 }
+
+type VirtualComposerDraft = {
+  category: NodeCategory;
+  subtype: Exclude<ReviewSubtype, "programmatic_review">;
+  motivation: string;
+  promptDraft: string;
+  brief: ReviewBrief;
+};
+
+function VirtualDraftModal({
+  planspaceId,
+  planspaceLabel,
+  disabled,
+  onCancel,
+  onCreate,
+}: {
+  planspaceId: string;
+  planspaceLabel: string;
+  disabled: boolean;
+  onCancel: () => void;
+  onCreate: (payload: Omit<CreateVirtualPayload, "planspace_id">) => Promise<void>;
+}) {
+  const [draft, setDraft] = useState<VirtualComposerDraft>({
+    category: "regular",
+    subtype: "agentic_review",
+    motivation: "",
+    promptDraft: "",
+    brief: {
+      check_what: "",
+      expected: "",
+      abnormal: "",
+    },
+  });
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const canCreate =
+    draft.promptDraft.trim().length > 0 &&
+    !disabled &&
+    !saving &&
+    (draft.category !== "review" ||
+      (!!draft.brief.check_what.trim() &&
+        !!draft.brief.expected.trim() &&
+        !!draft.brief.abnormal.trim()));
+
+  const submit = async () => {
+    if (!canCreate) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const payload: Omit<CreateVirtualPayload, "planspace_id"> = {
+        category: draft.category,
+        prompt_draft: draft.promptDraft.trim(),
+        motivation: draft.motivation.trim() || null,
+        scheduled_deps: [],
+      };
+      if (draft.category === "review") {
+        payload.subtype = draft.subtype;
+        payload.brief = {
+          check_what: draft.brief.check_what.trim(),
+          expected: draft.brief.expected.trim(),
+          abnormal: draft.brief.abnormal.trim(),
+        };
+      } else {
+        payload.subtype = null;
+        payload.brief = null;
+      }
+      await onCreate(payload);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div
+      className="fixed inset-0 z-40 flex items-center justify-center bg-surface-scrim/60 backdrop-blur-sm"
+      onClick={onCancel}
+    >
+      <div
+        className="flex max-h-[88vh] w-[560px] max-w-[94vw] flex-col overflow-hidden rounded-xl border border-line bg-surface-raised shadow-modal"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-start justify-between gap-3 border-b border-line px-5 py-3.5">
+          <div className="min-w-0">
+            <div className="text-[10px] font-medium uppercase tracking-[0.14em] text-ink-subtle">
+              New virtual
+            </div>
+            <h2 className="mt-1 truncate font-display text-[15px] font-semibold text-ink-strong">
+              {planspaceLabel}
+            </h2>
+            <div className="mt-1 font-mono text-[10px] text-ink-muted">
+              {planspaceId}
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={onCancel}
+            className="rounded px-2 py-1 text-[11px] font-medium text-ink-muted transition hover:bg-surface-sunken hover:text-ink"
+          >
+            Esc
+          </button>
+        </div>
+
+        <div className="flex-1 space-y-4 overflow-y-auto bg-surface px-5 py-4">
+          <div>
+            <div className="mb-1 text-[10px] font-medium uppercase tracking-[0.12em] text-ink-subtle">
+              Type
+            </div>
+            <div className="inline-flex rounded-md border border-line bg-surface-sunken p-0.5">
+              {([
+                ["regular", "Work"],
+                ["planning", "Plan"],
+                ["review", "Review"],
+              ] as const).map(([value, label]) => (
+                <button
+                  key={value}
+                  type="button"
+                  onClick={() =>
+                    setDraft((current) => ({
+                      ...current,
+                      category: value,
+                    }))
+                  }
+                  className={
+                    "rounded px-3 py-1.5 text-[12px] font-medium transition " +
+                    (draft.category === value
+                      ? "bg-surface-raised text-ink-strong shadow-card"
+                      : "text-ink-muted hover:text-ink")
+                  }
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <ModalField label="Motivation">
+            <textarea
+              value={draft.motivation}
+              onChange={(e) =>
+                setDraft((current) => ({ ...current, motivation: e.target.value }))
+              }
+              rows={2}
+              className={modalTextareaClass}
+              placeholder="Why this planned node belongs in the lane"
+            />
+          </ModalField>
+
+          <ModalField label="Prompt draft">
+            <textarea
+              value={draft.promptDraft}
+              onChange={(e) =>
+                setDraft((current) => ({ ...current, promptDraft: e.target.value }))
+              }
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                  e.preventDefault();
+                  void submit();
+                }
+              }}
+              rows={7}
+              className={modalTextareaClass + " font-mono text-[11.5px]"}
+              placeholder="What should this virtual node do when promoted?"
+              autoFocus
+            />
+          </ModalField>
+
+          {draft.category === "review" && (
+            <div className="space-y-3 rounded-md border border-state-review/25 bg-state-review-soft/20 p-3">
+              <div className="inline-flex rounded-md border border-state-review/25 bg-surface p-0.5">
+                {([
+                  ["agentic_review", "Agentic"],
+                  ["human_interact_review", "Human"],
+                ] as const).map(([value, label]) => (
+                  <button
+                    key={value}
+                    type="button"
+                    onClick={() =>
+                      setDraft((current) => ({ ...current, subtype: value }))
+                    }
+                    className={
+                      "rounded px-3 py-1.5 text-[12px] font-medium transition " +
+                      (draft.subtype === value
+                        ? "bg-surface-raised text-state-review shadow-card"
+                        : "text-ink-muted hover:text-ink")
+                    }
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+              <ModalField label="Check">
+                <textarea
+                  value={draft.brief.check_what}
+                  onChange={(e) =>
+                    setDraft((current) => ({
+                      ...current,
+                      brief: { ...current.brief, check_what: e.target.value },
+                    }))
+                  }
+                  rows={2}
+                  className={modalTextareaClass}
+                />
+              </ModalField>
+              <ModalField label="Expected">
+                <textarea
+                  value={draft.brief.expected}
+                  onChange={(e) =>
+                    setDraft((current) => ({
+                      ...current,
+                      brief: { ...current.brief, expected: e.target.value },
+                    }))
+                  }
+                  rows={2}
+                  className={modalTextareaClass}
+                />
+              </ModalField>
+              <ModalField label="Abnormal">
+                <textarea
+                  value={draft.brief.abnormal}
+                  onChange={(e) =>
+                    setDraft((current) => ({
+                      ...current,
+                      brief: { ...current.brief, abnormal: e.target.value },
+                    }))
+                  }
+                  rows={2}
+                  className={modalTextareaClass}
+                />
+              </ModalField>
+            </div>
+          )}
+
+          {error && (
+            <div className="rounded-md border border-state-error/30 bg-state-error-soft px-3 py-2 text-[11.5px] text-state-error">
+              {error}
+            </div>
+          )}
+        </div>
+
+        <div className="flex items-center justify-between gap-3 border-t border-line px-5 py-3">
+          <div className="text-[10px] text-ink-subtle">Ctrl/⌘ + Enter</div>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={onCancel}
+              disabled={saving}
+              className="rounded-md border border-line bg-surface px-3 py-1.5 text-[12px] font-medium text-ink-muted transition hover:border-line-strong hover:text-ink disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={() => void submit()}
+              disabled={!canCreate}
+              className="rounded-md bg-brand px-3 py-1.5 text-[12px] font-medium text-white shadow-card transition hover:brightness-[0.95] disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              {saving ? "Creating..." : "Create virtual"}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ModalField({
+  label,
+  children,
+}: {
+  label: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <label className="block">
+      <div className="mb-1 text-[10px] font-medium uppercase tracking-[0.12em] text-ink-subtle">
+        {label}
+      </div>
+      {children}
+    </label>
+  );
+}
+
+const modalTextareaClass =
+  "w-full resize-y rounded-md border border-line bg-surface px-2 py-1.5 text-[12px] leading-relaxed text-ink-strong placeholder:text-ink-subtle focus:border-brand focus:outline-none";
 
 function upsertNode(prev: NodeInfo[], node: NodeInfo): NodeInfo[] {
   const index = prev.findIndex((item) => item.id === node.id);
@@ -1261,6 +1611,17 @@ function pendingBanner(
     nodeId: active.nodeId,
     label: `Node ${active.nodeId.slice(0, 8)} is awaiting your ${labelKind}.`,
   };
+}
+
+function labelForPlanspace(
+  contextSpace: SessionContextSpaceInfo | null,
+  planspaceId: string,
+): string {
+  for (const binding of contextSpace?.bindings ?? []) {
+    const plug = binding.plugs.find((candidate) => candidate.id === planspaceId);
+    if (plug) return plug.title || planspaceId;
+  }
+  return planspaceId;
 }
 
 function graphNodeIdForSelection(selection: CanvasSelection): string | null {

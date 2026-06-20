@@ -70,6 +70,7 @@ export type PlanspaceLaneData = {
   height: number;
   color: PlanspaceColor;
   active: boolean;
+  canCreateVirtual: boolean;
 };
 
 export type RFNodeData =
@@ -177,6 +178,8 @@ export type BuildGraphArgs = {
   hiddenPlanspaceIds: string[];
   /** active write target */
   activePlanspaceId: string | null;
+  /** true when the active lane's virtual create button should be enabled */
+  canCreateVirtual: boolean;
 };
 
 export type BuildGraphResult = {
@@ -204,6 +207,7 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
     knownPlanspaceIds,
     hiddenPlanspaceIds,
     activePlanspaceId,
+    canCreateVirtual,
   } = args;
 
   const rfNodes: RFNode[] = [];
@@ -603,6 +607,7 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
         height: LANE.planspaceLaneHeight,
         color,
         active: planspaceId === activePlanspaceId,
+        canCreateVirtual,
       },
       selectable: true,
       draggable: true,

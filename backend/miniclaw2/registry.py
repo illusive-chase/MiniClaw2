@@ -16,6 +16,7 @@ from .contextspace import (
     create_planspace,
     delete_project_contextspace,
     read_planspace_mode,
+    resolve_project_binding,
     resolve_active_planspace,
     set_planspace_mode,
 )
@@ -683,6 +684,131 @@ class ProjectRegistry:
             pass
         return runner
 
+    def create_virtual(
+        self,
+        pid: str,
+        *,
+        prompt_draft: str,
+        category: str | Category | None = Category.REGULAR,
+        subtype: str | ReviewSubtype | None = None,
+        brief: dict[str, Any] | ReviewBrief | None = None,
+        motivation: str | None = None,
+        scheduled_deps: list[str] | None = None,
+        planspace_id: str | None = None,
+        node_id: str | None = None,
+    ) -> Node | None:
+        """Create a user-authored editable virtual node.
+
+        Returns the created node, or ``None`` when the project is missing or
+        busy. Validation failures raise ``ValueError`` with a client-facing
+        message.
+        """
+        rt = self._runtimes.get(pid)
+        if rt is None or rt.is_running():
+            return None
+        if not str(prompt_draft).strip():
+            raise ValueError("prompt_draft must be non-empty")
+
+        lane_id = self._resolve_virtual_create_lane(rt, planspace_id)
+
+        try:
+            next_category = (
+                category
+                if isinstance(category, Category)
+                else Category(str(category or Category.REGULAR.value))
+            )
+        except ValueError as exc:
+            raise ValueError(f"unknown category: {category!r}") from exc
+
+        next_subtype: ReviewSubtype | None = None
+        if subtype not in (None, ""):
+            try:
+                next_subtype = (
+                    subtype
+                    if isinstance(subtype, ReviewSubtype)
+                    else ReviewSubtype(str(subtype))
+                )
+            except ValueError as exc:
+                raise ValueError(f"unknown review subtype: {subtype!r}") from exc
+
+        next_brief: ReviewBrief | None = None
+        if brief is not None:
+            if isinstance(brief, ReviewBrief):
+                next_brief = brief
+            else:
+                try:
+                    next_brief = ReviewBrief.model_validate(brief)
+                except Exception as exc:  # noqa: BLE001
+                    raise ValueError(f"invalid review brief: {exc}") from exc
+
+        if next_category is not Category.REVIEW:
+            next_subtype = None
+            next_brief = None
+        else:
+            if next_subtype is None:
+                raise ValueError("review virtuals require a subtype")
+            if next_brief is None:
+                raise ValueError("review virtuals require a brief")
+
+        node_kwargs: dict[str, Any] = {}
+        if node_id is not None:
+            node_kwargs["id"] = node_id
+        node = Node(
+            **node_kwargs,
+            project_id=pid,
+            kind=NodeKind.AGENT,
+            category=next_category,
+            subtype=next_subtype,
+            brief=next_brief,
+            state=NodeState.VIRTUAL,
+            planspace_id=lane_id,
+            provider=rt.project.provider,
+            prompt="",
+            prompt_draft=str(prompt_draft),
+            scheduled_deps=[],
+            proposed_by="user",
+            summary="" if motivation is None else str(motivation),
+        )
+        if self.store.load_node(pid, node.id) is not None:
+            raise ValueError(f"node id {node.id!r} already exists")
+        node.scheduled_deps = self._normalize_virtual_scheduled_deps(
+            pid,
+            virtual_id=node.id,
+            lane_id=lane_id,
+            scheduled_deps=scheduled_deps,
+        )
+        lane_nodes = self._lane_nodes_with(pid, lane_id, node)
+        if has_cycle(lane_nodes):
+            raise ValueError("scheduled_deps would introduce a cycle in the lane DAG")
+
+        self.store.create_node(node)
+        try:
+            self.store.write_node_preview(pid, node.id, render_virtual_preview(node))
+        except Exception:  # noqa: BLE001
+            logger.exception("failed to write virtual preview after user create")
+        try:
+            asyncio.get_running_loop().create_task(rt.broadcast({
+                "type": "node_updated",
+                "node": node.model_dump(),
+                "seq": 0,
+            }))
+        except RuntimeError:
+            pass
+
+        active_lane = rt.project.settings_override.get("active_planspace_id") or ""
+        if active_lane == lane_id:
+            try:
+                mode = read_planspace_mode(
+                    rt.project, active_lane, store_root=self.store.root
+                )
+            except Exception:  # noqa: BLE001
+                logger.exception("planspace mode lookup failed")
+            else:
+                if mode is PlanspaceMode.AUTO and not rt.is_running():
+                    self._auto_promote_next_virtual(rt)
+                    return self.store.load_node(pid, node.id) or node
+        return node
+
     def update_virtual(
         self,
         pid: str,
@@ -776,44 +902,18 @@ class ProjectRegistry:
             update["brief"] = next_brief
 
         if scheduled_deps is not _UNSET:
-            if scheduled_deps is None:
-                deps: list[str] = []
-            elif not isinstance(scheduled_deps, list):
-                raise ValueError("scheduled_deps must be a list")
-            else:
-                deps = []
-                seen: set[str] = set()
-                lane_id = existing.planspace_id or ""
-                for raw_dep in scheduled_deps:
-                    if not isinstance(raw_dep, str) or not raw_dep.strip():
-                        raise ValueError("scheduled_deps entries must be non-empty strings")
-                    dep = raw_dep.strip()
-                    if dep == existing.id:
-                        raise ValueError("scheduled_deps must not include the virtual itself")
-                    if dep in seen:
-                        continue
-                    dep_node = self.store.load_node(pid, dep)
-                    if dep_node is None:
-                        raise ValueError(f"scheduled_dep {dep!r} does not resolve")
-                    if (dep_node.planspace_id or "") != lane_id:
-                        raise ValueError(
-                            f"scheduled_dep {dep!r} is outside this lane"
-                        )
-                    seen.add(dep)
-                    deps.append(dep)
+            deps = self._normalize_virtual_scheduled_deps(
+                pid,
+                virtual_id=existing.id,
+                lane_id=existing.planspace_id or "",
+                scheduled_deps=scheduled_deps,
+            )
             update["scheduled_deps"] = deps
 
         updated = existing.model_copy(update=update)
         updated = Node.model_validate(updated.model_dump())
         lane_id = updated.planspace_id or ""
-        lane_nodes = [
-            n
-            for n in self.store.list_nodes(pid)
-            if (n.planspace_id or "") == lane_id
-        ]
-        by_id: dict[str, Node] = {n.id: n for n in lane_nodes}
-        by_id[updated.id] = updated
-        if has_cycle(by_id):
+        if has_cycle(self._lane_nodes_with(pid, lane_id, updated)):
             raise ValueError("scheduled_deps would introduce a cycle in the lane DAG")
 
         self.store.update_node(updated)
@@ -842,6 +942,78 @@ class ProjectRegistry:
                     self._auto_promote_next_virtual(rt)
                     return self.store.load_node(pid, updated.id) or updated
         return updated
+
+    def _resolve_virtual_create_lane(
+        self,
+        rt: ProjectRuntime,
+        planspace_id: str | None,
+    ) -> str:
+        active = resolve_active_planspace(
+            rt.project, contextspace_root(self.store.root)
+        )
+        active_lane = active[1].id if active is not None else ""
+        requested = planspace_id.strip() if isinstance(planspace_id, str) else ""
+        if not requested:
+            if not active_lane:
+                raise ValueError("active planspace is required")
+            return active_lane
+        if not requested.startswith("planspaces."):
+            raise ValueError(f"unknown planspace: {requested}")
+        if requested == active_lane:
+            return requested
+        binding = resolve_project_binding(
+            rt.project, contextspace_root(self.store.root)
+        )
+        if binding is None:
+            raise ValueError(f"unknown planspace: {requested}")
+        if any(ref.id == requested for ref in binding.plugs):
+            return requested
+        raise ValueError(f"unknown planspace: {requested}")
+
+    def _normalize_virtual_scheduled_deps(
+        self,
+        pid: str,
+        *,
+        virtual_id: str,
+        lane_id: str,
+        scheduled_deps: list[str] | None,
+    ) -> list[str]:
+        if scheduled_deps is None:
+            return []
+        if not isinstance(scheduled_deps, list):
+            raise ValueError("scheduled_deps must be a list")
+        deps: list[str] = []
+        seen: set[str] = set()
+        for raw_dep in scheduled_deps:
+            if not isinstance(raw_dep, str) or not raw_dep.strip():
+                raise ValueError("scheduled_deps entries must be non-empty strings")
+            dep = raw_dep.strip()
+            if dep == virtual_id:
+                raise ValueError("scheduled_deps must not include the virtual itself")
+            if dep in seen:
+                continue
+            dep_node = self.store.load_node(pid, dep)
+            if dep_node is None:
+                raise ValueError(f"scheduled_dep {dep!r} does not resolve")
+            if (dep_node.planspace_id or "") != lane_id:
+                raise ValueError(f"scheduled_dep {dep!r} is outside this lane")
+            seen.add(dep)
+            deps.append(dep)
+        return deps
+
+    def _lane_nodes_with(
+        self,
+        pid: str,
+        lane_id: str,
+        node: Node,
+    ) -> dict[str, Node]:
+        by_id = {
+            n.id: n
+            for n in self.store.list_nodes(pid)
+            if (n.planspace_id or "") == lane_id
+        }
+        by_id[node.id] = node
+        return by_id
 
     def _spawn_op_commit(self, rt: ProjectRuntime, agent_node: Node) -> None:
         op_node = Node(

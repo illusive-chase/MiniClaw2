@@ -114,6 +114,16 @@ class UpdateVirtualRequest(BaseModel):
     obsolete_reason: str | None = None
 
 
+class CreateVirtualRequest(BaseModel):
+    prompt_draft: str
+    category: str | None = None
+    subtype: str | None = None
+    brief: dict[str, Any] | None = None
+    motivation: str | None = None
+    scheduled_deps: list[str] | None = None
+    planspace_id: str | None = None
+
+
 class EventRecord(BaseModel):
     seq: int
     event: dict[str, Any]
@@ -355,6 +365,35 @@ def create_app() -> FastAPI:
         if mode is None:
             raise HTTPException(404, "session not found")
         return describe_project_contextspace(project, store_root=registry.store.root)
+
+    @app.post("/sessions/{sid}/virtuals", response_model=dict[str, Any])
+    async def create_virtual(
+        sid: str,
+        req: CreateVirtualRequest,
+    ) -> dict[str, Any]:
+        project = registry.get_project(sid)
+        if project is None:
+            raise HTTPException(404, "session not found")
+        if registry.is_running(sid):
+            raise HTTPException(409, "turn in progress")
+        if _context_task_running(project.id):
+            raise HTTPException(409, "context refresh in progress")
+        try:
+            node = registry.create_virtual(
+                sid,
+                prompt_draft=req.prompt_draft,
+                category=req.category,
+                subtype=req.subtype,
+                brief=req.brief,
+                motivation=req.motivation,
+                scheduled_deps=req.scheduled_deps,
+                planspace_id=req.planspace_id,
+            )
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        if node is None:
+            raise HTTPException(409, "project is busy")
+        return {"ok": True, "node_id": node.id, "node": node.model_dump()}
 
     @app.post(
         "/sessions/{sid}/virtuals/{vid}/promote", response_model=dict[str, Any]

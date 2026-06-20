@@ -84,6 +84,7 @@ export type CanvasProps = {
   knownPlanspaceIds: string[];
   hiddenPlanspaceIds: string[];
   activePlanspaceId: string | null;
+  canCreateVirtual: boolean;
   /** Persisted positions hydrated from the session. */
   initialLayoutHints?: Record<string, { x: number; y: number }>;
   /** Persisted viewport hydrated from the session. */
@@ -117,6 +118,7 @@ function CanvasInner({
   knownPlanspaceIds,
   hiddenPlanspaceIds,
   activePlanspaceId,
+  canCreateVirtual,
   initialLayoutHints,
   initialLayoutViewport,
   onSelectionChange,
@@ -200,6 +202,7 @@ function CanvasInner({
         knownPlanspaceIds,
         hiddenPlanspaceIds,
         activePlanspaceId,
+        canCreateVirtual,
       }),
     [
       nodes,
@@ -211,6 +214,7 @@ function CanvasInner({
       knownPlanspaceIds,
       hiddenPlanspaceIds,
       activePlanspaceId,
+      canCreateVirtual,
     ],
   );
 

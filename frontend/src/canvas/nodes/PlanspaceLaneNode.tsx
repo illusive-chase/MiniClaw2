@@ -41,6 +41,22 @@ function PlanspaceLaneNodeImpl({ data }: NodeProps<PlanspaceLaneData>) {
           </span>
         )}
         <span className="ml-auto flex-none font-mono opacity-70">{data.nodeCount} nodes</span>
+        {data.active && (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              planspaceLaneContext.onCreateVirtual(data.planspaceId);
+            }}
+            onMouseDown={(e) => e.stopPropagation()}
+            disabled={!data.canCreateVirtual}
+            className="nodrag -mr-1 inline-flex h-5 w-5 flex-none items-center justify-center rounded border border-current/30 bg-surface-raised/70 text-[14px] leading-none opacity-90 transition hover:bg-surface-raised disabled:cursor-not-allowed disabled:opacity-35"
+            title="Add virtual node"
+            aria-label="Add virtual node"
+          >
+            +
+          </button>
+        )}
       </div>
     </div>
   );
@@ -48,15 +64,18 @@ function PlanspaceLaneNodeImpl({ data }: NodeProps<PlanspaceLaneData>) {
 
 export const PlanspaceLaneNode = memo(PlanspaceLaneNodeImpl);
 
-/* Legacy singleton kept for backwards compatibility with App.tsx's
- * setPlanspaceLaneContext call. The node no longer reads from it — selection
- * is routed via React Flow's onNodeClick in Canvas.tsx — but removing the
- * setter would force a churny edit in App.tsx for no behavior change. */
 export type PlanspaceLaneContext = {
   onSelectPlanspace: (planspaceId: string) => void;
   onTogglePlanspaceVisibility: (planspaceId: string, hidden: boolean) => void;
+  onCreateVirtual: (planspaceId: string) => void;
 };
 
-export function setPlanspaceLaneContext(_ctx: PlanspaceLaneContext): void {
-  // no-op
+let planspaceLaneContext: PlanspaceLaneContext = {
+  onSelectPlanspace: () => {},
+  onTogglePlanspaceVisibility: () => {},
+  onCreateVirtual: () => {},
+};
+
+export function setPlanspaceLaneContext(ctx: PlanspaceLaneContext): void {
+  planspaceLaneContext = ctx;
 }

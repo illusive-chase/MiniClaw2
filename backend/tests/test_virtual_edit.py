@@ -10,6 +10,7 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 import miniclaw2.app as app_module
+from miniclaw2.contextspace import create_planspace
 from miniclaw2.domain import (
     Category,
     Node,
@@ -30,7 +31,12 @@ class VirtualEditRegistryTests(unittest.TestCase):
         self.project = Project(root_path=str(Path(self.tmp.name) / "repo"))
         self.store.create_project(self.project)
         self.registry = ProjectRegistry(store=self.store)
-        self.lane = "planspaces.work"
+        self.lane = create_planspace(self.project, title="Work", mode="manual")
+        runtime = self.registry._runtimes[self.project.id]
+        settings = dict(runtime.project.settings_override)
+        settings["active_planspace_id"] = self.lane
+        runtime.project.settings_override = settings
+        self.store.update_project(runtime.project)
 
     def tearDown(self) -> None:
         os.environ.pop("MINICLAW_CONTEXT_HOME", None)
@@ -168,6 +174,88 @@ class VirtualEditRegistryTests(unittest.TestCase):
         )
 
         self.assertIsNone(updated)
+
+    def test_create_virtual_uses_active_lane_and_writes_preview(self) -> None:
+        parent = self._virtual("parent")
+
+        created = self.registry.create_virtual(
+            self.project.id,
+            prompt_draft="new planned work",
+            motivation="user wants this",
+            scheduled_deps=[parent.id],
+        )
+
+        self.assertIsNotNone(created)
+        assert created is not None
+        self.assertEqual(created.state, NodeState.VIRTUAL)
+        self.assertEqual(created.kind, NodeKind.AGENT)
+        self.assertEqual(created.category, Category.REGULAR)
+        self.assertEqual(created.planspace_id, self.lane)
+        self.assertEqual(created.prompt_draft, "new planned work")
+        self.assertEqual(created.summary, "user wants this")
+        self.assertEqual(created.scheduled_deps, [parent.id])
+        self.assertEqual(created.proposed_by, "user")
+
+        reloaded = self.store.load_node(self.project.id, created.id)
+        self.assertIsNotNone(reloaded)
+        preview = self.store.read_node_preview(self.project.id, created.id)
+        self.assertIsNotNone(preview)
+        assert preview is not None
+        self.assertIn('"prompt_draft": "new planned work"', preview)
+
+    def test_create_virtual_rejects_missing_dependency(self) -> None:
+        with self.assertRaisesRegex(ValueError, "does not resolve"):
+            self.registry.create_virtual(
+                self.project.id,
+                prompt_draft="new planned work",
+                scheduled_deps=["missing"],
+            )
+
+        self.assertEqual(
+            [n.id for n in self.store.list_nodes(self.project.id)],
+            [],
+        )
+
+    def test_create_virtual_rejects_cross_lane_dependency(self) -> None:
+        parent = self._virtual("other-parent")
+        parent.planspace_id = "planspaces.other"
+        self.store.update_node(parent)
+
+        with self.assertRaisesRegex(ValueError, "outside this lane"):
+            self.registry.create_virtual(
+                self.project.id,
+                prompt_draft="new planned work",
+                scheduled_deps=[parent.id],
+            )
+
+        self.assertEqual(
+            [n.id for n in self.store.list_nodes(self.project.id)],
+            [parent.id],
+        )
+
+    def test_create_virtual_rejects_self_dependency(self) -> None:
+        with self.assertRaisesRegex(ValueError, "must not include"):
+            self.registry.create_virtual(
+                self.project.id,
+                node_id="new-node",
+                prompt_draft="new planned work",
+                scheduled_deps=["new-node"],
+            )
+
+        self.assertIsNone(self.store.load_node(self.project.id, "new-node"))
+
+    def test_create_virtual_rejects_cycle(self) -> None:
+        parent = self._virtual("parent", deps=["new-node"])
+
+        with self.assertRaisesRegex(ValueError, "cycle"):
+            self.registry.create_virtual(
+                self.project.id,
+                node_id="new-node",
+                prompt_draft="new planned work",
+                scheduled_deps=[parent.id],
+            )
+
+        self.assertIsNone(self.store.load_node(self.project.id, "new-node"))
 
 
 class VirtualEditApiTests(unittest.TestCase):

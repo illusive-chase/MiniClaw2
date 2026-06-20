@@ -150,6 +150,38 @@ export type UpdateVirtualPayload = {
   obsolete_reason?: string | null;
 };
 
+export type CreateVirtualPayload = {
+  prompt_draft: string;
+  category?: NodeCategory;
+  subtype?: ReviewSubtype | null;
+  brief?: ReviewBrief | null;
+  motivation?: string | null;
+  scheduled_deps?: string[];
+  planspace_id?: string | null;
+};
+
+export async function createVirtual(
+  sessionId: string,
+  body: CreateVirtualPayload,
+): Promise<{ ok: boolean; node_id: string; node: NodeInfo }> {
+  const res = await fetch(`/sessions/${sessionId}/virtuals`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    let detail = `${res.status}`;
+    try {
+      const body = await res.json();
+      if (typeof body?.detail === "string") detail = `${res.status}: ${body.detail}`;
+    } catch {
+      /* keep status-only detail */
+    }
+    throw new Error(`createVirtual failed: ${detail}`);
+  }
+  return res.json();
+}
+
 export async function updateVirtual(
   sessionId: string,
   nodeId: string,
