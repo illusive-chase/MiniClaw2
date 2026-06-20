@@ -136,12 +136,31 @@ function CanvasInner({
   const pendingViewportRef = useRef<Viewport | null>(null);
   const flushTimerRef = useRef<number | null>(null);
   const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
-  const { getViewport } = useReactFlow();
+  const { getViewport, setViewport } = useReactFlow();
+  const [layoutHydrationVersion, setLayoutHydrationVersion] = useState(0);
+  const [viewportHydrationVersion, setViewportHydrationVersion] = useState(0);
+  const appliedLayoutHydrationVersionRef = useRef(layoutHydrationVersion);
 
-  /* Re-hydrate when the session changes (initialLayoutHints prop swap). */
+  /* Re-hydrate when the session changes (initialLayoutHints prop swap). A ref
+   * update alone is not enough because buildGraph is memoized, and the RF sync
+   * pass normally preserves current positions to protect active drags. */
   useEffect(() => {
-    layoutHintsRef.current = sanitizeLayoutHints(initialLayoutHints);
+    const next = sanitizeLayoutHints(initialLayoutHints);
+    if (sameLayoutHints(layoutHintsRef.current, next)) return;
+    layoutHintsRef.current = next;
+    setLayoutHydrationVersion((version) => version + 1);
   }, [initialLayoutHints]);
+
+  /* defaultViewport is only read by React Flow on mount. If a mounted canvas is
+   * given hydrated session state later, apply that persisted viewport
+   * explicitly. */
+  useEffect(() => {
+    const next = sanitizeViewport(initialLayoutViewport);
+    if (sameViewportOrNull(initialViewportRef.current, next)) return;
+    initialViewportRef.current = next;
+    viewportRef.current = next;
+    setViewportHydrationVersion((version) => version + 1);
+  }, [initialLayoutViewport]);
 
   const flushPendingLayout = useCallback(() => {
     if (flushTimerRef.current !== null) {
@@ -215,6 +234,7 @@ function CanvasInner({
       hiddenPlanspaceIds,
       activePlanspaceId,
       canCreateVirtual,
+      layoutHydrationVersion,
     ],
   );
 
@@ -236,9 +256,12 @@ function CanvasInner({
    * its grip on which element is under the cursor, producing the cursor flicker
    * between pane (grab) and node (pointer). */
   useEffect(() => {
+    const hydrateFromLayout =
+      appliedLayoutHydrationVersionRef.current !== layoutHydrationVersion;
     setRfNodes((current) => {
       const positionById = new Map(current.map((n) => [n.id, n.position]));
       const next = built.rfNodes.map((n) => {
+        if (hydrateFromLayout) return n;
         const existing = positionById.get(n.id);
         // Only allocate a new object when the carried-over position actually
         // differs; stable refs let React Flow skip work and keep hit-test stable.
@@ -249,7 +272,26 @@ function CanvasInner({
       });
       return decorateSelection(next, selectedNodeId, phantomVisible);
     });
-  }, [built.rfNodes, selectedNodeId, phantomVisible, setRfNodes]);
+    if (hydrateFromLayout) {
+      appliedLayoutHydrationVersionRef.current = layoutHydrationVersion;
+    }
+  }, [
+    built.rfNodes,
+    selectedNodeId,
+    phantomVisible,
+    setRfNodes,
+    layoutHydrationVersion,
+  ]);
+
+  useEffect(() => {
+    if (viewportHydrationVersion === 0) return;
+    const next = initialViewportRef.current;
+    if (!next) return;
+    const id = window.setTimeout(() => {
+      setViewport(next, { duration: 0 });
+    }, 0);
+    return () => window.clearTimeout(id);
+  }, [setViewport, viewportHydrationVersion]);
 
   /* Edges depend on hover (the `loads` lane fades in only for the hovered or
    * selected node), so they get a separate effect. */
@@ -518,6 +560,27 @@ function sameViewport(a: Viewport | null, b: Viewport): boolean {
     Math.abs(a.y - b.y) < 0.01 &&
     Math.abs(a.zoom - b.zoom) < 0.0001
   );
+}
+
+function sameViewportOrNull(a: Viewport | null, b: Viewport | null): boolean {
+  if (!a && !b) return true;
+  if (!a || !b) return false;
+  return sameViewport(a, b);
+}
+
+function sameLayoutHints(
+  a: Record<string, { x: number; y: number }>,
+  b: Record<string, { x: number; y: number }>,
+): boolean {
+  const aKeys = Object.keys(a);
+  const bKeys = Object.keys(b);
+  if (aKeys.length !== bKeys.length) return false;
+  for (const key of aKeys) {
+    const left = a[key];
+    const right = b[key];
+    if (!right || left.x !== right.x || left.y !== right.y) return false;
+  }
+  return true;
 }
 
 function decorateSelection(
