@@ -29,10 +29,10 @@ import { PhantomNode } from "./nodes/PhantomNode";
 import { ProjectRootNode } from "./nodes/ProjectRootNode";
 import { PlanspaceLaneNode } from "./nodes/PlanspaceLaneNode";
 import {
+  DependencyEdge,
   LoadsEdge,
   OpChevronEdge,
   ResumeEdge,
-  ReviewsEdge,
   TimelineEdge,
   setOpChevronContext,
 } from "./edges/TimelineEdge";
@@ -49,9 +49,9 @@ const NODE_TYPES = {
 };
 
 const EDGE_TYPES = {
+  dependency: DependencyEdge,
   timeline: TimelineEdge,
   resume: ResumeEdge,
-  reviews: ReviewsEdge,
   loads: LoadsEdge,
   opChevron: OpChevronEdge,
 };

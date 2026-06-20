@@ -115,6 +115,10 @@ export function App() {
 
   const activeNodeIdRef = useRef<string | null>(null);
   const inspectedNodeIdRef = useRef<string | null>(null);
+  const currentRouteRef = useRef<Route>("landing");
+  const currentSessionIdRef = useRef<string | null>(null);
+  const nodeCountRef = useRef(0);
+  const refreshNodesSeqRef = useRef(0);
   const lastLayoutSaveRef = useRef<Promise<SessionInfo> | null>(null);
   const layoutSaveChainRef = useRef<Promise<void>>(Promise.resolve());
   const openProjectRequestRef = useRef(0);
@@ -127,6 +131,18 @@ export function App() {
   useEffect(() => {
     inspectedNodeIdRef.current = inspectedNodeId;
   }, [inspectedNodeId]);
+
+  useEffect(() => {
+    currentRouteRef.current = route;
+  }, [route]);
+
+  useEffect(() => {
+    currentSessionIdRef.current = session?.id ?? null;
+  }, [session?.id]);
+
+  useEffect(() => {
+    nodeCountRef.current = nodes.length;
+  }, [nodes.length]);
 
   /* close the ⋯ menu on outside click */
   useEffect(() => {
@@ -141,6 +157,8 @@ export function App() {
   }, [menuOpen]);
 
   const resetAllSessionState = useCallback(() => {
+    refreshNodesSeqRef.current += 1;
+    nodeCountRef.current = 0;
     setNodes([]);
     setSelection({ kind: "none" });
     setInspectedNodeId(null);
@@ -193,6 +211,8 @@ export function App() {
         console.warn("get session failed:", err);
       }
       resetAllSessionState();
+      currentSessionIdRef.current = fresh.id;
+      currentRouteRef.current = "project";
       setSession(fresh);
       setRoute("project");
     },
@@ -201,6 +221,8 @@ export function App() {
 
   const backToLanding = useCallback(() => {
     openProjectRequestRef.current += 1;
+    currentRouteRef.current = "landing";
+    currentSessionIdRef.current = null;
     resetAllSessionState();
     setSession(null);
     setRoute("landing");
@@ -231,9 +253,23 @@ export function App() {
 
   /* refresh node list */
   const refreshNodes = useCallback(async () => {
-    if (!session?.id) return;
+    const sessionId = session?.id;
+    if (!sessionId) return;
+    const seq = ++refreshNodesSeqRef.current;
     try {
-      const next = await listNodes(session.id);
+      const next = await listNodes(sessionId);
+      if (seq !== refreshNodesSeqRef.current) return;
+      if (currentRouteRef.current !== "project" || currentSessionIdRef.current !== sessionId) {
+        return;
+      }
+      if (nodeCountRef.current > 0 && next.length === 0) {
+        console.warn("Ignoring empty node refresh for non-empty project", {
+          sessionId,
+          currentCount: nodeCountRef.current,
+        });
+        return;
+      }
+      nodeCountRef.current = next.length;
       setNodes(next);
       setInspectedNodeId((current) => current ?? next.at(-1)?.id ?? null);
     } catch (err) {
@@ -399,7 +435,11 @@ export function App() {
       setSessionContextSpaceError(null);
       try {
         const result = await promoteVirtual(session.id, nodeId);
-        setNodes((prev) => upsertNode(prev, result.node));
+        setNodes((prev) => {
+          const updated = upsertNode(prev, result.node);
+          nodeCountRef.current = updated.length;
+          return updated;
+        });
         setSelection({ kind: "agent", nodeId: result.node.id });
         setInspectedNodeId(result.node.id);
         await refreshNodes();
@@ -417,7 +457,11 @@ export function App() {
       setSessionContextSpaceError(null);
       try {
         const result = await updateVirtual(session.id, nodeId, payload);
-        setNodes((prev) => upsertNode(prev, result.node));
+        setNodes((prev) => {
+          const updated = upsertNode(prev, result.node);
+          nodeCountRef.current = updated.length;
+          return updated;
+        });
       } catch (err) {
         setSessionContextSpaceError(String(err));
         throw err;
@@ -449,7 +493,11 @@ export function App() {
           planspace_id: planspaceId,
           ...payload,
         });
-        setNodes((prev) => upsertNode(prev, result.node));
+        setNodes((prev) => {
+          const updated = upsertNode(prev, result.node);
+          nodeCountRef.current = updated.length;
+          return updated;
+        });
         setSelection({ kind: "agent", nodeId: result.node.id });
         setInspectedNodeId(result.node.id);
         if (result.node.state !== "virtual") {
@@ -746,7 +794,11 @@ export function App() {
         void refreshNodes();
       } else if (ev.type === "node_updated") {
         eventNodeId = ev.node.id;
-        setNodes((prev) => upsertNode(prev, ev.node));
+        setNodes((prev) => {
+          const updated = upsertNode(prev, ev.node);
+          nodeCountRef.current = updated.length;
+          return updated;
+        });
         if (ev.node.state !== "waiting") {
           setPendingGate((prev) => (prev?.nodeId === ev.node.id ? null : prev));
         }

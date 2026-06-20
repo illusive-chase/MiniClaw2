@@ -256,9 +256,9 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
     selectable: true,
   });
 
-  /* Index ops by the child node they sit between, so we can fold them onto
-   * a single chevron edge from (op's parent) → (op's child). Trailing ops
-   * (no child yet) keep their tile rendering so the auto-commit stays visible. */
+  /* Index ops by the child node they sit between, so we can keep folding them
+   * onto the existing chevron edge. Trailing ops (no child yet) keep their tile
+   * rendering so the auto-commit stays visible. */
   const opByChildId = new Map<string, NodeInfo>();
   const opsWithChild = new Set<string>();
   for (const node of visibleNodes) {
@@ -276,24 +276,17 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
     contextBundlesByNodeId,
   );
 
-  /* Mark agent nodes that no other agent descends from. The "+" hover
-   * affordance only appears on these tail tiles. Ops are transparent here: we
-   * walk through them to find the real agent parent. */
+  /* Mark agent nodes that no other work node depends on or continues from. The
+   * "+" hover affordance only appears on these tail tiles. */
   const hasDescendantById = new Set<string>();
   for (const candidate of visibleNodes) {
     if (candidate.kind === "op") continue;
-    let parentId: string | null | undefined = candidate.parent_node_id;
-    while (parentId) {
-      const parent = nodeById.get(parentId);
-      if (!parent) {
-        parentId = null;
-        break;
-      }
-      if (parent.kind !== "op") break;
-      parentId = parent.parent_node_id;
+    for (const depId of visibleScheduledDepIds(candidate, nodeById)) {
+      hasDescendantById.add(depId);
     }
-    if (parentId && nodeById.has(parentId)) {
-      hasDescendantById.add(parentId);
+    const continueSourceId = findContinueSourceId(candidate, nodeById);
+    if (continueSourceId) {
+      hasDescendantById.add(continueSourceId);
     }
   }
 
@@ -390,10 +383,12 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
       });
     }
 
-    /* timeline / resume / op-chevron edge from FS-parent */
+    /* Ops are not part of the scheduled dependency DAG. Keep their existing
+     * filesystem edge rendering so auto-commit tiles still read as attached to
+     * the run that spawned them. Work-node edges are generated below from
+     * scheduled_deps + continue sources only. */
     const interposedOp = opByChildId.get(node.id);
     if (interposedOp) {
-      /* parent → child carrying the folded op chevron */
       const grandparentId =
         interposedOp.parent_node_id && nodeById.has(interposedOp.parent_node_id)
           ? interposedOp.parent_node_id
@@ -405,29 +400,70 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
         type: "opChevron",
         data: { childState: node.state, op: interposedOp },
       });
-    } else if (node.parent_node_id && nodeById.has(node.parent_node_id)) {
-      const parentNode = nodeById.get(node.parent_node_id)!;
-      const isReview = parentNode.kind === "agent" && node.category === "review";
-      const isResume = parentNode.kind !== "op" && node.kind === "agent" && !isReview;
+    } else if (node.kind === "op" && node.parent_node_id && nodeById.has(node.parent_node_id)) {
       rfEdges.push({
         id: `tl:${node.parent_node_id}->${node.id}`,
         source: node.parent_node_id,
-        target: node.id,
-        targetHandle: isReview ? "reviews" : undefined,
-        type: isReview ? "reviews" : isResume ? "resume" : "timeline",
-        data: { childState: node.state },
-      });
-    } else if (node.parent_node_id === null || node.parent_node_id === undefined) {
-      /* root-anchored timeline edge */
-      rfEdges.push({
-        id: `tl:root->${node.id}`,
-        source: "root",
         target: node.id,
         type: "timeline",
         data: { childState: node.state },
       });
     }
   });
+
+  /* Dependency arrows — scheduled_deps are the planning/template DAG. Home is
+   * only the root for work nodes with no declared dependencies. */
+  const continueSourceByNodeId = new Map<string, string>();
+  for (const node of visibleNodes) {
+    if (node.kind === "op") continue;
+    const continueSourceId = findContinueSourceId(node, nodeById);
+    if (continueSourceId) continueSourceByNodeId.set(node.id, continueSourceId);
+  }
+
+  for (const node of visibleNodes) {
+    if (node.kind === "op") continue;
+    const declaredDeps = node.scheduled_deps ?? [];
+    const visibleDeps = visibleScheduledDepIds(node, nodeById);
+    if (declaredDeps.length === 0) {
+      rfEdges.push({
+        id: `dep:root->${node.id}`,
+        source: "root",
+        target: node.id,
+        type: "dependency",
+        data: { childState: node.state, root: true },
+      });
+      continue;
+    }
+    const continueSourceId = continueSourceByNodeId.get(node.id);
+    for (const depId of visibleDeps) {
+      rfEdges.push({
+        id: `dep:${depId}->${node.id}`,
+        source: depId,
+        target: node.id,
+        type: "dependency",
+        data: {
+          childState: node.state,
+          overlapsContinue: depId === continueSourceId,
+        },
+      });
+    }
+  }
+
+  /* Continue arrows — explicit provider-conversation continuation. Prefer the
+   * virtual/template field, but fall back to parent_node_id for older/directly
+   * launched continuation runs that materialized before that field was set. */
+  for (const node of visibleNodes) {
+    if (node.kind === "op") continue;
+    const sourceId = continueSourceByNodeId.get(node.id);
+    if (!sourceId) continue;
+    rfEdges.push({
+      id: `continue:${sourceId}->${node.id}`,
+      source: sourceId,
+      target: node.id,
+      type: "resume",
+      data: { childState: node.state },
+    });
+  }
 
   /* error terminals — a small red-edged downstream node per failed run.
    * The owning agent keeps its own error state; the terminal puts the failure
@@ -690,10 +726,40 @@ export function findResumeParent(
   node: NodeInfo,
   byId: Map<string, NodeInfo>,
 ): NodeInfo | null {
-  if (!node.parent_node_id) return null;
-  const parent = byId.get(node.parent_node_id);
+  const sourceId = findContinueSourceId(node, byId);
+  if (!sourceId) return null;
+  const parent = byId.get(sourceId);
   if (!parent || parent.kind === "op") return null;
   return parent;
+}
+
+function visibleScheduledDepIds(
+  node: NodeInfo,
+  byId: Map<string, NodeInfo>,
+): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const depId of node.scheduled_deps ?? []) {
+    if (seen.has(depId) || !byId.has(depId)) continue;
+    seen.add(depId);
+    out.push(depId);
+  }
+  return out;
+}
+
+function findContinueSourceId(
+  node: NodeInfo,
+  byId: Map<string, NodeInfo>,
+): string | null {
+  if (node.resume_from_node_id && byId.has(node.resume_from_node_id)) {
+    return node.resume_from_node_id;
+  }
+  if (!node.parent_node_id || !byId.has(node.parent_node_id)) return null;
+  const parent = byId.get(node.parent_node_id);
+  if (!parent || parent.kind === "op" || node.kind !== "agent") return null;
+  if (node.category === "review") return null;
+  if ((node.scheduled_deps ?? []).length > 0) return null;
+  return node.parent_node_id;
 }
 
 function collectPlanspaceOrder(

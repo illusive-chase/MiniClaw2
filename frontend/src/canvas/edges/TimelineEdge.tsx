@@ -8,7 +8,11 @@ import {
 import type { NodeInfo, NodeState } from "../../types";
 import { stateStroke } from "../nodes/stateMeta";
 
-type EdgeData = { childState?: NodeState };
+type EdgeData = {
+  childState?: NodeState;
+  root?: boolean;
+  overlapsContinue?: boolean;
+};
 
 const ACTIVE: NodeState[] = [
   "running",
@@ -55,6 +59,45 @@ function TimelineEdgeImpl(props: EdgeProps<EdgeData>) {
 }
 
 export const TimelineEdge = memo(TimelineEdgeImpl);
+
+/** Primary DAG arrow — template/planning dependency from scheduled_deps. */
+function DependencyEdgeImpl(props: EdgeProps<EdgeData>) {
+  const { sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, data, selected } =
+    props;
+  const offsetY = data?.overlapsContinue ? 14 : 0;
+  const [path] = getBezierPath({
+    sourceX,
+    sourceY: sourceY + offsetY,
+    targetX,
+    targetY: targetY + offsetY,
+    sourcePosition,
+    targetPosition,
+    curvature: data?.root ? 0.18 : 0.24,
+  });
+  const state = data?.childState;
+  const isActive = state ? ACTIVE.includes(state) : false;
+  const stroke = selected
+    ? "rgb(var(--brand))"
+    : data?.root
+      ? "rgb(var(--border-strong))"
+      : "rgb(var(--state-review))";
+
+  return (
+    <BaseEdge
+      path={path}
+      style={{
+        stroke,
+        strokeWidth: selected ? 2.3 : isActive ? 1.9 : data?.root ? 1.35 : 1.7,
+        opacity: selected ? 1 : isActive ? 0.95 : data?.root ? 0.6 : 0.82,
+        strokeDasharray: isActive ? "3 4" : undefined,
+        animation: isActive ? "edge-march 0.9s linear infinite" : undefined,
+      }}
+      markerEnd={props.markerEnd}
+    />
+  );
+}
+
+export const DependencyEdge = memo(DependencyEdgeImpl);
 
 /** Solid arrow with ↻ glyph mid-edge — provider conversation continuation. */
 function ResumeEdgeImpl(props: EdgeProps<EdgeData>) {
