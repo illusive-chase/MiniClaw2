@@ -1,6 +1,6 @@
 """Domain models — Project, Node, HumanGate, ContextBundle.
 
-Schema matches PHILOSOPHY §6 and PROPOSAL_VIRTUAL_NODES §3.1. The
+Schema matches PHILOSOPHY §6. The
 ontology is two-axis: ``kind`` distinguishes agent, op, and verifier;
 ``category`` (orthogonal, applies to agent/verifier) distinguishes
 planning, regular, and review semantics. Agentic and human reviews are

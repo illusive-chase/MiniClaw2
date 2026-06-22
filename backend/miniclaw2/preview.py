@@ -4,8 +4,6 @@ Every executed node writes ``preview.json`` (or the framework writes a
 stub when the agent failed to). Every virtual node carries its preview
 shape declaratively. Schemas are strict whitelist (``extra='forbid'``)
 so agent-written files surface unknown-field violations at reap.
-
-Per PROPOSAL_VIRTUAL_NODES §3.3.
 """
 
 from __future__ import annotations

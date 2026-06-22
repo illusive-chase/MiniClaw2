@@ -1,71 +1,14 @@
 # MiniClaw2 Implementation Status
 
 Companion to `PHILOSOPHY.md`. The philosophy doc describes the
-destination; this doc tracks how far the code has actually travelled
-toward it. Where the two disagree, the philosophy doc states the
+destination; this doc is the single source of truth for what the code
+actually does. Where the two disagree, the philosophy doc states the
 position and this doc names the unresolved gap.
 
 Trunk files are mentioned only as orientation; subordinate modules and
 test files are left implicit. Items are bucketed by subsystem, then
 split into **Landed** and **Pending**. Pending items are not
 sequenced — dependencies are noted inline where they matter.
-
-
-## 0. Virtual-nodes redesign progress
-
-Per `PROPOSAL_VIRTUAL_NODES.md` §11 sequencing:
-
-- [x] Step 1 — Domain types: `NodeKind = {agent, op, verifier}`, `VIRTUAL` /
-      `AWAITING_HUMAN_INPUT` states, category / subtype / brief.
-- [x] Step 2 — Preview module (parse/validate/persist;
-      `backend/miniclaw2/preview.py`).
-- [x] Step 3 — Materialization
-      (`materialize_active_lane`; in-flight nodes skipped, agent
-      writes its own).
-- [x] Step 4 — Reap pipeline (`reap_lane`).
-- [x] Step 5 — Auto-promotion scheduler. Per-planspace `mode`
-      (`auto` | `manual`, default `manual`) in plug manifest.
-      `read_planspace_mode` reads it. `_on_runner_done` invokes
-      `_auto_promote_next_virtual`, which picks the earliest-created
-      eligible virtual on the active lane. `promote_virtual(pid, vid)`
-      is the public method (manual mode = REST call).
-- [x] Step 6 — Category-aware launch prompts (planning / regular /
-      agentic_review / human_interact_review).
-- [x] Step 7 — Human-interact substate. Runner enters
-      `AWAITING_HUMAN_INPUT` before the provider runs for
-      `human_interact_review` nodes, emits an
-      `interaction_request {interaction_type: "human_review_prose"}`,
-      writes the user's prose to both
-      `projects/<pid>/nodes/<nid>/human-review.md` (durable) and
-      `.miniclaw2/graph/lanes/<lane>/nodes/<nid>/human-review.md`
-      (materialized) before launching the reviewer agent. Empty prose
-      cancels the node without invoking the provider.
-- [x] Step 8 — Concierge bootstrap.
-      `POST /sessions/{sid}/planspaces {title, seed, mode?}` creates a
-      planspace plug, attaches it to the project's binding, activates
-      it, and launches a planning-category agent whose prompt is the
-      rendered `prompts/concierge_bootstrap.md` with the seed
-      substituted into `<<user_seed>>`.
-- [x] Step 9 — Remove legacy paths. Product/runtime passive gates,
-      `planspace_state.py`, STATUS/PLAN UI, memory-delta frontend
-      paths, and scenario-loader `gate` / `needs_review` vocabulary are
-      gone. Bundled tests now declare template lanes with review agents
-      and verifier nodes.
-- [x] Step 10 — Frontend pass. Virtual tiles render with dashed
-      outlines, category badges, ready-to-promote affordances, virtual
-      side-panel detail, project/direction mode controls, and the old
-      `PlanspacePanel` / gate-node UI has been removed. Phantom composer
-      no longer exposes `needs_review` or cross-lane load controls.
-- [x] Step 11 — Remaining wire envelopes. `node_started` carries
-      `category` / `subtype`; manual promotion returns the promoted
-      node and also broadcasts `node_updated`; `PATCH
-      /sessions/{sid}/planspaces/{planspace_id}/mode` updates lane mode.
-
-Known gaps against the proposal:
-
-- User-authored edits to verifier virtuals are intentionally not
-  exposed. Verifier virtuals are template-only because the missing
-  script carrier cannot be represented by an agent-authored preview.
 
 
 ## 1. Backend domain model
@@ -232,8 +175,7 @@ Trunk: `backend/miniclaw2/contextspace.py`, `backend/miniclaw2/context.py`.
   plug ids, char counts, and injection modes (`system` / `turn`).
 - ContextSpace bootstrap split into idempotent helpers:
   `ensure_contextspace_root`, `ensure_project_binding`, and
-  `add_planspace_to_binding`. The legacy
-  `bootstrap_project_contextspace` remains as a compatibility facade.
+  `add_planspace_to_binding`.
 - `POST /sessions/{sid}/planspaces` creates a new bound direction,
   activates it, and launches the concierge bootstrap agent node from a
   preset markdown prompt.
@@ -366,8 +308,9 @@ Trunk: `frontend/src/canvas/Canvas.tsx`, `frontend/src/canvas/layout.ts`,
 
 ## 6. Preview / virtual-node output model
 
-The `PROPOSAL_VIRTUAL_NODES.md` output model has replaced the
-STATUS/PLAN update harness for the product runtime.
+Executed and virtual nodes both carry a `preview.json` (strict-whitelist
+schema). The materialized active-lane subtree is the agent's read/write
+surface; the durable node store is the source of truth.
 
 ### Landed
 
@@ -441,12 +384,10 @@ Vendor-specific config loading is the largest remaining drift.
 
 ## 8. Templates
 
-A bundled recipe layer for canned multi-step launches. The landed scope
-is the frozen-DAG design from `PROPOSAL_TEMPLATES.md`: a template stamps
-a complete lane of virtual nodes into a fresh temporary project, then
-normal virtual-node promotion drives the run. Parameterized templates,
-slot interpolation, `on_state` branching, and `next:` loops remain
-deferred.
+A bundled recipe layer for canned multi-step launches. A template stamps
+a complete lane of virtual nodes into a fresh temporary project; normal
+virtual-node promotion drives the run from there. Parameterized
+templates, slot interpolation, branching DSL, and loops remain deferred.
 
 ### Landed
 

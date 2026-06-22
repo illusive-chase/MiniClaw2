@@ -1,7 +1,7 @@
 """Reap pipeline — terminal-time walk-diff of the materialized lane.
 
-Per PROPOSAL_VIRTUAL_NODES §3.5. The runner snapshots the lane before
-agent launch and calls ``reap_lane`` at the agent's terminal transition.
+The runner snapshots the lane before agent launch and calls ``reap_lane``
+at the agent's terminal transition.
 The reap pipeline:
 
 1. Diffs the materialized subtree against the pre-launch snapshot.
