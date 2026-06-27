@@ -56,7 +56,10 @@ const EDGE_TYPES = {
   opChevron: OpChevronEdge,
 };
 
-const LAYOUT_DRAG_SAVE_DEBOUNCE_MS = 500;
+const DEFAULT_VIEWPORT: Viewport = { x: 0, y: 0, zoom: 0.9 };
+const MIN_ZOOM = 0.3;
+const MAX_ZOOM = 1.6;
+const CTRL_WHEEL_ZOOM_SENSITIVITY = 0.0012;
 
 export type CanvasSelection =
   | { kind: "agent" | "op"; nodeId: string }
@@ -132,13 +135,14 @@ function CanvasInner({
     sanitizeViewport(initialLayoutViewport),
   );
   const viewportRef = useRef<Viewport | null>(initialViewportRef.current);
+  const liveViewportRef = useRef<Viewport>(initialViewportRef.current ?? DEFAULT_VIEWPORT);
   const pendingHintsRef = useRef<Record<string, { x: number; y: number }>>({});
   const pendingViewportRef = useRef<Viewport | null>(null);
   const flushTimerRef = useRef<number | null>(null);
+  const wrapperRef = useRef<HTMLDivElement | null>(null);
   const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
   const { getViewport, setViewport } = useReactFlow();
   const [layoutHydrationVersion, setLayoutHydrationVersion] = useState(0);
-  const [viewportHydrationVersion, setViewportHydrationVersion] = useState(0);
   const appliedLayoutHydrationVersionRef = useRef(layoutHydrationVersion);
 
   /* Re-hydrate when the session changes (initialLayoutHints prop swap). A ref
@@ -150,17 +154,6 @@ function CanvasInner({
     layoutHintsRef.current = next;
     setLayoutHydrationVersion((version) => version + 1);
   }, [initialLayoutHints]);
-
-  /* defaultViewport is only read by React Flow on mount. If a mounted canvas is
-   * given hydrated session state later, apply that persisted viewport
-   * explicitly. */
-  useEffect(() => {
-    const next = sanitizeViewport(initialLayoutViewport);
-    if (sameViewportOrNull(initialViewportRef.current, next)) return;
-    initialViewportRef.current = next;
-    viewportRef.current = next;
-    setViewportHydrationVersion((version) => version + 1);
-  }, [initialLayoutViewport]);
 
   const flushPendingLayout = useCallback(() => {
     if (flushTimerRef.current !== null) {
@@ -283,16 +276,6 @@ function CanvasInner({
     layoutHydrationVersion,
   ]);
 
-  useEffect(() => {
-    if (viewportHydrationVersion === 0) return;
-    const next = initialViewportRef.current;
-    if (!next) return;
-    const id = window.setTimeout(() => {
-      setViewport(next, { duration: 0 });
-    }, 0);
-    return () => window.clearTimeout(id);
-  }, [setViewport, viewportHydrationVersion]);
-
   /* Edges depend on hover (the `loads` lane fades in only for the hovered or
    * selected node), so they get a separate effect. */
   useEffect(() => {
@@ -303,19 +286,25 @@ function CanvasInner({
    * debounce a push to the backend so refreshes survive too. */
   const handleNodesChange = useCallback(
     (changes: NodeChange[]) => {
-      let changed = false;
+      let shouldFlush = false;
       for (const ch of changes) {
-        if (ch.type === "position" && ch.position && ch.dragging === false) {
-          layoutHintsRef.current[ch.id] = ch.position;
-          pendingHintsRef.current[ch.id] = ch.position;
-          changed = true;
+        if (ch.type === "position" && ch.position && ch.dragging !== undefined) {
+          const position = { x: ch.position.x, y: ch.position.y };
+          layoutHintsRef.current[ch.id] = position;
+          pendingHintsRef.current[ch.id] = position;
+          if (ch.dragging === false) shouldFlush = true;
         }
       }
-      if (changed) scheduleFlushLayout(LAYOUT_DRAG_SAVE_DEBOUNCE_MS);
+      if (shouldFlush) scheduleFlushLayout(0);
       onNodesChange(changes);
     },
     [onNodesChange, scheduleFlushLayout],
   );
+
+  const onMove = useCallback((_event: MouseEvent | TouchEvent | null, viewport: Viewport) => {
+    const next = sanitizeViewport(viewport);
+    if (next) liveViewportRef.current = next;
+  }, []);
 
   const onMoveEnd = useCallback(
     (event: MouseEvent | TouchEvent | null, viewport: Viewport) => {
@@ -324,6 +313,7 @@ function CanvasInner({
       if (!event) return;
       const next = sanitizeViewport(viewport);
       if (!next || sameViewport(viewportRef.current, next)) return;
+      liveViewportRef.current = next;
       viewportRef.current = next;
       pendingViewportRef.current = next;
       scheduleFlushLayout(250);
@@ -331,10 +321,49 @@ function CanvasInner({
     [scheduleFlushLayout],
   );
 
+  const onWheelCapture = useCallback(
+    (event: React.WheelEvent<HTMLDivElement>) => {
+      if (!event.ctrlKey && !event.metaKey) return;
+      if (!wrapperRef.current) return;
+      event.preventDefault();
+      event.stopPropagation();
+
+      const rect = wrapperRef.current.getBoundingClientRect();
+      const localX = event.clientX - rect.left;
+      const localY = event.clientY - rect.top;
+      const viewport = liveViewportRef.current;
+      const normalizedDeltaY = normalizeWheelDeltaY(event);
+      if (!Number.isFinite(normalizedDeltaY) || normalizedDeltaY === 0) return;
+
+      const nextZoom = clamp(
+        viewport.zoom * Math.exp(-normalizedDeltaY * CTRL_WHEEL_ZOOM_SENSITIVITY),
+        MIN_ZOOM,
+        MAX_ZOOM,
+      );
+      if (Math.abs(nextZoom - viewport.zoom) < 0.0001) return;
+
+      const flowX = (localX - viewport.x) / viewport.zoom;
+      const flowY = (localY - viewport.y) / viewport.zoom;
+      const next = {
+        x: localX - flowX * nextZoom,
+        y: localY - flowY * nextZoom,
+        zoom: nextZoom,
+      };
+
+      liveViewportRef.current = next;
+      viewportRef.current = next;
+      pendingViewportRef.current = next;
+      setViewport(next, { duration: 0 });
+      scheduleFlushLayout(250);
+    },
+    [scheduleFlushLayout, setViewport],
+  );
+
   const persistCurrentViewport = useCallback(() => {
     window.setTimeout(() => {
       const next = sanitizeViewport(getViewport());
       if (!next || sameViewport(viewportRef.current, next)) return;
+      liveViewportRef.current = next;
       viewportRef.current = next;
       pendingViewportRef.current = next;
       scheduleFlushLayout(0);
@@ -430,7 +459,11 @@ function CanvasInner({
   );
 
   return (
-    <div className="relative h-full w-full">
+    <div
+      ref={wrapperRef}
+      className="relative h-full w-full"
+      onWheelCapture={onWheelCapture}
+    >
       <ReactFlow
         nodes={rfNodes}
         edges={rfEdges}
@@ -440,6 +473,7 @@ function CanvasInner({
         onNodeMouseLeave={onNodeMouseLeave}
         onNodeDoubleClick={onNodeDoubleClick}
         onPaneClick={onPaneClick}
+        onMove={onMove}
         onMoveEnd={onMoveEnd}
         nodeTypes={NODE_TYPES}
         edgeTypes={EDGE_TYPES}
@@ -451,9 +485,10 @@ function CanvasInner({
             height: 14,
           },
         }}
-        defaultViewport={initialViewportRef.current ?? { x: 0, y: 0, zoom: 0.9 }}
-        minZoom={0.3}
-        maxZoom={1.6}
+        defaultViewport={initialViewportRef.current ?? DEFAULT_VIEWPORT}
+        minZoom={MIN_ZOOM}
+        maxZoom={MAX_ZOOM}
+        zoomOnScroll={false}
         panOnScroll
         panOnDrag
         selectionOnDrag={false}
@@ -562,12 +597,6 @@ function sameViewport(a: Viewport | null, b: Viewport): boolean {
   );
 }
 
-function sameViewportOrNull(a: Viewport | null, b: Viewport | null): boolean {
-  if (!a && !b) return true;
-  if (!a || !b) return false;
-  return sameViewport(a, b);
-}
-
 function sameLayoutHints(
   a: Record<string, { x: number; y: number }>,
   b: Record<string, { x: number; y: number }>,
@@ -581,6 +610,16 @@ function sameLayoutHints(
     if (!right || left.x !== right.x || left.y !== right.y) return false;
   }
   return true;
+}
+
+function normalizeWheelDeltaY(event: React.WheelEvent): number {
+  if (event.deltaMode === 1) return event.deltaY * 16;
+  if (event.deltaMode === 2) return event.deltaY * 600;
+  return event.deltaY;
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
 }
 
 function decorateSelection(

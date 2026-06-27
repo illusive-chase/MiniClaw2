@@ -286,6 +286,7 @@ export async function updateLayoutHints(
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
+    keepalive: true,
   });
   if (!res.ok) throw new Error(`updateLayoutHints failed: ${res.status}`);
   return res.json();

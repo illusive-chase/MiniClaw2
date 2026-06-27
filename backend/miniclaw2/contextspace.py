@@ -403,8 +403,8 @@ def describe_project_contextspace(
 def read_project_context(project: Project) -> dict[str, Any] | None:
     """Read the project-root ``CONTEXT.md`` for UI display.
 
-    Returns ``{role, path, text, mtime}`` or ``None`` if the file is
-    missing.
+    Returns ``{role, path, text, mtime, last_writer}`` or ``None`` if the
+    file is missing.
     """
     path = Path(project.root_path) / "CONTEXT.md"
     try:
@@ -417,7 +417,38 @@ def read_project_context(project: Project) -> dict[str, Any] | None:
         "path": str(path),
         "text": text,
         "mtime": stat.st_mtime,
+        "last_writer": _project_context_last_writer(
+            Path(project.root_path),
+            stat.st_mtime,
+        ),
     }
+
+
+def _project_context_last_writer(root: Path, context_mtime: float) -> dict[str, Any]:
+    meta_path = root / ".miniclaw2" / "context.meta.json"
+    try:
+        meta_stat = meta_path.stat()
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {"kind": "hand"}
+    source = meta.get("source")
+    updated_at = meta.get("updated_at")
+    if (
+        isinstance(source, str)
+        and source in {"init", "refresh"}
+        and isinstance(updated_at, (int, float))
+        and meta_stat.st_mtime + 1.0 >= context_mtime
+    ):
+        return {
+            "kind": "context-refresh",
+            "updated_at": float(updated_at),
+            "source": source,
+        }
+    previous = source if isinstance(source, str) else None
+    out: dict[str, Any] = {"kind": "hand"}
+    if previous:
+        out["previous"] = previous
+    return out
 
 
 def read_planspace_mode(

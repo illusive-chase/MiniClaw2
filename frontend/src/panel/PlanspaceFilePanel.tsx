@@ -135,7 +135,7 @@ export function PlanspaceFilePanel({
 }
 
 function writerLabel(file: SessionFile): string {
-  const writer = file.last_writer;
+  const writer = file.last_writer ?? { kind: "hand" };
   if (writer.kind === "node" && writer.node_id) {
     return `updated by node ${writer.node_id.slice(0, 8)}`;
   }
