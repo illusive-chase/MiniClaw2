@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 
 import { LANGUAGE_OPTIONS } from "../languages";
@@ -22,10 +22,13 @@ export type ProjectPanelProps = {
   onSelectContextBinding: (binding_id: string) => void;
   onPreferredLanguageChange: (preferredLanguage: string | null) => void;
   onNewDirection: (userSeed: string, mode: PlanspaceMode) => void;
+  onStartBlankDirection: (userSeed: string, mode: PlanspaceMode) => void;
   onContextInit: () => void;
   onContextRefresh: () => void;
   onContextCancel: () => void;
   onTogglePlanspaceVisibility: (planspaceId: string, hidden: boolean) => void;
+  newDirectionRequestVersion: number;
+  onNewDirectionRequestHandled: () => void;
 };
 
 /**
@@ -46,14 +49,19 @@ export function ProjectPanel({
   onSelectContextBinding,
   onPreferredLanguageChange,
   onNewDirection,
+  onStartBlankDirection,
   onContextInit,
   onContextRefresh,
   onContextCancel,
   onTogglePlanspaceVisibility,
+  newDirectionRequestVersion,
+  onNewDirectionRequestHandled,
 }: ProjectPanelProps) {
   const [composerOpen, setComposerOpen] = useState(false);
   const [seed, setSeed] = useState("");
   const [newDirectionMode, setNewDirectionMode] = useState<PlanspaceMode>("manual");
+  const seedRef = useRef<HTMLTextAreaElement | null>(null);
+  const lastRequestVersionRef = useRef(0);
 
   const activeBinding = contextSpace?.bindings.find(
     (b) => b.id === (contextSpace?.resolved_binding_id ?? session?.project_context_binding_id),
@@ -67,6 +75,18 @@ export function ProjectPanel({
   const refreshing = !!contextSpace?.context_refresh?.running;
   const busy = contextSpaceSaving || refreshing || settingsSaving;
 
+  useEffect(() => {
+    if (newDirectionRequestVersion <= 0) {
+      lastRequestVersionRef.current = 0;
+      return;
+    }
+    if (newDirectionRequestVersion === lastRequestVersionRef.current) return;
+    lastRequestVersionRef.current = newDirectionRequestVersion;
+    setComposerOpen(true);
+    window.setTimeout(() => seedRef.current?.focus(), 30);
+    onNewDirectionRequestHandled();
+  }, [newDirectionRequestVersion, onNewDirectionRequestHandled]);
+
   if (!session) {
     return (
       <div className="flex h-full items-center justify-center px-4 text-sm text-ink-muted">
@@ -75,10 +95,14 @@ export function ProjectPanel({
     );
   }
 
-  const submitNewDirection = () => {
+  const submitNewDirection = (kind: "concierge" | "blank") => {
     const trimmed = seed.trim();
     if (!trimmed || busy) return;
-    onNewDirection(trimmed, newDirectionMode);
+    if (kind === "concierge") {
+      onNewDirection(trimmed, newDirectionMode);
+    } else {
+      onStartBlankDirection(trimmed, newDirectionMode);
+    }
     setSeed("");
     setNewDirectionMode("manual");
     setComposerOpen(false);
@@ -188,6 +212,7 @@ export function ProjectPanel({
                 Direction
               </label>
               <textarea
+                ref={seedRef}
                 value={seed}
                 onChange={(event) => setSeed(event.target.value)}
                 rows={5}
@@ -195,19 +220,22 @@ export function ProjectPanel({
                 className="mt-1 w-full resize-none rounded-md border border-line bg-surface px-3 py-2 text-[13px] leading-relaxed text-ink-strong placeholder:text-ink-subtle focus:border-brand focus:outline-none"
               />
               <div className="mt-2 inline-flex rounded-md border border-line bg-surface p-0.5">
-                {(["manual", "auto"] as const).map((mode) => (
+                {([
+                  ["manual", "Wait for me to promote"],
+                  ["auto", "Auto-promote when ready"],
+                ] as const).map(([mode, label]) => (
                   <button
                     key={mode}
                     type="button"
                     onClick={() => setNewDirectionMode(mode)}
                     className={
-                      "rounded px-2.5 py-1 text-[11px] font-medium transition " +
+                      "rounded px-2.5 py-1 text-[10.5px] font-medium transition " +
                       (newDirectionMode === mode
                         ? "bg-surface-raised text-ink-strong shadow-card"
                         : "text-ink-muted hover:text-ink")
                     }
                   >
-                    {mode}
+                    {label}
                   </button>
                 ))}
               </div>
@@ -222,10 +250,19 @@ export function ProjectPanel({
                 <button
                   type="button"
                   disabled={busy || seed.trim().length === 0}
-                  onClick={submitNewDirection}
-                  className="rounded-md bg-brand px-2.5 py-1 text-[11px] font-medium text-white shadow-card transition hover:brightness-[0.95] disabled:opacity-40"
+                  onClick={() => submitNewDirection("concierge")}
+                  className="rounded-md bg-brand px-2.5 py-1 text-[11px] font-medium text-white shadow-card transition hover:brightness-[0.95] disabled:cursor-not-allowed disabled:opacity-40"
                 >
-                  Start
+                  Draft with concierge
+                </button>
+                <button
+                  type="button"
+                  disabled={busy || seed.trim().length === 0}
+                  onClick={() => submitNewDirection("blank")}
+                  title="Skip the concierge - start with one empty virtual you'll fill in yourself."
+                  className="rounded-md border border-line-strong bg-surface-raised px-2.5 py-1 text-[11px] font-medium text-ink transition hover:border-brand hover:text-ink-strong disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  Start blank
                 </button>
               </div>
             </div>

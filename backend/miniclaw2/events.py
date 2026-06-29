@@ -79,6 +79,12 @@ class NodeUpdated(BaseModel):
     seq: int = 0
 
 
+class NodeRemoved(BaseModel):
+    type: Literal["node_removed"] = "node_removed"
+    id: str
+    seq: int = 0
+
+
 class TurnDone(BaseModel):
     type: Literal["turn_done"] = "turn_done"
     seq: int = 0

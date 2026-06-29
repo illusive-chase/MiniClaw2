@@ -13,7 +13,7 @@ import os
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Response, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -100,6 +100,12 @@ class CreatePlanspaceRequest(BaseModel):
     mode: str | None = None
 
 
+class CreateBlankPlanspaceRequest(BaseModel):
+    title: str | None = None
+    seed: str
+    mode: str | None = None
+
+
 class UpdatePlanspaceModeRequest(BaseModel):
     mode: str
 
@@ -122,6 +128,8 @@ class CreateVirtualRequest(BaseModel):
     motivation: str | None = None
     scheduled_deps: list[str] | None = None
     planspace_id: str | None = None
+    parent_node_id: str | None = None
+    resume_from_node_id: str | None = None
 
 
 class EventRecord(BaseModel):
@@ -349,6 +357,39 @@ def create_app() -> FastAPI:
         contextspace["binding_id"] = contextspace.get("resolved_binding_id")
         return contextspace
 
+    @app.post("/sessions/{sid}/planspaces/blank", response_model=dict[str, Any])
+    async def create_blank_planspace(
+        sid: str,
+        req: CreateBlankPlanspaceRequest,
+    ) -> dict[str, Any]:
+        project = registry.get_project(sid)
+        if project is None:
+            raise HTTPException(404, "session not found")
+        if registry.is_running(sid):
+            raise HTTPException(409, "turn in progress")
+        if _context_task_running(project.id):
+            raise HTTPException(409, "context refresh in progress")
+        if not req.seed.strip():
+            raise HTTPException(400, "seed must be non-empty")
+        try:
+            node = registry.create_blank_planspace(
+                sid,
+                title=(req.title or "").strip(),
+                seed=req.seed,
+                mode=req.mode,
+            )
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        if node is None:
+            raise HTTPException(409, "project is busy")
+        contextspace = describe_project_contextspace(
+            project, store_root=registry.store.root
+        )
+        contextspace["node_id"] = node.id
+        contextspace["planspace_id"] = node.planspace_id
+        contextspace["binding_id"] = contextspace.get("resolved_binding_id")
+        return contextspace
+
     @app.patch("/sessions/{sid}/planspaces/{planspace_id}/mode", response_model=dict[str, Any])
     async def update_planspace_mode(
         sid: str,
@@ -388,12 +429,33 @@ def create_app() -> FastAPI:
                 motivation=req.motivation,
                 scheduled_deps=req.scheduled_deps,
                 planspace_id=req.planspace_id,
+                parent_node_id=req.parent_node_id,
+                resume_from_node_id=req.resume_from_node_id,
             )
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
         if node is None:
             raise HTTPException(409, "project is busy")
         return {"ok": True, "node_id": node.id, "node": node.model_dump()}
+
+    @app.delete("/sessions/{sid}/virtuals/{vid}", status_code=204)
+    async def delete_virtual(sid: str, vid: str) -> Response:
+        project = registry.get_project(sid)
+        if project is None:
+            raise HTTPException(404, "session not found")
+        if _context_task_running(project.id):
+            raise HTTPException(409, "context refresh in progress")
+        try:
+            deleted, blockers = registry.delete_virtual(sid, vid)
+        except RuntimeError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        if blockers:
+            raise HTTPException(409, {"blockers": blockers})
+        if not deleted:
+            raise HTTPException(404, "virtual not found")
+        return Response(status_code=204)
 
     @app.post(
         "/sessions/{sid}/virtuals/{vid}/promote", response_model=dict[str, Any]

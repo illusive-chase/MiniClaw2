@@ -179,6 +179,9 @@ Trunk: `backend/miniclaw2/contextspace.py`, `backend/miniclaw2/context.py`.
 - `POST /sessions/{sid}/planspaces` creates a new bound direction,
   activates it, and launches the concierge bootstrap agent node from a
   preset markdown prompt.
+- `POST /sessions/{sid}/planspaces/blank` creates a new bound
+  direction, activates it, and seeds it with one empty regular virtual
+  without launching an agent.
 - Per-planspace mode lives in the planspace manifest and is read /
   written through `read_planspace_mode` / `set_planspace_mode`.
 - `GET /sessions/{sid}/contextspace` returns binding and plug summaries
@@ -233,16 +236,19 @@ Trunk: `frontend/src/canvas/Canvas.tsx`, `frontend/src/canvas/layout.ts`,
 
 - React Flow canvas; one canvas per project; pan/zoom per-project.
 - Node kinds rendered: `AgentNode`, `OpNode`, `ContextNode`,
-  `ErrorTerminalNode`, `PhantomNode`, `PlanspaceLaneNode`,
-  `ProjectRootNode`. Passive `GateNode` and `ArtifactNode` have been
-  removed.
+  `ErrorTerminalNode`, `PlanspaceLaneNode`, `ProjectRootNode`. Passive
+  `GateNode`, `ArtifactNode`, and the old phantom composer node have
+  been removed.
 - Polymorphic side panel: `AgentPanel`, `ContextNodePanel`, `OpPanel`,
   lane panel, `ProjectPanel` switched by selection (`SidePanel.tsx`).
-- Phantom composer replaces the old launch modal. Resume source is
-  implicit in spawn site; it now launches regular agent runs only.
+- The new-direction composer offers two bootstraps: `Draft with
+  concierge` launches the planning bootstrap agent, while `Start blank`
+  creates a bound planspace with one empty virtual node and focuses its
+  draft field.
 - Virtual agent tiles render as dashed plan tiles with category badges,
   draft prompt text, ready/obsolete/dependency footer state, and a
-  hover promote affordance.
+  hover right-edge action stack for promote, continuation virtual,
+  dependency virtual, and remove.
 - Virtual agent nodes can be edited from the side panel
   (`prompt_draft`, category/subtype/brief, motivation, dependencies,
   and obsoletion); verifier virtuals render as read-only
@@ -261,13 +267,19 @@ Trunk: `frontend/src/canvas/Canvas.tsx`, `frontend/src/canvas/layout.ts`,
 - Planspace lane visibility is per-project and persisted; hidden lanes,
   and their nodes are filtered from the canvas, while Project →
   Directions keeps a recovery row.
-- The active direction is highlighted at lane level, and fresh
-  phantoms drop on the active lane's trailing slot.
+- The active direction is highlighted at lane level. The lane-header `+`
+  creates an unparented empty virtual directly in that lane and opens it
+  in the side panel.
 - Project `CONTEXT.md` sits in its own neutral top stripe above the
   planspace-colored "loaded context" lane.
 - `AgentPanel` shows virtual node draft/provenance/dependencies/brief
   for virtuals; executed nodes show agent input, persisted
   `preview.json`, activity, thinking, and inspect drawer.
+- Newly-created virtuals from blank direction, lane `+`, continuation,
+  or dependency actions auto-focus the side-panel draft textarea.
+- Mid-lane virtual branching is visible: continuation/dependency
+  virtual siblings anchor below their source tile and lanes grow to fit
+  the stack while preserving manual layout hints.
 - Human-interact review prose form renders inside `AgentPanel` while
   the review node is in `awaiting_human_input`.
 - Clicking a lane header opens a lane panel with manual/auto mode
@@ -320,6 +332,12 @@ surface; the durable node store is the source of truth.
 - Planning and review agents may create or mutate virtual previews in
   the materialized graph; regular agents are rejected if they write
   virtuals.
+- UI-created virtuals can be added directly to a planspace as
+  unparented drafts, continuation drafts, or scheduled-dependency
+  drafts.
+- Unrun virtuals can be marked obsolete or hard-deleted. Hard delete
+  refuses live dependency blockers, removes the node from durable lane
+  state, and broadcasts `node_removed`.
 - Virtual preview writes are validated, canonicalized from slugs to
   node ids, cycle-checked, persisted atomically, and surfaced on the
   canvas after reap.
@@ -473,11 +491,12 @@ Quick reference; the on-disk shape is authoritative.
 
 - Server → client:
   `node_started {node_id, parent_node_id, kind, category, subtype, prompt}`,
-  `node_updated`, `interaction_request {interaction_type, ...}` with
-  `interaction_type ∈ {"permission", "ask_user", "plan_approval",
-  "human_review_prose"}` (`checkpoint_review` remains accepted in
-  legacy replay/client types only), `text_delta`, `thinking`,
-  `activity`, `usage`, `turn_done`, `error`.
+  `node_updated`, `node_removed {id}`, `interaction_request
+  {interaction_type, ...}` with `interaction_type ∈ {"permission",
+  "ask_user", "plan_approval", "human_review_prose"}`
+  (`checkpoint_review` remains accepted in legacy replay/client types
+  only), `text_delta`, `thinking`, `activity`, `usage`, `turn_done`,
+  `error`.
 - Client → server: user prompt with optional `resume_from_node_id`,
   `interrupt`, interaction response,
   `replay_request {node_id, since_seq}`.
@@ -488,6 +507,14 @@ Quick reference; the on-disk shape is authoritative.
   `POST /sessions/{sid}/planspaces {title, seed, mode?}` (creates a
   new planspace + activates it + launches the concierge planning
   agent),
+  `POST /sessions/{sid}/planspaces/blank {title?, seed, mode}`
+  (creates a new planspace + activates it + creates one empty virtual),
+  `POST /sessions/{sid}/virtuals` (creates an editable virtual in a
+  planspace),
+  `PATCH /sessions/{sid}/virtuals/{vid}` (edits or obsoletes a
+  virtual),
+  `DELETE /sessions/{sid}/virtuals/{vid}` (hard-deletes an unrun
+  virtual, returning blockers when other live nodes depend on it),
   `POST /sessions/{sid}/virtuals/{vid}/promote` (manual promotion,
   returns and broadcasts the promoted node),
   `POST /sessions/{sid}/context/init`,

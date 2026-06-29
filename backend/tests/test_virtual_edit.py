@@ -257,6 +257,116 @@ class VirtualEditRegistryTests(unittest.TestCase):
 
         self.assertIsNone(self.store.load_node(self.project.id, "new-node"))
 
+    def test_create_virtual_allows_empty_draft_but_does_not_promote_it(self) -> None:
+        created = self.registry.create_virtual(
+            self.project.id,
+            prompt_draft="",
+        )
+
+        self.assertIsNotNone(created)
+        assert created is not None
+        self.assertEqual(created.prompt_draft, "")
+        self.assertIsNone(self.registry.promote_virtual(self.project.id, created.id))
+
+    def test_create_virtual_can_record_resume_source(self) -> None:
+        source = Node(
+            id="source",
+            project_id=self.project.id,
+            kind=NodeKind.AGENT,
+            category=Category.REGULAR,
+            state=NodeState.ERROR,
+            planspace_id=self.lane,
+            provider_session_id="session-1",
+            prompt="old",
+        )
+        self.store.create_node(source)
+
+        created = self.registry.create_virtual(
+            self.project.id,
+            prompt_draft="continue",
+            resume_from_node_id=source.id,
+        )
+
+        self.assertIsNotNone(created)
+        assert created is not None
+        self.assertEqual(created.resume_from_node_id, source.id)
+
+    def test_create_virtual_rejects_unresumable_resume_source(self) -> None:
+        source = Node(
+            id="source",
+            project_id=self.project.id,
+            kind=NodeKind.AGENT,
+            category=Category.REGULAR,
+            state=NodeState.DONE,
+            planspace_id=self.lane,
+            prompt="old",
+        )
+        self.store.create_node(source)
+
+        with self.assertRaisesRegex(ValueError, "not resumable"):
+            self.registry.create_virtual(
+                self.project.id,
+                prompt_draft="continue",
+                resume_from_node_id=source.id,
+            )
+
+    def test_delete_virtual_removes_node_and_cleans_obsolete_deps(self) -> None:
+        doomed = self._virtual("doomed")
+        obsolete_child = self._virtual("obsolete-child", deps=[doomed.id])
+        obsolete_child.obsolete_reason = "old"
+        self.store.update_node(obsolete_child)
+
+        deleted, blockers = self.registry.delete_virtual(self.project.id, doomed.id)
+
+        self.assertTrue(deleted)
+        self.assertEqual(blockers, [])
+        self.assertIsNone(self.store.load_node(self.project.id, doomed.id))
+        reloaded = self.store.load_node(self.project.id, obsolete_child.id)
+        assert reloaded is not None
+        self.assertEqual(reloaded.scheduled_deps, [])
+
+    def test_delete_virtual_returns_false_for_missing_node(self) -> None:
+        deleted, blockers = self.registry.delete_virtual(self.project.id, "missing")
+
+        self.assertFalse(deleted)
+        self.assertEqual(blockers, [])
+
+    def test_delete_virtual_rejects_executed_node(self) -> None:
+        node = Node(
+            id="done",
+            project_id=self.project.id,
+            kind=NodeKind.AGENT,
+            category=Category.REGULAR,
+            state=NodeState.DONE,
+            planspace_id=self.lane,
+            started_at=1.0,
+            finished_at=2.0,
+        )
+        self.store.create_node(node)
+
+        with self.assertRaisesRegex(ValueError, "only virtual nodes"):
+            self.registry.delete_virtual(self.project.id, node.id)
+
+    def test_delete_virtual_reports_non_obsolete_dependency_blockers(self) -> None:
+        parent = self._virtual("parent")
+        child = self._virtual("child", deps=[parent.id])
+
+        deleted, blockers = self.registry.delete_virtual(self.project.id, parent.id)
+
+        self.assertFalse(deleted)
+        self.assertEqual(blockers, [child.id])
+        self.assertIsNotNone(self.store.load_node(self.project.id, parent.id))
+
+    def test_delete_virtual_rejects_when_project_running(self) -> None:
+        node = self._virtual("busy")
+        runtime = self.registry._runtimes[self.project.id]
+        runtime.runner_task = _PendingTask()  # type: ignore[assignment]
+        try:
+            with self.assertRaisesRegex(RuntimeError, "turn in progress"):
+                self.registry.delete_virtual(self.project.id, node.id)
+        finally:
+            runtime.runner_task.cancel()
+
 
 class VirtualEditApiTests(unittest.TestCase):
     def test_patch_virtual_forwards_only_supplied_fields(self) -> None:
@@ -312,6 +422,72 @@ class VirtualEditApiTests(unittest.TestCase):
             body = res.json()
             self.assertTrue(body["ok"])
             self.assertEqual(body["node"]["id"], node.id)
+
+    def test_delete_virtual_returns_blockers_body(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            project = Project(root_path=raw, name="Project")
+            calls: list[dict[str, object]] = []
+
+            class _Registry:
+                store = SimpleNamespace(root=Path(raw) / "store")
+
+                def get_project(self, sid: str) -> Project | None:
+                    return project if sid == project.id else None
+
+                def delete_virtual(self, sid: str, vid: str) -> tuple[bool, list[str]]:
+                    calls.append({"sid": sid, "vid": vid})
+                    return False, ["child"]
+
+            with patch.object(app_module, "ProjectRegistry", return_value=_Registry()):
+                with patch.object(
+                    app_module,
+                    "context_refresh_status",
+                    return_value={"running": False},
+                ):
+                    client = TestClient(app_module.create_app())
+                    try:
+                        res = client.delete(f"/sessions/{project.id}/virtuals/parent")
+                    finally:
+                        client.close()
+
+            self.assertEqual(res.status_code, 409, res.text)
+            self.assertEqual(calls, [{"sid": project.id, "vid": "parent"}])
+            self.assertEqual(res.json()["detail"], {"blockers": ["child"]})
+
+    def test_delete_virtual_success_returns_204(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            project = Project(root_path=raw, name="Project")
+
+            class _Registry:
+                store = SimpleNamespace(root=Path(raw) / "store")
+
+                def get_project(self, sid: str) -> Project | None:
+                    return project if sid == project.id else None
+
+                def delete_virtual(self, sid: str, vid: str) -> tuple[bool, list[str]]:
+                    return True, []
+
+            with patch.object(app_module, "ProjectRegistry", return_value=_Registry()):
+                with patch.object(
+                    app_module,
+                    "context_refresh_status",
+                    return_value={"running": False},
+                ):
+                    client = TestClient(app_module.create_app())
+                    try:
+                        res = client.delete(f"/sessions/{project.id}/virtuals/virt")
+                    finally:
+                        client.close()
+
+            self.assertEqual(res.status_code, 204, res.text)
+
+
+class _PendingTask:
+    def done(self) -> bool:
+        return False
+
+    def cancel(self) -> None:
+        pass
 
 
 if __name__ == "__main__":

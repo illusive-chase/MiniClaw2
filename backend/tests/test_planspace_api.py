@@ -85,6 +85,116 @@ class PlanspaceApiTest(unittest.TestCase):
             self.assertEqual(body["planspace_id"], "planspaces.auth")
             self.assertEqual(body["binding_id"], "project.project")
 
+    def test_create_blank_planspace_returns_seeded_virtual(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            project = Project(root_path=raw, name="Project")
+            node = Node(
+                id="blank-1",
+                project_id=project.id,
+                planspace_id="planspaces.blank",
+                state=NodeState.VIRTUAL,
+                prompt_draft="",
+            )
+            calls: list[dict[str, object]] = []
+
+            class _Registry:
+                store = SimpleNamespace(root=Path(raw) / "store")
+
+                def get_project(self, sid: str) -> Project | None:
+                    return project if sid == project.id else None
+
+                def is_running(self, sid: str) -> bool:
+                    return False
+
+                def create_blank_planspace(
+                    self,
+                    sid: str,
+                    *,
+                    title: str,
+                    seed: str,
+                    mode: str | None = None,
+                ) -> Node | None:
+                    calls.append({
+                        "sid": sid,
+                        "title": title,
+                        "seed": seed,
+                        "mode": mode,
+                    })
+                    return node
+
+            with patch.object(app_module, "ProjectRegistry", return_value=_Registry()):
+                with patch.object(
+                    app_module,
+                    "context_refresh_status",
+                    return_value={"running": False},
+                ):
+                    with patch.object(
+                        app_module,
+                        "describe_project_contextspace",
+                        return_value={
+                            "root": raw,
+                            "exists": True,
+                            "resolved_binding_id": "project.project",
+                            "active_planspace_id": "planspaces.blank",
+                            "bindings": [],
+                        },
+                    ):
+                        client = TestClient(app_module.create_app())
+                        try:
+                            res = client.post(
+                                f"/sessions/{project.id}/planspaces/blank",
+                                json={
+                                    "title": "Blank",
+                                    "seed": "Start from scratch",
+                                    "mode": "auto",
+                                },
+                            )
+                        finally:
+                            client.close()
+
+            self.assertEqual(res.status_code, 200, res.text)
+            self.assertEqual(calls, [{
+                "sid": project.id,
+                "title": "Blank",
+                "seed": "Start from scratch",
+                "mode": "auto",
+            }])
+            body = res.json()
+            self.assertEqual(body["node_id"], "blank-1")
+            self.assertEqual(body["planspace_id"], "planspaces.blank")
+            self.assertEqual(body["binding_id"], "project.project")
+
+    def test_create_blank_planspace_refuses_context_refresh_running(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            project = Project(root_path=raw, name="Project")
+
+            class _Registry:
+                store = SimpleNamespace(root=Path(raw) / "store")
+
+                def get_project(self, sid: str) -> Project | None:
+                    return project if sid == project.id else None
+
+                def is_running(self, sid: str) -> bool:
+                    return False
+
+            with patch.object(app_module, "ProjectRegistry", return_value=_Registry()):
+                with patch.object(
+                    app_module,
+                    "context_refresh_status",
+                    return_value={"running": True},
+                ):
+                    client = TestClient(app_module.create_app())
+                    try:
+                        res = client.post(
+                            f"/sessions/{project.id}/planspaces/blank",
+                            json={"seed": "Blocked", "mode": "manual"},
+                        )
+                    finally:
+                        client.close()
+
+            self.assertEqual(res.status_code, 409, res.text)
+            self.assertIn("context refresh", res.json()["detail"])
+
     def test_update_planspace_mode_forwards_to_registry(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             project = Project(root_path=raw, name="Project")

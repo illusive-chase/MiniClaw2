@@ -115,6 +115,13 @@ class Store:
     def update_node(self, node: Node) -> None:
         self._write_json(self._node_file(node.project_id, node.id), node.model_dump())
 
+    def delete_node(self, pid: str, nid: str) -> bool:
+        d = self.node_dir(pid, nid)
+        if not d.exists():
+            return False
+        shutil.rmtree(d)
+        return True
+
     def list_nodes(self, pid: str) -> list[Node]:
         nodes_dir = self._project_dir(pid) / "nodes"
         if not nodes_dir.exists():

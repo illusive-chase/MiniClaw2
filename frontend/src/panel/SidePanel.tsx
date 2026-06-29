@@ -57,11 +57,12 @@ export type SidePanelProps = {
     judgment: string;
   }) => void;
   onSelectNode: (nodeId: string) => void;
-  onSpawnPhantomFromNode: (nodeId: string) => void;
   onPreferredLanguageChange: (preferredLanguage: string | null) => void;
   onActivatePlanspace: (binding_id: string, planspace_id: string) => void;
   onSelectContextBinding: (binding_id: string) => void;
   onNewDirection: (userSeed: string, mode: PlanspaceMode) => void;
+  onStartBlankDirection: (userSeed: string, mode: PlanspaceMode) => void;
+  onCreateContinuationVirtual: (nodeId: string) => void;
   onPromoteVirtual: (nodeId: string) => void;
   onUpdateVirtual: (nodeId: string, payload: UpdateVirtualPayload) => Promise<void>;
   onPlanspaceModeChange: (planspaceId: string, mode: PlanspaceMode) => void;
@@ -73,6 +74,9 @@ export type SidePanelProps = {
   /* Bumped each time a CONTEXT.md refresh completes, so PlanspaceFilePanel
      reloads the file content. */
   contextReloadVersion?: number;
+  focusRequestVersion: number;
+  newDirectionRequestVersion: number;
+  onNewDirectionRequestHandled: () => void;
 };
 
 /**
@@ -113,11 +117,12 @@ function Inner(props: SidePanelProps & { nodesById: Map<string, NodeInfo> }) {
     onResolveGate,
     onResolveReview,
     onSelectNode,
-    onSpawnPhantomFromNode,
     onPreferredLanguageChange,
     onActivatePlanspace,
     onSelectContextBinding,
     onNewDirection,
+    onStartBlankDirection,
+    onCreateContinuationVirtual,
     onPromoteVirtual,
     onUpdateVirtual,
     onPlanspaceModeChange,
@@ -126,6 +131,9 @@ function Inner(props: SidePanelProps & { nodesById: Map<string, NodeInfo> }) {
     onContextCancel,
     onTogglePlanspaceVisibility,
     contextReloadVersion,
+    focusRequestVersion,
+    newDirectionRequestVersion,
+    onNewDirectionRequestHandled,
     nodesById,
   } = props;
 
@@ -151,10 +159,13 @@ function Inner(props: SidePanelProps & { nodesById: Map<string, NodeInfo> }) {
         onSelectContextBinding={onSelectContextBinding}
         onPreferredLanguageChange={onPreferredLanguageChange}
         onNewDirection={onNewDirection}
+        onStartBlankDirection={onStartBlankDirection}
         onContextInit={onContextInit}
         onContextRefresh={onContextRefresh}
         onContextCancel={onContextCancel}
         onTogglePlanspaceVisibility={onTogglePlanspaceVisibility}
+        newDirectionRequestVersion={newDirectionRequestVersion}
+        onNewDirectionRequestHandled={onNewDirectionRequestHandled}
       />
     );
   }
@@ -176,9 +187,10 @@ function Inner(props: SidePanelProps & { nodesById: Map<string, NodeInfo> }) {
         pendingReview={pendingReview}
         onResolveGate={onResolveGate}
         onResolveReview={onResolveReview}
-        onSpawnPhantomFromNode={onSpawnPhantomFromNode}
+        onCreateContinuationVirtual={onCreateContinuationVirtual}
         onPromoteVirtual={onPromoteVirtual}
         onUpdateVirtual={onUpdateVirtual}
+        focusRequestVersion={focusRequestVersion}
       />
     );
   }

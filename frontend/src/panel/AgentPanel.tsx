@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
@@ -38,9 +38,10 @@ export type AgentPanelProps = {
   pendingReview: InteractionRequest | null;
   onResolveGate?: (id: string, payload: ResolveGatePayload) => void;
   onResolveReview: (payload: { id: string; judgment: string }) => void;
-  onSpawnPhantomFromNode: (nodeId: string) => void;
+  onCreateContinuationVirtual: (nodeId: string) => void;
   onPromoteVirtual: (nodeId: string) => void;
   onUpdateVirtual: (nodeId: string, payload: UpdateVirtualPayload) => Promise<void>;
+  focusRequestVersion: number;
 };
 
 export function AgentPanel({
@@ -55,9 +56,10 @@ export function AgentPanel({
   pendingReview,
   onResolveGate,
   onResolveReview,
-  onSpawnPhantomFromNode,
+  onCreateContinuationVirtual,
   onPromoteVirtual,
   onUpdateVirtual,
+  focusRequestVersion,
 }: AgentPanelProps) {
   const headline = (
     node.summary ||
@@ -138,11 +140,11 @@ export function AgentPanel({
           ) : canResumeNode(node) ? (
             <button
               type="button"
-              onClick={() => onSpawnPhantomFromNode(node.id)}
+              onClick={() => onCreateContinuationVirtual(node.id)}
               className="flex-none rounded-md border border-line bg-surface px-2.5 py-1 text-[11px] text-ink-muted transition hover:border-line-strong hover:text-ink"
-              title="Start a follow-up run continuing this conversation"
+              title="Create a continuation virtual that resumes this conversation"
             >
-              Follow up
+              Continuation
             </button>
           ) : null}
         </div>
@@ -154,6 +156,7 @@ export function AgentPanel({
             node={node}
             nodesById={nodesById}
             onUpdateVirtual={onUpdateVirtual}
+            focusRequestVersion={focusRequestVersion}
           />
         ) : (
           <>
@@ -288,10 +291,12 @@ function VirtualNodeBody({
   node,
   nodesById,
   onUpdateVirtual,
+  focusRequestVersion,
 }: {
   node: NodeInfo;
   nodesById: Map<string, NodeInfo>;
   onUpdateVirtual: (nodeId: string, payload: UpdateVirtualPayload) => Promise<void>;
+  focusRequestVersion: number;
 }) {
   if (node.kind === "verifier") {
     return <VerifierVirtualBody node={node} nodesById={nodesById} />;
@@ -301,6 +306,7 @@ function VirtualNodeBody({
       node={node}
       nodesById={nodesById}
       onUpdateVirtual={onUpdateVirtual}
+      focusRequestVersion={focusRequestVersion}
     />
   );
 }
@@ -309,15 +315,18 @@ function EditableVirtualNodeBody({
   node,
   nodesById,
   onUpdateVirtual,
+  focusRequestVersion,
 }: {
   node: NodeInfo;
   nodesById: Map<string, NodeInfo>;
   onUpdateVirtual: (nodeId: string, payload: UpdateVirtualPayload) => Promise<void>;
+  focusRequestVersion: number;
 }) {
 
   const [draft, setDraft] = useState<VirtualDraft>(() => virtualDraftFromNode(node));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const promptDraftRef = useRef<HTMLTextAreaElement | null>(null);
   const candidateDeps = useMemo(
     () =>
       Array.from(nodesById.values()).filter(
@@ -345,6 +354,15 @@ function EditableVirtualNodeBody({
     node.scheduled_deps,
     node.obsolete_reason,
   ]);
+
+  useEffect(() => {
+    if (focusRequestVersion <= 0) return;
+    const timer = window.setTimeout(() => {
+      promptDraftRef.current?.focus();
+      promptDraftRef.current?.select();
+    }, 30);
+    return () => window.clearTimeout(timer);
+  }, [node.id, focusRequestVersion]);
 
   const save = async () => {
     setSaving(true);
@@ -416,6 +434,7 @@ function EditableVirtualNodeBody({
             </FieldLabel>
             <FieldLabel label="Prompt draft">
               <textarea
+                ref={promptDraftRef}
                 value={draft.promptDraft}
                 onChange={(e) =>
                   setDraft((current) => ({
@@ -1199,6 +1218,7 @@ function isTerminal(state: NodeInfo["state"]): boolean {
 
 function virtualReady(node: NodeInfo, byId: Map<string, NodeInfo>): boolean {
   if (node.state !== "virtual" || node.obsolete_reason) return false;
+  if (!(node.prompt_draft || "").trim()) return false;
   for (const depId of node.scheduled_deps ?? []) {
     const dep = byId.get(depId);
     if (!dep) continue;

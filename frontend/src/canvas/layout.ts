@@ -13,6 +13,7 @@ export type AgentNodeData = {
   /** true when no agent node (in any lane) has this one as its agent parent */
   isLastInLane: boolean;
   readyToPromote: boolean;
+  canCreateVirtual: boolean;
 };
 
 export type OpNodeData = {
@@ -39,15 +40,6 @@ export type ContextNodeData = {
   loadedByNodeIds: string[];
   /** source plug id when this context file comes from a planspace/skill plug */
   plugId?: string | null;
-};
-
-export type PhantomNodeData = {
-  /** id of the node we're resuming from, if any */
-  resumeFromNodeId: string | null;
-  /** display label for the parent ("Build calculator", "fresh start") */
-  resumeFromLabel: string | null;
-  /** true when the composer cannot launch a node */
-  disabled: boolean;
 };
 
 export type ProjectRootNodeData = {
@@ -77,7 +69,6 @@ export type RFNodeData =
   | AgentNodeData
   | OpNodeData
   | ContextNodeData
-  | PhantomNodeData
   | ProjectRootNodeData
   | PlanspaceLaneData
   | ErrorTerminalData;
@@ -95,9 +86,13 @@ export const LANE = {
   artifactOffsetX: 240,
   artifactOffsetY: 140,
   agentWidth: 224,
+  agentHeight: 132,
   agentSpacing: 280,
   opWidth: 96,
+  opHeight: 80,
   opSpacing: 140,
+  contextHeight: 80,
+  siblingYStep: 152,
   /* Lane is laid out vertically as: header band → ctx row → agent row → bottom pad.
    * Y values below are RELATIVE positions inside the lane (origin = lane top-left). */
   planspaceLaneSpacing: 360,
@@ -162,12 +157,6 @@ export type BuildGraphArgs = {
   activeNodeId: string | null;
   /** project-level title to anchor as the root node */
   projectTitle: string;
-  /** id of a focused phantom (composer), if any */
-  phantomFromNodeId: string | null | undefined;
-  /** if a phantom is open as fresh-start, true */
-  phantomFreshStart: boolean;
-  /** if the phantom composer should be rendered disabled */
-  phantomDisabled: boolean;
   /** per-node manual position overrides (drag persistence — client-side for now) */
   layoutHints: Record<string, { x: number; y: number }>;
   /** per-node context bundles, keyed by node id, used to materialize context + loads edges */
@@ -199,9 +188,6 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
     nodes,
     activeNodeId,
     projectTitle,
-    phantomFromNodeId,
-    phantomFreshStart,
-    phantomDisabled,
     layoutHints,
     contextBundlesByNodeId,
     knownPlanspaceIds,
@@ -243,8 +229,11 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
   }
   /* Per-lane growable width + node count, harvested during the child pass. */
   const laneChildMaxX = new Map<string, number>();
+  const laneChildMaxY = new Map<string, number>();
   const laneChildCount = new Map<string, number>();
   const laneColors = new Map<string, PlanspaceColor>();
+  const nodeRelativePositions = new Map<string, { x: number; y: number }>();
+  const branchSiblingCounts = new Map<string, number>();
 
   /* project root anchor */
   rfNodes.push({
@@ -311,10 +300,19 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
     laneCursors.set(laneId, cur + by);
     return cur;
   };
-  const recordChildExtent = (laneId: string, relX: number, width: number): void => {
+  const recordChildExtent = (
+    laneId: string,
+    relX: number,
+    relY: number,
+    width: number,
+    height: number,
+  ): void => {
     const right = relX + width;
+    const bottom = relY + height;
     const prev = laneChildMaxX.get(laneId) ?? LANE.planspaceLanePaddingX;
     if (right > prev) laneChildMaxX.set(laneId, right);
+    const prevBottom = laneChildMaxY.get(laneId) ?? LANE.planspaceLaneAgentRowY + LANE.agentHeight;
+    if (bottom > prevBottom) laneChildMaxY.set(laneId, bottom);
     laneChildCount.set(laneId, (laneChildCount.get(laneId) ?? 0) + 1);
   };
 
@@ -329,10 +327,52 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
       planspaceColorOverrides,
     );
     if (planspaceId && planspaceColor) laneColors.set(planspaceId, planspaceColor);
-    const placeInLane = (spacing: number, width: number, defaultY: number) => {
+    const placeInLane = (
+      spacing: number,
+      width: number,
+      height: number,
+      defaultY: number,
+    ) => {
       const cursor = advanceLane(planspaceId!, spacing);
       const position = stored ?? { x: cursor, y: defaultY };
-      recordChildExtent(planspaceId!, position.x, width);
+      recordChildExtent(planspaceId!, position.x, position.y, width, height);
+      nodeRelativePositions.set(node.id, position);
+      return position;
+    };
+    const placeAnchoredVirtualInLane = (
+      anchorId: string | null,
+    ): { x: number; y: number } | null => {
+      if (!planspaceId || !anchorId) {
+        return null;
+      }
+      if (stored) {
+        recordChildExtent(
+          planspaceId,
+          stored.x,
+          stored.y,
+          LANE.agentWidth,
+          LANE.agentHeight,
+        );
+        nodeRelativePositions.set(node.id, stored);
+        return stored;
+      }
+      const anchorPosition = nodeRelativePositions.get(anchorId);
+      if (!anchorPosition) return null;
+      const key = `${planspaceId}:${anchorId}`;
+      const siblingIndex = branchSiblingCounts.get(key) ?? 0;
+      branchSiblingCounts.set(key, siblingIndex + 1);
+      const position = {
+        x: anchorPosition.x,
+        y: anchorPosition.y + LANE.siblingYStep * (siblingIndex + 1),
+      };
+      recordChildExtent(
+        planspaceId,
+        position.x,
+        position.y,
+        LANE.agentWidth,
+        LANE.agentHeight,
+      );
+      nodeRelativePositions.set(node.id, position);
       return position;
     };
     const placeFree = (spacing: number) => {
@@ -346,7 +386,7 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
       if (opsWithChild.has(node.id)) return;
       const parent = node.parent_node_id ? (nodeById.get(node.parent_node_id) ?? null) : null;
       const position = planspaceId
-        ? placeInLane(LANE.opSpacing, LANE.opWidth, LANE.planspaceLaneAgentRowY)
+        ? placeInLane(LANE.opSpacing, LANE.opWidth, LANE.opHeight, LANE.planspaceLaneAgentRowY)
         : placeFree(LANE.opSpacing);
       rfNodes.push({
         id: node.id,
@@ -360,8 +400,18 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
       });
     } else {
       const isLastInLane = !hasDescendantById.has(node.id);
+      const branchAnchorId =
+        node.state === "virtual" ? virtualBranchAnchorId(node, nodeById) : null;
       const position = planspaceId
-        ? placeInLane(LANE.agentSpacing, LANE.agentWidth, LANE.planspaceLaneAgentRowY)
+        ? (
+            placeAnchoredVirtualInLane(branchAnchorId) ??
+            placeInLane(
+              LANE.agentSpacing,
+              LANE.agentWidth,
+              LANE.agentHeight,
+              LANE.planspaceLaneAgentRowY,
+            )
+          )
         : placeFree(LANE.agentSpacing);
       rfNodes.push({
         id: node.id,
@@ -375,6 +425,7 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
           planspaceColor,
           isLastInLane,
           readyToPromote: isVirtualReady(node, nodeById),
+          canCreateVirtual,
         },
         draggable: true,
         ...(planspaceId
@@ -425,6 +476,7 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
     const declaredDeps = node.scheduled_deps ?? [];
     const visibleDeps = visibleScheduledDepIds(node, nodeById);
     if (declaredDeps.length === 0) {
+      if (continueSourceByNodeId.has(node.id)) continue;
       rfEdges.push({
         id: `dep:root->${node.id}`,
         source: "root",
@@ -482,15 +534,25 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
      * marker tied to its agent. Owner-relative offset stays the same in both
      * regimes. */
     const ownerParent = sourceNode?.parentNode;
+    const terminalPosition = stored ?? {
+      /* Drop below the agent so retries (next timeline slot at
+       * baseX + agentSpacing) don't stack on top of the failure marker. */
+      x: baseX,
+      y: baseY + LANE.artifactOffsetY,
+    };
+    if (ownerParent?.startsWith("planspace:")) {
+      recordChildExtent(
+        ownerParent.slice("planspace:".length),
+        terminalPosition.x,
+        terminalPosition.y,
+        180,
+        88,
+      );
+    }
     rfNodes.push({
       id: terminalId,
       type: "errorTerminal",
-      position: stored ?? {
-        /* Drop below the agent so retries (next timeline slot at
-         * baseX + agentSpacing) don't stack on top of the failure marker. */
-        x: baseX,
-        y: baseY + LANE.artifactOffsetY,
-      },
+      position: terminalPosition,
       data: {
         ownerNodeId: node.id,
         message: node.error,
@@ -577,7 +639,7 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
       parentNode = `planspace:${homeLaneId}`;
       extent = "parent";
       /* Width here matches ContextNode (160 for non-project tiles). */
-      recordChildExtent(homeLaneId, position.x, 160);
+      recordChildExtent(homeLaneId, position.x, position.y, 160, LANE.contextHeight);
     } else if (isProject) {
       position = stored ?? { x: projectCtxCursorX, y: LANE.projectContextLaneY };
       projectCtxCursorX += 240;
@@ -618,15 +680,31 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
    * their children in the rfNodes array — React Flow requires parents to come
    * before their children. */
   const laneNodes: RFNode[] = [];
+  let nextAutoLaneY = LANE.timelineY - LANE.planspaceLaneAgentRowY;
   for (const planspaceId of planspaceOrder) {
-    const pos = laneAbsPos.get(planspaceId);
-    if (!pos) continue;
     const maxRight =
       laneChildMaxX.get(planspaceId) ?? (LANE.planspaceLanePaddingX + LANE.agentWidth);
     const width = Math.max(
       LANE.agentWidth + LANE.planspaceLanePaddingX * 2,
       maxRight + LANE.planspaceLanePaddingX,
     );
+    const maxBottom =
+      laneChildMaxY.get(planspaceId) ?? (LANE.planspaceLaneAgentRowY + LANE.agentHeight);
+    const height = Math.max(
+      LANE.planspaceLaneHeight,
+      maxBottom + LANE.planspaceLanePaddingX,
+    );
+    const hintedPos = layoutHints[`planspace:${planspaceId}`];
+    const fallbackPos = laneAbsPos.get(planspaceId);
+    const pos = hintedPos ?? (
+      fallbackPos ? { x: fallbackPos.x, y: nextAutoLaneY } : null
+    );
+    if (!pos) continue;
+    if (!hintedPos) {
+      nextAutoLaneY += height + 40;
+    } else {
+      nextAutoLaneY = Math.max(nextAutoLaneY, hintedPos.y + height + 40);
+    }
     const color =
       laneColors.get(planspaceId) ??
       colorForPlanspace(planspaceId, planspaceIndex, planspaceColorOverrides) ??
@@ -640,7 +718,7 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
         label: labelForPlanspace(planspaceId),
         nodeCount: laneChildCount.get(planspaceId) ?? 0,
         width,
-        height: LANE.planspaceLaneHeight,
+        height,
         color,
         active: planspaceId === activePlanspaceId,
         canCreateVirtual,
@@ -652,59 +730,6 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
     });
   }
   rfNodes.splice(1, 0, ...laneNodes);
-
-  /* phantom composer — kept top-level so it can park at the lane's right edge
-   * without being clipped by `extent: "parent"`. Its absolute position is
-   * computed from the lane's abs pos + the lane's current right boundary. */
-  if (phantomFreshStart || phantomFromNodeId !== undefined) {
-    const phantomId = "phantom:composer";
-    let position: { x: number; y: number };
-    let resumeFromLabel: string | null = null;
-    if (phantomFromNodeId) {
-      const parent = nodeById.get(phantomFromNodeId);
-      const parentRf = rfNodes.find((n) => n.id === phantomFromNodeId);
-      let parentAbsX = parentRf?.position.x ?? freeCursorX;
-      let parentAbsY = parentRf?.position.y ?? LANE.timelineY;
-      if (parentRf?.parentNode) {
-        const laneId = parentRf.parentNode.slice("planspace:".length);
-        const laneAbs = laneAbsPos.get(laneId);
-        if (laneAbs) {
-          parentAbsX = laneAbs.x + parentAbsX;
-          parentAbsY = laneAbs.y + parentAbsY;
-        }
-      }
-      position = { x: parentAbsX + LANE.agentSpacing, y: parentAbsY };
-      resumeFromLabel = parent
-        ? (parent.summary || parent.prompt || parent.id.slice(0, 8)).slice(0, 48)
-        : null;
-    } else if (
-      activePlanspaceId &&
-      !hiddenPlanspaces.has(activePlanspaceId) &&
-      laneAbsPos.has(activePlanspaceId)
-    ) {
-      const laneAbs = laneAbsPos.get(activePlanspaceId)!;
-      const maxRight =
-        laneChildMaxX.get(activePlanspaceId) ?? LANE.planspaceLanePaddingX;
-      position = {
-        x: laneAbs.x + maxRight + LANE.planspaceLanePaddingX,
-        y: laneAbs.y + LANE.planspaceLaneAgentRowY,
-      };
-    } else {
-      position = { x: freeCursorX, y: LANE.timelineY };
-    }
-    rfNodes.push({
-      id: phantomId,
-      type: "phantom",
-      position,
-      data: {
-        resumeFromNodeId: phantomFromNodeId ?? null,
-        resumeFromLabel,
-        disabled: phantomDisabled,
-      },
-      draggable: false,
-      selectable: true,
-    });
-  }
 
   return { rfNodes, rfEdges };
 }
@@ -760,6 +785,18 @@ function findContinueSourceId(
   if (node.category === "review") return null;
   if ((node.scheduled_deps ?? []).length > 0) return null;
   return node.parent_node_id;
+}
+
+function virtualBranchAnchorId(
+  node: NodeInfo,
+  byId: Map<string, NodeInfo>,
+): string | null {
+  const continueSourceId = findContinueSourceId(node, byId);
+  if (continueSourceId) return continueSourceId;
+  for (const depId of node.scheduled_deps ?? []) {
+    if (byId.has(depId)) return depId;
+  }
+  return null;
 }
 
 function collectPlanspaceOrder(
@@ -849,6 +886,7 @@ function isVirtualReady(
   byId: Map<string, NodeInfo>,
 ): boolean {
   if (node.state !== "virtual" || node.obsolete_reason) return false;
+  if (!(node.prompt_draft || "").trim()) return false;
   for (const depId of node.scheduled_deps ?? []) {
     const dep = byId.get(depId);
     if (!dep) continue;

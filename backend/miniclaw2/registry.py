@@ -549,6 +549,45 @@ class ProjectRegistry:
         self._launch_runner(rt, runner)
         return runner
 
+    def create_blank_planspace(
+        self,
+        pid: str,
+        *,
+        title: str,
+        seed: str,
+        mode: str | None = None,
+    ) -> Node | None:
+        """Create a planspace and seed it with one empty editable virtual."""
+        rt = self._runtimes.get(pid)
+        if rt is None or rt.is_running():
+            return None
+        if not seed.strip():
+            raise ValueError("seed must be non-empty")
+        normalized_mode = normalize_planspace_mode(mode)
+        plug_id = create_planspace(
+            rt.project,
+            title=title or seed.strip() or "Direction",
+            mode=normalized_mode,
+            store_root=self.store.root,
+            seed_text=seed,
+        )
+        settings = dict(rt.project.settings_override)
+        settings["active_planspace_id"] = plug_id
+        rt.project.settings_override = settings
+        self.store.update_project(rt.project)
+
+        node = self.create_virtual(
+            pid,
+            prompt_draft="",
+            category=Category.REGULAR,
+            motivation="",
+            scheduled_deps=[],
+            planspace_id=plug_id,
+        )
+        if node is None:
+            return None
+        return node
+
     # ---- auto-promotion ----
 
     def _auto_promote_next_virtual(self, rt: ProjectRuntime) -> None:
@@ -610,6 +649,8 @@ class ProjectRegistry:
                 continue
             if n.obsolete_reason:
                 continue
+            if not (n.prompt_draft or "").strip():
+                continue
             if not all(is_dep_auto_ready(dep) for dep in n.scheduled_deps):
                 continue
             eligible.append(n)
@@ -633,6 +674,8 @@ class ProjectRegistry:
             return None
         if node.state is not NodeState.VIRTUAL or node.obsolete_reason:
             return None
+        if not (node.prompt_draft or "").strip():
+            return None
         active = resolve_active_planspace(
             rt.project, contextspace_root(self.store.root)
         )
@@ -653,7 +696,7 @@ class ProjectRegistry:
             resume_parent = self.store.load_node(pid, node.resume_from_node_id)
             if resume_parent is None:
                 return None
-            if resume_parent.state is not NodeState.DONE:
+            if resume_parent.state not in TERMINAL_NODE_STATES:
                 return None
             if not (resume_parent.provider_session_id or resume_parent.sdk_session_id):
                 return None
@@ -696,6 +739,8 @@ class ProjectRegistry:
         scheduled_deps: list[str] | None = None,
         planspace_id: str | None = None,
         node_id: str | None = None,
+        parent_node_id: str | None = None,
+        resume_from_node_id: str | None = None,
     ) -> Node | None:
         """Create a user-authored editable virtual node.
 
@@ -706,10 +751,18 @@ class ProjectRegistry:
         rt = self._runtimes.get(pid)
         if rt is None or rt.is_running():
             return None
-        if not str(prompt_draft).strip():
-            raise ValueError("prompt_draft must be non-empty")
 
         lane_id = self._resolve_virtual_create_lane(rt, planspace_id)
+        normalized_parent_id = self._normalize_virtual_parent(
+            pid,
+            lane_id=lane_id,
+            parent_node_id=parent_node_id,
+        )
+        normalized_resume_id = self._normalize_virtual_resume_source(
+            pid,
+            lane_id=lane_id,
+            resume_from_node_id=resume_from_node_id,
+        )
 
         try:
             next_category = (
@@ -761,11 +814,13 @@ class ProjectRegistry:
             subtype=next_subtype,
             brief=next_brief,
             state=NodeState.VIRTUAL,
+            parent_node_id=normalized_parent_id,
             planspace_id=lane_id,
             provider=rt.project.provider,
             prompt="",
             prompt_draft=str(prompt_draft),
             scheduled_deps=[],
+            resume_from_node_id=normalized_resume_id,
             proposed_by="user",
             summary="" if motivation is None else str(motivation),
         )
@@ -943,6 +998,60 @@ class ProjectRegistry:
                     return self.store.load_node(pid, updated.id) or updated
         return updated
 
+    def delete_virtual(self, pid: str, vid: str) -> tuple[bool, list[str]]:
+        """Hard-delete an unrun virtual node.
+
+        Returns ``(True, [])`` on success. Validation failures raise
+        ``ValueError`` for 400-class errors; a non-empty blockers list means the
+        caller should report a conflict.
+        """
+        rt = self._runtimes.get(pid)
+        if rt is None:
+            return False, []
+        if rt.is_running():
+            raise RuntimeError("turn in progress")
+        node = self.store.load_node(pid, vid)
+        if node is None:
+            return False, []
+        if node.state is not NodeState.VIRTUAL:
+            raise ValueError("only virtual nodes can be deleted")
+
+        nodes = self.store.list_nodes(pid)
+        blockers = [
+            other.id
+            for other in nodes
+            if other.id != vid
+            and not other.obsolete_reason
+            and vid in (other.scheduled_deps or [])
+        ]
+        if blockers:
+            return False, blockers
+
+        for other in nodes:
+            if other.id == vid or vid not in (other.scheduled_deps or []):
+                continue
+            cleaned = [dep for dep in other.scheduled_deps if dep != vid]
+            if cleaned == other.scheduled_deps:
+                continue
+            other.scheduled_deps = cleaned
+            self.store.update_node(other)
+            try:
+                self.store.write_node_preview(pid, other.id, render_virtual_preview(other))
+            except Exception:  # noqa: BLE001
+                logger.exception("failed to write virtual preview after dep cleanup")
+
+        if not self.store.delete_node(pid, vid):
+            return False, []
+        try:
+            asyncio.get_running_loop().create_task(rt.broadcast({
+                "type": "node_removed",
+                "id": vid,
+                "seq": 0,
+            }))
+        except RuntimeError:
+            pass
+        return True, []
+
     def _resolve_virtual_create_lane(
         self,
         rt: ProjectRuntime,
@@ -1000,6 +1109,46 @@ class ProjectRegistry:
             seen.add(dep)
             deps.append(dep)
         return deps
+
+    def _normalize_virtual_parent(
+        self,
+        pid: str,
+        *,
+        lane_id: str,
+        parent_node_id: str | None,
+    ) -> str | None:
+        if parent_node_id is None or not str(parent_node_id).strip():
+            return None
+        parent_id = str(parent_node_id).strip()
+        parent = self.store.load_node(pid, parent_id)
+        if parent is None:
+            raise ValueError(f"parent_node_id {parent_id!r} does not resolve")
+        if (parent.planspace_id or "") != lane_id:
+            raise ValueError(f"parent_node_id {parent_id!r} is outside this lane")
+        return parent_id
+
+    def _normalize_virtual_resume_source(
+        self,
+        pid: str,
+        *,
+        lane_id: str,
+        resume_from_node_id: str | None,
+    ) -> str | None:
+        if resume_from_node_id is None or not str(resume_from_node_id).strip():
+            return None
+        source_id = str(resume_from_node_id).strip()
+        source = self.store.load_node(pid, source_id)
+        if source is None:
+            raise ValueError(f"resume_from_node_id {source_id!r} does not resolve")
+        if source.kind is NodeKind.OP:
+            raise ValueError("resume_from_node_id must reference an agent/verifier node")
+        if (source.planspace_id or "") != lane_id:
+            raise ValueError(f"resume_from_node_id {source_id!r} is outside this lane")
+        if source.state not in TERMINAL_NODE_STATES:
+            raise ValueError("resume_from_node_id must reference a terminal node")
+        if not (source.provider_session_id or source.sdk_session_id):
+            raise ValueError("resume_from_node_id is not resumable")
+        return source_id
 
     def _lane_nodes_with(
         self,

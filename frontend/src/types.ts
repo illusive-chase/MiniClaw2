@@ -72,6 +72,11 @@ export type NodeUpdated = {
   node: NodeInfo;
   seq?: number;
 };
+export type NodeRemoved = {
+  type: "node_removed";
+  id: string;
+  seq?: number;
+};
 
 export type ServerEvent =
   | TextDelta
@@ -82,7 +87,8 @@ export type ServerEvent =
   | TurnDone
   | ErrorEvent
   | NodeStarted
-  | NodeUpdated;
+  | NodeUpdated
+  | NodeRemoved;
 
 export type ClientMessage =
     | {

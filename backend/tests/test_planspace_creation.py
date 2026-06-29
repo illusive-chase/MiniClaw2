@@ -18,7 +18,9 @@ from miniclaw2.contextspace import (
     resolve_project_binding,
     set_planspace_mode,
 )
-from miniclaw2.domain import Project
+from miniclaw2.domain import NodeState, Project
+from miniclaw2.registry import ProjectRegistry
+from miniclaw2.store import Store
 
 
 class PlanspaceCreationTests(unittest.TestCase):
@@ -167,6 +169,124 @@ class ReadPlanspaceModeTests(unittest.TestCase):
         }
         self.assertIn(binding["id"], selectable_ids)
         self.assertIn("project.billing", selectable_ids)
+
+
+class BlankPlanspaceRegistryTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        os.environ["MINICLAW_CONTEXT_HOME"] = str(Path(self.tmp.name) / "ctx")
+        self.store = Store(root=Path(self.tmp.name) / "store")
+        self.project = Project(
+            root_path=str(Path(self.tmp.name) / "repo"),
+            name="blank-project",
+        )
+        Path(self.project.root_path).mkdir(parents=True, exist_ok=True)
+        self.store.create_project(self.project)
+        self.registry = ProjectRegistry(store=self.store)
+
+    def tearDown(self) -> None:
+        os.environ.pop("MINICLAW_CONTEXT_HOME", None)
+        self.tmp.cleanup()
+
+    def test_create_blank_planspace_seeds_empty_virtual_and_activates_lane(self) -> None:
+        node = self.registry.create_blank_planspace(
+            self.project.id,
+            title="Auth flow",
+            seed="Sketch auth work",
+            mode="manual",
+        )
+
+        self.assertIsNotNone(node)
+        assert node is not None
+        self.assertEqual(node.state, NodeState.VIRTUAL)
+        self.assertEqual(node.prompt_draft, "")
+        self.assertEqual(node.summary, "")
+        self.assertEqual(node.scheduled_deps, [])
+        self.assertIsNone(node.parent_node_id)
+        self.assertEqual(node.planspace_id, "planspaces.auth-flow")
+
+        project = self.registry.get_project(self.project.id)
+        assert project is not None
+        self.assertEqual(
+            project.settings_override.get("active_planspace_id"),
+            "planspaces.auth-flow",
+        )
+
+        root = Path(os.environ["MINICLAW_CONTEXT_HOME"])
+        manifest_path = root / "plugs" / "planspaces" / "auth-flow" / "manifest.yaml"
+        manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+        self.assertEqual(manifest["mode"], "manual")
+        self.assertEqual(manifest["seed"], "Sketch auth work")
+        self.assertEqual(read_planspace_mode(project, "planspaces.auth-flow"), "manual")
+
+    def test_create_blank_planspace_propagates_auto_mode(self) -> None:
+        node = self.registry.create_blank_planspace(
+            self.project.id,
+            title="Auto lane",
+            seed="Prepare auto work",
+            mode="auto",
+        )
+
+        self.assertIsNotNone(node)
+        assert node is not None
+        project = self.registry.get_project(self.project.id)
+        assert project is not None
+        self.assertEqual(read_planspace_mode(project, node.planspace_id or ""), "auto")
+        reloaded = self.store.load_node(self.project.id, node.id)
+        assert reloaded is not None
+        self.assertEqual(reloaded.state, NodeState.VIRTUAL)
+
+    def test_create_blank_planspace_uses_unique_slug(self) -> None:
+        first = self.registry.create_blank_planspace(
+            self.project.id,
+            title="Direction",
+            seed="First",
+            mode="manual",
+        )
+        second = self.registry.create_blank_planspace(
+            self.project.id,
+            title="Direction",
+            seed="Second",
+            mode="manual",
+        )
+
+        assert first is not None
+        assert second is not None
+        self.assertEqual(first.planspace_id, "planspaces.direction")
+        self.assertTrue((second.planspace_id or "").startswith("planspaces.direction-"))
+        self.assertNotEqual(first.planspace_id, second.planspace_id)
+
+    def test_create_blank_planspace_rejects_empty_seed(self) -> None:
+        with self.assertRaisesRegex(ValueError, "seed"):
+            self.registry.create_blank_planspace(
+                self.project.id,
+                title="Blank",
+                seed="  ",
+                mode="manual",
+            )
+
+    def test_create_blank_planspace_returns_none_when_turn_running(self) -> None:
+        runtime = self.registry._runtimes[self.project.id]
+        runtime.runner_task = _PendingTask()  # type: ignore[assignment]
+        try:
+            node = self.registry.create_blank_planspace(
+                self.project.id,
+                title="Busy",
+                seed="Busy work",
+                mode="manual",
+            )
+        finally:
+            runtime.runner_task.cancel()
+
+        self.assertIsNone(node)
+
+
+class _PendingTask:
+    def done(self) -> bool:
+        return False
+
+    def cancel(self) -> None:
+        pass
 
 
 if __name__ == "__main__":

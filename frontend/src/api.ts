@@ -111,6 +111,25 @@ export async function createPlanspace(
   return res.json();
 }
 
+export type CreateBlankPlanspacePayload = {
+  title?: string;
+  seed: string;
+  mode: PlanspaceMode;
+};
+
+export async function createBlankPlanspace(
+  sessionId: string,
+  body: CreateBlankPlanspacePayload,
+): Promise<{ planspace_id: string; binding_id: string; node_id: string }> {
+  const res = await fetch(`/sessions/${sessionId}/planspaces/blank`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`createBlankPlanspace failed: ${res.status}`);
+  return res.json();
+}
+
 export async function updatePlanspaceMode(
   sessionId: string,
   planspaceId: string,
@@ -158,6 +177,8 @@ export type CreateVirtualPayload = {
   motivation?: string | null;
   scheduled_deps?: string[];
   planspace_id?: string | null;
+  parent_node_id?: string | null;
+  resume_from_node_id?: string | null;
 };
 
 export async function createVirtual(
@@ -180,6 +201,45 @@ export async function createVirtual(
     throw new Error(`createVirtual failed: ${detail}`);
   }
   return res.json();
+}
+
+export class DeleteVirtualConflictError extends Error {
+  blockers: string[];
+
+  constructor(blockers: string[]) {
+    super(`deleteVirtual blocked by: ${blockers.join(", ")}`);
+    this.name = "DeleteVirtualConflictError";
+    this.blockers = blockers;
+  }
+}
+
+export async function deleteVirtual(
+  sessionId: string,
+  nodeId: string,
+): Promise<void> {
+  const res = await fetch(
+    `/sessions/${sessionId}/virtuals/${encodeURIComponent(nodeId)}`,
+    { method: "DELETE" },
+  );
+  if (res.status === 204) return;
+  let detail: unknown = res.status;
+  try {
+    const body = await res.json();
+    detail = body?.detail ?? detail;
+    const blockers = (body?.detail as { blockers?: unknown } | undefined)?.blockers;
+    if (Array.isArray(blockers)) {
+      throw new DeleteVirtualConflictError(
+        blockers.filter((value): value is string => typeof value === "string"),
+      );
+    }
+  } catch (err) {
+    if (err instanceof DeleteVirtualConflictError) throw err;
+  }
+  throw new Error(
+    `deleteVirtual failed: ${
+      typeof detail === "string" ? detail : JSON.stringify(detail)
+    }`,
+  );
 }
 
 export async function updateVirtual(

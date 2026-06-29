@@ -25,7 +25,6 @@ import {
 import { AgentNode } from "./nodes/AgentNode";
 import { OpNode } from "./nodes/OpNode";
 import { ContextNode } from "./nodes/ContextNode";
-import { PhantomNode } from "./nodes/PhantomNode";
 import { ProjectRootNode } from "./nodes/ProjectRootNode";
 import { PlanspaceLaneNode } from "./nodes/PlanspaceLaneNode";
 import {
@@ -42,7 +41,6 @@ const NODE_TYPES = {
   agent: AgentNode,
   op: OpNode,
   context: ContextNode,
-  phantom: PhantomNode,
   projectRoot: ProjectRootNode,
   planspaceLane: PlanspaceLaneNode,
   errorTerminal: ErrorTerminalNode,
@@ -80,9 +78,6 @@ export type CanvasProps = {
   selectedNodeId: string | null;
   activeNodeId: string | null;
   projectTitle: string;
-  /** focused phantom: undefined = no phantom; null = fresh start; string = resuming from */
-  phantomFromNodeId: string | null | undefined;
-  phantomDisabled: boolean;
   contextBundlesByNodeId: Record<string, ContextBundle | null | undefined>;
   knownPlanspaceIds: string[];
   hiddenPlanspaceIds: string[];
@@ -93,8 +88,6 @@ export type CanvasProps = {
   /** Persisted viewport hydrated from the session. */
   initialLayoutViewport?: Viewport | null;
   onSelectionChange: (sel: CanvasSelection) => void;
-  /** spawn the phantom to the right of a finished agent */
-  onSpawnFromAgent: (nodeId: string) => void;
   /** Called after drag-end / pan / zoom with layout state that changed. */
   onLayoutHintsChange?: (
     updates: Record<string, { x: number; y: number }>,
@@ -115,8 +108,6 @@ function CanvasInner({
   selectedNodeId,
   activeNodeId,
   projectTitle,
-  phantomFromNodeId,
-  phantomDisabled,
   contextBundlesByNodeId,
   knownPlanspaceIds,
   hiddenPlanspaceIds,
@@ -125,7 +116,6 @@ function CanvasInner({
   initialLayoutHints,
   initialLayoutViewport,
   onSelectionChange,
-  onSpawnFromAgent,
   onLayoutHintsChange,
 }: CanvasProps) {
   const layoutHintsRef = useRef<Record<string, { x: number; y: number }>>(
@@ -195,20 +185,12 @@ function CanvasInner({
     });
   }, [onSelectionChange]);
 
-  /* Build the graph. Phantom presence is a function of phantomFromNodeId:
-   *   undefined → no phantom in the graph
-   *   null      → phantom in "fresh start" mode
-   *   string    → phantom continuing from that node
-   */
   const built = useMemo(
     () =>
       buildGraph({
         nodes,
         activeNodeId,
         projectTitle,
-        phantomFromNodeId,
-        phantomFreshStart: phantomFromNodeId === null,
-        phantomDisabled,
         layoutHints: layoutHintsRef.current,
         contextBundlesByNodeId,
         knownPlanspaceIds,
@@ -220,8 +202,6 @@ function CanvasInner({
       nodes,
       activeNodeId,
       projectTitle,
-      phantomFromNodeId,
-      phantomDisabled,
       contextBundlesByNodeId,
       knownPlanspaceIds,
       hiddenPlanspaceIds,
@@ -231,12 +211,10 @@ function CanvasInner({
     ],
   );
 
-  const phantomVisible = phantomFromNodeId !== undefined;
-
   /* React Flow controlled state. We keep an internal copy so dragging is smooth
    * while still reflecting upstream prop changes (e.g. node_updated events). */
   const [rfNodes, setRfNodes, onNodesChange] = useNodesState(
-    decorateSelection(built.rfNodes, selectedNodeId, phantomVisible),
+    decorateSelection(built.rfNodes, selectedNodeId),
   );
   const [rfEdges, setRfEdges] = useEdgesState(
     decorateEdges(built.rfEdges, selectedNodeId, hoveredNodeId),
@@ -263,7 +241,7 @@ function CanvasInner({
         }
         return n;
       });
-      return decorateSelection(next, selectedNodeId, phantomVisible);
+      return decorateSelection(next, selectedNodeId);
     });
     if (hydrateFromLayout) {
       appliedLayoutHydrationVersionRef.current = layoutHydrationVersion;
@@ -271,7 +249,6 @@ function CanvasInner({
   }, [
     built.rfNodes,
     selectedNodeId,
-    phantomVisible,
     setRfNodes,
     layoutHydrationVersion,
   ]);
@@ -412,19 +389,12 @@ function CanvasInner({
           kind: "agent",
           nodeId: data.ownerNodeId,
         });
-      } else if (n.type === "phantom") {
-        /* Clicks inside the composer (textarea, buttons, etc.) bubble up as a
-         * node click on the phantom. We intentionally don't propagate this to
-         * onSelectionChange — that would dismiss the very composer the user is
-         * editing. The phantom's "selected" appearance is driven directly by
-         * phantomFromNodeId in decorateSelection below. */
       }
     },
     [onSelectionChange],
   );
 
-  /* Empty-canvas tap: clear selection. The dismiss-on-deselect logic in App
-   * uses this same `none` transition to dismiss the phantom composer. */
+  /* Empty-canvas tap: clear selection. */
   const onPaneClick = useCallback(
     (event: React.MouseEvent) => {
       const target = event.target as HTMLElement;
@@ -444,20 +414,6 @@ function CanvasInner({
     setHoveredNodeId(null);
   }, []);
 
-  /* Double-click an agent → spawn phantom from it. */
-  const onNodeDoubleClick = useCallback<NodeMouseHandler>(
-    (_, node) => {
-      const rfNode = node as RFNode;
-      if (rfNode.type === "agent") {
-        const data = rfNode.data as import("./layout").AgentNodeData;
-        if (data.node.kind === "agent") {
-          onSpawnFromAgent(data.node.id);
-        }
-      }
-    },
-    [onSpawnFromAgent],
-  );
-
   return (
     <div
       ref={wrapperRef}
@@ -471,7 +427,6 @@ function CanvasInner({
         onNodeClick={onNodeClick}
         onNodeMouseEnter={onNodeMouseEnter}
         onNodeMouseLeave={onNodeMouseLeave}
-        onNodeDoubleClick={onNodeDoubleClick}
         onPaneClick={onPaneClick}
         onMove={onMove}
         onMoveEnd={onMoveEnd}
@@ -625,15 +580,9 @@ function clamp(value: number, min: number, max: number): number {
 function decorateSelection(
   nodes: RFNode[],
   selectedNodeId: string | null,
-  phantomVisible: boolean,
 ): Node[] {
   return nodes.map((n) => {
-    /* The phantom composer is the "selected" thing while it's on screen,
-     * regardless of the underlying canvas selection. That way the SidePanel
-     * keeps showing whatever the user was looking at while they author the
-     * next run. */
-    const isPhantom = n.id === "phantom:composer";
-    const selected = isPhantom ? phantomVisible : n.id === selectedNodeId;
+    const selected = n.id === selectedNodeId;
     return n.selected === selected ? n : { ...n, selected };
   });
 }

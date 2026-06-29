@@ -1,4 +1,4 @@
-import { memo } from "react";
+import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Handle, Position, type NodeProps } from "reactflow";
 import type { InteractionRequest, NodeInfo, NodeState } from "../../types";
 import {
@@ -7,14 +7,15 @@ import {
 } from "../../components/PendingGateInline";
 import type { AgentNodeData } from "../layout";
 import { stateMeta } from "./stateMeta";
+import { canResumeNode } from "../../nodeUtil";
 
 /**
  * Agent tile: rounded rectangle, ~224x130. The primary work unit.
  *
  * Color encodes `state`; shape encodes `kind`. Shows a one-line prompt preview
  * plus a streaming sweep bar when the agent is actively running. A hover-only
- * `+` handle on the right edge of a tail tile is the entry point for the
- * phantom composer.
+ * right-edge action stack exposes promote, continuation, dependency, and
+ * removal affordances when each operation is valid.
  */
 function AgentNodeImpl({ data, selected }: NodeProps<AgentNodeData>) {
   const {
@@ -23,8 +24,8 @@ function AgentNodeImpl({ data, selected }: NodeProps<AgentNodeData>) {
     resumeParent,
     isActive,
     planspaceColor,
-    isLastInLane,
     readyToPromote,
+    canCreateVirtual,
   } = data;
   const meta = stateMeta(node.state);
   const pendingGate = agentNodeContext.pendingGateForNode(node.id);
@@ -35,6 +36,142 @@ function AgentNodeImpl({ data, selected }: NodeProps<AgentNodeData>) {
       (node.state === "virtual" ? "(draft prompt missing)" : "(empty prompt)"),
   );
   const isVirtual = node.state === "virtual";
+  const [removeOpen, setRemoveOpen] = useState(false);
+  const [removeSaving, setRemoveSaving] = useState(false);
+  const [removeError, setRemoveError] = useState<string | null>(null);
+  const [deleteBlockers, setDeleteBlockers] = useState<string[] | null>(null);
+  const removeRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!removeOpen) return;
+    const handler = (event: MouseEvent) => {
+      if (removeRef.current && !removeRef.current.contains(event.target as Node)) {
+        setRemoveOpen(false);
+        setRemoveError(null);
+        setDeleteBlockers(null);
+      }
+    };
+    window.addEventListener("mousedown", handler);
+    return () => window.removeEventListener("mousedown", handler);
+  }, [removeOpen]);
+
+  useEffect(() => {
+    if (!selected || !isVirtual || !agentNodeContext.canCreateVirtual) return;
+    const handler = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (
+        target &&
+        ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName)
+      ) {
+        return;
+      }
+      if (event.key !== "Delete" && event.key !== "Backspace") return;
+      event.preventDefault();
+      setRemoveOpen(true);
+      setRemoveError(null);
+      setDeleteBlockers(null);
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [selected, isVirtual]);
+
+  const actionItems = useMemo(() => {
+    const items: Array<{
+      key: "promote" | "continuation" | "dependency" | "remove";
+      label: string;
+      title: string;
+      disabled: boolean;
+      tone: "brand" | "neutral" | "danger";
+      onClick: () => void;
+    }> = [];
+    if (isVirtual && readyToPromote && !node.obsolete_reason) {
+      items.push({
+        key: "promote",
+        label: "▶",
+        title: "Promote - run this virtual",
+        disabled: !agentNodeContext.canPromoteVirtual,
+        tone: "brand",
+        onClick: () => agentNodeContext.onPromoteVirtual(node.id),
+      });
+    }
+    if (!isVirtual && isTerminal(node.state) && canResumeNode(node)) {
+      items.push({
+        key: "continuation",
+        label: "↪",
+        title: "Continuation - new virtual that resumes this conversation",
+        disabled: !canCreateVirtual || !agentNodeContext.canCreateVirtual,
+        tone: "neutral",
+        onClick: () => agentNodeContext.onCreateContinuationVirtual(node.id),
+      });
+    }
+    if (isVirtual || (!isVirtual && isTerminal(node.state))) {
+      items.push({
+        key: "dependency",
+        label: "↘",
+        title: "Dependency - new virtual that waits for this",
+        disabled: !canCreateVirtual || !agentNodeContext.canCreateVirtual,
+        tone: "neutral",
+        onClick: () => agentNodeContext.onCreateDependencyVirtual(node.id),
+      });
+    }
+    if (isVirtual) {
+      items.push({
+        key: "remove",
+        label: "×",
+        title: "Remove",
+        disabled: removeSaving || !agentNodeContext.canCreateVirtual,
+        tone: "danger",
+        onClick: () => {
+          setRemoveOpen((open) => !open);
+          setRemoveError(null);
+          setDeleteBlockers(null);
+        },
+      });
+    }
+    return items;
+  }, [
+    canCreateVirtual,
+    isVirtual,
+    node,
+    readyToPromote,
+    removeSaving,
+  ]);
+
+  const removeIndex = actionItems.findIndex((item) => item.key === "remove");
+  const removeTop = stackTop(removeIndex, actionItems.length);
+
+  const markObsolete = async () => {
+    setRemoveSaving(true);
+    setRemoveError(null);
+    try {
+      await agentNodeContext.onMarkVirtualObsolete(node.id);
+      setRemoveOpen(false);
+      setDeleteBlockers(null);
+    } catch (err) {
+      setRemoveError(errorMessage(err));
+    } finally {
+      setRemoveSaving(false);
+    }
+  };
+
+  const hardDelete = async () => {
+    setRemoveSaving(true);
+    setRemoveError(null);
+    setDeleteBlockers(null);
+    try {
+      await agentNodeContext.onDeleteVirtual(node.id);
+      setRemoveOpen(false);
+    } catch (err) {
+      const blockers = blockersFromError(err);
+      if (blockers.length > 0) {
+        setDeleteBlockers(blockers);
+      } else {
+        setRemoveError(errorMessage(err));
+      }
+    } finally {
+      setRemoveSaving(false);
+    }
+  };
 
   return (
     <div className="group relative w-[224px]" title={tooltipForAgent(node, isActive)}>
@@ -181,40 +318,65 @@ function AgentNodeImpl({ data, selected }: NodeProps<AgentNodeData>) {
         </span>
       )}
 
-      {/* Hover-only "+" affordance: only on tail tiles, opens a phantom composer
-       * to the right. Half-overlapping the edge so cursor moves from tile to
-       * button without losing hover; `hover:opacity-100` on the button itself
-       * keeps it visible during that transition. */}
-      {isVirtual && readyToPromote && !node.obsolete_reason && (
+      {actionItems.map((item, actionIndex) => (
         <button
+          key={item.key}
           type="button"
           onClick={(e) => {
             e.stopPropagation();
-            agentNodeContext.onPromoteVirtual(node.id);
+            if (!item.disabled) item.onClick();
           }}
           onMouseDown={(e) => e.stopPropagation()}
-          className="nodrag absolute -right-3 top-1/2 z-10 inline-flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-full border border-brand bg-brand text-[14px] font-semibold leading-none text-white opacity-0 shadow-card transition hover:brightness-[0.95] group-hover:opacity-100 hover:opacity-100"
-          title="Promote virtual node"
-          aria-label="Promote virtual node"
+          disabled={item.disabled}
+          style={{ top: stackTop(actionIndex, actionItems.length) }}
+          className={actionButtonClass(item.tone)}
+          title={item.title}
+          aria-label={item.title}
         >
-          &gt;
+          {item.label}
         </button>
-      )}
+      ))}
 
-      {isLastInLane && !isVirtual && (
-        <button
-          type="button"
-          onClick={(e) => {
-            e.stopPropagation();
-            agentNodeContext.onSpawnFromAgent(node.id);
-          }}
+      {removeOpen && removeIndex >= 0 && (
+        <div
+          ref={removeRef}
+          className="nodrag absolute -right-[178px] z-40 w-40 -translate-y-1/2 rounded-md border border-line bg-surface-raised p-1 shadow-modal"
+          style={{ top: removeTop }}
+          onClick={(e) => e.stopPropagation()}
           onMouseDown={(e) => e.stopPropagation()}
-          className="nodrag absolute -right-3 top-1/2 z-10 inline-flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-full border border-line-strong bg-surface-raised text-[15px] font-semibold leading-none text-ink-muted opacity-0 shadow-card transition hover:border-brand hover:bg-brand hover:text-white group-hover:opacity-100 hover:opacity-100"
-          title="Start a follow-up run"
-          aria-label="Start a follow-up run"
         >
-          +
-        </button>
+          {deleteBlockers ? (
+            <div className="space-y-1.5 p-1">
+              <div className="break-words text-[11px] leading-snug text-state-error">
+                Blocked by: {deleteBlockers.join(", ")}
+              </div>
+              <PopoverButton
+                disabled={removeSaving}
+                onClick={markObsolete}
+              >
+                Mark obsolete instead
+              </PopoverButton>
+            </div>
+          ) : (
+            <>
+              <PopoverButton disabled={removeSaving} onClick={markObsolete}>
+                Mark obsolete
+              </PopoverButton>
+              <PopoverButton
+                disabled={removeSaving}
+                danger
+                onClick={hardDelete}
+              >
+                Delete
+              </PopoverButton>
+              {removeError && (
+                <div className="px-2 py-1 text-[10.5px] leading-snug text-state-error">
+                  {removeError}
+                </div>
+              )}
+            </>
+          )}
+        </div>
       )}
     </div>
   );
@@ -222,25 +384,100 @@ function AgentNodeImpl({ data, selected }: NodeProps<AgentNodeData>) {
 
 export const AgentNode = memo(AgentNodeImpl);
 
-/* Module-level singleton: App.tsx writes the active onSpawnFromAgent callback
- * (same pattern as PhantomNode's phantomContext) so the memoized AgentNode
- * always reads the latest handler without stale closures. */
+/* Module-level singleton: App.tsx writes active action callbacks here so the
+ * memoized AgentNode always reads the latest handlers without stale closures. */
 export type AgentNodeContext = {
-  onSpawnFromAgent: (nodeId: string) => void;
   onPromoteVirtual: (nodeId: string) => void;
+  onCreateContinuationVirtual: (nodeId: string) => void;
+  onCreateDependencyVirtual: (nodeId: string) => void;
+  onMarkVirtualObsolete: (nodeId: string) => Promise<void>;
+  onDeleteVirtual: (nodeId: string) => Promise<void>;
+  canCreateVirtual: boolean;
+  canPromoteVirtual: boolean;
   pendingGateForNode: (nodeId: string) => InteractionRequest | null;
   onResolveGate: (id: string, payload: ResolveGatePayload) => void;
 };
 
 let agentNodeContext: AgentNodeContext = {
-  onSpawnFromAgent: () => {},
   onPromoteVirtual: () => {},
+  onCreateContinuationVirtual: () => {},
+  onCreateDependencyVirtual: () => {},
+  onMarkVirtualObsolete: async () => {},
+  onDeleteVirtual: async () => {},
+  canCreateVirtual: false,
+  canPromoteVirtual: false,
   pendingGateForNode: () => null,
   onResolveGate: () => {},
 };
 
 export function setAgentNodeContext(ctx: AgentNodeContext): void {
   agentNodeContext = ctx;
+}
+
+function stackTop(index: number, total: number): string {
+  if (index < 0) return "50%";
+  const step = 30;
+  const offset = (index - (total - 1) / 2) * step;
+  return `calc(50% + ${offset}px)`;
+}
+
+function actionButtonClass(tone: "brand" | "neutral" | "danger"): string {
+  const toneClass =
+    tone === "brand"
+      ? "border-brand bg-brand text-white hover:brightness-[0.95]"
+      : tone === "danger"
+        ? "border-state-error/50 bg-surface-raised text-state-error hover:border-state-error hover:bg-state-error-soft"
+        : "border-line-strong bg-surface-raised text-ink-muted hover:border-brand hover:bg-brand hover:text-white";
+  return (
+    "nodrag absolute -right-3 z-20 inline-flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-full text-[13px] font-semibold leading-none opacity-0 shadow-card transition group-hover:opacity-100 hover:opacity-100 disabled:cursor-not-allowed disabled:border-line disabled:bg-surface-sunken disabled:text-ink-subtle disabled:opacity-0 group-hover:disabled:opacity-45 " +
+    toneClass
+  );
+}
+
+function PopoverButton({
+  children,
+  disabled,
+  danger,
+  onClick,
+}: {
+  children: ReactNode;
+  disabled?: boolean;
+  danger?: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={() => {
+        if (!disabled) onClick();
+      }}
+      className={
+        "block w-full rounded px-2 py-1.5 text-left text-[11.5px] transition disabled:cursor-not-allowed disabled:opacity-45 " +
+        (danger
+          ? "text-state-error hover:bg-state-error-soft"
+          : "text-ink hover:bg-surface-sunken")
+      }
+    >
+      {children}
+    </button>
+  );
+}
+
+function blockersFromError(err: unknown): string[] {
+  if (!err || typeof err !== "object") return [];
+  const blockers = (err as { blockers?: unknown }).blockers;
+  return Array.isArray(blockers)
+    ? blockers.filter((value): value is string => typeof value === "string")
+    : [];
+}
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+function isTerminal(state: NodeInfo["state"]): boolean {
+  return state === "done" || state === "error" || state === "cancelled";
 }
 
 function StateChip({ state }: { state: NodeState }) {
