@@ -133,6 +133,44 @@ class UserTemplateSerializerTest(unittest.TestCase):
         reloaded = load_user_template("greetings", self.store.root)
         self.assertEqual(reloaded.brief, "Hello then goodbye.")
 
+    def test_ui_continuation_resume_source_is_serialized_as_dep(self) -> None:
+        pid, lane = _make_project_with_lane(self.registry)
+        source = Node(
+            project_id=pid,
+            kind=NodeKind.AGENT,
+            state=NodeState.DONE,
+            planspace_id=lane,
+            provider="claude",
+            prompt="Original turn.",
+            provider_session_id="sess-a",
+            started_at=1.0,
+            finished_at=2.0,
+        )
+        self.store.create_node(source)
+        continuation = _add_virtual(
+            self.store,
+            pid,
+            lane,
+            prompt_draft="Continue from source.",
+            resume_from=source.id,
+        )
+
+        template = serialize_selection(
+            self.store,
+            pid,
+            [source.id, continuation.id],
+            name="Continuation",
+            brief="Resume chain.",
+        )
+
+        self.assertEqual([node.id for node in template.nodes], ["n0", "n1"])
+        self.assertEqual(template.nodes[1].resume_from, "n0")
+        self.assertEqual(template.nodes[1].scheduled_deps, ["n0"])
+
+        reloaded = load_user_template("continuation", self.store.root)
+        self.assertEqual(reloaded.nodes[1].resume_from, "n0")
+        self.assertEqual(reloaded.nodes[1].scheduled_deps, ["n0"])
+
     def test_op_nodes_are_silently_filtered(self) -> None:
         pid, lane = _make_project_with_lane(self.registry)
         a = _add_virtual(self.store, pid, lane, prompt_draft="One.")

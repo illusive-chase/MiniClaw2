@@ -1040,8 +1040,8 @@ export function App() {
       if (!session?.id) return;
       try {
         await applyUserTemplate(session.id, slug, anchorNodeId);
-        // Newly-stamped virtuals arrive via WebSocket ``node_updated``
-        // events; no manual refresh needed.
+        // Manual-lane stamps do not emit node_updated events.
+        await refreshNodes();
       } catch (err) {
         // eslint-disable-next-line no-console
         console.error("applyUserTemplate failed", err);
@@ -1050,7 +1050,7 @@ export function App() {
         );
       }
     },
-    [session?.id],
+    [refreshNodes, session?.id],
   );
 
   /* select a specific node id (used by panel "jump to" affordances) */

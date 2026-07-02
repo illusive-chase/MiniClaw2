@@ -111,11 +111,14 @@ def serialize_selection(
         translated_deps = [
             slug_map[dep] for dep in node.scheduled_deps if dep in selection_ids
         ]
-        if translated_deps:
-            entry["scheduled_deps"] = translated_deps
         if node.resume_from_node_id:
             # Validated in _load_and_validate_nodes to be in-selection.
-            entry["resume_from"] = slug_map[node.resume_from_node_id]
+            resume_slug = slug_map[node.resume_from_node_id]
+            if resume_slug not in translated_deps:
+                translated_deps.append(resume_slug)
+            entry["resume_from"] = resume_slug
+        if translated_deps:
+            entry["scheduled_deps"] = translated_deps
 
         motivation = (node.summary or "").strip()
         if motivation:
