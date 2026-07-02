@@ -27,6 +27,10 @@ import { setAgentNodeContext } from "./canvas/nodes/AgentNode";
 import { setPlanspaceLaneContext } from "./canvas/nodes/PlanspaceLaneNode";
 import { SidePanel } from "./panel/SidePanel";
 import { NewProjectModal } from "./components/NewProjectModal";
+import { SaveAsTemplateModal } from "./components/SaveAsTemplateModal";
+import { TemplateLibraryDock } from "./components/TemplateLibraryDock";
+import { ContextMenu, type ContextMenuItem } from "./canvas/ContextMenu";
+import { applyUserTemplate } from "./api";
 import { ProjectsLanding } from "./components/ProjectsLanding";
 import { ThemeToggle } from "./components/ThemeToggle";
 import { UsageStrip } from "./components/UsageStrip";
@@ -102,6 +106,18 @@ export function App() {
   const [newDirectionRequestVersion, setNewDirectionRequestVersion] = useState(0);
 
   const [newProjectModalOpen, setNewProjectModalOpen] = useState(false);
+
+  /* Template-library state: multi-selection on the canvas + right-click menu +
+   * "save as template" modal + a bump to force the dock to refetch after a
+   * save or delete. Kept flat in App.tsx because both the canvas surface and
+   * the dock need to observe the same underlying state. */
+  const [multiSelectedNodeIds, setMultiSelectedNodeIds] = useState<string[]>([]);
+  const [templateContextMenu, setTemplateContextMenu] = useState<
+    { x: number; y: number; nodeId: string | null } | null
+  >(null);
+  const [saveTemplateOpen, setSaveTemplateOpen] = useState(false);
+  const [saveTemplateNodeIds, setSaveTemplateNodeIds] = useState<string[]>([]);
+  const [libraryRefreshToken, setLibraryRefreshToken] = useState(0);
 
   /* ⋯ menu */
   const [menuOpen, setMenuOpen] = useState(false);
@@ -998,6 +1014,45 @@ export function App() {
     }
   }, []);
 
+  const onMultiSelectionChange = useCallback((ids: string[]) => {
+    setMultiSelectedNodeIds(ids);
+  }, []);
+
+  const onAgentNodeContextMenu = useCallback(
+    (nodeId: string | null, x: number, y: number) => {
+      if (!nodeId) return; // right-click on non-agent → no menu
+      setTemplateContextMenu({ nodeId, x, y });
+    },
+    [],
+  );
+
+  const openSaveTemplateModal = useCallback(
+    (nodeIds: string[]) => {
+      if (nodeIds.length === 0) return;
+      setSaveTemplateNodeIds(nodeIds);
+      setSaveTemplateOpen(true);
+    },
+    [],
+  );
+
+  const onTemplateDrop = useCallback(
+    async (slug: string, anchorNodeId: string | null) => {
+      if (!session?.id) return;
+      try {
+        await applyUserTemplate(session.id, slug, anchorNodeId);
+        // Newly-stamped virtuals arrive via WebSocket ``node_updated``
+        // events; no manual refresh needed.
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error("applyUserTemplate failed", err);
+        window.alert(
+          `Could not apply template: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    },
+    [session?.id],
+  );
+
   /* select a specific node id (used by panel "jump to" affordances) */
   const onSelectNode = useCallback(
     (nodeId: string) => {
@@ -1112,6 +1167,7 @@ export function App() {
         : "text-state-error";
 
   return (
+    <>
     <div className="flex h-screen flex-col bg-surface text-ink">
       <header className="flex items-center justify-between gap-4 border-b border-line bg-surface-raised px-6 py-2.5">
         <div className="flex min-w-0 items-center gap-3">
@@ -1198,6 +1254,7 @@ export function App() {
       </header>
 
       <div className="flex min-h-0 flex-1">
+        <TemplateLibraryDock refreshToken={libraryRefreshToken} />
         <main className="relative flex min-w-0 flex-1 flex-col bg-surface-sunken">
           {initialLoadComplete ? (
             <Canvas
@@ -1214,6 +1271,9 @@ export function App() {
               initialLayoutHints={session?.layout_hints}
               initialLayoutViewport={session?.layout_viewport ?? null}
               onSelectionChange={onSelectionChange}
+              onMultiSelectionChange={onMultiSelectionChange}
+              onAgentNodeContextMenu={onAgentNodeContextMenu}
+              onTemplateDrop={onTemplateDrop}
               onLayoutHintsChange={onLayoutHintsChange}
             />
           ) : (
@@ -1315,7 +1375,56 @@ export function App() {
         />
       </div>
     </div>
+    {templateContextMenu && (
+      <ContextMenu
+        x={templateContextMenu.x}
+        y={templateContextMenu.y}
+        onClose={() => setTemplateContextMenu(null)}
+        items={buildTemplateContextMenuItems({
+          rightClickedNodeId: templateContextMenu.nodeId,
+          multiSelectedNodeIds,
+          onSaveAsTemplate: openSaveTemplateModal,
+        })}
+      />
+    )}
+    <SaveAsTemplateModal
+      open={saveTemplateOpen}
+      sessionId={session?.id ?? null}
+      nodeIds={saveTemplateNodeIds}
+      onCancel={() => setSaveTemplateOpen(false)}
+      onSaved={() => {
+        setSaveTemplateOpen(false);
+        setLibraryRefreshToken((v) => v + 1);
+      }}
+    />
+    </>
   );
+}
+
+function buildTemplateContextMenuItems(args: {
+  rightClickedNodeId: string | null;
+  multiSelectedNodeIds: string[];
+  onSaveAsTemplate: (ids: string[]) => void;
+}): ContextMenuItem[] {
+  const { rightClickedNodeId, multiSelectedNodeIds, onSaveAsTemplate } = args;
+  const idsForSave =
+    multiSelectedNodeIds.length > 1 &&
+    rightClickedNodeId &&
+    multiSelectedNodeIds.includes(rightClickedNodeId)
+      ? multiSelectedNodeIds
+      : rightClickedNodeId
+        ? [rightClickedNodeId]
+        : multiSelectedNodeIds;
+  return [
+    {
+      label:
+        idsForSave.length === 1
+          ? "Save as template…"
+          : `Save ${idsForSave.length} nodes as template…`,
+      disabled: idsForSave.length === 0,
+      onClick: () => onSaveAsTemplate(idsForSave),
+    },
+  ];
 }
 
 function MenuItem({

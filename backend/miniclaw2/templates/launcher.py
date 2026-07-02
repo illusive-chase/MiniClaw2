@@ -48,13 +48,60 @@ def launch_template(
         project.settings_override = settings
         registry.store.update_project(project)
 
-        _instantiate_lane(template, project, provider.lower(), planspace_id, registry)
+        _stamp_lane(
+            template,
+            project,
+            provider.lower(),
+            planspace_id,
+            registry,
+            anchor_node_id=None,
+        )
         registry.promote_next_virtual(project.id)
     except Exception:
         registry.delete_project(project.id)
         raise
 
     return project, template
+
+
+def apply_user_template(
+    template: Template,
+    project: Project,
+    registry: ProjectRegistry,
+    *,
+    anchor_node_id: str | None = None,
+) -> list[Node]:
+    """Stamp ``template`` into ``project``'s active planspace.
+
+    Unlike :func:`launch_template`, this does not create a project, seed a
+    workspace, or touch project settings. Callers are expected to have
+    verified that the project is not busy. When ``anchor_node_id`` is
+    provided, every root virtual (one with no in-template deps) gets an
+    implicit ``scheduled_deps=[anchor_node_id]``.
+
+    Returns the list of newly-stamped nodes in slug order.
+    """
+    active_lane = project.settings_override.get("active_planspace_id") or ""
+    if not active_lane:
+        raise TemplateError("activate a direction first")
+
+    if anchor_node_id:
+        anchor = registry.store.load_node(project.id, anchor_node_id)
+        if anchor is None:
+            raise TemplateError(f"anchor node {anchor_node_id!r} does not exist")
+        if (anchor.planspace_id or "") != active_lane:
+            # Anchor lives in another lane — collapse into the active lane by
+            # dropping the anchor (matches "cross-lane collapse" semantics).
+            anchor_node_id = None
+
+    return _stamp_lane(
+        template,
+        project,
+        project.provider,
+        active_lane,
+        registry,
+        anchor_node_id=anchor_node_id,
+    )
 
 
 def _instantiate_lane(
@@ -64,6 +111,19 @@ def _instantiate_lane(
     planspace_id: str,
     registry: ProjectRegistry,
 ) -> None:
+    """Legacy shim kept for callers outside this module."""
+    _stamp_lane(template, project, provider, planspace_id, registry, anchor_node_id=None)
+
+
+def _stamp_lane(
+    template: Template,
+    project: Project,
+    provider: str,
+    planspace_id: str,
+    registry: ProjectRegistry,
+    *,
+    anchor_node_id: str | None,
+) -> list[Node]:
     slug_to_node_id: dict[str, str] = {}
     pending: list[tuple[TemplateNodeSpec, Node]] = []
     for spec in template.nodes:
@@ -88,8 +148,12 @@ def _instantiate_lane(
         slug_to_node_id[spec.id] = node.id
         pending.append((spec, node))
 
+    created: list[Node] = []
     for spec, node in pending:
-        node.scheduled_deps = [slug_to_node_id[dep] for dep in (spec.scheduled_deps or [])]
+        translated = [slug_to_node_id[dep] for dep in (spec.scheduled_deps or [])]
+        if anchor_node_id and not translated:
+            translated = [anchor_node_id]
+        node.scheduled_deps = translated
         if spec.resume_from:
             node.resume_from_node_id = slug_to_node_id[spec.resume_from]
         registry.store.create_node(node)
@@ -98,6 +162,8 @@ def _instantiate_lane(
             node.id,
             render_virtual_preview(node),
         )
+        created.append(node)
+    return created
 
 
 def _seed_workspace(template: Template, root: Path) -> None:

@@ -1,4 +1,17 @@
-"""Template discovery + YAML parsing."""
+"""Template discovery + YAML parsing.
+
+Two roots are supported:
+
+- **Bundled** templates ship with the backend under
+  ``backend/miniclaw2/templates/bundled/``. They can create fresh temporary
+  projects and are reached via the Tests modal.
+- **User** templates live under
+  ``$MINICLAW_CONTEXT_HOME/templates/<slug>/`` and are stamped into an
+  existing project's active planspace via drag-and-drop. They are authored
+  by ``serializer.serialize_selection``.
+
+Both flavours share the same YAML shape and parsing pipeline (``_load_from_root``).
+"""
 
 from __future__ import annotations
 
@@ -8,6 +21,7 @@ from typing import Any
 
 import yaml
 
+from ..contextspace import contextspace_root
 from ..domain import (
     Category,
     NodeKind,
@@ -31,6 +45,11 @@ TEMPLATE_ORDER = [
     "gui-calculator",
 ]
 _TEMPLATE_RANK = {name: idx for idx, name in enumerate(TEMPLATE_ORDER)}
+
+
+def user_templates_root(store_root: Path | None = None) -> Path:
+    """Return the on-disk root where user templates live."""
+    return contextspace_root(store_root) / "templates"
 
 
 class TemplateError(Exception):
@@ -106,7 +125,36 @@ def load_template(name: str) -> Template:
     root = TEMPLATES_DIR / name
     if not root.is_dir():
         raise TemplateError(f"template not found: {name}")
+    return _load_from_root(root, name)
 
+
+def list_user_templates(store_root: Path | None = None) -> list[Template]:
+    """Enumerate templates authored via the UI."""
+    root = user_templates_root(store_root)
+    out: list[Template] = []
+    if not root.exists():
+        return out
+    for child in sorted(root.iterdir(), key=lambda p: p.name):
+        if not child.is_dir():
+            continue
+        if not (child / "template.yaml").exists():
+            continue
+        try:
+            out.append(_load_from_root(child, child.name))
+        except TemplateError:
+            # Skip malformed user templates rather than fail the whole list.
+            continue
+    return out
+
+
+def load_user_template(slug: str, store_root: Path | None = None) -> Template:
+    root = user_templates_root(store_root) / slug
+    if not root.is_dir():
+        raise TemplateError(f"user template not found: {slug}")
+    return _load_from_root(root, slug)
+
+
+def _load_from_root(root: Path, name: str) -> Template:
     template_data = _read_yaml(root / "template.yaml", name, "template.yaml")
     lane_data = _read_yaml(root / "lane.yaml", name, "lane.yaml")
 

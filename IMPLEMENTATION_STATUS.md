@@ -402,12 +402,22 @@ Vendor-specific config loading is the largest remaining drift.
 
 ## 8. Templates
 
-A bundled recipe layer for canned multi-step launches. A template stamps
-a complete lane of virtual nodes into a fresh temporary project; normal
-virtual-node promotion drives the run from there. Parameterized
-templates, slot interpolation, branching DSL, and loops remain deferred.
+Two flavours share the YAML format but diverge on entry point and apply-
+time behaviour:
 
-### Landed
+- **Bundled** templates ship with the backend, are testing-only, reach
+  the user through the Tests modal, and create a fresh temporary project
+  each run.
+- **User** templates are authored via the UI from a canvas selection,
+  live under `$MINICLAW_CONTEXT_HOME/templates/<slug>/`, are surfaced by
+  a left-side library dock, and stamp their subgraph into the *current*
+  project's active planspace when dropped onto the canvas.
+
+Templates apply verbatim — no parameter substitution, no concierge
+prefix. A template author who wants adaptation bakes a `planning`
+virtual into their subgraph.
+
+### Landed — bundled
 
 - `backend/miniclaw2/templates/` provides `loader.py`, `launcher.py`,
   and `bundled/` template definitions with `template.yaml`,
@@ -436,11 +446,53 @@ templates, slot interpolation, branching DSL, and loops remain deferred.
   `gui-calculator`. `reconnect-replay` was intentionally dropped
   because it required a test-only UI hook.
 
+### Landed — user-authored
+
+- On-disk layout: `contextspace/templates/<slug>/{template.yaml,
+  lane.yaml, prompts/<slug>.md}`. No `scripts/`, no `seed/` — user
+  templates are agent-only. Loader reuses `_load_from_root` so bundled
+  and user templates share the parsing pipeline.
+- `templates/serializer.py`: `serialize_selection` captures a set of
+  node ids from a project. Executed terminal nodes collapse to virtual
+  form (session/commit/transcript metadata dropped, `prompt` folded into
+  the emitted `prompt_file`); `op` nodes are silently filtered.
+- Save validation: rejects verifiers in the selection, empty selections,
+  transient states (queued / running / waiting / awaiting_human_input),
+  `resume_from` links leaving the selection, disconnected selections
+  (must be one component under `scheduled_deps ∪ resume_from_node_id`),
+  and slug collisions. External `scheduled_deps` are dropped so the
+  template becomes topologically self-contained.
+- `virtual_graph.is_connected` performs the undirected BFS used by the
+  connectedness check.
+- `launcher.apply_user_template` stamps a user template into the
+  project's active planspace via a shared `_stamp_lane` helper.
+  Cross-lane origins collapse into the active lane on apply. When an
+  anchor tile is provided, root virtuals (those with no in-template
+  deps) get an implicit `scheduled_deps=[anchor]`.
+- REST endpoints:
+  `GET /user-templates`, `GET /user-templates/{slug}`,
+  `DELETE /user-templates/{slug}`,
+  `POST /sessions/{sid}/user-templates` (save selection),
+  `POST /sessions/{sid}/user-templates/{slug}/apply`.
+- Frontend: React Flow shift-click / marquee multi-select
+  (`multiSelectionKeyCode="Shift"`) with `selected` state carried
+  through graph re-syncs so multi-selection survives `node_updated`
+  websocket bumps. Right-click on an agent tile opens a `ContextMenu`
+  with "Save as template…"; the resulting `SaveAsTemplateModal` takes a
+  name + one-line brief and POSTs to the save endpoint.
+- Frontend: `TemplateLibraryDock` mounts on the left of the canvas,
+  lists user templates only (bundled ones stay in the Tests modal),
+  supports drag via the `application/x-miniclaw-template` MIME type,
+  and offers a hover-revealed delete affordance. Dropping a card onto
+  an agent tile anchors the root virtuals to that tile; dropping onto
+  empty canvas leaves root virtuals unparented.
+
 ### Pending
 
-- User-authored templates from the UI.
 - Template parameters / slot interpolation / branching DSL.
 - Template versioning beyond the instantiated node snapshots.
+- Template export / import / sharing across machines.
+- Library-card mini-DAG preview.
 
 
 ## 9. Multi-project / forks
@@ -522,7 +574,13 @@ Quick reference; the on-disk shape is authoritative.
   `POST /sessions/{sid}/context/cancel`,
   `GET /sessions/{sid}/files`,
   `GET /sessions/{sid}/nodes/{nid}/preview` (durable preview text),
-  `POST /sessions {auto_commit, ...}`.
+  `POST /sessions {auto_commit, ...}`,
+  `GET /user-templates`, `GET /user-templates/{slug}`,
+  `DELETE /user-templates/{slug}`,
+  `POST /sessions/{sid}/user-templates {name, brief, node_ids}` (saves
+  a canvas selection as a user template),
+  `POST /sessions/{sid}/user-templates/{slug}/apply {anchor_node_id?}`
+  (stamps a user template into the active planspace).
 
 No client-facing `start_gate_node` envelope remains; reviews are
 ordinary agent nodes with `category=review`.

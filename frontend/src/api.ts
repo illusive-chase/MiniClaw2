@@ -434,3 +434,82 @@ export async function runTemplate(
   if (!res.ok) throw new Error(`runTemplate failed: ${res.status}`);
   return res.json();
 }
+
+export async function listUserTemplates(): Promise<TemplateSummary[]> {
+  const res = await fetch("/user-templates");
+  if (!res.ok) throw new Error(`listUserTemplates failed: ${res.status}`);
+  return res.json();
+}
+
+export type SaveUserTemplatePayload = {
+  name: string;
+  brief: string;
+  node_ids: string[];
+};
+
+export type SaveUserTemplateResponse = {
+  slug: string;
+  name: string;
+  brief: string;
+  node_count: number;
+};
+
+export async function saveUserTemplate(
+  sessionId: string,
+  payload: SaveUserTemplatePayload,
+): Promise<SaveUserTemplateResponse> {
+  const res = await fetch(
+    `/sessions/${encodeURIComponent(sessionId)}/user-templates`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    },
+  );
+  if (!res.ok) {
+    let detail = `${res.status}`;
+    try {
+      const body = await res.json();
+      if (body && typeof body.detail === "string") detail = body.detail;
+    } catch {
+      /* ignore */
+    }
+    throw new Error(detail);
+  }
+  return res.json();
+}
+
+export async function applyUserTemplate(
+  sessionId: string,
+  slug: string,
+  anchorNodeId: string | null,
+): Promise<{ node_ids: string[] }> {
+  const res = await fetch(
+    `/sessions/${encodeURIComponent(sessionId)}/user-templates/${encodeURIComponent(slug)}/apply`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ anchor_node_id: anchorNodeId }),
+    },
+  );
+  if (!res.ok) {
+    let detail = `${res.status}`;
+    try {
+      const body = await res.json();
+      if (body && typeof body.detail === "string") detail = body.detail;
+    } catch {
+      /* ignore */
+    }
+    throw new Error(detail);
+  }
+  return res.json();
+}
+
+export async function deleteUserTemplate(slug: string): Promise<void> {
+  const res = await fetch(`/user-templates/${encodeURIComponent(slug)}`, {
+    method: "DELETE",
+  });
+  if (!res.ok && res.status !== 204) {
+    throw new Error(`deleteUserTemplate failed: ${res.status}`);
+  }
+}

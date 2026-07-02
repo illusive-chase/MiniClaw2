@@ -5,6 +5,7 @@ import ReactFlow, {
   Controls,
   MarkerType,
   ReactFlowProvider,
+  useOnSelectionChange,
   type Edge,
   type Node,
   type NodeChange,
@@ -88,6 +89,25 @@ export type CanvasProps = {
   /** Persisted viewport hydrated from the session. */
   initialLayoutViewport?: Viewport | null;
   onSelectionChange: (sel: CanvasSelection) => void;
+  /**
+   * Fires when React Flow's multi-selection changes (marquee, shift-click).
+   * Ids are agent-node ids only — other kinds (context, planspace, op) are
+   * filtered out because save-as-template only operates on agent nodes.
+   */
+  onMultiSelectionChange?: (nodeIds: string[]) => void;
+  /**
+   * Fires when the user right-clicks a node tile. The caller shows the
+   * context menu; the callback receives the underlying agent-node id (or
+   * null if the target is not an agent) plus the viewport-space
+   * coordinates for positioning.
+   */
+  onAgentNodeContextMenu?: (nodeId: string | null, x: number, y: number) => void;
+  /**
+   * Fires when a template card is dropped on the canvas. The callback
+   * receives the anchor node id (if the drop target was an agent tile)
+   * and the raw template slug string that was dragged.
+   */
+  onTemplateDrop?: (slug: string, anchorNodeId: string | null) => void;
   /** Called after drag-end / pan / zoom with layout state that changed. */
   onLayoutHintsChange?: (
     updates: Record<string, { x: number; y: number }>,
@@ -116,6 +136,9 @@ function CanvasInner({
   initialLayoutHints,
   initialLayoutViewport,
   onSelectionChange,
+  onMultiSelectionChange,
+  onAgentNodeContextMenu,
+  onTemplateDrop,
   onLayoutHintsChange,
 }: CanvasProps) {
   const layoutHintsRef = useRef<Record<string, { x: number; y: number }>>(
@@ -231,15 +254,27 @@ function CanvasInner({
       appliedLayoutHydrationVersionRef.current !== layoutHydrationVersion;
     setRfNodes((current) => {
       const positionById = new Map(current.map((n) => [n.id, n.position]));
+      // Carry over ``selected`` so React Flow's multi-selection (marquee /
+      // shift-click) survives an upstream ``built.rfNodes`` swap. Without
+      // this, every ``node_updated`` websocket event would reset the
+      // selection to just the scalar single-select target.
+      const selectedById = new Map(current.map((n) => [n.id, n.selected]));
       const next = built.rfNodes.map((n) => {
-        if (hydrateFromLayout) return n;
-        const existing = positionById.get(n.id);
-        // Only allocate a new object when the carried-over position actually
-        // differs; stable refs let React Flow skip work and keep hit-test stable.
-        if (existing && (existing.x !== n.position.x || existing.y !== n.position.y)) {
-          return { ...n, position: existing };
+        let out: RFNode = n;
+        if (!hydrateFromLayout) {
+          const existing = positionById.get(n.id);
+          if (
+            existing &&
+            (existing.x !== n.position.x || existing.y !== n.position.y)
+          ) {
+            out = { ...out, position: existing };
+          }
         }
-        return n;
+        const carried = selectedById.get(n.id);
+        if (carried !== undefined && carried !== out.selected) {
+          out = { ...out, selected: carried };
+        }
+        return out;
       });
       return decorateSelection(next, selectedNodeId);
     });
@@ -414,17 +449,92 @@ function CanvasInner({
     setHoveredNodeId(null);
   }, []);
 
+  /* Multi-selection observer. React Flow owns its own selection state; we
+   * only translate agent-node ids out so callers can drive right-click and
+   * library-dock actions. Non-agent selections (context, planspace, op,
+   * projectRoot) don't participate in save-as-template. */
+  useOnSelectionChange({
+    onChange: ({ nodes: selNodes }) => {
+      if (!onMultiSelectionChange) return;
+      const agentIds: string[] = [];
+      for (const n of selNodes) {
+        const rf = n as RFNode;
+        if (rf.type === "agent") {
+          const data = rf.data as import("./layout").AgentNodeData;
+          agentIds.push(data.node.id);
+        }
+      }
+      onMultiSelectionChange(agentIds);
+    },
+  });
+
+  const onNodeContextMenu = useCallback<NodeMouseHandler>(
+    (event, node) => {
+      event.preventDefault();
+      const rf = node as RFNode;
+      let agentId: string | null = null;
+      if (rf.type === "agent") {
+        const data = rf.data as import("./layout").AgentNodeData;
+        agentId = data.node.id;
+      }
+      onAgentNodeContextMenu?.(agentId, event.clientX, event.clientY);
+    },
+    [onAgentNodeContextMenu],
+  );
+
+  const onCanvasDragOver = useCallback((event: React.DragEvent<HTMLDivElement>) => {
+    if (
+      event.dataTransfer.types.includes("application/x-miniclaw-template")
+    ) {
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "copy";
+    }
+  }, []);
+
+  const onCanvasDrop = useCallback(
+    (event: React.DragEvent<HTMLDivElement>) => {
+      const slug = event.dataTransfer.getData("application/x-miniclaw-template");
+      if (!slug) return;
+      event.preventDefault();
+      // Walk up the DOM from the drop target to find the nearest React Flow
+      // node element and read its data-id. If none, the drop hit the pane.
+      let anchorNodeId: string | null = null;
+      let cursor = event.target as HTMLElement | null;
+      while (cursor && cursor !== event.currentTarget) {
+        const dataId = cursor.getAttribute?.("data-id");
+        if (dataId) {
+          // Match agent nodes only — the RF node id is the layout key,
+          // which happens to equal the backend node id for agent tiles.
+          const found = built.rfNodes.find(
+            (n) => n.id === dataId && n.type === "agent",
+          );
+          if (found) {
+            const data = found.data as import("./layout").AgentNodeData;
+            anchorNodeId = data.node.id;
+          }
+          break;
+        }
+        cursor = cursor.parentElement;
+      }
+      onTemplateDrop?.(slug, anchorNodeId);
+    },
+    [built.rfNodes, onTemplateDrop],
+  );
+
   return (
     <div
       ref={wrapperRef}
       className="relative h-full w-full"
       onWheelCapture={onWheelCapture}
+      onDragOver={onCanvasDragOver}
+      onDrop={onCanvasDrop}
     >
       <ReactFlow
         nodes={rfNodes}
         edges={rfEdges}
         onNodesChange={handleNodesChange}
         onNodeClick={onNodeClick}
+        onNodeContextMenu={onNodeContextMenu}
         onNodeMouseEnter={onNodeMouseEnter}
         onNodeMouseLeave={onNodeMouseLeave}
         onPaneClick={onPaneClick}
@@ -448,6 +558,7 @@ function CanvasInner({
         panOnDrag
         selectionOnDrag={false}
         selectNodesOnDrag={false}
+        multiSelectionKeyCode="Shift"
         snapToGrid
         snapGrid={[8, 8]}
         nodesConnectable={false}
@@ -582,8 +693,11 @@ function decorateSelection(
   selectedNodeId: string | null,
 ): Node[] {
   return nodes.map((n) => {
-    const selected = n.id === selectedNodeId;
-    return n.selected === selected ? n : { ...n, selected };
+    // OR the primary-click selection with whatever React Flow already tracks
+    // (multi-select). We never clear ``selected`` from here — deselection is
+    // driven by React Flow's own change events (pane click, replace-on-click).
+    const desired = n.id === selectedNodeId || n.selected === true;
+    return n.selected === desired ? n : { ...n, selected: desired };
   });
 }
 

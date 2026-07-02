@@ -34,10 +34,16 @@ from .git_state import node_diff
 from .registry import ProjectRegistry
 from .replay import LiveReplayBuffer
 from .templates import (
+    SerializerError,
     TemplateError,
+    apply_user_template,
+    delete_user_template,
     launch_template,
     list_templates,
+    list_user_templates,
     load_template,
+    load_user_template,
+    serialize_selection,
 )
 
 logger = logging.getLogger(__name__)
@@ -163,6 +169,27 @@ class TemplateDetail(BaseModel):
 
 class TemplateRunRequest(BaseModel):
     provider: str
+
+
+class SaveUserTemplateRequest(BaseModel):
+    name: str
+    brief: str = ""
+    node_ids: list[str] = Field(default_factory=list)
+
+
+class SaveUserTemplateResponse(BaseModel):
+    slug: str
+    name: str
+    brief: str
+    node_count: int
+
+
+class ApplyUserTemplateRequest(BaseModel):
+    anchor_node_id: str | None = None
+
+
+class ApplyUserTemplateResponse(BaseModel):
+    node_ids: list[str]
 
 
 def create_app() -> FastAPI:
@@ -599,6 +626,92 @@ def create_app() -> FastAPI:
         except RuntimeError as exc:
             raise HTTPException(500, str(exc)) from exc
         return _session_info(registry, project)
+
+    @app.get("/user-templates", response_model=list[TemplateSummary])
+    def list_user_templates_endpoint() -> list[TemplateSummary]:
+        return [
+            TemplateSummary(**tpl.metadata())
+            for tpl in list_user_templates(registry.store.root)
+        ]
+
+    @app.get("/user-templates/{slug}", response_model=TemplateDetail)
+    def get_user_template(slug: str) -> TemplateDetail:
+        try:
+            template = load_user_template(slug, registry.store.root)
+        except TemplateError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        return TemplateDetail(**template.metadata())
+
+    @app.delete("/user-templates/{slug}", status_code=204)
+    def delete_user_template_endpoint(slug: str) -> Response:
+        if not delete_user_template(slug, registry.store.root):
+            raise HTTPException(404, f"user template not found: {slug}")
+        return Response(status_code=204)
+
+    @app.post(
+        "/sessions/{sid}/user-templates",
+        response_model=SaveUserTemplateResponse,
+    )
+    async def save_user_template(
+        sid: str,
+        req: SaveUserTemplateRequest,
+    ) -> SaveUserTemplateResponse:
+        project = registry.get_project(sid)
+        if project is None:
+            raise HTTPException(404, "session not found")
+        try:
+            template = serialize_selection(
+                registry.store,
+                sid,
+                req.node_ids,
+                name=req.name,
+                brief=req.brief,
+                store_root=registry.store.root,
+            )
+        except SerializerError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        except TemplateError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        # ``template.root`` is the on-disk directory; its basename is the slug.
+        slug = template.root.name
+        return SaveUserTemplateResponse(
+            slug=slug,
+            name=template.name,
+            brief=template.brief,
+            node_count=len(template.nodes),
+        )
+
+    @app.post(
+        "/sessions/{sid}/user-templates/{slug}/apply",
+        response_model=ApplyUserTemplateResponse,
+    )
+    async def apply_user_template_endpoint(
+        sid: str,
+        slug: str,
+        req: ApplyUserTemplateRequest,
+    ) -> ApplyUserTemplateResponse:
+        project = registry.get_project(sid)
+        if project is None:
+            raise HTTPException(404, "session not found")
+        if registry.is_running(sid):
+            raise HTTPException(409, "turn in progress")
+        if _context_task_running(project.id):
+            raise HTTPException(409, "context refresh in progress")
+        try:
+            template = load_user_template(slug, registry.store.root)
+        except TemplateError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        try:
+            created = apply_user_template(
+                template,
+                project,
+                registry,
+                anchor_node_id=req.anchor_node_id,
+            )
+        except TemplateError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        registry.promote_next_virtual(sid)
+        return ApplyUserTemplateResponse(node_ids=[n.id for n in created])
 
     @app.websocket("/ws/{sid}")
     async def ws(websocket: WebSocket, sid: str) -> None:
