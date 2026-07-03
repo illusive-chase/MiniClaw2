@@ -6,15 +6,20 @@ type Props = {
   /** Bumped by callers after save/apply so the dock refetches. */
   refreshToken: number;
   onError?: (message: string) => void;
+  onClose: () => void;
 };
 
 /**
- * Left-side dock listing user templates. Cards are draggable via the
+ * Right-side dock listing user templates. Cards are draggable via the
  * ``application/x-miniclaw-template`` MIME type; the Canvas listens for
  * that MIME on its drop handler and calls ``applyUserTemplate`` with the
  * slug carried in ``dataTransfer``.
  */
-export function TemplateLibraryDock({ refreshToken, onError }: Props) {
+export function TemplateLibraryDock({
+  refreshToken,
+  onError,
+  onClose,
+}: Props) {
   const [templates, setTemplates] = useState<TemplateSummary[]>([]);
   const [loading, setLoading] = useState(false);
 
@@ -53,19 +58,31 @@ export function TemplateLibraryDock({ refreshToken, onError }: Props) {
       .replace(/^-+|-+$/g, "");
 
   return (
-    <aside className="flex w-[240px] flex-none flex-col border-r border-line bg-surface-sunken">
-      <div className="flex items-center justify-between border-b border-line px-3 py-2.5">
+    <div className="flex h-full flex-col">
+      <div className="flex items-center justify-between border-b border-line px-3 py-2">
         <div className="text-[10px] font-medium uppercase tracking-[0.16em] text-ink-subtle">
           Template library
         </div>
-        <button
-          type="button"
-          onClick={() => void refresh()}
-          className="text-[10px] text-ink-muted transition hover:text-ink"
-          title="Refresh"
-        >
-          ↻
-        </button>
+        <div className="flex items-center gap-1">
+          <button
+            type="button"
+            onClick={() => void refresh()}
+            className="flex h-6 w-6 items-center justify-center rounded text-[11px] text-ink-muted transition hover:bg-surface-raised hover:text-ink"
+            title="Refresh"
+            aria-label="Refresh templates"
+          >
+            ↻
+          </button>
+          <button
+            type="button"
+            onClick={onClose}
+            className="flex h-6 w-6 items-center justify-center rounded text-[13px] leading-none text-ink-muted transition hover:bg-surface-raised hover:text-ink"
+            title="Close panel"
+            aria-label="Close panel"
+          >
+            ×
+          </button>
+        </div>
       </div>
       <div className="flex flex-1 flex-col gap-2 overflow-y-auto p-3">
         {loading && templates.length === 0 && (
@@ -126,6 +143,6 @@ export function TemplateLibraryDock({ refreshToken, onError }: Props) {
           );
         })}
       </div>
-    </aside>
+    </div>
   );
 }

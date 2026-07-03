@@ -119,9 +119,35 @@ export function App() {
   const [saveTemplateNodeIds, setSaveTemplateNodeIds] = useState<string[]>([]);
   const [libraryRefreshToken, setLibraryRefreshToken] = useState(0);
 
-  /* ⋯ menu */
-  const [menuOpen, setMenuOpen] = useState(false);
-  const menuRef = useRef<HTMLDivElement | null>(null);
+  /* Single floating side panel: `panelOpen` controls the slide-in animation
+   * and `panelMode` decides whether details or the template library renders.
+   * Node clicks set mode='details' (but never force-open per UX spec);
+   * the templates top-bar button toggles open+templates; empty-canvas click
+   * or the panel's close button closes. */
+  const [panelState, setPanelState] = useState<{
+    open: boolean;
+    mode: "details" | "templates";
+  }>(() => readPanelState());
+  useEffect(() => {
+    try {
+      window.localStorage.setItem("miniclaw.panelState", JSON.stringify(panelState));
+    } catch {
+      /* localStorage unavailable — state stays session-scoped */
+    }
+  }, [panelState]);
+  const closePanel = useCallback(() => {
+    setPanelState((prev) => (prev.open ? { ...prev, open: false } : prev));
+  }, []);
+  const openDetails = useCallback(() => {
+    setPanelState({ open: true, mode: "details" });
+  }, []);
+  const toggleTemplates = useCallback(() => {
+    setPanelState((prev) =>
+      prev.open && prev.mode === "templates"
+        ? { ...prev, open: false }
+        : { open: true, mode: "templates" },
+    );
+  }, []);
 
   const activeNodeIdRef = useRef<string | null>(null);
   const inspectedNodeIdRef = useRef<string | null>(null);
@@ -153,18 +179,6 @@ export function App() {
   useEffect(() => {
     nodeCountRef.current = nodes.length;
   }, [nodes.length]);
-
-  /* close the ⋯ menu on outside click */
-  useEffect(() => {
-    if (!menuOpen) return;
-    const handler = (e: MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
-        setMenuOpen(false);
-      }
-    };
-    window.addEventListener("mousedown", handler);
-    return () => window.removeEventListener("mousedown", handler);
-  }, [menuOpen]);
 
   const resetAllSessionState = useCallback(() => {
     refreshNodesSeqRef.current += 1;
@@ -1012,6 +1026,15 @@ export function App() {
     } else if (sel.kind === "none") {
       setInspectedNodeId(null);
     }
+    /* Node clicks open the panel in details mode (overriding templates
+     * if that was showing). Empty-canvas click closes it. */
+    if (sel.kind === "none") {
+      setPanelState((prev) => (prev.open ? { ...prev, open: false } : prev));
+    } else {
+      setPanelState((prev) =>
+        prev.open && prev.mode === "details" ? prev : { open: true, mode: "details" },
+      );
+    }
   }, []);
 
   const onMultiSelectionChange = useCallback((ids: string[]) => {
@@ -1053,7 +1076,9 @@ export function App() {
     [refreshNodes, session?.id],
   );
 
-  /* select a specific node id (used by panel "jump to" affordances) */
+  /* select a specific node id (used by panel "jump to" affordances and the
+   * pending-node banner). Unlike a bare canvas click, these are explicit
+   * user asks to *inspect* the node, so we also open the panel. */
   const onSelectNode = useCallback(
     (nodeId: string) => {
       const node = nodes.find((n) => n.id === nodeId);
@@ -1063,8 +1088,9 @@ export function App() {
         nodeId,
       });
       setInspectedNodeId(nodeId);
+      openDetails();
     },
-    [nodes],
+    [nodes, openDetails],
   );
 
   /* Wire per-agent canvas affordances and inline pending-response tiles into
@@ -1195,7 +1221,7 @@ export function App() {
           </div>
         </div>
 
-        <div className="flex items-center gap-2.5">
+        <div className="flex items-center gap-2">
           <UsageStrip usage={selectedNode?.usage ?? null} />
 
           {streaming && (
@@ -1215,47 +1241,42 @@ export function App() {
             </span>
           )}
 
-          <div className="relative" ref={menuRef}>
-            <button
-              type="button"
-              onClick={() => setMenuOpen((v) => !v)}
-              className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-line bg-surface text-base text-ink-muted transition hover:border-line-strong hover:bg-surface-sunken hover:text-ink"
-              title="More actions"
-              aria-haspopup="menu"
-              aria-expanded={menuOpen}
-            >
-              ⋯
-            </button>
-            {menuOpen && (
-              <div
-                role="menu"
-                className="absolute right-0 top-full z-30 mt-1 w-56 rounded-md border border-line bg-surface-raised p-1 shadow-modal"
-              >
-                <MenuItem
-                  onClick={() => {
-                    setSelection({ kind: "projectRoot" });
-                    setInspectedNodeId(null);
-                    setNewDirectionRequestVersion((version) => version + 1);
-                    setMenuOpen(false);
-                  }}
-                  disabled={sessionSettingsSaving || streaming || composerLocked}
-                  label="New direction"
-                  hint="Open composer"
-                />
-                <div className="my-1 border-t border-line" />
-                <div className="flex items-center justify-between px-2 py-1.5 text-[11px] text-ink-muted">
-                  <span>Theme</span>
-                  <ThemeToggle />
-                </div>
-              </div>
-            )}
-          </div>
+          <button
+            type="button"
+            onClick={() => {
+              setSelection({ kind: "projectRoot" });
+              setInspectedNodeId(null);
+              setNewDirectionRequestVersion((version) => version + 1);
+              openDetails();
+            }}
+            disabled={sessionSettingsSaving || streaming || composerLocked}
+            className="inline-flex h-8 items-center rounded-md border border-line bg-surface px-2.5 text-xs font-medium text-ink-muted transition hover:border-line-strong hover:bg-surface-sunken hover:text-ink disabled:cursor-not-allowed disabled:opacity-40"
+            title="Open new direction composer"
+          >
+            + New direction
+          </button>
+
+          <button
+            type="button"
+            onClick={toggleTemplates}
+            aria-pressed={panelState.open && panelState.mode === "templates"}
+            className={
+              "inline-flex h-8 items-center rounded-md border px-2.5 text-xs font-medium transition " +
+              (panelState.open && panelState.mode === "templates"
+                ? "border-brand bg-brand/10 text-ink-strong"
+                : "border-line bg-surface text-ink-muted hover:border-line-strong hover:bg-surface-sunken hover:text-ink")
+            }
+            title="Toggle template library"
+          >
+            Templates
+          </button>
+
+          <ThemeToggle />
         </div>
       </header>
 
       <div className="flex min-h-0 flex-1">
-        <TemplateLibraryDock refreshToken={libraryRefreshToken} />
-        <main className="relative flex min-w-0 flex-1 flex-col bg-surface-sunken">
+        <main className="relative flex min-w-0 flex-1 flex-col overflow-hidden bg-surface-sunken">
           {initialLoadComplete ? (
             <Canvas
               key={session?.id ?? "no-session"}
@@ -1306,6 +1327,7 @@ export function App() {
                   setSelection({ kind: "projectRoot" });
                   setInspectedNodeId(null);
                   setNewDirectionRequestVersion((version) => version + 1);
+                  openDetails();
                 }}
                 className="absolute left-1/2 top-1/2 z-10 -translate-x-1/2 -translate-y-1/2 rounded-xl border-2 border-dashed border-line-strong bg-surface-raised/80 px-6 py-5 text-center text-sm text-ink-muted shadow-card transition hover:border-brand hover:bg-surface-raised hover:text-ink-strong"
               >
@@ -1317,62 +1339,80 @@ export function App() {
                 </div>
               </button>
             )}
-        </main>
 
-        <SidePanel
-          selection={selection}
-          nodes={nodes}
-          session={session}
-          events={selectedEvents}
-          eventsLoading={selectedEventsLoading}
-          diff={selectedDiff}
-          diffLoading={selectedDiffLoading}
-          contextBundle={selectedContextBundle}
-          contextBundleLoading={selectedContextBundleLoading}
-          contextBundlesByNodeId={contextBundlesByNodeId}
-          contextSpace={sessionContextSpace}
-          contextSpaceLoading={sessionContextSpaceLoading}
-          contextSpaceSaving={sessionContextSpaceSaving}
-          contextSpaceError={sessionContextSpaceError}
-          settingsSaving={sessionSettingsSaving}
-          settingsError={sessionSettingsError}
-          pendingGate={
-            activePendingGate &&
-            selectedNode &&
-            selectedNode.state === "waiting" &&
-            activePendingGate.nodeId === selectedNode.id
-              ? activePendingGate.request
-              : null
-          }
-          pendingReview={
-            activePendingReview &&
-            selectedNode &&
-            selectedNode.state === "awaiting_human_input" &&
-            activePendingReview.nodeId === selectedNode.id
-              ? activePendingReview.request
-              : null
-          }
-          onResolveGate={onResolveGate}
-          onResolveReview={onResolveReview}
-          onSelectNode={onSelectNode}
-          onPreferredLanguageChange={updatePreferredLanguage}
-          onActivatePlanspace={activatePlanspace}
-          onSelectContextBinding={selectContextBinding}
-          onNewDirection={startNewDirection}
-          onStartBlankDirection={startBlankDirection}
-          onCreateContinuationVirtual={createContinuationVirtual}
-          onPromoteVirtual={promoteVirtualNode}
-          onUpdateVirtual={updateVirtualNode}
-          onPlanspaceModeChange={changePlanspaceMode}
-          onContextInit={runContextInit}
-          onContextRefresh={runContextRefresh}
-          onContextCancel={runContextCancel}
-          onTogglePlanspaceVisibility={togglePlanspaceVisibility}
-          contextReloadVersion={contextReloadVersion}
-          focusRequestVersion={focusRequestVersion}
-          newDirectionRequestVersion={newDirectionRequestVersion}
-          onNewDirectionRequestHandled={acknowledgeNewDirectionRequest}
-        />
+          {/* Floating side panel — slides in from the right, swaps between
+              details (node inspector) and the template library. */}
+          <aside
+            aria-hidden={!panelState.open}
+            className={
+              "absolute inset-y-0 right-0 z-20 flex w-[380px] flex-col border-l border-line bg-surface-sunken shadow-modal transition-transform duration-200 ease-out will-change-transform " +
+              (panelState.open ? "translate-x-0" : "pointer-events-none translate-x-full")
+            }
+          >
+            {panelState.mode === "templates" ? (
+              <TemplateLibraryDock
+                refreshToken={libraryRefreshToken}
+                onClose={closePanel}
+              />
+            ) : (
+              <SidePanel
+                onClose={closePanel}
+                selection={selection}
+                nodes={nodes}
+                session={session}
+                events={selectedEvents}
+                eventsLoading={selectedEventsLoading}
+                diff={selectedDiff}
+                diffLoading={selectedDiffLoading}
+                contextBundle={selectedContextBundle}
+                contextBundleLoading={selectedContextBundleLoading}
+                contextBundlesByNodeId={contextBundlesByNodeId}
+                contextSpace={sessionContextSpace}
+                contextSpaceLoading={sessionContextSpaceLoading}
+                contextSpaceSaving={sessionContextSpaceSaving}
+                contextSpaceError={sessionContextSpaceError}
+                settingsSaving={sessionSettingsSaving}
+                settingsError={sessionSettingsError}
+                pendingGate={
+                  activePendingGate &&
+                  selectedNode &&
+                  selectedNode.state === "waiting" &&
+                  activePendingGate.nodeId === selectedNode.id
+                    ? activePendingGate.request
+                    : null
+                }
+                pendingReview={
+                  activePendingReview &&
+                  selectedNode &&
+                  selectedNode.state === "awaiting_human_input" &&
+                  activePendingReview.nodeId === selectedNode.id
+                    ? activePendingReview.request
+                    : null
+                }
+                onResolveGate={onResolveGate}
+                onResolveReview={onResolveReview}
+                onSelectNode={onSelectNode}
+                onPreferredLanguageChange={updatePreferredLanguage}
+                onActivatePlanspace={activatePlanspace}
+                onSelectContextBinding={selectContextBinding}
+                onNewDirection={startNewDirection}
+                onStartBlankDirection={startBlankDirection}
+                onCreateContinuationVirtual={createContinuationVirtual}
+                onPromoteVirtual={promoteVirtualNode}
+                onUpdateVirtual={updateVirtualNode}
+                onPlanspaceModeChange={changePlanspaceMode}
+                onContextInit={runContextInit}
+                onContextRefresh={runContextRefresh}
+                onContextCancel={runContextCancel}
+                onTogglePlanspaceVisibility={togglePlanspaceVisibility}
+                contextReloadVersion={contextReloadVersion}
+                focusRequestVersion={focusRequestVersion}
+                newDirectionRequestVersion={newDirectionRequestVersion}
+                onNewDirectionRequestHandled={acknowledgeNewDirectionRequest}
+              />
+            )}
+          </aside>
+        </main>
       </div>
     </div>
     {templateContextMenu && (
@@ -1425,31 +1465,6 @@ function buildTemplateContextMenuItems(args: {
       onClick: () => onSaveAsTemplate(idsForSave),
     },
   ];
-}
-
-function MenuItem({
-  onClick,
-  disabled,
-  label,
-  hint,
-}: {
-  onClick: () => void;
-  disabled?: boolean;
-  label: string;
-  hint?: string;
-}) {
-  return (
-    <button
-      type="button"
-      role="menuitem"
-      onClick={onClick}
-      disabled={disabled}
-      className="flex w-full items-center justify-between gap-3 rounded px-2 py-1.5 text-left text-[12px] text-ink transition hover:bg-surface-sunken hover:text-ink-strong disabled:cursor-not-allowed disabled:opacity-40"
-    >
-      <span>{label}</span>
-      {hint && <span className="text-[10px] text-ink-subtle">{hint}</span>}
-    </button>
-  );
 }
 
 function PendingBanner({ label, onJump }: { label: string; onJump: () => void }) {
@@ -1513,6 +1528,20 @@ function pendingBanner(
     nodeId: active.nodeId,
     label: `Node ${active.nodeId.slice(0, 8)} is awaiting your ${labelKind}.`,
   };
+}
+
+function readPanelState(): { open: boolean; mode: "details" | "templates" } {
+  try {
+    const raw = window.localStorage.getItem("miniclaw.panelState");
+    if (raw) {
+      const parsed = JSON.parse(raw) as { open?: unknown; mode?: unknown };
+      const mode = parsed.mode === "templates" ? "templates" : "details";
+      return { open: parsed.open === true, mode };
+    }
+  } catch {
+    /* fall through */
+  }
+  return { open: false, mode: "details" };
 }
 
 function graphNodeIdForSelection(selection: CanvasSelection): string | null {

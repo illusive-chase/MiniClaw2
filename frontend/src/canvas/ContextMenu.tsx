@@ -23,18 +23,32 @@ export function ContextMenu({ x, y, items, onClose }: Props) {
   const ref = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
-    const onDown = (event: MouseEvent) => {
+    /* Capture phase: some upstream handlers (React Flow, D3 pan/zoom) can call
+     * stopPropagation on the native event, so a plain bubble-phase listener on
+     * document occasionally misses "click elsewhere" and leaves the menu open. */
+    const onOutside = (event: MouseEvent) => {
       if (!ref.current) return;
       if (!ref.current.contains(event.target as Node)) onClose();
     };
     const onKey = (event: KeyboardEvent) => {
       if (event.key === "Escape") onClose();
     };
-    document.addEventListener("mousedown", onDown);
+    const onWheel = (event: WheelEvent) => {
+      if (!ref.current) return;
+      if (!ref.current.contains(event.target as Node)) onClose();
+    };
+    const onBlur = () => onClose();
+    document.addEventListener("mousedown", onOutside, true);
+    document.addEventListener("contextmenu", onOutside, true);
     document.addEventListener("keydown", onKey);
+    window.addEventListener("wheel", onWheel, { capture: true, passive: true });
+    window.addEventListener("blur", onBlur);
     return () => {
-      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("mousedown", onOutside, true);
+      document.removeEventListener("contextmenu", onOutside, true);
       document.removeEventListener("keydown", onKey);
+      window.removeEventListener("wheel", onWheel, { capture: true } as EventListenerOptions);
+      window.removeEventListener("blur", onBlur);
     };
   }, [onClose]);
 

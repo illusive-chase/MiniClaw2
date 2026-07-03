@@ -77,6 +77,8 @@ export type SidePanelProps = {
   focusRequestVersion: number;
   newDirectionRequestVersion: number;
   onNewDirectionRequestHandled: () => void;
+
+  onClose: () => void;
 };
 
 /**
@@ -89,9 +91,25 @@ export function SidePanel(props: SidePanelProps) {
   const nodesById = new Map(props.nodes.map((n) => [n.id, n]));
 
   return (
-    <aside className="flex w-[650px] flex-none flex-col border-l border-line bg-surface-sunken">
-      <Inner {...props} nodesById={nodesById} />
-    </aside>
+    <div className="flex h-full flex-col">
+      <div className="flex items-center justify-between border-b border-line px-3 py-2">
+        <div className="text-[10px] font-medium uppercase tracking-[0.16em] text-ink-subtle">
+          Details
+        </div>
+        <button
+          type="button"
+          onClick={props.onClose}
+          className="flex h-6 w-6 items-center justify-center rounded text-[13px] leading-none text-ink-muted transition hover:bg-surface-raised hover:text-ink"
+          title="Close panel"
+          aria-label="Close panel"
+        >
+          ×
+        </button>
+      </div>
+      <div className="min-h-0 flex-1">
+        <Inner {...props} nodesById={nodesById} />
+      </div>
+    </div>
   );
 }
 
