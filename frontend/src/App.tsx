@@ -148,7 +148,21 @@ export function App() {
         : { open: true, mode: "templates" },
     );
   }, []);
+  /* Programmatic-selection helper. Whenever code (not a user canvas click)
+   * changes what's inspected, we must also open the details panel — otherwise
+   * the freshly-inspected node's controls (gate/review form, virtual draft
+   * editor) sit inside the closed floating panel and are invisible to the
+   * user. */
+  const selectAndOpenNode = useCallback(
+    (nodeId: string, kind: "agent" | "op" = "agent") => {
+      setSelection({ kind, nodeId });
+      setInspectedNodeId(nodeId);
+      setPanelState({ open: true, mode: "details" });
+    },
+    [],
+  );
 
+  const panelRef = useRef<HTMLElement | null>(null);
   const activeNodeIdRef = useRef<string | null>(null);
   const inspectedNodeIdRef = useRef<string | null>(null);
   const currentRouteRef = useRef<Route>("landing");
@@ -167,6 +181,20 @@ export function App() {
   useEffect(() => {
     inspectedNodeIdRef.current = inspectedNodeId;
   }, [inspectedNodeId]);
+
+  /* Keyboard focus must not enter the panel while it's translated offscreen —
+   * pointer-events-none only blocks the mouse, and aria-hidden without inert
+   * still lets Tab move into the subtree. React 18's typings don't expose
+   * `inert`, so toggle it via ref. */
+  useEffect(() => {
+    const el = panelRef.current;
+    if (!el) return;
+    if (panelState.open) {
+      el.removeAttribute("inert");
+    } else {
+      el.setAttribute("inert", "");
+    }
+  }, [panelState.open]);
 
   useEffect(() => {
     currentRouteRef.current = route;
@@ -424,8 +452,7 @@ export function App() {
           user_seed: userSeed,
           mode,
         });
-        setSelection({ kind: "agent", nodeId: created.node_id });
-        setInspectedNodeId(created.node_id);
+        selectAndOpenNode(created.node_id);
         await refreshContextSpace();
         await refreshNodes();
       } catch (err) {
@@ -435,7 +462,7 @@ export function App() {
         setSessionContextSpaceSaving(false);
       }
     },
-    [session?.id, sessionSettingsSaving, refreshContextSpace, refreshNodes],
+    [session?.id, sessionSettingsSaving, refreshContextSpace, refreshNodes, selectAndOpenNode],
   );
 
   const startBlankDirection = useCallback(
@@ -448,8 +475,7 @@ export function App() {
           seed: userSeed,
           mode,
         });
-        setSelection({ kind: "agent", nodeId: created.node_id });
-        setInspectedNodeId(created.node_id);
+        selectAndOpenNode(created.node_id);
         setFocusRequestVersion((version) => version + 1);
         await refreshContextSpace();
         await refreshNodes();
@@ -459,7 +485,7 @@ export function App() {
         setSessionContextSpaceSaving(false);
       }
     },
-    [session?.id, sessionSettingsSaving, refreshContextSpace, refreshNodes],
+    [session?.id, sessionSettingsSaving, refreshContextSpace, refreshNodes, selectAndOpenNode],
   );
 
   const changePlanspaceMode = useCallback(
@@ -491,15 +517,14 @@ export function App() {
           nodeCountRef.current = updated.length;
           return updated;
         });
-        setSelection({ kind: "agent", nodeId: result.node.id });
-        setInspectedNodeId(result.node.id);
+        selectAndOpenNode(result.node.id);
         await refreshNodes();
       } catch (err) {
         setStreaming(false);
         setSessionContextSpaceError(String(err));
       }
     },
-    [session?.id, streaming, composerLocked, refreshNodes],
+    [session?.id, streaming, composerLocked, refreshNodes, selectAndOpenNode],
   );
 
   const updateVirtualNode = useCallback(
@@ -543,8 +568,7 @@ export function App() {
           nodeCountRef.current = updated.length;
           return updated;
         });
-        setSelection({ kind: "agent", nodeId: result.node.id });
-        setInspectedNodeId(result.node.id);
+        selectAndOpenNode(result.node.id);
         if (result.node.state !== "virtual") {
           activeNodeIdRef.current = result.node.id;
           setStreaming(true);
@@ -555,7 +579,7 @@ export function App() {
         throw err;
       }
     },
-    [session?.id, virtualCreateDisabled],
+    [session?.id, virtualCreateDisabled, selectAndOpenNode],
   );
 
   const createUnparentedVirtual = useCallback(
@@ -861,11 +885,10 @@ export function App() {
           } else {
             setPendingGate({ request: ev, nodeId: ownerNodeId });
           }
-          setInspectedNodeId(ownerNodeId);
-          setSelection({
-            kind: "agent",
-            nodeId: ownerNodeId,
-          });
+          /* The pending banner is suppressed once this node is the
+           * inspected one, so we must also open the details panel or
+           * the gate/review form ends up hidden. */
+          selectAndOpenNode(ownerNodeId);
         }
         void refreshNodes();
       } else if (ev.type === "turn_done") {
@@ -879,11 +902,7 @@ export function App() {
         eventNodeId = ev.node_id;
         const startedKind = ev.kind ?? "agent";
         if (startedKind !== "op") {
-          setInspectedNodeId(ev.node_id);
-          setSelection({
-            kind: "agent",
-            nodeId: ev.node_id,
-          });
+          selectAndOpenNode(ev.node_id);
         }
         void refreshNodes();
       } else if (ev.type === "node_updated") {
@@ -915,7 +934,7 @@ export function App() {
       }
       appendSelectedEvent(eventNodeId, ev);
     },
-    [appendSelectedEvent, refreshNodes],
+    [appendSelectedEvent, refreshNodes, selectAndOpenNode],
   );
 
   const { status, send } = useSessionSocket(
@@ -1310,6 +1329,7 @@ export function App() {
               label={
                 pendingBanner(activePendingGate, activePendingReview, inspectedNodeId)!.label
               }
+              panelOpen={panelState.open}
               onJump={() => {
                 const target =
                   pendingBanner(activePendingGate, activePendingReview, inspectedNodeId)!.nodeId;
@@ -1343,6 +1363,7 @@ export function App() {
           {/* Floating side panel — slides in from the right, swaps between
               details (node inspector) and the template library. */}
           <aside
+            ref={panelRef}
             aria-hidden={!panelState.open}
             className={
               "absolute inset-y-0 right-0 z-20 flex w-[380px] flex-col border-l border-line bg-surface-sunken shadow-modal transition-transform duration-200 ease-out will-change-transform " +
@@ -1467,9 +1488,26 @@ function buildTemplateContextMenuItems(args: {
   ];
 }
 
-function PendingBanner({ label, onJump }: { label: string; onJump: () => void }) {
+function PendingBanner({
+  label,
+  onJump,
+  panelOpen,
+}: {
+  label: string;
+  onJump: () => void;
+  panelOpen: boolean;
+}) {
+  /* When the floating side panel is open it sits at z-20 in the bottom-right
+   * corner (w-380px). Slide the banner past the panel's left edge so the
+   * Jump affordance stays clickable instead of being hidden underneath. */
+  const positionClass = panelOpen ? "right-[calc(380px+0.75rem)]" : "right-3";
   return (
-    <div className="absolute bottom-3 right-3 z-10 flex items-center gap-3 rounded-md border border-state-waiting/40 bg-state-waiting-soft px-3 py-1.5 text-[11px] text-state-waiting shadow-card">
+    <div
+      className={
+        "absolute bottom-3 z-10 flex items-center gap-3 rounded-md border border-state-waiting/40 bg-state-waiting-soft px-3 py-1.5 text-[11px] text-state-waiting shadow-card transition-[right] duration-200 ease-out " +
+        positionClass
+      }
+    >
       <span>{label}</span>
       <button
         type="button"
