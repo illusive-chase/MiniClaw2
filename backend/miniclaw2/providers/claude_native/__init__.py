@@ -79,7 +79,15 @@ class ClaudeNativeSession:
         self._jsonl_path: Path = jsonl_path(
             cwd, self._cli_session_id, self._data_dir
         )
+        # Resume: seed offset from current EOF. Without this, drain() would
+        # replay prior turns' records and a stale result/summary would trip
+        # seen_end_of_turn before the resumed turn even streams.
         self._jsonl_offset: int = 0
+        if session_id is not None:
+            try:
+                self._jsonl_offset = self._jsonl_path.stat().st_size
+            except OSError:
+                self._jsonl_offset = 0
         self._translator = TranscriptTranslator()
         self._closed = False
         self._dispatch_registered = False
@@ -108,14 +116,25 @@ class ClaudeNativeSession:
             session_id=self._cli_session_id,
         )
 
+        # Register the session-ready waiter before spawning: the child can
+        # run its SessionStart hook and POST /hook/* immediately after fork,
+        # and signal_session_ready() drops signals for unregistered ids.
+        self._session_ready_event = hook_runtime.register_session_ready(
+            self._cli_session_id
+        )
+
         loop = asyncio.get_running_loop()
         try:
             self._pty = await loop.run_in_executor(
                 None, _spawn_pty, argv, self._cwd, env
             )
         except ClaudeBinaryNotFoundError:
+            hook_runtime.unregister_session_ready(self._cli_session_id)
+            self._session_ready_event = None
             raise
         except Exception as exc:  # noqa: BLE001
+            hook_runtime.unregister_session_ready(self._cli_session_id)
+            self._session_ready_event = None
             raise ClaudeNativeError(f"failed to spawn claude PTY: {exc}") from exc
 
         submit_result = resolve_submit_key(self._data_dir)
@@ -138,9 +157,6 @@ class ClaudeNativeSession:
 
         hook_runtime.register_ask_dispatcher(self._node_id, self._ask_dispatcher)
         self._dispatch_registered = True
-        self._session_ready_event = hook_runtime.register_session_ready(
-            self._cli_session_id
-        )
 
         try:
             await asyncio.wait_for(
