@@ -837,7 +837,7 @@ class NodeRunner:
             return
         if ev.kind == "session" and ev.session_id:
             self.node.provider_session_id = ev.session_id
-            self.node.sdk_session_id = ev.session_id
+            self.node.cli_session_id = ev.session_id
             self.store.update_node(self.node)
             await self._emit_node_updated()
             return

@@ -1,7 +1,6 @@
 import type { ClientMessage, InteractionRequest, NodeInfo } from "../types";
 import { AskUserDialog } from "./AskUserDialog";
 import { PermissionDialog } from "./PermissionDialog";
-import { PlanDialog } from "./PlanDialog";
 
 export type ResolveGatePayload = Omit<
   Extract<ClientMessage, { type: "interaction_response" }>,
@@ -53,22 +52,6 @@ export function PendingGateInline({
               answers: toLegacyAnswers(answers),
             },
             response: { answers },
-          })
-        }
-      />
-    );
-  }
-  if (pending.interaction_type === "plan_approval") {
-    return (
-      <PlanDialog
-        request={pending}
-        variant={variant}
-        onRespond={(args) =>
-          onResolve({
-            allow: args.allow,
-            clear_context: args.clearContext ?? false,
-            permission_mode: args.permissionMode ?? null,
-            message: args.message ?? "",
           })
         }
       />

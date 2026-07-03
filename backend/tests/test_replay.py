@@ -89,7 +89,7 @@ class FreshNodeLaunchTest(unittest.TestCase):
                     state=NodeState.DONE,
                     provider="codex",
                     provider_session_id="thread_previous",
-                    sdk_session_id="thread_previous",
+                    cli_session_id="thread_previous",
                 )
             )
 
@@ -112,7 +112,7 @@ class FreshNodeLaunchTest(unittest.TestCase):
             assert node is not None
             self.assertEqual(node.parent_node_id, None)
             self.assertEqual(node.provider_session_id, None)
-            self.assertEqual(node.sdk_session_id, None)
+            self.assertEqual(node.cli_session_id, None)
             self.assertNotEqual(node.id, previous.id)
 
     def test_start_node_can_explicitly_resume_from_source_node(self) -> None:
@@ -128,7 +128,7 @@ class FreshNodeLaunchTest(unittest.TestCase):
                     state=NodeState.DONE,
                     provider="codex",
                     provider_session_id="thread_source",
-                    sdk_session_id="thread_source",
+                    cli_session_id="thread_source",
                 )
             )
 
@@ -156,7 +156,7 @@ class FreshNodeLaunchTest(unittest.TestCase):
             self.assertEqual(node.parent_node_id, source.id)
             self.assertEqual(node.provider, "codex")
             self.assertEqual(node.provider_session_id, "thread_source")
-            self.assertEqual(node.sdk_session_id, "thread_source")
+            self.assertEqual(node.cli_session_id, "thread_source")
             self.assertNotEqual(node.id, source.id)
 
     def test_start_node_rejects_resume_from_nonterminal_source_node(self) -> None:

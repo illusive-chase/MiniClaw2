@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 
 import uvicorn
 
@@ -17,6 +18,11 @@ def main() -> None:
     args = parser.parse_args()
 
     logging.basicConfig(level=args.log_level.upper())
+    # Broadcast the port to child processes (claude hook bridge reads
+    # it via MINICLAW_HOOK_URL and MINICLAW_HOOK_TOKEN from its env at
+    # spawn time; keeping this here lets the app compute the URL before
+    # any spawn happens).
+    os.environ["MINICLAW2_HOOK_PORT"] = str(args.port)
     uvicorn.run(
         "miniclaw2.app:app",
         host=args.host,

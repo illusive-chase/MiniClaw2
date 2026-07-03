@@ -408,7 +408,7 @@ class ProjectRegistry:
                 return None
             if resume_source.state not in TERMINAL_NODE_STATES:
                 return None
-            if not (resume_source.provider_session_id or resume_source.sdk_session_id):
+            if not (resume_source.provider_session_id or resume_source.cli_session_id):
                 return None
 
         extra_loads = [
@@ -436,7 +436,7 @@ class ProjectRegistry:
             planspace_id=active_lane,
             provider=resume_source.provider if resume_source else rt.project.provider,
             provider_session_id=resume_source.provider_session_id if resume_source else None,
-            sdk_session_id=resume_source.sdk_session_id if resume_source else None,
+            cli_session_id=resume_source.cli_session_id if resume_source else None,
             prompt=prompt,
             scheduled_deps=list(scheduled_deps or []),
             settings_snapshot=settings_snapshot,
@@ -698,11 +698,11 @@ class ProjectRegistry:
                 return None
             if resume_parent.state not in TERMINAL_NODE_STATES:
                 return None
-            if not (resume_parent.provider_session_id or resume_parent.sdk_session_id):
+            if not (resume_parent.provider_session_id or resume_parent.cli_session_id):
                 return None
             node.provider = resume_parent.provider
             node.provider_session_id = resume_parent.provider_session_id
-            node.sdk_session_id = resume_parent.sdk_session_id
+            node.cli_session_id = resume_parent.cli_session_id
             node.parent_node_id = resume_parent.id
         try:
             self.store.write_node_preview(pid, node.id, render_virtual_preview(node))
@@ -1146,7 +1146,7 @@ class ProjectRegistry:
             raise ValueError(f"resume_from_node_id {source_id!r} is outside this lane")
         if source.state not in TERMINAL_NODE_STATES:
             raise ValueError("resume_from_node_id must reference a terminal node")
-        if not (source.provider_session_id or source.sdk_session_id):
+        if not (source.provider_session_id or source.cli_session_id):
             raise ValueError("resume_from_node_id is not resumable")
         return source_id
 

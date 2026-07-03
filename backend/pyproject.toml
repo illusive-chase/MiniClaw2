@@ -5,14 +5,14 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "miniclaw2"
 version = "0.1.0"
-description = "Minimal Claude Code SDK wrapper with a FastAPI + WebSocket gateway"
+description = "Native Claude Code CLI driver with a FastAPI + WebSocket gateway"
 requires-python = ">=3.11"
 dependencies = [
-    "claude-agent-sdk>=0.1.40",
     "fastapi>=0.110",
     "uvicorn[standard]>=0.27",
     "pydantic>=2.6",
     "PyYAML>=6.0",
+    "ptyprocess>=0.7",
 ]
 
 [project.scripts]
@@ -22,6 +22,7 @@ miniclaw2 = "miniclaw2.__main__:main"
 packages = [
     "miniclaw2",
     "miniclaw2.providers",
+    "miniclaw2.providers.claude_native",
     "miniclaw2.templates",
 ]
 

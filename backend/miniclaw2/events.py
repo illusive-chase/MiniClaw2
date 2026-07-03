@@ -39,7 +39,6 @@ class InteractionRequest(BaseModel):
     interaction_type: Literal[
         "permission",
         "ask_user",
-        "plan_approval",
         "checkpoint_review",
         "human_review_prose",
     ]

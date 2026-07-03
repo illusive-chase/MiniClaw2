@@ -24,7 +24,6 @@ export type InteractionRequest = {
   interaction_type:
     | "permission"
     | "ask_user"
-    | "plan_approval"
     | "checkpoint_review"
     | "human_review_prose";
   tool_name: string;
@@ -195,7 +194,7 @@ export type NodeInfo = {
   provider: string;
   provider_session_id?: string | null;
   provider_turn_id?: string | null;
-  sdk_session_id?: string | null;
+  cli_session_id?: string | null;
   commit_before?: string | null;
   commit_after?: string | null;
   prompt: string;

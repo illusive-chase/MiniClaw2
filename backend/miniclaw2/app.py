@@ -13,8 +13,9 @@ import os
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Response, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from .contextspace import (
@@ -31,6 +32,8 @@ from .events import (
     UserMessage,
 )
 from .git_state import node_diff
+from .providers.claude_native import hook_runtime
+from .providers.claude_native.hook_installer import install_hooks
 from .registry import ProjectRegistry
 from .replay import LiveReplayBuffer
 from .templates import (
@@ -193,7 +196,21 @@ class ApplyUserTemplateResponse(BaseModel):
 
 
 def create_app() -> FastAPI:
-    app = FastAPI(title="MiniClaw2")
+    from contextlib import asynccontextmanager
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        # Generate the shared token before spawning any claude PTYs, and
+        # merge the AskUserQuestion / SessionStart hooks into the user's
+        # ~/.claude/settings.json. Both are idempotent.
+        hook_runtime.ensure_token()
+        try:
+            install_hooks()
+        except Exception:  # noqa: BLE001
+            logger.exception("failed to install claude hooks")
+        yield
+
+    app = FastAPI(title="MiniClaw2", lifespan=lifespan)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
@@ -201,6 +218,40 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
     registry = ProjectRegistry()
+
+    def _require_hook_token(request: Request) -> None:
+        auth = request.headers.get("Authorization", "")
+        expected = f"Bearer {hook_runtime.token()}"
+        if auth != expected:
+            raise HTTPException(status_code=403, detail="invalid hook token")
+
+    @app.post("/hook/ask")
+    async def hook_ask(request: Request) -> JSONResponse:
+        _require_hook_token(request)
+        body = await request.json()
+        node_id = body.get("node_id")
+        payload = body.get("payload")
+        if not isinstance(node_id, str) or not isinstance(payload, dict):
+            raise HTTPException(400, "invalid hook payload")
+        dispatcher = hook_runtime.get_ask_dispatcher(node_id)
+        if dispatcher is None:
+            raise HTTPException(404, f"no active session for node {node_id!r}")
+        try:
+            directive = await dispatcher(payload)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("hook_ask dispatcher failed")
+            raise HTTPException(500, f"ask dispatch failed: {exc}") from exc
+        return JSONResponse(content=directive)
+
+    @app.post("/hook/session-ready")
+    async def hook_session_ready(request: Request) -> JSONResponse:
+        _require_hook_token(request)
+        body = await request.json()
+        session_id = body.get("session_id")
+        if not isinstance(session_id, str) or not session_id:
+            raise HTTPException(400, "session_id required")
+        hook_runtime.signal_session_ready(session_id)
+        return JSONResponse({"ok": True})
 
     @app.post("/sessions", response_model=SessionInfo)
     def create_session(req: CreateSessionRequest) -> SessionInfo:

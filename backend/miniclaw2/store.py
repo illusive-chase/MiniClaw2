@@ -110,7 +110,7 @@ class Store:
         path = self._node_file(pid, nid)
         if not path.exists():
             return None
-        return Node.model_validate(self._read_json(path))
+        return Node.model_validate(_migrate_node_payload(self._read_json(path)))
 
     def update_node(self, node: Node) -> None:
         self._write_json(self._node_file(node.project_id, node.id), node.model_dump())
@@ -130,7 +130,7 @@ class Store:
         for ndir in nodes_dir.iterdir():
             nf = ndir / "node.json"
             if nf.exists():
-                out.append(Node.model_validate(self._read_json(nf)))
+                out.append(Node.model_validate(_migrate_node_payload(self._read_json(nf))))
         out.sort(key=lambda n: n.created_at)
         return out
 
@@ -201,3 +201,16 @@ class Store:
     @staticmethod
     def _read_json(path: Path) -> dict[str, Any]:
         return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _migrate_node_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Rename ``sdk_session_id`` → ``cli_session_id`` on load.
+
+    Old node.json files from before the native-CLI migration carry the
+    legacy field; copy it into the new one if the new one is missing so
+    resume still works. Leave the old key in place — Pydantic will drop
+    it silently since it's no longer a model field.
+    """
+    if "cli_session_id" not in payload and "sdk_session_id" in payload:
+        payload["cli_session_id"] = payload.get("sdk_session_id")
+    return payload

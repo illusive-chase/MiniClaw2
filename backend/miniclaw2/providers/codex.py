@@ -36,7 +36,7 @@ class CodexProvider:
             self._client = client
             try:
                 await client.initialize()
-                thread_id = context.node.provider_session_id or context.node.sdk_session_id
+                thread_id = context.node.provider_session_id or context.node.cli_session_id
                 fresh_thread = not thread_id
                 if not thread_id:
                     start = await client.request(

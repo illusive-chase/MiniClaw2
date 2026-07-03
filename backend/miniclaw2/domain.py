@@ -5,7 +5,7 @@ ontology is two-axis: ``kind`` distinguishes agent, op, and verifier;
 ``category`` (orthogonal, applies to agent/verifier) distinguishes
 planning, regular, and review semantics. Agentic and human reviews are
 agents; programmatic reviews are verifiers. ``HumanGate`` is preserved
-for inline gates (permission / ask_user / plan_approval) only.
+for inline gates (permission / ask_user) only.
 """
 
 from __future__ import annotations
@@ -86,7 +86,6 @@ class GateKind(StrEnum):
 class GateSubtype(StrEnum):
     PERMISSION = "permission"
     ASK_USER = "ask_user"
-    PLAN_APPROVAL = "plan_approval"
 
 
 class GateState(StrEnum):
@@ -142,7 +141,7 @@ class Node(BaseModel):
     provider: str = "claude"
     provider_session_id: str | None = None
     provider_turn_id: str | None = None
-    sdk_session_id: str | None = None
+    cli_session_id: str | None = None
     commit_before: str | None = None
     commit_after: str | None = None
     prompt: str = ""

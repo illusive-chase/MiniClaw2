@@ -15,8 +15,6 @@ class TemplatesLoaderTest(unittest.TestCase):
                 "hello-text",
                 "bash-uname",
                 "write-readme",
-                "permission-approve",
-                "plan-mode-approval",
                 "interrupt-midstream",
                 "context-md-respected",
                 "resume-fix-after-reject",
