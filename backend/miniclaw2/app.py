@@ -62,6 +62,7 @@ class CreateSessionRequest(BaseModel):
     temporary: bool = False
     name: str | None = None
     project_context_binding_id: str | None = None
+    create_missing_cwd: bool = False
 
 
 class RenameSessionRequest(BaseModel):
@@ -266,6 +267,7 @@ def create_app() -> FastAPI:
                 temporary=req.temporary,
                 name=req.name or "",
                 project_context_binding_id=req.project_context_binding_id,
+                create_missing_cwd=req.create_missing_cwd,
             )
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc

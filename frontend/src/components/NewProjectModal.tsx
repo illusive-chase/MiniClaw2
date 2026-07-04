@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { createSession } from "../api";
+import { ApiError, createSession } from "../api";
 import { LANGUAGE_OPTIONS } from "../languages";
 import type { SessionInfo } from "../types";
 
@@ -8,6 +8,23 @@ type Props = {
   onCancel: () => void;
   onCreated: (session: SessionInfo) => void;
 };
+
+const MISSING_CWD_PREFIX = "cwd does not exist:";
+
+function missingCwdPath(err: unknown): string | null {
+  if (
+    err instanceof ApiError &&
+    err.status === 400 &&
+    err.detail?.startsWith(MISSING_CWD_PREFIX)
+  ) {
+    return err.detail.slice(MISSING_CWD_PREFIX.length).trim();
+  }
+  return null;
+}
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
 
 export function NewProjectModal({ open, onCancel, onCreated }: Props) {
   const [name, setName] = useState("");
@@ -35,19 +52,47 @@ export function NewProjectModal({ open, onCancel, onCreated }: Props) {
   if (!open) return null;
 
   const submit = async () => {
+    const cwdInput = cwd.trim();
+    const payload = (createMissingCwd: boolean) => ({
+      name: name.trim() || undefined,
+      provider,
+      preferred_language: preferredLanguage || null,
+      cwd: temporary ? undefined : (cwdInput || undefined),
+      temporary,
+      create_missing_cwd: createMissingCwd,
+    });
+
     setSubmitting(true);
     setError(null);
     try {
-      const session = await createSession({
-        name: name.trim() || undefined,
-        provider,
-        preferred_language: preferredLanguage || null,
-        cwd: temporary ? undefined : (cwd.trim() || undefined),
-        temporary,
-      });
+      const session = await createSession(payload(false));
       onCreated(session);
     } catch (err) {
-      setError(String(err));
+      const missingPath = missingCwdPath(err);
+      if (
+        !temporary &&
+        cwdInput &&
+        missingPath &&
+        window.confirm(
+          [
+            "Working directory does not exist:",
+            missingPath,
+            "",
+            "Create it and continue?",
+          ].join("\n"),
+        )
+      ) {
+        try {
+          const session = await createSession(payload(true));
+          onCreated(session);
+          return;
+        } catch (retryErr) {
+          setError(errorMessage(retryErr));
+          setSubmitting(false);
+          return;
+        }
+      }
+      setError(errorMessage(err));
       setSubmitting(false);
     }
   };

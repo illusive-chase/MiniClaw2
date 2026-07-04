@@ -56,6 +56,32 @@ class TemporaryProjectTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 registry.create_project(cwd=None, temporary=False)
 
+    def test_create_non_temporary_rejects_missing_cwd_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            store = Store(root=Path(raw) / "store")
+            registry = ProjectRegistry(store=store)
+            missing = Path(raw) / "missing-project"
+
+            with self.assertRaisesRegex(ValueError, "cwd does not exist"):
+                registry.create_project(cwd=str(missing), temporary=False)
+
+            self.assertFalse(missing.exists())
+
+    def test_create_non_temporary_can_create_missing_cwd_when_requested(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            store = Store(root=Path(raw) / "store")
+            registry = ProjectRegistry(store=store)
+            missing = Path(raw) / "nested" / "project"
+
+            project = registry.create_project(
+                cwd=str(missing),
+                temporary=False,
+                create_missing_cwd=True,
+            )
+
+            self.assertTrue(missing.is_dir())
+            self.assertEqual(project.root_path, str(missing.resolve()))
+
     def test_temporary_flag_persists_across_registry_reload(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             store_root = Path(raw)

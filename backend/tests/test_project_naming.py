@@ -49,6 +49,33 @@ class ProjectNamingApiTest(unittest.TestCase):
         created = self._create()
         self.assertEqual(created["name"], "")
 
+    def test_create_missing_cwd_returns_400_without_confirmation(self) -> None:
+        missing = Path(self.cwd_dir.name) / "missing-project"
+
+        res = self.client.post(
+            "/sessions",
+            json={"cwd": str(missing), "provider": "claude"},
+        )
+
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("cwd does not exist", res.json()["detail"])
+        self.assertFalse(missing.exists())
+
+    def test_create_missing_cwd_with_confirmation_creates_directory(self) -> None:
+        missing = Path(self.cwd_dir.name) / "nested" / "project"
+
+        res = self.client.post(
+            "/sessions",
+            json={
+                "cwd": str(missing),
+                "provider": "claude",
+                "create_missing_cwd": True,
+            },
+        )
+
+        self.assertEqual(res.status_code, 200, res.text)
+        self.assertTrue(missing.is_dir())
+
     def test_patch_renames_project(self) -> None:
         created = self._create(name="Original")
         sid = created["id"]

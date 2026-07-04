@@ -16,6 +16,36 @@ import type {
   SessionContextSpaceInfo,
 } from "./types";
 
+export class ApiError extends Error {
+  readonly status: number;
+  readonly detail: string | null;
+
+  constructor(operation: string, status: number, detail: string | null) {
+    super(`${operation} failed: ${status}${detail ? `: ${detail}` : ""}`);
+    this.name = "ApiError";
+    this.status = status;
+    this.detail = detail;
+  }
+}
+
+async function readErrorDetail(res: Response): Promise<string | null> {
+  const contentType = res.headers.get("content-type") ?? "";
+  if (contentType.includes("application/json")) {
+    try {
+      const body: unknown = await res.json();
+      if (body && typeof body === "object" && "detail" in body) {
+        const detail = (body as { detail?: unknown }).detail;
+        return typeof detail === "string" ? detail : JSON.stringify(detail);
+      }
+    } catch {
+      return null;
+    }
+    return null;
+  }
+  const text = await res.text();
+  return text || null;
+}
+
 export async function createSession(
   body: {
     cwd?: string;
@@ -26,6 +56,7 @@ export async function createSession(
     temporary?: boolean;
     name?: string;
     project_context_binding_id?: string | null;
+    create_missing_cwd?: boolean;
   } = {},
 ): Promise<SessionInfo> {
   const res = await fetch("/sessions", {
@@ -33,7 +64,9 @@ export async function createSession(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
-  if (!res.ok) throw new Error(`createSession failed: ${res.status}`);
+  if (!res.ok) {
+    throw new ApiError("createSession", res.status, await readErrorDetail(res));
+  }
   return res.json();
 }
 

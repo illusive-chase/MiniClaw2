@@ -57,6 +57,36 @@ def _render_concierge_prompt(seed: str) -> str:
     return _concierge_template().replace("<<user_seed>>", seed)
 
 
+def _normalize_project_root(cwd: str, *, create_missing: bool = False) -> str:
+    """Return a stable absolute project root for non-temporary projects."""
+    if not cwd.strip():
+        raise ValueError("cwd is required for non-temporary projects")
+    try:
+        expanded = Path(cwd).expanduser()
+    except RuntimeError as exc:
+        raise ValueError(f"cwd cannot be expanded: {cwd}") from exc
+    if create_missing:
+        try:
+            expanded.mkdir(parents=True, exist_ok=True)
+        except FileExistsError as exc:
+            raise ValueError(f"cwd is not a directory: {expanded}") from exc
+        except OSError as exc:
+            reason = exc.strerror or str(exc)
+            raise ValueError(f"cwd cannot be created: {expanded}: {reason}") from exc
+    try:
+        resolved = expanded.resolve(strict=True)
+    except FileNotFoundError as exc:
+        raise ValueError(f"cwd does not exist: {expanded}") from exc
+    except NotADirectoryError as exc:
+        raise ValueError(f"cwd is not a directory: {expanded}") from exc
+    except OSError as exc:
+        reason = exc.strerror or str(exc)
+        raise ValueError(f"cwd cannot be accessed: {expanded}: {reason}") from exc
+    if not resolved.is_dir():
+        raise ValueError(f"cwd is not a directory: {resolved}")
+    return str(resolved)
+
+
 class ProjectRuntime:
     """Per-project mutable runtime state — only one runner active at a time."""
 
@@ -118,6 +148,7 @@ class ProjectRegistry:
         preferred_language: str | None = None,
         temporary: bool = False,
         template_id: str | None = None,
+        create_missing_cwd: bool = False,
     ) -> Project:
         normalized_provider = (provider or "claude").lower()
         if normalized_provider not in {"claude", "codex"}:
@@ -128,7 +159,9 @@ class ProjectRegistry:
         else:
             if not cwd:
                 raise ValueError("cwd is required for non-temporary projects")
-            root_path = cwd
+            root_path = _normalize_project_root(
+                cwd, create_missing=create_missing_cwd
+            )
         settings: dict[str, Any] = {}
         if model:
             settings["model"] = model
