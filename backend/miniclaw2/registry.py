@@ -1167,6 +1167,8 @@ class ProjectRegistry:
             motivation=f"rerun of {original.id[:8]}",
             scheduled_deps=list(original.scheduled_deps or []),
             planspace_id=original.planspace_id,
+            parent_node_id=original.parent_node_id,
+            resume_from_node_id=original.resume_from_node_id,
         )
         if virtual is None:
             return None

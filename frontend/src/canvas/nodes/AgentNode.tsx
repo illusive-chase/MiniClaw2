@@ -98,6 +98,7 @@ function AgentNodeImpl({ data, selected }: NodeProps<AgentNodeData>) {
     }
     if (
       !isVirtual &&
+      node.kind === "agent" &&
       (node.state === "error" || node.state === "cancelled")
     ) {
       items.push({

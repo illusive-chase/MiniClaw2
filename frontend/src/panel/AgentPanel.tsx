@@ -149,17 +149,18 @@ export function AgentPanel({
                 Stop
               </button>
             )}
-            {(node.state === "error" || node.state === "cancelled") && (
-              <button
-                type="button"
-                onClick={() => onRerunNode(node.id)}
-                disabled={!canRerun}
-                className="rounded-md bg-brand px-2.5 py-1 text-[11px] font-medium text-white shadow-card transition hover:brightness-[0.95] disabled:cursor-not-allowed disabled:opacity-40"
-                title="Rerun - create a fresh virtual with the same prompt"
-              >
-                ↻ Rerun
-              </button>
-            )}
+            {node.kind === "agent" &&
+              (node.state === "error" || node.state === "cancelled") && (
+                <button
+                  type="button"
+                  onClick={() => onRerunNode(node.id)}
+                  disabled={!canRerun}
+                  className="rounded-md bg-brand px-2.5 py-1 text-[11px] font-medium text-white shadow-card transition hover:brightness-[0.95] disabled:cursor-not-allowed disabled:opacity-40"
+                  title="Rerun - create a fresh virtual with the same prompt"
+                >
+                  ↻ Rerun
+                </button>
+              )}
             {node.state === "virtual" ? (
               <button
                 type="button"

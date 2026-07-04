@@ -191,3 +191,41 @@ class RerunNodeTests(unittest.TestCase):
 
     def test_rerun_returns_none_for_missing_node(self) -> None:
         self.assertIsNone(self.registry.rerun_node(self.project.id, "no-such"))
+
+    def test_rerun_preserves_continuation_context(self) -> None:
+        source = Node(
+            id="src-1",
+            project_id=self.project.id,
+            kind=NodeKind.AGENT,
+            category=Category.REGULAR,
+            state=NodeState.DONE,
+            planspace_id=self.lane,
+            provider="claude",
+            provider_session_id="prov-sess-1",
+            prompt="original prompt",
+            started_at=1.0,
+            finished_at=2.0,
+        )
+        self.store.create_node(source)
+        failed = Node(
+            id="cont-1",
+            project_id=self.project.id,
+            kind=NodeKind.AGENT,
+            category=Category.REGULAR,
+            state=NodeState.ERROR,
+            planspace_id=self.lane,
+            provider="claude",
+            prompt="follow up",
+            parent_node_id=source.id,
+            resume_from_node_id=source.id,
+            started_at=3.0,
+            finished_at=4.0,
+            error="boom",
+        )
+        self.store.create_node(failed)
+
+        result = self.registry.rerun_node(self.project.id, failed.id)
+
+        assert result is not None
+        self.assertEqual(result.resume_from_node_id, source.id)
+        self.assertEqual(result.parent_node_id, source.id)
