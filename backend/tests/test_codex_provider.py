@@ -12,6 +12,7 @@ from miniclaw2.domain import GateSubtype
 from miniclaw2.providers.codex import (
     CodexProvider,
     _CodexJsonRpcClient,
+    _CODEX_STDIO_BUFFER_LIMIT_BYTES,
     _thread_params,
     _turn_params,
 )
@@ -40,8 +41,8 @@ class _FakeProcess:
     ) -> None:
         self.on_request = on_request
         self.stdin = _FakeStdin(self)
-        self.stdout = asyncio.StreamReader()
-        self.stderr = asyncio.StreamReader()
+        self.stdout = asyncio.StreamReader(limit=_CODEX_STDIO_BUFFER_LIMIT_BYTES)
+        self.stderr = asyncio.StreamReader(limit=_CODEX_STDIO_BUFFER_LIMIT_BYTES)
         self.returncode: int | None = None
         self._wait_event = asyncio.Event()
 
@@ -194,6 +195,31 @@ class CodexProviderTest(unittest.IsolatedAsyncioTestCase):
                         {"threadId": "thread-1"},
                         timeout=0.01,
                     )
+
+    async def test_stdout_reader_accepts_large_json_rpc_lines(self) -> None:
+        fake_proc = _FakeProcess()
+        with patch(
+            "miniclaw2.providers.codex.asyncio.create_subprocess_exec",
+            return_value=fake_proc,
+        ) as create_subprocess_exec:
+            async with _CodexJsonRpcClient() as client:
+                fake_proc.feed_stdout(
+                    {
+                        "method": "item/commandExecution/outputDelta",
+                        "params": {
+                            "itemId": "cmd-1",
+                            "delta": "x" * (96 * 1024),
+                        },
+                    }
+                )
+                message = await client.receive()
+
+        self.assertEqual(message["method"], "item/commandExecution/outputDelta")
+        self.assertEqual(len(message["params"]["delta"]), 96 * 1024)
+        self.assertEqual(
+            create_subprocess_exec.call_args.kwargs["limit"],
+            _CODEX_STDIO_BUFFER_LIMIT_BYTES,
+        )
 
     async def test_modern_and_legacy_approval_decisions_map_differently(self) -> None:
         provider = CodexProvider()

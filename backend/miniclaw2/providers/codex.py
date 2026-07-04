@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 
 _CODEX_REQUEST_TIMEOUT_SECONDS = 60.0
 _CODEX_STDERR_TAIL_LINES = 20
+_CODEX_STDIO_BUFFER_LIMIT_BYTES = 16 * 1024 * 1024
 
 
 class CodexProvider:
@@ -373,6 +374,7 @@ class _CodexJsonRpcClient:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=env,
+            limit=_CODEX_STDIO_BUFFER_LIMIT_BYTES,
         )
         self._reader_task = asyncio.create_task(self._read_stdout())
         self._stderr_task = asyncio.create_task(self._read_stderr())
