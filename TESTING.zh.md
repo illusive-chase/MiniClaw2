@@ -504,7 +504,7 @@ verify.sh 一次性核对：
 - `scenario_step_history` 里 build / review / fix 三步都是 `terminal_state:
   "done"`;
 - fix 节点的 `node.json` 里 `parent_node_id == build.id`;
-- fix 的 `provider_session_id`(或 fallback 到 `sdk_session_id`)和 build 一致
+- fix 的 `provider_session_id`(或 fallback 到 `cli_session_id`)和 build 一致
   ——证明 resume 边把 provider 会话真的接过来了;
 - `mathutils.py` 至少定义两个不同的 `def`(`add` + 一个 fix 加的);
 - `git rev-list --count HEAD >= 3`(seed + 至少两次 auto-commit)。

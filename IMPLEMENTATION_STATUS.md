@@ -24,7 +24,7 @@ Trunk: `backend/miniclaw2/domain.py`.
 - `Node` fields covering ontology in `PHILOSOPHY.md` §6.1: `parent_node_id`,
   `planspace_id`, `context_sources`, `context_bundle_id`,
   `context_bundle_path`, `provider`, `provider_session_id`,
-  `provider_turn_id`, `sdk_session_id` (legacy alias),
+  `provider_turn_id`, `cli_session_id`,
   `commit_before`, `commit_after`, `prompt`, `category`, `subtype`,
   `brief`, `prompt_draft`, `scheduled_deps`, `resume_from_node_id`,
   `verify_script_ref`, `proposed_by`, `obsolete_reason`, `summary`,
@@ -36,7 +36,9 @@ Trunk: `backend/miniclaw2/domain.py`.
   `layout_hints`, `layout_viewport`, `planspace_view`,
   `created_at`.
 - `HumanGate` model is inline-only:
-  `GateSubtype ∈ {permission, ask_user, plan_approval}`.
+  `GateSubtype ∈ {permission, ask_user}`. `permission` is emitted by
+  the Codex adapter only; the native-CLI Claude provider runs with
+  `--dangerously-skip-permissions` and never opens a permission gate.
 - Atomic JSON write (tmp + rename) via `store.py`; per-node JSONL
   event log; gates.jsonl audit trail.
 
@@ -51,11 +53,22 @@ Trunk: `backend/miniclaw2/providers/` (`base.py`, `claude.py`, `codex.py`).
 
 ### Landed
 
-- Claude adapter over `claude-agent-sdk`. Per-session `ClaudeSDKClient`
-  with `system_prompt` preset = `claude_code`, `CONTEXT.md` appended
-  via `system_prompt.append`. Plan-mode happy path returns
-  `Allow(updated_permissions=[setMode acceptEdits])`. Interrupt wired
-  to the SDK reader. Surfaces `ThinkingBlock` as a `thinking` event.
+- Claude adapter drives the native `claude` binary directly through a
+  PTY (`ptyprocess`). Prompts are typed into the TUI; events are drained
+  from Claude Code's on-disk JSONL transcript under
+  `~/.claude/projects/<hash>/<sid>.jsonl`. Spawn args pin the session id
+  (or `--resume`), disable plan mode via
+  `--disallowed-tools EnterPlanMode,ExitPlanMode`, and bypass per-tool
+  permission prompts via `--dangerously-skip-permissions`. `CONTEXT.md`
+  is appended via `--append-system-prompt`. Assistant text, thinking
+  blocks, tool_use/tool_result pairs, and end-of-turn `summary` events
+  map onto the same `AgentProviderEvent` shapes previously emitted by
+  the SDK. Interrupt sends Ctrl-C over the PTY. `AskUserQuestion` is
+  intercepted by a `PreToolUse` hook (`claude_hook_bridge`) that POSTs
+  to FastAPI, which routes the payload through
+  `GateSubtype.ASK_USER` and writes the user's answer back into the
+  tool call. See `providers/claude_native/` for the spawn / input /
+  transcript / hook plumbing.
 - Codex adapter over `codex app-server` JSON-RPC. Per-session thread.
   `CONTEXT.md` prepended to `turn/start` input on fresh threads
   (resumed threads keep the context they were started with). Maps
@@ -68,8 +81,9 @@ Trunk: `backend/miniclaw2/providers/` (`base.py`, `claude.py`, `codex.py`).
 
 ### Pending
 
-- Per-token streaming on Claude. Pinned `claude-agent-sdk` exposes no
-  partial-message option; revisit when bumped.
+- Per-token streaming on Claude. The JSONL transcript is written
+  block-at-a-time, not token-at-a-time; revisit if Claude Code gains a
+  partial-block stream.
 - Cost estimate in the Usage strip (token counts are emitted; dollar
   conversion is not).
 
@@ -82,10 +96,11 @@ Trunk: `backend/miniclaw2/runner.py`, `backend/miniclaw2/registry.py`.
 
 - Fresh provider session/thread on ordinary launch.
 - Resume via `parent_node_id` when launched with `resume_from_node_id`;
-  inherits `provider_session_id` / `sdk_session_id`. Resumed agent
+  inherits `provider_session_id` / `cli_session_id`. Resumed agent
   surfaces show `↻` continuation context.
-- Inline gates (permission, ask-user, plan-approval) normalize to
-  `waiting` substate; resolution returns the node to `running`.
+- Inline gates (permission for Codex, ask-user for both providers)
+  normalize to `waiting` substate; resolution returns the node to
+  `running`.
 - Launch instructions are composed from (in order): the category-aware
   block from `launch_prompt.build_category_launch_block` (planning /
   regular / agentic_review / human_interact_review), the planspace
@@ -202,26 +217,27 @@ Trunk: `backend/miniclaw2/contextspace.py`, `backend/miniclaw2/context.py`.
   `POST /sessions/{sid}/context/cancel`. The task deliberately does not
   create nodes or append node event streams.
 - Provider adapters support a `minimal_mode` flag on
-  `AgentProviderContext` that skips `CONTEXT.md` self-injection, drives a
-  tool whitelist (`PermissionResultAllow` / `Deny`) on Claude, and forces
-  `approvalPolicy: "never"` on Codex. Used by the out-of-band
-  `context_refresh` agent; unused by `NodeRunner`.
+  `AgentProviderContext` that skips `CONTEXT.md` self-injection, passes
+  the whitelist to `claude --allowed-tools` on the native Claude
+  provider, and forces `approvalPolicy: "never"` on Codex. Used by the
+  out-of-band `context_refresh` agent; unused by `NodeRunner`.
 
 ### Pending
 
-- Vendor-specific on-disk context loading: `CLAUDE.md` walk
-  (project + user), `.claude/settings.json` + `settings.local.json`
-  → `permissions / env / hooks / mcpServers / allowedTools /
-  disallowedTools`, `.claude/agents/*.md`, `.mcp.json`.
+- Vendor-specific on-disk context is now applied by the native `claude`
+  binary itself (`CLAUDE.md` walk, `.claude/settings.json`,
+  `.claude/agents`, `.mcp.json`); MiniClaw2 no longer needs to
+  re-marshal any of it. What is still missing is a UI surface for
+  editing those files.
 - Drag-and-drop plug UX; skill authoring UI; manifest editor for
   injection-mode and `max_chars`.
 - Automatic ContextSpace git commits (v1 keeps changes visible).
 - Cross-provider reviewer nodes (the ontology supports review agents;
   no UI to configure provider override yet).
 - Fork merge semantics.
-- Codex per-tool allowlist for out-of-band agent mode. Claude's
-  `can_use_tool` callback enforces the whitelist directly; Codex has no
-  per-tool callback, so the current `context_refresh` agent relies on
+- Codex per-tool allowlist for out-of-band agent mode. Claude enforces
+  the whitelist directly via `--allowed-tools` at spawn; Codex has no
+  per-tool spawn flag, so the current `context_refresh` agent relies on
   `approvalPolicy: "never"` plus the preset prompt's self-constraint to
   scope tool use.
 
@@ -299,11 +315,11 @@ Trunk: `frontend/src/canvas/Canvas.tsx`, `frontend/src/canvas/layout.ts`,
   {node_id, since_seq}` client envelope; replay consumes
   `events.jsonl` then attaches to live tail. WS 4xxx close codes
   suppress the auto-reconnect loop.
-- Inline pending requests (permission / ask-user / plan-approval)
+- Inline pending requests (permission / ask-user)
   render at the top of `AgentPanel`. An amber canvas banner surfaces
   "Node X is awaiting your response" when the user is inspecting a
   different node.
-- Inline pending requests (permission / ask-user / plan-approval)
+- Inline pending requests (permission / ask-user)
   also expand directly under the waiting agent tile on the canvas,
   using the same response mapping as `AgentPanel`.
 - Projects landing page (`ProjectsLanding`) with rename/delete; Tests
@@ -357,46 +373,38 @@ surface; the durable node store is the source of truth.
 
 ## 7. CLI-parity gaps
 
-The wrapper matches the native `claude` CLI on the items below.
-Vendor-specific config loading is the largest remaining drift.
+Native Claude Code is now driven directly, so most CLI-parity items are
+answered by "whatever the CLI already does." The remaining gaps are the
+UI affordances and features MiniClaw2 does not expose on top of it.
 
 ### Landed
 
-- Provider-neutral `<project_root>/CONTEXT.md` (the textual substitute
-  for vendor-specific project context).
-- Plan-mode approve returns the correct permission update (no longer
-  treated as a Deny).
-- Interrupt wired (Stop button → `cancelled`).
-- `ThinkingBlock` surfaced as a `thinking` event.
+- Native `claude` binary driven directly via PTY + JSONL transcript.
+  Anything the CLI ships (skills, plugins, slash commands, new tools,
+  `CLAUDE.md` walk, `.claude/settings.json`, `.claude/agents`,
+  `.mcp.json`) is applied by Claude itself when spawned in the project
+  cwd.
+- Provider-neutral `<project_root>/CONTEXT.md` appended via
+  `--append-system-prompt`.
+- Interrupt wired (Stop button → Ctrl-C to PTY → `cancelled`).
+- `thinking` blocks surfaced as a `thinking` event.
 - Tool I/O result rendering for both providers.
 - Markdown rendering for assistant text.
 - Reconnect replay over the JSONL log.
+- `AskUserQuestion` intercepted via a `PreToolUse` hook and routed
+  through MiniClaw2's `ASK_USER` gate.
 - Codex `requestUserInput`, command/file/permission approvals mapped
   onto the same gate envelope; session-scoped allow via
   `acceptForSession`.
 
 ### Pending
 
-- `CLAUDE.md` hierarchical walk (project + user) merged into Claude's
-  preset.
-- `.claude/settings.json` + `settings.local.json` →
-  `ClaudeAgentOptions.permissions / env / hooks / mcpServers /
-  allowedTools / disallowedTools`.
-- `.claude/agents/*.md` → `agents=` SDK option.
-- `.mcp.json` → `mcp_servers=` SDK option.
 - `@file` / `!cmd` / image-paste input affordances.
-- Permission dialog: `updated_input` editing, allow-always project
-  scoping, `suggestions` rendering.
-- Settings UI: model picker, permission-mode dropdown, cwd selector,
-  tool allowlist.
+- Ask-user dialog: `suggestions` rendering and free-text "Other" affordance.
+- Settings UI: model picker, cwd selector, tool allowlist.
 - Queue user messages while a turn is in-flight (currently rejects).
-- `ClaudeSDKClient` lifetime = session lifetime, not turn (would
-  preserve MCP connections, permission state, skill caches across
-  turns).
 - Slash commands (`/clear`, `/compact`, `/model`, `/cwd`,
   `/permissions`) as frontend interceptors.
-- Hooks lifecycle (`PreToolUse`, `PostToolUse`, `Stop`,
-  `UserPromptSubmit`).
 - Cost estimate (per-model rates × token counts).
 
 
@@ -441,10 +449,11 @@ virtual into their subgraph.
   node renderer; templates use the normal canvas, side panel, virtual
   editing, human-review form, and interrupt controls.
 - Bundled templates: `hello-text`, `bash-uname`, `write-readme`,
-  `permission-approve`, `plan-mode-approval`, `interrupt-midstream`,
-  `context-md-respected`, `resume-fix-after-reject`, and
-  `gui-calculator`. `reconnect-replay` was intentionally dropped
-  because it required a test-only UI hook.
+  `interrupt-midstream`, `context-md-respected`,
+  `resume-fix-after-reject`, and `gui-calculator`. `permission-approve`
+  and `plan-mode-approval` were dropped when the native-CLI Claude
+  provider disabled per-tool gating and plan mode. `reconnect-replay`
+  was intentionally dropped because it required a test-only UI hook.
 
 ### Landed — user-authored
 
@@ -545,10 +554,10 @@ Quick reference; the on-disk shape is authoritative.
   `node_started {node_id, parent_node_id, kind, category, subtype, prompt}`,
   `node_updated`, `node_removed {id}`, `interaction_request
   {interaction_type, ...}` with `interaction_type ∈ {"permission",
-  "ask_user", "plan_approval", "human_review_prose"}`
-  (`checkpoint_review` remains accepted in legacy replay/client types
-  only), `text_delta`, `thinking`, `activity`, `usage`, `turn_done`,
-  `error`.
+  "ask_user", "human_review_prose"}` (`checkpoint_review` remains
+  accepted in legacy replay/client types only; `permission` is emitted
+  by Codex only), `text_delta`, `thinking`, `activity`, `usage`,
+  `turn_done`, `error`.
 - Client → server: user prompt with optional `resume_from_node_id`,
   `interrupt`, interaction response,
   `replay_request {node_id, since_seq}`.

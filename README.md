@@ -1,15 +1,15 @@
 # MiniClaw2
 
 A minimal coding-agent wrapper with a graph-oriented web GUI. The Python
-backend wraps provider adapters for Claude Code (`claude-agent-sdk`) and
-Codex (`codex app-server`) over FastAPI + WebSocket, paired with a React
-+ Vite + React Flow frontend.
+backend wraps provider adapters for Claude Code (native `claude` CLI
+driven over a PTY) and Codex (`codex app-server`) over FastAPI +
+WebSocket, paired with a React + Vite + React Flow frontend.
 
 ## Architecture
 
 ```
 ┌──────────────────────┐  REST / WebSocket  ┌──────────────────┐  provider adapter
-│ React Flow workspace │ ─────────────────▶ │ FastAPI gateway  │ ───────────────▶ Claude SDK
+│ React Flow workspace │ ─────────────────▶ │ FastAPI gateway  │ ───────────────▶ native `claude` CLI (PTY + JSONL)
 │     (frontend/)      │ ◀───────────────── │    (backend/)    │ ───────────────▶ Codex app-server
 └──────────────────────┘      events        └──────────────────┘   tool / messages
 ```
@@ -18,7 +18,7 @@ Codex (`codex app-server`) over FastAPI + WebSocket, paired with a React
   `HumanGate` domain model persisted to disk as JSON + JSONL. Each
   user prompt becomes a fresh agent `Node` using the project's selected
   provider. Provider conversation continuity is explicit rather than
-  implicit: a node starts a new Claude SDK session or Codex app-server
+  implicit: a node starts a new Claude session or Codex app-server
   thread unless it is launched with `resume_from_node_id`. A
   `NodeRunner` drives the state machine (`queued -> running [<-> waiting]
   -> done|error|cancelled`, with `awaiting_human_input` for human
@@ -40,9 +40,10 @@ Codex (`codex app-server`) over FastAPI + WebSocket, paired with a React
   `ProjectPanel`) rather than the old fixed `NodeDetail`
   tabs. Assistant output is markdown-rendered (`react-markdown` + GFM +
   `highlight.js`); inline tool activity has collapsible output panels;
-  pending permission / ask-user / plan requests render inside the agent
-  panel; human-review prose requests render in the node surface; and
-  WebSocket reconnect replay is handled by `ws.ts`.
+  pending ask-user (both providers) and permission (Codex only)
+  requests render inside the agent panel; human-review prose requests
+  render in the node surface; and WebSocket reconnect replay is handled
+  by `ws.ts`.
 - **Project and ContextSpace context** — a project-root `CONTEXT.md` is
   always loaded when present and injected provider-neutrally. If the
   project is bound to a ContextSpace, the launch also snapshots the
@@ -56,27 +57,27 @@ Codex (`codex app-server`) over FastAPI + WebSocket, paired with a React
 ## Scope
 
 In: persistent project list, graph canvas workspace, streaming markdown
-assistant output, tool activity with result panels, permission /
-ask-user / plan-approval interactions, on-disk persistence per project
-and node, interrupt, extended-thinking surface, WebSocket reconnect
-replay, Claude and Codex provider adapters, provider-neutral project
-context via `CONTEXT.md`, ContextSpace bootstrap / binding / active
-planspace / bundle snapshots, memory-delta writeback for safe
+assistant output, tool activity with result panels, ask-user (both
+providers) and permission (Codex) interactions, on-disk persistence per
+project and node, interrupt, extended-thinking surface, WebSocket
+reconnect replay, Claude and Codex provider adapters, provider-neutral
+project context via `CONTEXT.md`, ContextSpace bootstrap / binding /
+active planspace / bundle snapshots, memory-delta writeback for safe
   `STATUS.md` observations, virtual-node lanes, review agents,
   programmatic verifier nodes, bundled dashboard-launched templates, and
   opt-in auto-commit op nodes with two-commit per-node diffs.
 
-Out (for now): vendor-specific on-disk context (`CLAUDE.md`,
-`AGENTS.md`, `.claude/settings.json`, `.claude/agents`, `.mcp.json`),
-per-token streaming for Claude, auth, cost tracking, model/settings
-pickers in the primary UI, multi-project lane visualization,
-fork/worktree graph operations, schema-generated review forms,
-and automatic ContextSpace git commits.
+Out (for now): per-token streaming for Claude, auth, cost tracking,
+model/settings pickers in the primary UI, multi-project lane
+visualization, fork/worktree graph operations, schema-generated review
+forms, and automatic ContextSpace git commits. Vendor-specific on-disk
+context (`CLAUDE.md`, `.claude/settings.json`, `.claude/agents`,
+`.mcp.json`) is now applied by the native `claude` binary itself when
+MiniClaw2 spawns it in the project cwd.
 
-See [`DESIGN.md`](DESIGN.md) for the long-term graph-IDE plan,
-[`PROPOSAL.md`](PROPOSAL.md) for the CLI-parity punch list, and
-[`UI_REDESIGN_PRD.md`](UI_REDESIGN_PRD.md) for the graph UI rationale
-and remaining polish gaps.
+See [`IMPLEMENTATION_STATUS.md`](IMPLEMENTATION_STATUS.md) for the
+single source of truth on what has landed, and
+[`PHILOSOPHY.md`](PHILOSOPHY.md) for the design position.
 
 ## Run It
 
@@ -137,7 +138,7 @@ backend/miniclaw2/
   domain.py        # Project, Node, HumanGate, ContextBundle + state enums
   store.py         # JSON/JSONL filesystem store under $MINICLAW_HOME
   runner.py        # provider-neutral NodeRunner state machine
-  providers/       # Claude SDK and Codex app-server adapters
+  providers/       # native Claude CLI (PTY+JSONL) and Codex app-server adapters
   registry.py      # ProjectRegistry orchestration over the store
   events.py        # Pydantic models for the WS protocol
   app.py           # FastAPI: REST + WebSocket gateway
@@ -170,7 +171,7 @@ frontend/src/
     NewProjectModal.tsx    # create/select cwd + provider
     TestsPanel.tsx         # bundled template launcher
     ToolActivity.tsx       # provider tool result rendering
-    PermissionDialog.tsx, AskUserDialog.tsx, PlanDialog.tsx
+    PermissionDialog.tsx, AskUserDialog.tsx
   ws.ts                    # useSessionSocket + reconnect replay
   api.ts                   # REST helpers
   types.ts                 # mirror of backend events / models
@@ -239,12 +240,12 @@ is a project id, and each `user_message` spawns a fresh agent node.
   `prompt`), `node_updated`,
   `text_delta`, `thinking`, `activity` (with optional `result` +
   `result_kind`), `interaction_request` (`permission`, `ask_user`,
-  `plan_approval`, `checkpoint_review`, or `human_review_prose`),
-  `usage`, `turn_done`, and `error`. Events carry monotonic `seq`
-  values for reconnect replay.
+  `checkpoint_review`, or `human_review_prose`), `usage`, `turn_done`,
+  and `error`. Events carry monotonic `seq` values for reconnect
+  replay.
 
-`interaction_response` remains backward-compatible with Claude's
-`allow/message/updated_input` shape and also accepts Codex-style
+`interaction_response` accepts both the `allow / message / updated_input`
+shape used by Claude's `AskUserQuestion` gate and the Codex-style
 `decision`, `scope`, `interrupt`, and raw `response` payloads.
 
 Exact shapes: [`backend/miniclaw2/events.py`](backend/miniclaw2/events.py)
@@ -266,17 +267,19 @@ The current code has moved beyond the original chat-wrapper plan:
   polymorphic side panel, project-root ContextSpace controls, and
   template test modal are current. Some PRD polish remains.
 - `CONTEXT.md` plus ContextSpace bundle snapshots are in. Vendor-
-  specific loading (`CLAUDE.md` walk, `.claude/settings.json`,
-  `.claude/agents`, `.mcp.json`) is still intentionally deferred.
+  specific config (`CLAUDE.md` walk, `.claude/settings.json`,
+  `.claude/agents`, `.mcp.json`) is now applied by the native `claude`
+  binary itself when MiniClaw2 spawns it in the project cwd.
 - `commit` op nodes are in. With `auto_commit:true`, a commit op is
   appended after each successful agent node and rewrites the
   preceding node's `commit_after`.
-- The bundled template catalogue contains 9 templates:
-  `hello-text`, `bash-uname`, `write-readme`, `permission-approve`,
-  `plan-mode-approval`, `interrupt-midstream`, `context-md-respected`,
-  `resume-fix-after-reject`, and `gui-calculator`. `reconnect-replay`
-  was intentionally dropped because it required a test-only UI hook.
+- The bundled template catalogue contains 7 templates:
+  `hello-text`, `bash-uname`, `write-readme`, `interrupt-midstream`,
+  `context-md-respected`, `resume-fix-after-reject`, and
+  `gui-calculator`. `permission-approve` and `plan-mode-approval` were
+  dropped when the native-CLI Claude provider disabled per-tool gating
+  and plan mode; `reconnect-replay` was dropped because it required a
+  test-only UI hook.
 
-Remaining near-term work is graph UI polish, fork/worktree graph ops,
-and the deferred vendor-specific context loading needed for tighter
-native CLI parity.
+Remaining near-term work is graph UI polish and fork/worktree graph
+ops.
