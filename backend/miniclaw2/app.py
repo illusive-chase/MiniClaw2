@@ -11,11 +11,13 @@ import asyncio
 import logging
 import os
 from collections.abc import Awaitable, Callable
+from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from .contextspace import (
@@ -906,6 +908,21 @@ def create_app() -> FastAPI:
             pass
         finally:
             registry.detach_observer(sid, observer_token)
+
+    # Keep last — the /* mount below shadows any unmatched paths.
+    dist_env = os.environ.get("MINICLAW_FRONTEND_DIST")
+    if dist_env:
+        dist_path = Path(dist_env)
+        if not (dist_path / "index.html").is_file():
+            raise RuntimeError(
+                f"frontend dist not built at {dist_path}; "
+                "run `npm run build` in frontend/"
+            )
+        app.mount(
+            "/",
+            StaticFiles(directory=str(dist_path), html=True),
+            name="frontend",
+        )
 
     return app
 

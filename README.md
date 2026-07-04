@@ -81,13 +81,37 @@ single source of truth on what has landed, and
 
 ## Run It
 
-**Backend** (Python >= 3.11):
+One-time install (Python >= 3.11, Node.js):
 
 ```bash
-cd backend
-pip install -e .
-python -m miniclaw2 --reload     # http://127.0.0.1:8000
+cd backend && pip install -e . && cd ..
+cd frontend && npm install && npm run build && cd ..
 ```
+
+Then a single command runs the full app. Two modes:
+
+**Prod (default)** — FastAPI serves the built frontend and API on the
+same origin:
+
+```bash
+python -m miniclaw2 --host 127.0.0.1 --port 8000 [--reload]
+# UI + API: http://127.0.0.1:8000
+```
+
+`--reload` hot-reloads backend Python only. Rebuild the frontend
+(`npm run build` in `frontend/`) whenever you change UI code.
+
+**Dev** — same command spawns `npm run dev` alongside the backend so
+Vite HMR is live; Vite's proxy routes `/sessions`, `/templates`, and
+`/ws` back to the backend port:
+
+```bash
+python -m miniclaw2 --dev [--reload]
+# backend:             http://127.0.0.1:8000
+# frontend (Vite HMR): http://127.0.0.1:5173  <-- visit this
+```
+
+Ctrl-C stops both processes.
 
 Env:
 
@@ -95,6 +119,10 @@ Env:
 - `MINICLAW_HOME` (default `~/.miniclaw2`) — root for the on-disk store.
 - `MINICLAW_CONTEXT_HOME` (optional) — overrides the default
   `$MINICLAW_HOME/contextspace` ContextSpace root.
+- `MINICLAW_FRONTEND_DIST` (optional) — override the served frontend
+  build directory. Set automatically by `python -m miniclaw2` to
+  `<repo>/frontend/dist`; only export manually for non-editable
+  installs.
 - Claude provider: whatever auth the `claude` CLI already uses on your machine.
 - Codex provider: `codex` must be on `PATH` and `codex doctor` should
   show working auth/config. The adapter uses
@@ -120,16 +148,6 @@ curl -X POST http://127.0.0.1:8000/sessions \
   -H 'content-type: application/json' \
   -d '{"cwd":"'"$PWD"'","auto_commit":true}'
 ```
-
-**Frontend**:
-
-```bash
-cd frontend
-npm install
-npm run dev                      # http://127.0.0.1:5173
-```
-
-Vite proxies `/sessions`, `/templates`, and `/ws` to the backend.
 
 ## Layout
 
