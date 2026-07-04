@@ -41,6 +41,10 @@ export type AgentPanelProps = {
   onCreateContinuationVirtual: (nodeId: string) => void;
   onPromoteVirtual: (nodeId: string) => void;
   onUpdateVirtual: (nodeId: string, payload: UpdateVirtualPayload) => Promise<void>;
+  onInterruptNode: (nodeId: string) => void;
+  onRerunNode: (nodeId: string) => void;
+  canInterrupt: boolean;
+  canRerun: boolean;
   focusRequestVersion: number;
 };
 
@@ -59,6 +63,10 @@ export function AgentPanel({
   onCreateContinuationVirtual,
   onPromoteVirtual,
   onUpdateVirtual,
+  onInterruptNode,
+  onRerunNode,
+  canInterrupt,
+  canRerun,
   focusRequestVersion,
 }: AgentPanelProps) {
   const headline = (
@@ -127,26 +135,52 @@ export function AgentPanel({
               </div>
             )}
           </div>
-          {node.state === "virtual" ? (
-            <button
-              type="button"
-              onClick={() => onPromoteVirtual(node.id)}
-              disabled={!readyToPromote}
-              className="flex-none rounded-md bg-brand px-2.5 py-1 text-[11px] font-medium text-white shadow-card transition hover:brightness-[0.95] disabled:cursor-not-allowed disabled:opacity-40"
-              title={readyToPromote ? "Promote virtual node" : "Dependencies are not terminal"}
-            >
-              Promote
-            </button>
-          ) : canResumeNode(node) ? (
-            <button
-              type="button"
-              onClick={() => onCreateContinuationVirtual(node.id)}
-              className="flex-none rounded-md border border-line bg-surface px-2.5 py-1 text-[11px] text-ink-muted transition hover:border-line-strong hover:text-ink"
-              title="Create a continuation virtual that resumes this conversation"
-            >
-              Continuation
-            </button>
-          ) : null}
+          <div className="flex flex-none items-center gap-1.5">
+            {(node.state === "running" ||
+              node.state === "waiting" ||
+              node.state === "awaiting_human_input") && (
+              <button
+                type="button"
+                onClick={() => onInterruptNode(node.id)}
+                disabled={!canInterrupt}
+                className="rounded-md border border-state-error/50 bg-surface px-2.5 py-1 text-[11px] font-medium text-state-error transition hover:bg-state-error-soft disabled:cursor-not-allowed disabled:opacity-40"
+                title="Interrupt this running node"
+              >
+                Stop
+              </button>
+            )}
+            {(node.state === "error" || node.state === "cancelled") && (
+              <button
+                type="button"
+                onClick={() => onRerunNode(node.id)}
+                disabled={!canRerun}
+                className="rounded-md bg-brand px-2.5 py-1 text-[11px] font-medium text-white shadow-card transition hover:brightness-[0.95] disabled:cursor-not-allowed disabled:opacity-40"
+                title="Rerun - create a fresh virtual with the same prompt"
+              >
+                ↻ Rerun
+              </button>
+            )}
+            {node.state === "virtual" ? (
+              <button
+                type="button"
+                onClick={() => onPromoteVirtual(node.id)}
+                disabled={!readyToPromote}
+                className="rounded-md bg-brand px-2.5 py-1 text-[11px] font-medium text-white shadow-card transition hover:brightness-[0.95] disabled:cursor-not-allowed disabled:opacity-40"
+                title={readyToPromote ? "Promote virtual node" : "Dependencies are not terminal"}
+              >
+                Promote
+              </button>
+            ) : canResumeNode(node) ? (
+              <button
+                type="button"
+                onClick={() => onCreateContinuationVirtual(node.id)}
+                className="rounded-md border border-line bg-surface px-2.5 py-1 text-[11px] text-ink-muted transition hover:border-line-strong hover:text-ink"
+                title="Create a continuation virtual that resumes this conversation"
+              >
+                Continuation
+              </button>
+            ) : null}
+          </div>
         </div>
       </div>
 

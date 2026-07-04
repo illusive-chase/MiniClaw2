@@ -622,6 +622,25 @@ def create_app() -> FastAPI:
             raise HTTPException(404, "node not found")
         return [EventRecord(**record) for record in records]
 
+    @app.post("/sessions/{sid}/nodes/{nid}/rerun", response_model=dict[str, Any])
+    async def rerun_node(sid: str, nid: str) -> dict[str, Any]:
+        project = registry.get_project(sid)
+        if project is None:
+            raise HTTPException(404, "session not found")
+        if registry.is_running(sid):
+            raise HTTPException(409, "turn in progress")
+        if _context_task_running(project.id):
+            raise HTTPException(409, "context refresh in progress")
+        try:
+            node = registry.rerun_node(sid, nid)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        if node is None:
+            if registry.get_node(sid, nid) is None:
+                raise HTTPException(404, "node not found")
+            raise HTTPException(409, "cannot rerun this node")
+        return {"ok": True, "node_id": node.id, "node": node.model_dump()}
+
     @app.get("/sessions/{sid}/nodes/{nid}/diff", response_model=NodeDiffResponse)
     def get_node_diff(sid: str, nid: str) -> NodeDiffResponse:
         project = registry.get_project(sid)

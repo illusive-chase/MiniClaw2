@@ -65,6 +65,10 @@ export type SidePanelProps = {
   onCreateContinuationVirtual: (nodeId: string) => void;
   onPromoteVirtual: (nodeId: string) => void;
   onUpdateVirtual: (nodeId: string, payload: UpdateVirtualPayload) => Promise<void>;
+  onInterruptNode: (nodeId: string) => void;
+  onRerunNode: (nodeId: string) => void;
+  canInterrupt: boolean;
+  canRerun: boolean;
   onPlanspaceModeChange: (planspaceId: string, mode: PlanspaceMode) => void;
   onContextInit: () => void;
   onContextRefresh: () => void;
@@ -143,6 +147,10 @@ function Inner(props: SidePanelProps & { nodesById: Map<string, NodeInfo> }) {
     onCreateContinuationVirtual,
     onPromoteVirtual,
     onUpdateVirtual,
+    onInterruptNode,
+    onRerunNode,
+    canInterrupt,
+    canRerun,
     onPlanspaceModeChange,
     onContextInit,
     onContextRefresh,
@@ -208,6 +216,10 @@ function Inner(props: SidePanelProps & { nodesById: Map<string, NodeInfo> }) {
         onCreateContinuationVirtual={onCreateContinuationVirtual}
         onPromoteVirtual={onPromoteVirtual}
         onUpdateVirtual={onUpdateVirtual}
+        onInterruptNode={onInterruptNode}
+        onRerunNode={onRerunNode}
+        canInterrupt={canInterrupt}
+        canRerun={canRerun}
         focusRequestVersion={focusRequestVersion}
       />
     );

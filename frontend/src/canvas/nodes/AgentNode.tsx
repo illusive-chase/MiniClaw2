@@ -77,13 +77,38 @@ function AgentNodeImpl({ data, selected }: NodeProps<AgentNodeData>) {
 
   const actionItems = useMemo(() => {
     const items: Array<{
-      key: "promote" | "continuation" | "dependency" | "remove";
+      key: "promote" | "continuation" | "dependency" | "remove" | "interrupt" | "rerun";
       label: string;
       title: string;
       disabled: boolean;
       tone: "brand" | "neutral" | "danger";
+      alwaysVisible?: boolean;
       onClick: () => void;
     }> = [];
+    if (isActiveState(node.state)) {
+      items.push({
+        key: "interrupt",
+        label: "■",
+        title: "Interrupt this running node",
+        disabled: !agentNodeContext.canInterrupt,
+        tone: "danger",
+        alwaysVisible: true,
+        onClick: () => agentNodeContext.onInterruptNode(node.id),
+      });
+    }
+    if (
+      !isVirtual &&
+      (node.state === "error" || node.state === "cancelled")
+    ) {
+      items.push({
+        key: "rerun",
+        label: "↻",
+        title: "Rerun - fresh virtual with the same prompt",
+        disabled: !agentNodeContext.canRerun,
+        tone: "brand",
+        onClick: () => agentNodeContext.onRerunNode(node.id),
+      });
+    }
     if (isVirtual && readyToPromote && !node.obsolete_reason) {
       items.push({
         key: "promote",
@@ -329,7 +354,7 @@ function AgentNodeImpl({ data, selected }: NodeProps<AgentNodeData>) {
           onMouseDown={(e) => e.stopPropagation()}
           disabled={item.disabled}
           style={{ top: stackTop(actionIndex, actionItems.length) }}
-          className={actionButtonClass(item.tone)}
+          className={actionButtonClass(item.tone, item.alwaysVisible)}
           title={item.title}
           aria-label={item.title}
         >
@@ -392,8 +417,12 @@ export type AgentNodeContext = {
   onCreateDependencyVirtual: (nodeId: string) => void;
   onMarkVirtualObsolete: (nodeId: string) => Promise<void>;
   onDeleteVirtual: (nodeId: string) => Promise<void>;
+  onInterruptNode: (nodeId: string) => void;
+  onRerunNode: (nodeId: string) => void;
   canCreateVirtual: boolean;
   canPromoteVirtual: boolean;
+  canInterrupt: boolean;
+  canRerun: boolean;
   pendingGateForNode: (nodeId: string) => InteractionRequest | null;
   onResolveGate: (id: string, payload: ResolveGatePayload) => void;
 };
@@ -404,8 +433,12 @@ let agentNodeContext: AgentNodeContext = {
   onCreateDependencyVirtual: () => {},
   onMarkVirtualObsolete: async () => {},
   onDeleteVirtual: async () => {},
+  onInterruptNode: () => {},
+  onRerunNode: () => {},
   canCreateVirtual: false,
   canPromoteVirtual: false,
+  canInterrupt: false,
+  canRerun: false,
   pendingGateForNode: () => null,
   onResolveGate: () => {},
 };
@@ -421,15 +454,23 @@ function stackTop(index: number, total: number): string {
   return `calc(50% + ${offset}px)`;
 }
 
-function actionButtonClass(tone: "brand" | "neutral" | "danger"): string {
+function actionButtonClass(
+  tone: "brand" | "neutral" | "danger",
+  alwaysVisible?: boolean,
+): string {
   const toneClass =
     tone === "brand"
       ? "border-brand bg-brand text-white hover:brightness-[0.95]"
       : tone === "danger"
         ? "border-state-error/50 bg-surface-raised text-state-error hover:border-state-error hover:bg-state-error-soft"
         : "border-line-strong bg-surface-raised text-ink-muted hover:border-brand hover:bg-brand hover:text-white";
+  const visibility = alwaysVisible
+    ? "opacity-100 disabled:opacity-45"
+    : "opacity-0 group-hover:opacity-100 hover:opacity-100 disabled:opacity-0 group-hover:disabled:opacity-45";
   return (
-    "nodrag absolute -right-3 z-20 inline-flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-full text-[13px] font-semibold leading-none opacity-0 shadow-card transition group-hover:opacity-100 hover:opacity-100 disabled:cursor-not-allowed disabled:border-line disabled:bg-surface-sunken disabled:text-ink-subtle disabled:opacity-0 group-hover:disabled:opacity-45 " +
+    "nodrag absolute -right-3 z-20 inline-flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-full border text-[13px] font-semibold leading-none shadow-card transition disabled:cursor-not-allowed disabled:border-line disabled:bg-surface-sunken disabled:text-ink-subtle " +
+    visibility +
+    " " +
     toneClass
   );
 }
@@ -478,6 +519,14 @@ function errorMessage(err: unknown): string {
 
 function isTerminal(state: NodeInfo["state"]): boolean {
   return state === "done" || state === "error" || state === "cancelled";
+}
+
+function isActiveState(state: NodeInfo["state"]): boolean {
+  return (
+    state === "running" ||
+    state === "waiting" ||
+    state === "awaiting_human_input"
+  );
 }
 
 function StateChip({ state }: { state: NodeState }) {

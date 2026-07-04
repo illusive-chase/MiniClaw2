@@ -192,6 +192,27 @@ export async function promoteVirtual(
   return res.json();
 }
 
+export async function rerunNode(
+  sessionId: string,
+  nodeId: string,
+): Promise<{ ok: boolean; node_id: string; node: NodeInfo }> {
+  const res = await fetch(
+    `/sessions/${sessionId}/nodes/${encodeURIComponent(nodeId)}/rerun`,
+    { method: "POST" },
+  );
+  if (!res.ok) {
+    let detail = `${res.status}`;
+    try {
+      const body = await res.json();
+      if (typeof body?.detail === "string") detail = `${res.status}: ${body.detail}`;
+    } catch {
+      /* keep status-only detail */
+    }
+    throw new Error(`rerunNode failed: ${detail}`);
+  }
+  return res.json();
+}
+
 export type UpdateVirtualPayload = {
   prompt_draft?: string;
   category?: NodeCategory;

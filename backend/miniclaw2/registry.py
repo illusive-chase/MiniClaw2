@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+import time
 from collections.abc import Awaitable, Callable
 from functools import lru_cache
 from pathlib import Path
@@ -33,11 +34,13 @@ from .domain import (
     normalize_planspace_mode,
 )
 from .language import normalize_preferred_language
-from .preview import render_virtual_preview
+from .preview import render_executed_preview, render_virtual_preview
 from .runner import NodeRunner
 from .store import Store
 from .virtual_graph import has_cycle
 from .workspace import create_temporary_root, remove_temporary_root
+
+_STARTUP_INTERRUPT_REASON = "interrupted by backend restart"
 
 logger = logging.getLogger(__name__)
 
@@ -130,6 +133,54 @@ class ProjectRegistry:
         self._runtimes: dict[str, ProjectRuntime] = {}
         for project in self.store.list_projects():
             self._runtimes[project.id] = ProjectRuntime(project)
+            self._repair_stale_nodes(project.id)
+
+    def _repair_stale_nodes(self, pid: str) -> None:
+        """Mark nodes stuck in non-terminal states as cancelled on load.
+
+        A previous process may have exited (crash, reload, kill) with a
+        runner still driving nodes in RUNNING/WAITING/AWAITING_HUMAN_INPUT
+        /QUEUED. Those runners are gone; the node states in the store are
+        misleading. Sweep them to CANCELLED with a reason so the UI shows
+        them as terminal and rerun becomes possible. Best-effort only —
+        failures are logged and swallowed so a bad node doesn't block
+        the whole registry from starting.
+        """
+        now = time.time()
+        for node in self.store.list_nodes(pid):
+            if node.state in TERMINAL_NODE_STATES:
+                continue
+            if node.state is NodeState.VIRTUAL:
+                continue
+            node.state = NodeState.CANCELLED
+            node.error = (
+                (node.error + "\n" if node.error else "") + _STARTUP_INTERRUPT_REASON
+            )
+            if node.started_at is None:
+                node.started_at = node.created_at
+            node.finished_at = now
+            try:
+                self.store.update_node(node)
+            except Exception:  # noqa: BLE001
+                logger.exception("failed to persist stale-node repair for %s", node.id)
+                continue
+            try:
+                preview_text = render_executed_preview(
+                    node,
+                    motivation=(
+                        node.prompt[:200]
+                        if node.prompt
+                        else "(no motivation recorded)"
+                    ),
+                    summary=_STARTUP_INTERRUPT_REASON,
+                    next_implications=(
+                        "node was mid-flight when the backend restarted; "
+                        "rerun from the panel to try again"
+                    ),
+                )
+                self.store.write_node_preview(pid, node.id, preview_text)
+            except Exception:  # noqa: BLE001
+                logger.exception("failed to write stale-node preview for %s", node.id)
 
     # ---- project CRUD ----
 
@@ -1084,6 +1135,56 @@ class ProjectRegistry:
         except RuntimeError:
             pass
         return True, []
+
+    def rerun_node(self, pid: str, nid: str) -> Node | None:
+        """Create a fresh virtual carrying the same prompt as a failed node.
+
+        Used by the rerun UI for nodes in ERROR or CANCELLED state (e.g.,
+        crashed by a backend restart). Returns ``None`` when the project
+        or node is missing, the project is busy, or the target is not a
+        rerunnable agent node. Validation failures raise ``ValueError``.
+        """
+        rt = self._runtimes.get(pid)
+        if rt is None or rt.is_running():
+            return None
+        original = self.store.load_node(pid, nid)
+        if original is None:
+            return None
+        if original.kind is not NodeKind.AGENT:
+            raise ValueError("only agent nodes support rerun")
+        if original.state not in {NodeState.ERROR, NodeState.CANCELLED}:
+            raise ValueError("only error/cancelled nodes support rerun")
+        prompt = (original.prompt or original.prompt_draft or "").strip()
+        if not prompt:
+            raise ValueError("original node has no prompt to rerun")
+
+        virtual = self.create_virtual(
+            pid,
+            prompt_draft=prompt,
+            category=original.category or Category.REGULAR,
+            subtype=original.subtype,
+            brief=original.brief,
+            motivation=f"rerun of {original.id[:8]}",
+            scheduled_deps=list(original.scheduled_deps or []),
+            planspace_id=original.planspace_id,
+        )
+        if virtual is None:
+            return None
+        # create_virtual stamps proposed_by="user"; re-tag with the rerun
+        # provenance so downstream previews carry the link back.
+        fresh = self.store.load_node(pid, virtual.id) or virtual
+        if fresh.state is NodeState.VIRTUAL:
+            fresh.proposed_by = f"rerun:{original.id}"
+            self.store.update_node(fresh)
+            try:
+                self.store.write_node_preview(
+                    pid, fresh.id, render_virtual_preview(fresh)
+                )
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "failed to write rerun virtual preview for %s", fresh.id
+                )
+        return fresh
 
     def _resolve_virtual_create_lane(
         self,

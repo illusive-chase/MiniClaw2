@@ -14,6 +14,7 @@ import {
   listNodes,
   promoteVirtual,
   refreshProjectContext,
+  rerunNode,
   updateLayoutHints,
   updatePlanspaceMode,
   updatePlanspaceView,
@@ -635,6 +636,31 @@ export function App() {
     [session?.id, streaming, composerLocked],
   );
 
+  const rerunFailedNode = useCallback(
+    async (nodeId: string) => {
+      if (!session?.id || streaming || composerLocked) return;
+      setSessionContextSpaceError(null);
+      try {
+        const result = await rerunNode(session.id, nodeId);
+        setNodes((prev) => {
+          const updated = upsertNode(prev, result.node);
+          nodeCountRef.current = updated.length;
+          return updated;
+        });
+        selectAndOpenNode(result.node.id);
+        if (result.node.state !== "virtual") {
+          activeNodeIdRef.current = result.node.id;
+          setStreaming(true);
+        }
+        setFocusRequestVersion((version) => version + 1);
+        await refreshNodes();
+      } catch (err) {
+        setSessionContextSpaceError(String(err));
+      }
+    },
+    [session?.id, streaming, composerLocked, refreshNodes, selectAndOpenNode],
+  );
+
   const runContextInit = useCallback(async () => {
     if (!session?.id) return;
     setSessionContextSpaceSaving(true);
@@ -975,10 +1001,16 @@ export function App() {
     return Array.from(hidden);
   }, [sessionContextSpace]);
 
-  const onStop = () => {
-    if (!streaming || status !== "open") return;
-    send({ type: "interrupt" });
-  };
+  const interruptNode = useCallback(
+    (_nodeId: string) => {
+      if (status !== "open") return;
+      /* The backend runs at most one node per project at a time, so
+       * interrupting "this node" is the same as interrupting the current
+       * runner. The node id is accepted for call-site symmetry. */
+      send({ type: "interrupt" });
+    },
+    [status, send],
+  );
 
   const onResolveReview = useCallback(
     (payload: { id: string; judgment: string }) => {
@@ -1122,8 +1154,12 @@ export function App() {
       onMarkVirtualObsolete: (nodeId) =>
         updateVirtualNode(nodeId, { obsolete_reason: "Obsoleted by user" }),
       onDeleteVirtual: deleteVirtualNode,
+      onInterruptNode: interruptNode,
+      onRerunNode: rerunFailedNode,
       canCreateVirtual: !virtualCreateDisabled,
       canPromoteVirtual: !streaming && !composerLocked,
+      canInterrupt: streaming && status === "open",
+      canRerun: !streaming && !composerLocked,
       pendingGateForNode: (nodeId) =>
         activePendingGate?.nodeId === nodeId ? activePendingGate.request : null,
       onResolveGate,
@@ -1136,9 +1172,12 @@ export function App() {
     createDependencyVirtual,
     updateVirtualNode,
     deleteVirtualNode,
+    interruptNode,
+    rerunFailedNode,
     virtualCreateDisabled,
     streaming,
     composerLocked,
+    status,
   ]);
 
   /* Canvas layout changes -> serialized backend PATCHes. Best-effort: log on
@@ -1242,17 +1281,6 @@ export function App() {
 
         <div className="flex items-center gap-2">
           <UsageStrip usage={selectedNode?.usage ?? null} />
-
-          {streaming && (
-            <button
-              type="button"
-              onClick={onStop}
-              disabled={status !== "open"}
-              className="inline-flex h-8 items-center rounded-md border border-state-error/40 bg-state-error-soft px-2.5 text-xs font-medium text-state-error transition hover:border-state-error/70 disabled:opacity-40"
-            >
-              Stop
-            </button>
-          )}
 
           {composerLocked && (
             <span className="hidden items-center rounded-md border border-state-waiting/40 bg-state-waiting-soft px-2 py-1 text-[10.5px] text-state-waiting sm:inline-flex">
@@ -1421,6 +1449,10 @@ export function App() {
                 onCreateContinuationVirtual={createContinuationVirtual}
                 onPromoteVirtual={promoteVirtualNode}
                 onUpdateVirtual={updateVirtualNode}
+                onInterruptNode={interruptNode}
+                onRerunNode={rerunFailedNode}
+                canInterrupt={streaming && status === "open"}
+                canRerun={!streaming && !composerLocked}
                 onPlanspaceModeChange={changePlanspaceMode}
                 onContextInit={runContextInit}
                 onContextRefresh={runContextRefresh}

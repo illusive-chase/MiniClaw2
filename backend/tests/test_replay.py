@@ -165,6 +165,10 @@ class FreshNodeLaunchTest(unittest.TestCase):
             project = Project(root_path=tmp, provider="codex")
             store.create_project(project)
 
+            # Registry init sweeps stale non-terminal nodes to CANCELLED; add
+            # the RUNNING source AFTER init so start_node sees a non-terminal
+            # resume source and exercises its own safety check.
+            registry = ProjectRegistry(store=store)
             source = store.create_node(
                 Node(
                     project_id=project.id,
@@ -175,7 +179,6 @@ class FreshNodeLaunchTest(unittest.TestCase):
                 )
             )
 
-            registry = ProjectRegistry(store=store)
             self.assertIsNone(
                 registry.start_node(
                     project.id,
