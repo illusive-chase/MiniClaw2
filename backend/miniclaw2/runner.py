@@ -44,7 +44,11 @@ from .events import (
 )
 from .git_state import commit_all, git_head
 from .language import language_launch_instruction, project_preferred_language
-from .launch_prompt import anti_self_poisoning_block, build_category_launch_block
+from .launch_prompt import (
+    anti_self_poisoning_block,
+    build_category_launch_block,
+    build_dependency_launch_block,
+)
 from .materialize import GRAPH_DIRNAME, materialize_active_lane, node_dir, snapshot_lane
 from .preview import render_executed_preview
 from .providers import AgentProvider, AgentProviderContext, AgentProviderEvent, GateRequest
@@ -187,6 +191,7 @@ class NodeRunner:
                             await self._emit_node_updated()
                         launch_instructions = _compose_launch_instructions(
                             build_category_launch_block(self.node),
+                            build_dependency_launch_block(self.node),
                             context_bundle.turn_text,
                             language_launch_instruction(
                                 project_preferred_language(self.project)

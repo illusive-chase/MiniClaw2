@@ -79,6 +79,39 @@ def build_category_launch_block(node: Node) -> str:
     return rendered.strip()
 
 
+def build_dependency_launch_block(node: Node) -> str:
+    """Return a launch block that names declared dependency previews.
+
+    The graph already carries ``scheduled_deps`` as structured state. This
+    block makes that state explicit in the provider prompt so the agent does
+    not need to discover its upstream preview paths by enumerating the lane.
+    """
+    deps = [
+        dep.strip()
+        for dep in node.scheduled_deps
+        if isinstance(dep, str) and dep.strip()
+    ]
+    if not deps:
+        return ""
+
+    lane = _lane_path(node)
+    lines = [
+        "# MiniClaw2 — scheduled dependency index",
+        "",
+        "This node has declared dependency parents. Read these previews before "
+        "using upstream work as context:",
+        "",
+    ]
+    for dep in deps:
+        lines.append(f"- `{dep}` -> `{lane}/nodes/{dep}/preview.json`")
+    lines.extend([
+        "",
+        "If a dependency preview points to transcript details or artifacts, "
+        "inspect the sibling files under that same dependency directory.",
+    ])
+    return "\n".join(lines)
+
+
 def anti_self_poisoning_block() -> str:
     """Return the durable-preview guidance footer.
 

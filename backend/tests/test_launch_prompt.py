@@ -15,6 +15,7 @@ from miniclaw2.domain import (
 from miniclaw2.launch_prompt import (
     anti_self_poisoning_block,
     build_category_launch_block,
+    build_dependency_launch_block,
 )
 from miniclaw2.materialize import GRAPH_DIRNAME
 
@@ -26,6 +27,7 @@ def _agent_node(
     category: Category = Category.REGULAR,
     subtype: ReviewSubtype | None = None,
     brief: ReviewBrief | None = None,
+    scheduled_deps: list[str] | None = None,
 ) -> Node:
     return Node(
         id=node_id,
@@ -36,6 +38,7 @@ def _agent_node(
         subtype=subtype,
         brief=brief,
         planspace_id=lane_id,
+        scheduled_deps=list(scheduled_deps or []),
     )
 
 
@@ -71,6 +74,29 @@ class PlanningBlockTests(unittest.TestCase):
         self.assertIn("Virtual preview shape", block)
         self.assertIn("scheduled_deps", block)
         self.assertIn(f"node:{node.id}", block)
+
+
+class DependencyBlockTests(unittest.TestCase):
+    def test_empty_when_no_scheduled_deps(self) -> None:
+        node = _agent_node()
+        self.assertEqual(build_dependency_launch_block(node), "")
+
+    def test_lists_dependency_preview_paths(self) -> None:
+        node = _agent_node(
+            lane_id="lane-X",
+            scheduled_deps=["dep-a", "dep-b"],
+        )
+        block = build_dependency_launch_block(node)
+
+        self.assertIn("scheduled dependency index", block)
+        self.assertIn(
+            f"`dep-a` -> `{GRAPH_DIRNAME}/lane-X/nodes/dep-a/preview.json`",
+            block,
+        )
+        self.assertIn(
+            f"`dep-b` -> `{GRAPH_DIRNAME}/lane-X/nodes/dep-b/preview.json`",
+            block,
+        )
 
 
 class AgenticReviewBlockTests(unittest.TestCase):
