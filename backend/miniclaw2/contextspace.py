@@ -145,12 +145,22 @@ def compose_context_bundle(
         binding_skill_ids.add(skill_id)  # also dedupes within extra_skills
         ref = PlugRef(id=skill_id, source="node-opt-in")
         plug_dir = _plug_dir(root, skill_id)
+        # The expected CONTEXT.md path (may not exist on disk) — recorded so
+        # the canvas' (scope, kind, path) aggregation keys missing skills by
+        # plug_id instead of collapsing them all under an ``undefined`` tile.
+        expected_path = (
+            _display_path(plug_dir / "CONTEXT.md", root)
+            if plug_dir is not None
+            else f"skills/{skill_id}/CONTEXT.md"
+        )
         if plug_dir is None or not plug_dir.exists():
             sources.append({
                 "scope": "contextspace",
                 "kind": "skill",
                 "plug_id": skill_id,
                 "source": "node-opt-in",
+                "path": expected_path,
+                "chars": 0,
                 "missing": True,
             })
             continue
@@ -161,6 +171,8 @@ def compose_context_bundle(
                 "kind": "skill",
                 "plug_id": skill_id,
                 "source": "node-opt-in",
+                "path": expected_path,
+                "chars": 0,
                 "missing": True,
             })
             continue
@@ -692,12 +704,20 @@ def delete_skill(slug: str, *, store_root: Path | None = None) -> bool:
     return True
 
 
+_SKILL_SLUG_RE = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
+
+
 def normalize_skill_ids(raw: Any) -> list[str]:
     """Normalize a list of skill ids/slugs into canonical ``skills.<slug>`` ids.
 
     Accepts bare slugs (``"foo"``) or full ids (``"skills.foo"``). Non-list
     input, non-string entries, empty strings, and other-kind prefixes are
     dropped silently. Duplicates collapse preserving first-seen order.
+
+    The slug portion is validated as strict kebab-case (lowercase letters,
+    digits, hyphens; no path separators, no ``..`` traversal, no absolute
+    paths) so downstream ``_plug_dir()`` cannot be steered outside
+    ``plugs/skills/`` via a crafted id.
 
     Single source of truth for both wire-in normalization (``registry``
     accepting client payloads) and settings-snapshot read-back
@@ -716,9 +736,12 @@ def normalize_skill_ids(raw: Any) -> list[str]:
         if "." in cleaned:
             if not cleaned.startswith("skills."):
                 continue
-            plug_id = cleaned
+            slug = cleaned[len("skills."):]
         else:
-            plug_id = f"skills.{cleaned}"
+            slug = cleaned
+        if not _SKILL_SLUG_RE.fullmatch(slug):
+            continue
+        plug_id = f"skills.{slug}"
         if plug_id in seen:
             continue
         seen.add(plug_id)

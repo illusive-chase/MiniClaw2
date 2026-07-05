@@ -47,8 +47,11 @@ needs the load-bearing points to solve a real problem.
   code open. Ground examples in universally-legible language.
 - **Skimmable.** Headings, short paragraphs, bullets over prose.
   A future agent will Ctrl-F this, not read it cover to cover.
-- **No writes outside the skill directory.** Do not touch this
-  project's code, do not create files elsewhere in the contextspace.
+- **No writes outside the skill directory** — with one exception: you
+  still must write the MiniClaw2 lane preview at
+  `<lane_path>/nodes/<node_id>/preview.json` (see the next section).
+  Do not touch this project's code, do not create files elsewhere in
+  the contextspace.
 
 ## Refining an existing skill
 
