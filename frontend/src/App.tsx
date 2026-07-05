@@ -21,6 +21,9 @@ import {
   updateSessionContextSpace,
   updateSessionPreferences,
   updateVirtual,
+  listSkills,
+  deleteSkill,
+  type SkillSummary,
   type UpdateVirtualPayload,
 } from "./api";
 import { Canvas, type CanvasSelection } from "./canvas/Canvas";
@@ -82,6 +85,27 @@ export function App() {
     Record<string, ContextBundle | null>
   >({});
 
+  /* User-wide skill shelf. Fetched on session mount and refreshed after
+   * a skill-edit turn completes. See canvas layout.ts for the dimmed-tile
+   * merge into the context aggregate. */
+  const [skills, setSkills] = useState<SkillSummary[]>([]);
+  const refreshSkills = useCallback(() => {
+    listSkills()
+      .then(setSkills)
+      .catch(() => {
+        /* non-fatal — the shelf just stays stale until the next refresh */
+      });
+  }, []);
+  const handleDeleteSkill = useCallback(
+    async (slug: string) => {
+      try {
+        await deleteSkill(slug);
+      } finally {
+        refreshSkills();
+      }
+    },
+    [refreshSkills],
+  );
   const [sessionContextSpace, setSessionContextSpace] = useState<SessionContextSpaceInfo | null>(
     null,
   );
@@ -163,12 +187,35 @@ export function App() {
     [],
   );
 
+  const handleNewSkill = useCallback(
+    async (userSeed: string) => {
+      if (!session?.id) return;
+      const active = sessionContextSpace?.active_planspace_id ?? null;
+      const result = await createVirtual(session.id, {
+        prompt_draft: userSeed,
+        category: "regular",
+        agent_op_kind: "skill_edit",
+        planspace_id: active,
+      });
+      setNodes((prev) => {
+        const updated = upsertNode(prev, result.node);
+        nodeCountRef.current = updated.length;
+        return updated;
+      });
+      selectAndOpenNode(result.node.id);
+      setFocusRequestVersion((v) => v + 1);
+    },
+    [session?.id, sessionContextSpace?.active_planspace_id, selectAndOpenNode],
+  );
+
+
   const panelRef = useRef<HTMLElement | null>(null);
   const activeNodeIdRef = useRef<string | null>(null);
   const inspectedNodeIdRef = useRef<string | null>(null);
   const currentRouteRef = useRef<Route>("landing");
   const currentSessionIdRef = useRef<string | null>(null);
   const nodeCountRef = useRef(0);
+  const nodesRef = useRef<NodeInfo[]>([]);
   const refreshNodesSeqRef = useRef(0);
   const lastLayoutSaveRef = useRef<Promise<SessionInfo> | null>(null);
   const layoutSaveChainRef = useRef<Promise<void>>(Promise.resolve());
@@ -207,7 +254,8 @@ export function App() {
 
   useEffect(() => {
     nodeCountRef.current = nodes.length;
-  }, [nodes.length]);
+    nodesRef.current = nodes;
+  }, [nodes]);
 
   const resetAllSessionState = useCallback(() => {
     refreshNodesSeqRef.current += 1;
@@ -363,6 +411,7 @@ export function App() {
   useEffect(() => {
     if (!session?.id) {
       setInitialLoadComplete(false);
+      setSkills([]);
       return;
     }
     setInitialLoadComplete(false);
@@ -370,10 +419,14 @@ export function App() {
     void Promise.allSettled([refreshNodes(), refreshContextSpace()]).then(() => {
       if (!cancelled) setInitialLoadComplete(true);
     });
+    /* Skills are user-wide — fetched independently of nodes/contextspace and
+     * don't gate the canvas render. Stale is acceptable; refreshSkills() is
+     * called after skill-edit turns finish. */
+    refreshSkills();
     return () => {
       cancelled = true;
     };
-  }, [session?.id, refreshNodes, refreshContextSpace]);
+  }, [session?.id, refreshNodes, refreshContextSpace, refreshSkills]);
 
   useEffect(() => {
     if (!sessionContextSpace?.context_refresh?.running) return;
@@ -382,6 +435,25 @@ export function App() {
     }, 1200);
     return () => window.clearInterval(timer);
   }, [sessionContextSpace?.context_refresh?.running, refreshContextSpace]);
+
+  /* Refresh the skill shelf whenever a skill-edit node reaches a terminal
+   * state — creation and refinement both land through this path. */
+  const terminalSkillEditCount = useMemo(() => {
+    let count = 0;
+    for (const n of nodes) {
+      if (n.agent_op_kind === "skill_edit" && TERMINAL_STATES.has(n.state)) {
+        count += 1;
+      }
+    }
+    return count;
+  }, [nodes]);
+  const prevTerminalSkillEditCountRef = useRef(0);
+  useEffect(() => {
+    if (terminalSkillEditCount > prevTerminalSkillEditCountRef.current) {
+      refreshSkills();
+    }
+    prevTerminalSkillEditCountRef.current = terminalSkillEditCount;
+  }, [terminalSkillEditCount, refreshSkills]);
 
   /* Bump the reload version each time the context task finishes, so the
      CONTEXT.md viewer re-reads from disk. */
@@ -545,6 +617,25 @@ export function App() {
       }
     },
     [session?.id, streaming, composerLocked],
+  );
+
+  /* Drag-onto-virtual attach path: Canvas hands us (virtualNodeId, skillId)
+   * when a skill chip is dropped on a virtual tile. We read the target's
+   * current pending_extra_skills, append, and PATCH via updateVirtualNode.
+   * Fire-and-forget: errors surface through sessionContextSpaceError. */
+  const handleAttachSkillToVirtual = useCallback(
+    (virtualNodeId: string, skillId: string) => {
+      const target = nodesRef.current.find((n) => n.id === virtualNodeId);
+      if (!target || target.state !== "virtual" || target.obsolete_reason) {
+        return;
+      }
+      const current = target.pending_extra_skills ?? [];
+      if (current.includes(skillId)) return;
+      void updateVirtualNode(virtualNodeId, {
+        pending_extra_skills: [...current, skillId],
+      });
+    },
+    [updateVirtualNode],
   );
 
   const createVirtualNode = useCallback(
@@ -1336,12 +1427,14 @@ export function App() {
               hiddenPlanspaceIds={hiddenPlanspaceIds}
               activePlanspaceId={sessionContextSpace?.active_planspace_id ?? null}
               canCreateVirtual={!virtualCreateDisabled}
+              skills={skills}
               initialLayoutHints={session?.layout_hints}
               initialLayoutViewport={session?.layout_viewport ?? null}
               onSelectionChange={onSelectionChange}
               onMultiSelectionChange={onMultiSelectionChange}
               onAgentNodeContextMenu={onAgentNodeContextMenu}
               onTemplateDrop={onTemplateDrop}
+              onAttachSkillToVirtual={handleAttachSkillToVirtual}
               onLayoutHintsChange={onLayoutHintsChange}
             />
           ) : (
@@ -1446,6 +1539,7 @@ export function App() {
                 onSelectContextBinding={selectContextBinding}
                 onNewDirection={startNewDirection}
                 onStartBlankDirection={startBlankDirection}
+                onNewSkill={handleNewSkill}
                 onCreateContinuationVirtual={createContinuationVirtual}
                 onPromoteVirtual={promoteVirtualNode}
                 onUpdateVirtual={updateVirtualNode}
@@ -1462,6 +1556,8 @@ export function App() {
                 focusRequestVersion={focusRequestVersion}
                 newDirectionRequestVersion={newDirectionRequestVersion}
                 onNewDirectionRequestHandled={acknowledgeNewDirectionRequest}
+                skills={skills}
+                onDeleteSkill={handleDeleteSkill}
               />
             )}
           </aside>

@@ -20,7 +20,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel
 
-from .contextspace import compose_context_bundle
+from .contextspace import compose_context_bundle, contextspace_root
 from .domain import (
     Category,
     GateKind,
@@ -48,6 +48,7 @@ from .launch_prompt import (
     anti_self_poisoning_block,
     build_category_launch_block,
     build_dependency_launch_block,
+    build_skill_init_block,
 )
 from .materialize import GRAPH_DIRNAME, materialize_active_lane, node_dir, snapshot_lane
 from .preview import render_executed_preview
@@ -166,6 +167,7 @@ class NodeRunner:
                     subtype=(
                         self.node.subtype.value if self.node.subtype is not None else None
                     ),
+                    agent_op_kind=self.node.agent_op_kind,
                     prompt=self.node.prompt,
                 )
             )
@@ -190,6 +192,7 @@ class NodeRunner:
                             self._transition(NodeState.RUNNING)
                             await self._emit_node_updated()
                         launch_instructions = _compose_launch_instructions(
+                            _skill_init_block(self.node, self.store.root),
                             build_category_launch_block(self.node),
                             build_dependency_launch_block(self.node),
                             context_bundle.turn_text,
@@ -255,6 +258,7 @@ class NodeRunner:
                     subtype=(
                         self.node.subtype.value if self.node.subtype is not None else None
                     ),
+                    agent_op_kind=self.node.agent_op_kind,
                     prompt=self.node.prompt,
                 )
             )
@@ -958,6 +962,14 @@ def _make_provider(provider: str) -> AgentProvider:
 def _compose_launch_instructions(*parts: str) -> str:
     cleaned = [part.strip() for part in parts if part and part.strip()]
     return "\n\n---\n\n".join(cleaned)
+
+
+def _skill_init_block(node: Node, store_root: Path) -> str:
+    """Return the skill-author preset for skill-edit agents; else empty."""
+    if node.agent_op_kind != "skill_edit":
+        return ""
+    skills_dir = contextspace_root(store_root) / "plugs" / "skills"
+    return build_skill_init_block(str(skills_dir))
 
 
 def _preview_repair_prompt(node: Node, reason: str, attempt: int) -> str:

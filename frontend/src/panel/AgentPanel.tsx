@@ -15,7 +15,7 @@ import type {
   ReviewBrief,
   ReviewSubtype,
 } from "../types";
-import type { UpdateVirtualPayload } from "../api";
+import type { SkillSummary, UpdateVirtualPayload } from "../api";
 import { buildTurnsFromEvents } from "../transcript";
 import { ToolActivity } from "../components/ToolActivity";
 import {
@@ -36,6 +36,7 @@ export type AgentPanelProps = {
   contextBundleLoading: boolean;
   pendingGate: InteractionRequest | null;
   pendingReview: InteractionRequest | null;
+  skills?: SkillSummary[];
   onResolveGate?: (id: string, payload: ResolveGatePayload) => void;
   onResolveReview: (payload: { id: string; judgment: string }) => void;
   onCreateContinuationVirtual: (nodeId: string) => void;
@@ -58,6 +59,7 @@ export function AgentPanel({
   contextBundleLoading,
   pendingGate,
   pendingReview,
+  skills,
   onResolveGate,
   onResolveReview,
   onCreateContinuationVirtual,
@@ -190,6 +192,7 @@ export function AgentPanel({
           <VirtualNodeBody
             node={node}
             nodesById={nodesById}
+            skills={skills}
             onUpdateVirtual={onUpdateVirtual}
             focusRequestVersion={focusRequestVersion}
           />
@@ -319,17 +322,20 @@ type VirtualDraft = {
   subtype: ReviewSubtype;
   brief: ReviewBrief;
   scheduledDeps: string[];
+  pendingExtraSkills: string[];
   obsoleteReason: string;
 };
 
 function VirtualNodeBody({
   node,
   nodesById,
+  skills,
   onUpdateVirtual,
   focusRequestVersion,
 }: {
   node: NodeInfo;
   nodesById: Map<string, NodeInfo>;
+  skills?: SkillSummary[];
   onUpdateVirtual: (nodeId: string, payload: UpdateVirtualPayload) => Promise<void>;
   focusRequestVersion: number;
 }) {
@@ -340,6 +346,7 @@ function VirtualNodeBody({
     <EditableVirtualNodeBody
       node={node}
       nodesById={nodesById}
+      skills={skills}
       onUpdateVirtual={onUpdateVirtual}
       focusRequestVersion={focusRequestVersion}
     />
@@ -349,11 +356,13 @@ function VirtualNodeBody({
 function EditableVirtualNodeBody({
   node,
   nodesById,
+  skills,
   onUpdateVirtual,
   focusRequestVersion,
 }: {
   node: NodeInfo;
   nodesById: Map<string, NodeInfo>;
+  skills?: SkillSummary[];
   onUpdateVirtual: (nodeId: string, payload: UpdateVirtualPayload) => Promise<void>;
   focusRequestVersion: number;
 }) {
@@ -387,6 +396,7 @@ function EditableVirtualNodeBody({
     node.subtype,
     node.brief,
     node.scheduled_deps,
+    node.pending_extra_skills,
     node.obsolete_reason,
   ]);
 
@@ -598,6 +608,14 @@ function EditableVirtualNodeBody({
           </div>
         </div>
       </section>
+
+      <SkillsAttachSection
+        skills={skills}
+        attached={draft.pendingExtraSkills}
+        onChange={(next) =>
+          setDraft((current) => ({ ...current, pendingExtraSkills: next }))
+        }
+      />
 
       <section className="mb-5">
         <div className="overflow-hidden rounded-md border border-line bg-surface-sunken">
@@ -812,6 +830,104 @@ function FieldLabel({
   );
 }
 
+function SkillsAttachSection({
+  skills,
+  attached,
+  onChange,
+}: {
+  skills?: SkillSummary[];
+  attached: string[];
+  onChange: (next: string[]) => void;
+}) {
+  const available = skills ?? [];
+  const attachedIds = new Set(attached);
+  const attachedSkills = attached.map((id) => ({
+    id,
+    title: available.find((s) => s.id === id)?.title ?? id,
+  }));
+  const remaining = available.filter((s) => !attachedIds.has(s.id));
+
+  const attach = (id: string) => {
+    if (!id || attachedIds.has(id)) return;
+    onChange([...attached, id]);
+  };
+  const detach = (id: string) => {
+    onChange(attached.filter((x) => x !== id));
+  };
+
+  return (
+    <section className="mb-5">
+      <div className="overflow-hidden rounded-md border border-line bg-surface-sunken">
+        <div className="border-b border-line px-3 py-2">
+          <SectionHeading
+            right={
+              attached.length > 0 ? (
+                <span className="text-[10px] font-normal normal-case tracking-normal text-ink-subtle">
+                  {attached.length} attached
+                </span>
+              ) : null
+            }
+          >
+            Skills
+          </SectionHeading>
+        </div>
+        <div className="space-y-2 px-3 py-3">
+          {attached.length === 0 ? (
+            <div className="rounded-md border border-line bg-surface px-3 py-2 text-[11.5px] text-ink-muted">
+              No skills attached. Skills teach durable tool/workflow knowledge
+              that any node can pull in.
+            </div>
+          ) : (
+            <div className="flex flex-wrap gap-1.5">
+              {attachedSkills.map((s) => (
+                <span
+                  key={s.id}
+                  className="inline-flex items-center gap-1 rounded-md border border-line bg-surface px-2 py-0.5 text-[11px] text-ink"
+                >
+                  <span className="font-medium">{s.title}</span>
+                  <button
+                    type="button"
+                    aria-label={`Remove ${s.title}`}
+                    onClick={() => detach(s.id)}
+                    className="text-ink-muted hover:text-state-error"
+                  >
+                    ×
+                  </button>
+                </span>
+              ))}
+            </div>
+          )}
+          {remaining.length > 0 && (
+            <div>
+              <select
+                value=""
+                onChange={(e) => {
+                  attach(e.target.value);
+                  e.currentTarget.value = "";
+                }}
+                className={inputClassName + " text-[11.5px]"}
+              >
+                <option value="">Attach a skill…</option>
+                {remaining.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.title} ({s.slug})
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+          {available.length === 0 && (
+            <div className="rounded-md border border-dashed border-line bg-surface px-3 py-2 text-[11px] text-ink-muted">
+              No skills yet. Author one with the "New skill" button on the
+              project panel.
+            </div>
+          )}
+        </div>
+      </div>
+    </section>
+  );
+}
+
 function virtualDraftFromNode(node: NodeInfo): VirtualDraft {
   return {
     promptDraft: node.prompt_draft || node.prompt || "",
@@ -824,6 +940,7 @@ function virtualDraftFromNode(node: NodeInfo): VirtualDraft {
       abnormal: "",
     },
     scheduledDeps: [...(node.scheduled_deps ?? [])],
+    pendingExtraSkills: [...(node.pending_extra_skills ?? [])],
     obsoleteReason: node.obsolete_reason || "",
   };
 }
@@ -834,6 +951,7 @@ function virtualPayloadFromDraft(draft: VirtualDraft): UpdateVirtualPayload {
     motivation: draft.motivation,
     category: draft.category,
     scheduled_deps: draft.scheduledDeps,
+    pending_extra_skills: draft.pendingExtraSkills,
     obsolete_reason: draft.obsoleteReason.trim() || null,
   };
   if (draft.category === "review") {

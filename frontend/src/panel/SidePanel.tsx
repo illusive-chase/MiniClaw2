@@ -10,7 +10,7 @@ import type {
   SessionContextSpaceInfo,
   SessionInfo,
 } from "../types";
-import type { UpdateVirtualPayload } from "../api";
+import type { SkillSummary, UpdateVirtualPayload } from "../api";
 import { AgentPanel } from "./AgentPanel";
 import { ContextNodePanel } from "./ContextNodePanel";
 import { OpPanel } from "./OpPanel";
@@ -62,6 +62,7 @@ export type SidePanelProps = {
   onSelectContextBinding: (binding_id: string) => void;
   onNewDirection: (userSeed: string, mode: PlanspaceMode) => void;
   onStartBlankDirection: (userSeed: string, mode: PlanspaceMode) => void;
+  onNewSkill?: (userSeed: string) => Promise<void> | void;
   onCreateContinuationVirtual: (nodeId: string) => void;
   onPromoteVirtual: (nodeId: string) => void;
   onUpdateVirtual: (nodeId: string, payload: UpdateVirtualPayload) => Promise<void>;
@@ -81,6 +82,11 @@ export type SidePanelProps = {
   focusRequestVersion: number;
   newDirectionRequestVersion: number;
   onNewDirectionRequestHandled: () => void;
+
+  /* User-wide skills; used to enrich the context panel when a skill tile is
+   * selected. */
+  skills?: SkillSummary[];
+  onDeleteSkill?: (slug: string) => Promise<void> | void;
 
   onClose: () => void;
 };
@@ -144,6 +150,7 @@ function Inner(props: SidePanelProps & { nodesById: Map<string, NodeInfo> }) {
     onSelectContextBinding,
     onNewDirection,
     onStartBlankDirection,
+    onNewSkill,
     onCreateContinuationVirtual,
     onPromoteVirtual,
     onUpdateVirtual,
@@ -160,6 +167,8 @@ function Inner(props: SidePanelProps & { nodesById: Map<string, NodeInfo> }) {
     focusRequestVersion,
     newDirectionRequestVersion,
     onNewDirectionRequestHandled,
+    skills,
+    onDeleteSkill,
     nodesById,
   } = props;
 
@@ -186,6 +195,7 @@ function Inner(props: SidePanelProps & { nodesById: Map<string, NodeInfo> }) {
         onPreferredLanguageChange={onPreferredLanguageChange}
         onNewDirection={onNewDirection}
         onStartBlankDirection={onStartBlankDirection}
+        onNewSkill={onNewSkill}
         onContextInit={onContextInit}
         onContextRefresh={onContextRefresh}
         onContextCancel={onContextCancel}
@@ -211,6 +221,7 @@ function Inner(props: SidePanelProps & { nodesById: Map<string, NodeInfo> }) {
         contextBundleLoading={contextBundleLoading}
         pendingGate={pendingGate}
         pendingReview={pendingReview}
+        skills={skills}
         onResolveGate={onResolveGate}
         onResolveReview={onResolveReview}
         onCreateContinuationVirtual={onCreateContinuationVirtual}
@@ -264,6 +275,10 @@ function Inner(props: SidePanelProps & { nodesById: Map<string, NodeInfo> }) {
         />
       );
     }
+    const skill =
+      selection.plugId && selection.plugId.startsWith("skills.") && skills
+        ? skills.find((s) => s.id === selection.plugId) ?? null
+        : null;
     return (
       <ContextNodePanel
         identityKey={selection.identityKey}
@@ -272,6 +287,8 @@ function Inner(props: SidePanelProps & { nodesById: Map<string, NodeInfo> }) {
         nodesById={nodesById}
         sampleBundle={sample}
         onSelectConsumer={onSelectNode}
+        skill={skill}
+        onDeleteSkill={skill ? onDeleteSkill : undefined}
       />
     );
   }

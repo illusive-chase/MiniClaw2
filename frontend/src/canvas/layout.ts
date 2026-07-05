@@ -40,6 +40,23 @@ export type ContextNodeData = {
   loadedByNodeIds: string[];
   /** source plug id when this context file comes from a planspace/skill plug */
   plugId?: string | null;
+  /** manifest title, populated for known skills so tooltips read as a name */
+  title?: string | null;
+  /** true when a skill exists on the shelf but no live node has loaded it */
+  dimmed?: boolean;
+  /** number of virtuals/phantoms currently pre-attaching this skill.
+   *  Rendered as a small badge on the shelf tile (§6.1 of PROPOSAL_SKILLS). */
+  attachedCount?: number;
+};
+
+/** Minimal projection of a user-wide skill for buildGraph enumeration.
+ *  Kept local to avoid a layout → api dependency. */
+export type SkillEnumeration = {
+  id: string;
+  slug: string;
+  title: string;
+  description: string | null;
+  path: string;
 };
 
 export type ProjectRootNodeData = {
@@ -169,6 +186,9 @@ export type BuildGraphArgs = {
   activePlanspaceId: string | null;
   /** true when the active lane's virtual create button should be enabled */
   canCreateVirtual: boolean;
+  /** user-wide skills enumerated from GET /skills; dimmed on the shelf when
+   *  no live node has loaded them */
+  skills?: SkillEnumeration[];
 };
 
 export type BuildGraphResult = {
@@ -194,6 +214,7 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
     hiddenPlanspaceIds,
     activePlanspaceId,
     canCreateVirtual,
+    skills = [],
   } = args;
 
   const rfNodes: RFNode[] = [];
@@ -579,6 +600,7 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
     chars: number;
     loadedBy: Set<string>;
     plugId?: string | null;
+    title?: string | null;
   };
   const ctxAgg = new Map<string, CtxAggregate>();
   for (const [ownerId, bundle] of Object.entries(contextBundlesByNodeId)) {
@@ -606,6 +628,51 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
           plugId: src.plug_id ?? null,
         });
       }
+    }
+  }
+
+  /* User-wide skills that no live node has loaded still appear on the shelf,
+   * dimmed. Their identity matches what compose_context_bundle would emit if
+   * a node opted-in to them (scope="contextspace", kind="skill", path=plug
+   * CONTEXT.md path), so the tile survives once a live node loads the skill.
+   */
+  for (const skill of skills) {
+    const skillPath = `${skill.path}/CONTEXT.md`;
+    const key = contextIdentityKey("contextspace", "skill", skillPath);
+    const existing = ctxAgg.get(key);
+    if (existing) {
+      // Live node already loaded this skill; enrich with manifest title.
+      if (!existing.title) existing.title = skill.title;
+      continue;
+    }
+    ctxAgg.set(key, {
+      identityKey: key,
+      scope: "contextspace",
+      kind: "skill",
+      path: skillPath,
+      chars: 0,
+      loadedBy: new Set(),
+      plugId: skill.id,
+      title: skill.title,
+    });
+  }
+
+  /* Attached-count map: skill plug_id → number of visible virtuals whose
+   * pending_extra_skills list references that skill. Rendered as a small
+   * badge on the shelf tile (PROPOSAL_SKILLS §6.1). Only virtuals in a
+   * non-hidden lane contribute; hiding a lane hides its pre-attachments. */
+  const attachedBySkillId = new Map<string, number>();
+  for (const n of nodes) {
+    const ids = n.pending_extra_skills;
+    if (!ids || ids.length === 0) continue;
+    const planspaceId = resolvePlanspaceId(n, allNodeById);
+    if (planspaceId && hiddenPlanspaces.has(planspaceId)) continue;
+    for (const raw of ids) {
+      const id = typeof raw === "string" ? raw.trim() : "";
+      if (!id) continue;
+      const plugId = id.includes(".") ? id : `skills.${id}`;
+      if (!plugId.startsWith("skills.")) continue;
+      attachedBySkillId.set(plugId, (attachedBySkillId.get(plugId) ?? 0) + 1);
     }
   }
 
@@ -647,6 +714,10 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
       position = stored ?? { x: laneCtxCursorX, y: LANE.contextLaneY };
       laneCtxCursorX += 180;
     }
+    const attachedCount =
+      agg.kind === "skill" && agg.plugId
+        ? attachedBySkillId.get(agg.plugId) ?? 0
+        : 0;
     rfNodes.push({
       id: ctxId,
       type: "context",
@@ -660,6 +731,9 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
         chars: agg.chars,
         loadedByNodeIds: Array.from(agg.loadedBy),
         plugId: agg.plugId ?? null,
+        title: agg.title ?? null,
+        dimmed: agg.loadedBy.size === 0,
+        attachedCount,
       },
       draggable: true,
       ...(parentNode ? { parentNode, extent } : {}),

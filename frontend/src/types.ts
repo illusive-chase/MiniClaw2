@@ -94,7 +94,8 @@ export type ClientMessage =
       type: "user_message";
       text: string;
       resume_from_node_id?: string | null;
-      extra_planspace_loads?: string[] | null;
+      extra_skills?: string[] | null;
+      agent_op_kind?: string | null;
     }
   | {
       type: "interaction_response";
@@ -185,6 +186,7 @@ export type NodeInfo = {
   project_id: string;
   kind: NodeKind;
   op_kind?: string | null;
+  agent_op_kind?: string | null;
   state: NodeState;
   parent_node_id?: string | null;
   planspace_id?: string | null;
@@ -203,6 +205,7 @@ export type NodeInfo = {
   brief?: ReviewBrief | null;
   prompt_draft?: string | null;
   scheduled_deps?: string[];
+  pending_extra_skills?: string[];
   resume_from_node_id?: string | null;
   verify_script_ref?: string | null;
   proposed_by?: string | null;

@@ -68,6 +68,7 @@ class NodeStarted(BaseModel):
     kind: str = "agent"
     category: str | None = None
     subtype: str | None = None
+    agent_op_kind: str | None = None
     prompt: str = ""
     seq: int = 0
 
@@ -101,7 +102,8 @@ class UserMessage(BaseModel):
     type: Literal["user_message"]
     text: str
     resume_from_node_id: str | None = None
-    extra_planspace_loads: list[str] | None = None
+    extra_skills: list[str] | None = None
+    agent_op_kind: str | None = None
 
 
 class InteractionResponse(BaseModel):

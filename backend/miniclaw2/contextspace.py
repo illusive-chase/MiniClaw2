@@ -110,6 +110,7 @@ def compose_context_bundle(
             system_parts.append(text)
 
     active_planspace_id: str | None = None
+    binding_skill_ids: set[str] = set()
     if binding is not None:
         plug_refs = _expand_required_plugs(root, binding.plugs)
         active_planspace = _select_active_planspace(project, binding, plug_refs)
@@ -123,15 +124,53 @@ def compose_context_bundle(
                 # node previews via the materialized filesystem.
                 continue
             if kind in {"skill", "global"}:
+                if kind == "skill":
+                    binding_skill_ids.add(ref.id)
                 loaded = _load_context_markdown_source(root, ref, kind)
                 if loaded is None:
                     continue
                 source, text = loaded
+                source["source"] = ref.source
                 sources.append(source)
                 if source.get("injection") == "system":
                     system_parts.append(_section_text(source, text))
                 elif source.get("injection") == "turn":
                     turn_sections.append(_section_text(source, text))
+
+    # Per-node opt-in skills (settings_snapshot["extra_skills"]). Loaded
+    # after bindings so a binding-provided skill wins the dedupe.
+    for skill_id in _extra_skill_ids(node):
+        if skill_id in binding_skill_ids:
+            continue
+        binding_skill_ids.add(skill_id)  # also dedupes within extra_skills
+        ref = PlugRef(id=skill_id, source="node-opt-in")
+        plug_dir = _plug_dir(root, skill_id)
+        if plug_dir is None or not plug_dir.exists():
+            sources.append({
+                "scope": "contextspace",
+                "kind": "skill",
+                "plug_id": skill_id,
+                "source": "node-opt-in",
+                "missing": True,
+            })
+            continue
+        loaded = _load_context_markdown_source(root, ref, "skill")
+        if loaded is None:
+            sources.append({
+                "scope": "contextspace",
+                "kind": "skill",
+                "plug_id": skill_id,
+                "source": "node-opt-in",
+                "missing": True,
+            })
+            continue
+        source, text = loaded
+        source["source"] = ref.source
+        sources.append(source)
+        if source.get("injection") == "system":
+            system_parts.append(_section_text(source, text))
+        elif source.get("injection") == "turn":
+            turn_sections.append(_section_text(source, text))
 
     system_text = _join_nonempty(system_parts)
     turn_text = _join_nonempty(turn_sections)
@@ -581,6 +620,114 @@ def resolve_active_planspace(
     if plug_dir is None:
         return None
     return binding, ref, plug_dir
+
+
+def list_skills(store_root: Path | None = None) -> list[dict[str, Any]]:
+    """Enumerate user-wide skill plugs for the shelf.
+
+    Returns a list of dicts shaped like ``_plug_summary`` output but
+    scoped to skills (no binding/planspace fields). Missing manifests
+    are skipped; the ``exists`` field always reflects the plug dir.
+    """
+    root = contextspace_root(store_root)
+    skills_root = root / "plugs" / "skills"
+    if not skills_root.exists():
+        return []
+    out: list[dict[str, Any]] = []
+    for plug_dir in sorted(skills_root.iterdir()):
+        if not plug_dir.is_dir():
+            continue
+        slug = plug_dir.name
+        plug_id = f"skills.{slug}"
+        manifest = _plug_manifest(root, plug_id)
+        if not manifest:
+            continue
+        title = (
+            _string_value(manifest.get("title"))
+            or _string_value(manifest.get("name"))
+            or slug
+        )
+        injection = manifest.get("injection")
+        max_chars = manifest.get("max_chars")
+        out.append({
+            "id": plug_id,
+            "kind": "skill",
+            "slug": slug,
+            "title": title,
+            "description": _string_value(manifest.get("description")),
+            "injection": injection if isinstance(injection, (str, dict)) else None,
+            "max_chars": max_chars if isinstance(max_chars, (int, dict)) else None,
+            "path": _display_path(plug_dir, root),
+            "exists": plug_dir.exists(),
+        })
+    return out
+
+
+def delete_skill(slug: str, *, store_root: Path | None = None) -> bool:
+    """Delete a user-wide skill plug directory. Return True if removed.
+
+    Binding refs to the deleted skill become dangling; ``compose_context_bundle``
+    already silently skips missing binding plugs and marks missing opt-in
+    plugs with ``missing: true``.
+    """
+    if not isinstance(slug, str) or not slug.strip() or "/" in slug:
+        raise ValueError(f"invalid skill slug: {slug!r}")
+    root = contextspace_root(store_root)
+    plug_id = f"skills.{slug}" if "." not in slug else slug
+    if not plug_id.startswith("skills."):
+        raise ValueError(f"not a skill id: {plug_id!r}")
+    plug_dir = _plug_dir(root, plug_id)
+    if plug_dir is None:
+        return False
+    try:
+        resolved = plug_dir.resolve()
+        skills_root = (root / "plugs" / "skills").resolve()
+    except OSError:
+        return False
+    if resolved.parent != skills_root:
+        return False
+    if not plug_dir.exists():
+        return False
+    shutil.rmtree(plug_dir)
+    return True
+
+
+def normalize_skill_ids(raw: Any) -> list[str]:
+    """Normalize a list of skill ids/slugs into canonical ``skills.<slug>`` ids.
+
+    Accepts bare slugs (``"foo"``) or full ids (``"skills.foo"``). Non-list
+    input, non-string entries, empty strings, and other-kind prefixes are
+    dropped silently. Duplicates collapse preserving first-seen order.
+
+    Single source of truth for both wire-in normalization (``registry``
+    accepting client payloads) and settings-snapshot read-back
+    (``compose_context_bundle``).
+    """
+    if not isinstance(raw, list):
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for entry in raw:
+        if not isinstance(entry, str):
+            continue
+        cleaned = entry.strip()
+        if not cleaned:
+            continue
+        if "." in cleaned:
+            if not cleaned.startswith("skills."):
+                continue
+            plug_id = cleaned
+        else:
+            plug_id = f"skills.{cleaned}"
+        if plug_id in seen:
+            continue
+        seen.add(plug_id)
+        out.append(plug_id)
+    return out
+
+
+def _extra_skill_ids(node: Node) -> list[str]:
+    return normalize_skill_ids(node.settings_snapshot.get("extra_skills"))
 
 
 # ----------------- internal helpers -----------------

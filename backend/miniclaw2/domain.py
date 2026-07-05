@@ -67,6 +67,11 @@ TERMINAL_NODE_STATES: frozenset[NodeState] = frozenset({
 })
 
 
+# Whitelist of ``agent_op_kind`` values. Kept here as a plain set rather
+# than a StrEnum so a new variant can be added without a schema migration.
+KNOWN_AGENT_OP_KINDS: frozenset[str] = frozenset({"skill_edit"})
+
+
 def normalize_planspace_mode(value: str | None) -> PlanspaceMode:
     """Return a ``PlanspaceMode`` from a string; ``None`` → ``MANUAL``."""
     if value is None:
@@ -132,6 +137,10 @@ class Node(BaseModel):
     project_id: str
     kind: NodeKind = NodeKind.AGENT
     op_kind: str | None = None
+    # Marks agent-node variants that need special launch handling (e.g.
+    # ``"skill_edit"`` for the concierge that authors skill plugs). Kept
+    # as ``str | None`` — see ``KNOWN_AGENT_OP_KINDS`` for the whitelist.
+    agent_op_kind: str | None = None
     state: NodeState = NodeState.QUEUED
     parent_node_id: str | None = None
     planspace_id: str | None = None
@@ -155,6 +164,9 @@ class Node(BaseModel):
     # terminal state before this virtual is eligible to promote.
     prompt_draft: str | None = None
     scheduled_deps: list[str] = Field(default_factory=list)
+    # Virtual-only intent: skills to attach at promotion, copied into
+    # ``settings_snapshot["extra_skills"]`` when the virtual → queued.
+    pending_extra_skills: list[str] = Field(default_factory=list)
     resume_from_node_id: str | None = None
     verify_script_ref: str | None = None
     proposed_by: str | None = None
@@ -170,6 +182,22 @@ class Node(BaseModel):
 
     @model_validator(mode="after")
     def _check_invariants(self) -> "Node":
+        if self.kind is not NodeKind.AGENT:
+            if self.agent_op_kind is not None:
+                raise ValueError(
+                    "agent_op_kind is only valid on agent nodes"
+                )
+            if self.pending_extra_skills:
+                raise ValueError(
+                    "pending_extra_skills is only valid on agent nodes"
+                )
+        if (
+            self.agent_op_kind is not None
+            and self.agent_op_kind not in KNOWN_AGENT_OP_KINDS
+        ):
+            raise ValueError(
+                f"unknown agent_op_kind: {self.agent_op_kind!r}"
+            )
         if self.kind is NodeKind.OP:
             if self.category is not None:
                 raise ValueError("op nodes must not carry a category")

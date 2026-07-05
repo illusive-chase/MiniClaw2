@@ -22,6 +22,7 @@ import {
   buildGraph,
   type RFNode,
   type RFEdge,
+  type SkillEnumeration,
 } from "./layout";
 import { AgentNode } from "./nodes/AgentNode";
 import { OpNode } from "./nodes/OpNode";
@@ -84,6 +85,9 @@ export type CanvasProps = {
   hiddenPlanspaceIds: string[];
   activePlanspaceId: string | null;
   canCreateVirtual: boolean;
+  /** User-wide skills enumerated from GET /skills. Dimmed on the shelf when
+   * no live node has loaded them. */
+  skills?: SkillEnumeration[];
   /** Persisted positions hydrated from the session. */
   initialLayoutHints?: Record<string, { x: number; y: number }>;
   /** Persisted viewport hydrated from the session. */
@@ -108,6 +112,12 @@ export type CanvasProps = {
    * and the raw template slug string that was dragged.
    */
   onTemplateDrop?: (slug: string, anchorNodeId: string | null) => void;
+  /**
+   * Fires when a skill chip is dragged from a shelf tile and dropped onto
+   * a virtual agent tile. The callback receives the virtual node id and
+   * the skill plug id (``skills.<slug>``) to attach.
+   */
+  onAttachSkillToVirtual?: (virtualNodeId: string, skillId: string) => void;
   /** Called after drag-end / pan / zoom with layout state that changed. */
   onLayoutHintsChange?: (
     updates: Record<string, { x: number; y: number }>,
@@ -133,12 +143,14 @@ function CanvasInner({
   hiddenPlanspaceIds,
   activePlanspaceId,
   canCreateVirtual,
+  skills,
   initialLayoutHints,
   initialLayoutViewport,
   onSelectionChange,
   onMultiSelectionChange,
   onAgentNodeContextMenu,
   onTemplateDrop,
+  onAttachSkillToVirtual,
   onLayoutHintsChange,
 }: CanvasProps) {
   const layoutHintsRef = useRef<Record<string, { x: number; y: number }>>(
@@ -220,6 +232,7 @@ function CanvasInner({
         hiddenPlanspaceIds,
         activePlanspaceId,
         canCreateVirtual,
+        skills,
       }),
     [
       nodes,
@@ -230,6 +243,7 @@ function CanvasInner({
       hiddenPlanspaceIds,
       activePlanspaceId,
       canCreateVirtual,
+      skills,
       layoutHydrationVersion,
     ],
   );
@@ -483,8 +497,10 @@ function CanvasInner({
   );
 
   const onCanvasDragOver = useCallback((event: React.DragEvent<HTMLDivElement>) => {
+    const types = event.dataTransfer.types;
     if (
-      event.dataTransfer.types.includes("application/x-miniclaw-template")
+      types.includes("application/x-miniclaw-template") ||
+      types.includes("application/x-miniclaw-skill")
     ) {
       event.preventDefault();
       event.dataTransfer.dropEffect = "copy";
@@ -493,32 +509,49 @@ function CanvasInner({
 
   const onCanvasDrop = useCallback(
     (event: React.DragEvent<HTMLDivElement>) => {
-      const slug = event.dataTransfer.getData("application/x-miniclaw-template");
-      if (!slug) return;
+      const templateSlug = event.dataTransfer.getData(
+        "application/x-miniclaw-template",
+      );
+      const skillId = event.dataTransfer.getData(
+        "application/x-miniclaw-skill",
+      );
+      if (!templateSlug && !skillId) return;
       event.preventDefault();
       // Walk up the DOM from the drop target to find the nearest React Flow
       // node element and read its data-id. If none, the drop hit the pane.
-      let anchorNodeId: string | null = null;
+      let anchorAgentId: string | null = null;
+      let anchorNode: RFNode | null = null;
       let cursor = event.target as HTMLElement | null;
       while (cursor && cursor !== event.currentTarget) {
         const dataId = cursor.getAttribute?.("data-id");
         if (dataId) {
-          // Match agent nodes only — the RF node id is the layout key,
-          // which happens to equal the backend node id for agent tiles.
-          const found = built.rfNodes.find(
-            (n) => n.id === dataId && n.type === "agent",
-          );
+          const found = built.rfNodes.find((n) => n.id === dataId);
           if (found) {
-            const data = found.data as import("./layout").AgentNodeData;
-            anchorNodeId = data.node.id;
+            anchorNode = found;
+            if (found.type === "agent") {
+              const data = found.data as import("./layout").AgentNodeData;
+              anchorAgentId = data.node.id;
+            }
           }
           break;
         }
         cursor = cursor.parentElement;
       }
-      onTemplateDrop?.(slug, anchorNodeId);
+      if (skillId) {
+        /* Skills are attach-to-virtual only. Dropping on the pane, a
+         * running agent, an op node, or a context tile is a no-op — the
+         * cursor gives no feedback, but the drop is simply ignored. */
+        if (anchorNode?.type === "agent") {
+          const data = anchorNode.data as import("./layout").AgentNodeData;
+          if (data.node.state === "virtual" && !data.node.obsolete_reason) {
+            onAttachSkillToVirtual?.(data.node.id, skillId);
+          }
+        }
+        return;
+      }
+      onTemplateDrop?.(templateSlug, anchorAgentId);
     },
-    [built.rfNodes, onTemplateDrop],
+    [built.rfNodes, onTemplateDrop, onAttachSkillToVirtual],
   );
 
   return (

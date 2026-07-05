@@ -26,6 +26,7 @@ _CATEGORY_PLANNING = "category_planning.md"
 _CATEGORY_AGENTIC_REVIEW = "category_agentic_review.md"
 _CATEGORY_HUMAN_INTERACT_REVIEW = "category_human_interact_review.md"
 _ANTI_SELF_POISONING = "anti_self_poisoning.md"
+_SKILL_INIT = "skill_init.md"
 
 
 @lru_cache(maxsize=16)
@@ -110,6 +111,15 @@ def build_dependency_launch_block(node: Node) -> str:
         "inspect the sibling files under that same dependency directory.",
     ])
     return "\n".join(lines)
+
+
+def build_skill_init_block(skills_dir: str) -> str:
+    """Return the skill-author preset with ``<<skills_dir>>`` substituted.
+
+    Used only for agent nodes with ``agent_op_kind == "skill_edit"``.
+    """
+    template = _load_template(_SKILL_INIT)
+    return template.replace("<<skills_dir>>", skills_dir).strip()
 
 
 def anti_self_poisoning_block() -> str:

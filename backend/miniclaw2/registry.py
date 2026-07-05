@@ -16,6 +16,7 @@ from .contextspace import (
     contextspace_root,
     create_planspace,
     delete_project_contextspace,
+    normalize_skill_ids,
     read_planspace_mode,
     resolve_project_binding,
     resolve_active_planspace,
@@ -471,7 +472,8 @@ class ProjectRegistry:
         prompt: str,
         *,
         resume_from_node_id: str | None = None,
-        extra_planspace_loads: list[str] | None = None,
+        extra_skills: list[str] | None = None,
+        agent_op_kind: str | None = None,
         category: Category = Category.REGULAR,
         subtype: ReviewSubtype | None = None,
         brief: ReviewBrief | None = None,
@@ -495,14 +497,10 @@ class ProjectRegistry:
             if not (resume_source.provider_session_id or resume_source.cli_session_id):
                 return None
 
-        extra_loads = [
-            entry.strip()
-            for entry in (extra_planspace_loads or [])
-            if isinstance(entry, str) and entry.strip()
-        ]
+        extra_skill_ids = normalize_skill_ids(extra_skills)
         settings_snapshot: dict[str, Any] = {}
-        if extra_loads:
-            settings_snapshot["extra_planspace_loads"] = extra_loads
+        if extra_skill_ids:
+            settings_snapshot["extra_skills"] = extra_skill_ids
 
         active = resolve_active_planspace(
             rt.project, contextspace_root(self.store.root)
@@ -512,6 +510,7 @@ class ProjectRegistry:
         node = Node(
             project_id=pid,
             kind=NodeKind.AGENT,
+            agent_op_kind=agent_op_kind,
             category=category,
             subtype=subtype,
             brief=brief,
@@ -797,6 +796,14 @@ class ProjectRegistry:
         if node.kind is NodeKind.AGENT:
             node.prompt = node.prompt_draft or node.prompt
         node.prompt_draft = None
+        # Promote pending_extra_skills → settings_snapshot["extra_skills"]
+        # so compose_context_bundle at launch sees them (see contextspace
+        # ``_extra_skill_ids``).
+        if node.pending_extra_skills:
+            snapshot = dict(node.settings_snapshot)
+            snapshot["extra_skills"] = list(node.pending_extra_skills)
+            node.settings_snapshot = snapshot
+            node.pending_extra_skills = []
         self.store.update_node(node)
 
         runner = NodeRunner(node, rt.project, self.store, rt.broadcast)
@@ -821,6 +828,8 @@ class ProjectRegistry:
         brief: dict[str, Any] | ReviewBrief | None = None,
         motivation: str | None = None,
         scheduled_deps: list[str] | None = None,
+        pending_extra_skills: list[str] | None = None,
+        agent_op_kind: str | None = None,
         planspace_id: str | None = None,
         node_id: str | None = None,
         parent_node_id: str | None = None,
@@ -894,6 +903,7 @@ class ProjectRegistry:
             **node_kwargs,
             project_id=pid,
             kind=NodeKind.AGENT,
+            agent_op_kind=agent_op_kind,
             category=next_category,
             subtype=next_subtype,
             brief=next_brief,
@@ -904,6 +914,7 @@ class ProjectRegistry:
             prompt="",
             prompt_draft=str(prompt_draft),
             scheduled_deps=[],
+            pending_extra_skills=normalize_skill_ids(pending_extra_skills),
             resume_from_node_id=normalized_resume_id,
             proposed_by="user",
             summary="" if motivation is None else str(motivation),
@@ -959,6 +970,7 @@ class ProjectRegistry:
         brief: dict[str, Any] | ReviewBrief | None | object = _UNSET,
         motivation: str | None | object = _UNSET,
         scheduled_deps: list[str] | None | object = _UNSET,
+        pending_extra_skills: list[str] | None | object = _UNSET,
         obsolete_reason: str | None | object = _UNSET,
     ) -> Node | None:
         """Update a virtual node in place.
@@ -1048,6 +1060,11 @@ class ProjectRegistry:
                 scheduled_deps=scheduled_deps,
             )
             update["scheduled_deps"] = deps
+
+        if pending_extra_skills is not _UNSET:
+            update["pending_extra_skills"] = normalize_skill_ids(
+                pending_extra_skills
+            )
 
         updated = existing.model_copy(update=update)
         updated = Node.model_validate(updated.model_dump())

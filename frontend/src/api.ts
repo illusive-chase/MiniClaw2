@@ -220,6 +220,7 @@ export type UpdateVirtualPayload = {
   brief?: ReviewBrief | null;
   motivation?: string | null;
   scheduled_deps?: string[];
+  pending_extra_skills?: string[];
   obsolete_reason?: string | null;
 };
 
@@ -230,6 +231,8 @@ export type CreateVirtualPayload = {
   brief?: ReviewBrief | null;
   motivation?: string | null;
   scheduled_deps?: string[];
+  pending_extra_skills?: string[];
+  agent_op_kind?: string | null;
   planspace_id?: string | null;
   parent_node_id?: string | null;
   resume_from_node_id?: string | null;
@@ -565,5 +568,32 @@ export async function deleteUserTemplate(slug: string): Promise<void> {
   });
   if (!res.ok && res.status !== 204) {
     throw new Error(`deleteUserTemplate failed: ${res.status}`);
+  }
+}
+
+export type SkillSummary = {
+  id: string;
+  kind: "skill";
+  slug: string;
+  title: string;
+  description: string | null;
+  injection: string | Record<string, string> | null;
+  max_chars: number | Record<string, number> | null;
+  path: string;
+  exists: boolean;
+};
+
+export async function listSkills(): Promise<SkillSummary[]> {
+  const res = await fetch("/skills");
+  if (!res.ok) throw new Error(`listSkills failed: ${res.status}`);
+  return res.json();
+}
+
+export async function deleteSkill(slug: string): Promise<void> {
+  const res = await fetch(`/skills/${encodeURIComponent(slug)}`, {
+    method: "DELETE",
+  });
+  if (!res.ok && res.status !== 204) {
+    throw new Error(`deleteSkill failed: ${res.status}`);
   }
 }

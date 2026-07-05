@@ -21,7 +21,9 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from .contextspace import (
+    delete_skill,
     describe_project_contextspace,
+    list_skills,
     load_context_bundle_for_node,
     read_project_context,
 )
@@ -129,6 +131,7 @@ class UpdateVirtualRequest(BaseModel):
     brief: dict[str, Any] | None = None
     motivation: str | None = None
     scheduled_deps: list[str] | None = None
+    pending_extra_skills: list[str] | None = None
     obsolete_reason: str | None = None
 
 
@@ -139,6 +142,8 @@ class CreateVirtualRequest(BaseModel):
     brief: dict[str, Any] | None = None
     motivation: str | None = None
     scheduled_deps: list[str] | None = None
+    pending_extra_skills: list[str] | None = None
+    agent_op_kind: str | None = None
     planspace_id: str | None = None
     parent_node_id: str | None = None
     resume_from_node_id: str | None = None
@@ -510,6 +515,8 @@ def create_app() -> FastAPI:
                 brief=req.brief,
                 motivation=req.motivation,
                 scheduled_deps=req.scheduled_deps,
+                pending_extra_skills=req.pending_extra_skills,
+                agent_op_kind=req.agent_op_kind,
                 planspace_id=req.planspace_id,
                 parent_node_id=req.parent_node_id,
                 resume_from_node_id=req.resume_from_node_id,
@@ -722,6 +729,20 @@ def create_app() -> FastAPI:
             raise HTTPException(404, f"user template not found: {slug}")
         return Response(status_code=204)
 
+    @app.get("/skills", response_model=list[dict[str, Any]])
+    def list_skills_endpoint() -> list[dict[str, Any]]:
+        return list_skills(store_root=registry.store.root)
+
+    @app.delete("/skills/{slug}", status_code=204)
+    def delete_skill_endpoint(slug: str) -> Response:
+        try:
+            removed = delete_skill(slug, store_root=registry.store.root)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        if not removed:
+            raise HTTPException(404, f"skill not found: {slug}")
+        return Response(status_code=204)
+
     @app.post(
         "/sessions/{sid}/user-templates",
         response_model=SaveUserTemplateResponse,
@@ -841,7 +862,8 @@ def create_app() -> FastAPI:
                         sid,
                         msg.text,
                         resume_from_node_id=msg.resume_from_node_id,
-                        extra_planspace_loads=msg.extra_planspace_loads,
+                        extra_skills=msg.extra_skills,
+                        agent_op_kind=msg.agent_op_kind,
                     )
                     if runner is None:
                         await _send(send_now, {

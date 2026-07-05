@@ -23,6 +23,7 @@ export type ProjectPanelProps = {
   onPreferredLanguageChange: (preferredLanguage: string | null) => void;
   onNewDirection: (userSeed: string, mode: PlanspaceMode) => void;
   onStartBlankDirection: (userSeed: string, mode: PlanspaceMode) => void;
+  onNewSkill?: (userSeed: string) => Promise<void> | void;
   onContextInit: () => void;
   onContextRefresh: () => void;
   onContextCancel: () => void;
@@ -50,6 +51,7 @@ export function ProjectPanel({
   onPreferredLanguageChange,
   onNewDirection,
   onStartBlankDirection,
+  onNewSkill,
   onContextInit,
   onContextRefresh,
   onContextCancel,
@@ -62,6 +64,11 @@ export function ProjectPanel({
   const [newDirectionMode, setNewDirectionMode] = useState<PlanspaceMode>("manual");
   const seedRef = useRef<HTMLTextAreaElement | null>(null);
   const lastRequestVersionRef = useRef(0);
+  const [skillOpen, setSkillOpen] = useState(false);
+  const [skillSeed, setSkillSeed] = useState("");
+  const [skillBusy, setSkillBusy] = useState(false);
+  const [skillError, setSkillError] = useState<string | null>(null);
+  const skillSeedRef = useRef<HTMLTextAreaElement | null>(null);
 
   const activeBinding = contextSpace?.bindings.find(
     (b) => b.id === (contextSpace?.resolved_binding_id ?? session?.project_context_binding_id),
@@ -204,7 +211,80 @@ export function ProjectPanel({
             >
               {notesExist ? "Refresh project notes" : "Initialize project notes"}
             </button>
+            {onNewSkill && (
+              <button
+                type="button"
+                onClick={() => {
+                  setSkillOpen((v) => !v);
+                  window.setTimeout(() => skillSeedRef.current?.focus(), 30);
+                }}
+                disabled={busy}
+                className="rounded-md border border-line bg-surface-raised px-3 py-2 text-left text-[12px] text-ink transition hover:border-line-strong disabled:opacity-40"
+              >
+                + New skill
+              </button>
+            )}
           </div>
+
+          {skillOpen && onNewSkill && (
+            <div className="mt-3 rounded-md border border-line bg-surface-sunken p-3">
+              <label className="block text-[10px] font-medium uppercase tracking-[0.14em] text-ink-subtle">
+                What does this skill teach?
+              </label>
+              <textarea
+                ref={skillSeedRef}
+                value={skillSeed}
+                onChange={(e) => setSkillSeed(e.target.value)}
+                rows={4}
+                placeholder="e.g. how to run our migrations, or the vim keymap for review mode…"
+                className="mt-1 w-full resize-none rounded-md border border-line bg-surface px-3 py-2 text-[13px] leading-relaxed text-ink-strong placeholder:text-ink-subtle focus:border-brand focus:outline-none"
+              />
+              {skillError && (
+                <div className="mt-2 rounded-md border border-state-error/30 bg-state-error-soft p-2 text-[11px] text-state-error">
+                  {skillError}
+                </div>
+              )}
+              <div className="mt-2 flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSkillOpen(false);
+                    setSkillSeed("");
+                    setSkillError(null);
+                  }}
+                  className="rounded border border-line bg-surface px-2.5 py-1 text-[11px] text-ink-muted hover:text-ink"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  disabled={skillBusy || !skillSeed.trim()}
+                  onClick={async () => {
+                    const trimmed = skillSeed.trim();
+                    if (!trimmed) return;
+                    setSkillBusy(true);
+                    setSkillError(null);
+                    try {
+                      await onNewSkill(trimmed);
+                      setSkillOpen(false);
+                      setSkillSeed("");
+                    } catch (err) {
+                      setSkillError(String(err));
+                    } finally {
+                      setSkillBusy(false);
+                    }
+                  }}
+                  className="rounded-md bg-brand px-2.5 py-1 text-[11.5px] font-medium text-white disabled:opacity-40"
+                >
+                  {skillBusy ? "Creating…" : "Create skill draft"}
+                </button>
+              </div>
+              <p className="mt-2 text-[10.5px] text-ink-muted">
+                Creates a virtual skill-edit node on the active lane. Promote
+                it to launch the concierge and author the skill.
+              </p>
+            </div>
+          )}
 
           {composerOpen && (
             <div className="mt-3 rounded-md border border-line bg-surface-sunken p-3">

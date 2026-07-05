@@ -1,3 +1,5 @@
+import { useState } from "react";
+import type { SkillSummary } from "../api";
 import type { ContextBundle, NodeInfo } from "../types";
 
 export type ContextNodePanelProps = {
@@ -9,6 +11,10 @@ export type ContextNodePanelProps = {
   /** the bundle from the most-recent loader, used to read file content */
   sampleBundle: ContextBundle | null;
   onSelectConsumer: (nodeId: string) => void;
+  /** Populated when the selected context tile is a user-wide skill. */
+  skill?: SkillSummary | null;
+  /** Delete the current skill. Present only when ``skill`` is passed. */
+  onDeleteSkill?: (slug: string) => Promise<void> | void;
 };
 
 /**
@@ -23,19 +29,22 @@ export function ContextNodePanel({
   nodesById,
   sampleBundle,
   onSelectConsumer,
+  skill,
+  onDeleteSkill,
 }: ContextNodePanelProps) {
   const source = sampleBundle?.sources.find((s) => s.path === path) ?? null;
-  const description = plainLanguageDescription(source?.scope, source?.kind);
-  const filename = filenameOf(path);
+  const kindHint = skill ? "skill" : source?.kind;
+  const description = plainLanguageDescription(source?.scope, kindHint);
+  const heading = skill?.title || filenameOf(path);
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
       <div className="border-b border-line bg-surface-raised px-4 py-3">
         <div className="text-[10px] font-medium uppercase tracking-[0.14em] text-ink-subtle">
-          Context file
+          {skill ? "Skill" : "Context file"}
         </div>
         <h2 className="mt-1 truncate font-display text-[15px] font-semibold leading-snug text-ink-strong">
-          {filename}
+          {heading}
         </h2>
         <div className="mt-1 truncate font-mono text-[10.5px] text-ink-muted" title={path}>
           {path}
@@ -51,6 +60,10 @@ export function ContextNodePanel({
             {description}
           </div>
         </section>
+
+        {skill && (
+          <SkillDetails skill={skill} onDelete={onDeleteSkill} />
+        )}
 
         <section className="mb-4">
           <div className="mb-1 flex items-baseline justify-between text-[10px] font-medium uppercase tracking-[0.14em] text-ink-subtle">
@@ -154,6 +167,9 @@ function extractFromBundleText(systemText: string, turnText: string, path: strin
 }
 
 function plainLanguageDescription(scope?: string, kind?: string): string {
+  if (kind === "skill") {
+    return "A reusable skill — tool or workflow knowledge you can attach to any node in any project.";
+  }
   if (kind === "planspace") {
     return "Project memory — a notebook of plans and decisions the agent reads at the start of every run.";
   }
@@ -170,6 +186,84 @@ function plainLanguageDescription(scope?: string, kind?: string): string {
   if (scope === "session") return "Session-level note pulled in for this conversation.";
   if (scope === "project") return "Project file pulled into the agent's working context.";
   return "Context file pulled into the agent's working context.";
+}
+
+function SkillDetails({
+  skill,
+  onDelete,
+}: {
+  skill: SkillSummary;
+  onDelete?: (slug: string) => Promise<void> | void;
+}) {
+  const [confirming, setConfirming] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const injection =
+    typeof skill.injection === "string" ? skill.injection : "system";
+
+  const runDelete = async () => {
+    if (!onDelete) return;
+    setBusy(true);
+    try {
+      await onDelete(skill.slug);
+    } finally {
+      setBusy(false);
+      setConfirming(false);
+    }
+  };
+
+  return (
+    <section className="mb-4">
+      <div className="mb-1 text-[10px] font-medium uppercase tracking-[0.14em] text-ink-subtle">
+        Skill details
+      </div>
+      <div className="space-y-2 rounded-md border border-line bg-surface-sunken px-3 py-2 text-[12px] text-ink-strong">
+        {skill.description && (
+          <div className="text-[12px] text-ink">{skill.description}</div>
+        )}
+        <div className="flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-ink-muted">
+          <span>
+            <span className="text-ink-subtle">injection:</span> {injection}
+          </span>
+          <span className="font-mono">{skill.id}</span>
+        </div>
+        {onDelete && (
+          <div className="pt-1">
+            {confirming ? (
+              <div className="flex items-center gap-2">
+                <span className="text-[11px] text-ink-muted">
+                  Delete this skill?
+                </span>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={runDelete}
+                  className="rounded-md border border-red-400 bg-red-50 px-2 py-0.5 text-[11px] text-red-700 hover:bg-red-100 disabled:opacity-60"
+                >
+                  {busy ? "Deleting…" : "Confirm"}
+                </button>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => setConfirming(false)}
+                  className="rounded-md border border-line px-2 py-0.5 text-[11px] text-ink-muted hover:border-line-strong"
+                >
+                  Cancel
+                </button>
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setConfirming(true)}
+                className="rounded-md border border-line px-2 py-0.5 text-[11px] text-ink-muted hover:border-line-strong hover:text-ink"
+              >
+                Delete skill…
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+    </section>
+  );
 }
 
 function filenameOf(p: string): string {
