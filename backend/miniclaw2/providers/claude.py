@@ -65,8 +65,17 @@ class ClaudeProvider:
                 )
                 return
 
+            terminal_seen = False
             async for event in self._session.stream_events():
                 yield event
+                if event.kind in {"done", "error"}:
+                    terminal_seen = True
+                    return
+            if not terminal_seen:
+                yield AgentProviderEvent(
+                    kind="error",
+                    error="claude provider stream ended without a terminal event",
+                )
         except ClaudeNativeError as exc:
             yield AgentProviderEvent(kind="error", error=str(exc))
         except Exception as exc:  # noqa: BLE001

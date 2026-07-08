@@ -128,11 +128,18 @@ async def _run_agent_context_task(project: Project, record: ContextTask) -> None
     pre_mtime = _safe_mtime(context_path)
 
     try:
+        terminal_seen = False
         async for ev in provider.run(context):
             if ev.kind == "error":
+                terminal_seen = True
                 raise RuntimeError(ev.error or "provider error")
             if ev.kind == "done":
+                terminal_seen = True
                 break
+        if not terminal_seen:
+            raise RuntimeError(
+                f"{provider.name} provider stream ended without a terminal event"
+            )
     except asyncio.CancelledError:
         try:
             await provider.interrupt()

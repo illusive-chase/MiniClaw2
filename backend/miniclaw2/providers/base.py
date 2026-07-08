@@ -37,6 +37,14 @@ class GateRequest:
 
 @dataclass(slots=True)
 class AgentProviderEvent:
+    """Event emitted by an agent provider.
+
+    Provider streams must terminate explicitly: before ``run()`` exhausts it
+    must yield either ``kind="done"`` (optionally with ``final_state`` set to
+    ``"done"`` or ``"cancelled"``) or ``kind="error"``. Consumers should treat
+    bare generator exhaustion as a provider failure.
+    """
+
     kind: str
     event: ProviderWireEvent | None = None
     gate: GateRequest | None = None

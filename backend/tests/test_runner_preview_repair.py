@@ -65,6 +65,20 @@ class _CancellingRepairProvider:
         return None
 
 
+class _BareProvider:
+    name = "stub"
+
+    def __init__(self) -> None:
+        self.prompts: list[str] = []
+
+    async def run(self, context: AgentProviderContext):
+        self.prompts.append(context.node.prompt)
+        yield AgentProviderEvent(kind="session", session_id="stub-session")
+
+    async def interrupt(self) -> None:
+        return None
+
+
 def _write_own_preview(context: AgentProviderContext) -> None:
     node = context.node
     lane = node.planspace_id or ""
@@ -213,6 +227,33 @@ class RunnerPreviewRepairTests(unittest.IsolatedAsyncioTestCase):
         assert preview is not None
         self.assertIn('"state": "cancelled"', preview)
         self.assertIn("preview repair cancelled", preview)
+
+    async def test_provider_stream_exhaustion_without_terminal_event_errors(self) -> None:
+        node = self._node()
+        emitted: list[dict] = []
+
+        async def on_event(payload: dict) -> None:
+            emitted.append(payload)
+
+        provider = _BareProvider()
+        runner = NodeRunner(node, self.project, self.store, on_event)
+        with patch.object(runner_module, "_make_provider", return_value=provider):
+            await asyncio.wait_for(runner.run(), timeout=5.0)
+
+        self.assertEqual(node.state, NodeState.ERROR)
+        self.assertEqual(len(provider.prompts), 1)
+        self.assertIn("without a terminal event", node.error or "")
+        self.assertTrue(
+            any(
+                ev.get("type") == "error"
+                and "without a terminal event" in ev.get("message", "")
+                for ev in emitted
+            )
+        )
+        preview = self.store.read_node_preview(self.project.id, node.id)
+        self.assertIsNotNone(preview)
+        assert preview is not None
+        self.assertIn('"state": "error"', preview)
 
 
 if __name__ == "__main__":

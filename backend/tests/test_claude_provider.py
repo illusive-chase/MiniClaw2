@@ -11,15 +11,70 @@ from unittest.mock import patch
 from miniclaw2.domain import Node, Project
 from miniclaw2.providers.base import AgentProviderContext, GateRequest
 from miniclaw2.providers.claude import ClaudeProvider
+from miniclaw2.providers.claude_native import ClaudeNativeSession
 from miniclaw2.providers.claude_native.ask_payload import (
     format_ask_directive,
     parse_ask_payload,
 )
+from miniclaw2.providers.claude_native.input import SubmitResult
 from miniclaw2.providers.claude_native.spawn import build_argv, DISALLOWED_TOOLS
 
 
 async def _request_gate(_gate: GateRequest) -> dict[str, Any]:
     return {"allow": True}
+
+
+async def _ask_dispatcher(_payload: dict[str, Any]) -> dict[str, Any]:
+    return {}
+
+
+async def _collect(provider_events):
+    return [event async for event in provider_events]
+
+
+class _FakePty:
+    def __init__(
+        self,
+        *,
+        alive: bool = True,
+        exitstatus: int | None = None,
+        signalstatus: int | None = None,
+        exit_on_interrupt: bool = True,
+    ) -> None:
+        self.alive = alive
+        self.exitstatus = exitstatus
+        self.signalstatus = signalstatus
+        self.exit_on_interrupt = exit_on_interrupt
+        self.writes: list[bytes] = []
+
+    def isalive(self) -> bool:
+        return self.alive
+
+    def write(self, data: bytes) -> None:
+        self.writes.append(data)
+        if data == b"\x03" and self.exit_on_interrupt:
+            self.alive = False
+            self.signalstatus = 2
+
+    def terminate(self, force: bool = False) -> None:
+        self.alive = False
+        if force:
+            self.signalstatus = 9
+
+
+def _stream_session(raw: str, pty: _FakePty) -> ClaudeNativeSession:
+    root = Path(raw)
+    session = ClaudeNativeSession(
+        cwd=raw,
+        node_id="node-1",
+        project_id="project-1",
+        ask_dispatcher=_ask_dispatcher,
+        data_dir=root / "data",
+    )
+    session._jsonl_path = root / "turn.jsonl"
+    session._input = object()
+    session._pty = pty
+    return session
 
 
 class ClaudeProviderModelResolutionTest(unittest.TestCase):
@@ -190,6 +245,112 @@ class ProjectHashTest(unittest.TestCase):
             self.assertNotIn("/", hashed)
             self.assertNotIn(".", hashed)
             self.assertNotIn("_", hashed)
+
+
+class ClaudeNativeStreamTerminalTest(unittest.IsolatedAsyncioTestCase):
+    async def test_result_record_emits_explicit_done(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            session = _stream_session(raw, _FakePty(alive=True))
+            session._jsonl_path.write_text(
+                json.dumps(
+                    {
+                        "type": "result",
+                        "subtype": "success",
+                        "usage": {"input_tokens": 1, "output_tokens": 2},
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            events = await _collect(session.stream_events())
+
+        self.assertEqual(events[-1].kind, "done")
+        self.assertEqual(events[-1].final_state, "done")
+        self.assertTrue(
+            any(ev.kind == "event" and ev.event.type == "usage" for ev in events)
+        )
+
+    async def test_child_death_before_terminal_record_emits_error(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            session = _stream_session(
+                raw,
+                _FakePty(alive=False, exitstatus=7),
+            )
+
+            events = await _collect(session.stream_events())
+
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].kind, "error")
+        self.assertIn("exited before an end-of-turn marker", events[0].error or "")
+        self.assertIn("exit status 7", events[0].error or "")
+
+    async def test_interrupt_child_exit_emits_cancelled_done(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            pty = _FakePty(alive=True)
+            session = _stream_session(raw, pty)
+
+            await session.interrupt()
+            events = await _collect(session.stream_events())
+
+        self.assertEqual(pty.writes, [b"\x03"])
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].kind, "done")
+        self.assertEqual(events[0].final_state, "cancelled")
+
+    async def test_interrupt_idle_alive_child_emits_cancelled_done(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            pty = _FakePty(alive=True, exit_on_interrupt=False)
+            session = _stream_session(raw, pty)
+
+            with (
+                patch("miniclaw2.providers.claude_native._STREAM_IDLE_TICK_LIMIT", 0),
+                patch("miniclaw2.providers.claude_native._STREAM_POLL_INTERVAL", 0),
+            ):
+                await session.interrupt()
+                events = await _collect(session.stream_events())
+
+        self.assertEqual(pty.writes, [b"\x03"])
+        self.assertTrue(pty.alive)
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].kind, "done")
+        self.assertEqual(events[0].final_state, "cancelled")
+
+    async def test_claude_provider_turns_bare_native_exhaustion_into_error(self) -> None:
+        class BareSession:
+            cli_session_id = "claude-session"
+
+            def __init__(self, **_: Any) -> None:
+                self.closed = False
+
+            async def start(self) -> None:
+                return None
+
+            async def send(self, _prompt: str) -> SubmitResult:
+                return SubmitResult(submitted=True)
+
+            async def stream_events(self):
+                if False:
+                    yield None
+
+            async def close(self) -> None:
+                self.closed = True
+
+        node = Node(project_id="p", prompt="hi")
+        project = Project(root_path="/tmp/workspace")
+        ctx = AgentProviderContext(
+            node=node,
+            project=project,
+            request_gate_handler=_request_gate,
+        )
+        with patch(
+            "miniclaw2.providers.claude.ClaudeNativeSession",
+            BareSession,
+        ):
+            events = await _collect(ClaudeProvider().run(ctx))
+
+        self.assertEqual(events[-1].kind, "error")
+        self.assertIn("without a terminal event", events[-1].error or "")
 
 
 if __name__ == "__main__":

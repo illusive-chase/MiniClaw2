@@ -90,6 +90,7 @@ class ClaudeNativeSession:
                 self._jsonl_offset = 0
         self._translator = TranscriptTranslator()
         self._closed = False
+        self._interrupt_requested = False
         self._dispatch_registered = False
         self._session_ready_event: asyncio.Event | None = None
 
@@ -200,7 +201,7 @@ class ClaudeNativeSession:
             result = drain(self._jsonl_path, self._jsonl_offset)
             self._jsonl_offset = result.new_offset
 
-            seen_end_of_turn = False
+            terminal_record: dict[str, Any] | None = None
             for record in result.events:
                 sid = self._translator.observed_session_id(record)
                 if sid and sid != self._cli_session_id:
@@ -213,9 +214,26 @@ class ClaudeNativeSession:
                     yield ev
 
                 if is_end_of_turn(record):
-                    seen_end_of_turn = True
+                    terminal_record = record
 
-            if seen_end_of_turn:
+            if terminal_record is not None:
+                yield _terminal_event_for_record(
+                    terminal_record,
+                    interrupted=self._interrupt_requested,
+                )
+                return
+
+            if not _pty_child_alive(self._pty):
+                if self._interrupt_requested:
+                    yield AgentProviderEvent(kind="done", final_state="cancelled")
+                else:
+                    yield AgentProviderEvent(
+                        kind="error",
+                        error=(
+                            "claude PTY exited before an end-of-turn marker"
+                            + _pty_exit_detail(self._pty)
+                        ),
+                    )
                 return
 
             if result.events:
@@ -226,10 +244,20 @@ class ClaudeNativeSession:
                     idle_ticks > _STREAM_IDLE_TICK_LIMIT
                     and self._pty_output_quiescent()
                 ):
+                    if self._interrupt_requested:
+                        yield AgentProviderEvent(kind="done", final_state="cancelled")
+                    else:
+                        yield AgentProviderEvent(
+                            kind="error",
+                            error=(
+                                "claude stream went idle before an end-of-turn marker"
+                            ),
+                        )
                     return
             await asyncio.sleep(_STREAM_POLL_INTERVAL)
 
     async def interrupt(self) -> None:
+        self._interrupt_requested = True
         if self._pty is None:
             return
         try:
@@ -353,6 +381,86 @@ def _kill_pty(pty: Any) -> None:
         pty.terminate(force=True)
     except Exception:  # noqa: BLE001
         pass
+
+
+def _pty_child_alive(pty: Any) -> bool:
+    if pty is None:
+        return False
+    isalive = getattr(pty, "isalive", None)
+    if not callable(isalive):
+        return True
+    try:
+        return bool(isalive())
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _pty_exit_detail(pty: Any) -> str:
+    if pty is None:
+        return ""
+    parts: list[str] = []
+    exitstatus = getattr(pty, "exitstatus", None)
+    signalstatus = getattr(pty, "signalstatus", None)
+    if exitstatus is not None:
+        parts.append(f"exit status {exitstatus}")
+    if signalstatus is not None:
+        parts.append(f"signal {signalstatus}")
+    return f" ({', '.join(parts)})" if parts else ""
+
+
+def _terminal_event_for_record(
+    record: dict[str, Any],
+    *,
+    interrupted: bool,
+) -> AgentProviderEvent:
+    if interrupted or _record_indicates_cancel(record):
+        return AgentProviderEvent(kind="done", final_state="cancelled")
+    if _record_indicates_error(record):
+        return AgentProviderEvent(
+            kind="error",
+            error=_record_error_message(record),
+        )
+    return AgentProviderEvent(kind="done", final_state="done")
+
+
+def _record_indicates_cancel(record: dict[str, Any]) -> bool:
+    status = _record_status(record)
+    return any(token in status for token in ("cancel", "interrupt", "abort"))
+
+
+def _record_indicates_error(record: dict[str, Any]) -> bool:
+    if record.get("is_error") is True:
+        return True
+    status = _record_status(record)
+    return any(token in status for token in ("error", "fail"))
+
+
+def _record_status(record: dict[str, Any]) -> str:
+    values: list[str] = []
+    for key in ("subtype", "status", "conclusion"):
+        value = record.get(key)
+        if isinstance(value, str):
+            values.append(value)
+    return " ".join(values).lower()
+
+
+def _record_error_message(record: dict[str, Any]) -> str:
+    error = record.get("error")
+    if isinstance(error, dict):
+        message = error.get("message")
+        if isinstance(message, str) and message:
+            return message
+    if isinstance(error, str) and error:
+        return error
+    message = record.get("message")
+    if isinstance(message, str) and message:
+        return message
+    status = _record_status(record)
+    return (
+        f"claude turn ended with error status: {status}"
+        if status
+        else "claude turn ended with an error result"
+    )
 
 
 __all__ = [

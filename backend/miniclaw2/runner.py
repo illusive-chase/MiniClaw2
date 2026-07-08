@@ -501,24 +501,41 @@ class NodeRunner:
             system_context=system_context,
             launch_instructions=launch_instructions,
         )
-        final_state: NodeState = NodeState.DONE
+        final_state: NodeState | None = None
         error_msg: str | None = None
+        terminal_seen = False
         try:
             async for ev in provider.run(context):
                 await self._handle_provider_event(ev)
                 if ev.kind == "done":
-                    final_state = (
-                        _state_from_provider(ev.final_state)
-                        or NodeState.DONE
-                    )
+                    terminal_seen = True
+                    provider_state = _state_from_provider(ev.final_state)
+                    if ev.final_state is not None and provider_state is None:
+                        error_msg = (
+                            f"{provider.name} provider returned unknown final_state: "
+                            f"{ev.final_state}"
+                        )
+                        final_state = NodeState.ERROR
+                        await self._emit(ErrorEvent(message=error_msg))
+                    else:
+                        final_state = provider_state or NodeState.DONE
                     break
                 if ev.kind == "error":
+                    terminal_seen = True
                     error_msg = ev.error or "provider error"
                     final_state = NodeState.ERROR
+                    if ev.error is None:
+                        await self._emit(ErrorEvent(message=error_msg))
                     break
         finally:
             self._provider = None
-        return final_state, error_msg
+        if not terminal_seen:
+            error_msg = (
+                f"{provider.name} provider stream ended without a terminal event"
+            )
+            final_state = NodeState.ERROR
+            await self._emit(ErrorEvent(message=error_msg))
+        return final_state or NodeState.ERROR, error_msg
 
     # ---- materialization + reap ----
 
