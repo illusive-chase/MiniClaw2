@@ -1,9 +1,8 @@
 # The Graph UI/UX — Position and Open Directions (2026-07)
 
 A design essay on the high-level graph-based UI/UX, argued from
-`PHILOSOPHY.md`. Companion to `PROPOSAL_DESIGN_REVIEW.md` (which covers
-code-level findings); this document covers where the product surface
-should go next. Every direction proposed here extends an existing
+`PHILOSOPHY.md`. This document covers where the product surface should
+go next. Every direction proposed here extends an existing
 philosophical commitment rather than adding a new concept — the test
 any proposal must pass, given §4's rule that what cannot be a node or
 an edge probably should not be surfaced.

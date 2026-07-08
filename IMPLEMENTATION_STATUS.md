@@ -78,6 +78,35 @@ Trunk: `backend/miniclaw2/providers/` (`base.py`, `claude.py`, `codex.py`).
 - `NodeRunner` owns the state machine and persistence; providers do
   IO only. Cleanup resolves any open `HumanGate` as denied when the
   node ends.
+- Provider stream termination is contractual: before `run()` exhausts,
+  a provider must yield `done` (optionally
+  `final_state ∈ {done, cancelled}`) or `error`. `NodeRunner` and the
+  out-of-band context tasks treat bare generator exhaustion as a
+  provider error. The contract text lives on
+  `providers/base.AgentProviderEvent`.
+- Claude turn termination is explicit: the end-of-turn JSONL record is
+  classified into `done` / `cancelled` / `error`; PTY child death and
+  stream idle without an end-of-turn marker surface as provider errors
+  (or `cancelled` after a requested interrupt) instead of implicit
+  success.
+- The ask-gate timeout chain is strictly ordered so each layer gives
+  up before the layer beneath it kills the transport: runner-side gate
+  supervision 570s (`GateRequest.timeout_seconds`; expiry emits an
+  honest error, interrupts the session, and raises `GateTimeoutError`)
+  < `/hook/ask` dispatcher wait 590s < hook bridge HTTP timeout 600s
+  < installed hook entry timeout 700s. `test_hook_routes.py` asserts
+  the ordering. Gates on deadline-free transports (Codex permission
+  gates, human review prose) remain unbounded.
+- Installed Claude hook entries carry explicit timeouts
+  (AskUserQuestion 700s, SessionStart 15s). The hook callback port is
+  set from `MINICLAW2_HOOK_PORT` / `MINICLAW2_PORT` at app startup and
+  otherwise captured from the actual HTTP/WS request scope.
+- Session-transcript retargeting seeds its JSONL offset from the
+  confirmed user marker or matched rotation record and falls back to
+  EOF — never offset 0 — so rotated-session history is not replayed as
+  current-turn events. Submit-confirmation fingerprinting uses the
+  node prompt (not the composed launch header) and scans only the
+  expected project hash.
 
 ### Pending
 
@@ -108,6 +137,13 @@ Trunk: `backend/miniclaw2/runner.py`, `backend/miniclaw2/registry.py`.
   anti-self-poisoning guidance block appended last. Templates live in
   `backend/miniclaw2/prompts/category_*.md` and
   `prompts/anti_self_poisoning.md`; covered by `test_launch_prompt.py`.
+- Launch refuses visibly on stale persisted settings: a present but
+  unresolvable `active_planspace_id` errors the node before the
+  provider starts (`StaleLaunchSettingsError` → error state + stub
+  preview naming the stale id) instead of silently launching without
+  the preview-contract lane. An invalid persisted `preferred_language`
+  is ignored on read-back (logged); wire input stays strictly
+  validated.
 
 ### Review agents — landed
 
@@ -141,7 +177,12 @@ Trunk: `backend/miniclaw2/runner.py`, `backend/miniclaw2/registry.py`.
 
 - `commit` op only. Auto-appended after any `agent` node that
   reaches `done` when `project.settings_override.auto_commit` is
-  truthy. Runs `git add -A && git commit -m miniclaw:node:<id>`.
+  truthy. Commits as `miniclaw:node:<id>`, staging everything except
+  framework-generated `.miniclaw2/` paths (pathspec-excluded and
+  defensively unstaged; no-op detection checks the staged diff).
+  `.miniclaw2/` is also appended to `.git/info/exclude` at project
+  registration and temporary-workspace creation, so auto-commits never
+  sweep framework state into the user's history or per-node diffs.
 - On success the preceding node's `commit_after` is rewritten to the
   new commit hash; a `node_updated` event broadcasts the change so
   the frontend can refresh diffs.
