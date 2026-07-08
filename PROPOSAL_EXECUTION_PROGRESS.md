@@ -1,6 +1,6 @@
 # MiniClaw2 Refactor Execution Progress
 
-Status as of 2026-07-08, after Step 2 working-tree implementation.
+Status as of 2026-07-08, after Step 3 working-tree implementation.
 
 Source proposals:
 
@@ -89,29 +89,46 @@ python -m pytest backend/tests
 
 Result after Step 2: `261 passed`.
 
+### Step 3 — Claude Transcript Retarget/Fingerprint Hardening
+
+Implemented in working tree after Step 2.
+
+What changed:
+
+- Claude submit confirmation now carries the JSONL offset of the fresh
+  user marker or fingerprint match.
+- Session retarget now seeds transcript draining from that marker offset
+  when known, otherwise from the target JSONL EOF; it no longer resets to
+  `0` and replays copied session history.
+- `ClaudeProvider` passes the actual node prompt as the submit-confirmation
+  fingerprint source while still sending the composed turn text to Claude.
+- Fingerprint fallback scans only the expected Claude project hash instead
+  of all recently modified project hashes.
+
+Tests added/updated:
+
+- `backend/tests/test_claude_provider.py`
+  - retarget without a marker offset seeks to EOF.
+  - retarget with a marker offset does not replay stale transcript history.
+  - fingerprint fallback uses node prompt text instead of composed launch
+    headers.
+  - fingerprint fallback does not adopt sessions from another project hash.
+  - `ClaudeProvider` passes node prompt text into native submit confirmation.
+
+Verification run:
+
+```bash
+python -m py_compile backend/miniclaw2/providers/claude_native/input.py backend/miniclaw2/providers/claude_native/__init__.py backend/miniclaw2/providers/claude.py backend/tests/test_claude_provider.py
+python -m pytest backend/tests/test_claude_provider.py
+python -m pytest backend/tests
+```
+
+Result after Step 3: `267 passed`.
+
 ## Recommended Next Step
 
 Continue the remaining P0 safety/robustness work before moving into
 contract renames or large structural refactors.
-
-### Step 3 — Claude Transcript Retarget/Fingerprint Hardening
-
-Goal: prevent stale transcript replay and cross-project session adoption.
-
-Likely files:
-
-- `backend/miniclaw2/providers/claude_native/__init__.py`
-- `backend/miniclaw2/providers/claude_native/input.py`
-- `backend/miniclaw2/providers/claude_native/transcript.py`
-- `backend/tests/test_claude_provider.py`
-
-Expected work:
-
-- On session retarget, seed the JSONL offset from the fresh user marker or
-  seek to EOF; do not reset to 0.
-- Harden submit-confirmation fallback so it fingerprints the actual node
-  prompt rather than common template header text.
-- Scope fallback scanning to the expected project hash.
 
 ### Step 4 — Stale Launch Settings Robustness
 

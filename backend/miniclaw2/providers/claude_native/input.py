@@ -42,8 +42,15 @@ _FINGERPRINT_MTIME_WINDOW = 60.0
 class SubmitResult:
     submitted: bool
     cli_session_id: str | None = None
+    stream_offset: int | None = None
     failure_reason: str | None = None
-    recheck: Callable[[], Awaitable[bool]] | None = None
+    recheck: Callable[[], Awaitable["SubmitResult"]] | None = None
+
+
+@dataclass(slots=True)
+class _FingerprintMatch:
+    session_id: str
+    stream_offset: int
 
 
 class InputWriter:
@@ -70,15 +77,22 @@ class InputWriter:
     def update_jsonl_path(self, path: Path) -> None:
         self._jsonl_path = path
 
-    async def send(self, content: str) -> SubmitResult:
+    async def send(
+        self,
+        content: str,
+        *,
+        confirmation_text: str | None = None,
+    ) -> SubmitResult:
         if not content:
             return SubmitResult(submitted=False, failure_reason="empty content")
 
+        fingerprint_text = confirmation_text or content
         throttle = (
             _FIRST_WRITE_THROTTLE if not self._sent_first else _STEADY_WRITE_THROTTLE
         )
         self._sent_first = True
 
+        base_path = self._jsonl_path
         base_offset = self._current_size()
         await self._type(content, throttle=throttle)
         submit_delay = (
@@ -88,20 +102,26 @@ class InputWriter:
         )
         await asyncio.sleep(submit_delay)
 
-        confirmed = False
+        confirmed_offset: int | None = None
         for attempt in range(_CONFIRM_RETRIES):
             self._pty_write(self._submit_key.raw.encode("utf-8"))
-            confirmed = await self._await_marker(base_offset)
-            if confirmed:
+            confirmed_offset = await self._await_marker(base_offset)
+            if confirmed_offset is not None:
                 break
 
-        if confirmed:
-            return SubmitResult(submitted=True)
+        if confirmed_offset is not None:
+            return SubmitResult(submitted=True, stream_offset=confirmed_offset)
 
-        # Fallback: fingerprint scan across sibling jsonl files.
-        matched = self._fingerprint_scan(content)
+        # Fallback: fingerprint scan across sibling jsonl files for this
+        # project hash. Use the node prompt, not the composed framework wrapper,
+        # when callers can provide it.
+        matched = self._fingerprint_scan(content, confirmation_text=fingerprint_text)
         if matched is not None:
-            return SubmitResult(submitted=True, cli_session_id=matched)
+            return SubmitResult(
+                submitted=True,
+                cli_session_id=matched.session_id,
+                stream_offset=matched.stream_offset,
+            )
 
         return SubmitResult(
             submitted=False,
@@ -109,7 +129,12 @@ class InputWriter:
                 "submit key sent but no fresh user marker appeared in the JSONL "
                 "within the confirmation window"
             ),
-            recheck=lambda: self._recheck(content, base_offset),
+            recheck=lambda: self._recheck(
+                content,
+                fingerprint_text,
+                base_path,
+                base_offset,
+            ),
         )
 
     async def _type(self, content: str, *, throttle: float) -> None:
@@ -125,28 +150,33 @@ class InputWriter:
                 self._pty_write(b"\r")
                 await asyncio.sleep(throttle)
 
-    async def _await_marker(self, base_offset: int) -> bool:
+    async def _await_marker(self, base_offset: int) -> int | None:
         deadline = time.monotonic() + _CONFIRM_WINDOW
         while time.monotonic() < deadline:
-            if self._marker_present(base_offset):
-                return True
+            marker_offset = self._marker_offset(base_offset)
+            if marker_offset is not None:
+                return marker_offset
             await asyncio.sleep(_CONFIRM_POLL_INTERVAL)
-        return False
+        return None
 
-    def _marker_present(self, base_offset: int) -> bool:
+    def _marker_offset(self, base_offset: int) -> int | None:
         try:
             size = self._jsonl_path.stat().st_size
         except FileNotFoundError:
-            return False
+            return None
         if size <= base_offset:
-            return False
+            return None
         try:
             with self._jsonl_path.open("rb") as f:
                 f.seek(base_offset)
-                chunk = f.read(size - base_offset)
+                offset = base_offset
+                for line in f:
+                    if contains_user_submit_marker(line):
+                        return offset
+                    offset += len(line)
         except OSError:
-            return False
-        return contains_user_submit_marker(chunk)
+            return None
+        return None
 
     def _current_size(self) -> int:
         try:
@@ -154,36 +184,47 @@ class InputWriter:
         except FileNotFoundError:
             return 0
 
-    def _fingerprint_scan(self, content: str) -> str | None:
-        fingerprint = fingerprint_prompt(content)
+    def _fingerprint_scan(
+        self,
+        content: str,
+        *,
+        confirmation_text: str | None = None,
+    ) -> _FingerprintMatch | None:
+        fingerprint = fingerprint_prompt(confirmation_text or content)
         if not fingerprint:
             return None
         now = time.time()
         cutoff = now - _FINGERPRINT_MTIME_WINDOW
 
-        # 1. Siblings under this project's hash.
+        # Only scan siblings under this project's hash. Cross-project fallback
+        # adoption is worse than a visible submit-confirmation failure.
         project_root = project_dir(self._expected_cwd, self._data_dir)
         for candidate in _mtime_sorted_jsonls(project_root, cutoff):
-            sid = _scan_for_fingerprint(candidate, fingerprint)
-            if sid is not None:
-                return sid
-
-        # 2. All project hashes under the data dir.
-        projects_root = self._data_dir / "projects"
-        if projects_root.exists():
-            for project_child in projects_root.iterdir():
-                if project_child == project_root or not project_child.is_dir():
-                    continue
-                for candidate in _mtime_sorted_jsonls(project_child, cutoff):
-                    sid = _scan_for_fingerprint(candidate, fingerprint)
-                    if sid is not None:
-                        return sid
+            match = _scan_for_fingerprint(candidate, fingerprint)
+            if match is not None:
+                return match
         return None
 
-    async def _recheck(self, content: str, base_offset: int) -> bool:
-        if self._marker_present(base_offset):
-            return True
-        return self._fingerprint_scan(content) is not None
+    async def _recheck(
+        self,
+        content: str,
+        confirmation_text: str,
+        base_path: Path,
+        base_offset: int,
+    ) -> SubmitResult:
+        if self._jsonl_path == base_path:
+            marker_offset = self._marker_offset(base_offset)
+            if marker_offset is not None:
+                return SubmitResult(submitted=True, stream_offset=marker_offset)
+
+        matched = self._fingerprint_scan(content, confirmation_text=confirmation_text)
+        if matched is not None:
+            return SubmitResult(
+                submitted=True,
+                cli_session_id=matched.session_id,
+                stream_offset=matched.stream_offset,
+            )
+        return SubmitResult(submitted=False)
 
 
 def _mtime_sorted_jsonls(directory: Path, cutoff: float) -> list[Path]:
@@ -202,17 +243,25 @@ def _mtime_sorted_jsonls(directory: Path, cutoff: float) -> list[Path]:
     return fresh
 
 
-def _scan_for_fingerprint(path: Path, fingerprint: str) -> str | None:
+def _scan_for_fingerprint(path: Path, fingerprint: str) -> _FingerprintMatch | None:
+    match: _FingerprintMatch | None = None
     try:
-        with path.open("r", encoding="utf-8", errors="ignore") as f:
-            for line in f:
+        with path.open("rb") as f:
+            offset = 0
+            for raw_line in f:
+                line_offset = offset
+                offset += len(raw_line)
+                line = raw_line.decode("utf-8", errors="ignore")
                 if fingerprint not in line:
                     continue
                 if line_matches_fingerprint(line, fingerprint):
-                    return path.stem
+                    match = _FingerprintMatch(
+                        session_id=path.stem,
+                        stream_offset=line_offset,
+                    )
     except OSError:
         return None
-    return None
+    return match
 
 
 def _looks_like_image_path(content: str) -> bool:

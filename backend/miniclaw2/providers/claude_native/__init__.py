@@ -8,6 +8,7 @@ on-disk JSONL transcript.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
@@ -171,24 +172,56 @@ class ClaudeNativeSession:
                 _SESSION_READY_TIMEOUT,
             )
 
-    async def send(self, prompt: str) -> SubmitResult:
+    async def send(
+        self,
+        prompt: str,
+        *,
+        confirmation_text: str | None = None,
+    ) -> SubmitResult:
         if self._input is None:
             raise ClaudeNativeError("session.start() has not been called")
-        result = await self._input.send(prompt)
+        result = await self._input.send(
+            prompt,
+            confirmation_text=confirmation_text,
+        )
         if not result.submitted:
             resolved = self._resolve_from_pid_state()
             if resolved is not None and resolved.session_id != self._cli_session_id:
-                self._retarget(resolved.session_id, resolved.jsonl_path)
+                self._retarget(
+                    resolved.session_id,
+                    resolved.jsonl_path,
+                    seek_to_eof=True,
+                )
                 recheck = result.recheck
-                if recheck is not None and await recheck():
+                rechecked = await recheck() if recheck is not None else None
+                if rechecked is not None and rechecked.submitted:
+                    if (
+                        rechecked.cli_session_id is not None
+                        and rechecked.cli_session_id != self._cli_session_id
+                    ):
+                        self._retarget(
+                            rechecked.cli_session_id,
+                            jsonl_path(
+                                self._cwd,
+                                rechecked.cli_session_id,
+                                self._data_dir,
+                            ),
+                            stream_offset=rechecked.stream_offset,
+                            seek_to_eof=True,
+                        )
+                    elif rechecked.stream_offset is not None:
+                        self._jsonl_offset = rechecked.stream_offset
                     return SubmitResult(
                         submitted=True,
                         cli_session_id=self._cli_session_id,
+                        stream_offset=self._jsonl_offset,
                     )
         elif result.cli_session_id and result.cli_session_id != self._cli_session_id:
             self._retarget(
                 result.cli_session_id,
                 jsonl_path(self._cwd, result.cli_session_id, self._data_dir),
+                stream_offset=result.stream_offset,
+                seek_to_eof=True,
             )
         return result
 
@@ -205,8 +238,14 @@ class ClaudeNativeSession:
             for record in result.events:
                 sid = self._translator.observed_session_id(record)
                 if sid and sid != self._cli_session_id:
+                    new_jsonl = jsonl_path(self._cwd, sid, self._data_dir)
                     self._retarget(
-                        sid, jsonl_path(self._cwd, sid, self._data_dir)
+                        sid,
+                        new_jsonl,
+                        stream_offset=_matching_record_end_offset(
+                            new_jsonl,
+                            record,
+                        ),
                     )
                     yield AgentProviderEvent(kind="session", session_id=sid)
 
@@ -308,10 +347,21 @@ class ClaudeNativeSession:
         except Exception as exc:  # noqa: BLE001
             raise ClaudeNativeError(f"PTY write failed: {exc}") from exc
 
-    def _retarget(self, new_session_id: str, new_jsonl: Path) -> None:
+    def _retarget(
+        self,
+        new_session_id: str,
+        new_jsonl: Path,
+        *,
+        stream_offset: int | None = None,
+        seek_to_eof: bool = False,
+    ) -> None:
         self._cli_session_id = new_session_id
         self._jsonl_path = new_jsonl
-        self._jsonl_offset = 0
+        self._jsonl_offset = _retarget_offset(
+            new_jsonl,
+            stream_offset,
+            seek_to_eof=seek_to_eof,
+        )
         if self._input is not None:
             self._input.update_jsonl_path(new_jsonl)
 
@@ -393,6 +443,44 @@ def _pty_child_alive(pty: Any) -> bool:
         return bool(isalive())
     except Exception:  # noqa: BLE001
         return False
+
+
+def _retarget_offset(
+    path: Path,
+    stream_offset: int | None,
+    *,
+    seek_to_eof: bool = False,
+) -> int:
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return max(0, stream_offset or 0)
+    if stream_offset is None:
+        return size if seek_to_eof else 0
+    return max(0, min(stream_offset, size))
+
+
+def _matching_record_end_offset(
+    path: Path,
+    target: dict[str, Any],
+) -> int | None:
+    latest_end_offset: int | None = None
+    try:
+        with path.open("rb") as f:
+            offset = 0
+            for raw_line in f:
+                end_offset = offset + len(raw_line)
+                try:
+                    record = json.loads(raw_line)
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    offset = end_offset
+                    continue
+                if record == target:
+                    latest_end_offset = end_offset
+                offset = end_offset
+    except OSError:
+        return None
+    return latest_end_offset
 
 
 def _pty_exit_detail(pty: Any) -> str:

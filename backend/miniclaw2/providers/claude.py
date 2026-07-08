@@ -54,7 +54,10 @@ class ClaudeProvider:
                 session_id=self._session.cli_session_id,
             )
 
-            result = await self._session.send(context.turn_text())
+            result = await self._session.send(
+                context.turn_text(),
+                confirmation_text=context.node.prompt,
+            )
             if not result.submitted:
                 yield AgentProviderEvent(
                     kind="error",
