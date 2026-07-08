@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 _CLEAR_VALUES = {"", "auto", "default", "none", "null", "system"}
 
@@ -83,7 +86,15 @@ def project_preferred_language(project: Any) -> str | None:
         settings = getattr(project, "settings_override", {}) or {}
         if isinstance(settings, dict):
             raw = settings.get("preferred_language") or settings.get("language")
-    return normalize_preferred_language(raw)
+    try:
+        return normalize_preferred_language(raw)
+    except ValueError:
+        logger.warning(
+            "ignoring invalid persisted preferred_language for project %s: %r",
+            getattr(project, "id", "<unknown>"),
+            raw,
+        )
+        return None
 
 
 def language_launch_instruction(preferred_language: str | None) -> str:

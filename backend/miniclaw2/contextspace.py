@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
 import shutil
@@ -29,6 +30,12 @@ from uuid import uuid4
 import yaml
 
 from .domain import Node, PlanspaceMode, Project, normalize_planspace_mode
+
+logger = logging.getLogger(__name__)
+
+
+class StaleLaunchSettingsError(RuntimeError):
+    """Raised when persisted launch settings no longer resolve safely."""
 
 
 @dataclass(slots=True)
@@ -634,6 +641,47 @@ def resolve_active_planspace(
     return binding, ref, plug_dir
 
 
+def require_resolvable_active_planspace(
+    project: Project,
+    *,
+    store_root: Path | None = None,
+) -> None:
+    """Reject stale persisted active-planspace launch settings.
+
+    A missing active setting is allowed: older projects and free-form
+    launches can run without a planspace lane. A present setting is stricter:
+    if it no longer matches an enabled planspace in the resolved binding, the
+    launch must fail visibly instead of silently dropping the preview contract.
+    """
+    root = contextspace_root(store_root)
+    project_requested = _string_setting(project, "active_planspace_id")
+    binding = resolve_project_binding(project, root)
+    if binding is None:
+        if project_requested:
+            _raise_stale_active_planspace(
+                project=project,
+                binding=None,
+                requested=project_requested,
+                available=[],
+            )
+        return
+
+    refs = _expand_required_plugs(root, binding.plugs)
+    requested = _requested_active_planspace_id(project, binding)
+    if not requested:
+        return
+    selected = _select_active_planspace(project, binding, refs)
+    if selected is not None:
+        return
+    available = [ref.id for ref in refs if _plug_kind(ref.id) == "planspace"]
+    _raise_stale_active_planspace(
+        project=project,
+        binding=binding,
+        requested=requested,
+        available=available,
+    )
+
+
 def list_skills(store_root: Path | None = None) -> list[dict[str, Any]]:
     """Enumerate user-wide skill plugs for the shelf.
 
@@ -898,10 +946,7 @@ def _select_active_planspace(
     planspaces = [plug for plug in plugs if _plug_kind(plug.id) == "planspace"]
     if not planspaces:
         return None
-    requested = (
-        _string_setting(project, "active_planspace_id")
-        or _string_value(binding.raw.get("active_planspace_id"))
-    )
+    requested = _requested_active_planspace_id(project, binding)
     if requested:
         for plug in planspaces:
             if plug.id == requested or _plug_slug(plug.id) == requested:
@@ -910,6 +955,35 @@ def _select_active_planspace(
     if len(planspaces) == 1:
         return planspaces[0]
     return None
+
+
+def _requested_active_planspace_id(
+    project: Project,
+    binding: ProjectBinding,
+) -> str | None:
+    return (
+        _string_setting(project, "active_planspace_id")
+        or _string_value(binding.raw.get("active_planspace_id"))
+    )
+
+
+def _raise_stale_active_planspace(
+    *,
+    project: Project,
+    binding: ProjectBinding | None,
+    requested: str,
+    available: list[str],
+) -> None:
+    available_text = ", ".join(available) if available else "none"
+    binding_text = binding.id if binding is not None else "none"
+    message = (
+        "Stale launch settings: active_planspace_id "
+        f"{requested!r} does not resolve for project {project.id!r} "
+        f"in binding {binding_text!r}. Available planspaces: {available_text}. "
+        "Clear active_planspace_id or select a valid planspace before launching."
+    )
+    logger.warning(message)
+    raise StaleLaunchSettingsError(message)
 
 
 def _binding_summary(

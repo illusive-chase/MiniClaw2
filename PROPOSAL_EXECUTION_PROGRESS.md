@@ -1,6 +1,6 @@
 # MiniClaw2 Refactor Execution Progress
 
-Status as of 2026-07-08, after Step 3 working-tree implementation.
+Status as of 2026-07-08, after Step 4 working-tree implementation.
 
 Source proposals:
 
@@ -125,32 +125,50 @@ python -m pytest backend/tests
 
 Result after Step 3: `267 passed`.
 
-## Recommended Next Step
-
-Continue the remaining P0 safety/robustness work before moving into
-contract renames or large structural refactors.
-
 ### Step 4 — Stale Launch Settings Robustness
 
-Goal: a stale stored setting should not silently strip the preview
-contract or wedge every launch.
+Implemented in working tree after Step 3.
 
-Likely files:
+What changed:
 
-- `backend/miniclaw2/contextspace.py`
-- `backend/miniclaw2/language.py`
-- `backend/miniclaw2/runner.py`
+- Persisted `preferred_language` is now lenient on read-back:
+  - API/write validation still rejects unsupported labels.
+  - launch/session read paths ignore invalid stored values with logging.
+  - invalid stored values no longer block runner startup or language
+    instruction composition.
+- Persisted `active_planspace_id` is now checked before agent provider
+  launch:
+  - missing active planspace settings remain allowed for older/free-form
+    projects.
+  - present but unresolvable active planspace settings fail visibly with a
+    framework `error` node and stub preview.
+  - the provider is not started when the preview-contract lane would be
+    silently stripped.
+
+Tests added/updated:
+
 - `backend/tests/test_language_preference.py`
-- `backend/tests/test_planspace_creation.py` or related launch tests
+  - invalid persisted project/settings language values are ignored on read.
+  - runner startup proceeds without injecting language instructions for an
+    invalid stored language.
+- `backend/tests/test_runner_preview_repair.py`
+  - stale `active_planspace_id` errors before provider launch and writes a
+    visible error preview.
 
-Expected work:
+Verification run:
 
-- If persisted `active_planspace_id` no longer resolves, either refuse
-  launch with a visible framework error or fall back to the first valid
-  bound planspace with logging. Prefer visible failure unless the existing
-  product behavior strongly favors fallback.
-- Make persisted `preferred_language` lenient on read-back; strict
-  validation should remain at the API/write boundary.
+```bash
+python -m py_compile backend/miniclaw2/contextspace.py backend/miniclaw2/language.py backend/miniclaw2/runner.py backend/miniclaw2/app.py backend/tests/test_language_preference.py backend/tests/test_runner_preview_repair.py
+python -m pytest backend/tests/test_language_preference.py backend/tests/test_runner_preview_repair.py
+python -m pytest backend/tests
+```
+
+Result after Step 4: `272 passed`.
+
+## Recommended Next Step
+
+Begin the Contract Hardening phase with a narrow typed `GateResponse`
+slice before large structural refactors.
 
 ## Later Phases
 

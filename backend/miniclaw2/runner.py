@@ -20,7 +20,12 @@ from uuid import uuid4
 
 from pydantic import BaseModel
 
-from .contextspace import compose_context_bundle, contextspace_root
+from .contextspace import (
+    StaleLaunchSettingsError,
+    compose_context_bundle,
+    contextspace_root,
+    require_resolvable_active_planspace,
+)
 from .domain import (
     Category,
     GateKind,
@@ -147,6 +152,7 @@ class NodeRunner:
         try:
             context_bundle = self._snapshot_context_bundle()
             self._snapshot_launch_settings(context_bundle)
+            self._validate_launch_settings()
             self._materialize_lane()
 
             is_human_review = self._is_human_interact_review()
@@ -240,6 +246,31 @@ class NodeRunner:
                 await self._emit(TurnDone())
         except asyncio.CancelledError:
             raise
+        except StaleLaunchSettingsError as exc:
+            logger.warning("runner refused launch due to stale settings: %s", exc)
+            error_msg = str(exc)
+            self.node.error = error_msg
+            self.node.commit_after = git_head(self.project.root_path)
+            self._write_stub_preview(NodeState.ERROR, reason=error_msg)
+            self._transition(NodeState.ERROR, started=True, finished=True)
+            await self._emit(
+                NodeStarted(
+                    node_id=self.node.id,
+                    parent_node_id=self.node.parent_node_id,
+                    kind=self.node.kind.value,
+                    category=(
+                        self.node.category.value if self.node.category is not None else None
+                    ),
+                    subtype=(
+                        self.node.subtype.value if self.node.subtype is not None else None
+                    ),
+                    agent_op_kind=self.node.agent_op_kind,
+                    prompt=self.node.prompt,
+                )
+            )
+            await self._emit(ErrorEvent(message=error_msg))
+            await self._emit_node_updated()
+            await self._emit(TurnDone())
         except Exception as exc:  # noqa: BLE001
             logger.exception("runner failed before start")
             error_msg = f"Unexpected runner error: {exc}"
@@ -833,6 +864,12 @@ class NodeRunner:
         if self.node.category is not None:
             snapshot["category"] = self.node.category.value
         self.node.settings_snapshot = snapshot
+
+    def _validate_launch_settings(self) -> None:
+        require_resolvable_active_planspace(
+            self.project,
+            store_root=self.store.root,
+        )
 
     # ---- state transitions ----
 

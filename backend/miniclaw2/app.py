@@ -36,6 +36,7 @@ from .events import (
     UserMessage,
 )
 from .git_state import node_diff
+from .language import project_preferred_language
 from .providers.claude_native import hook_runtime
 from .providers.claude_native.hook_installer import install_hooks
 from .registry import ProjectRegistry
@@ -973,7 +974,7 @@ def _session_info(registry: ProjectRegistry, project: Any) -> SessionInfo:
         created_at=project.created_at,
         turns=registry.turn_count(project.id),
         provider=project.provider,
-        preferred_language=project.preferred_language,
+        preferred_language=project_preferred_language(project),
         temporary=project.temporary,
         template_id=project.template_id,
         name=project.name,

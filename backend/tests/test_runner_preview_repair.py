@@ -255,6 +255,40 @@ class RunnerPreviewRepairTests(unittest.IsolatedAsyncioTestCase):
         assert preview is not None
         self.assertIn('"state": "error"', preview)
 
+    async def test_stale_active_planspace_errors_before_provider_launch(self) -> None:
+        settings = dict(self.project.settings_override)
+        settings["active_planspace_id"] = "planspaces.deleted"
+        self.project.settings_override = settings
+        self.store.update_project(self.project)
+        node = self._node()
+        emitted: list[dict] = []
+
+        async def on_event(payload: dict) -> None:
+            emitted.append(payload)
+
+        provider = _RepairProvider(repair_succeeds=True)
+        runner = NodeRunner(node, self.project, self.store, on_event)
+        with patch.object(runner_module, "_make_provider", return_value=provider):
+            await asyncio.wait_for(runner.run(), timeout=5.0)
+
+        self.assertEqual(provider.prompts, [])
+        self.assertEqual(node.state, NodeState.ERROR)
+        self.assertIn("Stale launch settings", node.error or "")
+        self.assertIn("active_planspace_id", node.error or "")
+        preview = self.store.read_node_preview(self.project.id, node.id)
+        self.assertIsNotNone(preview)
+        assert preview is not None
+        self.assertIn('"state": "error"', preview)
+        self.assertIn("planspaces.deleted", preview)
+        self.assertTrue(
+            any(
+                ev.get("type") == "error"
+                and "active_planspace_id" in ev.get("message", "")
+                for ev in emitted
+            )
+        )
+        self.assertEqual(emitted[-1].get("type"), "turn_done")
+
 
 if __name__ == "__main__":
     unittest.main()
