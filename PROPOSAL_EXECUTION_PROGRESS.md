@@ -1,6 +1,6 @@
 # MiniClaw2 Refactor Execution Progress
 
-Status as of 2026-07-08, after Step 4 working-tree implementation.
+Status as of 2026-07-08, after Step 5 working-tree implementation.
 
 Source proposals:
 
@@ -165,6 +165,57 @@ python -m pytest backend/tests
 
 Result after Step 4: `272 passed`.
 
+### Step 5 — Ask-Gate Timeout Chain Reconciliation
+
+Implemented in working tree after Step 4, following a design review of
+Steps 1–4 against both proposals.
+
+What changed:
+
+- Reconciled the contradiction between the Step 1 timeout fixes: the
+  120s `/hook/ask` dispatcher timeout was undercutting the 700s/600s
+  hook/bridge timeouts, capping the human answer window for
+  AskUserQuestion at 120s. The chain is now strictly ordered and each
+  layer gives up before the layer beneath it kills the transport:
+  - runner-side ask-gate supervision: 570s
+    (`providers/claude._ASK_GATE_TIMEOUT_SECONDS`)
+  - `/hook/ask` dispatcher wait: 590s (`app._HOOK_ASK_TIMEOUT_SECONDS`)
+  - hook bridge HTTP timeout: 600s (unchanged)
+  - installed hook entry timeout: 700s (unchanged)
+- `GateRequest` gained an optional `timeout_seconds`; when set, the
+  runner supervises the gate and on expiry emits an honest error event,
+  records it on the node, deliberately interrupts the session, and
+  raises `GateTimeoutError` (previously the turn died via the 2s
+  idle-detection heuristic with a misleading message). Gates on
+  deadline-free transports (Codex permission gates, human review prose)
+  remain unbounded.
+- Session retarget without a known marker/record offset now falls back
+  to EOF universally; the mid-stream retarget path could previously
+  fall back to offset 0 and replay copied session history when the
+  observed rotation record was not found in the new JSONL.
+- Extracted `NodeRunner._emit_node_started()` and replaced five inline
+  `NodeStarted(...)` copies (agent start, stale-settings handler,
+  generic pre-start error handler, op, verifier).
+
+Tests added/updated:
+
+- `backend/tests/test_runner_gate_timeout.py`
+  - supervised gate timeout interrupts the session, records an honest
+    error, and finalizes the node as cancelled.
+- `backend/tests/test_hook_routes.py`
+  - the four ask-timeout constants are strictly ordered.
+- `backend/tests/test_claude_provider.py`
+  - mid-stream retarget without a matching record seeks to EOF instead
+    of replaying the copied file head.
+
+Verification run:
+
+```bash
+python -m pytest backend/tests
+```
+
+Result after Step 5: `275 passed`.
+
 ## Recommended Next Step
 
 Begin the Contract Hardening phase with a narrow typed `GateResponse`
@@ -186,14 +237,49 @@ reprioritizes.
 - Clean up provider abstraction leaks and remove legacy
   `checkpoint_review` where still present.
 
+### Remaining Phase-0 Robustness (from PROPOSAL_DESIGN_REVIEW)
+
+Cheap items that were part of the design review's Phase 0/1 and have
+not landed yet:
+
+- Skip context-bundle snapshots for `op` nodes; add snapshot retention
+  (prune-on-startup keeping last N per project)
+  (PROPOSAL_DESIGN_REVIEW §2.2).
+- Provider lifetime `try/finally` hardening plus lifespan-shutdown
+  interruption of in-flight runners; startup sweep for orphaned
+  `claude` PTYs / `codex app-server` processes
+  (PROPOSAL_DESIGN_REVIEW §4.4, PROPOSAL_REFACTOR §2.6).
+- Surface `context_refresh` task errors (`last_error`) in the status
+  payload (PROPOSAL_REFACTOR §2.6).
+- Make the verifier timeout (60s hardcoded at the `runner.py`
+  subprocess wait) configurable (PROPOSAL_REFACTOR §2.6).
+
+### Docs And Dead Code (from both proposals' Phase 0)
+
+- Refresh `README.md`: remove `PhantomNode`, the retired
+  output-contract enum, `scenarios/`, planspace inbox files, and the
+  removed bootstrap endpoint; trim to run-instructions + pointers to
+  PHILOSOPHY/IMPLEMENTATION_STATUS.
+- Amend `PHILOSOPHY.md`: add the `verifier` kind to §6.1 with its
+  constraint set and soften §9.2 (PROPOSAL_DESIGN_REVIEW §1.1); add an
+  honest caveat to §6.1 that permission gates do not currently fire on
+  Claude (PROPOSAL_DESIGN_REVIEW §1.2).
+- Archive or rewrite `TEST.md` / `TESTING.zh.md` (retired scenario
+  engine) and move `TEMP_EXAMPLE.md` to `docs/archive/`.
+- Delete verified-dead code: `domain.ContextBundle`, `context.py`
+  (`load_project_context`), root `paths.py`
+  (`validate_project_relative_path`), `GateKind` one-member enum,
+  `SpawnArgs`, `_write_passthrough`, and the other §4.5 items in
+  PROPOSAL_REFACTOR.
+
 ### Structure
 
 - Extract a single lane/virtual graph mutation service used by reap,
   REST create/update/delete, and templates.
-- Deduplicate runner finalization and `NodeStarted` construction before
-  considering a full per-kind runner split.
+- Deduplicate the remaining runner finalization sequences (stub preview
+  → transition → `node_updated` → `turn_done`) before considering a
+  full per-kind runner split (`_emit_node_started` is done).
 - Add an in-process `Store.list_nodes` cache before considering SQLite.
-- Move dead code removal into a small mechanical PR.
 
 ### Naming And UI Vocabulary
 

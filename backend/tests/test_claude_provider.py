@@ -427,7 +427,7 @@ class ClaudeNativeStreamTerminalTest(unittest.IsolatedAsyncioTestCase):
                 },
             )
 
-            session._retarget("new-session", path, seek_to_eof=True)
+            session._retarget("new-session", path)
             self.assertEqual(session._jsonl_offset, path.stat().st_size)
 
     async def test_retarget_with_marker_offset_does_not_replay_history(self) -> None:
@@ -538,6 +538,66 @@ class ClaudeNativeStreamTerminalTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("fresh response", text)
         self.assertNotIn("stale response", text)
         self.assertEqual(events[-1].kind, "done")
+
+    async def test_stream_retarget_without_matching_record_seeks_to_eof(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            session = _stream_session(raw, _FakePty(alive=True))
+            actual_session_id = "actual-session"
+            actual_path = jsonl_path(
+                raw,
+                actual_session_id,
+                root / "data",
+            )
+            actual_path.parent.mkdir(parents=True)
+            # The rotated file holds only copied prior history; the record
+            # that announced the rotation is absent from it.
+            _write_jsonl(
+                actual_path,
+                {
+                    "type": "assistant",
+                    "sessionId": actual_session_id,
+                    "message": {
+                        "content": [{"type": "text", "text": "stale response"}],
+                    },
+                },
+                {
+                    "type": "result",
+                    "sessionId": actual_session_id,
+                    "subtype": "success",
+                },
+            )
+            _write_jsonl(
+                session._jsonl_path,
+                {
+                    "type": "assistant",
+                    "sessionId": actual_session_id,
+                    "message": {
+                        "content": [{"type": "text", "text": "rotation marker"}],
+                    },
+                },
+            )
+
+            with (
+                patch("miniclaw2.providers.claude_native._STREAM_IDLE_TICK_LIMIT", 0),
+                patch("miniclaw2.providers.claude_native._STREAM_POLL_INTERVAL", 0),
+            ):
+                events = await _collect(session.stream_events())
+
+            self.assertEqual(session._jsonl_offset, actual_path.stat().st_size)
+
+        text = "".join(
+            event.event.text
+            for event in events
+            if (
+                event.kind == "event"
+                and event.event is not None
+                and event.event.type == "text_delta"
+            )
+        )
+        self.assertNotIn("stale response", text)
 
     async def test_result_record_emits_explicit_done(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

@@ -29,6 +29,28 @@ class HookInstallerTest(unittest.TestCase):
             self.assertEqual(session_start["timeout"], 15)
 
 
+class AskTimeoutChainTest(unittest.TestCase):
+    def test_ask_timeout_chain_is_strictly_ordered(self) -> None:
+        """Each layer must give up before the layer beneath it kills the
+        transport: runner gate < /hook/ask wait < bridge HTTP < hook entry."""
+        from miniclaw2 import claude_hook_bridge
+        from miniclaw2.providers import claude as claude_provider
+        from miniclaw2.providers.claude_native import hook_installer
+
+        self.assertLess(
+            claude_provider._ASK_GATE_TIMEOUT_SECONDS,
+            app_module._HOOK_ASK_TIMEOUT_SECONDS,
+        )
+        self.assertLess(
+            app_module._HOOK_ASK_TIMEOUT_SECONDS,
+            claude_hook_bridge._ASK_TIMEOUT_SECONDS,
+        )
+        self.assertLess(
+            claude_hook_bridge._ASK_TIMEOUT_SECONDS,
+            hook_installer._ASK_HOOK_TIMEOUT_SECONDS,
+        )
+
+
 class HookAskRouteTest(unittest.TestCase):
     def test_hook_ask_timeout_returns_passthrough_status(self) -> None:
         async def slow_dispatcher(_payload: dict) -> dict:

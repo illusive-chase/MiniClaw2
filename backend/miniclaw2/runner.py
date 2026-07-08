@@ -57,7 +57,13 @@ from .launch_prompt import (
 )
 from .materialize import GRAPH_DIRNAME, materialize_active_lane, node_dir, snapshot_lane
 from .preview import render_executed_preview
-from .providers import AgentProvider, AgentProviderContext, AgentProviderEvent, GateRequest
+from .providers import (
+    AgentProvider,
+    AgentProviderContext,
+    AgentProviderEvent,
+    GateRequest,
+    GateTimeoutError,
+)
 from .providers.claude import ClaudeProvider
 from .providers.codex import CodexProvider
 from .reap import reap_lane
@@ -162,21 +168,7 @@ class NodeRunner:
                 else NodeState.RUNNING
             )
             self._transition(first_state, started=True)
-            await self._emit(
-                NodeStarted(
-                    node_id=self.node.id,
-                    parent_node_id=self.node.parent_node_id,
-                    kind=self.node.kind.value,
-                    category=(
-                        self.node.category.value if self.node.category is not None else None
-                    ),
-                    subtype=(
-                        self.node.subtype.value if self.node.subtype is not None else None
-                    ),
-                    agent_op_kind=self.node.agent_op_kind,
-                    prompt=self.node.prompt,
-                )
-            )
+            await self._emit_node_started()
             await self._emit_node_updated()
 
             final_state: NodeState = NodeState.DONE
@@ -253,21 +245,7 @@ class NodeRunner:
             self.node.commit_after = git_head(self.project.root_path)
             self._write_stub_preview(NodeState.ERROR, reason=error_msg)
             self._transition(NodeState.ERROR, started=True, finished=True)
-            await self._emit(
-                NodeStarted(
-                    node_id=self.node.id,
-                    parent_node_id=self.node.parent_node_id,
-                    kind=self.node.kind.value,
-                    category=(
-                        self.node.category.value if self.node.category is not None else None
-                    ),
-                    subtype=(
-                        self.node.subtype.value if self.node.subtype is not None else None
-                    ),
-                    agent_op_kind=self.node.agent_op_kind,
-                    prompt=self.node.prompt,
-                )
-            )
+            await self._emit_node_started()
             await self._emit(ErrorEvent(message=error_msg))
             await self._emit_node_updated()
             await self._emit(TurnDone())
@@ -278,21 +256,7 @@ class NodeRunner:
             self.node.commit_after = git_head(self.project.root_path)
             self._write_stub_preview(NodeState.ERROR, reason=error_msg)
             self._transition(NodeState.ERROR, started=True, finished=True)
-            await self._emit(
-                NodeStarted(
-                    node_id=self.node.id,
-                    parent_node_id=self.node.parent_node_id,
-                    kind=self.node.kind.value,
-                    category=(
-                        self.node.category.value if self.node.category is not None else None
-                    ),
-                    subtype=(
-                        self.node.subtype.value if self.node.subtype is not None else None
-                    ),
-                    agent_op_kind=self.node.agent_op_kind,
-                    prompt=self.node.prompt,
-                )
-            )
+            await self._emit_node_started()
             await self._emit(ErrorEvent(message=error_msg))
             await self._emit_node_updated()
             await self._emit(TurnDone())
@@ -308,19 +272,7 @@ class NodeRunner:
         context_bundle = self._snapshot_context_bundle()
         self._snapshot_launch_settings(context_bundle)
         self._transition(NodeState.RUNNING, started=True)
-        await self._emit(
-            NodeStarted(
-                node_id=self.node.id,
-                parent_node_id=self.node.parent_node_id,
-                kind=self.node.kind.value,
-                category=(
-                    self.node.category.value if self.node.category is not None else None
-                ),
-                subtype=(
-                    self.node.subtype.value if self.node.subtype is not None else None
-                ),
-            )
-        )
+        await self._emit_node_started()
         await self._emit_node_updated()
 
         final_state = NodeState.DONE
@@ -364,19 +316,7 @@ class NodeRunner:
         context_bundle = self._snapshot_context_bundle()
         self._snapshot_launch_settings(context_bundle)
         self._transition(NodeState.RUNNING, started=True)
-        await self._emit(
-            NodeStarted(
-                node_id=self.node.id,
-                parent_node_id=self.node.parent_node_id,
-                kind=self.node.kind.value,
-                category=(
-                    self.node.category.value if self.node.category is not None else None
-                ),
-                subtype=(
-                    self.node.subtype.value if self.node.subtype is not None else None
-                ),
-            )
-        )
+        await self._emit_node_started()
         await self._emit_node_updated()
 
         final_state = NodeState.DONE
@@ -943,6 +883,27 @@ class NodeRunner:
     async def _emit_node_updated(self) -> None:
         await self._emit(NodeUpdated(node=self.node.model_dump()))
 
+    async def _emit_node_started(self) -> None:
+        await self._emit(
+            NodeStarted(
+                node_id=self.node.id,
+                parent_node_id=self.node.parent_node_id,
+                kind=self.node.kind.value,
+                category=(
+                    self.node.category.value
+                    if self.node.category is not None
+                    else None
+                ),
+                subtype=(
+                    self.node.subtype.value
+                    if self.node.subtype is not None
+                    else None
+                ),
+                agent_op_kind=self.node.agent_op_kind,
+                prompt=self.node.prompt,
+            )
+        )
+
     # ---- inline gate flow ----
 
     async def _request_gate(self, request: GateRequest) -> dict[str, Any]:
@@ -976,7 +937,23 @@ class NodeRunner:
         )
 
         try:
-            response = await future
+            if request.timeout_seconds is None:
+                response = await future
+            else:
+                try:
+                    response = await asyncio.wait_for(
+                        future, timeout=request.timeout_seconds
+                    )
+                except TimeoutError:
+                    message = (
+                        f"{request.subtype.value} gate timed out after "
+                        f"{request.timeout_seconds:.0f}s without a human "
+                        "response; interrupting the session"
+                    )
+                    self.node.error = message
+                    await self._emit(ErrorEvent(message=message))
+                    await self.interrupt()
+                    raise GateTimeoutError(message) from None
         finally:
             self._gates.pop(gate.id, None)
             if gate.state is GateState.PENDING:

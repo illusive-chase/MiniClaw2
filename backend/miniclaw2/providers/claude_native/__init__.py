@@ -187,11 +187,7 @@ class ClaudeNativeSession:
         if not result.submitted:
             resolved = self._resolve_from_pid_state()
             if resolved is not None and resolved.session_id != self._cli_session_id:
-                self._retarget(
-                    resolved.session_id,
-                    resolved.jsonl_path,
-                    seek_to_eof=True,
-                )
+                self._retarget(resolved.session_id, resolved.jsonl_path)
                 recheck = result.recheck
                 rechecked = await recheck() if recheck is not None else None
                 if rechecked is not None and rechecked.submitted:
@@ -207,7 +203,6 @@ class ClaudeNativeSession:
                                 self._data_dir,
                             ),
                             stream_offset=rechecked.stream_offset,
-                            seek_to_eof=True,
                         )
                     elif rechecked.stream_offset is not None:
                         self._jsonl_offset = rechecked.stream_offset
@@ -221,7 +216,6 @@ class ClaudeNativeSession:
                 result.cli_session_id,
                 jsonl_path(self._cwd, result.cli_session_id, self._data_dir),
                 stream_offset=result.stream_offset,
-                seek_to_eof=True,
             )
         return result
 
@@ -353,15 +347,10 @@ class ClaudeNativeSession:
         new_jsonl: Path,
         *,
         stream_offset: int | None = None,
-        seek_to_eof: bool = False,
     ) -> None:
         self._cli_session_id = new_session_id
         self._jsonl_path = new_jsonl
-        self._jsonl_offset = _retarget_offset(
-            new_jsonl,
-            stream_offset,
-            seek_to_eof=seek_to_eof,
-        )
+        self._jsonl_offset = _retarget_offset(new_jsonl, stream_offset)
         if self._input is not None:
             self._input.update_jsonl_path(new_jsonl)
 
@@ -445,18 +434,19 @@ def _pty_child_alive(pty: Any) -> bool:
         return False
 
 
-def _retarget_offset(
-    path: Path,
-    stream_offset: int | None,
-    *,
-    seek_to_eof: bool = False,
-) -> int:
+def _retarget_offset(path: Path, stream_offset: int | None) -> int:
+    """Offset to resume draining from after a session retarget.
+
+    The head of a rotated session file is copied prior history; resuming from
+    0 would replay it as current-turn events. Without a known marker/record
+    offset the safe fallback is EOF.
+    """
     try:
         size = path.stat().st_size
     except OSError:
         return max(0, stream_offset or 0)
     if stream_offset is None:
-        return size if seek_to_eof else 0
+        return size
     return max(0, min(stream_offset, size))
 
 

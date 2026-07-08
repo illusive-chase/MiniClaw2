@@ -21,6 +21,16 @@ from .claude_native.ask_payload import format_ask_directive, parse_ask_payload
 
 logger = logging.getLogger(__name__)
 
+# Ask gates ride the PreToolUse hook bridge, whose transport has hard
+# deadlines. Each layer must give up before the layer beneath it kills the
+# transport, or the user's answer lands on a dead socket:
+#   this runner-side gate supervision (570s)
+#   < /hook/ask dispatcher wait_for (app._HOOK_ASK_TIMEOUT_SECONDS, 590s)
+#   < hook bridge HTTP timeout (claude_hook_bridge._ASK_TIMEOUT_SECONDS, 600s)
+#   < installed hook entry timeout (hook_installer, 700s)
+# test_hook_routes asserts this ordering.
+_ASK_GATE_TIMEOUT_SECONDS = 570.0
+
 
 class ClaudeProvider:
     name = "claude"
@@ -121,6 +131,7 @@ class ClaudeProvider:
                     "questions": parsed.raw_questions,
                 },
                 provider_request_id=payload.get("hook_request_id"),
+                timeout_seconds=_ASK_GATE_TIMEOUT_SECONDS,
             )
         )
         return format_ask_directive(response, parsed)

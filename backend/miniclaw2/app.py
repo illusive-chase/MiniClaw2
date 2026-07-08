@@ -37,6 +37,7 @@ from .events import (
 )
 from .git_state import node_diff
 from .language import project_preferred_language
+from .providers import GateTimeoutError
 from .providers.claude_native import hook_runtime
 from .providers.claude_native.hook_installer import install_hooks
 from .registry import ProjectRegistry
@@ -56,7 +57,12 @@ from .templates import (
 
 logger = logging.getLogger(__name__)
 
-_HOOK_ASK_TIMEOUT_SECONDS = 120.0
+# Outer safety net for a hung ask dispatcher. Must respond before the hook
+# bridge's 600s HTTP timeout so the bridge sees a structured failure instead
+# of a dead socket. Slow humans are handled one layer down: the runner-side
+# ask-gate supervision (providers/claude._ASK_GATE_TIMEOUT_SECONDS, 570s)
+# fires first and interrupts the session with an honest error.
+_HOOK_ASK_TIMEOUT_SECONDS = 590.0
 
 
 class CreateSessionRequest(BaseModel):
@@ -264,6 +270,9 @@ def create_app() -> FastAPI:
                 status_code=504,
                 content={"error": "ask dispatch timed out"},
             )
+        except GateTimeoutError as exc:
+            logger.warning("hook_ask gate timed out for node %s: %s", node_id, exc)
+            return JSONResponse(status_code=504, content={"error": str(exc)})
         except Exception as exc:  # noqa: BLE001
             logger.exception("hook_ask dispatcher failed")
             raise HTTPException(500, f"ask dispatch failed: {exc}") from exc
