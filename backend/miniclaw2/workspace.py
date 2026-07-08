@@ -12,6 +12,8 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+from .git_state import ensure_miniclaw_git_excluded
+
 
 TEMP_PREFIX = "miniclaw2-tmp-"
 
@@ -28,6 +30,9 @@ def create_temporary_root() -> str:
         _run(["git", "init", "-q", "--initial-branch=main"], root)
         _run(["git", "config", "user.email", "miniclaw2@local"], root)
         _run(["git", "config", "user.name", "miniclaw2"], root)
+        exclude_error = ensure_miniclaw_git_excluded(str(root))
+        if exclude_error:
+            raise RuntimeError(f"failed to write git exclude: {exclude_error}")
         _run(
             ["git", "commit", "-q", "--allow-empty", "-m", "miniclaw:init"],
             root,

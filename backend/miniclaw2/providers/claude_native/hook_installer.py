@@ -22,6 +22,8 @@ from typing import Any
 
 _HOOK_MARKER = "miniclaw2.claude_hook_bridge"
 _SESSION_READY_MARKER = "--session-ready"
+_ASK_HOOK_TIMEOUT_SECONDS = 700
+_SESSION_READY_HOOK_TIMEOUT_SECONDS = 15
 
 
 def install_hooks(settings_path: Path | None = None) -> Path:
@@ -39,8 +41,16 @@ def install_hooks(settings_path: Path | None = None) -> Path:
     ask_command = _quoted_python() + f" -m {_HOOK_MARKER}"
     ready_command = ask_command + f" {_SESSION_READY_MARKER}"
 
-    ask_entry = {"type": "command", "command": ask_command}
-    ready_entry = {"type": "command", "command": ready_command}
+    ask_entry = {
+        "type": "command",
+        "command": ask_command,
+        "timeout": _ASK_HOOK_TIMEOUT_SECONDS,
+    }
+    ready_entry = {
+        "type": "command",
+        "command": ready_command,
+        "timeout": _SESSION_READY_HOOK_TIMEOUT_SECONDS,
+    }
 
     _replace_group(
         hooks,

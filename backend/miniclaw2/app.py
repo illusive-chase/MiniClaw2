@@ -55,6 +55,8 @@ from .templates import (
 
 logger = logging.getLogger(__name__)
 
+_HOOK_ASK_TIMEOUT_SECONDS = 120.0
+
 
 class CreateSessionRequest(BaseModel):
     cwd: str | None = None
@@ -212,6 +214,7 @@ def create_app() -> FastAPI:
         # merge the AskUserQuestion / SessionStart hooks into the user's
         # ~/.claude/settings.json. Both are idempotent.
         hook_runtime.ensure_token()
+        _set_hook_port_from_env()
         try:
             install_hooks()
         except Exception:  # noqa: BLE001
@@ -226,6 +229,11 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
     registry = ProjectRegistry()
+
+    @app.middleware("http")
+    async def record_hook_port(request: Request, call_next):
+        _record_hook_port_from_scope(request.scope)
+        return await call_next(request)
 
     def _require_hook_token(request: Request) -> None:
         auth = request.headers.get("Authorization", "")
@@ -245,7 +253,16 @@ def create_app() -> FastAPI:
         if dispatcher is None:
             raise HTTPException(404, f"no active session for node {node_id!r}")
         try:
-            directive = await dispatcher(payload)
+            directive = await asyncio.wait_for(
+                dispatcher(payload),
+                timeout=_HOOK_ASK_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            logger.warning("hook_ask dispatcher timed out for node %s", node_id)
+            return JSONResponse(
+                status_code=504,
+                content={"error": "ask dispatch timed out"},
+            )
         except Exception as exc:  # noqa: BLE001
             logger.exception("hook_ask dispatcher failed")
             raise HTTPException(500, f"ask dispatch failed: {exc}") from exc
@@ -810,6 +827,7 @@ def create_app() -> FastAPI:
 
     @app.websocket("/ws/{sid}")
     async def ws(websocket: WebSocket, sid: str) -> None:
+        _record_hook_port_from_scope(websocket.scope)
         project = registry.get_project(sid)
         if project is None:
             await websocket.close(code=4404, reason="session not found")
@@ -978,6 +996,29 @@ async def _send(
 
 def _context_task_running(project_id: str) -> bool:
     return bool(context_refresh_status(project_id).get("running"))
+
+
+def _set_hook_port_from_env() -> None:
+    raw = os.environ.get("MINICLAW2_HOOK_PORT") or os.environ.get("MINICLAW2_PORT")
+    if not raw:
+        return
+    try:
+        hook_runtime.set_port(int(raw))
+    except ValueError:
+        logger.debug("ignoring invalid hook port value %r", raw)
+
+
+def _record_hook_port_from_scope(scope: dict[str, Any]) -> None:
+    if os.environ.get("MINICLAW2_HOOK_PORT") or os.environ.get("MINICLAW2_PORT"):
+        return
+    server = scope.get("server")
+    if (
+        isinstance(server, (tuple, list))
+        and len(server) >= 2
+        and isinstance(server[1], int)
+        and server[1] > 0
+    ):
+        hook_runtime.set_port(server[1])
 
 
 app = create_app()

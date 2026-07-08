@@ -22,6 +22,7 @@ from .contextspace import (
     resolve_active_planspace,
     set_planspace_mode,
 )
+from .git_state import ensure_miniclaw_git_excluded
 from .domain import (
     TERMINAL_NODE_STATES,
     Category,
@@ -213,6 +214,13 @@ class ProjectRegistry:
                 raise ValueError("cwd is required for non-temporary projects")
             root_path = _normalize_project_root(
                 cwd, create_missing=create_missing_cwd
+            )
+        exclude_error = ensure_miniclaw_git_excluded(root_path)
+        if exclude_error:
+            logger.debug(
+                "failed to add .miniclaw2 to git exclude for %s: %s",
+                root_path,
+                exclude_error,
             )
         settings: dict[str, Any] = {}
         if model:
