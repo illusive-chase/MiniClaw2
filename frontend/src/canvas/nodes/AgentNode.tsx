@@ -13,7 +13,7 @@ import { canResumeNode } from "../../nodeUtil";
  * Agent tile: rounded rectangle, ~224x130. The primary work unit.
  *
  * Color encodes `state`; shape encodes `kind`. Shows a one-line prompt preview
- * plus a streaming sweep bar when the agent is actively running. A hover-only
+ * plus an active sweep bar when the agent is running. A hover-only
  * right-edge action stack exposes promote, continuation, dependency, and
  * removal affordances when each operation is valid.
  */
@@ -277,7 +277,7 @@ function AgentNodeImpl({ data, selected }: NodeProps<AgentNodeData>) {
         />
       )}
 
-      {/* live streaming dot */}
+      {/* live runner dot */}
       {isActive && (
         <span
           className="pointer-events-none absolute right-2 top-2 inline-block h-1.5 w-1.5 rounded-full bg-state-running shadow-[0_0_0_3px_rgb(var(--state-running)/0.25)]"
@@ -632,7 +632,7 @@ function formatStartTime(node: NodeInfo): string {
 function tooltipForAgent(node: NodeInfo, isActive: boolean): string {
   const promptText = node.prompt_draft || node.prompt;
   const prompt = promptText ? `"${promptText.slice(0, 80)}"` : "(no prompt)";
-  const status = isActive ? " · streaming" : "";
+  const status = isActive ? " · active" : "";
   const category = node.category ? ` · ${node.category}` : "";
   return `Agent ${node.state}${category}${status}\n${prompt}\n${node.id}`;
 }

@@ -129,7 +129,7 @@ export function App() {
   const [pendingGate, setPendingGate] = useState<PendingGateState | null>(null);
   const [pendingReview, setPendingReview] = useState<PendingGateState | null>(null);
 
-  const [streaming, setStreaming] = useState(false);
+  const [projectMutationPending, setProjectMutationPending] = useState(false);
 
   /* True once both initial fetches (nodes + contextspace) have settled for the
    * current session. The canvas is held off-screen until then so hidden-planspace
@@ -196,28 +196,6 @@ export function App() {
     [],
   );
 
-  const handleNewSkill = useCallback(
-    async (userSeed: string) => {
-      if (!session?.id) return;
-      const active = sessionContextSpace?.active_planspace_id ?? null;
-      const result = await createVirtual(session.id, {
-        prompt_draft: userSeed,
-        category: "regular",
-        agent_op_kind: "skill_edit",
-        planspace_id: active,
-      });
-      setNodes((prev) => {
-        const updated = upsertNode(prev, result.node);
-        nodeCountRef.current = updated.length;
-        return updated;
-      });
-      selectAndOpenNode(result.node.id);
-      setFocusRequestVersion((v) => v + 1);
-    },
-    [session?.id, sessionContextSpace?.active_planspace_id, selectAndOpenNode],
-  );
-
-
   const panelRef = useRef<HTMLElement | null>(null);
   const activeNodeIdRef = useRef<string | null>(null);
   const inspectedNodeIdRef = useRef<string | null>(null);
@@ -269,6 +247,7 @@ export function App() {
   const resetAllSessionState = useCallback(() => {
     refreshNodesSeqRef.current += 1;
     nodeCountRef.current = 0;
+    nodesRef.current = [];
     setNodes([]);
     setSelection({ kind: "none" });
     setInspectedNodeId(null);
@@ -283,7 +262,7 @@ export function App() {
     setSessionContextSpaceError(null);
     setSessionSettingsSaving(false);
     setSessionSettingsError(null);
-    setStreaming(false);
+    setProjectMutationPending(false);
     setPendingGate(null);
     setPendingReview(null);
     setFocusRequestVersion(0);
@@ -356,8 +335,9 @@ export function App() {
     () => nodes.some((n) => INTERRUPTIBLE_STATES.has(n.state)),
     [nodes],
   );
-  const projectRunnerActive = streaming || !!activeNodeFromList;
-  const activeCanvasNodeId = activeNodeIdRef.current ?? activeNodeFromList?.id ?? null;
+  const projectRunnerActive = !!activeNodeFromList;
+  const projectRunnerBusy = projectMutationPending || projectRunnerActive;
+  const activeCanvasNodeId = activeNodeFromList?.id ?? null;
 
   const activePendingGate = useMemo(
     () => keepPendingForState(pendingGate, nodes, "waiting"),
@@ -371,9 +351,44 @@ export function App() {
   const composerLocked = !!activePendingGate || !!activePendingReview;
   const virtualCreateDisabled =
     composerLocked ||
-    projectRunnerActive ||
+    projectRunnerBusy ||
     sessionSettingsSaving ||
     !!sessionContextSpace?.context_refresh?.running;
+
+  const handleNewSkill = useCallback(
+    async (userSeed: string) => {
+      if (!session?.id || virtualCreateDisabled) return;
+      const active = sessionContextSpace?.active_planspace_id ?? null;
+      setProjectMutationPending(true);
+      setSessionContextSpaceError(null);
+      try {
+        const result = await createVirtual(session.id, {
+          prompt_draft: userSeed,
+          category: "regular",
+          agent_op_kind: "skill_edit",
+          planspace_id: active,
+        });
+        setNodes((prev) => {
+          const updated = upsertNode(prev, result.node);
+          nodeCountRef.current = updated.length;
+          nodesRef.current = updated;
+          return updated;
+        });
+        selectAndOpenNode(result.node.id);
+        setFocusRequestVersion((v) => v + 1);
+      } catch (err) {
+        setSessionContextSpaceError(String(err));
+      } finally {
+        setProjectMutationPending(false);
+      }
+    },
+    [
+      session?.id,
+      sessionContextSpace?.active_planspace_id,
+      virtualCreateDisabled,
+      selectAndOpenNode,
+    ],
+  );
 
   /* refresh node list.
    *
@@ -387,47 +402,69 @@ export function App() {
    * be missing whatever the WS just added, and the canvas appears to
    * "clean up" nodes.
    *
-   * Fix: never REMOVE local nodes via a refresh. Real removals arrive as
-   * ``node_removed`` events (or as explicit local filters after a delete
-   * API call). Additions and state updates from ``next`` are still
-   * applied, so drift and missed events still get corrected. */
+   * Fix: treat ``next`` as authoritative for nodes that existed when the
+   * request started, so missed ``node_removed`` events are reconciled. Preserve
+   * nodes that appeared locally while the request was in flight, because the
+   * backend snapshot can legitimately predate those WS/POST additions. */
   const refreshNodes = useCallback(async () => {
     const sessionId = session?.id;
     if (!sessionId) return;
     const seq = ++refreshNodesSeqRef.current;
+    const refreshStartedNodeIds = new Set(nodesRef.current.map((node) => node.id));
     try {
       const next = await listNodes(sessionId);
       if (seq !== refreshNodesSeqRef.current) return;
       if (currentRouteRef.current !== "project" || currentSessionIdRef.current !== sessionId) {
         return;
       }
-      if (nodeCountRef.current > 0 && next.length === 0) {
-        console.warn("Ignoring empty node refresh for non-empty project", {
-          sessionId,
-          currentCount: nodeCountRef.current,
-        });
-        return;
-      }
+      const nextById = new Map(next.map((node) => [node.id, node]));
+      const wasRemovedByRefresh = (nodeId: string | null | undefined) =>
+        !!nodeId && refreshStartedNodeIds.has(nodeId) && !nextById.has(nodeId);
       setNodes((current) => {
-        if (current.length === 0) return next;
-        const nextById = new Map(next.map((n) => [n.id, n]));
+        if (current.length === 0) {
+          nodeCountRef.current = next.length;
+          nodesRef.current = next;
+          return next;
+        }
         const currentById = new Map(current.map((n) => [n.id, n]));
         const merged: NodeInfo[] = [];
         for (const c of current) {
           /* Prefer the backend version when it exists (state drift correction);
-           * otherwise keep the local node — a very recent WS/POST addition that
-           * hasn't landed in the backend snapshot yet, or an entry the caller
-           * intends to keep across the (best-effort) refresh. */
-          merged.push(nextById.get(c.id) ?? c);
+           * otherwise only keep local nodes added after this refresh began. */
+          const refreshed = nextById.get(c.id);
+          if (refreshed) {
+            merged.push(refreshed);
+          } else if (!refreshStartedNodeIds.has(c.id)) {
+            merged.push(c);
+          }
         }
         for (const n of next) {
           if (!currentById.has(n.id)) merged.push(n);
         }
         merged.sort((a, b) => a.created_at - b.created_at);
         nodeCountRef.current = merged.length;
+        nodesRef.current = merged;
         return merged;
       });
-      setInspectedNodeId((current) => current ?? next.at(-1)?.id ?? null);
+      if (wasRemovedByRefresh(activeNodeIdRef.current)) {
+        activeNodeIdRef.current = null;
+      }
+      setPendingGate((current) =>
+        current && wasRemovedByRefresh(current.nodeId) ? null : current,
+      );
+      setPendingReview((current) =>
+        current && wasRemovedByRefresh(current.nodeId) ? null : current,
+      );
+      setSelection((current) =>
+        (current.kind === "agent" || current.kind === "op") &&
+        wasRemovedByRefresh(current.nodeId)
+          ? { kind: "none" }
+          : current,
+      );
+      setInspectedNodeId((current) => {
+        if (wasRemovedByRefresh(current)) return null;
+        return current ?? next.at(-1)?.id ?? null;
+      });
     } catch (err) {
       console.error("list nodes failed:", err);
     }
@@ -567,10 +604,10 @@ export function App() {
 
   const startNewDirection = useCallback(
     async (userSeed: string, mode: PlanspaceMode) => {
-      if (!session?.id || sessionSettingsSaving) return;
+      if (!session?.id || sessionSettingsSaving || projectRunnerBusy) return;
       setSessionContextSpaceSaving(true);
       setSessionContextSpaceError(null);
-      setStreaming(true);
+      setProjectMutationPending(true);
       try {
         const created = await createPlanspace(session.id, {
           user_seed: userSeed,
@@ -580,18 +617,25 @@ export function App() {
         await refreshContextSpace();
         await refreshNodes();
       } catch (err) {
-        setStreaming(false);
         setSessionContextSpaceError(String(err));
       } finally {
+        setProjectMutationPending(false);
         setSessionContextSpaceSaving(false);
       }
     },
-    [session?.id, sessionSettingsSaving, refreshContextSpace, refreshNodes, selectAndOpenNode],
+    [
+      session?.id,
+      sessionSettingsSaving,
+      projectRunnerBusy,
+      refreshContextSpace,
+      refreshNodes,
+      selectAndOpenNode,
+    ],
   );
 
   const startBlankDirection = useCallback(
     async (userSeed: string, mode: PlanspaceMode) => {
-      if (!session?.id || sessionSettingsSaving) return;
+      if (!session?.id || sessionSettingsSaving || projectRunnerBusy) return;
       setSessionContextSpaceSaving(true);
       setSessionContextSpaceError(null);
       try {
@@ -609,7 +653,14 @@ export function App() {
         setSessionContextSpaceSaving(false);
       }
     },
-    [session?.id, sessionSettingsSaving, refreshContextSpace, refreshNodes, selectAndOpenNode],
+    [
+      session?.id,
+      sessionSettingsSaving,
+      projectRunnerBusy,
+      refreshContextSpace,
+      refreshNodes,
+      selectAndOpenNode,
+    ],
   );
 
   const changePlanspaceMode = useCallback(
@@ -631,35 +682,38 @@ export function App() {
 
   const promoteVirtualNode = useCallback(
     async (nodeId: string) => {
-      if (!session?.id || projectRunnerActive || composerLocked) return;
-      setStreaming(true);
+      if (!session?.id || projectRunnerBusy || composerLocked) return;
+      setProjectMutationPending(true);
       setSessionContextSpaceError(null);
       try {
         const result = await promoteVirtual(session.id, nodeId);
         setNodes((prev) => {
           const updated = upsertNode(prev, result.node);
           nodeCountRef.current = updated.length;
+          nodesRef.current = updated;
           return updated;
         });
         selectAndOpenNode(result.node.id);
         await refreshNodes();
       } catch (err) {
-        setStreaming(false);
         setSessionContextSpaceError(String(err));
+      } finally {
+        setProjectMutationPending(false);
       }
     },
-    [session?.id, projectRunnerActive, composerLocked, refreshNodes, selectAndOpenNode],
+    [session?.id, projectRunnerBusy, composerLocked, refreshNodes, selectAndOpenNode],
   );
 
   const updateVirtualNode = useCallback(
     async (nodeId: string, payload: UpdateVirtualPayload) => {
-      if (!session?.id || projectRunnerActive || composerLocked) return;
+      if (!session?.id || projectRunnerBusy || composerLocked) return;
       setSessionContextSpaceError(null);
       try {
         const result = await updateVirtual(session.id, nodeId, payload);
         setNodes((prev) => {
           const updated = upsertNode(prev, result.node);
           nodeCountRef.current = updated.length;
+          nodesRef.current = updated;
           return updated;
         });
       } catch (err) {
@@ -667,7 +721,7 @@ export function App() {
         throw err;
       }
     },
-    [session?.id, projectRunnerActive, composerLocked],
+    [session?.id, projectRunnerBusy, composerLocked],
   );
 
   /* Drag-onto-virtual attach path: Canvas hands us (virtualNodeId, skillId)
@@ -696,6 +750,7 @@ export function App() {
       resume_from_node_id?: string | null;
     }) => {
       if (!session?.id || virtualCreateDisabled) return;
+      setProjectMutationPending(true);
       setSessionContextSpaceError(null);
       try {
         const result = await createVirtual(session.id, {
@@ -709,17 +764,16 @@ export function App() {
         setNodes((prev) => {
           const updated = upsertNode(prev, result.node);
           nodeCountRef.current = updated.length;
+          nodesRef.current = updated;
           return updated;
         });
         selectAndOpenNode(result.node.id);
-        if (result.node.state !== "virtual") {
-          activeNodeIdRef.current = result.node.id;
-          setStreaming(true);
-        }
         setFocusRequestVersion((version) => version + 1);
       } catch (err) {
         setSessionContextSpaceError(String(err));
         throw err;
+      } finally {
+        setProjectMutationPending(false);
       }
     },
     [session?.id, virtualCreateDisabled, selectAndOpenNode],
@@ -760,12 +814,13 @@ export function App() {
 
   const deleteVirtualNode = useCallback(
     async (nodeId: string) => {
-      if (!session?.id || projectRunnerActive || composerLocked) return;
+      if (!session?.id || projectRunnerBusy || composerLocked) return;
       setSessionContextSpaceError(null);
       await deleteVirtual(session.id, nodeId);
       setNodes((prev) => {
         const updated = prev.filter((node) => node.id !== nodeId);
         nodeCountRef.current = updated.length;
+        nodesRef.current = updated;
         return updated;
       });
       setPendingGate((prev) => (prev?.nodeId === nodeId ? null : prev));
@@ -775,32 +830,32 @@ export function App() {
         setSelection({ kind: "none" });
       }
     },
-    [session?.id, projectRunnerActive, composerLocked],
+    [session?.id, projectRunnerBusy, composerLocked],
   );
 
   const rerunFailedNode = useCallback(
     async (nodeId: string) => {
-      if (!session?.id || projectRunnerActive || composerLocked) return;
+      if (!session?.id || projectRunnerBusy || composerLocked) return;
+      setProjectMutationPending(true);
       setSessionContextSpaceError(null);
       try {
         const result = await rerunNode(session.id, nodeId);
         setNodes((prev) => {
           const updated = upsertNode(prev, result.node);
           nodeCountRef.current = updated.length;
+          nodesRef.current = updated;
           return updated;
         });
         selectAndOpenNode(result.node.id);
-        if (result.node.state !== "virtual") {
-          activeNodeIdRef.current = result.node.id;
-          setStreaming(true);
-        }
         setFocusRequestVersion((version) => version + 1);
         await refreshNodes();
       } catch (err) {
         setSessionContextSpaceError(String(err));
+      } finally {
+        setProjectMutationPending(false);
       }
     },
-    [session?.id, projectRunnerActive, composerLocked, refreshNodes, selectAndOpenNode],
+    [session?.id, projectRunnerBusy, composerLocked, refreshNodes, selectAndOpenNode],
   );
 
   const runContextInit = useCallback(async () => {
@@ -1060,17 +1115,14 @@ export function App() {
         }
         void refreshNodes();
       } else if (ev.type === "turn_done") {
-        setStreaming(false);
         activeNodeIdRef.current = null;
         void refreshNodes();
       } else if (ev.type === "error") {
-        setStreaming(false);
         activeNodeIdRef.current = null;
         console.error("server error:", ev.message);
       } else if (ev.type === "node_started") {
         activeNodeIdRef.current = ev.node_id;
         eventNodeId = ev.node_id;
-        setStreaming(true);
         const startedKind = ev.kind ?? "agent";
         if (startedKind !== "op") {
           selectAndOpenNode(ev.node_id);
@@ -1080,14 +1132,13 @@ export function App() {
         eventNodeId = ev.node.id;
         if (PROJECT_ACTIVE_STATES.has(ev.node.state)) {
           activeNodeIdRef.current = ev.node.id;
-          setStreaming(true);
         } else if (activeNodeIdRef.current === ev.node.id) {
           activeNodeIdRef.current = null;
-          setStreaming(false);
         }
         setNodes((prev) => {
           const updated = upsertNode(prev, ev.node);
           nodeCountRef.current = updated.length;
+          nodesRef.current = updated;
           return updated;
         });
         if (ev.node.state !== "waiting") {
@@ -1101,6 +1152,7 @@ export function App() {
         setNodes((prev) => {
           const updated = prev.filter((node) => node.id !== ev.id);
           nodeCountRef.current = updated.length;
+          nodesRef.current = updated;
           return updated;
         });
         setPendingGate((prev) => (prev?.nodeId === ev.id ? null : prev));
@@ -1310,9 +1362,9 @@ export function App() {
       onInterruptNode: interruptNode,
       onRerunNode: rerunFailedNode,
       canCreateVirtual: !virtualCreateDisabled,
-      canPromoteVirtual: !projectRunnerActive && !composerLocked,
+      canPromoteVirtual: !projectRunnerBusy && !composerLocked,
       canInterrupt: canInterruptRunner,
-      canRerun: !projectRunnerActive && !composerLocked,
+      canRerun: !projectRunnerBusy && !composerLocked,
       pendingGateForNode: (nodeId) =>
         activePendingGate?.nodeId === nodeId ? activePendingGate.request : null,
       onResolveGate,
@@ -1328,7 +1380,7 @@ export function App() {
     interruptNode,
     rerunFailedNode,
     virtualCreateDisabled,
-    projectRunnerActive,
+    projectRunnerBusy,
     canInterruptRunner,
     composerLocked,
   ]);
@@ -1449,7 +1501,7 @@ export function App() {
               setNewDirectionRequestVersion((version) => version + 1);
               openDetails();
             }}
-            disabled={sessionSettingsSaving || projectRunnerActive || composerLocked}
+            disabled={sessionSettingsSaving || projectRunnerBusy || composerLocked}
             className="inline-flex h-8 items-center rounded-md border border-line bg-surface px-2.5 text-xs font-medium text-ink-muted transition hover:border-line-strong hover:bg-surface-sunken hover:text-ink disabled:cursor-not-allowed disabled:opacity-40"
             title="Open new direction composer"
           >
@@ -1521,7 +1573,7 @@ export function App() {
             />
           )}
 
-          {!projectRunnerActive &&
+          {!projectRunnerBusy &&
             !composerLocked &&
             nodes.length === 0 && (
               <button
@@ -1608,7 +1660,7 @@ export function App() {
                 onInterruptNode={interruptNode}
                 onRerunNode={rerunFailedNode}
                 canInterrupt={canInterruptRunner}
-                canRerun={!projectRunnerActive && !composerLocked}
+                canRerun={!projectRunnerBusy && !composerLocked}
                 onPlanspaceModeChange={changePlanspaceMode}
                 onContextInit={runContextInit}
                 onContextRefresh={runContextRefresh}

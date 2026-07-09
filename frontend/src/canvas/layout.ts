@@ -7,7 +7,7 @@ export type AgentNodeData = {
   node: NodeInfo;
   index: number;
   resumeParent: NodeInfo | null;
-  /** true when this agent is currently streaming text in the live channel */
+  /** true when this node is currently active in the project runner */
   isActive: boolean;
   planspaceColor: PlanspaceColor | null;
   /** true when no agent node (in any lane) has this one as its agent parent */
@@ -170,7 +170,7 @@ export const PLANSPACE_PALETTE: PlanspaceColor[] = [
 
 export type BuildGraphArgs = {
   nodes: NodeInfo[];
-  /** id of the currently-streaming node so we can mark it active */
+  /** id of the currently active project-runner node */
   activeNodeId: string | null;
   /** project-level title to anchor as the root node */
   projectTitle: string;
