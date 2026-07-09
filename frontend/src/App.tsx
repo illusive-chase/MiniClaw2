@@ -60,6 +60,15 @@ type PendingGateState = {
 };
 
 const TERMINAL_STATES = new Set<NodeInfo["state"]>(["done", "error", "cancelled"]);
+const INTERRUPTIBLE_STATES = new Set<NodeInfo["state"]>([
+  "running",
+  "waiting",
+  "awaiting_human_input",
+]);
+const PROJECT_ACTIVE_STATES = new Set<NodeInfo["state"]>([
+  "queued",
+  ...INTERRUPTIBLE_STATES,
+]);
 
 export function App() {
   const [route, setRoute] = useState<Route>("landing");
@@ -339,6 +348,16 @@ export function App() {
     [nodes, inspectedNodeId],
   );
   const selectedCanvasNodeId = useMemo(() => graphNodeIdForSelection(selection), [selection]);
+  const activeNodeFromList = useMemo(
+    () => nodes.find((n) => PROJECT_ACTIVE_STATES.has(n.state)) ?? null,
+    [nodes],
+  );
+  const hasInterruptibleNode = useMemo(
+    () => nodes.some((n) => INTERRUPTIBLE_STATES.has(n.state)),
+    [nodes],
+  );
+  const projectRunnerActive = streaming || !!activeNodeFromList;
+  const activeCanvasNodeId = activeNodeIdRef.current ?? activeNodeFromList?.id ?? null;
 
   const activePendingGate = useMemo(
     () => keepPendingForState(pendingGate, nodes, "waiting"),
@@ -352,11 +371,26 @@ export function App() {
   const composerLocked = !!activePendingGate || !!activePendingReview;
   const virtualCreateDisabled =
     composerLocked ||
-    streaming ||
+    projectRunnerActive ||
     sessionSettingsSaving ||
     !!sessionContextSpace?.context_refresh?.running;
 
-  /* refresh node list */
+  /* refresh node list.
+   *
+   * refreshNodes is called both on initial load and as a hedge from
+   * handleEvent (turn_done / node_started / interaction_request). The
+   * hedge races with the WebSocket: between the listNodes API request
+   * and its response, ev-driven setNodes calls can add or mutate nodes
+   * locally. A blanket ``setNodes(next)`` would clobber those in-flight
+   * updates — most visibly, when the backend snapshot is taken between a
+   * node completing and the follow-up scheduler activity, ``next`` can
+   * be missing whatever the WS just added, and the canvas appears to
+   * "clean up" nodes.
+   *
+   * Fix: never REMOVE local nodes via a refresh. Real removals arrive as
+   * ``node_removed`` events (or as explicit local filters after a delete
+   * API call). Additions and state updates from ``next`` are still
+   * applied, so drift and missed events still get corrected. */
   const refreshNodes = useCallback(async () => {
     const sessionId = session?.id;
     if (!sessionId) return;
@@ -374,8 +408,25 @@ export function App() {
         });
         return;
       }
-      nodeCountRef.current = next.length;
-      setNodes(next);
+      setNodes((current) => {
+        if (current.length === 0) return next;
+        const nextById = new Map(next.map((n) => [n.id, n]));
+        const currentById = new Map(current.map((n) => [n.id, n]));
+        const merged: NodeInfo[] = [];
+        for (const c of current) {
+          /* Prefer the backend version when it exists (state drift correction);
+           * otherwise keep the local node — a very recent WS/POST addition that
+           * hasn't landed in the backend snapshot yet, or an entry the caller
+           * intends to keep across the (best-effort) refresh. */
+          merged.push(nextById.get(c.id) ?? c);
+        }
+        for (const n of next) {
+          if (!currentById.has(n.id)) merged.push(n);
+        }
+        merged.sort((a, b) => a.created_at - b.created_at);
+        nodeCountRef.current = merged.length;
+        return merged;
+      });
       setInspectedNodeId((current) => current ?? next.at(-1)?.id ?? null);
     } catch (err) {
       console.error("list nodes failed:", err);
@@ -580,7 +631,7 @@ export function App() {
 
   const promoteVirtualNode = useCallback(
     async (nodeId: string) => {
-      if (!session?.id || streaming || composerLocked) return;
+      if (!session?.id || projectRunnerActive || composerLocked) return;
       setStreaming(true);
       setSessionContextSpaceError(null);
       try {
@@ -597,12 +648,12 @@ export function App() {
         setSessionContextSpaceError(String(err));
       }
     },
-    [session?.id, streaming, composerLocked, refreshNodes, selectAndOpenNode],
+    [session?.id, projectRunnerActive, composerLocked, refreshNodes, selectAndOpenNode],
   );
 
   const updateVirtualNode = useCallback(
     async (nodeId: string, payload: UpdateVirtualPayload) => {
-      if (!session?.id || streaming || composerLocked) return;
+      if (!session?.id || projectRunnerActive || composerLocked) return;
       setSessionContextSpaceError(null);
       try {
         const result = await updateVirtual(session.id, nodeId, payload);
@@ -616,7 +667,7 @@ export function App() {
         throw err;
       }
     },
-    [session?.id, streaming, composerLocked],
+    [session?.id, projectRunnerActive, composerLocked],
   );
 
   /* Drag-onto-virtual attach path: Canvas hands us (virtualNodeId, skillId)
@@ -709,7 +760,7 @@ export function App() {
 
   const deleteVirtualNode = useCallback(
     async (nodeId: string) => {
-      if (!session?.id || streaming || composerLocked) return;
+      if (!session?.id || projectRunnerActive || composerLocked) return;
       setSessionContextSpaceError(null);
       await deleteVirtual(session.id, nodeId);
       setNodes((prev) => {
@@ -724,12 +775,12 @@ export function App() {
         setSelection({ kind: "none" });
       }
     },
-    [session?.id, streaming, composerLocked],
+    [session?.id, projectRunnerActive, composerLocked],
   );
 
   const rerunFailedNode = useCallback(
     async (nodeId: string) => {
-      if (!session?.id || streaming || composerLocked) return;
+      if (!session?.id || projectRunnerActive || composerLocked) return;
       setSessionContextSpaceError(null);
       try {
         const result = await rerunNode(session.id, nodeId);
@@ -749,7 +800,7 @@ export function App() {
         setSessionContextSpaceError(String(err));
       }
     },
-    [session?.id, streaming, composerLocked, refreshNodes, selectAndOpenNode],
+    [session?.id, projectRunnerActive, composerLocked, refreshNodes, selectAndOpenNode],
   );
 
   const runContextInit = useCallback(async () => {
@@ -1010,13 +1061,16 @@ export function App() {
         void refreshNodes();
       } else if (ev.type === "turn_done") {
         setStreaming(false);
+        activeNodeIdRef.current = null;
         void refreshNodes();
       } else if (ev.type === "error") {
         setStreaming(false);
+        activeNodeIdRef.current = null;
         console.error("server error:", ev.message);
       } else if (ev.type === "node_started") {
         activeNodeIdRef.current = ev.node_id;
         eventNodeId = ev.node_id;
+        setStreaming(true);
         const startedKind = ev.kind ?? "agent";
         if (startedKind !== "op") {
           selectAndOpenNode(ev.node_id);
@@ -1024,6 +1078,13 @@ export function App() {
         void refreshNodes();
       } else if (ev.type === "node_updated") {
         eventNodeId = ev.node.id;
+        if (PROJECT_ACTIVE_STATES.has(ev.node.state)) {
+          activeNodeIdRef.current = ev.node.id;
+          setStreaming(true);
+        } else if (activeNodeIdRef.current === ev.node.id) {
+          activeNodeIdRef.current = null;
+          setStreaming(false);
+        }
         setNodes((prev) => {
           const updated = upsertNode(prev, ev.node);
           nodeCountRef.current = updated.length;
@@ -1058,6 +1119,7 @@ export function App() {
     route === "project" ? (session?.id ?? null) : null,
     handleEvent,
   );
+  const canInterruptRunner = status === "open" && hasInterruptibleNode;
   /* Planspace ids available for cross-lane loads, sourced from the
    * contextspace describe call. Excludes the active planspace (it loads
    * by default via the binding). */
@@ -1248,9 +1310,9 @@ export function App() {
       onInterruptNode: interruptNode,
       onRerunNode: rerunFailedNode,
       canCreateVirtual: !virtualCreateDisabled,
-      canPromoteVirtual: !streaming && !composerLocked,
-      canInterrupt: streaming && status === "open",
-      canRerun: !streaming && !composerLocked,
+      canPromoteVirtual: !projectRunnerActive && !composerLocked,
+      canInterrupt: canInterruptRunner,
+      canRerun: !projectRunnerActive && !composerLocked,
       pendingGateForNode: (nodeId) =>
         activePendingGate?.nodeId === nodeId ? activePendingGate.request : null,
       onResolveGate,
@@ -1266,9 +1328,9 @@ export function App() {
     interruptNode,
     rerunFailedNode,
     virtualCreateDisabled,
-    streaming,
+    projectRunnerActive,
+    canInterruptRunner,
     composerLocked,
-    status,
   ]);
 
   /* Canvas layout changes -> serialized backend PATCHes. Best-effort: log on
@@ -1387,7 +1449,7 @@ export function App() {
               setNewDirectionRequestVersion((version) => version + 1);
               openDetails();
             }}
-            disabled={sessionSettingsSaving || streaming || composerLocked}
+            disabled={sessionSettingsSaving || projectRunnerActive || composerLocked}
             className="inline-flex h-8 items-center rounded-md border border-line bg-surface px-2.5 text-xs font-medium text-ink-muted transition hover:border-line-strong hover:bg-surface-sunken hover:text-ink disabled:cursor-not-allowed disabled:opacity-40"
             title="Open new direction composer"
           >
@@ -1420,7 +1482,7 @@ export function App() {
               key={session?.id ?? "no-session"}
               nodes={nodes}
               selectedNodeId={selectedCanvasNodeId}
-              activeNodeId={activeNodeIdRef.current}
+              activeNodeId={activeCanvasNodeId}
               projectTitle={projectTitle}
               contextBundlesByNodeId={contextBundlesByNodeId}
               knownPlanspaceIds={knownPlanspaceIds}
@@ -1459,7 +1521,7 @@ export function App() {
             />
           )}
 
-          {!streaming &&
+          {!projectRunnerActive &&
             !composerLocked &&
             nodes.length === 0 && (
               <button
@@ -1545,8 +1607,8 @@ export function App() {
                 onUpdateVirtual={updateVirtualNode}
                 onInterruptNode={interruptNode}
                 onRerunNode={rerunFailedNode}
-                canInterrupt={streaming && status === "open"}
-                canRerun={!streaming && !composerLocked}
+                canInterrupt={canInterruptRunner}
+                canRerun={!projectRunnerActive && !composerLocked}
                 onPlanspaceModeChange={changePlanspaceMode}
                 onContextInit={runContextInit}
                 onContextRefresh={runContextRefresh}

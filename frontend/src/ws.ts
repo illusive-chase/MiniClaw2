@@ -60,21 +60,35 @@ export function useSessionSocket(
       ws.onmessage = (e) => {
         try {
           const data = JSON.parse(e.data) as ServerEvent;
+          /* Two seq regimes flow through this socket:
+           *   - Runner-emitted events (per-node NodeRunner) carry monotonic
+           *     seq >= 1 and ARE persisted to the event log. These need dedup
+           *     across reconnect replays.
+           *   - Registry-emitted events (virtual create/promote, node_removed,
+           *     cross-node commit propagation, etc.) carry seq == 0 and are
+           *     ephemeral (never persisted, never replayed). They MUST always
+           *     be delivered — dropping them causes state divergence
+           *     (e.g., node_removed lost → phantom nodes, or a stale refresh
+           *     later wipes them anyway, producing the "canvas clears" bug).
+           */
+          const seq = typeof data.seq === "number" ? data.seq : null;
           if (data.type === "node_started") {
             if (
               activeNodeIdRef.current === data.node_id &&
-              typeof data.seq === "number" &&
-              data.seq <= lastSeqRef.current
+              seq !== null &&
+              seq > 0 &&
+              seq <= lastSeqRef.current
             ) {
               return;
             }
             activeNodeIdRef.current = data.node_id;
-            lastSeqRef.current = data.seq ?? 0;
-          } else if (typeof data.seq === "number" && data.seq > lastSeqRef.current) {
-            lastSeqRef.current = data.seq;
-          } else if (typeof data.seq === "number") {
-            return;
+            if (seq !== null && seq > 0) lastSeqRef.current = seq;
+          } else if (seq !== null && seq > 0) {
+            if (seq <= lastSeqRef.current) return;
+            lastSeqRef.current = seq;
           }
+          /* seq == 0 (registry events) and missing-seq events fall through
+           * to always-deliver. */
           onEventRef.current(data);
         } catch (err) {
           console.error("bad ws frame", err);
