@@ -115,6 +115,33 @@ class FreshNodeLaunchTest(unittest.TestCase):
             self.assertEqual(node.cli_session_id, None)
             self.assertNotEqual(node.id, previous.id)
 
+    def test_start_node_uses_explicit_provider_for_new_node(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(root=Path(tmp))
+            project = Project(root_path=tmp, provider="claude")
+            store.create_project(project)
+
+            registry = ProjectRegistry(store=store)
+
+            class _FakeTask:
+                def add_done_callback(self, callback):
+                    self._callback = callback
+
+            def fake_create_task(coro):
+                coro.close()
+                return _FakeTask()
+
+            with patch("miniclaw2.registry.asyncio.create_task", side_effect=fake_create_task):
+                runner = registry.start_node(project.id, "hello", provider="codex")
+
+            self.assertIsNotNone(runner)
+
+            node = store.latest_node(project.id)
+            assert node is not None
+            self.assertEqual(node.provider, "codex")
+            self.assertEqual(node.provider_session_id, None)
+            self.assertEqual(node.cli_session_id, None)
+
     def test_start_node_can_explicitly_resume_from_source_node(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             store = Store(root=Path(tmp))
@@ -158,6 +185,50 @@ class FreshNodeLaunchTest(unittest.TestCase):
             self.assertEqual(node.provider_session_id, "thread_source")
             self.assertEqual(node.cli_session_id, "thread_source")
             self.assertNotEqual(node.id, source.id)
+
+    def test_start_node_resume_ignores_requested_provider(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(root=Path(tmp))
+            project = Project(root_path=tmp, provider="claude")
+            store.create_project(project)
+
+            source = store.create_node(
+                Node(
+                    project_id=project.id,
+                    kind=NodeKind.AGENT,
+                    state=NodeState.DONE,
+                    provider="claude",
+                    provider_session_id="thread_source",
+                    cli_session_id="thread_source",
+                )
+            )
+
+            registry = ProjectRegistry(store=store)
+
+            class _FakeTask:
+                def add_done_callback(self, callback):
+                    self._callback = callback
+
+            def fake_create_task(coro):
+                coro.close()
+                return _FakeTask()
+
+            with patch("miniclaw2.registry.asyncio.create_task", side_effect=fake_create_task):
+                runner = registry.start_node(
+                    project.id,
+                    "continue from source",
+                    resume_from_node_id=source.id,
+                    provider="codex",
+                )
+
+            self.assertIsNotNone(runner)
+
+            node = store.latest_node(project.id)
+            assert node is not None
+            self.assertEqual(node.parent_node_id, source.id)
+            self.assertEqual(node.provider, "claude")
+            self.assertEqual(node.provider_session_id, "thread_source")
+            self.assertEqual(node.cli_session_id, "thread_source")
 
     def test_start_node_rejects_resume_from_nonterminal_source_node(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

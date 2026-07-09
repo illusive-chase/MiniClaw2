@@ -46,6 +46,7 @@ import type {
   NodeInfo,
   ServerEvent,
   CanvasViewport,
+  AgentProvider,
   SessionContextSpaceInfo,
   SessionInfo,
   PlanspaceMode,
@@ -366,6 +367,7 @@ export function App() {
           prompt_draft: userSeed,
           category: "regular",
           agent_op_kind: "skill_edit",
+          provider: session.provider ?? "claude",
           planspace_id: active,
         });
         setNodes((prev) => {
@@ -385,6 +387,7 @@ export function App() {
     },
     [
       session?.id,
+      session?.provider,
       sessionContextSpace?.active_planspace_id,
       virtualCreateDisabled,
       selectAndOpenNode,
@@ -604,7 +607,7 @@ export function App() {
   );
 
   const startNewDirection = useCallback(
-    async (userSeed: string, mode: PlanspaceMode) => {
+    async (userSeed: string, mode: PlanspaceMode, provider: AgentProvider) => {
       if (!session?.id || sessionSettingsSaving || projectRunnerBusy) return;
       setSessionContextSpaceSaving(true);
       setSessionContextSpaceError(null);
@@ -613,6 +616,7 @@ export function App() {
         const created = await createPlanspace(session.id, {
           user_seed: userSeed,
           mode,
+          provider,
         });
         selectAndOpenNode(created.node_id);
         await refreshContextSpace();
@@ -635,7 +639,7 @@ export function App() {
   );
 
   const startBlankDirection = useCallback(
-    async (userSeed: string, mode: PlanspaceMode) => {
+    async (userSeed: string, mode: PlanspaceMode, provider: AgentProvider) => {
       if (!session?.id || sessionSettingsSaving || projectRunnerBusy) return;
       setSessionContextSpaceSaving(true);
       setSessionContextSpaceError(null);
@@ -643,6 +647,7 @@ export function App() {
         const created = await createBlankPlanspace(session.id, {
           seed: userSeed,
           mode,
+          provider,
         });
         selectAndOpenNode(created.node_id);
         setFocusRequestVersion((version) => version + 1);
@@ -748,6 +753,7 @@ export function App() {
     async (payload: {
       planspace_id: string;
       scheduled_deps?: string[];
+      provider?: AgentProvider;
       resume_from_node_id?: string | null;
     }) => {
       if (!session?.id || virtualCreateDisabled) return;
@@ -759,6 +765,7 @@ export function App() {
           category: "regular",
           motivation: "",
           scheduled_deps: payload.scheduled_deps ?? [],
+          provider: payload.provider ?? session.provider ?? "claude",
           planspace_id: payload.planspace_id,
           resume_from_node_id: payload.resume_from_node_id ?? null,
         });
@@ -777,14 +784,17 @@ export function App() {
         setProjectMutationPending(false);
       }
     },
-    [session?.id, virtualCreateDisabled, selectAndOpenNode],
+    [session?.id, session?.provider, virtualCreateDisabled, selectAndOpenNode],
   );
 
   const createUnparentedVirtual = useCallback(
     (planspaceId: string) => {
-      void createVirtualNode({ planspace_id: planspaceId });
+      void createVirtualNode({
+        planspace_id: planspaceId,
+        provider: session?.provider ?? "claude",
+      });
     },
-    [createVirtualNode],
+    [createVirtualNode, session?.provider],
   );
 
   const createDependencyVirtual = useCallback(
@@ -795,6 +805,7 @@ export function App() {
       void createVirtualNode({
         planspace_id: planspaceId,
         scheduled_deps: [parent.id],
+        provider: parent.provider,
       });
     },
     [createVirtualNode, nodes, sessionContextSpace?.active_planspace_id],
@@ -807,6 +818,7 @@ export function App() {
       if (!parent || !planspaceId || !canResumeNode(parent)) return;
       void createVirtualNode({
         planspace_id: planspaceId,
+        provider: parent.provider,
         resume_from_node_id: parent.id,
       });
     },

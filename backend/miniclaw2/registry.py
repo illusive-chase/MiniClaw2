@@ -51,6 +51,7 @@ _UNSET: object = object()
 
 _PROMPTS_DIR = Path(__file__).with_name("prompts")
 _CONCIERGE_TEMPLATE = "concierge_bootstrap.md"
+_KNOWN_PROVIDERS: frozenset[str] = frozenset({"claude", "codex"})
 
 
 @lru_cache(maxsize=1)
@@ -60,6 +61,13 @@ def _concierge_template() -> str:
 
 def _render_concierge_prompt(seed: str) -> str:
     return _concierge_template().replace("<<user_seed>>", seed)
+
+
+def _normalize_provider(provider: str | None) -> str:
+    normalized = (provider or "claude").lower()
+    if normalized not in _KNOWN_PROVIDERS:
+        raise ValueError(f"unknown provider: {provider}")
+    return normalized
 
 
 def _normalize_project_root(cwd: str, *, create_missing: bool = False) -> str:
@@ -203,9 +211,7 @@ class ProjectRegistry:
         template_id: str | None = None,
         create_missing_cwd: bool = False,
     ) -> Project:
-        normalized_provider = (provider or "claude").lower()
-        if normalized_provider not in {"claude", "codex"}:
-            raise ValueError(f"unknown provider: {provider}")
+        normalized_provider = _normalize_provider(provider)
         normalized_language = normalize_preferred_language(preferred_language)
         if temporary:
             root_path = create_temporary_root()
@@ -482,6 +488,7 @@ class ProjectRegistry:
         resume_from_node_id: str | None = None,
         extra_skills: list[str] | None = None,
         agent_op_kind: str | None = None,
+        provider: str | None = None,
         category: Category = Category.REGULAR,
         subtype: ReviewSubtype | None = None,
         brief: ReviewBrief | None = None,
@@ -494,6 +501,8 @@ class ProjectRegistry:
             return None
         if rt.is_running():
             return None
+
+        normalized_provider = _normalize_provider(provider or rt.project.provider)
 
         resume_source: Node | None = None
         if resume_from_node_id:
@@ -525,7 +534,7 @@ class ProjectRegistry:
             state=NodeState.QUEUED,
             parent_node_id=actual_parent_id,
             planspace_id=active_lane,
-            provider=resume_source.provider if resume_source else rt.project.provider,
+            provider=resume_source.provider if resume_source else normalized_provider,
             provider_session_id=resume_source.provider_session_id if resume_source else None,
             cli_session_id=resume_source.cli_session_id if resume_source else None,
             prompt=prompt,
@@ -598,6 +607,7 @@ class ProjectRegistry:
         title: str,
         seed: str,
         mode: str | None = None,
+        provider: str | None = None,
     ) -> NodeRunner | None:
         """Create a new planspace, activate it, and launch the concierge.
 
@@ -611,6 +621,7 @@ class ProjectRegistry:
             return None
         if not seed.strip():
             raise ValueError("seed must be non-empty")
+        normalized_provider = _normalize_provider(provider or rt.project.provider)
         normalized_mode = normalize_planspace_mode(mode)
         plug_id = create_planspace(
             rt.project,
@@ -631,7 +642,7 @@ class ProjectRegistry:
             category=Category.PLANNING,
             state=NodeState.QUEUED,
             planspace_id=plug_id,
-            provider=rt.project.provider,
+            provider=normalized_provider,
             prompt=prompt_text,
         )
         self.store.create_node(node)
@@ -647,6 +658,7 @@ class ProjectRegistry:
         title: str,
         seed: str,
         mode: str | None = None,
+        provider: str | None = None,
     ) -> Node | None:
         """Create a planspace and seed it with one empty editable virtual."""
         rt = self._runtimes.get(pid)
@@ -654,6 +666,7 @@ class ProjectRegistry:
             return None
         if not seed.strip():
             raise ValueError("seed must be non-empty")
+        normalized_provider = _normalize_provider(provider or rt.project.provider)
         normalized_mode = normalize_planspace_mode(mode)
         plug_id = create_planspace(
             rt.project,
@@ -673,6 +686,7 @@ class ProjectRegistry:
             category=Category.REGULAR,
             motivation="",
             scheduled_deps=[],
+            provider=normalized_provider,
             planspace_id=plug_id,
         )
         if node is None:
@@ -838,6 +852,7 @@ class ProjectRegistry:
         scheduled_deps: list[str] | None = None,
         pending_extra_skills: list[str] | None = None,
         agent_op_kind: str | None = None,
+        provider: str | None = None,
         planspace_id: str | None = None,
         node_id: str | None = None,
         parent_node_id: str | None = None,
@@ -864,6 +879,15 @@ class ProjectRegistry:
             lane_id=lane_id,
             resume_from_node_id=resume_from_node_id,
         )
+        if normalized_resume_id:
+            resume_source = self.store.load_node(pid, normalized_resume_id)
+            next_provider = (
+                resume_source.provider
+                if resume_source is not None
+                else _normalize_provider(provider or rt.project.provider)
+            )
+        else:
+            next_provider = _normalize_provider(provider or rt.project.provider)
 
         try:
             next_category = (
@@ -918,7 +942,7 @@ class ProjectRegistry:
             state=NodeState.VIRTUAL,
             parent_node_id=normalized_parent_id,
             planspace_id=lane_id,
-            provider=rt.project.provider,
+            provider=next_provider,
             prompt="",
             prompt_draft=str(prompt_draft),
             scheduled_deps=[],
@@ -979,6 +1003,7 @@ class ProjectRegistry:
         motivation: str | None | object = _UNSET,
         scheduled_deps: list[str] | None | object = _UNSET,
         pending_extra_skills: list[str] | None | object = _UNSET,
+        provider: str | None | object = _UNSET,
         obsolete_reason: str | None | object = _UNSET,
     ) -> Node | None:
         """Update a virtual node in place.
@@ -1073,6 +1098,24 @@ class ProjectRegistry:
             update["pending_extra_skills"] = normalize_skill_ids(
                 pending_extra_skills
             )
+
+        if provider is not _UNSET:
+            if provider is None:
+                raise ValueError("provider is required")
+            next_provider = _normalize_provider(str(provider))
+            if existing.resume_from_node_id:
+                resume_source = self.store.load_node(pid, existing.resume_from_node_id)
+                source_provider = (
+                    resume_source.provider
+                    if resume_source is not None
+                    else existing.provider
+                )
+                if next_provider != source_provider:
+                    raise ValueError(
+                        "resume virtuals inherit provider from their source node"
+                    )
+                next_provider = source_provider
+            update["provider"] = next_provider
 
         updated = existing.model_copy(update=update)
         updated = Node.model_validate(updated.model_dump())
@@ -1191,6 +1234,7 @@ class ProjectRegistry:
             brief=original.brief,
             motivation=f"rerun of {original.id[:8]}",
             scheduled_deps=list(original.scheduled_deps or []),
+            provider=original.provider,
             planspace_id=original.planspace_id,
             parent_node_id=original.parent_node_id,
             resume_from_node_id=original.resume_from_node_id,

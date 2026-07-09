@@ -28,7 +28,6 @@ function errorMessage(err: unknown): string {
 
 export function NewProjectModal({ open, onCancel, onCreated }: Props) {
   const [name, setName] = useState("");
-  const [provider, setProvider] = useState<"claude" | "codex">("claude");
   const [preferredLanguage, setPreferredLanguage] = useState("");
   const [cwd, setCwd] = useState("");
   const [temporary, setTemporary] = useState(false);
@@ -39,7 +38,6 @@ export function NewProjectModal({ open, onCancel, onCreated }: Props) {
   useEffect(() => {
     if (open) {
       setName("");
-      setProvider("claude");
       setPreferredLanguage("");
       setCwd("");
       setTemporary(false);
@@ -55,7 +53,6 @@ export function NewProjectModal({ open, onCancel, onCreated }: Props) {
     const cwdInput = cwd.trim();
     const payload = (createMissingCwd: boolean) => ({
       name: name.trim() || undefined,
-      provider,
       preferred_language: preferredLanguage || null,
       cwd: temporary ? undefined : (cwdInput || undefined),
       temporary,
@@ -131,20 +128,6 @@ export function NewProjectModal({ open, onCancel, onCreated }: Props) {
               placeholder="My experiment"
               className="rounded-md border border-line bg-surface-sunken px-3 py-2 text-sm text-ink-strong placeholder:text-ink-subtle focus:border-brand focus:outline-none"
             />
-          </label>
-
-          <label className="flex flex-col gap-1">
-            <span className="text-[10px] font-medium uppercase tracking-[0.14em] text-ink-subtle">
-              Provider
-            </span>
-            <select
-              value={provider}
-              onChange={(e) => setProvider(e.target.value as "claude" | "codex")}
-              className="rounded-md border border-line bg-surface-sunken px-3 py-2 text-sm text-ink-strong focus:border-brand focus:outline-none"
-            >
-              <option value="claude">Claude</option>
-              <option value="codex">Codex</option>
-            </select>
           </label>
 
           <label className="flex flex-col gap-1">

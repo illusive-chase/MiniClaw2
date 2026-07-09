@@ -359,9 +359,6 @@ function ProjectCard({
       )}
 
       <div className="flex flex-wrap items-center gap-1.5 text-[10px]">
-        <span className="rounded border border-line bg-surface-sunken px-1.5 py-0.5 uppercase tracking-[0.12em] text-ink-muted">
-          {session.provider ?? "claude"}
-        </span>
         {session.preferred_language && (
           <span className="rounded border border-line bg-surface-sunken px-1.5 py-0.5 text-ink-muted">
             {languageLabel(session.preferred_language)}

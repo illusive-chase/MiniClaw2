@@ -40,12 +40,14 @@ class PlanspaceApiTest(unittest.TestCase):
                     title: str,
                     seed: str,
                     mode: str | None = None,
+                    provider: str | None = None,
                 ) -> object:
                     calls.append({
                         "sid": sid,
                         "title": title,
                         "seed": seed,
                         "mode": mode,
+                        "provider": provider,
                     })
                     return SimpleNamespace(node=node)
 
@@ -68,6 +70,7 @@ class PlanspaceApiTest(unittest.TestCase):
                             json={
                                 "user_seed": "Build auth",
                                 "mode": "manual",
+                                "provider": "codex",
                             },
                         )
                     finally:
@@ -79,6 +82,7 @@ class PlanspaceApiTest(unittest.TestCase):
                 "title": "",
                 "seed": "Build auth",
                 "mode": "manual",
+                "provider": "codex",
             }])
             body = res.json()
             self.assertEqual(body["node_id"], "node-123")
@@ -113,12 +117,14 @@ class PlanspaceApiTest(unittest.TestCase):
                     title: str,
                     seed: str,
                     mode: str | None = None,
+                    provider: str | None = None,
                 ) -> Node | None:
                     calls.append({
                         "sid": sid,
                         "title": title,
                         "seed": seed,
                         "mode": mode,
+                        "provider": provider,
                     })
                     return node
 
@@ -147,6 +153,7 @@ class PlanspaceApiTest(unittest.TestCase):
                                     "title": "Blank",
                                     "seed": "Start from scratch",
                                     "mode": "auto",
+                                    "provider": "codex",
                                 },
                             )
                         finally:
@@ -158,6 +165,7 @@ class PlanspaceApiTest(unittest.TestCase):
                 "title": "Blank",
                 "seed": "Start from scratch",
                 "mode": "auto",
+                "provider": "codex",
             }])
             body = res.json()
             self.assertEqual(body["node_id"], "blank-1")

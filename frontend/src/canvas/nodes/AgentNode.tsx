@@ -246,7 +246,12 @@ function AgentNodeImpl({ data, selected }: NodeProps<AgentNodeData>) {
 
       {/* footer */}
       <div className="flex items-center justify-between gap-2 px-3.5 pb-1.5 pt-2 text-[10px] text-ink-subtle">
-        <span className="font-mono">{node.id.slice(0, 8)}</span>
+        <span className="flex min-w-0 items-center gap-1">
+          <span className="font-mono">{node.id.slice(0, 8)}</span>
+          <span className="rounded border border-line bg-surface/70 px-1 py-0.5 text-[8.5px] font-medium uppercase tracking-[0.1em] text-ink-muted">
+            {providerLabel(node.provider)}
+          </span>
+        </span>
         {isVirtual ? (
           <span className={readyToPromote ? "font-mono text-brand" : "font-mono text-ink-muted"}>
             {node.obsolete_reason ? "obsolete" : readyToPromote ? "ready" : `${node.scheduled_deps?.length ?? 0} deps`}
@@ -621,6 +626,10 @@ function compactTokens(n: number): string {
   return String(n);
 }
 
+function providerLabel(provider: NodeInfo["provider"]): string {
+  return provider === "codex" ? "codex" : "claude";
+}
+
 function formatStartTime(node: NodeInfo): string {
   const at = node.started_at ?? node.created_at;
   return new Date(at * 1000).toLocaleTimeString([], {
@@ -634,5 +643,5 @@ function tooltipForAgent(node: NodeInfo, isActive: boolean): string {
   const prompt = promptText ? `"${promptText.slice(0, 80)}"` : "(no prompt)";
   const status = isActive ? " · active" : "";
   const category = node.category ? ` · ${node.category}` : "";
-  return `Agent ${node.state}${category}${status}\n${prompt}\n${node.id}`;
+  return `Agent ${node.state}${category} · ${node.provider}${status}\n${prompt}\n${node.id}`;
 }

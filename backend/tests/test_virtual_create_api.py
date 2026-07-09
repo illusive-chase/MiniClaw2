@@ -39,6 +39,7 @@ class VirtualCreateApiTest(unittest.TestCase):
                 "prompt_draft": "Add an extra user-authored check.",
                 "motivation": "Manual template extension",
                 "category": "regular",
+                "provider": "codex",
                 "scheduled_deps": [first["id"]],
             },
         )
@@ -50,6 +51,7 @@ class VirtualCreateApiTest(unittest.TestCase):
         self.assertEqual(node["state"], "virtual")
         self.assertEqual(node["kind"], "agent")
         self.assertEqual(node["category"], "regular")
+        self.assertEqual(node["provider"], "codex")
         self.assertEqual(node["prompt_draft"], "Add an extra user-authored check.")
         self.assertEqual(node["summary"], "Manual template extension")
         self.assertEqual(node["scheduled_deps"], [first["id"]])

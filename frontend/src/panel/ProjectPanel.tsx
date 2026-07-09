@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 
 import { LANGUAGE_OPTIONS } from "../languages";
 import type {
+  AgentProvider,
   ContextSpaceBindingSummary,
   ContextSpacePlugSummary,
   PlanspaceMode,
@@ -21,8 +22,16 @@ export type ProjectPanelProps = {
   onActivatePlanspace: (binding_id: string, planspace_id: string) => void;
   onSelectContextBinding: (binding_id: string) => void;
   onPreferredLanguageChange: (preferredLanguage: string | null) => void;
-  onNewDirection: (userSeed: string, mode: PlanspaceMode) => void;
-  onStartBlankDirection: (userSeed: string, mode: PlanspaceMode) => void;
+  onNewDirection: (
+    userSeed: string,
+    mode: PlanspaceMode,
+    provider: AgentProvider,
+  ) => void;
+  onStartBlankDirection: (
+    userSeed: string,
+    mode: PlanspaceMode,
+    provider: AgentProvider,
+  ) => void;
   onNewSkill?: (userSeed: string) => Promise<void> | void;
   onContextInit: () => void;
   onContextRefresh: () => void;
@@ -62,6 +71,8 @@ export function ProjectPanel({
   const [composerOpen, setComposerOpen] = useState(false);
   const [seed, setSeed] = useState("");
   const [newDirectionMode, setNewDirectionMode] = useState<PlanspaceMode>("manual");
+  const [newDirectionProvider, setNewDirectionProvider] =
+    useState<AgentProvider>("claude");
   const seedRef = useRef<HTMLTextAreaElement | null>(null);
   const lastRequestVersionRef = useRef(0);
   const [skillOpen, setSkillOpen] = useState(false);
@@ -81,6 +92,10 @@ export function ProjectPanel({
   const notesExist = !!contextSpace?.context_file?.exists;
   const refreshing = !!contextSpace?.context_refresh?.running;
   const busy = contextSpaceSaving || refreshing || settingsSaving;
+
+  useEffect(() => {
+    setNewDirectionProvider(session?.provider ?? "claude");
+  }, [session?.id, session?.provider]);
 
   useEffect(() => {
     if (newDirectionRequestVersion <= 0) {
@@ -106,12 +121,13 @@ export function ProjectPanel({
     const trimmed = seed.trim();
     if (!trimmed || busy) return;
     if (kind === "concierge") {
-      onNewDirection(trimmed, newDirectionMode);
+      onNewDirection(trimmed, newDirectionMode, newDirectionProvider);
     } else {
-      onStartBlankDirection(trimmed, newDirectionMode);
+      onStartBlankDirection(trimmed, newDirectionMode, newDirectionProvider);
     }
     setSeed("");
     setNewDirectionMode("manual");
+    setNewDirectionProvider(session.provider ?? "claude");
     setComposerOpen(false);
   };
 
@@ -133,7 +149,6 @@ export function ProjectPanel({
         <section className="mb-5">
           <SectionLabel>Settings</SectionLabel>
           <dl className="mt-1 grid grid-cols-[140px_1fr] gap-x-3 gap-y-1.5 rounded-md border border-line bg-surface-sunken px-3 py-2 text-[11.5px]">
-            <KV label="Provider" value={session.provider ?? "claude"} />
             <KV label="Temporary" value={session.temporary ? "yes" : "no"} />
             <KV label="Template" value={session.template_id ?? "(none)"} />
             <KV label="Turns" value={String(session.turns)} />
@@ -319,6 +334,19 @@ export function ProjectPanel({
                   </button>
                 ))}
               </div>
+              <label className="mt-2 flex items-center justify-between gap-3 rounded-md border border-line bg-surface px-3 py-2 text-[11.5px]">
+                <span className="text-ink-subtle">Provider</span>
+                <select
+                  value={newDirectionProvider}
+                  onChange={(event) =>
+                    setNewDirectionProvider(event.target.value as AgentProvider)
+                  }
+                  className="min-w-[130px] rounded border border-line bg-surface-sunken px-2 py-1 text-[11.5px] text-ink-strong focus:border-brand focus:outline-none"
+                >
+                  <option value="claude">Claude</option>
+                  <option value="codex">Codex</option>
+                </select>
+              </label>
               <div className="mt-2 flex justify-end gap-2">
                 <button
                   type="button"

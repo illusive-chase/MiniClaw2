@@ -889,6 +889,7 @@ class NodeRunner:
                 node_id=self.node.id,
                 parent_node_id=self.node.parent_node_id,
                 kind=self.node.kind.value,
+                provider=self.node.provider,
                 category=(
                     self.node.category.value
                     if self.node.category is not None

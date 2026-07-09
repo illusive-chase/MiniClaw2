@@ -121,12 +121,14 @@ class CreatePlanspaceRequest(BaseModel):
     seed: str | None = None
     user_seed: str | None = None
     mode: str | None = None
+    provider: str | None = None
 
 
 class CreateBlankPlanspaceRequest(BaseModel):
     title: str | None = None
     seed: str
     mode: str | None = None
+    provider: str | None = None
 
 
 class UpdatePlanspaceModeRequest(BaseModel):
@@ -141,6 +143,7 @@ class UpdateVirtualRequest(BaseModel):
     motivation: str | None = None
     scheduled_deps: list[str] | None = None
     pending_extra_skills: list[str] | None = None
+    provider: str | None = None
     obsolete_reason: str | None = None
 
 
@@ -153,6 +156,7 @@ class CreateVirtualRequest(BaseModel):
     scheduled_deps: list[str] | None = None
     pending_extra_skills: list[str] | None = None
     agent_op_kind: str | None = None
+    provider: str | None = None
     planspace_id: str | None = None
     parent_node_id: str | None = None
     resume_from_node_id: str | None = None
@@ -458,6 +462,7 @@ def create_app() -> FastAPI:
                 title=req.title.strip(),
                 seed=seed,
                 mode=req.mode,
+                provider=req.provider,
             )
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
@@ -491,6 +496,7 @@ def create_app() -> FastAPI:
                 title=(req.title or "").strip(),
                 seed=req.seed,
                 mode=req.mode,
+                provider=req.provider,
             )
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
@@ -544,6 +550,7 @@ def create_app() -> FastAPI:
                 scheduled_deps=req.scheduled_deps,
                 pending_extra_skills=req.pending_extra_skills,
                 agent_op_kind=req.agent_op_kind,
+                provider=req.provider,
                 planspace_id=req.planspace_id,
                 parent_node_id=req.parent_node_id,
                 resume_from_node_id=req.resume_from_node_id,
@@ -886,13 +893,21 @@ def create_app() -> FastAPI:
                             "message": "context refresh in progress",
                         })
                         continue
-                    runner = registry.start_node(
-                        sid,
-                        msg.text,
-                        resume_from_node_id=msg.resume_from_node_id,
-                        extra_skills=msg.extra_skills,
-                        agent_op_kind=msg.agent_op_kind,
-                    )
+                    try:
+                        runner = registry.start_node(
+                            sid,
+                            msg.text,
+                            resume_from_node_id=msg.resume_from_node_id,
+                            extra_skills=msg.extra_skills,
+                            agent_op_kind=msg.agent_op_kind,
+                            provider=msg.provider,
+                        )
+                    except ValueError as exc:
+                        await _send(send_now, {
+                            "type": "error",
+                            "message": str(exc),
+                        })
+                        continue
                     if runner is None:
                         await _send(send_now, {
                             "type": "error",

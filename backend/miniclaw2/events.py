@@ -66,6 +66,7 @@ class NodeStarted(BaseModel):
     node_id: str
     parent_node_id: str | None = None
     kind: str = "agent"
+    provider: str | None = None
     category: str | None = None
     subtype: str | None = None
     agent_op_kind: str | None = None
@@ -104,6 +105,7 @@ class UserMessage(BaseModel):
     resume_from_node_id: str | None = None
     extra_skills: list[str] | None = None
     agent_op_kind: str | None = None
+    provider: str | None = None
 
 
 class InteractionResponse(BaseModel):

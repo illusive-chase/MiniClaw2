@@ -5,6 +5,7 @@ import type {
   NodeInfo,
   ReviewBrief,
   NodeCategory,
+  AgentProvider,
   ReviewSubtype,
   PlanspaceMode,
   TemplateDetail,
@@ -133,6 +134,7 @@ export async function createPlanspace(
   body: {
     user_seed: string;
     mode?: PlanspaceMode;
+    provider?: AgentProvider;
   },
 ): Promise<{ planspace_id: string; binding_id: string; node_id: string }> {
   const res = await fetch(`/sessions/${sessionId}/planspaces`, {
@@ -148,6 +150,7 @@ export type CreateBlankPlanspacePayload = {
   title?: string;
   seed: string;
   mode: PlanspaceMode;
+  provider?: AgentProvider;
 };
 
 export async function createBlankPlanspace(
@@ -221,6 +224,7 @@ export type UpdateVirtualPayload = {
   motivation?: string | null;
   scheduled_deps?: string[];
   pending_extra_skills?: string[];
+  provider?: AgentProvider;
   obsolete_reason?: string | null;
 };
 
@@ -233,6 +237,7 @@ export type CreateVirtualPayload = {
   scheduled_deps?: string[];
   pending_extra_skills?: string[];
   agent_op_kind?: string | null;
+  provider?: AgentProvider;
   planspace_id?: string | null;
   parent_node_id?: string | null;
   resume_from_node_id?: string | null;

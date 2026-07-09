@@ -6,6 +6,7 @@ import rehypeHighlight from "rehype-highlight";
 import { getNodePreview } from "../api";
 import type {
   Activity,
+  AgentProvider,
   ContextBundle,
   ContextBundleSource,
   EventRecord,
@@ -127,6 +128,7 @@ export function AgentPanel({
             <div className="flex flex-wrap items-center gap-1.5">
               <StatePill state={node.state} />
               <CategoryPill node={node} />
+              <ProviderPill provider={node.provider} />
             </div>
             <h2 className="mt-1.5 line-clamp-2 font-display text-[15px] font-semibold leading-snug text-ink-strong">
               {headline}
@@ -318,6 +320,7 @@ function SectionHeading({
 type VirtualDraft = {
   promptDraft: string;
   motivation: string;
+  provider: AgentProvider;
   category: NodeCategory;
   subtype: ReviewSubtype;
   brief: ReviewBrief;
@@ -395,6 +398,7 @@ function EditableVirtualNodeBody({
     node.category,
     node.subtype,
     node.brief,
+    node.provider,
     node.scheduled_deps,
     node.pending_extra_skills,
     node.obsolete_reason,
@@ -491,6 +495,33 @@ function EditableVirtualNodeBody({
                 className={fieldClassName + " font-mono text-[11.5px]"}
               />
             </FieldLabel>
+            <FieldLabel label="Provider">
+              <select
+                value={draft.provider}
+                disabled={Boolean(node.resume_from_node_id)}
+                onChange={(e) =>
+                  setDraft((current) => ({
+                    ...current,
+                    provider: e.target.value as AgentProvider,
+                  }))
+                }
+                className={inputClassName + " disabled:opacity-50"}
+                title={
+                  node.resume_from_node_id
+                    ? "Continuation nodes inherit the provider from their resume source."
+                    : "Provider used when this node is promoted."
+                }
+              >
+                <option value="claude">Claude</option>
+                <option value="codex">Codex</option>
+              </select>
+            </FieldLabel>
+            {node.resume_from_node_id && (
+              <div className="rounded-md border border-line bg-surface px-3 py-2 text-[11px] text-ink-muted">
+                Continuation nodes use the same provider session as their
+                source node.
+              </div>
+            )}
           </div>
         </div>
       </section>
@@ -932,6 +963,7 @@ function virtualDraftFromNode(node: NodeInfo): VirtualDraft {
   return {
     promptDraft: node.prompt_draft || node.prompt || "",
     motivation: node.summary || "",
+    provider: node.provider || "claude",
     category: node.category || "regular",
     subtype: node.subtype || "agentic_review",
     brief: node.brief || {
@@ -949,6 +981,7 @@ function virtualPayloadFromDraft(draft: VirtualDraft): UpdateVirtualPayload {
   const payload: UpdateVirtualPayload = {
     prompt_draft: draft.promptDraft,
     motivation: draft.motivation,
+    provider: draft.provider,
     category: draft.category,
     scheduled_deps: draft.scheduledDeps,
     pending_extra_skills: draft.pendingExtraSkills,
@@ -1339,6 +1372,15 @@ function CategoryPill({ node }: { node: NodeInfo }) {
           ? "human review"
           : "review"
         : "regular";
+  return (
+    <span className="inline-block rounded border border-line bg-surface px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.12em] text-ink-muted">
+      {label}
+    </span>
+  );
+}
+
+function ProviderPill({ provider }: { provider: AgentProvider }) {
+  const label = provider === "codex" ? "Codex" : "Claude";
   return (
     <span className="inline-block rounded border border-line bg-surface px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.12em] text-ink-muted">
       {label}

@@ -6,6 +6,7 @@ import type {
   InteractionRequest,
   NodeDiff,
   NodeInfo,
+  AgentProvider,
   PlanspaceMode,
   SessionContextSpaceInfo,
   SessionInfo,
@@ -60,8 +61,16 @@ export type SidePanelProps = {
   onPreferredLanguageChange: (preferredLanguage: string | null) => void;
   onActivatePlanspace: (binding_id: string, planspace_id: string) => void;
   onSelectContextBinding: (binding_id: string) => void;
-  onNewDirection: (userSeed: string, mode: PlanspaceMode) => void;
-  onStartBlankDirection: (userSeed: string, mode: PlanspaceMode) => void;
+  onNewDirection: (
+    userSeed: string,
+    mode: PlanspaceMode,
+    provider: AgentProvider,
+  ) => void;
+  onStartBlankDirection: (
+    userSeed: string,
+    mode: PlanspaceMode,
+    provider: AgentProvider,
+  ) => void;
   onNewSkill?: (userSeed: string) => Promise<void> | void;
   onCreateContinuationVirtual: (nodeId: string) => void;
   onPromoteVirtual: (nodeId: string) => void;

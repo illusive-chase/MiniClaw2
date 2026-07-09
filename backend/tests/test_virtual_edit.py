@@ -90,6 +90,64 @@ class VirtualEditRegistryTests(unittest.TestCase):
         self.assertIn('"prompt_draft": "new draft"', preview)
         self.assertIn('"obsolete_reason": "superseded"', preview)
 
+    def test_update_virtual_can_change_provider(self) -> None:
+        node = self._virtual("provider-node")
+
+        updated = self.registry.update_virtual(
+            self.project.id,
+            node.id,
+            provider="codex",
+        )
+
+        self.assertIsNotNone(updated)
+        assert updated is not None
+        self.assertEqual(updated.provider, "codex")
+        reloaded = self.store.load_node(self.project.id, node.id)
+        assert reloaded is not None
+        self.assertEqual(reloaded.provider, "codex")
+
+    def test_update_resume_virtual_rejects_provider_change(self) -> None:
+        source = Node(
+            id="resume-source",
+            project_id=self.project.id,
+            kind=NodeKind.AGENT,
+            category=Category.REGULAR,
+            state=NodeState.DONE,
+            planspace_id=self.lane,
+            provider="codex",
+            provider_session_id="session-1",
+            prompt="old",
+        )
+        self.store.create_node(source)
+        created = self.registry.create_virtual(
+            self.project.id,
+            prompt_draft="continue",
+            resume_from_node_id=source.id,
+        )
+        self.assertIsNotNone(created)
+        assert created is not None
+
+        unchanged = self.registry.update_virtual(
+            self.project.id,
+            created.id,
+            motivation="still inherits source provider",
+            provider="codex",
+        )
+        self.assertIsNotNone(unchanged)
+        assert unchanged is not None
+        self.assertEqual(unchanged.provider, "codex")
+
+        with self.assertRaisesRegex(ValueError, "inherit provider"):
+            self.registry.update_virtual(
+                self.project.id,
+                created.id,
+                provider="claude",
+            )
+
+        reloaded = self.store.load_node(self.project.id, created.id)
+        assert reloaded is not None
+        self.assertEqual(reloaded.provider, "codex")
+
     def test_update_virtual_rejects_cycle(self) -> None:
         parent = self._virtual("parent")
         child = self._virtual("child", deps=[parent.id])
@@ -203,6 +261,17 @@ class VirtualEditRegistryTests(unittest.TestCase):
         assert preview is not None
         self.assertIn('"prompt_draft": "new planned work"', preview)
 
+    def test_create_virtual_can_select_provider(self) -> None:
+        created = self.registry.create_virtual(
+            self.project.id,
+            prompt_draft="codex planned work",
+            provider="codex",
+        )
+
+        self.assertIsNotNone(created)
+        assert created is not None
+        self.assertEqual(created.provider, "codex")
+
     def test_create_virtual_rejects_missing_dependency(self) -> None:
         with self.assertRaisesRegex(ValueError, "does not resolve"):
             self.registry.create_virtual(
@@ -276,6 +345,7 @@ class VirtualEditRegistryTests(unittest.TestCase):
             category=Category.REGULAR,
             state=NodeState.ERROR,
             planspace_id=self.lane,
+            provider="codex",
             provider_session_id="session-1",
             prompt="old",
         )
@@ -290,6 +360,7 @@ class VirtualEditRegistryTests(unittest.TestCase):
         self.assertIsNotNone(created)
         assert created is not None
         self.assertEqual(created.resume_from_node_id, source.id)
+        self.assertEqual(created.provider, "codex")
 
     def test_create_virtual_rejects_unresumable_resume_source(self) -> None:
         source = Node(
