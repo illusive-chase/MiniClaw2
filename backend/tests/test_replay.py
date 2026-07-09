@@ -186,7 +186,7 @@ class FreshNodeLaunchTest(unittest.TestCase):
             self.assertEqual(node.cli_session_id, "thread_source")
             self.assertNotEqual(node.id, source.id)
 
-    def test_start_node_resume_ignores_requested_provider(self) -> None:
+    def test_start_node_resume_rejects_provider_mismatch(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             store = Store(root=Path(tmp))
             project = Project(root_path=tmp, provider="claude")
@@ -214,11 +214,19 @@ class FreshNodeLaunchTest(unittest.TestCase):
                 return _FakeTask()
 
             with patch("miniclaw2.registry.asyncio.create_task", side_effect=fake_create_task):
+                with self.assertRaisesRegex(ValueError, "inherit provider"):
+                    registry.start_node(
+                        project.id,
+                        "continue from source",
+                        resume_from_node_id=source.id,
+                        provider="codex",
+                    )
+
                 runner = registry.start_node(
                     project.id,
                     "continue from source",
                     resume_from_node_id=source.id,
-                    provider="codex",
+                    provider="claude",
                 )
 
             self.assertIsNotNone(runner)

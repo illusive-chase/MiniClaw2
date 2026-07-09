@@ -789,12 +789,21 @@ export function App() {
 
   const createUnparentedVirtual = useCallback(
     (planspaceId: string) => {
+      // Prefer the planspace's own provider (from its earliest node) over
+      // the project-level default, so a codex planspace on a claude project
+      // doesn't silently default new virtuals back to claude.
+      const laneNodes = nodes.filter((n) => n.planspace_id === planspaceId);
+      const laneAnchor = laneNodes.reduce<NodeInfo | null>((acc, n) => {
+        if (acc === null) return n;
+        return n.created_at < acc.created_at ? n : acc;
+      }, null);
+      const provider = laneAnchor?.provider ?? session?.provider ?? "claude";
       void createVirtualNode({
         planspace_id: planspaceId,
-        provider: session?.provider ?? "claude",
+        provider,
       });
     },
-    [createVirtualNode, session?.provider],
+    [createVirtualNode, nodes, session?.provider],
   );
 
   const createDependencyVirtual = useCallback(

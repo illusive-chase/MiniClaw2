@@ -362,6 +362,28 @@ class VirtualEditRegistryTests(unittest.TestCase):
         self.assertEqual(created.resume_from_node_id, source.id)
         self.assertEqual(created.provider, "codex")
 
+    def test_create_virtual_resume_rejects_provider_mismatch(self) -> None:
+        source = Node(
+            id="source-mismatch",
+            project_id=self.project.id,
+            kind=NodeKind.AGENT,
+            category=Category.REGULAR,
+            state=NodeState.ERROR,
+            planspace_id=self.lane,
+            provider="codex",
+            provider_session_id="session-1",
+            prompt="old",
+        )
+        self.store.create_node(source)
+
+        with self.assertRaisesRegex(ValueError, "inherit provider"):
+            self.registry.create_virtual(
+                self.project.id,
+                prompt_draft="continue",
+                resume_from_node_id=source.id,
+                provider="claude",
+            )
+
     def test_create_virtual_rejects_unresumable_resume_source(self) -> None:
         source = Node(
             id="source",

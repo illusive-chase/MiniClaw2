@@ -417,7 +417,7 @@ function EditableVirtualNodeBody({
     setSaving(true);
     setError(null);
     try {
-      await onUpdateVirtual(node.id, virtualPayloadFromDraft(draft));
+      await onUpdateVirtual(node.id, virtualPayloadFromDraft(draft, node));
     } catch (err) {
       setError(errorMessage(err));
     } finally {
@@ -977,16 +977,23 @@ function virtualDraftFromNode(node: NodeInfo): VirtualDraft {
   };
 }
 
-function virtualPayloadFromDraft(draft: VirtualDraft): UpdateVirtualPayload {
+function virtualPayloadFromDraft(
+  draft: VirtualDraft,
+  node: NodeInfo,
+): UpdateVirtualPayload {
   const payload: UpdateVirtualPayload = {
     prompt_draft: draft.promptDraft,
     motivation: draft.motivation,
-    provider: draft.provider,
     category: draft.category,
     scheduled_deps: draft.scheduledDeps,
     pending_extra_skills: draft.pendingExtraSkills,
     obsolete_reason: draft.obsoleteReason.trim() || null,
   };
+  // Provider is locked to the resume source for continuation virtuals;
+  // omit it from the payload so the backend doesn't have to re-check equality.
+  if (!node.resume_from_node_id) {
+    payload.provider = draft.provider;
+  }
   if (draft.category === "review") {
     payload.subtype = draft.subtype;
     payload.brief = draft.brief;

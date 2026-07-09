@@ -502,8 +502,6 @@ class ProjectRegistry:
         if rt.is_running():
             return None
 
-        normalized_provider = _normalize_provider(provider or rt.project.provider)
-
         resume_source: Node | None = None
         if resume_from_node_id:
             resume_source = self.store.load_node(pid, resume_from_node_id)
@@ -513,6 +511,15 @@ class ProjectRegistry:
                 return None
             if not (resume_source.provider_session_id or resume_source.cli_session_id):
                 return None
+
+        if resume_source is not None:
+            if provider is not None and _normalize_provider(provider) != resume_source.provider:
+                raise ValueError(
+                    "resume nodes inherit provider from their source node"
+                )
+            normalized_provider = resume_source.provider
+        else:
+            normalized_provider = _normalize_provider(provider or rt.project.provider)
 
         extra_skill_ids = normalize_skill_ids(extra_skills)
         settings_snapshot: dict[str, Any] = {}
@@ -534,7 +541,7 @@ class ProjectRegistry:
             state=NodeState.QUEUED,
             parent_node_id=actual_parent_id,
             planspace_id=active_lane,
-            provider=resume_source.provider if resume_source else normalized_provider,
+            provider=normalized_provider,
             provider_session_id=resume_source.provider_session_id if resume_source else None,
             cli_session_id=resume_source.cli_session_id if resume_source else None,
             prompt=prompt,
@@ -879,13 +886,15 @@ class ProjectRegistry:
             lane_id=lane_id,
             resume_from_node_id=resume_from_node_id,
         )
+        resume_source_for_provider: Node | None = None
         if normalized_resume_id:
-            resume_source = self.store.load_node(pid, normalized_resume_id)
-            next_provider = (
-                resume_source.provider
-                if resume_source is not None
-                else _normalize_provider(provider or rt.project.provider)
-            )
+            resume_source_for_provider = self.store.load_node(pid, normalized_resume_id)
+        if resume_source_for_provider is not None:
+            if provider is not None and _normalize_provider(provider) != resume_source_for_provider.provider:
+                raise ValueError(
+                    "resume virtuals inherit provider from their source node"
+                )
+            next_provider = resume_source_for_provider.provider
         else:
             next_provider = _normalize_provider(provider or rt.project.provider)
 
@@ -1114,7 +1123,6 @@ class ProjectRegistry:
                     raise ValueError(
                         "resume virtuals inherit provider from their source node"
                     )
-                next_provider = source_provider
             update["provider"] = next_provider
 
         updated = existing.model_copy(update=update)

@@ -149,6 +149,10 @@ export function ProjectPanel({
         <section className="mb-5">
           <SectionLabel>Settings</SectionLabel>
           <dl className="mt-1 grid grid-cols-[140px_1fr] gap-x-3 gap-y-1.5 rounded-md border border-line bg-surface-sunken px-3 py-2 text-[11.5px]">
+            <KV
+              label="Default provider"
+              value={session.provider ?? "claude"}
+            />
             <KV label="Temporary" value={session.temporary ? "yes" : "no"} />
             <KV label="Template" value={session.template_id ?? "(none)"} />
             <KV label="Turns" value={String(session.turns)} />
