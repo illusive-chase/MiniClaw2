@@ -378,6 +378,7 @@ export function App() {
         setFocusRequestVersion((v) => v + 1);
       } catch (err) {
         setSessionContextSpaceError(String(err));
+        throw err;
       } finally {
         setProjectMutationPending(false);
       }
