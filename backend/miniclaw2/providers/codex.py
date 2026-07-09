@@ -33,7 +33,7 @@ class CodexProvider:
 
     async def run(self, context: AgentProviderContext) -> AsyncIterator[AgentProviderEvent]:
         self._stop = False
-        async with _CodexJsonRpcClient() as client:
+        async with _CodexJsonRpcClient(cwd=context.project.root_path) as client:
             self._client = client
             try:
                 await client.initialize()
@@ -352,8 +352,9 @@ class CodexProvider:
 
 
 class _CodexJsonRpcClient:
-    def __init__(self) -> None:
+    def __init__(self, *, cwd: str | None = None) -> None:
         self._proc: asyncio.subprocess.Process | None = None
+        self._cwd = str(Path(cwd).resolve(strict=False)) if cwd else None
         self._next_id = 1
         self._pending: dict[int, asyncio.Future[dict[str, Any]]] = {}
         self._queue: asyncio.Queue[dict[str, Any] | BaseException] = asyncio.Queue()
@@ -374,6 +375,7 @@ class _CodexJsonRpcClient:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=env,
+            cwd=self._cwd,
             limit=_CODEX_STDIO_BUFFER_LIMIT_BYTES,
         )
         self._reader_task = asyncio.create_task(self._read_stdout())
@@ -597,7 +599,7 @@ def _thread_params(
         params["sandbox"] = "workspace-write"
     else:
         _set_if_present(params, "approvalPolicy", settings.get("approval_policy"))
-        _set_if_present(params, "sandbox", settings.get("sandbox"))
+        params["sandbox"] = settings.get("sandbox") or "workspace-write"
     _set_if_present(params, "config", settings.get("codex_config"))
     if "threadId" not in params:
         params["serviceName"] = "MiniClaw2"
@@ -621,19 +623,32 @@ def _turn_params(
     }
     if getattr(context, "minimal_mode", False):
         params["approvalPolicy"] = "never"
-        params["sandboxPolicy"] = _minimal_context_sandbox_policy(context)
+        params["sandboxPolicy"] = _workspace_write_sandbox_policy(
+            context,
+            exclude_tmp=True,
+        )
+    elif (
+        context.project.settings_override.get("sandbox") or "workspace-write"
+    ) == "workspace-write":
+        params["sandboxPolicy"] = _workspace_write_sandbox_policy(context)
     return params
 
 
-def _minimal_context_sandbox_policy(context: AgentProviderContext) -> dict[str, Any]:
+def _workspace_write_sandbox_policy(
+    context: AgentProviderContext,
+    *,
+    exclude_tmp: bool = False,
+) -> dict[str, Any]:
     project_root = Path(context.project.root_path).resolve(strict=False)
-    return {
+    policy: dict[str, Any] = {
         "type": "workspaceWrite",
         "writableRoots": [str(project_root)],
         "networkAccess": False,
-        "excludeTmpdirEnvVar": True,
-        "excludeSlashTmp": True,
     }
+    if exclude_tmp:
+        policy["excludeTmpdirEnvVar"] = True
+        policy["excludeSlashTmp"] = True
+    return policy
 
 
 def _set_if_present(target: dict[str, Any], key: str, value: Any) -> None:

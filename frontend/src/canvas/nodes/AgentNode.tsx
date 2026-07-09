@@ -78,7 +78,7 @@ function AgentNodeImpl({ data, selected }: NodeProps<AgentNodeData>) {
   const actionItems = useMemo(() => {
     const items: Array<{
       key: "promote" | "continuation" | "dependency" | "remove" | "interrupt" | "rerun";
-      label: string;
+      icon: ReactNode;
       title: string;
       disabled: boolean;
       tone: "brand" | "neutral" | "danger";
@@ -88,7 +88,7 @@ function AgentNodeImpl({ data, selected }: NodeProps<AgentNodeData>) {
     if (isActiveState(node.state)) {
       items.push({
         key: "interrupt",
-        label: "■",
+        icon: <StopActionIcon />,
         title: "Interrupt this running node",
         disabled: !agentNodeContext.canInterrupt,
         tone: "danger",
@@ -103,7 +103,7 @@ function AgentNodeImpl({ data, selected }: NodeProps<AgentNodeData>) {
     ) {
       items.push({
         key: "rerun",
-        label: "↻",
+        icon: <ActionGlyph>↻</ActionGlyph>,
         title: "Rerun - fresh virtual with the same prompt",
         disabled: !agentNodeContext.canRerun,
         tone: "brand",
@@ -113,7 +113,7 @@ function AgentNodeImpl({ data, selected }: NodeProps<AgentNodeData>) {
     if (isVirtual && readyToPromote && !node.obsolete_reason) {
       items.push({
         key: "promote",
-        label: "▶",
+        icon: <PromoteActionIcon />,
         title: "Promote - run this virtual",
         disabled: !agentNodeContext.canPromoteVirtual,
         tone: "brand",
@@ -123,7 +123,7 @@ function AgentNodeImpl({ data, selected }: NodeProps<AgentNodeData>) {
     if (!isVirtual && isTerminal(node.state) && canResumeNode(node)) {
       items.push({
         key: "continuation",
-        label: "↪",
+        icon: <ActionGlyph>↪</ActionGlyph>,
         title: "Continuation - new virtual that resumes this conversation",
         disabled: !canCreateVirtual || !agentNodeContext.canCreateVirtual,
         tone: "neutral",
@@ -133,7 +133,7 @@ function AgentNodeImpl({ data, selected }: NodeProps<AgentNodeData>) {
     if (isVirtual || (!isVirtual && isTerminal(node.state))) {
       items.push({
         key: "dependency",
-        label: "↘",
+        icon: <ActionGlyph>↘</ActionGlyph>,
         title: "Dependency - new virtual that waits for this",
         disabled: !canCreateVirtual || !agentNodeContext.canCreateVirtual,
         tone: "neutral",
@@ -143,7 +143,7 @@ function AgentNodeImpl({ data, selected }: NodeProps<AgentNodeData>) {
     if (isVirtual) {
       items.push({
         key: "remove",
-        label: "×",
+        icon: <ActionGlyph>×</ActionGlyph>,
         title: "Remove",
         disabled: removeSaving || !agentNodeContext.canCreateVirtual,
         tone: "danger",
@@ -359,7 +359,7 @@ function AgentNodeImpl({ data, selected }: NodeProps<AgentNodeData>) {
           title={item.title}
           aria-label={item.title}
         >
-          {item.label}
+          {item.icon}
         </button>
       ))}
 
@@ -461,18 +461,54 @@ function actionButtonClass(
 ): string {
   const toneClass =
     tone === "brand"
-      ? "border-brand bg-brand text-white hover:brightness-[0.95]"
+      ? "border-brand/45 bg-surface-raised text-brand hover:border-brand hover:bg-brand-soft"
       : tone === "danger"
         ? "border-state-error/50 bg-surface-raised text-state-error hover:border-state-error hover:bg-state-error-soft"
-        : "border-line-strong bg-surface-raised text-ink-muted hover:border-brand hover:bg-brand hover:text-white";
+        : "border-line-strong bg-surface-raised text-ink-muted hover:border-brand/55 hover:bg-brand-soft hover:text-brand";
   const visibility = alwaysVisible
     ? "opacity-100 disabled:opacity-45"
     : "opacity-0 group-hover:opacity-100 hover:opacity-100 disabled:opacity-0 group-hover:disabled:opacity-45";
   return (
-    "nodrag absolute -right-3 z-20 inline-flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-full border text-[13px] font-semibold leading-none shadow-card transition disabled:cursor-not-allowed disabled:border-line disabled:bg-surface-sunken disabled:text-ink-subtle " +
+    "nodrag absolute -right-3 z-20 inline-flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-full border text-[12px] font-semibold leading-none shadow-card transition disabled:cursor-not-allowed disabled:border-line disabled:bg-surface-sunken disabled:text-ink-subtle " +
     visibility +
     " " +
     toneClass
+  );
+}
+
+function ActionGlyph({ children }: { children: ReactNode }) {
+  return (
+    <span className="inline-flex h-3.5 w-3.5 items-center justify-center leading-none">
+      {children}
+    </span>
+  );
+}
+
+function StopActionIcon() {
+  return (
+    <svg
+      viewBox="0 0 14 14"
+      width="14"
+      height="14"
+      fill="currentColor"
+      aria-hidden="true"
+    >
+      <rect x="3.5" y="3.5" width="7" height="7" rx="1.2" />
+    </svg>
+  );
+}
+
+function PromoteActionIcon() {
+  return (
+    <svg
+      viewBox="0 0 14 14"
+      width="14"
+      height="14"
+      fill="currentColor"
+      aria-hidden="true"
+    >
+      <path d="M4.5 3 10.5 7 4.5 11Z" />
+    </svg>
   );
 }
 

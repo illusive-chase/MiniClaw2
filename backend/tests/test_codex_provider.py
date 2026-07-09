@@ -131,6 +131,46 @@ class CodexProviderTest(unittest.IsolatedAsyncioTestCase):
             },
         )
 
+    def test_regular_thread_and_turn_params_pin_project_workspace_write(self) -> None:
+        ctx = _FakeProviderContext()
+
+        thread_params = _thread_params(ctx, {"cwd": "/tmp/workspace"})  # type: ignore[arg-type]
+        turn_params = _turn_params(ctx, "thread-1", "build")  # type: ignore[arg-type]
+
+        expected_project_root = str(Path("/tmp/workspace").resolve(strict=False))
+        self.assertEqual(thread_params["sandbox"], "workspace-write")
+        self.assertEqual(
+            turn_params["sandboxPolicy"],
+            {
+                "type": "workspaceWrite",
+                "writableRoots": [expected_project_root],
+                "networkAccess": False,
+            },
+        )
+
+    def test_explicit_read_only_sandbox_is_preserved(self) -> None:
+        ctx = _FakeProviderContext(settings_override={"sandbox": "read-only"})
+
+        thread_params = _thread_params(ctx, {"cwd": "/tmp/workspace"})  # type: ignore[arg-type]
+        turn_params = _turn_params(ctx, "thread-1", "inspect")  # type: ignore[arg-type]
+
+        self.assertEqual(thread_params["sandbox"], "read-only")
+        self.assertNotIn("sandboxPolicy", turn_params)
+
+    async def test_app_server_starts_in_project_cwd(self) -> None:
+        fake_proc = _FakeProcess()
+        with patch(
+            "miniclaw2.providers.codex.asyncio.create_subprocess_exec",
+            return_value=fake_proc,
+        ) as create_subprocess_exec:
+            async with _CodexJsonRpcClient(cwd="/tmp/workspace"):
+                pass
+
+        self.assertEqual(
+            create_subprocess_exec.call_args.kwargs["cwd"],
+            str(Path("/tmp/workspace").resolve(strict=False)),
+        )
+
     async def test_initialize_fails_when_app_server_exits_before_reply(self) -> None:
         def on_request(payload: dict[str, Any]) -> None:
             fake_proc.feed_stderr("codex app-server stderr: unable to start")
