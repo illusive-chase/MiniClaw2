@@ -19,12 +19,16 @@ def main() -> None:
     parser = argparse.ArgumentParser(prog="miniclaw2")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8000)
-    parser.add_argument("--reload", action="store_true")
+    parser.add_argument(
+        "--reload",
+        action="store_true",
+        help="Reload on source changes (backend and, with --dev, frontend).",
+    )
     parser.add_argument("--log-level", default="info")
     parser.add_argument(
         "--dev",
         action="store_true",
-        help="Spawn `npm run dev` alongside the backend for Vite HMR at :5173.",
+        help="Spawn the Vite dev server alongside the backend at :5173.",
     )
     args = parser.parse_args()
 
@@ -57,12 +61,17 @@ def main() -> None:
         proxy_host = "127.0.0.1" if args.host == "0.0.0.0" else args.host
         backend_url = f"http://{proxy_host}:{args.port}"
         print(f"backend:            http://{args.host}:{args.port}")
-        print(f"frontend (Vite HMR): http://127.0.0.1:{VITE_PORT}")
+        frontend_mode = "Vite HMR" if args.reload else "Vite, reload off"
+        print(f"frontend ({frontend_mode}): http://127.0.0.1:{VITE_PORT}")
         vite_proc = subprocess.Popen(
             ["npm", "run", "dev"],
             cwd=str(frontend_dir),
             start_new_session=True,
-            env={**os.environ, "MINICLAW_BACKEND_URL": backend_url},
+            env={
+                **os.environ,
+                "MINICLAW_BACKEND_URL": backend_url,
+                "MINICLAW_RELOAD": "1" if args.reload else "0",
+            },
         )
     else:
         # Prod: FastAPI serves the built frontend from the same origin.

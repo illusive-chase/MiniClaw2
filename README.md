@@ -96,17 +96,19 @@ python -m miniclaw2 --host 127.0.0.1 --port 8000 [--reload]
 # UI + API: http://127.0.0.1:8000
 ```
 
-`--reload` hot-reloads backend Python only. Rebuild the frontend
-(`npm run build` in `frontend/`) whenever you change UI code.
+`--reload` hot-reloads backend Python. Rebuild the frontend (`npm run
+build` in `frontend/`) whenever you change UI code.
 
 **Dev** — same command spawns `npm run dev` alongside the backend so
-Vite HMR is live; Vite's proxy routes `/model-presets`, `/sessions`,
-`/templates`, and `/ws` back to the backend port:
+Vite's proxy routes `/model-presets`, `/sessions`, `/templates`, and
+`/ws` back to the backend port. Add `--reload` to enable both backend
+auto-reload and frontend HMR; without it, neither side reloads on source
+changes:
 
 ```bash
 python -m miniclaw2 --dev [--reload]
 # backend:             http://127.0.0.1:8000
-# frontend (Vite HMR): http://127.0.0.1:5173  <-- visit this
+# frontend (Vite):     http://127.0.0.1:5173  <-- visit this
 ```
 
 Ctrl-C stops both processes.
