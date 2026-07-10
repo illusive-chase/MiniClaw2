@@ -46,7 +46,7 @@ export function InspectDrawer({
             ["category", node.category ?? "-"],
             ["subtype", node.subtype ?? "-"],
             ["model preset", modelPresetLabel(modelPresets, node.model_preset_id)],
-            ["provider", node.provider],
+            ["provider", node.provider ?? "-"],
             ["provider session", node.provider_session_id ?? "-"],
             ["provider turn", node.provider_turn_id ?? "-"],
             ["context bundle", contextBundle?.bundle_id ?? node.context_bundle_id ?? "-"],

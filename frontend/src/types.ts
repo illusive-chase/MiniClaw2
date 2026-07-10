@@ -205,7 +205,7 @@ export type NodeInfo = {
   context_bundle_id?: string | null;
   context_bundle_path?: string | null;
   model_preset_id?: string | null;
-  provider: AgentProvider;
+  provider: AgentProvider | null;
   provider_session_id?: string | null;
   provider_turn_id?: string | null;
   commit_before?: string | null;
