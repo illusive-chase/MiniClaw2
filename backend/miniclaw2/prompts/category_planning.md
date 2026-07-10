@@ -62,7 +62,6 @@ Virtual preview shape:
   "state": "virtual",
   "lane": "<<lane_id>>",
   "proposed_by": "node:<<node_id>>",
-  "model_preset_id": "gpt-5.6",
   "motivation": "<why this step belongs on the plan>",
   "prompt_draft": "<the prompt that will launch when this is promoted>",
   "scheduled_deps": ["<id or slug of parents that must terminate first>"]
@@ -82,19 +81,22 @@ If the virtual is a **review**, it must additionally carry:
 }
 ```
 
-Every agent virtual must include `model_preset_id`. Use an active model
-preset that fits the work, such as `gpt-5.6` for Codex-backed coding
-work or `opus-4-8` for Claude-backed work. Do not write provider-only
-virtual previews.
+Do not include `model_preset_id`, `provider`, or concrete model fields in
+any virtual preview you write. Model selection is framework-owned: new
+virtuals automatically inherit this planning node's model preset, and
+existing virtuals keep their current preset. Any agent-written model
+selection field causes the entire batch to be rejected. When rewriting
+a framework-projected virtual, remove its existing `model_preset_id`
+field from the rewritten preview.
 
 ### Rewriting and obsoleting
 
 To **rewrite** an existing virtual, write a new preview at its
 current path. The id and `proposed_by` field will be preserved by
 the framework — you are free to update `motivation`, `prompt_draft`,
-`category`, `model_preset_id`, `scheduled_deps`, and (for reviews)
-`subtype` and `brief`. Continuation/resume virtuals inherit their
-source node's `model_preset_id`; do not change it on those nodes.
+`category`, `scheduled_deps`, and (for reviews) `subtype` and `brief`.
+Model preset and continuation/resume provider settings are
+framework-controlled and cannot be changed from a preview.
 
 To **obsolete** a virtual, rewrite its preview with a non-null
 `obsolete_reason` explaining why it no longer applies. Do not `rm`

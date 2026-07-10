@@ -161,6 +161,16 @@ def reap_lane(
     for ident, (preview, rel) in parsed.items():
         if ident == node.id:
             continue
+        if (
+            isinstance(preview, VirtualPreview)
+            and "model_preset_id" in preview.model_fields_set
+        ):
+            result.rejection_reasons.append(
+                f"{rel}: agent-written virtual previews must not set "
+                "model_preset_id; the framework owns model selection"
+            )
+            result.fatal = True
+            return result
         existing = store.load_node(project.id, ident)
         if existing is None:
             # Treat ident as a new slug. Must be a virtual preview.
@@ -222,6 +232,7 @@ def reap_lane(
             preview,
             project_id=project.id,
             canonical_id=canonical,
+            model_preset_id_override=node.model_preset_id,
         )
         # Provenance + lane are framework-controlled; the agent's claim is overridden.
         draft.proposed_by = f"node:{node.id}"
@@ -248,6 +259,7 @@ def reap_lane(
             project_id=project.id,
             canonical_id=existing.id,
             verify_script_ref=existing.verify_script_ref,
+            model_preset_id_override=existing.model_preset_id,
         )
         if existing.resume_from_node_id:
             resume_source = store.load_node(project.id, existing.resume_from_node_id)

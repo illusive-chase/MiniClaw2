@@ -47,7 +47,6 @@ def _virtual_payload(slug: str, lane: str, deps: list[str] | None = None,
         "state": "virtual",
         "lane": lane,
         "proposed_by": "node:source",
-        "model_preset_id": "gpt-5.5",
         "motivation": "m",
         "prompt_draft": "Do thing",
     }
@@ -74,7 +73,11 @@ class ReapTestBase(unittest.TestCase):
     def tearDown(self) -> None:
         self.tmp.cleanup()
 
-    def _make_running_node(self, category: Category = Category.REGULAR) -> Node:
+    def _make_running_node(
+        self,
+        category: Category = Category.REGULAR,
+        model_preset_id: str = "gpt-5.5",
+    ) -> Node:
         node = Node(
             id="n1",
             project_id="p1",
@@ -82,7 +85,7 @@ class ReapTestBase(unittest.TestCase):
             category=category,
             state=NodeState.DONE,
             planspace_id="lane-A",
-            model_preset_id="gpt-5.5",
+            model_preset_id=model_preset_id,
             started_at=1.0,
             finished_at=2.0,
         )
@@ -109,7 +112,10 @@ class ReapHappyPathTests(ReapTestBase):
         self.assertEqual(result.new_virtuals, [])
 
     def test_planning_agent_proposes_virtual(self) -> None:
-        node = self._make_running_node(category=Category.PLANNING)
+        node = self._make_running_node(
+            category=Category.PLANNING,
+            model_preset_id="opus-4-8",
+        )
         lane_root, pre = self._setup_lane(node)
         _write_preview(
             lane_root / "nodes" / "n1" / "preview.json",
@@ -125,6 +131,7 @@ class ReapHappyPathTests(ReapTestBase):
         new = result.new_virtuals[0]
         self.assertEqual(new.state, NodeState.VIRTUAL)
         self.assertEqual(new.proposed_by, "node:n1")
+        self.assertEqual(new.model_preset_id, "opus-4-8")
         self.assertNotEqual(new.id, "V_foo")  # canonicalized
         # And the new node is in the store
         self.assertIsNotNone(self.store.load_node("p1", new.id))
@@ -148,6 +155,31 @@ class ReapCategoryEnforcementTests(ReapTestBase):
         self.assertEqual(self.store.list_nodes("p1"), [node] if False else self.store.list_nodes("p1"))
         ids = {n.id for n in self.store.list_nodes("p1")}
         self.assertEqual(ids, {"n1"})
+
+    def test_agent_written_model_preset_is_rejected_even_when_it_matches(self) -> None:
+        node = self._make_running_node(category=Category.PLANNING)
+        lane_root, pre = self._setup_lane(node)
+        _write_preview(
+            lane_root / "nodes" / "n1" / "preview.json",
+            _executed_payload("n1", "lane-A", category="planning"),
+        )
+        virtual = _virtual_payload("V_x", "lane-A")
+        virtual["model_preset_id"] = node.model_preset_id
+        _write_preview(
+            lane_root / "nodes" / "V_x" / "preview.json",
+            virtual,
+        )
+
+        result = reap_lane(self.project, node, lane_root, pre, self.store)
+
+        self.assertTrue(result.fatal)
+        self.assertTrue(
+            any(
+                "must not set model_preset_id" in reason
+                for reason in result.rejection_reasons
+            )
+        )
+        self.assertEqual({n.id for n in self.store.list_nodes("p1")}, {"n1"})
 
 
 class ReapMissingOwnPreviewTests(ReapTestBase):
@@ -314,6 +346,45 @@ class ReapSlugCanonicalizationTests(ReapTestBase):
         assert persisted is not None
         self.assertEqual(persisted.resume_from_node_id, "build")
         self.assertEqual(persisted.prompt_draft, "edited fix")
+
+    def test_virtual_mutation_keeps_existing_model_preset(self) -> None:
+        node = self._make_running_node(
+            category=Category.PLANNING,
+            model_preset_id="opus-4-8",
+        )
+        existing_virtual = Node(
+            id="existing",
+            project_id="p1",
+            kind=NodeKind.AGENT,
+            category=Category.REGULAR,
+            state=NodeState.VIRTUAL,
+            planspace_id="lane-A",
+            model_preset_id="gpt-5.6",
+            prompt_draft="initial",
+            proposed_by="user",
+            summary="initial motivation",
+        )
+        self.store.create_node(existing_virtual)
+        lane_root, pre = self._setup_lane(node)
+        _write_preview(
+            lane_root / "nodes" / "n1" / "preview.json",
+            _executed_payload("n1", "lane-A", category="planning"),
+        )
+        rewritten = _virtual_payload("existing", "lane-A")
+        rewritten["prompt_draft"] = "edited"
+        _write_preview(
+            lane_root / "nodes" / "existing" / "preview.json",
+            rewritten,
+        )
+
+        result = reap_lane(self.project, node, lane_root, pre, self.store)
+
+        self.assertTrue(result.ok())
+        persisted = self.store.load_node("p1", "existing")
+        self.assertIsNotNone(persisted)
+        assert persisted is not None
+        self.assertEqual(persisted.model_preset_id, "gpt-5.6")
+        self.assertEqual(persisted.prompt_draft, "edited")
 
 
 class ReapCycleDetectionTests(ReapTestBase):

@@ -93,6 +93,14 @@ new question, propose another `human_interact_review`.
 
 Review virtuals additionally carry `subtype` and `brief`.
 
+Do not include `model_preset_id`, `provider`, or concrete model fields in
+any virtual preview you write. Model selection is framework-owned: new
+virtuals automatically inherit this review node's model preset, and
+existing virtuals keep their current preset. Any agent-written model
+selection field causes the entire batch to be rejected. When rewriting
+a framework-projected virtual, remove its existing `model_preset_id`
+field from the rewritten preview.
+
 #### Obsoleting an existing virtual
 
 Rewrite its preview with a non-null `obsolete_reason`. Do not `rm`

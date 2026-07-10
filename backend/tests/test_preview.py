@@ -71,6 +71,15 @@ class ParsePreviewTests(unittest.TestCase):
         self.assertIsInstance(preview, VirtualPreview)
         self.assertEqual(preview.prompt_draft, "Implement /forgot-password ...")
 
+    def test_agent_authored_virtual_may_omit_framework_model_metadata(self) -> None:
+        payload = _virtual_payload()
+        payload.pop("model_preset_id")
+        preview = parse_preview(json.dumps(payload))
+
+        self.assertIsInstance(preview, VirtualPreview)
+        assert isinstance(preview, VirtualPreview)
+        self.assertIsNone(preview.model_preset_id)
+
     def test_unknown_field_rejected(self) -> None:
         payload = _executed_payload(rogue="field")
         with self.assertRaises(PreviewValidationError):
@@ -226,6 +235,21 @@ class VirtualPreviewToNodeTests(unittest.TestCase):
         self.assertEqual(node.category, Category.REGULAR)
         self.assertEqual(node.model_preset_id, "gpt-5.5")
         self.assertEqual(node.prompt_draft, "Implement /forgot-password ...")
+
+    def test_framework_model_override_supplies_omitted_preset(self) -> None:
+        payload = _virtual_payload()
+        payload.pop("model_preset_id")
+        preview = parse_preview(json.dumps(payload))
+        assert isinstance(preview, VirtualPreview)
+
+        node = virtual_preview_to_node(
+            preview,
+            project_id="p1",
+            canonical_id="canon-inherited",
+            model_preset_id_override="opus-4-8",
+        )
+
+        self.assertEqual(node.model_preset_id, "opus-4-8")
 
     def test_review_virtual_promotes_with_brief(self) -> None:
         payload = _virtual_payload(

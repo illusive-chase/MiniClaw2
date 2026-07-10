@@ -116,8 +116,6 @@ class VirtualPreview(BaseModel):
             if self.prompt_draft:
                 raise ValueError("verifier virtuals must not carry prompt_draft")
             return self
-        if self.model_preset_id is None or not self.model_preset_id.strip():
-            raise ValueError("agent virtuals require model_preset_id")
         if self.subtype == "programmatic_review":
             raise ValueError("programmatic_review virtuals require kind=verifier")
         if self.category == "review":
@@ -259,6 +257,7 @@ def virtual_preview_to_node(
     project_id: str,
     canonical_id: str,
     verify_script_ref: str | None = None,
+    model_preset_id_override: str | None = None,
 ) -> Node:
     """Promote a parsed VirtualPreview into a persistable ``Node`` with
     a framework-assigned canonical id."""
@@ -271,7 +270,11 @@ def virtual_preview_to_node(
         kind=kind,
         state=NodeState.VIRTUAL,
         planspace_id=preview.lane or None,
-        model_preset_id=preview.model_preset_id,
+        model_preset_id=(
+            model_preset_id_override
+            if model_preset_id_override is not None
+            else preview.model_preset_id
+        ),
         prompt="",
         prompt_draft=preview.prompt_draft,
         category=Category(preview.category),

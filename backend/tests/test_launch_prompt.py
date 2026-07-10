@@ -75,6 +75,8 @@ class PlanningBlockTests(unittest.TestCase):
         self.assertIn("Virtual preview shape", block)
         self.assertIn("scheduled_deps", block)
         self.assertIn(f"node:{node.id}", block)
+        self.assertNotIn('"model_preset_id":', block)
+        self.assertIn("Model selection is framework-owned", block)
 
 
 class DependencyBlockTests(unittest.TestCase):
@@ -117,6 +119,8 @@ class AgenticReviewBlockTests(unittest.TestCase):
         self.assertIn("signup unit test passes", block)
         self.assertIn("no hardcoded urls", block)
         self.assertIn("coverage drops below 70%", block)
+        self.assertNotIn('"model_preset_id":', block)
+        self.assertIn("Model selection is framework-owned", block)
         # Does NOT reference human-review.md
         self.assertNotIn("human-review.md", block)
 
@@ -140,6 +144,8 @@ class HumanInteractReviewBlockTests(unittest.TestCase):
         self.assertIn(f"{GRAPH_DIRNAME}/lane-A/nodes/rev-1/human-review.md", block)
         self.assertIn("JWT with rotating refresh", block)
         self.assertIn("session cookies", block)
+        self.assertNotIn('"model_preset_id":', block)
+        self.assertIn("Model selection is framework-owned", block)
 
 
 class OpAndUnknownTests(unittest.TestCase):
