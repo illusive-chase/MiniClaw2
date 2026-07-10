@@ -682,25 +682,8 @@ function CanvasInner({
           onZoomOut={persistCurrentViewport}
           onFitView={persistCurrentViewport}
         />
-        <ContextLaneLabel />
       </ReactFlow>
     </div>
-  );
-}
-
-/* Floating labels so users know what the two top strips mean. */
-function ContextLaneLabel() {
-  return (
-    <>
-      <div className="pointer-events-none absolute left-4 top-2 z-10 inline-flex items-center gap-1.5 rounded border border-line border-dashed bg-surface-raised/85 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.14em] text-ink-subtle backdrop-blur">
-        <span className="inline-block h-1 w-1 rounded-full bg-ink-subtle" />
-        Project context
-      </div>
-      <div className="pointer-events-none absolute left-4 top-[110px] z-10 inline-flex items-center gap-1.5 rounded border border-line bg-surface-raised/85 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.14em] text-ink-subtle backdrop-blur">
-        <span className="inline-block h-1 w-1 rounded-full bg-ink-subtle" />
-        Loaded context
-      </div>
-    </>
   );
 }
 

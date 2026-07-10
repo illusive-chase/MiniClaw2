@@ -1724,28 +1724,6 @@ export function App() {
             />
           )}
 
-          {!projectRunnerBusy &&
-            !composerLocked &&
-            nodes.length === 0 && (
-              <button
-                type="button"
-                onClick={() => {
-                  setSelection({ kind: "projectRoot" });
-                  inspectNode(null);
-                  setNewDirectionRequestVersion((version) => version + 1);
-                  openDetails();
-                }}
-                className="absolute left-1/2 top-1/2 z-10 -translate-x-1/2 -translate-y-1/2 rounded-xl border-2 border-dashed border-line-strong bg-surface-raised/80 px-6 py-5 text-center text-sm text-ink-muted shadow-card transition hover:border-brand hover:bg-surface-raised hover:text-ink-strong"
-              >
-                <div className="font-display text-base font-semibold text-ink-strong">
-                  Start the first direction
-                </div>
-                <div className="mt-1 text-[12px] text-ink-muted">
-                  Open project actions to create a notebook.
-                </div>
-              </button>
-            )}
-
           {/* Floating side panel — slides in from the right, swaps between
               details (node inspector) and the template library. */}
           <aside
