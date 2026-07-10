@@ -73,7 +73,7 @@ MODEL_PRESETS: tuple[ModelPreset, ...] = (
     ),
     ModelPreset(
         id="gpt-5.6-x",
-        label="GPT-5.6 (XHigh)",
+        label="GPT-5.6 SOL (XHigh)",
         provider="codex",
         model="gpt-5.6-sol",
         model_provider="openai",
@@ -82,7 +82,7 @@ MODEL_PRESETS: tuple[ModelPreset, ...] = (
     ),
     ModelPreset(
         id="gpt-5.6-u",
-        label="GPT-5.6 (Ultra)",
+        label="GPT-5.6 SOL (Ultra)",
         provider="codex",
         model="gpt-5.6-sol",
         model_provider="openai",
@@ -101,11 +101,11 @@ MODEL_PRESETS: tuple[ModelPreset, ...] = (
     ),
     ModelPreset(
         id="opus-4-7",
-        label="Claude Opus 4.7",
+        label="Claude Opus 4.7 (1M)",
         provider="claude",
-        model="opus-4-7",
-        description="Compatibility preset for existing Claude Opus 4.7 data.",
-        status="compatibility",
+        model="claude-opus-4-7[1m]",
+        reasoning_effort="xhigh",
+        description="Claude Opus 4.7 preset with a 1M context window and xhigh effort.",
     ),
 )
 
