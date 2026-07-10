@@ -8,6 +8,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from miniclaw2.app import create_app
+from miniclaw2.global_config import load_global_config, save_global_config
 from miniclaw2.registry import ProjectRegistry
 from miniclaw2.store import Store
 
@@ -109,6 +110,34 @@ class GlobalStateApiTest(unittest.TestCase):
 
         templates = self.client.get("/templates")
         self.assertEqual(templates.status_code, 200)
+
+    def test_upgraded_store_missing_template_preset_remains_usable(self) -> None:
+        config = load_global_config(self.root)
+        local_preset = next(
+            preset.model_copy(update={"id": "local-fast", "label": "Local fast"})
+            for preset in config.model_presets
+            if preset.id == "gpt-5.6-x"
+        )
+        save_global_config(
+            config.model_copy(
+                update={
+                    "model_presets": [
+                        preset
+                        for preset in config.model_presets
+                        if preset.id != "opus-4-7"
+                    ]
+                    + [local_preset]
+                }
+            ),
+            self.root,
+        )
+
+        templates = self.client.get("/templates")
+        self.assertEqual(templates.status_code, 200)
+        self.assertTrue(templates.json())
+
+        deleted = self.client.delete("/global-state/model-presets/local-fast")
+        self.assertEqual(deleted.status_code, 204)
 
     def test_store_specific_preset_can_create_session(self) -> None:
         preset = {

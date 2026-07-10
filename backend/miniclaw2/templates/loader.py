@@ -30,7 +30,6 @@ from ..domain import (
     ReviewSubtype,
     normalize_planspace_mode,
 )
-from ..model_catalog import normalize_model_preset_id
 from ..virtual_graph import has_cycle
 
 TEMPLATES_DIR = Path(__file__).parent / "bundled"
@@ -237,10 +236,11 @@ def _parse_allowed_model_preset_ids(
             raise TemplateError(
                 f"{name}: allowed_model_preset_ids entries must be strings"
             )
-        try:
-            preset_id = normalize_model_preset_id(item, store_root=store_root)
-        except ValueError as exc:
-            raise TemplateError(f"{name}: {exc}") from exc
+        preset_id = item.strip()
+        if not preset_id:
+            raise TemplateError(
+                f"{name}: allowed_model_preset_ids entries must be non-empty"
+            )
         if preset_id not in out:
             out.append(preset_id)
     return out
