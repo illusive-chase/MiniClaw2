@@ -38,6 +38,7 @@ from .domain import (
 from .language import normalize_preferred_language
 from .model_catalog import (
     default_model_preset_id,
+    normalize_active_model_preset_id,
     normalize_model_preset_id,
     provider_for_model_preset,
 )
@@ -235,7 +236,7 @@ class ProjectRegistry:
         if model is not None or model_provider is not None:
             raise ValueError("model/model_provider are no longer accepted; use model_preset_id")
         normalized_model_preset_id = (
-            normalize_model_preset_id(model_preset_id)
+            normalize_active_model_preset_id(model_preset_id)
             if model_preset_id is not None
             else default_model_preset_id()
         )
@@ -548,11 +549,14 @@ class ProjectRegistry:
                 )
             next_model_preset_id = resume_source.model_preset_id
         else:
-            next_model_preset_id = (
-                normalize_model_preset_id(model_preset_id)
-                if model_preset_id is not None
-                else rt.project.model_preset_id
-            )
+            if model_preset_id is None:
+                next_model_preset_id = rt.project.model_preset_id
+            else:
+                next_model_preset_id = normalize_model_preset_id(model_preset_id)
+                if next_model_preset_id != rt.project.model_preset_id:
+                    next_model_preset_id = normalize_active_model_preset_id(
+                        next_model_preset_id
+                    )
         normalized_provider = provider_for_model_preset(next_model_preset_id)
 
         extra_skill_ids = normalize_skill_ids(extra_skills)
@@ -667,7 +671,7 @@ class ProjectRegistry:
         if provider is not None:
             raise ValueError("provider is no longer accepted; use model_preset_id")
         next_model_preset_id = (
-            normalize_model_preset_id(model_preset_id)
+            normalize_active_model_preset_id(model_preset_id)
             if model_preset_id is not None
             else rt.project.model_preset_id
         )
@@ -721,7 +725,7 @@ class ProjectRegistry:
         if provider is not None:
             raise ValueError("provider is no longer accepted; use model_preset_id")
         next_model_preset_id = (
-            normalize_model_preset_id(model_preset_id)
+            normalize_active_model_preset_id(model_preset_id)
             if model_preset_id is not None
             else rt.project.model_preset_id
         )
@@ -745,6 +749,7 @@ class ProjectRegistry:
             motivation="",
             scheduled_deps=[],
             model_preset_id=next_model_preset_id,
+            _allow_compatibility_model_preset=True,
             planspace_id=plug_id,
         )
         if node is None:
@@ -917,6 +922,7 @@ class ProjectRegistry:
         node_id: str | None = None,
         parent_node_id: str | None = None,
         resume_from_node_id: str | None = None,
+        _allow_compatibility_model_preset: bool = False,
     ) -> Node | None:
         """Create a user-authored editable virtual node.
 
@@ -955,11 +961,14 @@ class ProjectRegistry:
                 )
             next_model_preset_id = resume_source_for_provider.model_preset_id
         else:
-            next_model_preset_id = (
-                normalize_model_preset_id(model_preset_id)
-                if model_preset_id is not None
-                else rt.project.model_preset_id
-            )
+            if model_preset_id is None:
+                next_model_preset_id = rt.project.model_preset_id
+            else:
+                next_model_preset_id = normalize_model_preset_id(model_preset_id)
+                if not _allow_compatibility_model_preset:
+                    next_model_preset_id = normalize_active_model_preset_id(
+                        next_model_preset_id
+                    )
         next_provider = provider_for_model_preset(next_model_preset_id)
 
         try:
@@ -1192,6 +1201,10 @@ class ProjectRegistry:
                     raise ValueError(
                         "resume virtuals inherit model_preset_id from their source node"
                     )
+            if next_model_preset_id != existing.model_preset_id:
+                next_model_preset_id = normalize_active_model_preset_id(
+                    next_model_preset_id
+                )
             update["model_preset_id"] = next_model_preset_id
             update["provider"] = provider_for_model_preset(next_model_preset_id)
 
@@ -1313,6 +1326,7 @@ class ProjectRegistry:
             motivation=f"rerun of {original.id[:8]}",
             scheduled_deps=list(original.scheduled_deps or []),
             model_preset_id=original.model_preset_id,
+            _allow_compatibility_model_preset=True,
             planspace_id=original.planspace_id,
             parent_node_id=original.parent_node_id,
             resume_from_node_id=original.resume_from_node_id,

@@ -57,6 +57,7 @@ class ClaudeNativeSession:
         project_id: str,
         ask_dispatcher: AskDispatcher,
         model: str | None = None,
+        effort: str | None = None,
         session_id: str | None = None,
         system_prompt_append: str = "",
         tool_allowlist: list[str] | None = None,
@@ -67,6 +68,7 @@ class ClaudeNativeSession:
         self._project_id = project_id
         self._ask_dispatcher = ask_dispatcher
         self._model = model
+        self._effort = effort
         self._resume_session_id = session_id
         self._system_prompt_append = system_prompt_append
         self._tool_allowlist = tool_allowlist
@@ -107,6 +109,7 @@ class ClaudeNativeSession:
             session_id=self._cli_session_id,
             resume=self._resume_session_id is not None,
             model=self._model,
+            effort=self._effort,
             system_prompt_append=self._system_prompt_append,
             tool_allowlist=self._tool_allowlist,
         )

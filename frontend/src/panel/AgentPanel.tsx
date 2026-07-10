@@ -26,7 +26,11 @@ import {
 import { canResumeNode } from "../nodeUtil";
 import { GateReviewForm } from "./gateReview";
 import { InspectDrawer } from "./InspectDrawer";
-import { modelPresetDetail, modelPresetLabel } from "../modelPresets";
+import {
+  modelPresetDetail,
+  modelPresetLabel,
+  selectableModelPresets,
+} from "../modelPresets";
 
 export type AgentPanelProps = {
   sessionId: string;
@@ -387,6 +391,8 @@ function EditableVirtualNodeBody({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const promptDraftRef = useRef<HTMLTextAreaElement | null>(null);
+  const activeModelPresets = selectableModelPresets(modelPresets);
+  const currentPreset = modelPresets.find((preset) => preset.id === draft.modelPresetId);
   const candidateDeps = useMemo(
     () =>
       Array.from(nodesById.values()).filter(
@@ -511,7 +517,7 @@ function EditableVirtualNodeBody({
             <FieldLabel label="模型档位">
               <select
                 value={draft.modelPresetId}
-                disabled={Boolean(node.resume_from_node_id) || modelPresets.length === 0}
+                disabled={Boolean(node.resume_from_node_id) || activeModelPresets.length === 0}
                 onChange={(e) =>
                   setDraft((current) => ({
                     ...current,
@@ -525,14 +531,18 @@ function EditableVirtualNodeBody({
                     : "此 virtual 提升运行时使用的模型档位。"
                 }
               >
-                {modelPresets.length === 0 && (
+                {activeModelPresets.length === 0 && (
                   <option value="">没有可用模型档位</option>
                 )}
-                {draft.modelPresetId &&
-                  !modelPresets.some((preset) => preset.id === draft.modelPresetId) && (
-                    <option value={draft.modelPresetId}>{draft.modelPresetId}</option>
-                  )}
-                {modelPresets.map((preset) => (
+                {draft.modelPresetId && currentPreset?.status === "compatibility" && (
+                  <option value={draft.modelPresetId} disabled>
+                    {modelPresetLabel(modelPresets, draft.modelPresetId)}
+                  </option>
+                )}
+                {draft.modelPresetId && !currentPreset && (
+                  <option value={draft.modelPresetId} disabled>{draft.modelPresetId}</option>
+                )}
+                {activeModelPresets.map((preset) => (
                   <option key={preset.id} value={preset.id}>
                     {preset.label}
                   </option>
@@ -1024,7 +1034,7 @@ function virtualPayloadFromDraft(
   };
   // Model preset is locked to the resume source for continuation virtuals;
   // omit it from the payload so the backend doesn't have to re-check equality.
-  if (!node.resume_from_node_id) {
+  if (!node.resume_from_node_id && draft.modelPresetId !== node.model_preset_id) {
     payload.model_preset_id = draft.modelPresetId;
   }
   if (draft.category === "review") {

@@ -9,6 +9,7 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
+      "/model-presets": backendUrl,
       "/sessions": backendUrl,
       "/templates": backendUrl,
       "/ws": {

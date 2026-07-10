@@ -2,7 +2,12 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 
 import { LANGUAGE_OPTIONS } from "../languages";
-import { defaultModelPresetId, modelPresetDetail, modelPresetLabel } from "../modelPresets";
+import {
+  defaultModelPresetId,
+  modelPresetDetail,
+  modelPresetLabel,
+  selectableModelPresets,
+} from "../modelPresets";
 import type {
   ContextSpaceBindingSummary,
   ContextSpacePlugSummary,
@@ -94,6 +99,7 @@ export function ProjectPanel({
   const notesExist = !!contextSpace?.context_file?.exists;
   const refreshing = !!contextSpace?.context_refresh?.running;
   const busy = contextSpaceSaving || refreshing || settingsSaving;
+  const activeModelPresets = selectableModelPresets(modelPresets);
 
   useEffect(() => {
     setNewDirectionModelPresetId(
@@ -356,7 +362,7 @@ export function ProjectPanel({
                   }
                   className="min-w-[170px] rounded border border-line bg-surface-sunken px-2 py-1 text-[11.5px] text-ink-strong focus:border-brand focus:outline-none"
                 >
-                  {modelPresets.map((preset) => (
+                  {activeModelPresets.map((preset) => (
                     <option key={preset.id} value={preset.id}>
                       {preset.label}
                     </option>

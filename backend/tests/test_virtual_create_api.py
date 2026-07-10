@@ -23,7 +23,7 @@ class VirtualCreateApiTest(unittest.TestCase):
     def test_create_virtual_in_template_active_lane(self) -> None:
         launched = self.client.post(
             "/templates/hello-text/run",
-            json={"model_preset_id": "gpt-5.5"},
+            json={"model_preset_id": "gpt-5.6"},
         )
         self.assertEqual(launched.status_code, 200, launched.text)
         session = launched.json()
@@ -39,7 +39,7 @@ class VirtualCreateApiTest(unittest.TestCase):
                 "prompt_draft": "Add an extra user-authored check.",
                 "motivation": "Manual template extension",
                 "category": "regular",
-                "model_preset_id": "opus-4-7",
+                "model_preset_id": "opus-4-8",
                 "scheduled_deps": [first["id"]],
             },
         )
@@ -51,7 +51,7 @@ class VirtualCreateApiTest(unittest.TestCase):
         self.assertEqual(node["state"], "virtual")
         self.assertEqual(node["kind"], "agent")
         self.assertEqual(node["category"], "regular")
-        self.assertEqual(node["model_preset_id"], "opus-4-7")
+        self.assertEqual(node["model_preset_id"], "opus-4-8")
         self.assertEqual(node["provider"], "claude")
         self.assertEqual(node["prompt_draft"], "Add an extra user-authored check.")
         self.assertEqual(node["summary"], "Manual template extension")
@@ -72,7 +72,7 @@ class VirtualCreateApiTest(unittest.TestCase):
     def test_create_virtual_rejects_missing_dependency(self) -> None:
         launched = self.client.post(
             "/templates/hello-text/run",
-            json={"model_preset_id": "gpt-5.5"},
+            json={"model_preset_id": "gpt-5.6"},
         )
         self.assertEqual(launched.status_code, 200, launched.text)
         sid = launched.json()["id"]
@@ -95,7 +95,7 @@ class VirtualCreateApiTest(unittest.TestCase):
 
         launched = self.client.post(
             "/templates/hello-text/run",
-            json={"model_preset_id": "gpt-5.5"},
+            json={"model_preset_id": "gpt-5.6"},
         )
         self.assertEqual(launched.status_code, 200, launched.text)
         sid = launched.json()["id"]

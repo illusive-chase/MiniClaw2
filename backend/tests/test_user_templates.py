@@ -36,7 +36,7 @@ def _seeded_registry(root: Path) -> tuple[ProjectRegistry, Store]:
 def _make_project_with_lane(registry: ProjectRegistry) -> tuple[str, str]:
     """Create a temporary project + activate a fresh planspace. Returns (pid, lane)."""
     project = registry.create_project(
-        cwd=None, model_preset_id="opus-4-7", temporary=True
+        cwd=None, model_preset_id="opus-4-8", temporary=True
     )
     from miniclaw2.contextspace import create_planspace
 
@@ -71,7 +71,7 @@ def _add_virtual(
         kind=NodeKind.AGENT,
         state=NodeState.VIRTUAL,
         planspace_id=lane,
-        model_preset_id="opus-4-7",
+        model_preset_id="opus-4-8",
         prompt="",
         prompt_draft=prompt_draft,
         category=category,
@@ -139,7 +139,7 @@ class UserTemplateSerializerTest(unittest.TestCase):
             kind=NodeKind.AGENT,
             state=NodeState.DONE,
             planspace_id=lane,
-            model_preset_id="opus-4-7",
+            model_preset_id="opus-4-8",
             prompt="Original turn.",
             provider_session_id="sess-a",
             started_at=1.0,
@@ -228,7 +228,7 @@ class UserTemplateSerializerTest(unittest.TestCase):
             kind=NodeKind.AGENT,
             state=NodeState.DONE,
             planspace_id=lane,
-            model_preset_id="opus-4-7",
+            model_preset_id="opus-4-8",
             prompt="One.",
             provider_session_id="sess-a",
             started_at=1.0,
@@ -290,7 +290,7 @@ class UserTemplateSerializerTest(unittest.TestCase):
             kind=NodeKind.AGENT,
             state=NodeState.RUNNING,
             planspace_id=lane,
-            model_preset_id="opus-4-7",
+            model_preset_id="opus-4-8",
             prompt="Working…",
             started_at=1.0,
         )
@@ -307,7 +307,7 @@ class UserTemplateSerializerTest(unittest.TestCase):
             kind=NodeKind.AGENT,
             state=NodeState.DONE,
             planspace_id=lane,
-            model_preset_id="opus-4-7",
+            model_preset_id="opus-4-8",
             prompt="Reify me.",
             started_at=1.0,
             finished_at=2.0,
@@ -381,7 +381,7 @@ class ApplyUserTemplateTest(unittest.TestCase):
         template = load_user_template(slug, self.store.root)
 
         project = self.registry.create_project(
-            cwd=None, model_preset_id="opus-4-7", temporary=True
+            cwd=None, model_preset_id="opus-4-8", temporary=True
         )
         # settings_override["active_planspace_id"] is unset.
         with self.assertRaises(Exception):
@@ -404,7 +404,7 @@ class UserTemplateHttpApiTest(unittest.TestCase):
     def test_save_apply_and_delete_round_trip(self) -> None:
         # Set up a project with a couple of virtuals in the active lane.
         launched = self.client.post(
-            "/templates/hello-text/run", json={"model_preset_id": "opus-4-7"}
+            "/templates/hello-text/run", json={"model_preset_id": "opus-4-8"}
         )
         self.assertEqual(launched.status_code, 200, launched.text)
         sid = launched.json()["id"]
@@ -453,7 +453,7 @@ class UserTemplateHttpApiTest(unittest.TestCase):
 
     def test_save_returns_400_on_invalid_selection(self) -> None:
         launched = self.client.post(
-            "/templates/hello-text/run", json={"model_preset_id": "opus-4-7"}
+            "/templates/hello-text/run", json={"model_preset_id": "opus-4-8"}
         )
         sid = launched.json()["id"]
         # Empty selection.

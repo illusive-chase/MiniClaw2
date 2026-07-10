@@ -48,6 +48,7 @@ class ClaudeProvider:
                 project_id=context.project.id,
                 ask_dispatcher=lambda payload: self._dispatch_ask(payload, context),
                 model=self._resolve_model(context),
+                effort=self._resolve_effort(context),
                 session_id=self._resume_session_id(context),
                 system_prompt_append=(
                     context.system_context if not context.minimal_mode else ""
@@ -138,6 +139,9 @@ class ClaudeProvider:
 
     def _resolve_model(self, context: AgentProviderContext) -> str | None:
         return get_model_preset(context.node.model_preset_id).model
+
+    def _resolve_effort(self, context: AgentProviderContext) -> str | None:
+        return get_model_preset(context.node.model_preset_id).reasoning_effort
 
     def _resume_session_id(
         self, context: AgentProviderContext

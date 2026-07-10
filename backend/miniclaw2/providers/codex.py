@@ -225,6 +225,9 @@ class CodexProvider:
         if method == "error":
             error = params.get("error") or {}
             text = error.get("message") or json.dumps(error, ensure_ascii=False)
+            if params.get("willRetry") is True:
+                logger.warning("Codex turn error is being retried: %s", text)
+                return
             yield AgentProviderEvent(kind="error", error=text)
             return
 

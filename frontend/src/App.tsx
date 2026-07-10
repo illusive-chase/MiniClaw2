@@ -54,6 +54,7 @@ import type {
 } from "./types";
 import { useSessionSocket } from "./ws";
 import { canResumeNode } from "./nodeUtil";
+import { defaultModelPresetId } from "./modelPresets";
 
 type Route = "landing" | "project";
 type PendingGateState = {
@@ -383,7 +384,7 @@ export function App() {
           prompt_draft: userSeed,
           category: "regular",
           agent_op_kind: "skill_edit",
-          model_preset_id: session.model_preset_id,
+          model_preset_id: defaultModelPresetId(modelPresets, session.model_preset_id),
           planspace_id: active,
         });
         setNodes((prev) => {
@@ -404,6 +405,7 @@ export function App() {
     [
       session?.id,
       session?.model_preset_id,
+      modelPresets,
       sessionContextSpace?.active_planspace_id,
       virtualCreateDisabled,
       selectAndOpenNode,
@@ -781,7 +783,12 @@ export function App() {
           category: "regular",
           motivation: "",
           scheduled_deps: payload.scheduled_deps ?? [],
-          model_preset_id: payload.model_preset_id ?? session.model_preset_id,
+          model_preset_id: payload.resume_from_node_id
+            ? undefined
+            : defaultModelPresetId(
+                modelPresets,
+                payload.model_preset_id ?? session.model_preset_id,
+              ),
           planspace_id: payload.planspace_id,
           resume_from_node_id: payload.resume_from_node_id ?? null,
         });
@@ -800,7 +807,13 @@ export function App() {
         setProjectMutationPending(false);
       }
     },
-    [session?.id, session?.model_preset_id, virtualCreateDisabled, selectAndOpenNode],
+    [
+      session?.id,
+      session?.model_preset_id,
+      modelPresets,
+      virtualCreateDisabled,
+      selectAndOpenNode,
+    ],
   );
 
   const createUnparentedVirtual = useCallback(

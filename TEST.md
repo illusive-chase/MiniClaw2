@@ -158,7 +158,7 @@ Each scenario lives under `backend/miniclaw2/scenarios/bundled/<name>/`:
 ```yaml
 name: hello-text
 brief: "Simplest end-to-end run: agent produces a sensible text reply."
-allowed_model_preset_ids: [gpt-5.5, opus-4-7]
+allowed_model_preset_ids: [opus-4-8, gpt-5.6, gpt-5.6-x, gpt-5.6-u]
 auto_commit: false
 nodes:
   - id: turn1
@@ -175,7 +175,7 @@ Extended shape (Tiers 2–4 — current implementation):
 ```yaml
 name: gui-calculator
 brief: "Build a PySide6 Qt calculator, review it, snapshot it."
-allowed_model_preset_ids: [gpt-5.5, opus-4-7]
+allowed_model_preset_ids: [opus-4-8, gpt-5.6, gpt-5.6-x, gpt-5.6-u]
 auto_commit: true
 permission_mode: default          # or "plan" for plan-mode-approval
 seed:
@@ -427,12 +427,12 @@ npm run dev
 
 Create or select a session whose cwd is
 `/private/tmp/miniclaw2-contextspace-test/workspace` and model preset is
-either `gpt-5.5` or `opus-4-7`. The API equivalent is:
+one of `opus-4-8`, `gpt-5.6`, `gpt-5.6-x`, or `gpt-5.6-u`. The API equivalent is:
 
 ```bash
 curl -s -X POST http://127.0.0.1:8000/sessions \
   -H 'content-type: application/json' \
-  -d '{"cwd":"/private/tmp/miniclaw2-contextspace-test/workspace","model_preset_id":"gpt-5.5","name":"ContextSpace Manual Test"}'
+  -d '{"cwd":"/private/tmp/miniclaw2-contextspace-test/workspace","model_preset_id":"gpt-5.6","name":"ContextSpace Manual Test"}'
 ```
 
 Frontend steps:

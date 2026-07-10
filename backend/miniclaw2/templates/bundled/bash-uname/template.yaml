@@ -1,8 +1,10 @@
 name: bash-uname
 brief: Agent runs a single Bash command and reports its output.
 allowed_model_preset_ids:
-- gpt-5.5
-- opus-4-7
+- opus-4-8
+- gpt-5.6
+- gpt-5.6-x
+- gpt-5.6-u
 auto_commit: false
 permission_mode: bypassPermissions
 lane_mode: manual

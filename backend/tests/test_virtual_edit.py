@@ -96,16 +96,16 @@ class VirtualEditRegistryTests(unittest.TestCase):
         updated = self.registry.update_virtual(
             self.project.id,
             node.id,
-            model_preset_id="opus-4-7",
+            model_preset_id="opus-4-8",
         )
 
         self.assertIsNotNone(updated)
         assert updated is not None
-        self.assertEqual(updated.model_preset_id, "opus-4-7")
+        self.assertEqual(updated.model_preset_id, "opus-4-8")
         self.assertEqual(updated.provider, "claude")
         reloaded = self.store.load_node(self.project.id, node.id)
         assert reloaded is not None
-        self.assertEqual(reloaded.model_preset_id, "opus-4-7")
+        self.assertEqual(reloaded.model_preset_id, "opus-4-8")
         self.assertEqual(reloaded.provider, "claude")
 
     def test_update_resume_virtual_rejects_model_preset_change(self) -> None:
@@ -144,7 +144,7 @@ class VirtualEditRegistryTests(unittest.TestCase):
             self.registry.update_virtual(
                 self.project.id,
                 created.id,
-                model_preset_id="opus-4-7",
+                model_preset_id="opus-4-8",
             )
 
         reloaded = self.store.load_node(self.project.id, created.id)
@@ -270,13 +270,21 @@ class VirtualEditRegistryTests(unittest.TestCase):
         created = self.registry.create_virtual(
             self.project.id,
             prompt_draft="codex planned work",
-            model_preset_id="opus-4-7",
+            model_preset_id="opus-4-8",
         )
 
         self.assertIsNotNone(created)
         assert created is not None
-        self.assertEqual(created.model_preset_id, "opus-4-7")
+        self.assertEqual(created.model_preset_id, "opus-4-8")
         self.assertEqual(created.provider, "claude")
+
+    def test_create_virtual_rejects_compatibility_model_preset(self) -> None:
+        with self.assertRaisesRegex(ValueError, "compatibility-only"):
+            self.registry.create_virtual(
+                self.project.id,
+                prompt_draft="old preset",
+                model_preset_id="opus-4-7",
+            )
 
     def test_create_virtual_rejects_missing_dependency(self) -> None:
         with self.assertRaisesRegex(ValueError, "does not resolve"):

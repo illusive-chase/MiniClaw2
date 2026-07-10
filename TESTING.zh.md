@@ -59,8 +59,9 @@ npm run dev        # 默认 http://127.0.0.1:5173
 
 ### 0.3 关于模型档位与 provider 的说明
 
-**每个场景都必须分别用 `gpt-5.5` 和 `opus-4-7` 两个模型档位各跑一次，两个
-provider 都通过才算这个场景通过。** 这是有意为之的——provider 之间的差异本身就是有价值的信号
+**每个场景都必须分别用 `opus-4-8`、`gpt-5.6`、`gpt-5.6-x` 和
+`gpt-5.6-u` 四个 active 模型档位各跑一次，所有档位都通过才算这个场景通过。**
+这是有意为之的——provider 和 reasoning effort 之间的差异本身就是有价值的信号
 （适配层有问题 vs. provider 自身能力问题，都需要暴露）。
 
 ---
@@ -665,14 +666,14 @@ http://localhost:5173/
 
 - name：`ContextSpace Manual Test`
 - cwd：`/private/tmp/miniclaw2-contextspace-test/workspace`
-- 模型档位：`gpt-5.5` 或 `opus-4-7`
+- 模型档位：`opus-4-8`、`gpt-5.6`、`gpt-5.6-x` 或 `gpt-5.6-u`
 
 也可以直接用 API 创建：
 
 ```bash
 curl -s -X POST http://127.0.0.1:8000/sessions \
   -H 'content-type: application/json' \
-  -d '{"cwd":"/private/tmp/miniclaw2-contextspace-test/workspace","model_preset_id":"gpt-5.5","name":"ContextSpace Manual Test"}'
+  -d '{"cwd":"/private/tmp/miniclaw2-contextspace-test/workspace","model_preset_id":"gpt-5.6","name":"ContextSpace Manual Test"}'
 ```
 
 ### 11.4 在 UI 里 bootstrap ContextSpace

@@ -175,6 +175,7 @@ export type ModelPreset = {
   reasoning_effort?: string | null;
   description?: string;
   is_default?: boolean;
+  status: "active" | "compatibility";
 };
 export type NodeCategory = "planning" | "regular" | "review";
 export type ReviewSubtype =

@@ -2,7 +2,11 @@ import { useEffect, useRef, useState } from "react";
 import { ApiError, createSession } from "../api";
 import { LANGUAGE_OPTIONS } from "../languages";
 import type { ModelPreset, SessionInfo } from "../types";
-import { defaultModelPresetId, modelPresetDetail } from "../modelPresets";
+import {
+  defaultModelPresetId,
+  modelPresetDetail,
+  selectableModelPresets,
+} from "../modelPresets";
 
 type Props = {
   open: boolean;
@@ -42,6 +46,7 @@ export function NewProjectModal({
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const nameRef = useRef<HTMLInputElement | null>(null);
+  const activeModelPresets = selectableModelPresets(modelPresets);
 
   useEffect(() => {
     if (open) {
@@ -164,13 +169,13 @@ export function NewProjectModal({
             <select
               value={modelPresetId}
               onChange={(e) => setModelPresetId(e.target.value)}
-              disabled={modelPresets.length === 0}
+              disabled={activeModelPresets.length === 0}
               className="rounded-md border border-line bg-surface-sunken px-3 py-2 text-sm text-ink-strong focus:border-brand focus:outline-none disabled:opacity-40"
             >
-              {modelPresets.length === 0 && (
+              {activeModelPresets.length === 0 && (
                 <option value="">没有可用模型档位</option>
               )}
-              {modelPresets.map((preset) => (
+              {activeModelPresets.map((preset) => (
                 <option key={preset.id} value={preset.id}>
                   {preset.label}
                 </option>

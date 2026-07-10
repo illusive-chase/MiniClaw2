@@ -235,7 +235,7 @@ class ModelPresetMigrationTest(unittest.TestCase):
                     "kind": "agent",
                     "state": "done",
                     "provider": "codex",
-                    "settings_snapshot": {"reasoning_effort": "high"},
+                    "settings_snapshot": {"reasoning_effort": "low"},
                 },
             )
 
@@ -247,7 +247,7 @@ class ModelPresetMigrationTest(unittest.TestCase):
 
             self.assertEqual(
                 _read_json(node_path)["settings_snapshot"]["reasoning_effort"],
-                "high",
+                "low",
             )
             self.assertFalse((root / "schema.json").exists())
 

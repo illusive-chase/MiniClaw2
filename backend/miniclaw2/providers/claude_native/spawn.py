@@ -60,6 +60,7 @@ def build_argv(
     resume: bool,
     model: str | None,
     system_prompt_append: str,
+    effort: str | None = None,
     tool_allowlist: list[str] | None = None,
 ) -> list[str]:
     args: list[str] = [binary]
@@ -69,6 +70,8 @@ def build_argv(
         args += ["--session-id", session_id]
     if model:
         args += ["--model", model]
+    if effort:
+        args += ["--effort", effort]
     args.append("--dangerously-skip-permissions")
     args += [
         "--settings",

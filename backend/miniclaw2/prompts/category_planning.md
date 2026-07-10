@@ -62,7 +62,7 @@ Virtual preview shape:
   "state": "virtual",
   "lane": "<<lane_id>>",
   "proposed_by": "node:<<node_id>>",
-  "model_preset_id": "gpt-5.5",
+  "model_preset_id": "gpt-5.6",
   "motivation": "<why this step belongs on the plan>",
   "prompt_draft": "<the prompt that will launch when this is promoted>",
   "scheduled_deps": ["<id or slug of parents that must terminate first>"]
@@ -82,9 +82,9 @@ If the virtual is a **review**, it must additionally carry:
 }
 ```
 
-Every agent virtual must include `model_preset_id`. Use the model
-preset that fits the work, such as `gpt-5.5` for Codex-backed coding
-work or `opus-4-7` for Claude-backed work. Do not write provider-only
+Every agent virtual must include `model_preset_id`. Use an active model
+preset that fits the work, such as `gpt-5.6` for Codex-backed coding
+work or `opus-4-8` for Claude-backed work. Do not write provider-only
 virtual previews.
 
 ### Rewriting and obsoleting

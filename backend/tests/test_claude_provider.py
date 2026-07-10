@@ -106,10 +106,10 @@ def _write_jsonl(path: Path, *records: dict[str, Any]) -> list[int]:
 
 class ClaudeProviderModelResolutionTest(unittest.TestCase):
     def test_node_model_preset_resolves_claude_model(self) -> None:
-        node = Node(project_id="p", prompt="hi", model_preset_id="opus-4-7")
+        node = Node(project_id="p", prompt="hi", model_preset_id="opus-4-8")
         project = Project(
             root_path="/tmp/workspace",
-            model_preset_id="gpt-5.5",
+            model_preset_id="gpt-5.6",
             settings_override={"model": "ignored-legacy-model"},
         )
         ctx = AgentProviderContext(
@@ -117,13 +117,14 @@ class ClaudeProviderModelResolutionTest(unittest.TestCase):
             project=project,
             request_gate_handler=_request_gate,
         )
-        self.assertEqual(ClaudeProvider()._resolve_model(ctx), "opus-4-7")
+        self.assertEqual(ClaudeProvider()._resolve_model(ctx), "claude-opus-4-8[1m]")
+        self.assertEqual(ClaudeProvider()._resolve_effort(ctx), "xhigh")
 
     def test_project_settings_do_not_override_node_preset(self) -> None:
-        node = Node(project_id="p", prompt="hi", model_preset_id="opus-4-7")
+        node = Node(project_id="p", prompt="hi", model_preset_id="opus-4-8")
         project = Project(
             root_path="/tmp/workspace",
-            model_preset_id="gpt-5.5",
+            model_preset_id="gpt-5.6",
             settings_override={"model": "legacy-project-model"},
         )
         ctx = AgentProviderContext(
@@ -131,7 +132,7 @@ class ClaudeProviderModelResolutionTest(unittest.TestCase):
             project=project,
             request_gate_handler=_request_gate,
         )
-        self.assertEqual(ClaudeProvider()._resolve_model(ctx), "opus-4-7")
+        self.assertEqual(ClaudeProvider()._resolve_model(ctx), "claude-opus-4-8[1m]")
 
 
 class BuildArgvTest(unittest.TestCase):
@@ -141,12 +142,14 @@ class BuildArgvTest(unittest.TestCase):
             session_id="abc-123",
             resume=False,
             model="claude-sonnet-4-6",
+            effort="xhigh",
             system_prompt_append="Hello",
         )
         self.assertEqual(args[0], "/usr/local/bin/claude")
         self.assertIn("--session-id", args)
         self.assertIn("abc-123", args)
         self.assertIn("--model", args)
+        self.assertEqual(args[args.index("--effort") + 1], "xhigh")
         self.assertIn("--dangerously-skip-permissions", args)
         # Both belt-and-suspenders per §7: --settings JSON + the flag.
         settings_idx = args.index("--settings")

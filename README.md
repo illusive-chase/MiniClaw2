@@ -102,8 +102,8 @@ python -m miniclaw2 --host 127.0.0.1 --port 8000 [--reload]
 (`npm run build` in `frontend/`) whenever you change UI code.
 
 **Dev** — same command spawns `npm run dev` alongside the backend so
-Vite HMR is live; Vite's proxy routes `/sessions`, `/templates`, and
-`/ws` back to the backend port:
+Vite HMR is live; Vite's proxy routes `/model-presets`, `/sessions`,
+`/templates`, and `/ws` back to the backend port:
 
 ```bash
 python -m miniclaw2 --dev [--reload]
@@ -126,21 +126,24 @@ Env:
 - Codex provider: `codex` must be on `PATH` and `codex doctor` should
   show working auth/config. The adapter uses
   `codex app-server --listen stdio://`, launched from the project cwd.
-  It leaves `modelProvider` and `approvalPolicy` to session overrides or
-  `$CODEX_HOME/config.toml`, and defaults Codex to `workspace-write`
-  with the project cwd as the writable root.
+  The selected preset supplies `model`, `modelProvider`, and reasoning
+  effort; approval and sandbox settings still come from session overrides
+  or `$CODEX_HOME/config.toml`, with the project cwd writable by default.
 
 Create a Codex-backed project manually:
 
 ```bash
 curl -X POST http://127.0.0.1:8000/sessions \
   -H 'content-type: application/json' \
-  -d '{"cwd":"'"$PWD"'","model_preset_id":"gpt-5.5","name":"MiniClaw2"}'
+  -d '{"cwd":"'"$PWD"'","model_preset_id":"gpt-5.6","name":"MiniClaw2"}'
 ```
 
 Model selection is preset-based. Query `GET /model-presets` for the
-available ids; current request bodies use `model_preset_id` and reject
-the old `provider`, `model`, and `model_provider` selection fields.
+available ids. Presets with `status: active` can be selected for new or
+edited work; `status: compatibility` presets remain resolvable for old
+data but cannot be newly selected. Current request bodies use
+`model_preset_id` and reject the old `provider`, `model`, and
+`model_provider` selection fields.
 
 ### Store schema upgrades
 
@@ -304,7 +307,8 @@ The current code has moved beyond the original chat-wrapper plan:
   deferred.
 - Provider layer is split out of the state machine. Projects and agents
   select a model preset; its provider and concrete model are derived from
-  the central catalog. The default preset is `gpt-5.5` via Codex.
+  the central catalog. The default preset is `gpt-5.6` via Codex;
+  compatibility presets remain available only for existing data.
 - New nodes start fresh by default. Resume edges are explicit and copy
   the parent's provider session/thread id into the child node.
 - The graph UI redesign is partially landed: persistent projects,

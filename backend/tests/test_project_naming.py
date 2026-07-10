@@ -29,7 +29,7 @@ class ProjectNamingApiTest(unittest.TestCase):
         self._tmp.cleanup()
 
     def _create(self, name: str | None = None) -> dict:
-        body: dict = {"cwd": self.cwd_dir.name, "model_preset_id": "opus-4-7"}
+        body: dict = {"cwd": self.cwd_dir.name, "model_preset_id": "opus-4-8"}
         if name is not None:
             body["name"] = name
         res = self.client.post("/sessions", json=body)
@@ -54,7 +54,7 @@ class ProjectNamingApiTest(unittest.TestCase):
 
         res = self.client.post(
             "/sessions",
-            json={"cwd": str(missing), "model_preset_id": "opus-4-7"},
+            json={"cwd": str(missing), "model_preset_id": "opus-4-8"},
         )
 
         self.assertEqual(res.status_code, 400)
@@ -68,7 +68,7 @@ class ProjectNamingApiTest(unittest.TestCase):
             "/sessions",
             json={
                 "cwd": str(missing),
-                "model_preset_id": "opus-4-7",
+                "model_preset_id": "opus-4-8",
                 "create_missing_cwd": True,
             },
         )

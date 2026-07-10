@@ -7,7 +7,10 @@ from pathlib import Path
 
 from ..contextspace import create_planspace
 from ..domain import Node, NodeKind, NodeState, Project
-from ..model_catalog import normalize_model_preset_id, provider_for_model_preset
+from ..model_catalog import (
+    normalize_active_model_preset_id,
+    provider_for_model_preset,
+)
 from ..preview import render_virtual_preview
 from ..registry import ProjectRegistry
 from .loader import Template, TemplateError, TemplateNodeSpec, load_template
@@ -183,7 +186,7 @@ def _require_template_model_preset(
     model_preset_id: str,
 ) -> str:
     try:
-        normalized = normalize_model_preset_id(model_preset_id)
+        normalized = normalize_active_model_preset_id(model_preset_id)
     except ValueError as exc:
         raise TemplateError(str(exc)) from exc
     if normalized not in template.allowed_model_preset_ids:

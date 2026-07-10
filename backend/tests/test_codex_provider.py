@@ -90,7 +90,7 @@ class _FakeProviderContext:
         self,
         *,
         settings_override: dict[str, Any] | None = None,
-        model_preset_id: str = "gpt-5.5",
+        model_preset_id: str = "gpt-5.6",
     ) -> None:
         from miniclaw2.domain import Node, Project
 
@@ -127,9 +127,9 @@ class CodexProviderTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(thread_params["approvalPolicy"], "never")
         self.assertEqual(thread_params["sandbox"], "workspace-write")
-        self.assertEqual(thread_params["model"], "gpt-5.5")
+        self.assertEqual(thread_params["model"], "gpt-5.6-sol")
         self.assertEqual(thread_params["modelProvider"], "openai")
-        self.assertEqual(thread_params["reasoningEffort"], "medium")
+        self.assertEqual(thread_params["reasoningEffort"], "high")
         self.assertEqual(turn_params["approvalPolicy"], "never")
         expected_project_root = str(Path("/tmp/workspace").resolve(strict=False))
         self.assertEqual(
@@ -151,9 +151,9 @@ class CodexProviderTest(unittest.IsolatedAsyncioTestCase):
 
         expected_project_root = str(Path("/tmp/workspace").resolve(strict=False))
         self.assertEqual(thread_params["sandbox"], "workspace-write")
-        self.assertEqual(thread_params["model"], "gpt-5.5")
+        self.assertEqual(thread_params["model"], "gpt-5.6-sol")
         self.assertEqual(thread_params["modelProvider"], "openai")
-        self.assertEqual(thread_params["reasoningEffort"], "medium")
+        self.assertEqual(thread_params["reasoningEffort"], "high")
         self.assertEqual(
             turn_params["sandboxPolicy"],
             {
@@ -383,6 +383,50 @@ class CodexProviderTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(usage.cache_creation_tokens, 5)
         self.assertEqual(usage.cumulative_output_tokens, 300)
         self.assertEqual(usage.cumulative_cache_creation_tokens, 40)
+
+    async def test_retryable_error_notification_does_not_end_turn(self) -> None:
+        provider = CodexProvider()
+        events = [
+            event
+            async for event in provider._handle_message(
+                {
+                    "method": "error",
+                    "params": {
+                        "error": {"message": "Reconnecting... 1/5"},
+                        "willRetry": True,
+                        "threadId": "thread-1",
+                        "turnId": "turn-1",
+                    },
+                },
+                _FakeProviderContext(),  # type: ignore[arg-type]
+                object(),  # type: ignore[arg-type]
+            )
+        ]
+
+        self.assertEqual(events, [])
+
+    async def test_non_retryable_error_notification_ends_turn(self) -> None:
+        provider = CodexProvider()
+        events = [
+            event
+            async for event in provider._handle_message(
+                {
+                    "method": "error",
+                    "params": {
+                        "error": {"message": "connection failed"},
+                        "willRetry": False,
+                        "threadId": "thread-1",
+                        "turnId": "turn-1",
+                    },
+                },
+                _FakeProviderContext(),  # type: ignore[arg-type]
+                object(),  # type: ignore[arg-type]
+            )
+        ]
+
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].kind, "error")
+        self.assertEqual(events[0].error, "connection failed")
 
     async def test_thread_start_uses_project_sandbox_override(self) -> None:
         provider = CodexProvider()

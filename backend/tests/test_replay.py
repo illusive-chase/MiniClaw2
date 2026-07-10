@@ -87,7 +87,7 @@ class FreshNodeLaunchTest(unittest.TestCase):
                     project_id=project.id,
                     kind=NodeKind.AGENT,
                     state=NodeState.DONE,
-                    model_preset_id="gpt-5.5",
+                    model_preset_id="gpt-5.6",
                     provider_session_id="thread_previous",
                     cli_session_id="thread_previous",
                 )
@@ -135,14 +135,14 @@ class FreshNodeLaunchTest(unittest.TestCase):
                 runner = registry.start_node(
                     project.id,
                     "hello",
-                    model_preset_id="gpt-5.5",
+                    model_preset_id="gpt-5.6",
                 )
 
             self.assertIsNotNone(runner)
 
             node = store.latest_node(project.id)
             assert node is not None
-            self.assertEqual(node.model_preset_id, "gpt-5.5")
+            self.assertEqual(node.model_preset_id, "gpt-5.6")
             self.assertEqual(node.provider, "codex")
             self.assertEqual(node.provider_session_id, None)
             self.assertEqual(node.cli_session_id, None)

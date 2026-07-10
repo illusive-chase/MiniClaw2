@@ -9,7 +9,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-
 KNOWN_PROVIDERS: frozenset[str] = frozenset({"claude", "codex"})
 
 
@@ -24,6 +23,7 @@ class ModelPreset:
     service_tier: str | None = None
     reasoning_effort: str | None = None
     is_default: bool = False
+    status: str = "active"
 
     def metadata(self) -> dict[str, Any]:
         return {
@@ -36,6 +36,7 @@ class ModelPreset:
             "reasoning_effort": self.reasoning_effort,
             "description": self.description,
             "is_default": self.is_default,
+            "status": self.status,
         }
 
     def settings_snapshot(self) -> dict[str, Any]:
@@ -55,21 +56,58 @@ class ModelPreset:
 
 MODEL_PRESETS: tuple[ModelPreset, ...] = (
     ModelPreset(
+        id="opus-4-8",
+        label="Claude Opus 4.8 (1M)",
+        provider="claude",
+        model="claude-opus-4-8[1m]",
+        reasoning_effort="xhigh",
+        description="Claude Opus 4.8 preset with a 1M context window and xhigh effort.",
+    ),
+    ModelPreset(
+        id="gpt-5.6",
+        label="GPT-5.6 SOL (High)",
+        provider="codex",
+        model="gpt-5.6-sol",
+        model_provider="openai",
+        reasoning_effort="high",
+        description="Codex preset for GPT-5.6 SOL with high reasoning effort.",
+        is_default=True,
+    ),
+    ModelPreset(
+        id="gpt-5.6-x",
+        label="GPT-5.6 (XHigh)",
+        provider="codex",
+        model="gpt-5.6-sol",
+        model_provider="openai",
+        reasoning_effort="xhigh",
+        description="Codex preset for GPT-5.6 SOL with xhigh reasoning effort.",
+    ),
+    ModelPreset(
+        id="gpt-5.6-u",
+        label="GPT-5.6 (Ultra)",
+        provider="codex",
+        model="gpt-5.6-sol",
+        model_provider="openai",
+        reasoning_effort="ultra",
+        description="Codex preset for GPT-5.6 SOL with ultra reasoning effort.",
+    ),
+    ModelPreset(
         id="gpt-5.5",
         label="GPT-5.5",
         provider="codex",
         model="gpt-5.5",
         model_provider="openai",
         reasoning_effort="medium",
-        description="Codex preset for GPT-5.5 with balanced reasoning effort.",
-        is_default=True,
+        description="Compatibility preset for existing GPT-5.5 data.",
+        status="compatibility",
     ),
     ModelPreset(
         id="opus-4-7",
         label="Claude Opus 4.7",
         provider="claude",
         model="opus-4-7",
-        description="Claude preset for Opus 4.7.",
+        description="Compatibility preset for existing Claude Opus 4.7 data.",
+        status="compatibility",
     ),
 )
 
@@ -106,6 +144,16 @@ def normalize_model_preset_id(model_preset_id: str | None) -> str:
         raise ValueError("model_preset_id is required")
     if normalized not in _PRESETS_BY_ID:
         raise ValueError(f"unknown model_preset_id: {model_preset_id!r}")
+    return normalized
+
+
+def normalize_active_model_preset_id(model_preset_id: str | None) -> str:
+    normalized = normalize_model_preset_id(model_preset_id)
+    if _PRESETS_BY_ID[normalized].status != "active":
+        raise ValueError(
+            f"model_preset_id {normalized!r} is compatibility-only and cannot "
+            "be selected for new or edited work"
+        )
     return normalized
 
 

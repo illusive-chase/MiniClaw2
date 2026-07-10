@@ -1,11 +1,16 @@
 import type { ModelPreset } from "./types";
 
+export function selectableModelPresets(presets: ModelPreset[]): ModelPreset[] {
+  return presets.filter((preset) => preset.status === "active");
+}
+
 export function defaultModelPresetId(
   presets: ModelPreset[],
   fallback?: string | null,
 ): string {
-  if (fallback && presets.some((preset) => preset.id === fallback)) return fallback;
-  return presets.find((preset) => preset.is_default)?.id ?? presets[0]?.id ?? "";
+  const selectable = selectableModelPresets(presets);
+  if (fallback && selectable.some((preset) => preset.id === fallback)) return fallback;
+  return selectable.find((preset) => preset.is_default)?.id ?? selectable[0]?.id ?? "";
 }
 
 export function modelPresetLabel(
@@ -13,7 +18,9 @@ export function modelPresetLabel(
   modelPresetId?: string | null,
 ): string {
   if (!modelPresetId) return "Model preset";
-  return presets.find((preset) => preset.id === modelPresetId)?.label ?? modelPresetId;
+  const preset = presets.find((item) => item.id === modelPresetId);
+  if (!preset) return modelPresetId;
+  return preset.status === "compatibility" ? `${preset.label}（兼容）` : preset.label;
 }
 
 export function modelPresetDetail(
