@@ -120,7 +120,12 @@ def compose_context_bundle(
     binding_skill_ids: set[str] = set()
     if binding is not None:
         plug_refs = _expand_required_plugs(root, binding.plugs)
-        active_planspace = _select_active_planspace(project, binding, plug_refs)
+        launch_project = project.model_copy(
+            update={"active_planspace_id": node.planspace_id}
+        )
+        active_planspace = _select_active_planspace(
+            launch_project, binding, plug_refs
+        )
         if active_planspace is not None:
             active_planspace_id = active_planspace.id
 

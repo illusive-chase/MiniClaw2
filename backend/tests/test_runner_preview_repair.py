@@ -162,6 +162,15 @@ class RunnerPreviewRepairTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(node.state, NodeState.DONE)
         self.assertEqual(len(provider.prompts), 2)
         self.assertIn("Repair attempt 1 of 3", provider.prompts[1])
+        expected_path = (
+            f".miniclaw2/graph/runs/{node.id}/lanes/{self.plug_id}"
+            f"/nodes/{node.id}/preview.json"
+        )
+        self.assertIn(expected_path, provider.prompts[1])
+        self.assertNotIn(
+            f".miniclaw2/graph/lanes/{self.plug_id}",
+            provider.prompts[1],
+        )
         preview = self.store.read_node_preview(self.project.id, node.id)
         self.assertIsNotNone(preview)
         assert preview is not None
@@ -180,6 +189,25 @@ class RunnerPreviewRepairTests(unittest.IsolatedAsyncioTestCase):
                 and "Preview contract repair" in ev.get("message", "")
                 for ev in emitted
             )
+        )
+
+    def test_launch_snapshot_preserves_queued_node_planspace(self) -> None:
+        node = self._node()
+        queued_planspace_id = node.planspace_id
+        other_planspace_id = create_planspace(
+            self.project, title="other-lane", mode="manual"
+        )
+        self.project.active_planspace_id = other_planspace_id
+        runner = NodeRunner(node, self.project, self.store, lambda _event: None)
+
+        context_bundle = runner._snapshot_context_bundle()
+        runner._snapshot_launch_settings(context_bundle)
+
+        self.assertEqual(context_bundle.active_planspace_id, queued_planspace_id)
+        self.assertEqual(node.planspace_id, queued_planspace_id)
+        self.assertEqual(
+            node.settings_snapshot.get("active_planspace_id"),
+            queued_planspace_id,
         )
 
     async def test_missing_preview_stubs_after_three_failed_repairs(self) -> None:

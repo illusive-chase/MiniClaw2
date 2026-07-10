@@ -822,15 +822,10 @@ class NodeRunner:
             if context_bundle is not None
             else self.project.project_context_binding_id
         )
-        active_planspace_id = (
-            getattr(context_bundle, "active_planspace_id", None)
-            if context_bundle is not None
-            else None
-        )
+        active_planspace_id = self.node.planspace_id
         if project_binding_id:
             snapshot["project_context_binding_id"] = project_binding_id
         if active_planspace_id:
-            self.node.planspace_id = active_planspace_id
             snapshot["active_planspace_id"] = active_planspace_id
         if self.node.context_bundle_id:
             snapshot["context_bundle_id"] = self.node.context_bundle_id
@@ -1053,7 +1048,7 @@ def _preview_repair_prompt(node: Node, reason: str, attempt: int) -> str:
         reason or "(no structured reason recorded)",
         "",
         "You must now write a valid executed preview JSON file at:",
-        f".miniclaw2/graph/lanes/{lane}/nodes/{node.id}/preview.json",
+        f"{GRAPH_RUNS_DIRNAME}/{node.id}/lanes/{lane}/nodes/{node.id}/preview.json",
         "",
         "Use exactly this schema, with no unknown fields:",
         "{",
