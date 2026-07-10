@@ -65,16 +65,16 @@ class ConciergeBootstrapTests(unittest.IsolatedAsyncioTestCase):
     async def test_creates_planspace_activates_and_launches_planning_agent(self) -> None:
         stub = _StubProvider()
         with patch.object(runner_module, "_make_provider", return_value=stub):
-            runner = self.registry.create_planspace_and_launch_concierge(
+            node = self.registry.create_planspace_and_launch_concierge(
                 self.pid,
                 title="Auth flow",
                 seed="Build a signup screen wired to Stripe",
                 mode="manual",
             )
-            self.assertIsNotNone(runner)
-            assert runner is not None
+            self.assertIsNotNone(node)
+            assert node is not None
             rt = self.registry._runtimes[self.pid]
-            await asyncio.wait_for(rt.runner_task, timeout=5.0)
+            await asyncio.wait_for(rt.runner_tasks[node.id], timeout=5.0)
 
         # Planspace plug exists.
         ctx_root = Path(os.environ["MINICLAW_CONTEXT_HOME"])
@@ -87,7 +87,6 @@ class ConciergeBootstrapTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(refreshed.active_planspace_id, "planspaces.auth-flow")
 
         # The launched node is a planning agent with the right lane.
-        node = runner.node
         self.assertEqual(node.kind, NodeKind.AGENT)
         self.assertEqual(node.category, Category.PLANNING)
         self.assertEqual(node.planspace_id, "planspaces.auth-flow")
@@ -128,7 +127,7 @@ class ConciergeBootstrapTests(unittest.IsolatedAsyncioTestCase):
         async def _hold() -> None:
             await asyncio.sleep(0.5)
 
-        rt.runner_task = asyncio.create_task(_hold())
+        rt.runner_tasks["busy"] = asyncio.create_task(_hold())
         try:
             runner = self.registry.create_planspace_and_launch_concierge(
                 self.pid,
@@ -138,9 +137,10 @@ class ConciergeBootstrapTests(unittest.IsolatedAsyncioTestCase):
             )
             self.assertIsNone(runner)
         finally:
-            rt.runner_task.cancel()
+            task = rt.runner_tasks["busy"]
+            task.cancel()
             try:
-                await rt.runner_task
+                await task
             except BaseException:
                 pass
 

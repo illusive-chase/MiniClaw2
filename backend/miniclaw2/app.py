@@ -18,7 +18,7 @@ from fastapi import FastAPI, HTTPException, Request, Response, WebSocket, WebSoc
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, ValidationError
 
 from .contextspace import (
     delete_skill,
@@ -77,6 +77,7 @@ class CreateSessionRequest(BaseModel):
     name: str | None = None
     project_context_binding_id: str | None = None
     create_missing_cwd: bool = False
+    concurrency: StrictInt = Field(default=1, ge=1)
 
 
 class RenameSessionRequest(BaseModel):
@@ -85,6 +86,7 @@ class RenameSessionRequest(BaseModel):
 
 class UpdateSessionPreferencesRequest(BaseModel):
     preferred_language: str | None = None
+    concurrency: StrictInt | None = Field(default=None, ge=1)
 
 
 class UpdateSessionContextRequest(BaseModel):
@@ -98,6 +100,9 @@ class SessionInfo(BaseModel):
     turns: int
     model_preset_id: str
     provider: str = "codex"
+    concurrency: int = 1
+    active_count: int = 0
+    queued_count: int = 0
     preferred_language: str | None = None
     temporary: bool = False
     template_id: str | None = None
@@ -240,6 +245,9 @@ def create_app(registry: ProjectRegistry | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
         initialize_registry()
+        schedule_all = getattr(registry, "schedule_all", None)
+        if schedule_all is not None:
+            schedule_all()
         # Generate the shared token before spawning any claude PTYs, and
         # merge the AskUserQuestion / SessionStart hooks into the user's
         # ~/.claude/settings.json. Both are idempotent.
@@ -327,6 +335,7 @@ def create_app(registry: ProjectRegistry | None = None) -> FastAPI:
                 name=req.name or "",
                 project_context_binding_id=req.project_context_binding_id,
                 create_missing_cwd=req.create_missing_cwd,
+                concurrency=req.concurrency,
             )
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
@@ -353,13 +362,17 @@ def create_app(registry: ProjectRegistry | None = None) -> FastAPI:
         return _session_info(registry, project)
 
     @app.patch("/sessions/{sid}/preferences", response_model=SessionInfo)
-    def update_session_preferences(
+    async def update_session_preferences(
         sid: str,
         req: UpdateSessionPreferencesRequest,
     ) -> SessionInfo:
         kwargs: dict[str, Any] = {}
         if "preferred_language" in req.model_fields_set:
             kwargs["preferred_language"] = req.preferred_language
+        if "concurrency" in req.model_fields_set:
+            if req.concurrency is None:
+                raise HTTPException(422, "concurrency must be a positive integer")
+            kwargs["concurrency"] = req.concurrency
         try:
             project = registry.update_project_preferences(sid, **kwargs)
         except ValueError as exc:
@@ -472,8 +485,6 @@ def create_app(registry: ProjectRegistry | None = None) -> FastAPI:
         project = registry.get_project(sid)
         if project is None:
             raise HTTPException(404, "session not found")
-        if registry.is_running(sid):
-            raise HTTPException(409, "turn in progress")
         if _context_task_running(project.id):
             raise HTTPException(409, "context refresh in progress")
         if (
@@ -491,7 +502,7 @@ def create_app(registry: ProjectRegistry | None = None) -> FastAPI:
         if seed is None or not seed.strip():
             raise HTTPException(400, "seed must be non-empty")
         try:
-            runner = registry.create_planspace_and_launch_concierge(
+            node = registry.create_planspace_and_launch_concierge(
                 sid,
                 title=req.title.strip(),
                 seed=seed,
@@ -500,13 +511,13 @@ def create_app(registry: ProjectRegistry | None = None) -> FastAPI:
             )
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
-        if runner is None:
+        if node is None:
             raise HTTPException(409, "failed to launch concierge")
         contextspace = describe_project_contextspace(
             project, store_root=registry.store.root
         )
-        contextspace["node_id"] = runner.node.id
-        contextspace["planspace_id"] = runner.node.planspace_id
+        contextspace["node_id"] = node.id
+        contextspace["planspace_id"] = node.planspace_id
         contextspace["binding_id"] = contextspace.get("resolved_binding_id")
         return contextspace
 
@@ -518,8 +529,6 @@ def create_app(registry: ProjectRegistry | None = None) -> FastAPI:
         project = registry.get_project(sid)
         if project is None:
             raise HTTPException(404, "session not found")
-        if registry.is_running(sid):
-            raise HTTPException(409, "turn in progress")
         if _context_task_running(project.id):
             raise HTTPException(409, "context refresh in progress")
         if not req.seed.strip():
@@ -569,8 +578,6 @@ def create_app(registry: ProjectRegistry | None = None) -> FastAPI:
         project = registry.get_project(sid)
         if project is None:
             raise HTTPException(404, "session not found")
-        if registry.is_running(sid):
-            raise HTTPException(409, "turn in progress")
         if _context_task_running(project.id):
             raise HTTPException(409, "context refresh in progress")
         try:
@@ -621,21 +628,19 @@ def create_app(registry: ProjectRegistry | None = None) -> FastAPI:
         project = registry.get_project(sid)
         if project is None:
             raise HTTPException(404, "session not found")
-        if registry.is_running(sid):
-            raise HTTPException(409, "turn in progress")
         if _context_task_running(project.id):
             raise HTTPException(409, "context refresh in progress")
-        runner = registry.promote_virtual(sid, vid)
-        if runner is None:
+        node = registry.promote_virtual(sid, vid)
+        if node is None:
             raise HTTPException(
                 409,
                 "virtual cannot be promoted (missing, obsolete, deps not "
-                "terminal, or project busy)",
+                "terminal, or outside the active planspace)",
             )
         return {
             "ok": True,
-            "node_id": runner.node.id,
-            "node": runner.node.model_dump(),
+            "node_id": node.id,
+            "node": node.model_dump(),
         }
 
     @app.patch(
@@ -649,8 +654,6 @@ def create_app(registry: ProjectRegistry | None = None) -> FastAPI:
         project = registry.get_project(sid)
         if project is None:
             raise HTTPException(404, "session not found")
-        if registry.is_running(sid):
-            raise HTTPException(409, "turn in progress")
         if _context_task_running(project.id):
             raise HTTPException(409, "context refresh in progress")
         kwargs: dict[str, Any] = {}
@@ -704,8 +707,6 @@ def create_app(registry: ProjectRegistry | None = None) -> FastAPI:
         project = registry.get_project(sid)
         if project is None:
             raise HTTPException(404, "session not found")
-        if registry.is_running(sid):
-            raise HTTPException(409, "turn in progress")
         if _context_task_running(project.id):
             raise HTTPException(409, "context refresh in progress")
         try:
@@ -953,7 +954,7 @@ def create_app(registry: ProjectRegistry | None = None) -> FastAPI:
                     if runner is None:
                         await _send(send_now, {
                             "type": "error",
-                            "message": "turn in progress or invalid resume source",
+                            "message": "invalid resume source or project",
                         })
                         continue
 
@@ -963,6 +964,7 @@ def create_app(registry: ProjectRegistry | None = None) -> FastAPI:
                     ok = registry.resolve_gate(
                         sid,
                         resp.id,
+                        node_id=resp.node_id,
                         allow=resp.allow,
                         message=resp.message,
                         updated_input=resp.updated_input,
@@ -980,8 +982,8 @@ def create_app(registry: ProjectRegistry | None = None) -> FastAPI:
 
                 elif msg_type == "interrupt":
                     await mark_live_ready()
-                    Interrupt(**raw)
-                    registry.interrupt(sid)
+                    interrupt = Interrupt(**raw)
+                    registry.interrupt(sid, interrupt.node_id)
 
                 elif msg_type == "replay_request":
                     req = ReplayRequest(**raw)
@@ -1040,6 +1042,9 @@ def _session_info(registry: ProjectRegistry, project: Any) -> SessionInfo:
         turns=registry.turn_count(project.id),
         model_preset_id=project.model_preset_id,
         provider=project.provider,
+        concurrency=project.concurrency,
+        active_count=registry.active_count(project.id),
+        queued_count=registry.queued_count(project.id),
         preferred_language=project_preferred_language(project),
         temporary=project.temporary,
         template_id=project.template_id,

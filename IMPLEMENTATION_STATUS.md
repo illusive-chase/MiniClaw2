@@ -156,6 +156,18 @@ Trunk: `backend/miniclaw2/runner.py`, `backend/miniclaw2/registry.py`.
   creation, ordinary virtual creation, and virtual editing select active
   presets; continuation virtuals keep the resume source's preset/session, and
   reruns may preserve a compatibility preset from historical data.
+- `Project.concurrency` is persisted as a positive integer with default `1`.
+  `ProjectRuntime` owns runner/task maps keyed by node id; `queued` nodes wait
+  without starting providers or consuming slots, and a stable
+  `(created_at, id)` scheduler fills capacity after create/promote, limit
+  increases, and each runner completion. Lowering the limit leaves active
+  runners untouched. Auto-commit ops consume slots and are prioritized after
+  their parent agent before ordinary queued work advances.
+- Concurrent nodes share the project source worktree by product design. They
+  may observe partial peer edits or conflict on source/Git operations. Their
+  graph projections are isolated under
+  `.miniclaw2/graph/runs/<node-id>/lanes/<lane>/`; only reap validation and
+  durable virtual-DAG persistence are serialized per project.
 - Launch refuses visibly on stale persisted settings: a present but
   unresolvable `active_planspace_id` errors the node before the
   provider starts (`StaleLaunchSettingsError` → error state + stub
@@ -163,9 +175,10 @@ Trunk: `backend/miniclaw2/runner.py`, `backend/miniclaw2/registry.py`.
   the preview-contract lane. An invalid persisted `preferred_language`
   is ignored on read-back (logged); wire input stays strictly
   validated.
-- Registry startup repairs persisted `queued` / `running` / `waiting` /
+- Registry startup repairs persisted `running` / `waiting` /
   `awaiting_human_input` nodes left behind by a dead process to `cancelled`
-  with a stub preview. Error/cancelled agent nodes can be rerun from the UI;
+  with a stub preview. Durable `queued` work survives restart and is scheduled
+  from the application lifespan. Error/cancelled agent nodes can be rerun from the UI;
   rerun creates a fresh editable virtual with the original prompt, model,
   lane, dependencies, review fields, and continuation linkage.
 
@@ -252,7 +265,8 @@ Trunk: `backend/miniclaw2/contextspace.py`.
   ```
 - Plug loaders for project-root `CONTEXT.md`, global `CONTEXT.md`, and
   skill `CONTEXT.md`. Planspace plugs are manifest-only; lane state is
-  read through `.miniclaw2/graph/lanes/<lane>/`.
+  read through the node-private
+  `.miniclaw2/graph/runs/<node-id>/lanes/<lane>/` projection.
 - Skills can also be opted into per node without changing the project binding.
   Virtuals hold canonical `pending_extra_skills`; promotion snapshots them as
   `settings_snapshot.extra_skills`; bundle composition deduplicates them
@@ -441,7 +455,7 @@ surface; the durable node store is the source of truth.
 ### Landed
 
 - Every executed agent is expected to write its own
-  `.miniclaw2/graph/lanes/<lane>/nodes/<nid>/preview.json`; the runner reaps it
+  `.miniclaw2/graph/runs/<nid>/lanes/<lane>/nodes/<nid>/preview.json`; the runner reaps it
   into `projects/<pid>/nodes/<nid>/preview.json`. Verifier and op previews are
   framework-written because those node kinds do not run an agent provider.
 - Planning and review agents may create or mutate virtual previews in
@@ -620,8 +634,8 @@ virtual into their subgraph.
 
 ## 9. Multi-project / forks
 
-`PHILOSOPHY.md` §6.2 names forks as the concurrency model. None of the
-multi-project surface has been built.
+Project-local bounded concurrency is implemented independently of forks.
+The multi-project/worktree isolation surface described here has not been built.
 
 ### Status: not started
 
@@ -647,11 +661,13 @@ Trunk: `backend/miniclaw2/store.py`, `backend/miniclaw2/replay.py`.
   projects/<pid>/nodes/<nid>/gates.jsonl
   contextspace/...                # see §4
   ```
-- Atomic JSON writes (tmp + rename). Single-writer per node is
-  guaranteed by sequential intra-project execution.
-- Registry initialization repairs non-terminal persisted nodes left by a
-  previous process to cancelled terminal records, including framework stub
-  previews, without blocking other projects on a malformed entry.
+- Atomic JSON writes (tmp + rename). Each node has one event writer; different
+  nodes may write their independent records concurrently, while project-wide
+  virtual-DAG reconciliation is narrowly serialized.
+- Registry initialization repairs persisted active nodes left by a previous
+  process to cancelled terminal records, including framework stub previews,
+  without blocking other projects on a malformed entry; queued nodes remain
+  pending and resume scheduling after startup.
 - Store schema v3 writes one canonical shape: only `model_preset_id`
   persists provider selection, only `provider_session_id` persists
   provider conversation identity, and ContextSpace/language selections
@@ -677,7 +693,7 @@ Trunk: `backend/miniclaw2/store.py`, `backend/miniclaw2/replay.py`.
 
 Quick reference; the on-disk shape is authoritative.
 
-- Server → client:
+- Server → client (all runner-emitted envelopes carry `node_id`):
   `node_started {node_id, parent_node_id, kind, provider, model_preset_id,
   category, subtype, agent_op_kind, prompt}`,
   `node_updated`, `node_removed {id}`, `interaction_request
@@ -689,7 +705,9 @@ Quick reference; the on-disk shape is authoritative.
 - Client → server: user prompt with optional `resume_from_node_id`,
   `extra_skills`, `agent_op_kind`, and `model_preset_id`; `interrupt`;
   interaction response;
-  `replay_request {node_id, since_seq}`.
+  `replay_request {node_id, since_seq}`. Interrupt is
+  `interrupt {node_id}`; interaction responses may include their owner
+  `node_id`, with gate-id lookup retained for compatibility.
 - Interaction responses use one carrier per kind: ask-user answers at
   `response.answers`, human-review text at `response.prose`, and
   provider-neutral permission fields (`allow`, `scope`, `interrupt`,

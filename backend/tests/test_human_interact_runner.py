@@ -144,7 +144,7 @@ class HumanInteractRunnerTests(unittest.IsolatedAsyncioTestCase):
 
             await asyncio.wait_for(task, timeout=5.0)
 
-        # Durable + materialized human-review.md contain the prose.
+        # The durable review survives while the private run projection is cleaned.
         durable = self.store.node_dir(self.project.id, node.id) / "human-review.md"
         self.assertTrue(durable.exists())
         self.assertEqual(durable.read_text(encoding="utf-8"), prose_text)
@@ -153,14 +153,15 @@ class HumanInteractRunnerTests(unittest.IsolatedAsyncioTestCase):
             Path(self.project.root_path)
             / ".miniclaw2"
             / "graph"
+            / "runs"
+            / node.id
             / "lanes"
             / self.plug_id
             / "nodes"
             / node.id
             / "human-review.md"
         )
-        self.assertTrue(materialized.exists())
-        self.assertEqual(materialized.read_text(encoding="utf-8"), prose_text)
+        self.assertFalse(materialized.exists())
 
         # The provider was actually invoked after prose collection.
         self.assertIsNotNone(stub.last_context)

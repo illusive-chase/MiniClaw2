@@ -151,10 +151,11 @@ class PromotePendingSkillsTests(unittest.IsolatedAsyncioTestCase):
         # Cancel the just-launched runner immediately — we only care about
         # the state mutation, not a real provider call.
         rt = self.registry._runtimes[self.project.id]
-        if rt.runner_task is not None:
-            rt.runner_task.cancel()
+        task = rt.runner_tasks.get(virtual.id)
+        if task is not None:
+            task.cancel()
             try:
-                await rt.runner_task
+                await task
             except (asyncio.CancelledError, BaseException):
                 pass
         promoted = self.store.load_node(self.project.id, virtual.id)

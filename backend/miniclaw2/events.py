@@ -12,12 +12,14 @@ from pydantic import BaseModel, ConfigDict, Field
 class TextDelta(BaseModel):
     type: Literal["text_delta"] = "text_delta"
     text: str
+    node_id: str = ""
     seq: int = 0
 
 
 class Thinking(BaseModel):
     type: Literal["thinking"] = "thinking"
     text: str
+    node_id: str = ""
     seq: int = 0
 
 
@@ -30,6 +32,7 @@ class Activity(BaseModel):
     summary: str = ""
     result: str | None = None
     result_kind: Literal["stdout", "diff", "text", "json"] | None = None
+    node_id: str = ""
     seq: int = 0
 
 
@@ -45,6 +48,7 @@ class InteractionRequest(BaseModel):
     tool_input: dict[str, Any] = Field(default_factory=dict)
     suggestions: list[Any] = Field(default_factory=list)
     response_hint: dict[str, Any] = Field(default_factory=dict)
+    node_id: str = ""
     seq: int = 0
 
 
@@ -57,6 +61,7 @@ class Usage(BaseModel):
     cumulative_output_tokens: int | None = None
     cumulative_cache_creation_tokens: int | None = None
     final: bool = False
+    node_id: str = ""
     seq: int = 0
 
 
@@ -77,6 +82,7 @@ class NodeStarted(BaseModel):
 class NodeUpdated(BaseModel):
     type: Literal["node_updated"] = "node_updated"
     node: dict[str, Any]
+    node_id: str = ""
     seq: int = 0
 
 
@@ -88,12 +94,14 @@ class NodeRemoved(BaseModel):
 
 class TurnDone(BaseModel):
     type: Literal["turn_done"] = "turn_done"
+    node_id: str = ""
     seq: int = 0
 
 
 class ErrorEvent(BaseModel):
     type: Literal["error"] = "error"
     message: str
+    node_id: str = ""
     seq: int = 0
 
 
@@ -115,6 +123,7 @@ class InteractionResponse(BaseModel):
 
     type: Literal["interaction_response"]
     id: str
+    node_id: str | None = None
     allow: bool = True
     message: str = ""
     updated_input: dict[str, Any] | None = None
@@ -126,7 +135,10 @@ class InteractionResponse(BaseModel):
 
 
 class Interrupt(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     type: Literal["interrupt"]
+    node_id: str
 
 
 class ReplayRequest(BaseModel):

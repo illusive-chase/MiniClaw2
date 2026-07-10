@@ -1,8 +1,8 @@
 // Mirror of backend WebSocket events (backend/miniclaw2/events.py).
 
-export type TextDelta = { type: "text_delta"; text: string; seq?: number };
+export type TextDelta = { type: "text_delta"; text: string; node_id: string; seq?: number };
 
-export type Thinking = { type: "thinking"; text: string; seq?: number };
+export type Thinking = { type: "thinking"; text: string; node_id: string; seq?: number };
 
 export type ResultKind = "stdout" | "diff" | "text" | "json";
 
@@ -15,6 +15,7 @@ export type Activity = {
   summary: string;
   result?: string | null;
   result_kind?: ResultKind | null;
+  node_id: string;
   seq?: number;
 };
 
@@ -29,6 +30,7 @@ export type InteractionRequest = {
   tool_input: Record<string, unknown>;
   suggestions: unknown[];
   response_hint?: Record<string, unknown>;
+  node_id: string;
   seq?: number;
 };
 
@@ -41,6 +43,7 @@ export type Usage = {
   cumulative_output_tokens?: number | null;
   cumulative_cache_creation_tokens?: number | null;
   final: boolean;
+  node_id: string;
   seq?: number;
 };
 
@@ -53,8 +56,8 @@ export type TokenUsage = {
   cumulative_cache_creation_tokens?: number | null;
 };
 
-export type TurnDone = { type: "turn_done"; seq?: number };
-export type ErrorEvent = { type: "error"; message: string; seq?: number };
+export type TurnDone = { type: "turn_done"; node_id: string; seq?: number };
+export type ErrorEvent = { type: "error"; message: string; node_id: string; seq?: number };
 export type NodeStarted = {
   type: "node_started";
   node_id: string;
@@ -69,6 +72,7 @@ export type NodeStarted = {
 };
 export type NodeUpdated = {
   type: "node_updated";
+  node_id: string;
   node: NodeInfo;
   seq?: number;
 };
@@ -102,6 +106,7 @@ export type ClientMessage =
   | {
       type: "interaction_response";
       id: string;
+      node_id?: string | null;
       allow: boolean;
       message?: string;
       updated_input?: Record<string, unknown> | null;
@@ -111,7 +116,7 @@ export type ClientMessage =
       permission_mode?: string | null;
       clear_context?: boolean;
     }
-  | { type: "interrupt" }
+  | { type: "interrupt"; node_id: string }
   | { type: "replay_request"; node_id: string; since_seq: number };
 
 export type CanvasViewport = {
@@ -126,6 +131,9 @@ export type SessionInfo = {
   turns: number;
   model_preset_id: string;
   provider?: AgentProvider;
+  concurrency: number;
+  active_count: number;
+  queued_count: number;
   preferred_language?: string | null;
   temporary?: boolean;
   template_id?: string | null;

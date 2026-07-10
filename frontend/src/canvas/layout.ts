@@ -169,8 +169,8 @@ export const PLANSPACE_PALETTE: PlanspaceColor[] = [
 
 export type BuildGraphArgs = {
   nodes: NodeInfo[];
-  /** id of the currently active project-runner node */
-  activeNodeId: string | null;
+  /** ids of project runners that currently occupy execution slots */
+  activeNodeIds: string[];
   /** project-level title to anchor as the root node */
   projectTitle: string;
   /** per-node manual position overrides (drag persistence — client-side for now) */
@@ -205,7 +205,7 @@ export type BuildGraphResult = {
 export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
   const {
     nodes,
-    activeNodeId,
+    activeNodeIds,
     projectTitle,
     layoutHints,
     contextBundlesByNodeId,
@@ -338,7 +338,7 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
 
   visibleNodes.forEach((node, index) => {
     const resumeParent = findResumeParent(node, nodeById);
-    const isActive = node.id === activeNodeId;
+    const isActive = activeNodeIds.includes(node.id);
     const stored = layoutHints[node.id];
     const planspaceId = resolvePlanspaceId(node, allNodeById);
     const planspaceColor = colorForPlanspace(

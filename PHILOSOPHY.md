@@ -226,10 +226,9 @@ once all dep parents are terminal (auto mode).
 The virtual subgraph within a lane is a DAG keyed on
 `scheduled_deps`, not a chain. Multiple virtuals can share parents;
 convergence virtuals can have multiple parents. The DAG governs
-promotion eligibility only — execution remains strictly serialized
-per project (one node at a time per worktree, per §6.2). FS state
-coherence is preserved by the linear execution order, not by the
-dep DAG.
+promotion eligibility only. Promotion persists an eligible node as
+`queued`; a deterministic scheduler starts queued nodes in
+`(created_at, id)` order while the project has capacity.
 
 A running session may oscillate between active execution and a
 paused substate as inline gates open and close. Human-interact
@@ -239,14 +238,18 @@ states.
 
 ### 6.2 Project
 
-A workspace is `(folder + ordered nodes)`. One worktree per project;
-nodes run **one at a time** on it.
+A workspace is `(folder + graph of nodes)`. One worktree per project;
+`Project.concurrency` is a positive integer (default `1`) that caps how
+many nodes may actually run at once. Queued nodes do not occupy a slot.
+Lowering the limit never cancels active work; raising it immediately
+fills newly available slots.
 
-Within a project the timeline is strictly ordered. Concurrency comes
-from forks (new projects with their own worktree), not from
-intra-project parallelism. This is what makes FS state coherent — the
-state another node starts from is exactly the state the previous node
-left behind.
+Nodes running concurrently intentionally share the source worktree.
+This enables collaborative edits but does not provide filesystem or Git
+isolation: agents can observe each other's partial changes, make
+conflicting edits, or race on repository-wide operations. Dependency
+edges and human supervision are the coordination mechanism; projects
+that require hard isolation should still use separate worktrees/forks.
 
 Each node records the pre- and post-state of the worktree, so the
 timeline can show a project-state diff per node.
@@ -301,7 +304,7 @@ code project. Its layout (project-level details are in
   - `skill` — reusable tool/workflow knowledge.
   - `planspace` — a single direction's DAG of nodes (executed and
     virtual). The LLM-facing form is a real filesystem materialized
-    under `.miniclaw2/graph/lanes/<active-lane>/` per launch; there
+    under `.miniclaw2/graph/runs/<node-id>/lanes/<active-lane>/` per launch; there
     is no STATUS.md or PLAN.md on disk.
   - `protocol` — reusable execution loop or output contract.
 - **Bindings** — many-to-many connections between projects and plugs.
@@ -506,7 +509,7 @@ A review virtual carries:
    `awaiting_human_input`. The side panel and inline tile expansion
    show the brief plus a free-form textarea. On submit, the runner
    writes the prose to
-   `.miniclaw2/graph/lanes/<lane>/nodes/<this-id>/human-review.md`
+   `.miniclaw2/graph/runs/<this-id>/lanes/<lane>/nodes/<this-id>/human-review.md`
    and launches the reviewer agent. The agent's system prompt
    includes the brief verbatim and the path to `human-review.md`,
    and instructs the agent to synthesize a preview from
@@ -629,9 +632,10 @@ which direction the next agent launch will run against.
 
 The non-obvious commitments, restated as one-liners:
 
-- **One node at a time per project.** FS coherence depends on it.
-  Concurrency is forks, not interleaving. The dep DAG is planning
-  structure; FS lineage stays strictly linear.
+- **Project concurrency is explicit and bounded.** Queued work starts
+  deterministically up to the positive project limit. Concurrent nodes share
+  the worktree, so collaboration and conflict risk are visible product
+  semantics rather than hidden isolation.
 - **Sessions, not turns.** The smallest unit a researcher delegates
   without checking in.
 - **One active planspace per node launch.** Avoids merging

@@ -24,40 +24,49 @@ class LiveReplayBufferTest(unittest.TestCase):
         self.assertIsNone(
             buffer.push_live({"type": "node_started", "node_id": "n1", "seq": 1})
         )
-        self.assertIsNone(buffer.push_live({"type": "text_delta", "text": "old", "seq": 2}))
+        self.assertIsNone(buffer.push_live({
+            "type": "text_delta", "text": "old", "node_id": "n1", "seq": 2
+        }))
 
         self.assertEqual(
             buffer.mark_live_ready(replay_node_id="n1", replayed_through_seq=2),
             [],
         )
         self.assertEqual(
-            buffer.push_live({"type": "text_delta", "text": "new", "seq": 3}),
-            {"type": "text_delta", "text": "new", "seq": 3},
+            buffer.push_live({
+                "type": "text_delta", "text": "new", "node_id": "n1", "seq": 3
+            }),
+            {"type": "text_delta", "text": "new", "node_id": "n1", "seq": 3},
         )
 
     def test_flushes_live_events_after_replayed_gap(self) -> None:
         buffer = LiveReplayBuffer()
 
         buffer.push_live({"type": "node_started", "node_id": "n1", "seq": 1})
-        buffer.push_live({"type": "text_delta", "text": "later", "seq": 13})
+        buffer.push_live({
+            "type": "text_delta", "text": "later", "node_id": "n1", "seq": 13
+        })
 
         self.assertEqual(
             buffer.mark_live_ready(replay_node_id="n1", replayed_through_seq=12),
-            [{"type": "text_delta", "text": "later", "seq": 13}],
+            [{"type": "text_delta", "text": "later", "node_id": "n1", "seq": 13}],
         )
 
     def test_does_not_cover_other_node_events(self) -> None:
         buffer = LiveReplayBuffer()
 
         buffer.push_live({"type": "node_started", "node_id": "n2", "seq": 1})
-        buffer.push_live({"type": "text_delta", "text": "other", "seq": 2})
+        buffer.push_live({
+            "type": "text_delta", "text": "other", "node_id": "n2", "seq": 2
+        })
 
         self.assertEqual(
             buffer.mark_live_ready(replay_node_id="n1", replayed_through_seq=99),
-            [
-                {"type": "node_started", "node_id": "n2", "seq": 1},
-                {"type": "text_delta", "text": "other", "seq": 2},
-            ],
+            [],
+        )
+        self.assertEqual(
+            buffer.mark_live_ready(replay_node_id="n2", replayed_through_seq=1),
+            [{"type": "text_delta", "text": "other", "node_id": "n2", "seq": 2}],
         )
 
 
@@ -341,7 +350,11 @@ class ReplayBootstrapTest(unittest.TestCase):
                     {
                         "schema_version": EVENT_SCHEMA_VERSION,
                         "seq": 1,
-                        "event": {"type": "text_delta", "seq": 1},
+                        "event": {
+                            "type": "text_delta",
+                            "seq": 1,
+                            "node_id": first.id,
+                        },
                     }
                 ],
             )

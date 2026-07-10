@@ -6,25 +6,31 @@ export type WSStatus = "connecting" | "open" | "closed";
 export function useSessionSocket(
   sessionId: string | null,
   onEvent: (ev: ServerEvent) => void,
+  activeNodeIds: string[] = [],
 ) {
   const [status, setStatus] = useState<WSStatus>("closed");
   const wsRef = useRef<WebSocket | null>(null);
   const onEventRef = useRef(onEvent);
   onEventRef.current = onEvent;
 
-  const activeNodeIdRef = useRef<string | null>(null);
-  const lastSeqRef = useRef<number>(0);
+  const activeNodeIdsRef = useRef<Set<string>>(new Set());
+  const lastSeqByNodeRef = useRef<Map<string, number>>(new Map());
+  const requestedReplayNodeIdsRef = useRef<Set<string>>(new Set());
+  const activeNodeIdsRefFromApp = useRef(activeNodeIds);
+  activeNodeIdsRefFromApp.current = activeNodeIds;
 
   useEffect(() => {
     if (!sessionId) {
       setStatus("closed");
-      activeNodeIdRef.current = null;
-      lastSeqRef.current = 0;
+      activeNodeIdsRef.current.clear();
+      lastSeqByNodeRef.current.clear();
+      requestedReplayNodeIdsRef.current.clear();
       return;
     }
     // New session → drop any seq tracking from a previous session.
-    activeNodeIdRef.current = null;
-    lastSeqRef.current = 0;
+    activeNodeIdsRef.current.clear();
+    lastSeqByNodeRef.current.clear();
+    requestedReplayNodeIdsRef.current.clear();
 
     let cancelled = false;
     let ws: WebSocket | null = null;
@@ -39,14 +45,27 @@ export function useSessionSocket(
       ws.onopen = () => {
         setStatus("open");
         if (ws?.readyState !== WebSocket.OPEN) return;
-        const nodeId = isReconnect ? activeNodeIdRef.current : null;
-        const sinceSeq = isReconnect ? lastSeqRef.current : 0;
-        const msg: ClientMessage = {
-          type: "replay_request",
-          node_id: nodeId ?? "",
-          since_seq: sinceSeq,
-        };
-        ws.send(JSON.stringify(msg));
+        requestedReplayNodeIdsRef.current.clear();
+        const replayNodeIds = Array.from(new Set([
+          ...activeNodeIdsRefFromApp.current,
+          ...(isReconnect ? activeNodeIdsRef.current : []),
+        ])).sort();
+        if (replayNodeIds.length === 0) {
+          ws.send(JSON.stringify({
+            type: "replay_request",
+            node_id: "",
+            since_seq: 0,
+          } satisfies ClientMessage));
+        } else {
+          for (const nodeId of replayNodeIds) {
+            requestedReplayNodeIdsRef.current.add(nodeId);
+            ws.send(JSON.stringify({
+              type: "replay_request",
+              node_id: nodeId,
+              since_seq: lastSeqByNodeRef.current.get(nodeId) ?? 0,
+            } satisfies ClientMessage));
+          }
+        }
       };
       ws.onclose = (e) => {
         setStatus("closed");
@@ -72,20 +91,23 @@ export function useSessionSocket(
            *     later wipes them anyway, producing the "canvas clears" bug).
            */
           const seq = typeof data.seq === "number" ? data.seq : null;
+          const nodeId = "node_id" in data ? data.node_id : null;
+          if (nodeId && seq !== null && seq > 0) {
+            const lastSeq = lastSeqByNodeRef.current.get(nodeId) ?? 0;
+            if (seq <= lastSeq) return;
+            lastSeqByNodeRef.current.set(nodeId, seq);
+          }
           if (data.type === "node_started") {
-            if (
-              activeNodeIdRef.current === data.node_id &&
-              seq !== null &&
-              seq > 0 &&
-              seq <= lastSeqRef.current
-            ) {
-              return;
-            }
-            activeNodeIdRef.current = data.node_id;
-            if (seq !== null && seq > 0) lastSeqRef.current = seq;
-          } else if (seq !== null && seq > 0) {
-            if (seq <= lastSeqRef.current) return;
-            lastSeqRef.current = seq;
+            activeNodeIdsRef.current.add(data.node_id);
+          } else if (data.type === "turn_done") {
+            activeNodeIdsRef.current.delete(data.node_id);
+          } else if (
+            data.type === "node_updated" &&
+            !["queued", "running", "waiting", "awaiting_human_input"].includes(
+              data.node.state,
+            )
+          ) {
+            activeNodeIdsRef.current.delete(data.node.id);
           }
           /* seq == 0 (registry events) and missing-seq events fall through
            * to always-deliver. */
@@ -104,6 +126,20 @@ export function useSessionSocket(
       wsRef.current = null;
     };
   }, [sessionId]);
+
+  useEffect(() => {
+    const ws = wsRef.current;
+    if (!sessionId || !ws || ws.readyState !== WebSocket.OPEN) return;
+    for (const nodeId of [...activeNodeIds].sort()) {
+      if (requestedReplayNodeIdsRef.current.has(nodeId)) continue;
+      requestedReplayNodeIdsRef.current.add(nodeId);
+      ws.send(JSON.stringify({
+        type: "replay_request",
+        node_id: nodeId,
+        since_seq: lastSeqByNodeRef.current.get(nodeId) ?? 0,
+      } satisfies ClientMessage));
+    }
+  }, [activeNodeIds, sessionId]);
 
   const send = (msg: ClientMessage) => {
     const ws = wsRef.current;

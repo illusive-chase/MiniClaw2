@@ -99,16 +99,33 @@ def _normalize_project_root(cwd: str, *, create_missing: bool = False) -> str:
 
 
 class ProjectRuntime:
-    """Per-project mutable runtime state — only one runner active at a time."""
+    """Per-project mutable runtime state for concurrent node execution."""
 
     def __init__(self, project: Project) -> None:
         self.project = project
-        self.runner: NodeRunner | None = None
-        self.runner_task: asyncio.Task[None] | None = None
+        self.runners: dict[str, NodeRunner] = {}
+        self.runner_tasks: dict[str, asyncio.Task[None]] = {}
+        self.priority_node_ids: list[str] = []
+        self.closed = False
+        self.reap_lock = asyncio.Lock()
         self.observers: dict[str, Callable[[dict[str, Any]], Awaitable[None]]] = {}
 
+    @property
+    def active_count(self) -> int:
+        return sum(1 for task in self.runner_tasks.values() if not task.done())
+
+    def has_capacity(self) -> bool:
+        return self.active_count < self.project.concurrency
+
     def is_running(self) -> bool:
-        return self.runner_task is not None and not self.runner_task.done()
+        return self.active_count > 0
+
+    def get_runner(self, node_id: str) -> NodeRunner | None:
+        return self.runners.get(node_id)
+
+    def remove_runner(self, node_id: str) -> NodeRunner | None:
+        self.runner_tasks.pop(node_id, None)
+        return self.runners.pop(node_id, None)
 
     def add_observer(
         self,
@@ -164,12 +181,17 @@ class ProjectRegistry:
             self._runtimes[project.id] = ProjectRuntime(project)
             self._repair_stale_nodes(project.id)
 
+    def schedule_all(self) -> None:
+        """Fill execution slots for durable queued work after startup."""
+        for runtime in self._runtimes.values():
+            self._schedule_queued(runtime)
+
     def _repair_stale_nodes(self, pid: str) -> None:
         """Mark nodes stuck in non-terminal states as cancelled on load.
 
         A previous process may have exited (crash, reload, kill) with a
         runner still driving nodes in RUNNING/WAITING/AWAITING_HUMAN_INPUT
-        /QUEUED. Those runners are gone; the node states in the store are
+        states. Those runners are gone; the node states in the store are
         misleading. Sweep them to CANCELLED with a reason so the UI shows
         them as terminal and rerun becomes possible. Best-effort only —
         failures are logged and swallowed so a bad node doesn't block
@@ -179,7 +201,7 @@ class ProjectRegistry:
         for node in self.store.list_nodes(pid):
             if node.state in TERMINAL_NODE_STATES:
                 continue
-            if node.state is NodeState.VIRTUAL:
+            if node.state in {NodeState.VIRTUAL, NodeState.QUEUED}:
                 continue
             node.state = NodeState.CANCELLED
             node.error = (
@@ -230,6 +252,7 @@ class ProjectRegistry:
         temporary: bool = False,
         template_id: str | None = None,
         create_missing_cwd: bool = False,
+        concurrency: int = 1,
     ) -> Project:
         if provider is not None:
             raise ValueError("provider is no longer accepted; use model_preset_id")
@@ -269,6 +292,7 @@ class ProjectRegistry:
             root_path=root_path,
             name=name,
             model_preset_id=normalized_model_preset_id,
+            concurrency=concurrency,
             preferred_language=normalized_language,
             project_context_binding_id=project_context_binding_id,
             settings_override=settings,
@@ -299,6 +323,7 @@ class ProjectRegistry:
         pid: str,
         *,
         preferred_language: str | None | object = _UNSET,
+        concurrency: int | object = _UNSET,
     ) -> Project | None:
         rt = self._runtimes.get(pid)
         if rt is None:
@@ -307,7 +332,16 @@ class ProjectRegistry:
             rt.project.preferred_language = normalize_preferred_language(
                 preferred_language
             )
+        if concurrency is not _UNSET:
+            validated = Project.model_validate(
+                {
+                    **rt.project.model_dump(exclude={"provider"}),
+                    "concurrency": concurrency,
+                }
+            )
+            rt.project.concurrency = validated.concurrency
         self.store.update_project(rt.project)
+        self._schedule_queued(rt)
         return rt.project
 
     def update_project_context(
@@ -428,24 +462,38 @@ class ProjectRegistry:
         if (
             written is PlanspaceMode.AUTO
             and planspace_id == active_lane
-            and not rt.is_running()
         ):
-            self._auto_promote_next_virtual(rt)
+            self._auto_promote_eligible_virtuals(rt)
         return written
 
     def delete_project(self, pid: str) -> bool:
         rt = self._runtimes.get(pid)
         if rt is None:
             return False
-        if rt.is_running():
-            assert rt.runner_task is not None
-            rt.runner_task.cancel()
+        rt.closed = True
+        for runner in list(rt.runners.values()):
+            try:
+                asyncio.get_running_loop().create_task(runner.interrupt())
+            except RuntimeError:
+                pass
+        for task in list(rt.runner_tasks.values()):
+            task.add_done_callback(
+                lambda _task, _rt=rt: self._finalize_deleted_project(_rt)
+            )
+            task.cancel()
         delete_project_contextspace(rt.project, store_root=self.store.root)
         if rt.project.temporary:
             remove_temporary_root(rt.project.root_path)
         self.store.delete_project(pid)
         self._runtimes.pop(pid, None)
         return True
+
+    def _finalize_deleted_project(self, rt: ProjectRuntime) -> None:
+        if any(not task.done() for task in rt.runner_tasks.values()):
+            return
+        self.store.delete_project(rt.project.id)
+        if rt.project.temporary:
+            remove_temporary_root(rt.project.root_path)
 
     def attach_observer(
         self,
@@ -470,6 +518,17 @@ class ProjectRegistry:
     def is_running(self, pid: str) -> bool:
         rt = self._runtimes.get(pid)
         return bool(rt and rt.is_running())
+
+    def active_count(self, pid: str) -> int:
+        rt = self._runtimes.get(pid)
+        return rt.active_count if rt is not None else 0
+
+    def queued_count(self, pid: str) -> int:
+        if pid not in self._runtimes:
+            return 0
+        return sum(
+            1 for node in self.store.list_nodes(pid) if node.state is NodeState.QUEUED
+        )
 
     def list_nodes(self, pid: str) -> list[Node] | None:
         if pid not in self._runtimes:
@@ -514,12 +573,10 @@ class ProjectRegistry:
         brief: ReviewBrief | None = None,
         parent_node_id: str | None = None,
         scheduled_deps: list[str] | None = None,
-    ) -> NodeRunner | None:
-        """Create a new agent node and launch its runner as a task."""
+    ) -> Node | None:
+        """Persist a queued agent node and schedule it when capacity exists."""
         rt = self._runtimes.get(pid)
         if rt is None:
-            return None
-        if rt.is_running():
             return None
 
         resume_source: Node | None = None
@@ -598,28 +655,116 @@ class ProjectRegistry:
             except Exception:  # noqa: BLE001
                 logger.exception("failed to seed review node virtual preview")
 
-        runner = NodeRunner(node, rt.project, self.store, rt.broadcast)
-        self._launch_runner(rt, runner)
-        return runner
+        self._schedule_queued(rt)
+        return self.store.load_node(pid, node.id) or node
 
-    def _launch_runner(
+    def _launch_node(
         self,
         rt: ProjectRuntime,
-        runner: NodeRunner,
+        node: Node,
         *,
         coro: Awaitable[None] | None = None,
+    ) -> Node | None:
+        if node.id in rt.runner_tasks or not rt.has_capacity():
+            return None
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return None
+        runner = NodeRunner(
+            node,
+            rt.project,
+            self.store,
+            rt.broadcast,
+            reap_lock=rt.reap_lock,
+        )
+        task = asyncio.create_task(coro if coro is not None else runner.run())
+        rt.runners[node.id] = runner
+        rt.runner_tasks[node.id] = task
+        task.add_done_callback(
+            lambda _task, _rt=rt, _node_id=node.id: self._on_runner_done(
+                _rt, _node_id, _task
+            )
+        )
+        return runner
+
+    def _schedule_queued(self, rt: ProjectRuntime) -> None:
+        while rt.has_capacity():
+            priority = [
+                node_id
+                for node_id in rt.priority_node_ids
+                if node_id not in rt.runner_tasks
+                and (
+                    (node := self.store.load_node(rt.project.id, node_id))
+                    is not None
+                    and node.state is NodeState.QUEUED
+                )
+            ]
+            rt.priority_node_ids = priority
+            if priority:
+                node = self.store.load_node(rt.project.id, priority[0])
+                if node is not None and self._launch_node(rt, node) is not None:
+                    rt.priority_node_ids.pop(0)
+                    continue
+                return
+            queued = sorted(
+                (
+                    node
+                    for node in self.store.list_nodes(rt.project.id)
+                    if node.state is NodeState.QUEUED
+                    and node.id not in rt.runner_tasks
+                ),
+                key=lambda node: (node.created_at, node.id),
+            )
+            if not queued:
+                return
+            if self._launch_node(rt, queued[0]) is None:
+                return
+
+    def _on_runner_done(
+        self,
+        rt: ProjectRuntime,
+        node_id: str,
+        task: asyncio.Task[None] | None = None,
     ) -> None:
-        rt.runner = runner
-        rt.runner_task = asyncio.create_task(coro if coro is not None else runner.run())
-        rt.runner_task.add_done_callback(lambda _t, _rt=rt: self._on_runner_done(_rt))
-
-    def _on_runner_done(self, rt: ProjectRuntime) -> None:
-        finished_node = rt.runner.node if rt.runner else None
-        rt.runner = None
-        rt.runner_task = None
-
-        if finished_node is None:
+        runner = rt.remove_runner(node_id)
+        if runner is None:
             return
+        if rt.closed:
+            return
+        finished_node = runner.node
+        if task is not None and task.cancelled() and finished_node.state is NodeState.QUEUED:
+            finished_node.state = NodeState.CANCELLED
+            finished_node.error = "cancelled before runner start"
+            finished_node.started_at = finished_node.created_at
+            finished_node.finished_at = time.time()
+            self.store.update_node(finished_node)
+        if (
+            finished_node.kind is NodeKind.OP
+            and finished_node.op_kind == "commit"
+            and finished_node.state is NodeState.DONE
+            and finished_node.parent_node_id
+            and finished_node.commit_after
+            and finished_node.commit_after != finished_node.commit_before
+        ):
+            fresh_agent = self.store.load_node(
+                rt.project.id, finished_node.parent_node_id
+            )
+            if (
+                fresh_agent is not None
+                and fresh_agent.commit_after != finished_node.commit_after
+            ):
+                fresh_agent.commit_after = finished_node.commit_after
+                self.store.update_node(fresh_agent)
+                try:
+                    asyncio.get_running_loop().create_task(rt.broadcast({
+                        "type": "node_updated",
+                        "node_id": fresh_agent.id,
+                        "node": fresh_agent.model_dump(),
+                        "seq": 0,
+                    }))
+                except RuntimeError:
+                    pass
         spawned_op = False
         if (
             finished_node.kind is NodeKind.AGENT
@@ -628,13 +773,9 @@ class ProjectRegistry:
         ):
             self._spawn_op_commit(rt, finished_node)
             spawned_op = True
-        if spawned_op:
-            return
-        if finished_node.state is not NodeState.DONE:
-            return
-        if not rt.project.active_planspace_id:
-            return
-        self._auto_promote_next_virtual(rt)
+        if not spawned_op and finished_node.state is NodeState.DONE:
+            self._auto_promote_eligible_virtuals(rt)
+        self._schedule_queued(rt)
 
     def create_planspace_and_launch_concierge(
         self,
@@ -645,13 +786,13 @@ class ProjectRegistry:
         mode: str | None = None,
         provider: str | None = None,
         model_preset_id: str | None = None,
-    ) -> NodeRunner | None:
+    ) -> Node | None:
         """Create a new planspace, activate it, and launch the concierge.
 
         The concierge is a planning-category agent node whose prompt is
         the rendered ``concierge_bootstrap.md`` template with the user's
-        free-form ``seed`` substituted in. Returns the runner on
-        success, ``None`` if the project is already running.
+        free-form ``seed`` substituted in. Returns the persisted queued/running
+        node on success, or ``None`` if the project is already running.
         """
         rt = self._runtimes.get(pid)
         if rt is None or rt.is_running():
@@ -688,9 +829,8 @@ class ProjectRegistry:
         )
         self.store.create_node(node)
 
-        runner = NodeRunner(node, rt.project, self.store, rt.broadcast)
-        self._launch_runner(rt, runner)
-        return runner
+        self._schedule_queued(rt)
+        return self.store.load_node(pid, node.id) or node
 
     def create_blank_planspace(
         self,
@@ -742,8 +882,8 @@ class ProjectRegistry:
 
     # ---- auto-promotion ----
 
-    def _auto_promote_next_virtual(self, rt: ProjectRuntime) -> None:
-        """Promote the next eligible virtual on the active lane if mode=auto."""
+    def _auto_promote_eligible_virtuals(self, rt: ProjectRuntime) -> None:
+        """Queue every currently eligible virtual on an auto planspace."""
         project = rt.project
         active_lane = project.active_planspace_id or ""
         if not active_lane:
@@ -757,17 +897,20 @@ class ProjectRegistry:
             return
         if mode is not PlanspaceMode.AUTO:
             return
-        candidate = self._next_promotion_candidate(project.id, active_lane)
-        if candidate is None:
-            return
-        self.promote_virtual(project.id, candidate.id)
+        while True:
+            candidate = self._next_promotion_candidate(project.id, active_lane)
+            if candidate is None:
+                break
+            if self.promote_virtual(project.id, candidate.id) is None:
+                break
+        self._schedule_queued(rt)
 
     def promote_next_virtual(self, pid: str) -> None:
         """Run one auto-promotion pass for callers that just seeded a lane."""
         rt = self._runtimes.get(pid)
-        if rt is None or rt.is_running():
+        if rt is None:
             return
-        self._auto_promote_next_virtual(rt)
+        self._auto_promote_eligible_virtuals(rt)
 
     def _next_promotion_candidate(
         self, pid: str, lane_id: str
@@ -811,15 +954,14 @@ class ProjectRegistry:
         eligible.sort(key=lambda n: (n.created_at, n.id))
         return eligible[0]
 
-    def promote_virtual(self, pid: str, vid: str) -> NodeRunner | None:
-        """Promote a virtual node to ``queued`` and launch its runner.
+    def promote_virtual(self, pid: str, vid: str) -> Node | None:
+        """Promote an eligible virtual node to the durable ``queued`` state.
 
-        Returns the runner or ``None`` if the node cannot be promoted
-        (already executed, obsoleted, unresolved deps, or another node
-        is currently running on the project).
+        Starting a provider is a separate scheduler concern; a full project
+        therefore still accepts promotion and returns the queued node.
         """
         rt = self._runtimes.get(pid)
-        if rt is None or rt.is_running():
+        if rt is None:
             return None
         node = self.store.load_node(pid, vid)
         if node is None:
@@ -874,17 +1016,17 @@ class ProjectRegistry:
             node.pending_extra_skills = []
         self.store.update_node(node)
 
-        runner = NodeRunner(node, rt.project, self.store, rt.broadcast)
-        self._launch_runner(rt, runner)
         try:
             asyncio.get_running_loop().create_task(rt.broadcast({
                 "type": "node_updated",
+                "node_id": node.id,
                 "node": node.model_dump(),
                 "seq": 0,
             }))
         except RuntimeError:
             pass
-        return runner
+        self._schedule_queued(rt)
+        return self.store.load_node(pid, node.id) or node
 
     def create_virtual(
         self,
@@ -908,12 +1050,11 @@ class ProjectRegistry:
     ) -> Node | None:
         """Create a user-authored editable virtual node.
 
-        Returns the created node, or ``None`` when the project is missing or
-        busy. Validation failures raise ``ValueError`` with a client-facing
-        message.
+        Returns the created node, or ``None`` when the project is missing.
+        Validation failures raise ``ValueError`` with a client-facing message.
         """
         rt = self._runtimes.get(pid)
-        if rt is None or rt.is_running():
+        if rt is None:
             return None
         if provider is not None:
             raise ValueError("provider is no longer accepted; use model_preset_id")
@@ -1033,6 +1174,7 @@ class ProjectRegistry:
         try:
             asyncio.get_running_loop().create_task(rt.broadcast({
                 "type": "node_updated",
+                "node_id": node.id,
                 "node": node.model_dump(),
                 "seq": 0,
             }))
@@ -1048,8 +1190,8 @@ class ProjectRegistry:
             except Exception:  # noqa: BLE001
                 logger.exception("planspace mode lookup failed")
             else:
-                if mode is PlanspaceMode.AUTO and not rt.is_running():
-                    self._auto_promote_next_virtual(rt)
+                if mode is PlanspaceMode.AUTO:
+                    self._auto_promote_eligible_virtuals(rt)
                     return self.store.load_node(pid, node.id) or node
         return node
 
@@ -1072,11 +1214,11 @@ class ProjectRegistry:
         """Update a virtual node in place.
 
         Returns the updated node. ``None`` means the project/node is missing, the
-        project is busy, or the target is not an editable virtual. Validation
+        or the target is not an editable virtual. Validation
         failures raise ``ValueError`` with a client-facing message.
         """
         rt = self._runtimes.get(pid)
-        if rt is None or rt.is_running():
+        if rt is None:
             return None
         existing = self.store.load_node(pid, vid)
         if existing is None:
@@ -1199,6 +1341,7 @@ class ProjectRegistry:
         try:
             asyncio.get_running_loop().create_task(rt.broadcast({
                 "type": "node_updated",
+                "node_id": updated.id,
                 "node": updated.model_dump(),
                 "seq": 0,
             }))
@@ -1213,8 +1356,8 @@ class ProjectRegistry:
             except Exception:  # noqa: BLE001
                 logger.exception("planspace mode lookup failed")
             else:
-                if mode is PlanspaceMode.AUTO and not rt.is_running():
-                    self._auto_promote_next_virtual(rt)
+                if mode is PlanspaceMode.AUTO:
+                    self._auto_promote_eligible_virtuals(rt)
                     return self.store.load_node(pid, updated.id) or updated
         return updated
 
@@ -1274,11 +1417,11 @@ class ProjectRegistry:
 
         Used by the rerun UI for nodes in ERROR or CANCELLED state (e.g.,
         crashed by a backend restart). Returns ``None`` when the project
-        or node is missing, the project is busy, or the target is not a
+        or node is missing, or the target is not a
         rerunnable agent node. Validation failures raise ``ValueError``.
         """
         rt = self._runtimes.get(pid)
-        if rt is None or rt.is_running():
+        if rt is None:
             return None
         original = self.store.load_node(pid, nid)
         if original is None:
@@ -1446,43 +1589,19 @@ class ProjectRegistry:
             planspace_id=agent_node.planspace_id,
         )
         self.store.create_node(op_node)
+        rt.priority_node_ids.append(op_node.id)
+        self._schedule_queued(rt)
 
-        runner = NodeRunner(op_node, rt.project, self.store, rt.broadcast)
-        self._launch_runner(
-            rt, runner, coro=self._run_op_and_rewrite(rt, runner, agent_node.id)
-        )
-
-    async def _run_op_and_rewrite(
-        self,
-        rt: ProjectRuntime,
-        runner: NodeRunner,
-        agent_node_id: str,
-    ) -> None:
-        await runner.run()
-        op_node = runner.node
-        if (
-            op_node.state is NodeState.DONE
-            and op_node.commit_after
-            and op_node.commit_after != op_node.commit_before
-        ):
-            fresh_agent = self.store.load_node(rt.project.id, agent_node_id)
-            if fresh_agent is not None and fresh_agent.commit_after != op_node.commit_after:
-                fresh_agent.commit_after = op_node.commit_after
-                self.store.update_node(fresh_agent)
-                await rt.broadcast({
-                    "type": "node_updated",
-                    "node": fresh_agent.model_dump(),
-                    "seq": 0,
-                })
-
-    def interrupt(self, pid: str) -> bool:
+    def interrupt(self, pid: str, node_id: str) -> bool:
         rt = self._runtimes.get(pid)
-        if rt is None or not rt.is_running():
+        if rt is None:
             return False
-        assert rt.runner_task is not None
-        if rt.runner is not None:
-            asyncio.create_task(rt.runner.interrupt())
-        rt.runner_task.cancel()
+        runner = rt.get_runner(node_id)
+        task = rt.runner_tasks.get(node_id)
+        if runner is None or task is None or task.done():
+            return False
+        asyncio.create_task(runner.interrupt())
+        task.cancel()
         return True
 
     def resolve_gate(
@@ -1490,6 +1609,7 @@ class ProjectRegistry:
         pid: str,
         gate_id: str,
         *,
+        node_id: str | None = None,
         allow: bool,
         message: str = "",
         updated_input: dict[str, Any] | None = None,
@@ -1500,16 +1620,24 @@ class ProjectRegistry:
         clear_context: bool = False,
     ) -> bool:
         rt = self._runtimes.get(pid)
-        if rt is None or rt.runner is None:
+        if rt is None:
             return False
-        return rt.runner.resolve_gate(
-            gate_id,
-            allow=allow,
-            message=message,
-            updated_input=updated_input,
-            response=response,
-            scope=scope,
-            interrupt=interrupt,
-            permission_mode=permission_mode,
-            clear_context=clear_context,
+        runners = (
+            [rt.get_runner(node_id)]
+            if node_id is not None
+            else list(rt.runners.values())
         )
+        for runner in runners:
+            if runner is not None and runner.resolve_gate(
+                gate_id,
+                allow=allow,
+                message=message,
+                updated_input=updated_input,
+                response=response,
+                scope=scope,
+                interrupt=interrupt,
+                permission_mode=permission_mode,
+                clear_context=clear_context,
+            ):
+                return True
+        return False

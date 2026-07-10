@@ -279,11 +279,11 @@ class AutoPromoteOnRunnerDoneTests(unittest.IsolatedAsyncioTestCase):
         finished = self._make_finished_agent(plug_id)
         virtual = self._make_virtual(plug_id)
 
-        rt.runner = self._stub_runner(finished)  # type: ignore[assignment]
-        self.registry._on_runner_done(rt)
+        rt.runners[finished.id] = self._stub_runner(finished)  # type: ignore[assignment]
+        self.registry._on_runner_done(rt, finished.id)
 
         # No new task was spawned: virtual is still virtual.
-        self.assertIsNone(rt.runner_task)
+        self.assertEqual(rt.runner_tasks, {})
         still_virtual = self.store.load_node(self.project.id, virtual.id)
         assert still_virtual is not None
         self.assertEqual(still_virtual.state, NodeState.VIRTUAL)
@@ -300,19 +300,20 @@ class AutoPromoteOnRunnerDoneTests(unittest.IsolatedAsyncioTestCase):
         virtual = self._make_virtual(plug_id, prompt_draft="follow up")
 
         rt = self.registry._runtimes[self.project.id]
-        rt.runner = self._stub_runner(finished)  # type: ignore[assignment]
+        rt.runners[finished.id] = self._stub_runner(finished)  # type: ignore[assignment]
         # Pre-condition: project not running.
         self.assertFalse(rt.is_running())
-        self.registry._on_runner_done(rt)
+        self.registry._on_runner_done(rt, finished.id)
 
         # promote_virtual should have transitioned virtual -> queued and
         # spawned a runner task. We immediately cancel to avoid touching
         # the real provider in this unit test.
-        self.assertIsNotNone(rt.runner_task)
-        assert rt.runner_task is not None
-        rt.runner_task.cancel()
+        task = rt.runner_tasks.get(virtual.id)
+        self.assertIsNotNone(task)
+        assert task is not None
+        task.cancel()
         try:
-            await rt.runner_task
+            await task
         except asyncio.CancelledError:
             pass
         except BaseException:
@@ -341,8 +342,8 @@ class AutoPromoteOnRunnerDoneTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(mode, "auto")
-        self.assertIsNotNone(rt.runner_task)
-        await self._drain_task(rt.runner_task)
+        self.assertIn(virtual.id, rt.runner_tasks)
+        await self._drain_task(rt.runner_tasks.get(virtual.id))
         reloaded = self.store.load_node(self.project.id, virtual.id)
         assert reloaded is not None
         self.assertNotEqual(reloaded.state, NodeState.VIRTUAL)
@@ -384,7 +385,7 @@ class AutoPromoteOnRunnerDoneTests(unittest.IsolatedAsyncioTestCase):
         runner = self.registry.promote_virtual(self.project.id, virtual.id)
 
         self.assertIsNotNone(runner)
-        await self._drain_task(rt.runner_task)
+        await self._drain_task(rt.runner_tasks.get(virtual.id))
         preview_text = self.store.read_node_preview(self.project.id, virtual.id)
         self.assertIsNotNone(preview_text)
         assert preview_text is not None
@@ -408,12 +409,12 @@ class AutoPromoteOnRunnerDoneTests(unittest.IsolatedAsyncioTestCase):
             plug_id, nid="v-blocked", deps=["v-gating"]
         )
 
-        rt.runner = self._stub_runner(finished)  # type: ignore[assignment]
-        self.registry._on_runner_done(rt)
+        rt.runners[finished.id] = self._stub_runner(finished)  # type: ignore[assignment]
+        self.registry._on_runner_done(rt, finished.id)
 
         # blocked has gating as a dep; gating itself is unsatisfied (it
         # has no deps) so it should be the one promoted, not the blocked.
-        await self._drain_task(rt.runner_task)
+        await self._drain_task(rt.runner_tasks.get(gating.id))
         gating_now = self.store.load_node(self.project.id, gating.id)
         blocked_now = self.store.load_node(self.project.id, blocked.id)
         assert gating_now is not None and blocked_now is not None
@@ -443,8 +444,8 @@ class AutoPromoteOnRunnerDoneTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertIsNotNone(updated)
-        self.assertIsNotNone(rt.runner_task)
-        await self._drain_task(rt.runner_task)
+        self.assertIn(virtual.id, rt.runner_tasks)
+        await self._drain_task(rt.runner_tasks.get(virtual.id))
         reloaded = self.store.load_node(self.project.id, virtual.id)
         assert reloaded is not None
         self.assertNotEqual(reloaded.state, NodeState.VIRTUAL)

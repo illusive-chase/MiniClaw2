@@ -29,6 +29,7 @@ export type ProjectPanelProps = {
   onActivatePlanspace: (binding_id: string, planspace_id: string) => void;
   onSelectContextBinding: (binding_id: string) => void;
   onPreferredLanguageChange: (preferredLanguage: string | null) => void;
+  onConcurrencyChange: (concurrency: number) => void;
   onNewDirection: (
     userSeed: string,
     mode: PlanspaceMode,
@@ -66,6 +67,7 @@ export function ProjectPanel({
   onActivatePlanspace,
   onSelectContextBinding,
   onPreferredLanguageChange,
+  onConcurrencyChange,
   onNewDirection,
   onStartBlankDirection,
   onNewSkill,
@@ -193,6 +195,23 @@ export function ProjectPanel({
               ))}
             </select>
           </label>
+          <label className="mt-2 flex items-center justify-between gap-3 rounded-md border border-line bg-surface-sunken px-3 py-2 text-[11.5px]">
+            <span className="text-ink-subtle">Concurrency</span>
+            <input
+              type="number"
+              min={1}
+              step={1}
+              value={session.concurrency}
+              disabled={settingsSaving}
+              onChange={(event) => {
+                onConcurrencyChange(Math.max(1, Number(event.target.value) || 1));
+              }}
+              className="w-20 rounded border border-line bg-surface px-2 py-1 text-right text-[11.5px] text-ink-strong focus:border-brand focus:outline-none disabled:opacity-50"
+            />
+          </label>
+          <div className="mt-2 rounded-md border border-line bg-surface-sunken px-3 py-2 text-[11.5px] text-ink-subtle">
+            {session.active_count} active · {session.queued_count} queued · limit {session.concurrency}
+          </div>
           {settingsError && (
             <div className="mt-2 rounded-md border border-state-error/30 bg-state-error-soft p-2 text-xs text-state-error">
               {settingsError}

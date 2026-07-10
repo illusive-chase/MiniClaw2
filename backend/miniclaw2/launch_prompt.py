@@ -51,9 +51,9 @@ def _lane_path(node: Node) -> str:
     return f"{GRAPH_DIRNAME}/{lane_id}".rstrip("/")
 
 
-def _substitutions(node: Node) -> dict[str, str]:
+def _substitutions(node: Node, lane_path: str | None = None) -> dict[str, str]:
     subs: dict[str, str] = {
-        "lane_path": _lane_path(node),
+        "lane_path": lane_path or _lane_path(node),
         "node_id": node.id,
         "lane_id": node.planspace_id or "",
     }
@@ -65,7 +65,7 @@ def _substitutions(node: Node) -> dict[str, str]:
     return subs
 
 
-def build_category_launch_block(node: Node) -> str:
+def build_category_launch_block(node: Node, *, lane_path: str | None = None) -> str:
     """Return the category-aware launch instruction block for ``node``.
 
     Returns an empty string for op nodes (they do not get a launch
@@ -75,12 +75,16 @@ def build_category_launch_block(node: Node) -> str:
     if template is None:
         return ""
     rendered = template
-    for token, value in _substitutions(node).items():
+    for token, value in _substitutions(node, lane_path).items():
         rendered = rendered.replace(f"<<{token}>>", value)
     return rendered.strip()
 
 
-def build_dependency_launch_block(node: Node) -> str:
+def build_dependency_launch_block(
+    node: Node,
+    *,
+    lane_path: str | None = None,
+) -> str:
     """Return a launch block that names declared dependency previews.
 
     The graph already carries ``scheduled_deps`` as structured state. This
@@ -95,7 +99,7 @@ def build_dependency_launch_block(node: Node) -> str:
     if not deps:
         return ""
 
-    lane = _lane_path(node)
+    lane = lane_path or _lane_path(node)
     lines = [
         "# MiniClaw2 — scheduled dependency index",
         "",

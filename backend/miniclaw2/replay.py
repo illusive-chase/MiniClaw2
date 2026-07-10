@@ -87,16 +87,15 @@ class LiveReplayBuffer:
 
     def __init__(self) -> None:
         self.live_ready = False
+        self._ready_node_ids: set[str] = set()
         self._buffered: list[tuple[str | None, dict[str, Any]]] = []
-        self._node_id: str | None = None
 
     def push_live(self, event: dict[str, Any]) -> dict[str, Any] | None:
-        if event.get("type") == "node_started":
-            node_id = event.get("node_id")
-            self._node_id = node_id if isinstance(node_id, str) else None
-        if self.live_ready:
+        raw_node_id = event.get("node_id")
+        node_id = raw_node_id if isinstance(raw_node_id, str) else None
+        if self.live_ready or (node_id is not None and node_id in self._ready_node_ids):
             return event
-        self._buffered.append((self._node_id, event))
+        self._buffered.append((node_id, event))
         return None
 
     def mark_live_ready(
@@ -107,9 +106,20 @@ class LiveReplayBuffer:
     ) -> list[dict[str, Any]]:
         if self.live_ready:
             return []
-        self.live_ready = True
-        pending = self._buffered
-        self._buffered = []
+        if replay_node_id is None:
+            self.live_ready = True
+            pending = self._buffered
+            self._buffered = []
+        else:
+            self._ready_node_ids.add(replay_node_id)
+            pending = []
+            retained = []
+            for event_node_id, event in self._buffered:
+                if event_node_id in {None, replay_node_id}:
+                    pending.append((event_node_id, event))
+                else:
+                    retained.append((event_node_id, event))
+            self._buffered = retained
         return [
             event
             for event_node_id, event in pending

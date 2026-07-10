@@ -468,12 +468,12 @@ class VirtualEditRegistryTests(unittest.TestCase):
     def test_delete_virtual_rejects_when_project_running(self) -> None:
         node = self._virtual("busy")
         runtime = self.registry._runtimes[self.project.id]
-        runtime.runner_task = _PendingTask()  # type: ignore[assignment]
+        runtime.runner_tasks["busy"] = _PendingTask()  # type: ignore[assignment]
         try:
             with self.assertRaisesRegex(RuntimeError, "turn in progress"):
                 self.registry.delete_virtual(self.project.id, node.id)
         finally:
-            runtime.runner_task.cancel()
+            runtime.runner_tasks["busy"].cancel()
 
 
 class VirtualEditApiTests(unittest.TestCase):

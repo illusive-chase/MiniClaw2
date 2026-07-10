@@ -264,7 +264,7 @@ class BlankPlanspaceRegistryTests(unittest.TestCase):
 
     def test_create_blank_planspace_returns_none_when_turn_running(self) -> None:
         runtime = self.registry._runtimes[self.project.id]
-        runtime.runner_task = _PendingTask()  # type: ignore[assignment]
+        runtime.runner_tasks["busy"] = _PendingTask()  # type: ignore[assignment]
         try:
             node = self.registry.create_blank_planspace(
                 self.project.id,
@@ -273,7 +273,7 @@ class BlankPlanspaceRegistryTests(unittest.TestCase):
                 mode="manual",
             )
         finally:
-            runtime.runner_task.cancel()
+            runtime.runner_tasks["busy"].cancel()
 
         self.assertIsNone(node)
 

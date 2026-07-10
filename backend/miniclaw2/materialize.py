@@ -1,7 +1,7 @@
 """Per-launch filesystem projection of the active lane.
 
 Before each agent launch the framework copies the durable lane state
-into ``.miniclaw2/graph/lanes/<lane_id>/`` so the agent can read
+into ``.miniclaw2/graph/runs/<node_id>/lanes/<lane_id>/`` so the agent can read
 previews, transcripts, and artifacts with native ``Read`` and write
 its own ``preview.json`` (plus virtual previews for planning / review
 categories) with native ``Write``. At terminal, ``runner.py`` walk-
@@ -24,6 +24,7 @@ from .store import Store
 
 
 GRAPH_DIRNAME = ".miniclaw2/graph/lanes"
+GRAPH_RUNS_DIRNAME = ".miniclaw2/graph/runs"
 ARTIFACTS_DIRNAME = ".miniclaw2/outputs"
 
 # Event types that belong in a node transcript. Skips state_change /
@@ -36,6 +37,11 @@ _TRANSCRIPT_TYPES = frozenset({"text_delta", "thinking", "activity", "error"})
 def lane_root(project: Project, lane_id: str) -> Path:
     """Absolute path to the materialized lane root for this project."""
     return Path(project.root_path) / GRAPH_DIRNAME / lane_id
+
+
+def runner_lane_root(project: Project, node_id: str, lane_id: str) -> Path:
+    """Return the private materialized lane path for one running node."""
+    return Path(project.root_path) / GRAPH_RUNS_DIRNAME / node_id / "lanes" / lane_id
 
 
 def node_dir(lane_root_path: Path, node_id: str) -> Path:
@@ -99,6 +105,7 @@ def materialize_active_lane(
     store: Store,
     *,
     current_node_id: str | None = None,
+    target_root: Path | None = None,
 ) -> Path:
     """Build ``.miniclaw2/graph/lanes/<lane_id>/nodes/<nid>/`` for every
     node in the lane and return the lane root path.
@@ -113,7 +120,7 @@ def materialize_active_lane(
     Lane scoping is by ``node.planspace_id == lane_id``. Nodes without
     a planspace match an empty lane id.
     """
-    root = lane_root(project, lane_id)
+    root = target_root or lane_root(project, lane_id)
     shutil.rmtree(root, ignore_errors=True)
     root.mkdir(parents=True, exist_ok=True)
 

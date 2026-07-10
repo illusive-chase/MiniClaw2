@@ -51,6 +51,7 @@ export async function createSession(
     cwd?: string;
     model_preset_id?: string;
     preferred_language?: string | null;
+    concurrency?: number;
     temporary?: boolean;
     name?: string;
     project_context_binding_id?: string | null;
@@ -367,6 +368,7 @@ export async function updateSessionPreferences(
   id: string,
   body: {
     preferred_language?: string | null;
+    concurrency?: number;
   },
 ): Promise<SessionInfo> {
   const res = await fetch(`/sessions/${id}/preferences`, {

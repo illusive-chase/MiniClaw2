@@ -41,6 +41,7 @@ export function NewProjectModal({
   const [name, setName] = useState("");
   const [preferredLanguage, setPreferredLanguage] = useState("");
   const [modelPresetId, setModelPresetId] = useState("");
+  const [concurrency, setConcurrency] = useState(1);
   const [cwd, setCwd] = useState("");
   const [temporary, setTemporary] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -53,6 +54,7 @@ export function NewProjectModal({
       setName("");
       setPreferredLanguage("");
       setModelPresetId(defaultModelPresetId(modelPresets));
+      setConcurrency(1);
       setCwd("");
       setTemporary(false);
       setSubmitting(false);
@@ -69,6 +71,7 @@ export function NewProjectModal({
       name: name.trim() || undefined,
       preferred_language: preferredLanguage || null,
       model_preset_id: modelPresetId || undefined,
+      concurrency,
       cwd: temporary ? undefined : (cwdInput || undefined),
       temporary,
       create_missing_cwd: createMissingCwd,
@@ -186,6 +189,23 @@ export function NewProjectModal({
                 {modelPresetDetail(modelPresets, modelPresetId) || modelPresetId}
               </span>
             )}
+          </label>
+
+          <label className="flex flex-col gap-1">
+            <span className="text-[10px] font-medium uppercase tracking-[0.14em] text-ink-subtle">
+              Concurrency
+            </span>
+            <input
+              type="number"
+              min={1}
+              step={1}
+              value={concurrency}
+              onChange={(event) => setConcurrency(Math.max(1, Number(event.target.value) || 1))}
+              className="rounded-md border border-line bg-surface-sunken px-3 py-2 text-sm text-ink-strong focus:border-brand focus:outline-none"
+            />
+            <span className="text-[11px] text-ink-muted">
+              Maximum nodes that may actually run at once. Extra work stays queued.
+            </span>
           </label>
 
           <label className="flex flex-col gap-1">

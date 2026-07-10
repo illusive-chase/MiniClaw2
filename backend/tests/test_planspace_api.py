@@ -50,7 +50,7 @@ class PlanspaceApiTest(unittest.TestCase):
                         "mode": mode,
                         "model_preset_id": model_preset_id,
                     })
-                    return SimpleNamespace(node=node)
+                    return node
 
             with patch.object(app_module, "ProjectRegistry", return_value=_Registry()):
                 with patch.object(
@@ -324,7 +324,7 @@ class PlanspaceApiTest(unittest.TestCase):
                 def promote_virtual(self, sid: str, vid: str) -> object | None:
                     if sid != project.id or vid != node.id:
                         return None
-                    return SimpleNamespace(node=node)
+                    return node
 
             with patch.object(app_module, "ProjectRegistry", return_value=_Registry()):
                 client = TestClient(app_module.create_app())

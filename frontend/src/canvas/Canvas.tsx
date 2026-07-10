@@ -78,7 +78,7 @@ export type CanvasSelection =
 export type CanvasProps = {
   nodes: NodeInfo[];
   selectedNodeId: string | null;
-  activeNodeId: string | null;
+  activeNodeIds: string[];
   projectTitle: string;
   contextBundlesByNodeId: Record<string, ContextBundle | null | undefined>;
   knownPlanspaceIds: string[];
@@ -136,7 +136,7 @@ export function Canvas(props: CanvasProps) {
 function CanvasInner({
   nodes,
   selectedNodeId,
-  activeNodeId,
+  activeNodeIds,
   projectTitle,
   contextBundlesByNodeId,
   knownPlanspaceIds,
@@ -224,7 +224,7 @@ function CanvasInner({
     () =>
       buildGraph({
         nodes,
-        activeNodeId,
+        activeNodeIds,
         projectTitle,
         layoutHints: layoutHintsRef.current,
         contextBundlesByNodeId,
@@ -236,7 +236,7 @@ function CanvasInner({
       }),
     [
       nodes,
-      activeNodeId,
+      activeNodeIds,
       projectTitle,
       contextBundlesByNodeId,
       knownPlanspaceIds,

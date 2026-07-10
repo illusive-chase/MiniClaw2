@@ -60,6 +60,7 @@ export type SidePanelProps = {
   }) => void;
   onSelectNode: (nodeId: string) => void;
   onPreferredLanguageChange: (preferredLanguage: string | null) => void;
+  onConcurrencyChange: (concurrency: number) => void;
   onActivatePlanspace: (binding_id: string, planspace_id: string) => void;
   onSelectContextBinding: (binding_id: string) => void;
   onNewDirection: (
@@ -157,6 +158,7 @@ function Inner(props: SidePanelProps & { nodesById: Map<string, NodeInfo> }) {
     onResolveReview,
     onSelectNode,
     onPreferredLanguageChange,
+    onConcurrencyChange,
     onActivatePlanspace,
     onSelectContextBinding,
     onNewDirection,
@@ -205,6 +207,7 @@ function Inner(props: SidePanelProps & { nodesById: Map<string, NodeInfo> }) {
         onActivatePlanspace={onActivatePlanspace}
         onSelectContextBinding={onSelectContextBinding}
         onPreferredLanguageChange={onPreferredLanguageChange}
+        onConcurrencyChange={onConcurrencyChange}
         onNewDirection={onNewDirection}
         onStartBlankDirection={onStartBlankDirection}
         onNewSkill={onNewSkill}

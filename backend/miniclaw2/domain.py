@@ -15,7 +15,7 @@ from enum import StrEnum
 from typing import Any
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, computed_field, model_validator
 
 from .model_catalog import (
     default_model_preset_id,
@@ -126,6 +126,7 @@ class Project(BaseModel):
     root_path: str
     name: str = ""
     model_preset_id: str = Field(default_factory=default_model_preset_id)
+    concurrency: StrictInt = Field(default=1, ge=1)
     preferred_language: str | None = None
     project_context_binding_id: str | None = None
     active_planspace_id: str | None = None

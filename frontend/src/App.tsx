@@ -68,11 +68,6 @@ const INTERRUPTIBLE_STATES = new Set<NodeInfo["state"]>([
   "waiting",
   "awaiting_human_input",
 ]);
-const PROJECT_ACTIVE_STATES = new Set<NodeInfo["state"]>([
-  "queued",
-  ...INTERRUPTIBLE_STATES,
-]);
-
 export function App() {
   const [route, setRoute] = useState<Route>("landing");
   const [session, setSession] = useState<SessionInfo | null>(null);
@@ -143,8 +138,8 @@ export function App() {
     };
   }, []);
 
-  const [pendingGate, setPendingGate] = useState<PendingGateState | null>(null);
-  const [pendingReview, setPendingReview] = useState<PendingGateState | null>(null);
+  const [pendingGates, setPendingGates] = useState<Record<string, PendingGateState>>({});
+  const [pendingReviews, setPendingReviews] = useState<Record<string, PendingGateState>>({});
 
   const [projectMutationPending, setProjectMutationPending] = useState(false);
 
@@ -214,7 +209,6 @@ export function App() {
   );
 
   const panelRef = useRef<HTMLElement | null>(null);
-  const activeNodeIdRef = useRef<string | null>(null);
   const inspectedNodeIdRef = useRef<string | null>(null);
   const currentRouteRef = useRef<Route>("landing");
   const currentSessionIdRef = useRef<string | null>(null);
@@ -280,12 +274,11 @@ export function App() {
     setSessionSettingsSaving(false);
     setSessionSettingsError(null);
     setProjectMutationPending(false);
-    setPendingGate(null);
-    setPendingReview(null);
+    setPendingGates({});
+    setPendingReviews({});
     setFocusRequestVersion(0);
     setNewDirectionRequestVersion(0);
     setInitialLoadComplete(false);
-    activeNodeIdRef.current = null;
     inflightBundleFetchRef.current.clear();
   }, []);
 
@@ -343,32 +336,49 @@ export function App() {
     () => nodes.find((n) => n.id === inspectedNodeId) ?? null,
     [nodes, inspectedNodeId],
   );
+  const sessionWithRuntimeCounts = useMemo(
+    () =>
+      session
+        ? {
+            ...session,
+            active_count: nodes.filter((node) => INTERRUPTIBLE_STATES.has(node.state)).length,
+            queued_count: nodes.filter((node) => node.state === "queued").length,
+          }
+        : null,
+    [nodes, session],
+  );
   const selectedCanvasNodeId = useMemo(() => graphNodeIdForSelection(selection), [selection]);
-  const activeNodeFromList = useMemo(
-    () => nodes.find((n) => PROJECT_ACTIVE_STATES.has(n.state)) ?? null,
+  const activeNodesFromList = useMemo(
+    () => nodes.filter((n) => INTERRUPTIBLE_STATES.has(n.state)),
     [nodes],
   );
   const hasInterruptibleNode = useMemo(
     () => nodes.some((n) => INTERRUPTIBLE_STATES.has(n.state)),
     [nodes],
   );
-  const projectRunnerActive = !!activeNodeFromList;
+  const projectRunnerActive = activeNodesFromList.length > 0;
   const projectRunnerBusy = projectMutationPending || projectRunnerActive;
-  const activeCanvasNodeId = activeNodeFromList?.id ?? null;
+  const activeCanvasNodeIds = activeNodesFromList.map((node) => node.id);
 
-  const activePendingGate = useMemo(
-    () => keepPendingForState(pendingGate, nodes, "waiting"),
-    [nodes, pendingGate],
+  const validPendingGates = useMemo(
+    () => keepPendingForStates(pendingGates, nodes, ["waiting"]),
+    [nodes, pendingGates],
   );
-  const activePendingReview = useMemo(
-    () =>
-      keepPendingForStates(pendingReview, nodes, ["awaiting_human_input"]),
-    [nodes, pendingReview],
+  const validPendingReviews = useMemo(
+    () => keepPendingForStates(pendingReviews, nodes, ["awaiting_human_input"]),
+    [nodes, pendingReviews],
   );
+  const activePendingGate =
+    (inspectedNodeId && validPendingGates[inspectedNodeId]) ||
+    Object.values(validPendingGates)[0] ||
+    null;
+  const activePendingReview =
+    (inspectedNodeId && validPendingReviews[inspectedNodeId]) ||
+    Object.values(validPendingReviews)[0] ||
+    null;
   const composerLocked = !!activePendingGate || !!activePendingReview;
   const virtualCreateDisabled =
-    composerLocked ||
-    projectRunnerBusy ||
+    projectMutationPending ||
     sessionSettingsSaving ||
     !!sessionContextSpace?.context_refresh?.running;
 
@@ -467,15 +477,8 @@ export function App() {
         nodesRef.current = merged;
         return merged;
       });
-      if (wasRemovedByRefresh(activeNodeIdRef.current)) {
-        activeNodeIdRef.current = null;
-      }
-      setPendingGate((current) =>
-        current && wasRemovedByRefresh(current.nodeId) ? null : current,
-      );
-      setPendingReview((current) =>
-        current && wasRemovedByRefresh(current.nodeId) ? null : current,
-      );
+      setPendingGates((current) => removePendingNodes(current, wasRemovedByRefresh));
+      setPendingReviews((current) => removePendingNodes(current, wasRemovedByRefresh));
       setSelection((current) =>
         (current.kind === "agent" || current.kind === "op") &&
         wasRemovedByRefresh(current.nodeId)
@@ -705,7 +708,7 @@ export function App() {
 
   const promoteVirtualNode = useCallback(
     async (nodeId: string) => {
-      if (!session?.id || projectRunnerBusy || composerLocked) return;
+      if (!session?.id || projectMutationPending) return;
       setProjectMutationPending(true);
       setSessionContextSpaceError(null);
       try {
@@ -724,12 +727,12 @@ export function App() {
         setProjectMutationPending(false);
       }
     },
-    [session?.id, projectRunnerBusy, composerLocked, refreshNodes, selectAndOpenNode],
+    [session?.id, projectMutationPending, refreshNodes, selectAndOpenNode],
   );
 
   const updateVirtualNode = useCallback(
     async (nodeId: string, payload: UpdateVirtualPayload) => {
-      if (!session?.id || projectRunnerBusy || composerLocked) return;
+      if (!session?.id) return;
       setSessionContextSpaceError(null);
       try {
         const result = await updateVirtual(session.id, nodeId, payload);
@@ -744,7 +747,7 @@ export function App() {
         throw err;
       }
     },
-    [session?.id, projectRunnerBusy, composerLocked],
+    [session?.id],
   );
 
   /* Drag-onto-virtual attach path: Canvas hands us (virtualNodeId, skillId)
@@ -872,8 +875,8 @@ export function App() {
         nodesRef.current = updated;
         return updated;
       });
-      setPendingGate((prev) => (prev?.nodeId === nodeId ? null : prev));
-      setPendingReview((prev) => (prev?.nodeId === nodeId ? null : prev));
+      setPendingGates((prev) => withoutPendingNode(prev, nodeId));
+      setPendingReviews((prev) => withoutPendingNode(prev, nodeId));
       if (inspectedNodeIdRef.current === nodeId) {
         setInspectedNodeId(null);
         setSelection({ kind: "none" });
@@ -884,7 +887,7 @@ export function App() {
 
   const rerunFailedNode = useCallback(
     async (nodeId: string) => {
-      if (!session?.id || projectRunnerBusy || composerLocked) return;
+      if (!session?.id || projectMutationPending) return;
       setProjectMutationPending(true);
       setSessionContextSpaceError(null);
       try {
@@ -904,7 +907,7 @@ export function App() {
         setProjectMutationPending(false);
       }
     },
-    [session?.id, projectRunnerBusy, composerLocked, refreshNodes, selectAndOpenNode],
+    [session?.id, projectMutationPending, refreshNodes, selectAndOpenNode],
   );
 
   const runContextInit = useCallback(async () => {
@@ -983,6 +986,26 @@ export function App() {
       }
     },
     [session?.id],
+  );
+
+  const updateConcurrency = useCallback(
+    async (concurrency: number) => {
+      if (!session?.id) return;
+      setSessionSettingsSaving(true);
+      setSessionSettingsError(null);
+      try {
+        const next = await updateSessionPreferences(session.id, { concurrency });
+        setSession((current) =>
+          current && current.id === session.id ? { ...current, ...next } : current,
+        );
+        await refreshNodes();
+      } catch (err) {
+        setSessionSettingsError(String(err));
+      } finally {
+        setSessionSettingsSaving(false);
+      }
+    },
+    [refreshNodes, session?.id],
   );
 
   /* Events, diff, and context-bundle fetch — keyed off inspectedNodeId. */
@@ -1140,29 +1163,23 @@ export function App() {
 
   const handleEvent = useCallback(
     (ev: ServerEvent) => {
-      let eventNodeId = activeNodeIdRef.current;
+      let eventNodeId = "node_id" in ev ? ev.node_id : null;
       if (ev.type === "interaction_request") {
-        const ownerNodeId = activeNodeIdRef.current;
-        if (ownerNodeId) {
-          if (isReviewInteraction(ev)) {
-            setPendingReview({ request: ev, nodeId: ownerNodeId });
-          } else {
-            setPendingGate({ request: ev, nodeId: ownerNodeId });
-          }
-          /* The pending banner is suppressed once this node is the
-           * inspected one, so we must also open the details panel or
-           * the gate/review form ends up hidden. */
-          selectAndOpenNode(ownerNodeId);
+        const pending = { request: ev, nodeId: ev.node_id };
+        if (isReviewInteraction(ev)) {
+          setPendingReviews((current) => ({ ...current, [ev.node_id]: pending }));
+        } else {
+          setPendingGates((current) => ({ ...current, [ev.node_id]: pending }));
         }
+        selectAndOpenNode(ev.node_id);
         void refreshNodes();
       } else if (ev.type === "turn_done") {
-        activeNodeIdRef.current = null;
+        setPendingGates((current) => withoutPendingNode(current, ev.node_id));
+        setPendingReviews((current) => withoutPendingNode(current, ev.node_id));
         void refreshNodes();
       } else if (ev.type === "error") {
-        activeNodeIdRef.current = null;
         console.error("server error:", ev.message);
       } else if (ev.type === "node_started") {
-        activeNodeIdRef.current = ev.node_id;
         eventNodeId = ev.node_id;
         const startedKind = ev.kind ?? "agent";
         if (startedKind !== "op") {
@@ -1171,11 +1188,6 @@ export function App() {
         void refreshNodes();
       } else if (ev.type === "node_updated") {
         eventNodeId = ev.node.id;
-        if (PROJECT_ACTIVE_STATES.has(ev.node.state)) {
-          activeNodeIdRef.current = ev.node.id;
-        } else if (activeNodeIdRef.current === ev.node.id) {
-          activeNodeIdRef.current = null;
-        }
         setNodes((prev) => {
           const updated = upsertNode(prev, ev.node);
           nodeCountRef.current = updated.length;
@@ -1183,10 +1195,10 @@ export function App() {
           return updated;
         });
         if (ev.node.state !== "waiting") {
-          setPendingGate((prev) => (prev?.nodeId === ev.node.id ? null : prev));
+          setPendingGates((prev) => withoutPendingNode(prev, ev.node.id));
         }
         if (ev.node.state !== "awaiting_human_input") {
-          setPendingReview((prev) => (prev?.nodeId === ev.node.id ? null : prev));
+          setPendingReviews((prev) => withoutPendingNode(prev, ev.node.id));
         }
       } else if (ev.type === "node_removed") {
         eventNodeId = ev.id;
@@ -1196,8 +1208,8 @@ export function App() {
           nodesRef.current = updated;
           return updated;
         });
-        setPendingGate((prev) => (prev?.nodeId === ev.id ? null : prev));
-        setPendingReview((prev) => (prev?.nodeId === ev.id ? null : prev));
+        setPendingGates((prev) => withoutPendingNode(prev, ev.id));
+        setPendingReviews((prev) => withoutPendingNode(prev, ev.id));
         if (inspectedNodeIdRef.current === ev.id) {
           setInspectedNodeId(null);
           setSelection({ kind: "none" });
@@ -1211,6 +1223,7 @@ export function App() {
   const { status, send } = useSessionSocket(
     route === "project" ? (session?.id ?? null) : null,
     handleEvent,
+    activeCanvasNodeIds,
   );
   const canInterruptRunner = status === "open" && hasInterruptibleNode;
   /* Planspace ids available for cross-lane loads, sourced from the
@@ -1248,12 +1261,9 @@ export function App() {
   }, [sessionContextSpace]);
 
   const interruptNode = useCallback(
-    (_nodeId: string) => {
+    (nodeId: string) => {
       if (status !== "open") return;
-      /* The backend runs at most one node per project at a time, so
-       * interrupting "this node" is the same as interrupting the current
-       * runner. The node id is accepted for call-site symmetry. */
-      send({ type: "interrupt" });
+      send({ type: "interrupt", node_id: nodeId });
     },
     [status, send],
   );
@@ -1264,10 +1274,15 @@ export function App() {
       send({
         type: "interaction_response",
         id: payload.id,
+        node_id: activePendingReview?.nodeId ?? null,
         allow: true,
         response: { prose: payload.judgment },
       });
-      setPendingReview(null);
+      if (activePendingReview) {
+        setPendingReviews((current) =>
+          withoutPendingNode(current, activePendingReview.nodeId),
+        );
+      }
       window.setTimeout(() => {
         void refreshNodes();
       }, 250);
@@ -1295,13 +1310,23 @@ export function App() {
         "type" | "id"
       >,
     ) => {
-      send({ type: "interaction_response", id, ...payload });
-      setPendingGate((prev) => (prev && prev.request.id === id ? null : prev));
+      const owner = Object.values(validPendingGates).find(
+        (pending) => pending.request.id === id,
+      );
+      send({
+        type: "interaction_response",
+        id,
+        node_id: owner?.nodeId ?? null,
+        ...payload,
+      });
+      if (owner) {
+        setPendingGates((current) => withoutPendingNode(current, owner.nodeId));
+      }
       window.setTimeout(() => {
         void refreshNodes();
       }, 250);
     },
-    [send, refreshNodes],
+    [send, refreshNodes, validPendingGates],
   );
 
   const onSelectionChange = useCallback((sel: CanvasSelection) => {
@@ -1391,16 +1416,16 @@ export function App() {
       onInterruptNode: interruptNode,
       onRerunNode: rerunFailedNode,
       canCreateVirtual: !virtualCreateDisabled,
-      canPromoteVirtual: !projectRunnerBusy && !composerLocked,
+      canPromoteVirtual: !projectMutationPending,
       canInterrupt: canInterruptRunner,
-      canRerun: !projectRunnerBusy && !composerLocked,
+      canRerun: !projectMutationPending,
       pendingGateForNode: (nodeId) =>
-        activePendingGate?.nodeId === nodeId ? activePendingGate.request : null,
+        validPendingGates[nodeId]?.request ?? null,
       onResolveGate,
       modelPresets,
     });
   }, [
-    activePendingGate,
+    validPendingGates,
     onResolveGate,
     promoteVirtualNode,
     createContinuationVirtual,
@@ -1410,7 +1435,7 @@ export function App() {
     interruptNode,
     rerunFailedNode,
     virtualCreateDisabled,
-    projectRunnerBusy,
+    projectMutationPending,
     canInterruptRunner,
     composerLocked,
     modelPresets,
@@ -1534,7 +1559,7 @@ export function App() {
               setNewDirectionRequestVersion((version) => version + 1);
               openDetails();
             }}
-            disabled={sessionSettingsSaving || projectRunnerBusy || composerLocked}
+            disabled={sessionSettingsSaving || projectMutationPending}
             className="inline-flex h-8 items-center rounded-md border border-line bg-surface px-2.5 text-xs font-medium text-ink-muted transition hover:border-line-strong hover:bg-surface-sunken hover:text-ink disabled:cursor-not-allowed disabled:opacity-40"
             title="Open new direction composer"
           >
@@ -1567,7 +1592,7 @@ export function App() {
               key={session?.id ?? "no-session"}
               nodes={nodes}
               selectedNodeId={selectedCanvasNodeId}
-              activeNodeId={activeCanvasNodeId}
+              activeNodeIds={activeCanvasNodeIds}
               projectTitle={projectTitle}
               contextBundlesByNodeId={contextBundlesByNodeId}
               knownPlanspaceIds={knownPlanspaceIds}
@@ -1649,7 +1674,7 @@ export function App() {
                 onClose={closePanel}
                 selection={selection}
                 nodes={nodes}
-                session={session}
+                session={sessionWithRuntimeCounts}
                 modelPresets={modelPresets}
                 events={selectedEvents}
                 eventsLoading={selectedEventsLoading}
@@ -1684,6 +1709,7 @@ export function App() {
                 onResolveReview={onResolveReview}
                 onSelectNode={onSelectNode}
                 onPreferredLanguageChange={updatePreferredLanguage}
+                onConcurrencyChange={updateConcurrency}
                 onActivatePlanspace={activatePlanspace}
                 onSelectContextBinding={selectContextBinding}
                 onNewDirection={startNewDirection}
@@ -1695,7 +1721,7 @@ export function App() {
                 onInterruptNode={interruptNode}
                 onRerunNode={rerunFailedNode}
                 canInterrupt={canInterruptRunner}
-                canRerun={!projectRunnerBusy && !composerLocked}
+                canRerun={!projectMutationPending}
                 onPlanspaceModeChange={changePlanspaceMode}
                 onContextInit={runContextInit}
                 onContextRefresh={runContextRefresh}
@@ -1805,23 +1831,37 @@ function upsertNode(prev: NodeInfo[], node: NodeInfo): NodeInfo[] {
   return prev.map((item, i) => (i === index ? node : item));
 }
 
-function keepPendingForState(
-  pending: PendingGateState | null,
-  nodes: NodeInfo[],
-  state: NodeInfo["state"],
-): PendingGateState | null {
-  return keepPendingForStates(pending, nodes, [state]);
-}
-
 function keepPendingForStates(
-  pending: PendingGateState | null,
+  pending: Record<string, PendingGateState>,
   nodes: NodeInfo[],
   states: NodeInfo["state"][],
-): PendingGateState | null {
-  if (!pending) return null;
-  const owner = nodes.find((node) => node.id === pending.nodeId);
-  if (owner && !states.includes(owner.state)) return null;
-  return pending;
+): Record<string, PendingGateState> {
+  const byId = new Map(nodes.map((node) => [node.id, node]));
+  return Object.fromEntries(
+    Object.entries(pending).filter(([nodeId]) => {
+      const owner = byId.get(nodeId);
+      return !owner || states.includes(owner.state);
+    }),
+  );
+}
+
+function withoutPendingNode(
+  pending: Record<string, PendingGateState>,
+  nodeId: string,
+): Record<string, PendingGateState> {
+  if (!(nodeId in pending)) return pending;
+  const next = { ...pending };
+  delete next[nodeId];
+  return next;
+}
+
+function removePendingNodes(
+  pending: Record<string, PendingGateState>,
+  shouldRemove: (nodeId: string) => boolean,
+): Record<string, PendingGateState> {
+  return Object.fromEntries(
+    Object.entries(pending).filter(([nodeId]) => !shouldRemove(nodeId)),
+  );
 }
 
 function isReviewInteraction(request: InteractionRequest): boolean {

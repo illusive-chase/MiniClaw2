@@ -1,7 +1,7 @@
 """NodeRunner — provider-neutral agent node state machine.
 
-For each agent node the runner materializes the active lane under
-``.miniclaw2/graph/lanes/<lane>/``, snapshots its filesystem state,
+For each agent node the runner materializes a private lane under
+``.miniclaw2/graph/runs/<node>/lanes/<lane>/``, snapshots its filesystem state,
 runs the provider, then walk-diffs and reaps preview writes back into
 the durable store. Op nodes (e.g. auto-commit) bypass the reap pipeline
 and write their own ``preview.json`` directly.
@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import shutil
 import time
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -55,7 +56,13 @@ from .launch_prompt import (
     build_dependency_launch_block,
     build_skill_init_block,
 )
-from .materialize import GRAPH_DIRNAME, materialize_active_lane, node_dir, snapshot_lane
+from .materialize import (
+    GRAPH_RUNS_DIRNAME,
+    materialize_active_lane,
+    node_dir,
+    runner_lane_root,
+    snapshot_lane,
+)
 from .model_catalog import get_model_preset
 from .preview import render_executed_preview
 from .providers import (
@@ -84,11 +91,14 @@ class NodeRunner:
         project: Project,
         store: Store,
         on_event: Callable[[dict[str, Any]], Awaitable[None]],
+        *,
+        reap_lock: asyncio.Lock | None = None,
     ) -> None:
         self.node = node
         self.project = project
         self.store = store
         self.on_event = on_event
+        self._reap_lock = reap_lock or asyncio.Lock()
 
         self._seq = 0
         self._gates: dict[str, asyncio.Future[dict[str, Any]]] = {}
@@ -145,12 +155,15 @@ class NodeRunner:
     # ---- main entry point ----
 
     async def run(self) -> None:
-        if self.node.kind is NodeKind.OP:
-            await self._run_op()
-        elif self.node.kind is NodeKind.VERIFIER:
-            await self._run_verifier()
-        else:
-            await self._run_agent()
+        try:
+            if self.node.kind is NodeKind.OP:
+                await self._run_op()
+            elif self.node.kind is NodeKind.VERIFIER:
+                await self._run_verifier()
+            else:
+                await self._run_agent()
+        finally:
+            self._cleanup_lane_projection()
 
     async def _run_agent(self) -> None:
         self.node.commit_before = git_head(self.project.root_path)
@@ -190,8 +203,12 @@ class NodeRunner:
                             await self._emit_node_updated()
                         launch_instructions = _compose_launch_instructions(
                             _skill_init_block(self.node, self.store.root),
-                            build_category_launch_block(self.node),
-                            build_dependency_launch_block(self.node),
+                            build_category_launch_block(
+                                self.node, lane_path=self._lane_prompt_path()
+                            ),
+                            build_dependency_launch_block(
+                                self.node, lane_path=self._lane_prompt_path()
+                            ),
                             context_bundle.turn_text,
                             language_launch_instruction(
                                 project_preferred_language(self.project)
@@ -231,7 +248,7 @@ class NodeRunner:
                             reason="preview repair cancelled",
                         )
                 else:
-                    final_state = self._reap_and_finalize(final_state)
+                    final_state = await self._reap_and_finalize(final_state)
                 self._transition(final_state, finished=True)
                 await self._emit_node_updated()
                 await self._emit(TurnDone())
@@ -516,12 +533,22 @@ class NodeRunner:
             self._lane_root = None
             self._pre_snapshot = {}
             return
+        target_root = runner_lane_root(self.project, self.node.id, lane_id)
         self._lane_root = materialize_active_lane(
             self.project,
             lane_id,
             self.store,
             current_node_id=self.node.id,
+            target_root=target_root,
         )
+
+    def _lane_prompt_path(self) -> str:
+        lane_id = self.node.planspace_id or ""
+        return f"{GRAPH_RUNS_DIRNAME}/{self.node.id}/lanes/{lane_id}".rstrip("/")
+
+    def _cleanup_lane_projection(self) -> None:
+        run_root = Path(self.project.root_path) / GRAPH_RUNS_DIRNAME / self.node.id
+        shutil.rmtree(run_root, ignore_errors=True)
 
     def _take_pre_snapshot(self) -> None:
         if self._lane_root is None:
@@ -553,8 +580,7 @@ class NodeRunner:
             tool_input["brief"] = self.node.brief.model_dump()
         if self.node.planspace_id:
             tool_input["human_review_path"] = (
-                f"{GRAPH_DIRNAME}/{self.node.planspace_id}/"
-                f"nodes/{self.node.id}/human-review.md"
+                f"{self._lane_prompt_path()}/nodes/{self.node.id}/human-review.md"
             )
 
         await self._emit(
@@ -592,7 +618,7 @@ class NodeRunner:
         """Reap the lane, re-prompting inline for preview repair up to
         the proposal's retry bound before writing the framework stub.
         """
-        ok, reason = self._try_reap_and_persist()
+        ok, reason = await self._try_reap_and_persist()
         if ok:
             return NodeState.DONE
 
@@ -628,7 +654,7 @@ class NodeRunner:
                     ),
                 )
                 return repair_state
-            ok, reason = self._try_reap_and_persist()
+            ok, reason = await self._try_reap_and_persist()
             if ok:
                 return NodeState.DONE
             last_reason = reason
@@ -641,7 +667,11 @@ class NodeRunner:
         self._write_stub_preview(NodeState.ERROR, reason=reason)
         return NodeState.ERROR
 
-    def _try_reap_and_persist(self) -> tuple[bool, str]:
+    async def _try_reap_and_persist(self) -> tuple[bool, str]:
+        async with self._reap_lock:
+            return self._try_reap_and_persist_unlocked()
+
+    def _try_reap_and_persist_unlocked(self) -> tuple[bool, str]:
         if self._lane_root is None:
             return False, "no materialized lane exists for this node"
         try:
@@ -666,7 +696,9 @@ class NodeRunner:
             self.store.update_node(virtual)
         return True, ""
 
-    def _reap_and_finalize(self, provider_final_state: NodeState) -> NodeState:
+    async def _reap_and_finalize(
+        self, provider_final_state: NodeState
+    ) -> NodeState:
         """Run reap (when applicable) and persist the node's own preview.
 
         Returns the effective terminal state. Cancelled / error runs
@@ -676,7 +708,7 @@ class NodeRunner:
         if provider_final_state is not NodeState.DONE or self._lane_root is None:
             self._write_stub_preview(provider_final_state)
             return provider_final_state
-        ok, reason = self._try_reap_and_persist()
+        ok, reason = await self._try_reap_and_persist()
         if not ok:
             self._append_error(f"Reap fatal: {reason}")
             self._write_stub_preview(NodeState.ERROR, reason=reason)
@@ -874,6 +906,7 @@ class NodeRunner:
         if hasattr(ev, "seq"):
             ev.seq = self._seq  # type: ignore[attr-defined]
         data = ev.model_dump()
+        data["node_id"] = self.node.id
         try:
             self.store.append_event(self.project.id, self.node.id, self._seq, data)
         except Exception:  # noqa: BLE001

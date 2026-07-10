@@ -79,11 +79,11 @@ class OpCommitRunnerTest(unittest.IsolatedAsyncioTestCase):
 
             registry = ProjectRegistry(store=store)
             rt = registry._runtimes[project.id]
-            rt.runner = _StubRunner(agent)  # type: ignore[assignment]
+            rt.runners[agent.id] = _StubRunner(agent)  # type: ignore[assignment]
 
-            registry._on_runner_done(rt)
-            self.assertIsNotNone(rt.runner_task)
-            await rt.runner_task  # type: ignore[arg-type]
+            registry._on_runner_done(rt, agent.id)
+            self.assertEqual(len(rt.runner_tasks), 1)
+            await next(iter(rt.runner_tasks.values()))
 
             nodes = store.list_nodes(project.id)
             self.assertEqual(len(nodes), 2)
@@ -110,11 +110,11 @@ class OpCommitRunnerTest(unittest.IsolatedAsyncioTestCase):
 
             registry = ProjectRegistry(store=store)
             rt = registry._runtimes[project.id]
-            rt.runner = _StubRunner(agent)  # type: ignore[assignment]
+            rt.runners[agent.id] = _StubRunner(agent)  # type: ignore[assignment]
 
-            registry._on_runner_done(rt)
-            assert rt.runner_task is not None
-            await rt.runner_task
+            registry._on_runner_done(rt, agent.id)
+            assert len(rt.runner_tasks) == 1
+            await next(iter(rt.runner_tasks.values()))
 
             op_node = store.list_nodes(project.id)[-1]
             self.assertEqual(op_node.state, NodeState.DONE)
@@ -136,12 +136,12 @@ class OpCommitRunnerTest(unittest.IsolatedAsyncioTestCase):
 
             registry = ProjectRegistry(store=store)
             rt = registry._runtimes[project.id]
-            rt.runner = _StubRunner(agent)  # type: ignore[assignment]
+            rt.runners[agent.id] = _StubRunner(agent)  # type: ignore[assignment]
 
-            registry._on_runner_done(rt)
+            registry._on_runner_done(rt, agent.id)
 
-            self.assertIsNone(rt.runner)
-            self.assertIsNone(rt.runner_task)
+            self.assertEqual(rt.runners, {})
+            self.assertEqual(rt.runner_tasks, {})
             self.assertEqual(len(store.list_nodes(project.id)), 1)
 
     async def test_no_auto_commit_when_agent_did_not_reach_done(self) -> None:
@@ -153,12 +153,12 @@ class OpCommitRunnerTest(unittest.IsolatedAsyncioTestCase):
 
             registry = ProjectRegistry(store=store)
             rt = registry._runtimes[project.id]
-            rt.runner = _StubRunner(agent)  # type: ignore[assignment]
+            rt.runners[agent.id] = _StubRunner(agent)  # type: ignore[assignment]
 
-            registry._on_runner_done(rt)
+            registry._on_runner_done(rt, agent.id)
 
-            self.assertIsNone(rt.runner)
-            self.assertIsNone(rt.runner_task)
+            self.assertEqual(rt.runners, {})
+            self.assertEqual(rt.runner_tasks, {})
             self.assertEqual(len(store.list_nodes(project.id)), 1)
 
 

@@ -11,8 +11,9 @@ Layout under ``$MINICLAW_HOME`` (default ``~/.miniclaw2``)::
             events.jsonl
             gates.jsonl
 
-Single-writer-per-node is guaranteed by the runtime (nodes within a
-project run sequentially), so writes need no extra locking.
+Each node has a single runner and therefore a single event writer. Different
+nodes in one project may run concurrently; project-wide graph reconciliation
+is serialized by ``ProjectRuntime`` while per-node records remain independent.
 """
 
 from __future__ import annotations
@@ -211,7 +212,11 @@ class Store:
                     continue
                 rec = json.loads(line)
                 if rec.get("seq", 0) > since_seq:
-                    out.append(upgrade_event_record(rec))
+                    upgraded = upgrade_event_record(rec)
+                    event = upgraded.get("event")
+                    if isinstance(event, dict):
+                        event.setdefault("node_id", nid)
+                    out.append(upgraded)
         return out
 
     # ---- gates ----

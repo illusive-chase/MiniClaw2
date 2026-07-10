@@ -86,6 +86,8 @@ def _write_own_preview(context: AgentProviderContext) -> None:
         Path(context.project.root_path)
         / ".miniclaw2"
         / "graph"
+        / "runs"
+        / node.id
         / "lanes"
         / lane
         / "nodes"
@@ -139,6 +141,7 @@ class RunnerPreviewRepairTests(unittest.IsolatedAsyncioTestCase):
             model_preset_id="opus-4-7",
             category=Category.REGULAR,
             state=NodeState.QUEUED,
+            planspace_id=self.plug_id,
             prompt="do work",
         )
         self.store.create_node(node)

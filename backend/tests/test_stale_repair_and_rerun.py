@@ -56,18 +56,21 @@ class StaleNodeRepairTests(unittest.TestCase):
         self.assertIn("interrupted by backend restart", loaded.error or "")
         self.assertIsNotNone(loaded.finished_at)
 
-    def test_waiting_and_queued_nodes_also_swept(self) -> None:
+    def test_waiting_nodes_are_swept_but_queued_work_survives(self) -> None:
         w = self._make_stale("stale-waiting", NodeState.WAITING)
         q = self._make_stale("stale-queued", NodeState.QUEUED)
         ah = self._make_stale("stale-ahi", NodeState.AWAITING_HUMAN_INPUT)
 
         ProjectRegistry(store=self.store)
 
-        for nid in (w.id, q.id, ah.id):
+        for nid in (w.id, ah.id):
             loaded = self.store.load_node(self.project.id, nid)
             assert loaded is not None
             self.assertEqual(loaded.state, NodeState.CANCELLED)
             self.assertIn("interrupted by backend restart", loaded.error or "")
+        queued = self.store.load_node(self.project.id, q.id)
+        assert queued is not None
+        self.assertEqual(queued.state, NodeState.QUEUED)
 
     def test_terminal_and_virtual_nodes_left_alone(self) -> None:
         done = Node(
