@@ -64,9 +64,10 @@ Trunk: `backend/miniclaw2/providers/` (`base.py`, `claude.py`, `codex.py`).
   `backend/miniclaw2/model_catalog.py`. `GET /model-presets` exposes the
   catalog; active presets can be selected for new/edited work, while
   compatibility presets remain resolvable for persisted nodes and reruns.
-  Provider, model, model provider, service tier, and reasoning effort are
-  derived from the preset rather than accepted as independent persisted
-  selectors.
+  Provider, model, service tier, and reasoning effort are derived from the
+  preset rather than accepted as independent persisted selectors. Codex
+  model-provider selection (including its base URL) remains owned by the
+  Codex CLI configuration.
 - Claude adapter drives the native `claude` binary directly through a
   PTY (`ptyprocess`). Prompts are typed into the TUI; events are drained
   from Claude Code's on-disk JSONL transcript under

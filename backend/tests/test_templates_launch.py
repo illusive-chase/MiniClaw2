@@ -95,7 +95,18 @@ class LaunchTemplateTest(unittest.TestCase):
             store = Store(root=Path(raw))
             registry = ProjectRegistry(store=store)
             with self.assertRaisesRegex(TemplateError, "compatibility-only"):
-                launch_template("hello-text", "opus-4-7", registry)
+                launch_template("hello-text", "gpt-5.5", registry)
+
+    def test_active_opus_4_7_can_launch_template(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            store = Store(root=Path(raw))
+            registry = ProjectRegistry(store=store)
+            project, _ = launch_template("hello-text", "opus-4-7", registry)
+            try:
+                self.assertEqual(project.model_preset_id, "opus-4-7")
+                self.assertEqual(project.provider, "claude")
+            finally:
+                registry.delete_project(project.id)
 
 
 if __name__ == "__main__":

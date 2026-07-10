@@ -162,7 +162,7 @@ class CodexProviderTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(thread_params["approvalPolicy"], "never")
         self.assertEqual(thread_params["sandbox"], "workspace-write")
         self.assertEqual(thread_params["model"], "gpt-5.6-sol")
-        self.assertEqual(thread_params["modelProvider"], "openai")
+        self.assertNotIn("modelProvider", thread_params)
         self.assertEqual(thread_params["reasoningEffort"], "high")
         self.assertEqual(turn_params["approvalPolicy"], "never")
         expected_project_root = str(Path("/tmp/workspace").resolve(strict=False))
@@ -186,7 +186,7 @@ class CodexProviderTest(unittest.IsolatedAsyncioTestCase):
         expected_project_root = str(Path("/tmp/workspace").resolve(strict=False))
         self.assertEqual(thread_params["sandbox"], "workspace-write")
         self.assertEqual(thread_params["model"], "gpt-5.6-sol")
-        self.assertEqual(thread_params["modelProvider"], "openai")
+        self.assertNotIn("modelProvider", thread_params)
         self.assertEqual(thread_params["reasoningEffort"], "high")
         self.assertEqual(
             turn_params["sandboxPolicy"],

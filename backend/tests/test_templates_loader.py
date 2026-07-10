@@ -29,7 +29,13 @@ class TemplatesLoaderTest(unittest.TestCase):
                 self.assertTrue(template.brief)
                 self.assertEqual(
                     set(template.allowed_model_preset_ids),
-                    {"opus-4-8", "gpt-5.6", "gpt-5.6-x", "gpt-5.6-u"},
+                    {
+                        "opus-4-8",
+                        "opus-4-7",
+                        "gpt-5.6",
+                        "gpt-5.6-x",
+                        "gpt-5.6-u",
+                    },
                 )
                 self.assertGreaterEqual(len(template.nodes), 3)
                 self.assertTrue(any(n.kind is NodeKind.VERIFIER for n in template.nodes))

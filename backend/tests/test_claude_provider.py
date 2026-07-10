@@ -23,7 +23,11 @@ from miniclaw2.providers.claude_native.ask_payload import (
 from miniclaw2.providers.claude_native.input import InputWriter, SubmitResult
 from miniclaw2.providers.claude_native.keybindings import SubmitKey
 from miniclaw2.providers.claude_native.paths import jsonl_path, project_dir
-from miniclaw2.providers.claude_native.spawn import build_argv, DISALLOWED_TOOLS
+from miniclaw2.providers.claude_native.spawn import (
+    DISALLOWED_TOOLS,
+    build_argv,
+    build_env,
+)
 
 
 async def _request_gate(_gate: GateRequest) -> dict[str, Any]:
@@ -162,6 +166,9 @@ class BuildArgvTest(unittest.TestCase):
             set(args[disallowed_idx + 1].split(",")),
             set(DISALLOWED_TOOLS),
         )
+        # Keep Claude's default user/project/local setting sources enabled;
+        # --settings above is an additional inline override.
+        self.assertNotIn("--setting-sources", args)
         # System prompt append.
         self.assertIn("--append-system-prompt", args)
 
@@ -178,6 +185,28 @@ class BuildArgvTest(unittest.TestCase):
         self.assertNotIn("--session-id", args)
         self.assertNotIn("--model", args)
         self.assertNotIn("--append-system-prompt", args)
+
+
+class BuildEnvTest(unittest.TestCase):
+    def test_inherits_configured_anthropic_base_url(self) -> None:
+        with patch.dict(
+            os.environ,
+            {"ANTHROPIC_BASE_URL": "https://anthropic.example.test"},
+            clear=True,
+        ):
+            env = build_env(
+                hook_url="http://127.0.0.1:43123/hook",
+                hook_token="hook-token",
+                node_id="node-1",
+                project_id="project-1",
+                session_id="session-1",
+            )
+
+        self.assertEqual(
+            env["ANTHROPIC_BASE_URL"],
+            "https://anthropic.example.test",
+        )
+        self.assertEqual(env["MINICLAW_NODE_ID"], "node-1")
 
 
 class AskPayloadRoundtripTest(unittest.TestCase):

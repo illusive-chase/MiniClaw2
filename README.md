@@ -124,9 +124,10 @@ Env:
 - Codex provider: `codex` must be on `PATH` and `codex doctor` should
   show working auth/config. The adapter uses
   `codex app-server --listen stdio://`, launched from the project cwd.
-  The selected preset supplies `model`, `modelProvider`, and reasoning
-  effort; approval and sandbox settings still come from session overrides
-  or `$CODEX_HOME/config.toml`, with the project cwd writable by default.
+  The selected preset supplies `model` and reasoning effort. The model
+  provider (including its `base_url`) is inherited from Codex config;
+  approval and sandbox settings come from session overrides or
+  `$CODEX_HOME/config.toml`, with the project cwd writable by default.
 
 Create a Codex-backed project manually:
 

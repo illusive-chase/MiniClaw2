@@ -2,6 +2,7 @@ name: write-readme
 brief: "Agent produces one file via Edit/Write - README.md with a single line."
 allowed_model_preset_ids:
 - opus-4-8
+- opus-4-7
 - gpt-5.6
 - gpt-5.6-x
 - gpt-5.6-u

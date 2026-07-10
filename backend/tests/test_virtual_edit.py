@@ -267,13 +267,13 @@ class VirtualEditRegistryTests(unittest.TestCase):
     def test_create_virtual_can_select_model_preset(self) -> None:
         created = self.registry.create_virtual(
             self.project.id,
-            prompt_draft="codex planned work",
-            model_preset_id="opus-4-8",
+            prompt_draft="claude planned work",
+            model_preset_id="opus-4-7",
         )
 
         self.assertIsNotNone(created)
         assert created is not None
-        self.assertEqual(created.model_preset_id, "opus-4-8")
+        self.assertEqual(created.model_preset_id, "opus-4-7")
         self.assertEqual(created.provider, "claude")
 
     def test_create_virtual_rejects_compatibility_model_preset(self) -> None:
@@ -281,7 +281,7 @@ class VirtualEditRegistryTests(unittest.TestCase):
             self.registry.create_virtual(
                 self.project.id,
                 prompt_draft="old preset",
-                model_preset_id="opus-4-7",
+                model_preset_id="gpt-5.5",
             )
 
     def test_create_virtual_rejects_missing_dependency(self) -> None:

@@ -577,6 +577,8 @@ def _thread_params(
     preset = get_model_preset(context.node.model_preset_id)
     params = dict(base)
     _set_if_present(params, "model", preset.model)
+    # Generic presets leave this unset so app-server inherits the selected
+    # model provider and base URL from the user's Codex configuration.
     _set_if_present(params, "modelProvider", preset.model_provider)
     _set_if_present(params, "serviceTier", preset.service_tier)
     _set_if_present(params, "reasoningEffort", preset.reasoning_effort)

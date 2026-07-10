@@ -17,6 +17,8 @@ class ModelPreset:
     provider: str
     model: str
     description: str = ""
+    # None lets the provider CLI use the model provider and base URL from
+    # its own user configuration.
     model_provider: str | None = None
     service_tier: str | None = None
     reasoning_effort: str | None = None
@@ -66,7 +68,6 @@ MODEL_PRESETS: tuple[ModelPreset, ...] = (
         label="GPT-5.6 SOL (High)",
         provider="codex",
         model="gpt-5.6-sol",
-        model_provider="openai",
         reasoning_effort="high",
         description="Codex preset for GPT-5.6 SOL with high reasoning effort.",
         is_default=True,
@@ -76,7 +77,6 @@ MODEL_PRESETS: tuple[ModelPreset, ...] = (
         label="GPT-5.6 SOL (XHigh)",
         provider="codex",
         model="gpt-5.6-sol",
-        model_provider="openai",
         reasoning_effort="xhigh",
         description="Codex preset for GPT-5.6 SOL with xhigh reasoning effort.",
     ),
@@ -85,7 +85,6 @@ MODEL_PRESETS: tuple[ModelPreset, ...] = (
         label="GPT-5.6 SOL (Ultra)",
         provider="codex",
         model="gpt-5.6-sol",
-        model_provider="openai",
         reasoning_effort="ultra",
         description="Codex preset for GPT-5.6 SOL with ultra reasoning effort.",
     ),
@@ -94,7 +93,6 @@ MODEL_PRESETS: tuple[ModelPreset, ...] = (
         label="GPT-5.5",
         provider="codex",
         model="gpt-5.5",
-        model_provider="openai",
         reasoning_effort="medium",
         description="Compatibility preset for existing GPT-5.5 data.",
         status="compatibility",
