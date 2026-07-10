@@ -259,9 +259,12 @@ class ProjectRegistry:
         if model is not None or model_provider is not None:
             raise ValueError("model/model_provider are no longer accepted; use model_preset_id")
         normalized_model_preset_id = (
-            normalize_active_model_preset_id(model_preset_id)
+            normalize_active_model_preset_id(
+                model_preset_id,
+                store_root=self.store.root,
+            )
             if model_preset_id is not None
-            else default_model_preset_id()
+            else default_model_preset_id(store_root=self.store.root)
         )
         normalized_language = normalize_preferred_language(preferred_language)
         if temporary:

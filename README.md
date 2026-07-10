@@ -146,6 +146,32 @@ data but cannot be newly selected. Current request bodies use
 `model_preset_id` and reject the old `provider`, `model`, and
 `model_provider` selection fields.
 
+The catalog is fully configuration-driven. On first startup MiniClaw2 writes
+`$MINICLAW_HOME/config.json` from the packaged starter configuration; runtime
+selection then reads every preset and default from that user-owned file. There
+is no separate hard-coded or protected preset catalog. The Projects page's
+**Global settings** panel can:
+
+- view the active configuration path and every configured preset;
+- add and edit Codex or Claude presets;
+- delete any non-default preset that is not referenced by a project;
+- configure the default preset, language, concurrency, and auto-commit value
+  used by new projects.
+
+The same operations are available over REST:
+
+```text
+GET    /global-state
+PATCH  /global-state/defaults
+POST   /global-state/model-presets
+PUT    /global-state/model-presets/{preset_id}
+DELETE /global-state/model-presets/{preset_id}
+```
+
+Set another active preset as the default before deleting the current default.
+Deletion also rejects presets referenced by existing project or node records,
+so historical runs remain resolvable.
+
 Opt a project into auto-commit (a `commit` op node is appended after
 each agent/gate node reaches `done`, rewriting that node's
 `commit_after` so the per-node diff becomes a real two-commit diff):
@@ -162,7 +188,8 @@ curl -X POST http://127.0.0.1:8000/sessions \
 backend/miniclaw2/
   domain.py        # Project, Node, HumanGate + state enums
   store.py         # JSON/JSONL filesystem store under $MINICLAW_HOME
-  model_catalog.py # model preset catalog and provider derivation
+  global_config.py # validated global defaults + configurable preset storage
+  model_catalog.py # preset lookup and provider derivation from global config
   runner.py        # provider-neutral NodeRunner state machine
   providers/       # native Claude CLI (PTY+JSONL) and Codex app-server adapters
   registry.py      # ProjectRegistry orchestration over the store
@@ -208,6 +235,7 @@ frontend/src/
 On-disk layout (under `$MINICLAW_HOME`, default `~/.miniclaw2`):
 
 ```
+config.json             # global defaults and complete model preset catalog
 projects/<pid>/
   project.json
   nodes/<nid>/
@@ -251,6 +279,9 @@ is a project id, and each `user_message` spawns a fresh agent node.
   `PATCH /sessions/{sid}/layout-hints`,
   `PATCH /sessions/{sid}/planspace-view`, and
   `DELETE /sessions/{sid}`.
+- Global configuration REST APIs:
+  `GET /global-state`, `PATCH /global-state/defaults`, and
+  `/global-state/model-presets` (`POST`, `PUT`, `DELETE`).
 - ContextSpace REST APIs:
   `GET /sessions/{sid}/contextspace`,
   `PATCH /sessions/{sid}/contextspace`,

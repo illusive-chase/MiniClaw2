@@ -36,7 +36,13 @@ from .events import (
     UserMessage,
 )
 from .git_state import node_diff
-from .language import project_preferred_language
+from .global_config import (
+    ModelPreset,
+    global_config_path,
+    load_global_config,
+    save_global_config,
+)
+from .language import normalize_preferred_language, project_preferred_language
 from .model_catalog import list_model_presets
 from .providers import GateTimeoutError
 from .providers.claude_native import hook_runtime
@@ -77,7 +83,16 @@ class CreateSessionRequest(BaseModel):
     name: str | None = None
     project_context_binding_id: str | None = None
     create_missing_cwd: bool = False
-    concurrency: StrictInt = Field(default=1, ge=1)
+    concurrency: StrictInt | None = Field(default=None, ge=1)
+
+
+class UpdateGlobalDefaultsRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    default_model_preset_id: str | None = None
+    auto_commit: bool | None = None
+    preferred_language: str | None = None
+    concurrency: StrictInt | None = Field(default=None, ge=1)
 
 
 class RenameSessionRequest(BaseModel):
@@ -269,7 +284,117 @@ def create_app(registry: ProjectRegistry | None = None) -> FastAPI:
 
     @app.get("/model-presets", response_model=list[dict[str, Any]])
     def list_model_presets_endpoint() -> list[dict[str, Any]]:
-        return [preset.metadata() for preset in list_model_presets()]
+        return [
+            preset.metadata()
+            for preset in list_model_presets(store_root=registry.store.root)
+        ]
+
+    @app.get("/global-state", response_model=dict[str, Any])
+    def get_global_state() -> dict[str, Any]:
+        return _global_state_payload(registry.store.root)
+
+    @app.patch("/global-state/defaults", response_model=dict[str, Any])
+    def update_global_defaults(
+        req: UpdateGlobalDefaultsRequest,
+    ) -> dict[str, Any]:
+        config = load_global_config(registry.store.root)
+        updates: dict[str, Any] = {}
+        if "default_model_preset_id" in req.model_fields_set:
+            if req.default_model_preset_id is None:
+                raise HTTPException(422, "default_model_preset_id cannot be null")
+            updates["default_model_preset_id"] = req.default_model_preset_id.strip()
+        if "auto_commit" in req.model_fields_set:
+            if req.auto_commit is None:
+                raise HTTPException(422, "auto_commit cannot be null")
+            updates["auto_commit"] = req.auto_commit
+        if "preferred_language" in req.model_fields_set:
+            try:
+                updates["preferred_language"] = normalize_preferred_language(
+                    req.preferred_language
+                )
+            except ValueError as exc:
+                raise HTTPException(400, str(exc)) from exc
+        if "concurrency" in req.model_fields_set:
+            if req.concurrency is None:
+                raise HTTPException(422, "concurrency cannot be null")
+            updates["concurrency"] = req.concurrency
+        try:
+            save_global_config(
+                config.model_copy(
+                    update={"defaults": config.defaults.model_copy(update=updates)}
+                ),
+                registry.store.root,
+            )
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        return _global_state_payload(registry.store.root)
+
+    @app.post("/global-state/model-presets", response_model=dict[str, Any], status_code=201)
+    def create_model_preset(preset: ModelPreset) -> dict[str, Any]:
+        config = load_global_config(registry.store.root)
+        if any(item.id == preset.id for item in config.model_presets):
+            raise HTTPException(409, f"model preset already exists: {preset.id}")
+        try:
+            save_global_config(
+                config.model_copy(
+                    update={"model_presets": [*config.model_presets, preset]}
+                ),
+                registry.store.root,
+            )
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        return _global_state_payload(registry.store.root)
+
+    @app.put("/global-state/model-presets/{preset_id}", response_model=dict[str, Any])
+    def replace_model_preset(
+        preset_id: str,
+        preset: ModelPreset,
+    ) -> dict[str, Any]:
+        if preset.id != preset_id:
+            raise HTTPException(400, "preset id in path and body must match")
+        config = load_global_config(registry.store.root)
+        if not any(item.id == preset_id for item in config.model_presets):
+            raise HTTPException(404, f"model preset not found: {preset_id}")
+        try:
+            save_global_config(
+                config.model_copy(
+                    update={
+                        "model_presets": [
+                            preset if item.id == preset_id else item
+                            for item in config.model_presets
+                        ]
+                    }
+                ),
+                registry.store.root,
+            )
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        return _global_state_payload(registry.store.root)
+
+    @app.delete("/global-state/model-presets/{preset_id}", status_code=204)
+    def delete_model_preset(preset_id: str) -> Response:
+        config = load_global_config(registry.store.root)
+        if not any(item.id == preset_id for item in config.model_presets):
+            raise HTTPException(404, f"model preset not found: {preset_id}")
+        if config.defaults.default_model_preset_id == preset_id:
+            raise HTTPException(409, "cannot delete the default model preset")
+        for project in registry.list_projects():
+            nodes = registry.list_nodes(project.id) or []
+            if project.model_preset_id == preset_id or any(
+                node.model_preset_id == preset_id for node in nodes
+            ):
+                raise HTTPException(409, "cannot delete a model preset used by a project")
+        save_global_config(
+            config.model_copy(
+                update={
+                    "model_presets": [
+                        item for item in config.model_presets if item.id != preset_id
+                    ]
+                }
+            ),
+            registry.store.root,
+        )
+        return Response(status_code=204)
 
     @app.middleware("http")
     async def record_hook_port(request: Request, call_next):
@@ -325,17 +450,34 @@ def create_app(registry: ProjectRegistry | None = None) -> FastAPI:
 
     @app.post("/sessions", response_model=SessionInfo)
     def create_session(req: CreateSessionRequest) -> SessionInfo:
+        defaults = load_global_config(registry.store.root).defaults
         try:
             project = registry.create_project(
                 cwd=None if req.temporary else (req.cwd or os.getcwd()),
-                model_preset_id=req.model_preset_id,
-                auto_commit=req.auto_commit,
-                preferred_language=req.preferred_language,
+                model_preset_id=(
+                    req.model_preset_id
+                    if "model_preset_id" in req.model_fields_set
+                    else defaults.default_model_preset_id
+                ),
+                auto_commit=(
+                    req.auto_commit
+                    if "auto_commit" in req.model_fields_set
+                    else defaults.auto_commit
+                ),
+                preferred_language=(
+                    req.preferred_language
+                    if "preferred_language" in req.model_fields_set
+                    else defaults.preferred_language
+                ),
                 temporary=req.temporary,
                 name=req.name or "",
                 project_context_binding_id=req.project_context_binding_id,
                 create_missing_cwd=req.create_missing_cwd,
-                concurrency=req.concurrency,
+                concurrency=(
+                    req.concurrency
+                    if req.concurrency is not None
+                    else defaults.concurrency
+                ),
             )
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
@@ -1033,6 +1175,21 @@ def create_app(registry: ProjectRegistry | None = None) -> FastAPI:
         )
 
     return app
+
+
+def _global_state_payload(store_root: Path) -> dict[str, Any]:
+    config = load_global_config(store_root)
+    default_id = config.defaults.default_model_preset_id
+    return {
+        "config_path": str(global_config_path(store_root)),
+        "defaults": config.defaults.model_dump(),
+        "model_presets": [
+            preset.model_copy(
+                update={"is_default": preset.id == default_id}
+            ).metadata()
+            for preset in config.model_presets
+        ],
+    }
 
 
 def _session_info(registry: ProjectRegistry, project: Any) -> SessionInfo:

@@ -28,6 +28,7 @@ packages = [
 
 [tool.setuptools.package-data]
 "miniclaw2" = [
+    "default_config.json",
     "prompts/*.md",
 ]
 "miniclaw2.templates" = [

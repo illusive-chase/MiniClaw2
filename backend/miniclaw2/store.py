@@ -45,6 +45,9 @@ class Store:
     def __init__(self, root: Path | None = None) -> None:
         self.root = root or _root()
         (self.root / "projects").mkdir(parents=True, exist_ok=True)
+        from .global_config import ensure_global_config
+
+        ensure_global_config(self.root)
 
     # ---- paths ----
 

@@ -1,0 +1,77 @@
+{
+  "version": 1,
+  "defaults": {
+    "default_model_preset_id": "gpt-5.6",
+    "auto_commit": false,
+    "preferred_language": null,
+    "concurrency": 1
+  },
+  "model_presets": [
+    {
+      "id": "opus-4-8",
+      "label": "Claude Opus 4.8 (1M)",
+      "provider": "claude",
+      "model": "claude-opus-4-8[1m]",
+      "description": "Claude Opus 4.8 preset with a 1M context window and xhigh effort.",
+      "model_provider": null,
+      "service_tier": null,
+      "reasoning_effort": "xhigh",
+      "status": "active"
+    },
+    {
+      "id": "gpt-5.6",
+      "label": "GPT-5.6 SOL (High)",
+      "provider": "codex",
+      "model": "gpt-5.6-sol",
+      "description": "Codex preset for GPT-5.6 SOL with high reasoning effort.",
+      "model_provider": null,
+      "service_tier": null,
+      "reasoning_effort": "high",
+      "status": "active"
+    },
+    {
+      "id": "gpt-5.6-x",
+      "label": "GPT-5.6 SOL (XHigh)",
+      "provider": "codex",
+      "model": "gpt-5.6-sol",
+      "description": "Codex preset for GPT-5.6 SOL with xhigh reasoning effort.",
+      "model_provider": null,
+      "service_tier": null,
+      "reasoning_effort": "xhigh",
+      "status": "active"
+    },
+    {
+      "id": "gpt-5.6-u",
+      "label": "GPT-5.6 SOL (Ultra)",
+      "provider": "codex",
+      "model": "gpt-5.6-sol",
+      "description": "Codex preset for GPT-5.6 SOL with ultra reasoning effort.",
+      "model_provider": null,
+      "service_tier": null,
+      "reasoning_effort": "ultra",
+      "status": "active"
+    },
+    {
+      "id": "gpt-5.5",
+      "label": "GPT-5.5",
+      "provider": "codex",
+      "model": "gpt-5.5",
+      "description": "Compatibility preset for existing GPT-5.5 data.",
+      "model_provider": null,
+      "service_tier": null,
+      "reasoning_effort": "medium",
+      "status": "compatibility"
+    },
+    {
+      "id": "opus-4-7",
+      "label": "Claude Opus 4.7 (1M)",
+      "provider": "claude",
+      "model": "claude-opus-4-7[1m]",
+      "description": "Claude Opus 4.7 preset with a 1M context window and xhigh effort.",
+      "model_provider": null,
+      "service_tier": null,
+      "reasoning_effort": "xhigh",
+      "status": "active"
+    }
+  ]
+}
