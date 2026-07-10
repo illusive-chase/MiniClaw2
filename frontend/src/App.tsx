@@ -23,7 +23,7 @@ import {
   updateVirtual,
   listSkills,
   deleteSkill,
-  listModelPresets,
+  getGlobalState,
   type SkillSummary,
   type UpdateVirtualPayload,
 } from "./api";
@@ -48,6 +48,7 @@ import type {
   ServerEvent,
   CanvasViewport,
   ModelPreset,
+  GlobalState,
   SessionContextSpaceInfo,
   SessionInfo,
   PlanspaceMode,
@@ -77,6 +78,7 @@ export function App() {
   const [session, setSession] = useState<SessionInfo | null>(null);
   const [nodes, setNodes] = useState<NodeInfo[]>([]);
   const [modelPresets, setModelPresets] = useState<ModelPreset[]>([]);
+  const [globalState, setGlobalState] = useState<GlobalState | null>(null);
 
   const [selection, setSelection] = useState<CanvasSelection>({ kind: "none" });
   /* For data-fetching purposes we track the "currently inspected nodeId" — the
@@ -143,12 +145,15 @@ export function App() {
 
   useEffect(() => {
     let cancelled = false;
-    listModelPresets()
+    getGlobalState()
       .then((next) => {
-        if (!cancelled) setModelPresets(next);
+        if (!cancelled) {
+          setGlobalState(next);
+          setModelPresets(next.model_presets);
+        }
       })
       .catch((err) => {
-        console.error("list model presets failed:", err);
+        console.error("get global state failed:", err);
       });
     return () => {
       cancelled = true;
@@ -392,7 +397,10 @@ export function App() {
   );
   const projectRunnerActive = activeNodesFromList.length > 0;
   const projectRunnerBusy = projectMutationPending || projectRunnerActive;
-  const activeCanvasNodeIds = activeNodesFromList.map((node) => node.id);
+  const activeCanvasNodeIds = useMemo(
+    () => activeNodesFromList.map((node) => node.id),
+    [activeNodesFromList],
+  );
 
   const validPendingGates = useMemo(
     () => keepPendingForStates(pendingGates, nodes, ["waiting"]),
@@ -1566,11 +1574,17 @@ export function App() {
           onOpen={openProject}
           onCreate={() => setNewProjectModalOpen(true)}
           modelPresets={modelPresets}
+          globalState={globalState}
+          onGlobalStateChanged={(next) => {
+            setGlobalState(next);
+            setModelPresets(next.model_presets);
+          }}
           onTemplateLaunched={(s) => openProject(s)}
         />
         <NewProjectModal
           open={newProjectModalOpen}
           modelPresets={modelPresets}
+          defaults={globalState?.defaults ?? null}
           onCancel={() => setNewProjectModalOpen(false)}
           onCreated={(next) => {
             setNewProjectModalOpen(false);

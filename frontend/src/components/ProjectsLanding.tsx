@@ -5,11 +5,15 @@ import type { ModelPreset, SessionInfo } from "../types";
 import { modelPresetLabel } from "../modelPresets";
 import { TestsPanel } from "./TestsPanel";
 import { ThemeToggle } from "./ThemeToggle";
+import { GlobalSettingsModal } from "./GlobalSettingsModal";
+import type { GlobalState } from "../types";
 
 type Props = {
   onOpen: (session: SessionInfo) => void;
   onCreate: () => void;
   modelPresets: ModelPreset[];
+  globalState: GlobalState | null;
+  onGlobalStateChanged: (state: GlobalState) => void;
   /** template runner kicks off a new project — open the result */
   onTemplateLaunched?: (session: SessionInfo, templateName: string) => void;
 };
@@ -18,11 +22,14 @@ export function ProjectsLanding({
   onOpen,
   onCreate,
   modelPresets,
+  globalState,
+  onGlobalStateChanged,
   onTemplateLaunched,
 }: Props) {
   const [sessions, setSessions] = useState<SessionInfo[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [testsOpen, setTestsOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -82,6 +89,13 @@ export function ProjectsLanding({
           </p>
         </div>
         <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setSettingsOpen(true)}
+            className="inline-flex h-9 items-center rounded-md border border-line bg-surface-raised px-3 text-[12.5px] font-medium text-ink-muted shadow-card transition hover:border-line-strong hover:text-ink"
+          >
+            Global settings
+          </button>
           <button
             type="button"
             onClick={() => setTestsOpen(true)}
@@ -197,6 +211,12 @@ export function ProjectsLanding({
           </div>
         </div>
       )}
+      <GlobalSettingsModal
+        open={settingsOpen}
+        state={globalState}
+        onClose={() => setSettingsOpen(false)}
+        onChanged={onGlobalStateChanged}
+      />
     </div>
   );
 }

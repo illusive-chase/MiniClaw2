@@ -179,6 +179,17 @@ export type ModelPreset = {
   is_default?: boolean;
   status: "active" | "compatibility";
 };
+export type GlobalDefaults = {
+  default_model_preset_id: string;
+  auto_commit: boolean;
+  preferred_language?: string | null;
+  concurrency: number;
+};
+export type GlobalState = {
+  config_path: string;
+  defaults: GlobalDefaults;
+  model_presets: ModelPreset[];
+};
 export type NodeCategory = "planning" | "regular" | "review";
 export type ReviewSubtype =
   | "agentic_review"

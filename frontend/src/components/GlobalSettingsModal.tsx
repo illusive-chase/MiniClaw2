@@ -1,0 +1,203 @@
+import { useEffect, useState } from "react";
+import {
+  createModelPreset,
+  deleteModelPreset,
+  getGlobalState,
+  replaceModelPreset,
+  updateGlobalDefaults,
+} from "../api";
+import { LANGUAGE_OPTIONS } from "../languages";
+import type { GlobalDefaults, GlobalState, ModelPreset } from "../types";
+
+type Props = {
+  open: boolean;
+  state: GlobalState | null;
+  onClose: () => void;
+  onChanged: (state: GlobalState) => void;
+};
+
+const EMPTY_PRESET: ModelPreset = {
+  id: "",
+  label: "",
+  provider: "codex",
+  model: "",
+  description: "",
+  model_provider: null,
+  service_tier: null,
+  reasoning_effort: null,
+  status: "active",
+};
+
+export function GlobalSettingsModal({ open, state, onClose, onChanged }: Props) {
+  const [defaults, setDefaults] = useState<GlobalDefaults | null>(null);
+  const [draft, setDraft] = useState<ModelPreset | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    setDefaults(state?.defaults ?? null);
+    setDraft(null);
+    setEditingId(null);
+    setError(null);
+    if (!state) {
+      getGlobalState().then(onChanged).catch((err) => setError(String(err)));
+    }
+  }, [open, state, onChanged]);
+
+  if (!open) return null;
+  const presets = state?.model_presets ?? [];
+
+  const saveDefaults = async () => {
+    if (!defaults) return;
+    setSaving(true);
+    setError(null);
+    try {
+      onChanged(await updateGlobalDefaults(defaults));
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const savePreset = async () => {
+    if (!draft) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const normalized: ModelPreset = {
+        ...draft,
+        id: draft.id.trim(),
+        label: draft.label.trim(),
+        model: draft.model.trim(),
+        description: draft.description?.trim() ?? "",
+        model_provider: draft.model_provider?.trim() || null,
+        service_tier: draft.service_tier?.trim() || null,
+        reasoning_effort: draft.reasoning_effort?.trim() || null,
+      };
+      const next = editingId
+        ? await replaceModelPreset(normalized)
+        : await createModelPreset(normalized);
+      onChanged(next);
+      setDraft(null);
+      setEditingId(null);
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const removePreset = async (preset: ModelPreset) => {
+    if (!window.confirm(`Delete model preset “${preset.label}”?`)) return;
+    setSaving(true);
+    setError(null);
+    try {
+      await deleteModelPreset(preset.id);
+      onChanged(await getGlobalState());
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-surface-scrim/60 backdrop-blur-sm">
+      <div className="flex max-h-[92vh] w-[860px] max-w-[96vw] flex-col overflow-hidden rounded-xl border border-line bg-surface-raised shadow-modal">
+        <div className="flex items-center justify-between border-b border-line px-5 py-3.5">
+          <div>
+            <div className="font-display text-sm font-semibold text-ink-strong">Global settings</div>
+            <div className="mt-0.5 font-mono text-[10px] text-ink-subtle">
+              {state?.config_path ?? "Loading configuration…"}
+            </div>
+          </div>
+          <button type="button" onClick={onClose} className="rounded px-2 py-1 text-xs text-ink-muted hover:bg-surface-sunken">Esc</button>
+        </div>
+
+        <div className="flex-1 space-y-6 overflow-y-auto bg-surface-sunken p-5">
+          {error && <div className="rounded-md border border-state-error/30 bg-state-error-soft px-3 py-2 text-xs text-state-error">{error}</div>}
+
+          {defaults && (
+            <section className="rounded-lg border border-line bg-surface-raised p-4 shadow-card">
+              <div className="mb-3 font-display text-sm font-semibold text-ink-strong">New project defaults</div>
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <Field label="Model preset">
+                  <select value={defaults.default_model_preset_id} onChange={(event) => setDefaults({ ...defaults, default_model_preset_id: event.target.value })} className={inputClass}>
+                    {presets.filter((preset) => preset.status === "active").map((preset) => <option key={preset.id} value={preset.id}>{preset.label}</option>)}
+                  </select>
+                </Field>
+                <Field label="Language">
+                  <select value={defaults.preferred_language ?? ""} onChange={(event) => setDefaults({ ...defaults, preferred_language: event.target.value || null })} className={inputClass}>
+                    {LANGUAGE_OPTIONS.map((option) => <option key={option.value || "none"} value={option.value}>{option.label}</option>)}
+                  </select>
+                </Field>
+                <Field label="Concurrency">
+                  <input type="number" min={1} value={defaults.concurrency} onChange={(event) => setDefaults({ ...defaults, concurrency: Math.max(1, Number(event.target.value) || 1) })} className={inputClass} />
+                </Field>
+                <label className="flex items-center gap-2 self-end rounded-md border border-line bg-surface-sunken px-3 py-2 text-xs text-ink">
+                  <input type="checkbox" checked={defaults.auto_commit} onChange={(event) => setDefaults({ ...defaults, auto_commit: event.target.checked })} className="accent-brand" /> Auto commit completed work
+                </label>
+              </div>
+              <div className="mt-3 flex justify-end"><button type="button" disabled={saving} onClick={() => void saveDefaults()} className={primaryButton}>Save defaults</button></div>
+            </section>
+          )}
+
+          <section className="rounded-lg border border-line bg-surface-raised p-4 shadow-card">
+            <div className="mb-3 flex items-center justify-between">
+              <div>
+                <div className="font-display text-sm font-semibold text-ink-strong">Model presets</div>
+                <div className="text-[11px] text-ink-muted">All entries come from the global configuration and are editable.</div>
+              </div>
+              <button type="button" onClick={() => { setEditingId(null); setDraft({ ...EMPTY_PRESET }); }} className={primaryButton}>+ Add preset</button>
+            </div>
+            <div className="space-y-2">
+              {presets.map((preset) => (
+                <div key={preset.id} className="flex items-start justify-between gap-3 rounded-md border border-line bg-surface-sunken px-3 py-2.5">
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2 text-xs font-medium text-ink-strong"><span>{preset.label}</span>{preset.is_default && <span className="rounded bg-brand-soft px-1.5 py-0.5 text-[9px] text-brand-ink">default</span>}<span className="rounded border border-line px-1.5 py-0.5 font-mono text-[9px] text-ink-muted">{preset.status}</span></div>
+                    <div className="mt-1 font-mono text-[10px] text-ink-muted">{preset.id} · {preset.provider} · {preset.model}{preset.reasoning_effort ? ` · ${preset.reasoning_effort}` : ""}</div>
+                    {preset.description && <div className="mt-1 text-[11px] text-ink-muted">{preset.description}</div>}
+                  </div>
+                  <div className="flex gap-1">
+                    <button type="button" onClick={() => { setEditingId(preset.id); setDraft({ ...preset }); }} className={secondaryButton}>Edit</button>
+                    <button type="button" disabled={saving} onClick={() => void removePreset(preset)} className={`${secondaryButton} hover:text-state-error`}>Delete</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </section>
+
+          {draft && (
+            <section className="rounded-lg border border-brand/40 bg-surface-raised p-4 shadow-card">
+              <div className="mb-3 font-display text-sm font-semibold text-ink-strong">{editingId ? "Edit preset" : "Add preset"}</div>
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <Field label="ID"><input value={draft.id} disabled={editingId !== null} onChange={(event) => setDraft({ ...draft, id: event.target.value })} className={inputClass} placeholder="my-model-high" /></Field>
+                <Field label="Label"><input value={draft.label} onChange={(event) => setDraft({ ...draft, label: event.target.value })} className={inputClass} placeholder="My model (High)" /></Field>
+                <Field label="Provider"><select value={draft.provider} onChange={(event) => setDraft({ ...draft, provider: event.target.value as ModelPreset["provider"] })} className={inputClass}><option value="codex">Codex</option><option value="claude">Claude</option></select></Field>
+                <Field label="Model"><input value={draft.model} onChange={(event) => setDraft({ ...draft, model: event.target.value })} className={inputClass} /></Field>
+                <Field label="Reasoning effort"><input value={draft.reasoning_effort ?? ""} onChange={(event) => setDraft({ ...draft, reasoning_effort: event.target.value || null })} className={inputClass} placeholder="high" /></Field>
+                <Field label="Status"><select value={draft.status} onChange={(event) => setDraft({ ...draft, status: event.target.value as ModelPreset["status"] })} className={inputClass}><option value="active">Active</option><option value="compatibility">Compatibility</option></select></Field>
+                <Field label="Model provider"><input value={draft.model_provider ?? ""} onChange={(event) => setDraft({ ...draft, model_provider: event.target.value || null })} className={inputClass} /></Field>
+                <Field label="Service tier"><input value={draft.service_tier ?? ""} onChange={(event) => setDraft({ ...draft, service_tier: event.target.value || null })} className={inputClass} /></Field>
+                <label className="flex flex-col gap-1 sm:col-span-2"><span className={labelClass}>Description</span><textarea value={draft.description ?? ""} onChange={(event) => setDraft({ ...draft, description: event.target.value })} className={`${inputClass} min-h-16 resize-y`} /></label>
+              </div>
+              <div className="mt-3 flex justify-end gap-2"><button type="button" onClick={() => { setDraft(null); setEditingId(null); }} className={secondaryButton}>Cancel</button><button type="button" disabled={saving || !draft.id.trim() || !draft.label.trim() || !draft.model.trim()} onClick={() => void savePreset()} className={primaryButton}>{saving ? "Saving…" : "Save preset"}</button></div>
+            </section>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
+  return <label className="flex flex-col gap-1"><span className={labelClass}>{label}</span>{children}</label>;
+}
+
+const labelClass = "text-[10px] font-medium uppercase tracking-[0.12em] text-ink-subtle";
+const inputClass = "rounded-md border border-line bg-surface-sunken px-3 py-2 text-xs text-ink-strong focus:border-brand focus:outline-none disabled:opacity-50";
+const primaryButton = "rounded-md bg-brand px-3 py-1.5 text-xs font-medium text-white shadow-card transition hover:brightness-95 disabled:opacity-40";
+const secondaryButton = "rounded-md border border-line bg-surface px-2.5 py-1.5 text-[11px] text-ink-muted transition hover:text-ink disabled:opacity-40";

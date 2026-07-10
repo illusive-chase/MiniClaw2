@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { ApiError, createSession } from "../api";
 import { LANGUAGE_OPTIONS } from "../languages";
-import type { ModelPreset, SessionInfo } from "../types";
+import type { GlobalDefaults, ModelPreset, SessionInfo } from "../types";
 import {
   defaultModelPresetId,
   modelPresetDetail,
@@ -11,6 +11,7 @@ import {
 type Props = {
   open: boolean;
   modelPresets: ModelPreset[];
+  defaults: GlobalDefaults | null;
   onCancel: () => void;
   onCreated: (session: SessionInfo) => void;
 };
@@ -35,6 +36,7 @@ function errorMessage(err: unknown): string {
 export function NewProjectModal({
   open,
   modelPresets,
+  defaults,
   onCancel,
   onCreated,
 }: Props) {
@@ -42,6 +44,7 @@ export function NewProjectModal({
   const [preferredLanguage, setPreferredLanguage] = useState("");
   const [modelPresetId, setModelPresetId] = useState("");
   const [concurrency, setConcurrency] = useState(1);
+  const [autoCommit, setAutoCommit] = useState(false);
   const [cwd, setCwd] = useState("");
   const [temporary, setTemporary] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -52,16 +55,19 @@ export function NewProjectModal({
   useEffect(() => {
     if (open) {
       setName("");
-      setPreferredLanguage("");
-      setModelPresetId(defaultModelPresetId(modelPresets));
-      setConcurrency(1);
+      setPreferredLanguage(defaults?.preferred_language ?? "");
+      setModelPresetId(
+        defaultModelPresetId(modelPresets, defaults?.default_model_preset_id),
+      );
+      setConcurrency(defaults?.concurrency ?? 1);
+      setAutoCommit(defaults?.auto_commit ?? false);
       setCwd("");
       setTemporary(false);
       setSubmitting(false);
       setError(null);
       window.setTimeout(() => nameRef.current?.focus(), 0);
     }
-  }, [open, modelPresets]);
+  }, [open, modelPresets, defaults]);
 
   if (!open) return null;
 
@@ -72,6 +78,7 @@ export function NewProjectModal({
       preferred_language: preferredLanguage || null,
       model_preset_id: modelPresetId || undefined,
       concurrency,
+      auto_commit: autoCommit,
       cwd: temporary ? undefined : (cwdInput || undefined),
       temporary,
       create_missing_cwd: createMissingCwd,
@@ -221,6 +228,21 @@ export function NewProjectModal({
               placeholder="leave blank to use server cwd"
               className="rounded-md border border-line bg-surface-sunken px-3 py-2 font-mono text-xs text-ink-strong placeholder:text-ink-subtle focus:border-brand focus:outline-none disabled:opacity-40"
             />
+          </label>
+
+          <label className="flex items-start gap-2 text-xs text-ink">
+            <input
+              type="checkbox"
+              checked={autoCommit}
+              onChange={(e) => setAutoCommit(e.target.checked)}
+              className="mt-0.5 h-4 w-4 accent-brand"
+            />
+            <span>
+              Auto commit
+              <span className="ml-1 text-ink-muted">
+                — append a commit node after completed agent work.
+              </span>
+            </span>
           </label>
 
           <label className="flex items-start gap-2 text-xs text-ink">

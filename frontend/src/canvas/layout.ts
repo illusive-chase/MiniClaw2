@@ -260,6 +260,8 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
     id: "root",
     type: "projectRoot",
     position: layoutHints["root"] ?? { x: LANE.rootX, y: LANE.timelineY },
+    width: 64,
+    height: 64,
     data: { title: projectTitle },
     draggable: true,
     selectable: true,
@@ -412,6 +414,8 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
         id: node.id,
         type: "op",
         position,
+        width: LANE.opWidth,
+        height: 48,
         data: { node, parent, child: null },
         draggable: true,
         ...(planspaceId
@@ -437,6 +441,8 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
         id: node.id,
         type: "agent",
         position,
+        width: LANE.agentWidth,
+        height: 86,
         data: {
           node,
           index,
@@ -573,6 +579,8 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
       id: terminalId,
       type: "errorTerminal",
       position: terminalPosition,
+      width: 180,
+      height: 88,
       data: {
         ownerNodeId: node.id,
         message: node.error,
@@ -721,6 +729,8 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
       id: ctxId,
       type: "context",
       position,
+      width: isProject ? 220 : 160,
+      height: 70,
       data: {
         identityKey: agg.identityKey,
         scope: agg.scope,
@@ -786,6 +796,8 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
       id: `planspace:${planspaceId}`,
       type: "planspaceLane",
       position: pos,
+      width,
+      height,
       data: {
         planspaceId,
         label: labelForPlanspace(planspaceId),

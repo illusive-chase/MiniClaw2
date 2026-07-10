@@ -169,6 +169,13 @@ function CanvasInner({
   const { getViewport, setViewport } = useReactFlow();
   const [layoutHydrationVersion, setLayoutHydrationVersion] = useState(0);
   const appliedLayoutHydrationVersionRef = useRef(layoutHydrationVersion);
+  const previousPrimarySelectionRef = useRef(selectedNodeId);
+  const primarySelectionRef = useRef(selectedNodeId);
+  primarySelectionRef.current = selectedNodeId;
+  const pendingUserSelectionRef = useRef<{
+    nodeId: string | null;
+    preserveExisting: boolean;
+  } | null>(null);
 
   /* Re-hydrate when the session changes (initialLayoutHints prop swap). A ref
    * update alone is not enough because buildGraph is memoized, and the RF sync
@@ -247,6 +254,7 @@ function CanvasInner({
       layoutHydrationVersion,
     ],
   );
+  const syncedBuiltNodesRef = useRef(built.rfNodes);
 
   /* React Flow controlled state. We keep an internal copy so dragging is smooth
    * while still reflecting upstream prop changes (e.g. node_updated events). */
@@ -266,17 +274,25 @@ function CanvasInner({
   useEffect(() => {
     const hydrateFromLayout =
       appliedLayoutHydrationVersionRef.current !== layoutHydrationVersion;
+    if (
+      syncedBuiltNodesRef.current === built.rfNodes &&
+      !hydrateFromLayout
+    ) {
+      return;
+    }
+    syncedBuiltNodesRef.current = built.rfNodes;
     setRfNodes((current) => {
-      const positionById = new Map(current.map((n) => [n.id, n.position]));
+      const runtimeById = new Map(current.map((n) => [n.id, n]));
       // Carry over ``selected`` so React Flow's multi-selection (marquee /
       // shift-click) survives an upstream ``built.rfNodes`` swap. Without
       // this, every ``node_updated`` websocket event would reset the
       // selection to just the scalar single-select target.
       const selectedById = new Map(current.map((n) => [n.id, n.selected]));
       const next = built.rfNodes.map((n) => {
-        let out: RFNode = n;
+        const runtime = runtimeById.get(n.id);
+        let out: RFNode = runtime ? { ...runtime, ...n } : n;
         if (!hydrateFromLayout) {
-          const existing = positionById.get(n.id);
+          const existing = runtime?.position;
           if (
             existing &&
             (existing.x !== n.position.x || existing.y !== n.position.y)
@@ -290,17 +306,39 @@ function CanvasInner({
         }
         return out;
       });
-      return decorateSelection(next, selectedNodeId);
+      return decorateSelection(
+        next,
+        primarySelectionRef.current,
+        true,
+      );
     });
     if (hydrateFromLayout) {
       appliedLayoutHydrationVersionRef.current = layoutHydrationVersion;
     }
   }, [
     built.rfNodes,
-    selectedNodeId,
     setRfNodes,
     layoutHydrationVersion,
   ]);
+
+  useEffect(() => {
+    const primarySelectionChanged =
+      previousPrimarySelectionRef.current !== selectedNodeId;
+    const pendingUserSelection = pendingUserSelectionRef.current;
+    const preserveExistingSelection =
+      pendingUserSelection?.nodeId === selectedNodeId &&
+      pendingUserSelection.preserveExisting;
+    previousPrimarySelectionRef.current = selectedNodeId;
+    pendingUserSelectionRef.current = null;
+    if (!primarySelectionChanged) return;
+    setRfNodes((current) =>
+      decorateSelection(
+        current as RFNode[],
+        selectedNodeId,
+        preserveExistingSelection,
+      ),
+    );
+  }, [selectedNodeId, setRfNodes]);
 
   /* Edges depend on hover (the `loads` lane fades in only for the hovered or
    * selected node), so they get a separate effect. */
@@ -408,16 +446,28 @@ function CanvasInner({
    * flicker, fetch storms, and visible re-renders on every pane click.
    * onNodeClick only fires for genuine user clicks, breaking the loop. */
   const onNodeClick = useCallback<NodeMouseHandler>(
-    (_, node) => {
+    (event, node) => {
       const n = node as RFNode;
       if (n.type === "agent") {
         const data = n.data as import("./layout").AgentNodeData;
+        pendingUserSelectionRef.current = {
+          nodeId: data.node.id,
+          preserveExisting: event.shiftKey,
+        };
         onSelectionChange({ kind: "agent", nodeId: data.node.id });
       } else if (n.type === "op") {
         const data = n.data as import("./layout").OpNodeData;
+        pendingUserSelectionRef.current = {
+          nodeId: data.node.id,
+          preserveExisting: event.shiftKey,
+        };
         onSelectionChange({ kind: "op", nodeId: data.node.id });
       } else if (n.type === "context") {
         const data = n.data as import("./layout").ContextNodeData;
+        pendingUserSelectionRef.current = {
+          nodeId: n.id,
+          preserveExisting: event.shiftKey,
+        };
         onSelectionChange({
           kind: "context",
           identityKey: data.identityKey,
@@ -427,13 +477,25 @@ function CanvasInner({
           plugId: data.plugId ?? null,
         });
       } else if (n.type === "projectRoot") {
+        pendingUserSelectionRef.current = {
+          nodeId: n.id,
+          preserveExisting: event.shiftKey,
+        };
         onSelectionChange({ kind: "projectRoot" });
       } else if (n.type === "planspaceLane") {
         const data = n.data as import("./layout").PlanspaceLaneData;
+        pendingUserSelectionRef.current = {
+          nodeId: n.id,
+          preserveExisting: event.shiftKey,
+        };
         onSelectionChange({ kind: "planspace", planspaceId: data.planspaceId });
       } else if (n.type === "errorTerminal") {
         const data = n.data as import("./layout").ErrorTerminalData;
         /* The terminal itself has no panel — selecting it focuses its owner. */
+        pendingUserSelectionRef.current = {
+          nodeId: data.ownerNodeId,
+          preserveExisting: event.shiftKey,
+        };
         onSelectionChange({
           kind: "agent",
           nodeId: data.ownerNodeId,
@@ -451,6 +513,10 @@ function CanvasInner({
         target.classList.contains("react-flow__pane") ||
         target.classList.contains("react-flow__renderer");
       if (!isPane) return;
+      pendingUserSelectionRef.current = {
+        nodeId: null,
+        preserveExisting: false,
+      };
       onSelectionChange({ kind: "none" });
     },
     [onSelectionChange],
@@ -596,6 +662,7 @@ function CanvasInner({
         snapGrid={[8, 8]}
         nodesConnectable={false}
         deleteKeyCode={null}
+        elevateNodesOnSelect={false}
         attributionPosition="bottom-right"
         proOptions={{ hideAttribution: true }}
         fitView={!initialViewportRef.current}
@@ -724,12 +791,11 @@ function clamp(value: number, min: number, max: number): number {
 function decorateSelection(
   nodes: RFNode[],
   selectedNodeId: string | null,
+  preserveExisting = false,
 ): Node[] {
   return nodes.map((n) => {
-    // OR the primary-click selection with whatever React Flow already tracks
-    // (multi-select). We never clear ``selected`` from here — deselection is
-    // driven by React Flow's own change events (pane click, replace-on-click).
-    const desired = n.id === selectedNodeId || n.selected === true;
+    const desired =
+      n.id === selectedNodeId || (preserveExisting && n.selected === true);
     return n.selected === desired ? n : { ...n, selected: desired };
   });
 }

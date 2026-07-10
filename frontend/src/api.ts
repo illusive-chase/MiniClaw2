@@ -4,6 +4,8 @@ import type {
   NodeDiff,
   NodeInfo,
   ModelPreset,
+  GlobalDefaults,
+  GlobalState,
   ReviewBrief,
   NodeCategory,
   ReviewSubtype,
@@ -50,6 +52,7 @@ export async function createSession(
   body: {
     cwd?: string;
     model_preset_id?: string;
+    auto_commit?: boolean;
     preferred_language?: string | null;
     concurrency?: number;
     temporary?: boolean;
@@ -73,6 +76,60 @@ export async function listModelPresets(): Promise<ModelPreset[]> {
   const res = await fetch("/model-presets");
   if (!res.ok) throw new Error(`listModelPresets failed: ${res.status}`);
   return res.json();
+}
+
+export async function getGlobalState(): Promise<GlobalState> {
+  const res = await fetch("/global-state");
+  if (!res.ok) throw new ApiError("getGlobalState", res.status, await readErrorDetail(res));
+  return res.json();
+}
+
+export async function updateGlobalDefaults(
+  body: Partial<GlobalDefaults>,
+): Promise<GlobalState> {
+  const res = await fetch("/global-state/defaults", {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    throw new ApiError("updateGlobalDefaults", res.status, await readErrorDetail(res));
+  }
+  return res.json();
+}
+
+export async function createModelPreset(preset: ModelPreset): Promise<GlobalState> {
+  const res = await fetch("/global-state/model-presets", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(preset),
+  });
+  if (!res.ok) {
+    throw new ApiError("createModelPreset", res.status, await readErrorDetail(res));
+  }
+  return res.json();
+}
+
+export async function replaceModelPreset(preset: ModelPreset): Promise<GlobalState> {
+  const res = await fetch(`/global-state/model-presets/${encodeURIComponent(preset.id)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(preset),
+  });
+  if (!res.ok) {
+    throw new ApiError("replaceModelPreset", res.status, await readErrorDetail(res));
+  }
+  return res.json();
+}
+
+export async function deleteModelPreset(presetId: string): Promise<void> {
+  const res = await fetch(
+    `/global-state/model-presets/${encodeURIComponent(presetId)}`,
+    { method: "DELETE" },
+  );
+  if (!res.ok) {
+    throw new ApiError("deleteModelPreset", res.status, await readErrorDetail(res));
+  }
 }
 
 export async function listSessions(): Promise<SessionInfo[]> {
