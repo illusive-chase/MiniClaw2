@@ -105,7 +105,6 @@ class SessionInfo(BaseModel):
     project_context_binding_id: str | None = None
     layout_hints: dict[str, dict[str, float]] = Field(default_factory=dict)
     layout_viewport: dict[str, float] | None = None
-    planspace_view: dict[str, dict[str, bool]] = Field(default_factory=dict)
 
 
 class UpdateLayoutHintsRequest(BaseModel):
@@ -1048,7 +1047,6 @@ def _session_info(registry: ProjectRegistry, project: Any) -> SessionInfo:
         project_context_binding_id=project.project_context_binding_id,
         layout_hints=project.layout_hints,
         layout_viewport=project.layout_viewport,
-        planspace_view=project.planspace_view,
     )
 
 

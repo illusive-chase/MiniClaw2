@@ -135,7 +135,6 @@ export type SessionInfo = {
   layout_hints?: Record<string, { x: number; y: number }>;
   /** Persisted React Flow viewport so pan/zoom survives project reopen. */
   layout_viewport?: CanvasViewport | null;
-  planspace_view?: Record<string, { hidden?: boolean }>;
 };
 
 export type TemplateSummary = {

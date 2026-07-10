@@ -955,14 +955,6 @@ export function App() {
           [planspaceId]: { hidden },
         });
         setSessionContextSpace(next);
-        setSession((current) =>
-          current && current.id === session.id
-            ? {
-                ...current,
-                planspace_view: next.planspace_view ?? current.planspace_view,
-              }
-            : current,
-        );
       } catch (err) {
         setSessionContextSpaceError(String(err));
       } finally {

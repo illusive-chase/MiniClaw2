@@ -57,12 +57,14 @@ class LayoutStateApiTest(unittest.TestCase):
         try:
             fetched = restarted.get(f"/sessions/{sid}")
             self.assertEqual(fetched.status_code, 200, fetched.text)
+            self.assertNotIn("planspace_view", fetched.json())
             self.assertEqual(fetched.json()["layout_hints"], body["layout_hints"])
             self.assertEqual(fetched.json()["layout_viewport"], body["layout_viewport"])
 
             listed = restarted.get("/sessions")
             self.assertEqual(listed.status_code, 200, listed.text)
             match = next(item for item in listed.json() if item["id"] == sid)
+            self.assertNotIn("planspace_view", match)
             self.assertEqual(match["layout_hints"], body["layout_hints"])
             self.assertEqual(match["layout_viewport"], body["layout_viewport"])
 
