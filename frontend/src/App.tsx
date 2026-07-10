@@ -61,6 +61,10 @@ type PendingGateState = {
   request: InteractionRequest;
   nodeId: string;
 };
+type SelectedEventsState = {
+  nodeId: string | null;
+  records: EventRecord[];
+};
 
 const TERMINAL_STATES = new Set<NodeInfo["state"]>(["done", "error", "cancelled"]);
 const INTERRUPTIBLE_STATES = new Set<NodeInfo["state"]>([
@@ -79,9 +83,22 @@ export function App() {
    * agent/op whose events, diff, and context bundle we should load. For context
    * selections, this stays pointed at the owning node. */
   const [inspectedNodeId, setInspectedNodeId] = useState<string | null>(null);
+  const inspectedNodeIdRef = useRef<string | null>(null);
 
-  const [selectedEvents, setSelectedEvents] = useState<EventRecord[]>([]);
+  const [selectedEventsState, setSelectedEventsState] = useState<SelectedEventsState>({
+    nodeId: null,
+    records: [],
+  });
   const [selectedEventsLoading, setSelectedEventsLoading] = useState(false);
+  const pendingSelectedEventsRef = useRef<{
+    nodeId: string;
+    records: EventRecord[];
+  } | null>(null);
+  const selectedEventsFlushTimerRef = useRef<number | null>(null);
+  const selectedEvents =
+    selectedEventsState.nodeId === inspectedNodeId
+      ? selectedEventsState.records
+      : [];
   const [selectedDiff, setSelectedDiff] = useState<NodeDiff | null>(null);
   const [selectedDiffLoading, setSelectedDiffLoading] = useState(false);
   const [selectedContextBundle, setSelectedContextBundle] = useState<ContextBundle | null>(null);
@@ -194,6 +211,21 @@ export function App() {
         : { open: true, mode: "templates" },
     );
   }, []);
+  const inspectNode = useCallback((nodeId: string | null) => {
+    inspectedNodeIdRef.current = nodeId;
+    setInspectedNodeId(nodeId);
+    setSelectedEventsState((current) =>
+      current.nodeId === nodeId ? current : { nodeId, records: [] },
+    );
+    const pending = pendingSelectedEventsRef.current;
+    if (pending && pending.nodeId !== nodeId) {
+      pendingSelectedEventsRef.current = null;
+      if (selectedEventsFlushTimerRef.current !== null) {
+        window.clearTimeout(selectedEventsFlushTimerRef.current);
+        selectedEventsFlushTimerRef.current = null;
+      }
+    }
+  }, []);
   /* Programmatic-selection helper. Whenever code (not a user canvas click)
    * changes what's inspected, we must also open the details panel — otherwise
    * the freshly-inspected node's controls (gate/review form, virtual draft
@@ -202,14 +234,13 @@ export function App() {
   const selectAndOpenNode = useCallback(
     (nodeId: string, kind: "agent" | "op" = "agent") => {
       setSelection({ kind, nodeId });
-      setInspectedNodeId(nodeId);
+      inspectNode(nodeId);
       setPanelState({ open: true, mode: "details" });
     },
-    [],
+    [inspectNode],
   );
 
   const panelRef = useRef<HTMLElement | null>(null);
-  const inspectedNodeIdRef = useRef<string | null>(null);
   const currentRouteRef = useRef<Route>("landing");
   const currentSessionIdRef = useRef<string | null>(null);
   const nodeCountRef = useRef(0);
@@ -223,10 +254,6 @@ export function App() {
    * effect; without this guard the still-in-flight nodes would be refetched
    * on every resolution. */
   const inflightBundleFetchRef = useRef<Set<string>>(new Set());
-
-  useEffect(() => {
-    inspectedNodeIdRef.current = inspectedNodeId;
-  }, [inspectedNodeId]);
 
   /* Keyboard focus must not enter the panel while it's translated offscreen —
    * pointer-events-none only blocks the mouse, and aria-hidden without inert
@@ -261,8 +288,15 @@ export function App() {
     nodesRef.current = [];
     setNodes([]);
     setSelection({ kind: "none" });
+    inspectedNodeIdRef.current = null;
     setInspectedNodeId(null);
-    setSelectedEvents([]);
+    setSelectedEventsState({ nodeId: null, records: [] });
+    setSelectedEventsLoading(false);
+    pendingSelectedEventsRef.current = null;
+    if (selectedEventsFlushTimerRef.current !== null) {
+      window.clearTimeout(selectedEventsFlushTimerRef.current);
+      selectedEventsFlushTimerRef.current = null;
+    }
     setSelectedDiff(null);
     setSelectedContextBundle(null);
     setSelectedContextBundleLoading(false);
@@ -485,14 +519,16 @@ export function App() {
           ? { kind: "none" }
           : current,
       );
-      setInspectedNodeId((current) => {
-        if (wasRemovedByRefresh(current)) return null;
-        return current ?? next.at(-1)?.id ?? null;
-      });
+      const currentInspectedNodeId = inspectedNodeIdRef.current;
+      inspectNode(
+        wasRemovedByRefresh(currentInspectedNodeId)
+          ? null
+          : currentInspectedNodeId ?? next.at(-1)?.id ?? null,
+      );
     } catch (err) {
       console.error("list nodes failed:", err);
     }
-  }, [session?.id]);
+  }, [inspectNode, session?.id]);
 
   /* context space */
   const refreshContextSpace = useCallback(async () => {
@@ -878,11 +914,11 @@ export function App() {
       setPendingGates((prev) => withoutPendingNode(prev, nodeId));
       setPendingReviews((prev) => withoutPendingNode(prev, nodeId));
       if (inspectedNodeIdRef.current === nodeId) {
-        setInspectedNodeId(null);
+        inspectNode(null);
         setSelection({ kind: "none" });
       }
     },
-    [session?.id, projectRunnerBusy, composerLocked],
+    [session?.id, projectRunnerBusy, composerLocked, inspectNode],
   );
 
   const rerunFailedNode = useCallback(
@@ -1011,20 +1047,28 @@ export function App() {
   /* Events, diff, and context-bundle fetch — keyed off inspectedNodeId. */
   useEffect(() => {
     if (!session?.id || !inspectedNodeId || selectedNode?.state === "virtual") {
-      setSelectedEvents([]);
+      setSelectedEventsState({ nodeId: inspectedNodeId, records: [] });
       setSelectedEventsLoading(false);
       return;
     }
+    const requestedNodeId = inspectedNodeId;
     let cancelled = false;
     setSelectedEventsLoading(true);
-    listNodeEvents(session.id, inspectedNodeId)
+    listNodeEvents(session.id, requestedNodeId)
       .then((records) => {
-        if (!cancelled) setSelectedEvents(records);
+        if (cancelled) return;
+        setSelectedEventsState((current) =>
+          current.nodeId === requestedNodeId
+            ? {
+                nodeId: requestedNodeId,
+                records: mergeEventRecords(current.records, records),
+              }
+            : current,
+        );
       })
       .catch((err) => {
         if (!cancelled) {
           console.error("list node events failed:", err);
-          setSelectedEvents([]);
         }
       })
       .finally(() => {
@@ -1150,16 +1194,51 @@ export function App() {
   }, [session?.id, nodes, contextBundlesByNodeId]);
 
   /* WS event handling */
+  const flushSelectedEvents = useCallback(() => {
+    selectedEventsFlushTimerRef.current = null;
+    const pending = pendingSelectedEventsRef.current;
+    pendingSelectedEventsRef.current = null;
+    if (!pending || inspectedNodeIdRef.current !== pending.nodeId) return;
+    setSelectedEventsState((current) =>
+      current.nodeId === pending.nodeId
+        ? {
+            nodeId: current.nodeId,
+            records: mergeEventRecords(current.records, pending.records),
+          }
+        : current,
+    );
+  }, []);
+
   const appendSelectedEvent = useCallback((nodeId: string | null, ev: ServerEvent) => {
     const seq = ev.seq;
-    if (!nodeId || inspectedNodeIdRef.current !== nodeId || typeof seq !== "number") {
+    if (
+      !nodeId ||
+      inspectedNodeIdRef.current !== nodeId ||
+      typeof seq !== "number" ||
+      seq <= 0
+    ) {
       return;
     }
-    setSelectedEvents((prev) => {
-      if (prev.some((record) => record.seq === seq)) return prev;
-      return [...prev, { seq, event: ev }].sort((a, b) => a.seq - b.seq);
-    });
-  }, []);
+    const record = { seq, event: ev };
+    const pending = pendingSelectedEventsRef.current;
+    if (pending?.nodeId === nodeId) {
+      pending.records.push(record);
+    } else {
+      pendingSelectedEventsRef.current = { nodeId, records: [record] };
+    }
+    if (selectedEventsFlushTimerRef.current === null) {
+      selectedEventsFlushTimerRef.current = window.setTimeout(flushSelectedEvents, 32);
+    }
+  }, [flushSelectedEvents]);
+
+  useEffect(
+    () => () => {
+      if (selectedEventsFlushTimerRef.current !== null) {
+        window.clearTimeout(selectedEventsFlushTimerRef.current);
+      }
+    },
+    [],
+  );
 
   const handleEvent = useCallback(
     (ev: ServerEvent) => {
@@ -1211,13 +1290,13 @@ export function App() {
         setPendingGates((prev) => withoutPendingNode(prev, ev.id));
         setPendingReviews((prev) => withoutPendingNode(prev, ev.id));
         if (inspectedNodeIdRef.current === ev.id) {
-          setInspectedNodeId(null);
+          inspectNode(null);
           setSelection({ kind: "none" });
         }
       }
       appendSelectedEvent(eventNodeId, ev);
     },
-    [appendSelectedEvent, refreshNodes, selectAndOpenNode],
+    [appendSelectedEvent, inspectNode, refreshNodes, selectAndOpenNode],
   );
 
   const { status, send } = useSessionSocket(
@@ -1295,12 +1374,12 @@ export function App() {
     setPlanspaceLaneContext({
       onSelectPlanspace: (planspaceId) => {
         setSelection({ kind: "planspace", planspaceId });
-        setInspectedNodeId(null);
+        inspectNode(null);
       },
       onTogglePlanspaceVisibility: togglePlanspaceVisibility,
       onCreateVirtual: createUnparentedVirtual,
     });
-  }, [togglePlanspaceVisibility, createUnparentedVirtual]);
+  }, [togglePlanspaceVisibility, createUnparentedVirtual, inspectNode]);
 
   const onResolveGate = useCallback(
     (
@@ -1332,9 +1411,9 @@ export function App() {
   const onSelectionChange = useCallback((sel: CanvasSelection) => {
     setSelection(sel);
     if (sel.kind === "agent" || sel.kind === "op") {
-      setInspectedNodeId(sel.nodeId);
+      inspectNode(sel.nodeId);
     } else if (sel.kind === "none") {
-      setInspectedNodeId(null);
+      inspectNode(null);
     }
     /* Node clicks open the panel in details mode (overriding templates
      * if that was showing). Empty-canvas click closes it. */
@@ -1345,7 +1424,7 @@ export function App() {
         prev.open && prev.mode === "details" ? prev : { open: true, mode: "details" },
       );
     }
-  }, []);
+  }, [inspectNode]);
 
   const onMultiSelectionChange = useCallback((ids: string[]) => {
     setMultiSelectedNodeIds(ids);
@@ -1397,10 +1476,10 @@ export function App() {
         kind: node.kind === "op" ? "op" : "agent",
         nodeId,
       });
-      setInspectedNodeId(nodeId);
+      inspectNode(nodeId);
       openDetails();
     },
-    [nodes, openDetails],
+    [inspectNode, nodes, openDetails],
   );
 
   /* Wire per-agent canvas affordances and inline pending-response tiles into
@@ -1555,7 +1634,7 @@ export function App() {
             type="button"
             onClick={() => {
               setSelection({ kind: "projectRoot" });
-              setInspectedNodeId(null);
+              inspectNode(null);
               setNewDirectionRequestVersion((version) => version + 1);
               openDetails();
             }}
@@ -1638,7 +1717,7 @@ export function App() {
                 type="button"
                 onClick={() => {
                   setSelection({ kind: "projectRoot" });
-                  setInspectedNodeId(null);
+                  inspectNode(null);
                   setNewDirectionRequestVersion((version) => version + 1);
                   openDetails();
                 }}
@@ -1829,6 +1908,34 @@ function upsertNode(prev: NodeInfo[], node: NodeInfo): NodeInfo[] {
     return [...prev, node].sort((a, b) => a.created_at - b.created_at);
   }
   return prev.map((item, i) => (i === index ? node : item));
+}
+
+function mergeEventRecords(
+  current: EventRecord[],
+  incoming: EventRecord[],
+): EventRecord[] {
+  if (incoming.length === 0) return current;
+
+  let previousSeq = current.at(-1)?.seq ?? -1;
+  let appendOnly = true;
+  for (const record of incoming) {
+    if (record.seq <= previousSeq) {
+      appendOnly = false;
+      break;
+    }
+    previousSeq = record.seq;
+  }
+  if (appendOnly) return [...current, ...incoming];
+
+  const bySeq = new Map(current.map((record) => [record.seq, record]));
+  let changed = false;
+  for (const record of incoming) {
+    if (bySeq.has(record.seq)) continue;
+    bySeq.set(record.seq, record);
+    changed = true;
+  }
+  if (!changed) return current;
+  return Array.from(bySeq.values()).sort((left, right) => left.seq - right.seq);
 }
 
 function keepPendingForStates(

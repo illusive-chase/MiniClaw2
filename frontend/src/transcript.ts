@@ -78,17 +78,34 @@ function seedAgentTurns(
 }
 
 export function buildTurnsFromEvents(node: NodeInfo, records: EventRecord[]): ChatTurn[] {
-  let turns: ChatTurn[] = [
+  const turns: ChatTurn[] = [
     createUserTurn(`${node.id}-user`, node.prompt),
     createAssistantTurn(
       `${node.id}-assistant`,
       node.state === "running" || node.state === "waiting",
     ),
   ];
+  return appendRecordsToTurns(turns, records);
+}
+
+export function appendRecordsToTurns(
+  previous: ChatTurn[],
+  records: EventRecord[],
+): ChatTurn[] {
+  let turns = previous;
   for (const record of records) {
     turns = appendServerEvent(turns, record.event);
   }
   return turns;
+}
+
+export function setTurnsStreaming(
+  previous: ChatTurn[],
+  streaming: boolean,
+): ChatTurn[] {
+  return updateLastAssistantTurn(previous, (turn) =>
+    turn.streaming === streaming ? turn : { ...turn, streaming },
+  );
 }
 
 function appendAssistantText(prev: ChatTurn[], text: string): ChatTurn[] {
@@ -233,5 +250,24 @@ function replaceLastBlock(
 function mergeActivityItems(items: Activity[], next: Activity): Activity[] {
   const index = items.findIndex((item) => item.id === next.id);
   if (index < 0) return [...items, next];
-  return items.map((item, i) => (i === index ? next : item));
+  return items.map((item, i) =>
+    i === index ? mergeActivityProgress(item, next) : item,
+  );
+}
+
+function mergeActivityProgress(current: Activity, next: Activity): Activity {
+  if (
+    next.status !== "progress" ||
+    next.name !== "command" ||
+    next.result == null
+  ) {
+    return next;
+  }
+  const result = `${current.result ?? ""}${next.result}`;
+  return {
+    ...next,
+    summary: current.summary || next.summary,
+    result: result.slice(-4096),
+    result_kind: next.result_kind ?? "stdout",
+  };
 }

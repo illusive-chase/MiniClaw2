@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
@@ -17,7 +17,11 @@ import type {
   ReviewSubtype,
 } from "../types";
 import type { SkillSummary, UpdateVirtualPayload } from "../api";
-import { buildTurnsFromEvents } from "../transcript";
+import {
+  appendRecordsToTurns,
+  buildTurnsFromEvents,
+  setTurnsStreaming,
+} from "../transcript";
 import { ToolActivity } from "../components/ToolActivity";
 import {
   PendingGateInline,
@@ -86,7 +90,7 @@ export function AgentPanel({
     "(no prompt)"
   ).trim();
   const resumeParentLabel = node.parent_node_id ? node.parent_node_id.slice(0, 8) : null;
-  const turns = useMemo(() => buildTurnsFromEvents(node, events), [node, events]);
+  const turns = useIncrementalTurns(node, events);
   const transcriptItems = useMemo(() => flattenTranscript(turns), [turns]);
   const readyToPromote = useMemo(
     () => virtualReady(node, nodesById),
@@ -256,6 +260,7 @@ export function AgentPanel({
 
             <section className="mb-5">
               <details
+                key={node.id}
                 open={activityDefaultOpen}
                 className="overflow-hidden rounded-md border border-line bg-surface-sunken"
               >
@@ -1243,6 +1248,48 @@ type TranscriptItem =
   | { kind: "error"; id: string; text: string }
   | { kind: "tools"; id: string; items: Activity[] };
 
+function useIncrementalTurns(
+  node: NodeInfo,
+  records: EventRecord[],
+): ReturnType<typeof buildTurnsFromEvents> {
+  const cacheRef = useRef<{
+    nodeId: string;
+    nodeState: NodeInfo["state"];
+    prompt: string;
+    records: EventRecord[];
+    turns: ReturnType<typeof buildTurnsFromEvents>;
+  } | null>(null);
+
+  return useMemo(() => {
+    const cached = cacheRef.current;
+    const cachedLength = cached?.records.length ?? 0;
+    const extendsCachedRecords =
+      cached !== null &&
+      cached.nodeId === node.id &&
+      cached.prompt === node.prompt &&
+      records.length >= cachedLength &&
+      (cachedLength === 0 || cached.records.at(-1) === records[cachedLength - 1]);
+
+    let turns = extendsCachedRecords
+      ? appendRecordsToTurns(cached.turns, records.slice(cachedLength))
+      : buildTurnsFromEvents(node, records);
+    const active = node.state === "running" || node.state === "waiting";
+    const wasActive =
+      cached?.nodeState === "running" || cached?.nodeState === "waiting";
+    if (!active || (extendsCachedRecords && !wasActive)) {
+      turns = setTurnsStreaming(turns, active);
+    }
+    cacheRef.current = {
+      nodeId: node.id,
+      nodeState: node.state,
+      prompt: node.prompt,
+      records,
+      turns,
+    };
+    return turns;
+  }, [node.id, node.prompt, node.state, records]);
+}
+
 function flattenTranscript(turns: ReturnType<typeof buildTurnsFromEvents>): TranscriptItem[] {
   const out: TranscriptItem[] = [];
   for (const turn of turns) {
@@ -1301,7 +1348,11 @@ function ActivityTranscript({
   );
 }
 
-function TranscriptItemView({ item }: { item: TranscriptItem }) {
+const TranscriptItemView = memo(function TranscriptItemView({
+  item,
+}: {
+  item: TranscriptItem;
+}) {
   if (item.kind === "user") {
     return (
       <div className="rounded-md border border-line bg-surface px-3 py-2 text-[12px] text-ink-muted">
@@ -1334,6 +1385,33 @@ function TranscriptItemView({ item }: { item: TranscriptItem }) {
     );
   }
   return <ToolActivity items={item.items} />;
+}, areTranscriptItemsEqual);
+
+function areTranscriptItemsEqual(
+  previous: { item: TranscriptItem },
+  next: { item: TranscriptItem },
+): boolean {
+  const left = previous.item;
+  const right = next.item;
+  if (left === right) return true;
+  if (left.kind !== right.kind || left.id !== right.id) return false;
+  if (left.kind !== "tools" && right.kind !== "tools") {
+    return left.text === right.text;
+  }
+  if (left.kind !== "tools" || right.kind !== "tools") return false;
+  if (left.items.length !== right.items.length) return false;
+  return left.items.every((activity, index) => {
+    const candidate = right.items[index];
+    return (
+      activity.id === candidate.id &&
+      activity.kind === candidate.kind &&
+      activity.status === candidate.status &&
+      activity.name === candidate.name &&
+      activity.summary === candidate.summary &&
+      activity.result === candidate.result &&
+      activity.result_kind === candidate.result_kind
+    );
+  });
 }
 
 function ThinkingSection({ turns }: { turns: ReturnType<typeof buildTurnsFromEvents> }) {

@@ -1,6 +1,7 @@
+import { memo } from "react";
 import type { Activity, ResultKind } from "../types";
 
-export function ToolActivity({ items }: { items: Activity[] }) {
+export const ToolActivity = memo(function ToolActivity({ items }: { items: Activity[] }) {
   if (items.length === 0) return null;
   return (
     <div className="space-y-1">
@@ -23,8 +24,11 @@ export function ToolActivity({ items }: { items: Activity[] }) {
               )}
             </div>
           </div>
-          {a.result && a.status !== "progress" && (
-            <details className="mt-2" open={a.status === "failed"}>
+          {a.result && (
+            <details
+              className="mt-2"
+              open={a.status === "failed" || a.status === "progress"}
+            >
               <summary
                 className={
                   "cursor-pointer select-none text-[11px] " +
@@ -33,8 +37,12 @@ export function ToolActivity({ items }: { items: Activity[] }) {
                     : "text-ink-muted hover:text-ink")
                 }
               >
-                {a.status === "failed" ? "error output" : "output"} ({a.result.length}{" "}
-                chars)
+                {a.status === "failed"
+                  ? "error output"
+                  : a.status === "progress"
+                    ? "live output"
+                    : "output"}{" "}
+                ({a.result.length} chars)
               </summary>
               <ResultBlock kind={a.result_kind ?? "text"} text={a.result} />
             </details>
@@ -43,6 +51,26 @@ export function ToolActivity({ items }: { items: Activity[] }) {
       ))}
     </div>
   );
+}, areActivityListsEqual);
+
+function areActivityListsEqual(
+  previous: { items: Activity[] },
+  next: { items: Activity[] },
+): boolean {
+  if (previous.items === next.items) return true;
+  if (previous.items.length !== next.items.length) return false;
+  return previous.items.every((activity, index) => {
+    const candidate = next.items[index];
+    return (
+      activity.id === candidate.id &&
+      activity.kind === candidate.kind &&
+      activity.status === candidate.status &&
+      activity.name === candidate.name &&
+      activity.summary === candidate.summary &&
+      activity.result === candidate.result &&
+      activity.result_kind === candidate.result_kind
+    );
+  });
 }
 
 function ResultBlock({ kind, text }: { kind: ResultKind; text: string }) {

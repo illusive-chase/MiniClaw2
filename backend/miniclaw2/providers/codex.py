@@ -184,6 +184,7 @@ class CodexProvider:
 
         if method == "item/commandExecution/outputDelta":
             item_id = str(params.get("itemId") or "command")
+            delta = str(params.get("delta") or "")
             yield AgentProviderEvent(
                 kind="event",
                 event=Activity(
@@ -191,7 +192,9 @@ class CodexProvider:
                     status="progress",
                     id=item_id,
                     name="command",
-                    summary=_truncate(str(params.get("delta") or "")),
+                    summary=_truncate(delta),
+                    result=delta,
+                    result_kind="stdout",
                 ),
             )
             return

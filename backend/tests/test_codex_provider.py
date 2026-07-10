@@ -147,6 +147,30 @@ class _FakeProviderContext:
 
 
 class CodexProviderTest(unittest.IsolatedAsyncioTestCase):
+    async def test_command_output_delta_preserves_untruncated_result(self) -> None:
+        provider = CodexProvider()
+        delta = "0123456789" * 50
+
+        events = [
+            event
+            async for event in provider._handle_message(
+                {
+                    "method": "item/commandExecution/outputDelta",
+                    "params": {"itemId": "cmd-1", "delta": delta},
+                },
+                _FakeProviderContext(),  # type: ignore[arg-type]
+                None,  # type: ignore[arg-type]
+            )
+        ]
+
+        self.assertEqual(len(events), 1)
+        activity = events[0].event
+        self.assertIsNotNone(activity)
+        assert activity is not None
+        self.assertEqual(activity.summary, delta[:200] + "...")
+        self.assertEqual(activity.result, delta)
+        self.assertEqual(activity.result_kind, "stdout")
+
     def test_minimal_thread_and_turn_params_pin_context_sandbox(self) -> None:
         ctx = _FakeProviderContext(
             settings_override={
