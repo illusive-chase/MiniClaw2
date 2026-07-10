@@ -23,9 +23,11 @@ Trunk: `backend/miniclaw2/domain.py`.
   `ReviewSubtype ∈ {agentic_review, human_interact_review, programmatic_review}`.
 - `Node` fields covering ontology in `PHILOSOPHY.md` §6.1: `parent_node_id`,
   `planspace_id`, `context_bundle_id`, `context_bundle_path`,
-  `model_preset_id`, `provider_session_id`, `provider_turn_id`,
+  `model_preset_id`, `provider_session_id`, `provider_turn_id`, `op_kind`,
+  `agent_op_kind`,
   `commit_before`, `commit_after`, `prompt`, `category`, `subtype`,
-  `brief`, `prompt_draft`, `scheduled_deps`, `resume_from_node_id`,
+  `brief`, `prompt_draft`, `scheduled_deps`, `pending_extra_skills`,
+  `resume_from_node_id`,
   `verify_script_ref`, `proposed_by`, `obsolete_reason`, `summary`,
   `error`, `usage`, `system_context_snapshot`, `settings_snapshot`,
   `created_at`, `started_at`, `finished_at`.
@@ -36,6 +38,10 @@ Trunk: `backend/miniclaw2/domain.py`.
   `created_at`.
 - `Project.provider` and `Node.provider` are computed from
   `model_preset_id` for wire/display use and are excluded from persisted JSON.
+- `PlanspaceMode ∈ {auto, manual}`. `agent_op_kind` is an extensible
+  string discriminator with a current whitelist of `skill_edit`; it is valid
+  only on agent nodes. `pending_extra_skills` is virtual-agent intent and is
+  cleared into `settings_snapshot.extra_skills` at promotion.
 - `HumanGate` model is inline-only:
   `GateSubtype ∈ {permission, ask_user}`. `permission` is emitted by
   the Codex adapter only; the native-CLI Claude provider runs with
@@ -54,6 +60,13 @@ Trunk: `backend/miniclaw2/providers/` (`base.py`, `claude.py`, `codex.py`).
 
 ### Landed
 
+- Provider and concrete-model selection is centralized in
+  `backend/miniclaw2/model_catalog.py`. `GET /model-presets` exposes the
+  catalog; active presets can be selected for new/edited work, while
+  compatibility presets remain resolvable for persisted nodes and reruns.
+  Provider, model, model provider, service tier, and reasoning effort are
+  derived from the preset rather than accepted as independent persisted
+  selectors.
 - Claude adapter drives the native `claude` binary directly through a
   PTY (`ptyprocess`). Prompts are typed into the TUI; events are drained
   from Claude Code's on-disk JSONL transcript under
@@ -131,13 +144,17 @@ Trunk: `backend/miniclaw2/runner.py`, `backend/miniclaw2/registry.py`.
 - Inline gates (permission for Codex, ask-user for both providers)
   normalize to `waiting` substate; resolution returns the node to
   `running`.
-- Launch instructions are composed from (in order): the category-aware
-  block from `launch_prompt.build_category_launch_block` (planning /
-  regular / agentic_review / human_interact_review), the planspace
-  context bundle turn-text, the language preference hint, and the
-  anti-self-poisoning guidance block appended last. Templates live in
-  `backend/miniclaw2/prompts/category_*.md` and
-  `prompts/anti_self_poisoning.md`; covered by `test_launch_prompt.py`.
+- Launch instructions are composed from (in order): the optional skill-author
+  block, the category-aware block (planning / regular / agentic review /
+  human-interact review), a scheduled-dependency preview index, the
+  ContextSpace turn-text, the language preference hint, and the
+  anti-self-poisoning guidance appended last. Templates live under
+  `backend/miniclaw2/prompts/`; covered by `test_launch_prompt.py` and
+  `test_skill_edit_prompt.py`.
+- Agent nodes carry their own `model_preset_id`. Project creation, direction
+  creation, ordinary virtual creation, and virtual editing select active
+  presets; continuation virtuals keep the resume source's preset/session, and
+  reruns may preserve a compatibility preset from historical data.
 - Launch refuses visibly on stale persisted settings: a present but
   unresolvable `active_planspace_id` errors the node before the
   provider starts (`StaleLaunchSettingsError` → error state + stub
@@ -145,6 +162,22 @@ Trunk: `backend/miniclaw2/runner.py`, `backend/miniclaw2/registry.py`.
   the preview-contract lane. An invalid persisted `preferred_language`
   is ignored on read-back (logged); wire input stays strictly
   validated.
+- Registry startup repairs persisted `queued` / `running` / `waiting` /
+  `awaiting_human_input` nodes left behind by a dead process to `cancelled`
+  with a stub preview. Error/cancelled agent nodes can be rerun from the UI;
+  rerun creates a fresh editable virtual with the original prompt, model,
+  lane, dependencies, review fields, and continuation linkage.
+
+### Skill-edit agents — landed
+
+- `agent_op_kind="skill_edit"` marks an ordinary agent node that also receives
+  the framework-owned `prompts/skill_init.md` contract. The prompt resolves
+  the actual ContextSpace skills directory and instructs the agent to create
+  or update `plugs/skills/<slug>/{manifest.yaml,CONTEXT.md,assets/}`.
+- Project → `+ New skill` creates a regular virtual skill-edit node in the
+  active direction. Promotion uses the normal runner, preview contract,
+  provider events, cancellation, and terminal states; the skill shelf is
+  refreshed after the node finishes.
 
 ### Review agents — landed
 
@@ -219,12 +252,17 @@ Trunk: `backend/miniclaw2/contextspace.py`.
 - Plug loaders for project-root `CONTEXT.md`, global `CONTEXT.md`, and
   skill `CONTEXT.md`. Planspace plugs are manifest-only; lane state is
   read through `.miniclaw2/graph/lanes/<lane>/`.
+- Skills can also be opted into per node without changing the project binding.
+  Virtuals hold canonical `pending_extra_skills`; promotion snapshots them as
+  `settings_snapshot.extra_skills`; bundle composition deduplicates them
+  against binding skills, records node-opt-in provenance, and records missing
+  plugs explicitly instead of collapsing their context tiles.
 - `ProjectBinding`, `PlugRef`, `ComposedContextBundle` carry binding
   resolution; `Project.project_context_binding_id` references the
   current binding; `Project.active_planspace_id` owns the current
   planspace selection. Binding manifests describe available plugs only.
 - Provider-neutral `<project_root>/CONTEXT.md` loading at every node
-  launch. Claude receives it via `system_prompt.append`; Codex
+  launch. Claude receives it via `--append-system-prompt`; Codex
   prepends it to fresh-thread `turn/start` input. Resolved text is
   snapshotted on the node as `system_context_snapshot`.
 - Context bundle snapshot persisted to
@@ -263,6 +301,10 @@ Trunk: `backend/miniclaw2/contextspace.py`.
   the whitelist to `claude --allowed-tools` on the native Claude
   provider, and forces `approvalPolicy: "never"` on Codex. Used by the
   out-of-band `context_refresh` agent; unused by `NodeRunner`.
+- `GET /skills` enumerates user-wide skill plugs and `DELETE /skills/{slug}`
+  removes one with strict slug/path validation. The frontend exposes known
+  skills as reusable context tiles, supports delete, selection from a virtual's
+  editor, and drag-to-attach onto a virtual node.
 
 ### Pending
 
@@ -271,8 +313,9 @@ Trunk: `backend/miniclaw2/contextspace.py`.
   `.claude/agents`, `.mcp.json`); MiniClaw2 no longer needs to
   re-marshal any of it. What is still missing is a UI surface for
   editing those files.
-- Drag-and-drop plug UX; skill authoring UI; manifest editor for
-  injection-mode and `max_chars`.
+- Global-plug/binding authoring UI and a direct manifest/markdown editor for
+  injection mode, `max_chars`, and existing skill contents. Skill creation is
+  currently agent-assisted rather than a structured form.
 - Automatic ContextSpace git commits (v1 keeps changes visible).
 - Cross-provider reviewer nodes (the ontology supports review agents;
   no UI to configure provider override yet).
@@ -302,14 +345,15 @@ Trunk: `frontend/src/canvas/Canvas.tsx`, `frontend/src/canvas/layout.ts`,
 - The new-direction composer offers two bootstraps: `Draft with
   concierge` launches the planning bootstrap agent, while `Start blank`
   creates a bound planspace with one empty virtual node and focuses its
-  draft field.
+  draft field. Both paths expose planspace mode and an active model preset.
 - Virtual agent tiles render as dashed plan tiles with category badges,
   draft prompt text, ready/obsolete/dependency footer state, and a
   hover right-edge action stack for promote, continuation virtual,
   dependency virtual, and remove.
 - Virtual agent nodes can be edited from the side panel
   (`prompt_draft`, category/subtype/brief, motivation, dependencies,
-  and obsoletion); verifier virtuals render as read-only
+  model preset, attached skills, and obsoletion); continuation virtuals lock
+  their inherited model preset. Verifier virtuals render as read-only
   programmatic-review steps.
 - Agent tiles show category badges for planning / regular / review /
   human-interact review nodes; verifier tiles use the review tone and
@@ -334,6 +378,9 @@ Trunk: `frontend/src/canvas/Canvas.tsx`, `frontend/src/canvas/layout.ts`,
 - `AgentPanel` shows virtual node draft/provenance/dependencies/brief
   for virtuals; executed nodes show agent input, persisted
   `preview.json`, activity, thinking, and inspect drawer.
+- Agent tiles and the inspector show model-preset identity. Error/cancelled
+  agents expose rerun, which creates and focuses a new virtual instead of
+  mutating execution history.
 - Newly-created virtuals from blank direction, lane `+`, continuation,
   or dependency actions auto-focus the side-panel draft textarea.
 - Mid-lane virtual branching is visible: continuation/dependency
@@ -344,11 +391,16 @@ Trunk: `frontend/src/canvas/Canvas.tsx`, `frontend/src/canvas/layout.ts`,
 - Clicking a lane header opens a lane panel with manual/auto mode
   controls; Project → Directions also shows mode and hide/show.
 - `PlanspaceFilePanel.tsx` now handles project-root `CONTEXT.md` only.
-- `ProjectPanel.tsx` has Project actions (`+ New direction`,
-  initialize/refresh project notes) and a Directions section with
-  active badges, mode labels, and hide/show controls.
-- Persisted `layout_hints` round-tripped through `project.json` via
-  `PATCH /sessions/{sid}/layout-hints`.
+- `ProjectPanel.tsx` has Project actions (`+ New direction`, `+ New skill`,
+  initialize/refresh project notes) and a Directions section with active
+  badges, mode labels, and hide/show controls.
+- A user-wide skill shelf is merged into the context-node lane even before a
+  live node loads a skill. Skills can be inspected/deleted, attached in the
+  virtual editor, or dragged directly onto a virtual tile.
+- Persisted node `layout_hints` and the user-owned pan/zoom
+  `layout_viewport` round-trip through `project.json` via
+  `PATCH /sessions/{sid}/layout-hints`; programmatic fit-to-view does not
+  overwrite the saved viewport.
 - Tool I/O rendering: `Activity.result` (≤4 KB) + `result_kind ∈
   {stdout, diff, text, json}`. Collapsible `<details>` with diff
   coloring; failed-default-open.
@@ -366,7 +418,9 @@ Trunk: `frontend/src/canvas/Canvas.tsx`, `frontend/src/canvas/layout.ts`,
   also expand directly under the waiting agent tile on the canvas,
   using the same response mapping as `AgentPanel`.
 - Projects landing page (`ProjectsLanding`) with rename/delete; Tests
-  modal for bundled templates.
+  modal for bundled templates. New-project creation supports a named or
+  temporary workspace, cwd creation confirmation, preferred language, and an
+  active model preset.
 
 ### Pending
 
@@ -385,9 +439,10 @@ surface; the durable node store is the source of truth.
 
 ### Landed
 
-- Every executed node is expected to write its own
-  `.miniclaw2/graph/lanes/<lane>/nodes/<nid>/preview.json`; the runner
-  reaps it into `projects/<pid>/nodes/<nid>/preview.json`.
+- Every executed agent is expected to write its own
+  `.miniclaw2/graph/lanes/<lane>/nodes/<nid>/preview.json`; the runner reaps it
+  into `projects/<pid>/nodes/<nid>/preview.json`. Verifier and op previews are
+  framework-written because those node kinds do not run an agent provider.
 - Planning and review agents may create or mutate virtual previews in
   the materialized graph; regular agents are rejected if they write
   virtuals.
@@ -449,8 +504,13 @@ UI affordances and features MiniClaw2 does not expose on top of it.
 ### Pending
 
 - `@file` / `!cmd` / image-paste input affordances.
-- Ask-user dialog: `suggestions` rendering and free-text "Other" affordance.
-- Settings UI: model picker, cwd selector, tool allowlist.
+- Top-level `InteractionRequest.suggestions` has no separate renderer. The
+  question renderer already supports option descriptions, multi-select, and
+  provider question shapes that explicitly request a free-text `Other` (or
+  secret) input.
+- Post-creation project settings UI for changing cwd, the default model
+  preset, and provider tool allowlists. Cwd/model selection already exists at
+  project creation, and model selection exists on new directions/virtuals.
 - Queue user messages while a turn is in-flight (currently rejects).
 - Slash commands (`/clear`, `/compact`, `/model`, `/cwd`,
   `/permissions`) as frontend interceptors.
@@ -588,6 +648,9 @@ Trunk: `backend/miniclaw2/store.py`, `backend/miniclaw2/replay.py`.
   ```
 - Atomic JSON writes (tmp + rename). Single-writer per node is
   guaranteed by sequential intra-project execution.
+- Registry initialization repairs non-terminal persisted nodes left by a
+  previous process to cancelled terminal records, including framework stub
+  previews, without blocking other projects on a malformed entry.
 - Store schema v3 writes one canonical shape: only `model_preset_id`
   persists provider selection, only `provider_session_id` persists
   provider conversation identity, and ContextSpace/language selections
@@ -614,7 +677,8 @@ Trunk: `backend/miniclaw2/store.py`, `backend/miniclaw2/replay.py`.
 Quick reference; the on-disk shape is authoritative.
 
 - Server → client:
-  `node_started {node_id, parent_node_id, kind, category, subtype, prompt}`,
+  `node_started {node_id, parent_node_id, kind, provider, model_preset_id,
+  category, subtype, agent_op_kind, prompt}`,
   `node_updated`, `node_removed {id}`, `interaction_request
   {interaction_type, ...}` with `interaction_type ∈ {"permission",
   "ask_user", "human_review_prose"}` (`checkpoint_review` appears only
@@ -622,7 +686,8 @@ Quick reference; the on-disk shape is authoritative.
   only), `text_delta`, `thinking`, `activity`, `usage`,
   `turn_done`, `error`.
 - Client → server: user prompt with optional `resume_from_node_id`,
-  `interrupt`, interaction response,
+  `extra_skills`, `agent_op_kind`, and `model_preset_id`; `interrupt`;
+  interaction response;
   `replay_request {node_id, since_seq}`.
 - Interaction responses use one carrier per kind: ask-user answers at
   `response.answers`, human-review text at `response.prose`, and
@@ -635,17 +700,19 @@ Quick reference; the on-disk shape is authoritative.
 - `SessionInfo.provider` remains a response-only value derived from
   `model_preset_id`; it is not persisted and is retained only for HTTP response
   compatibility.
-- REST: project CRUD, node and event introspection,
+- REST: `GET /model-presets`; project CRUD, preferences, node/event
+  introspection, failed-node rerun, per-node diff/preview/context-bundle reads,
   `PATCH /sessions/{sid}/layout-hints`,
   `PATCH /sessions/{sid}/planspace-view`,
   `PATCH /sessions/{sid}/planspaces/{planspace_id}/mode`,
-  `POST /sessions/{sid}/planspaces {title, seed, mode?}` (creates a
-  new planspace + activates it + launches the concierge planning
+  `POST /sessions/{sid}/planspaces {title, seed, mode?, model_preset_id?}`
+  (creates a new planspace + activates it + launches the concierge planning
   agent),
-  `POST /sessions/{sid}/planspaces/blank {title?, seed, mode}`
+  `POST /sessions/{sid}/planspaces/blank`
+  `{title?, seed, mode?, model_preset_id?}`
   (creates a new planspace + activates it + creates one empty virtual),
-  `POST /sessions/{sid}/virtuals` (creates an editable virtual in a
-  planspace),
+  `POST /sessions/{sid}/virtuals` (creates an editable virtual in a planspace,
+  with optional model preset, attached skills, and `agent_op_kind`),
   `PATCH /sessions/{sid}/virtuals/{vid}` (edits or obsoletes a
   virtual),
   `DELETE /sessions/{sid}/virtuals/{vid}` (hard-deletes an unrun
@@ -658,6 +725,7 @@ Quick reference; the on-disk shape is authoritative.
   `GET /sessions/{sid}/files`,
   `GET /sessions/{sid}/nodes/{nid}/preview` (durable preview text),
   `POST /sessions {auto_commit, ...}`,
+  `GET /skills`, `DELETE /skills/{slug}`,
   `GET /user-templates`, `GET /user-templates/{slug}`,
   `DELETE /user-templates/{slug}`,
   `POST /sessions/{sid}/user-templates {name, brief, node_ids}` (saves

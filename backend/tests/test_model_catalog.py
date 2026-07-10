@@ -35,8 +35,8 @@ class ModelCatalogTest(unittest.TestCase):
 
         expected = {
             "gpt-5.6": ("gpt-5.6-sol", "high"),
-            "gpt-5.6-x": ("gpt-5.6", "xhigh"),
-            "gpt-5.6-u": ("gpt-5.6", "ultra"),
+            "gpt-5.6-x": ("gpt-5.6-sol", "xhigh"),
+            "gpt-5.6-u": ("gpt-5.6-sol", "ultra"),
         }
         for preset_id, (model, effort) in expected.items():
             with self.subTest(preset_id=preset_id):
