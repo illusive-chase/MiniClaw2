@@ -130,7 +130,7 @@ class ReadPlanspaceModeTests(unittest.TestCase):
         plug_id = create_planspace(
             self.project, title="Auto lane", mode="auto"
         )
-        self.project.settings_override["active_planspace_id"] = plug_id
+        self.project.active_planspace_id = plug_id
 
         summary = describe_project_contextspace(self.project)
 
@@ -207,10 +207,7 @@ class BlankPlanspaceRegistryTests(unittest.TestCase):
 
         project = self.registry.get_project(self.project.id)
         assert project is not None
-        self.assertEqual(
-            project.settings_override.get("active_planspace_id"),
-            "planspaces.auth-flow",
-        )
+        self.assertEqual(project.active_planspace_id, "planspaces.auth-flow")
 
         root = Path(os.environ["MINICLAW_CONTEXT_HOME"])
         manifest_path = root / "plugs" / "planspaces" / "auth-flow" / "manifest.yaml"

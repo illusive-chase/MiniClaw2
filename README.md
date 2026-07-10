@@ -25,17 +25,16 @@ WebSocket, paired with a React + Vite + React Flow frontend.
   review nodes),
   translates provider messages into a small event union over WebSocket,
   persists every event to `events.jsonl` before pushing, injects output
-  contracts (`freeform`, `summary`, `interface`, or `review_brief`), and
-  reaps graph previews after terminal transitions. Programmatic checks
+  and category-specific launch contracts, and reaps graph previews after
+  terminal transitions. Programmatic checks
   run as `verifier` nodes: deterministic scripts with normal node
   previews and error states.
 - **Frontend** (`frontend/`) — a projects landing page plus a
   single-project React Flow canvas. The canvas materializes project root,
-  agent/verifier, op, context, error-terminal, planspace, and
-  phantom-composer nodes with timeline, resume, reviews, loads, and
-  op-chevron edges. Launching work is
-  done through the dashed `PhantomNode` composer on the canvas, not a
-  `+ Node` modal. The selected item drives a polymorphic `SidePanel`
+  agent/verifier, op, context, error-terminal, and planspace-lane nodes
+  with dependency, timeline, resume, loads, and op-chevron edges. New
+  work is created from direction controls and virtual-node actions. The
+  selected item drives a polymorphic `SidePanel`
   (`AgentPanel`, `ContextNodePanel`, `PlanspaceFilePanel`, `OpPanel`,
   `ProjectPanel`) rather than the old fixed `NodeDetail`
   tabs. Assistant output is markdown-rendered (`react-markdown` + GFM +
@@ -49,10 +48,10 @@ WebSocket, paired with a React + Vite + React Flow frontend.
   project is bound to a ContextSpace, the launch also snapshots the
   active ContextSpace sources according to their manifests into
   `$MINICLAW_HOME/contextspace/snapshots/<bundle-id>.json`. Project
-  `CONTEXT.md` goes into system context; planspace sources are injected
-  as turn context. The node records `context_bundle_id`,
-  `context_bundle_path`, `context_sources`, and launch settings for
-  audit.
+  `CONTEXT.md`, global plugs, and skill plugs are injected according to
+  their declared mode. Planspace plugs are manifest-only; the agent reads
+  their materialized graph lane instead. The node records
+  `context_bundle_id`, `context_bundle_path`, and launch settings for audit.
 
 ## Scope
 
@@ -62,8 +61,7 @@ providers) and permission (Codex) interactions, on-disk persistence per
 project and node, interrupt, extended-thinking surface, WebSocket
 reconnect replay, Claude and Codex provider adapters, provider-neutral
 project context via `CONTEXT.md`, ContextSpace bootstrap / binding /
-active planspace / bundle snapshots, memory-delta writeback for safe
-  `STATUS.md` observations, virtual-node lanes, review agents,
+active planspace / bundle snapshots, virtual-node lanes, review agents,
   programmatic verifier nodes, bundled dashboard-launched templates, and
   opt-in auto-commit op nodes with two-commit per-node diffs.
 
@@ -77,7 +75,9 @@ MiniClaw2 spawns it in the project cwd.
 
 See [`IMPLEMENTATION_STATUS.md`](IMPLEMENTATION_STATUS.md) for the
 single source of truth on what has landed, and
-[`PHILOSOPHY.md`](PHILOSOPHY.md) for the design position.
+[`PHILOSOPHY.md`](PHILOSOPHY.md) for the design position. Compatibility
+and schema choices from the cleanup are recorded in
+[`CLEANUP_DECISIONS.md`](CLEANUP_DECISIONS.md).
 
 ## Run It
 
@@ -159,6 +159,13 @@ Validate a current store without modifying it:
 python -m miniclaw2 --check-store
 ```
 
+Preview all files an upgrade would change without modifying the source
+store:
+
+```bash
+python -m miniclaw2 --dry-run-migration
+```
+
 If a store is marked current but contains a legacy or inconsistent
 record, repair it explicitly after stopping all MiniClaw2 processes:
 
@@ -166,7 +173,7 @@ record, repair it explicitly after stopping all MiniClaw2 processes:
 python -m miniclaw2 --repair-store
 ```
 
-Use `--store-path /path/to/store` to inspect or repair a copied store.
+Use `--store-path /path/to/store` with any of these maintenance actions.
 
 Opt a project into auto-commit (a `commit` op node is appended after
 each agent/gate node reaches `done`, rewriting that node's
@@ -182,18 +189,22 @@ curl -X POST http://127.0.0.1:8000/sessions \
 
 ```
 backend/miniclaw2/
-  domain.py        # Project, Node, HumanGate, ContextBundle + state enums
+  domain.py        # Project, Node, HumanGate + state enums
   store.py         # JSON/JSONL filesystem store under $MINICLAW_HOME
+  migrations.py    # explicit schema migration, dry-run, backup, audit, repair
+  model_catalog.py # model preset catalog and provider derivation
   runner.py        # provider-neutral NodeRunner state machine
   providers/       # native Claude CLI (PTY+JSONL) and Codex app-server adapters
   registry.py      # ProjectRegistry orchestration over the store
   events.py        # Pydantic models for the WS protocol
   app.py           # FastAPI: REST + WebSocket gateway
-  contextspace.py  # ContextSpace bindings, bundle snapshots, memory deltas
-  context.py       # legacy CONTEXT.md loader helper
+  contextspace.py  # ContextSpace bindings, plugs, and bundle snapshots
+  context_refresh.py # out-of-band CONTEXT.md init/refresh tasks
   git_state.py     # git helpers for commit ids and read-only diffs
-  artifacts.py     # output artifact loading / summarization
-  replay.py        # replay/live buffering for reconnecting WS observers
+  preview.py       # strict executed/virtual preview schemas
+  materialize.py   # durable lane -> agent-visible graph projection
+  reap.py          # validate and persist graph writes after a run
+  replay.py        # versioned replay upgrades + live buffering
   workspace.py     # temporary workspace creation / cleanup
   templates/       # bundled template loader, launcher, verifier scripts
   __main__.py      # uvicorn entry
@@ -203,20 +214,20 @@ frontend/src/
   canvas/
     Canvas.tsx             # React Flow canvas
     layout.ts              # graph materialization and layout
-    nodes/                 # Agent, Gate, Op, Artifact, Context, Phantom, Root nodes
-    edges/                 # Timeline, Resume, Produces, Reviews, Loads edges
+    nodes/                 # Agent, Op, Context, ErrorTerminal, PlanspaceLane, Root
+    edges/TimelineEdge.tsx # Dependency, Timeline, Resume, Loads, OpChevron edges
   panel/
     SidePanel.tsx          # polymorphic inspector dispatch
     AgentPanel.tsx         # result/activity/pending/Inspect drawer
-    GatePanel.tsx          # passive review response form
-    ArtifactPanel.tsx      # result.md/result.json/brief.md viewer
     ContextNodePanel.tsx   # context source inspector
     OpPanel.tsx            # commit-op transition + diff
+    PlanspaceFilePanel.tsx # project CONTEXT.md viewer
     ProjectPanel.tsx       # project settings + ContextSpace activation
   components/
-    ProjectsLanding.tsx    # persistent project list + Tests modal
+    ProjectsLanding.tsx    # persistent project list
     NewProjectModal.tsx    # create/select cwd + model preset
-    TestsPanel.tsx         # bundled template launcher
+    TestsPanel.tsx         # bundled template launcher modal
+    PendingGateInline.tsx  # ask-user / permission response dispatch
     ToolActivity.tsx       # provider tool result rendering
     PermissionDialog.tsx, AskUserDialog.tsx
   ws.ts                    # useSessionSocket + reconnect replay
@@ -231,7 +242,7 @@ projects/<pid>/
   project.json
   nodes/<nid>/
     node.json           # full Node fields, rewritten on each state transition
-    events.jsonl        # {seq, event} per line, append-only
+    events.jsonl        # {schema_version, seq, event} per line, append-only
     gates.jsonl         # {action: "created"|"resolved", gate} per line
 
 contextspace/
@@ -239,22 +250,25 @@ contextspace/
   bindings/projects/<binding-id>.yaml
   plugs/planspaces/<slug>/
     manifest.yaml
-    STATUS.md
-    PLAN.md
-    SKILLS.md
-    events.jsonl
-    inbox/<node-id>.memory-delta.json
+  plugs/global/<slug>/{manifest.yaml, CONTEXT.md}
+  plugs/skills/<slug>/{manifest.yaml, CONTEXT.md, assets/}
   snapshots/<bundle-id>.json
+  templates/<slug>/{template.yaml,lane.yaml,prompts/}
 ```
 
-Agent node output artifacts live in the project workspace by default:
+The active lane is materialized in the project workspace before a run:
 
 ```
-<project_root>/.miniclaw2/outputs/<nid>/result.md          # output_kind=summary
-<project_root>/.miniclaw2/outputs/<nid>/result.json        # output_kind=interface
-<project_root>/.miniclaw2/outputs/<nid>/brief.md           # output_kind=review_brief
-<project_root>/.miniclaw2/outputs/<nid>/memory-delta.json  # optional ContextSpace writeback
+<project_root>/.miniclaw2/graph/lanes/<planspace-id>/nodes/<nid>/
+  preview.json
+  transcript.json       # terminal nodes
+  human-review.md       # human-interact reviews
+  artifacts/            # copied from .miniclaw2/outputs/<nid>/ when present
 ```
+
+Files under `.miniclaw2/outputs/<nid>/` are opaque optional artifacts;
+MiniClaw2 does not impose the former `output_kind`/result-file ontology or
+render artifact graph nodes.
 
 ## Wire Protocol
 
@@ -263,23 +277,37 @@ is a project id, and each `user_message` spawns a fresh agent node.
 
 - Project/session REST APIs:
   `GET /sessions`, `POST /sessions`, `PATCH /sessions/{sid}`,
+  `PATCH /sessions/{sid}/preferences`,
+  `PATCH /sessions/{sid}/layout-hints`,
+  `PATCH /sessions/{sid}/planspace-view`, and
   `DELETE /sessions/{sid}`.
 - ContextSpace REST APIs:
   `GET /sessions/{sid}/contextspace`,
   `PATCH /sessions/{sid}/contextspace`,
-  `POST /sessions/{sid}/contextspace/bootstrap`, and
+  `POST /sessions/{sid}/context/init`,
+  `POST /sessions/{sid}/context/refresh`,
+  `POST /sessions/{sid}/context/cancel`,
+  `GET /sessions/{sid}/files`,
+  `POST /sessions/{sid}/planspaces`,
+  `POST /sessions/{sid}/planspaces/blank`,
+  `PATCH /sessions/{sid}/planspaces/{planspace_id}/mode`, and
   `GET /sessions/{sid}/nodes/{nid}/context-bundle`.
 - Node REST APIs:
   `GET /sessions/{sid}/nodes`,
   `GET /sessions/{sid}/nodes/{nid}`,
   `GET /sessions/{sid}/nodes/{nid}/events`,
-  `GET /sessions/{sid}/nodes/{nid}/diff`, and
-  `GET /sessions/{sid}/nodes/{nid}/artifact`.
+  `GET /sessions/{sid}/nodes/{nid}/diff`,
+  `GET /sessions/{sid}/nodes/{nid}/preview`,
+  `POST /sessions/{sid}/nodes/{nid}/rerun`, and virtual create/edit/delete/
+  promote endpoints under `/sessions/{sid}/virtuals`.
 - Template REST APIs:
   `GET /templates`, `GET /templates/{name}`, and
-  `POST /templates/{name}/run`.
+  `POST /templates/{name}/run`; user templates use `/user-templates` and
+  `/sessions/{sid}/user-templates` endpoints.
+- Skill REST APIs: `GET /skills`, `DELETE /skills/{slug}`.
 - Client -> server:
-  `user_message {text, resume_from_node_id?, extra_planspace_loads?}`,
+  `user_message {text, resume_from_node_id?, extra_skills?,
+  agent_op_kind?, model_preset_id?}`,
   `interaction_response`, `interrupt`, and
   `replay_request {node_id, since_seq}`.
 - Server -> client:
@@ -287,13 +315,16 @@ is a project id, and each `user_message` spawns a fresh agent node.
   `prompt`), `node_updated`,
   `text_delta`, `thinking`, `activity` (with optional `result` +
   `result_kind`), `interaction_request` (`permission`, `ask_user`,
-  `checkpoint_review`, or `human_review_prose`), `usage`, `turn_done`,
+  or `human_review_prose`), `usage`, `turn_done`,
   and `error`. Events carry monotonic `seq` values for reconnect
-  replay.
+  replay; persisted envelopes carry an event schema version and upgrade
+  legacy `checkpoint_review` records before runtime delivery.
 
-`interaction_response` accepts both the `allow / message / updated_input`
-shape used by Claude's `AskUserQuestion` gate and the Codex-style
-`decision`, `scope`, `interrupt`, and raw `response` payloads.
+Current ask-user responses use
+`response.answers.<question-id>.answers: string[]`; human reviews use
+`response.prose`; permission responses use provider-neutral `allow`,
+`message`, `updated_input`, `scope`, and `interrupt`. Provider adapters
+translate that shape to vendor-specific decision vocabularies.
 
 Exact shapes: [`backend/miniclaw2/events.py`](backend/miniclaw2/events.py)
 and [`frontend/src/types.ts`](frontend/src/types.ts).
@@ -312,7 +343,7 @@ The current code has moved beyond the original chat-wrapper plan:
 - New nodes start fresh by default. Resume edges are explicit and copy
   the parent's provider session/thread id into the child node.
 - The graph UI redesign is partially landed: persistent projects,
-  React Flow canvas, context/artifact nodes, phantom composer,
+  React Flow canvas, context and error-terminal nodes, virtual-node actions,
   polymorphic side panel, project-root ContextSpace controls, and
   template test modal are current. Some PRD polish remains.
 - `CONTEXT.md` plus ContextSpace bundle snapshots are in. Vendor-

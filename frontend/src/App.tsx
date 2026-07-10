@@ -81,9 +81,8 @@ export function App() {
 
   const [selection, setSelection] = useState<CanvasSelection>({ kind: "none" });
   /* For data-fetching purposes we track the "currently inspected nodeId" — the
-   * agent/op whose events/diff/bundle we should load. For artifact and
-   * context selections, this stays pointed at the owning node so the artifact
-   * panel can render the file content. */
+   * agent/op whose events, diff, and context bundle we should load. For context
+   * selections, this stays pointed at the owning node. */
   const [inspectedNodeId, setInspectedNodeId] = useState<string | null>(null);
 
   const [selectedEvents, setSelectedEvents] = useState<EventRecord[]>([]);
@@ -632,7 +631,7 @@ export function App() {
       setProjectMutationPending(true);
       try {
         const created = await createPlanspace(session.id, {
-          user_seed: userSeed,
+          seed: userSeed,
           mode,
           model_preset_id: modelPresetId,
         });
@@ -994,7 +993,7 @@ export function App() {
     [session?.id],
   );
 
-  /* events / diff / artifact / context-bundle fetch — keyed off inspectedNodeId */
+  /* Events, diff, and context-bundle fetch — keyed off inspectedNodeId. */
   useEffect(() => {
     if (!session?.id || !inspectedNodeId || selectedNode?.state === "virtual") {
       setSelectedEvents([]);
@@ -1270,23 +1269,11 @@ export function App() {
   const onResolveReview = useCallback(
     (payload: { id: string; judgment: string }) => {
       if (status !== "open") return;
-      const interactionType =
-        activePendingReview?.request.id === payload.id
-          ? activePendingReview.request.interaction_type
-          : "human_review_prose";
-      const response =
-        interactionType === "human_review_prose"
-          ? { prose: payload.judgment }
-          : { judgment: payload.judgment };
       send({
         type: "interaction_response",
         id: payload.id,
         allow: true,
-        decision:
-          interactionType === "human_review_prose"
-            ? "human_review_prose"
-            : "review",
-        response,
+        response: { prose: payload.judgment },
       });
       setPendingReview(null);
       window.setTimeout(() => {
@@ -1846,10 +1833,7 @@ function keepPendingForStates(
 }
 
 function isReviewInteraction(request: InteractionRequest): boolean {
-  return (
-    request.interaction_type === "checkpoint_review" ||
-    request.interaction_type === "human_review_prose"
-  );
+  return request.interaction_type === "human_review_prose";
 }
 
 function pendingBanner(

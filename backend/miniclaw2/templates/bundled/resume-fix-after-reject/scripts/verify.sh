@@ -61,8 +61,8 @@ if fix_node.get("parent_node_id") != build_node_id:
     sys.exit(13)
 
 # Resume should have inherited at least one of the provider session ids.
-build_session = build_node.get("provider_session_id") or build_node.get("cli_session_id")
-fix_session = fix_node.get("provider_session_id") or fix_node.get("cli_session_id")
+build_session = build_node.get("provider_session_id")
+fix_session = fix_node.get("provider_session_id")
 if build_session and fix_session != build_session:
     print(
         f"fix did not inherit build's provider session: build={build_session!r} fix={fix_session!r}",

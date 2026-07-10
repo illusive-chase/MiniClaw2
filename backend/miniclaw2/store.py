@@ -18,13 +18,19 @@ project run sequentially), so writes need no extra locking.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shutil
 from pathlib import Path
 from typing import Any
 
+from pydantic import ValidationError
+
 from .domain import HumanGate, Node, Project
-from .migrations import migrate_store
+from .replay import EVENT_SCHEMA_VERSION, upgrade_event_record
+
+
+logger = logging.getLogger(__name__)
 
 
 def _root() -> Path:
@@ -38,7 +44,6 @@ class Store:
     def __init__(self, root: Path | None = None) -> None:
         self.root = root or _root()
         (self.root / "projects").mkdir(parents=True, exist_ok=True)
-        migrate_store(self.root)
 
     # ---- paths ----
 
@@ -68,17 +73,17 @@ class Store:
     def create_project(self, project: Project) -> Project:
         d = self._project_dir(project.id)
         (d / "nodes").mkdir(parents=True, exist_ok=True)
-        self._write_json(self._project_file(project.id), project.model_dump())
+        self._write_json(
+            self._project_file(project.id),
+            project.model_dump(exclude={"provider"}),
+        )
         return project
 
     def update_project(self, project: Project) -> None:
-        self._write_json(self._project_file(project.id), project.model_dump())
-
-    def load_project(self, pid: str) -> Project | None:
-        path = self._project_file(pid)
-        if not path.exists():
-            return None
-        return Project.model_validate(self._read_json(path))
+        self._write_json(
+            self._project_file(project.id),
+            project.model_dump(exclude={"provider"}),
+        )
 
     def list_projects(self) -> list[Project]:
         projects_dir = self.root / "projects"
@@ -90,7 +95,16 @@ class Store:
                 continue
             pf = pdir / "project.json"
             if pf.exists():
-                out.append(Project.model_validate(self._read_json(pf)))
+                try:
+                    out.append(_validate_project_record(pf, self._read_json(pf)))
+                except (ValueError, ValidationError):
+                    logger.error(
+                        "skipping invalid project record %s; run "
+                        "`python -m miniclaw2 --check-store` and "
+                        "`python -m miniclaw2 --repair-store`",
+                        pf,
+                        exc_info=True,
+                    )
         return out
 
     def delete_project(self, pid: str) -> bool:
@@ -105,17 +119,23 @@ class Store:
     def create_node(self, node: Node) -> Node:
         d = self.node_dir(node.project_id, node.id)
         d.mkdir(parents=True, exist_ok=True)
-        self._write_json(self._node_file(node.project_id, node.id), node.model_dump())
+        self._write_json(
+            self._node_file(node.project_id, node.id),
+            node.model_dump(exclude={"provider"}),
+        )
         return node
 
     def load_node(self, pid: str, nid: str) -> Node | None:
         path = self._node_file(pid, nid)
         if not path.exists():
             return None
-        return Node.model_validate(_migrate_node_payload(self._read_json(path)))
+        return Node.model_validate(self._read_json(path))
 
     def update_node(self, node: Node) -> None:
-        self._write_json(self._node_file(node.project_id, node.id), node.model_dump())
+        self._write_json(
+            self._node_file(node.project_id, node.id),
+            node.model_dump(exclude={"provider"}),
+        )
 
     def delete_node(self, pid: str, nid: str) -> bool:
         d = self.node_dir(pid, nid)
@@ -132,7 +152,16 @@ class Store:
         for ndir in nodes_dir.iterdir():
             nf = ndir / "node.json"
             if nf.exists():
-                out.append(Node.model_validate(_migrate_node_payload(self._read_json(nf))))
+                try:
+                    out.append(Node.model_validate(self._read_json(nf)))
+                except (ValueError, ValidationError):
+                    logger.error(
+                        "skipping invalid node record %s; run "
+                        "`python -m miniclaw2 --check-store` and "
+                        "`python -m miniclaw2 --repair-store`",
+                        nf,
+                        exc_info=True,
+                    )
         out.sort(key=lambda n: n.created_at)
         return out
 
@@ -161,7 +190,17 @@ class Store:
         path = self._events_file(pid, nid)
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a", encoding="utf-8") as f:
-            f.write(json.dumps({"seq": seq, "event": event}, ensure_ascii=False) + "\n")
+            f.write(
+                json.dumps(
+                    {
+                        "schema_version": EVENT_SCHEMA_VERSION,
+                        "seq": seq,
+                        "event": event,
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
             f.flush()
 
     def replay_events(self, pid: str, nid: str, since_seq: int = 0) -> list[dict[str, Any]]:
@@ -176,7 +215,7 @@ class Store:
                     continue
                 rec = json.loads(line)
                 if rec.get("seq", 0) > since_seq:
-                    out.append(rec)
+                    out.append(upgrade_event_record(rec))
         return out
 
     # ---- gates ----
@@ -205,14 +244,10 @@ class Store:
         return json.loads(path.read_text(encoding="utf-8"))
 
 
-def _migrate_node_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    """Rename ``sdk_session_id`` → ``cli_session_id`` on load.
-
-    Old node.json files from before the native-CLI migration carry the
-    legacy field; copy it into the new one if the new one is missing so
-    resume still works. Leave the old key in place — Pydantic will drop
-    it silently since it's no longer a model field.
-    """
-    if "cli_session_id" not in payload and "sdk_session_id" in payload:
-        payload["cli_session_id"] = payload.get("sdk_session_id")
-    return payload
+def _validate_project_record(path: Path, payload: dict[str, Any]) -> Project:
+    preset_id = payload.get("model_preset_id")
+    if not isinstance(preset_id, str) or not preset_id.strip():
+        raise ValueError(
+            f"{path}: project requires model_preset_id; run --repair-store"
+        )
+    return Project.model_validate(payload)

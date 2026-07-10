@@ -45,9 +45,7 @@ def launch_template(
             store_root=registry.store.root,
             seed_text=template.brief,
         )
-        settings = dict(project.settings_override)
-        settings["active_planspace_id"] = planspace_id
-        project.settings_override = settings
+        project.active_planspace_id = planspace_id
         registry.store.update_project(project)
 
         _stamp_lane(
@@ -83,7 +81,7 @@ def apply_user_template(
 
     Returns the list of newly-stamped nodes in slug order.
     """
-    active_lane = project.settings_override.get("active_planspace_id") or ""
+    active_lane = project.active_planspace_id or ""
     if not active_lane:
         raise TemplateError("activate a direction first")
     model_preset_id = _require_template_model_preset(
@@ -109,24 +107,6 @@ def apply_user_template(
     )
 
 
-def _instantiate_lane(
-    template: Template,
-    project: Project,
-    model_preset_id: str,
-    planspace_id: str,
-    registry: ProjectRegistry,
-) -> None:
-    """Legacy shim kept for callers outside this module."""
-    _stamp_lane(
-        template,
-        project,
-        model_preset_id,
-        planspace_id,
-        registry,
-        anchor_node_id=None,
-    )
-
-
 def _stamp_lane(
     template: Template,
     project: Project,
@@ -137,7 +117,6 @@ def _stamp_lane(
     anchor_node_id: str | None,
 ) -> list[Node]:
     model_preset_id = _require_template_model_preset(template, model_preset_id)
-    provider = provider_for_model_preset(model_preset_id)
     slug_to_node_id: dict[str, str] = {}
     pending: list[tuple[TemplateNodeSpec, Node]] = []
     for spec in template.nodes:
@@ -150,7 +129,6 @@ def _stamp_lane(
             state=NodeState.VIRTUAL,
             planspace_id=planspace_id,
             model_preset_id=model_preset_id if spec.kind is NodeKind.AGENT else None,
-            provider=provider,
             prompt="",
             prompt_draft=spec.prompt if spec.kind is NodeKind.AGENT else None,
             scheduled_deps=[],

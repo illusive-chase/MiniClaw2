@@ -46,9 +46,7 @@ def _make_project_with_lane(registry: ProjectRegistry) -> tuple[str, str]:
         store_root=registry.store.root,
         seed_text="seed",
     )
-    settings = dict(project.settings_override)
-    settings["active_planspace_id"] = lane
-    project.settings_override = settings
+    project.active_planspace_id = lane
     registry.store.update_project(project)
     return project.id, lane
 
@@ -383,7 +381,7 @@ class ApplyUserTemplateTest(unittest.TestCase):
         project = self.registry.create_project(
             cwd=None, model_preset_id="opus-4-8", temporary=True
         )
-        # settings_override["active_planspace_id"] is unset.
+        # active_planspace_id is unset.
         with self.assertRaises(Exception):
             apply_user_template(template, project, self.registry)
 

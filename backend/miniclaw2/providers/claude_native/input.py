@@ -41,7 +41,7 @@ _FINGERPRINT_MTIME_WINDOW = 60.0
 @dataclass(slots=True)
 class SubmitResult:
     submitted: bool
-    cli_session_id: str | None = None
+    session_id: str | None = None
     stream_offset: int | None = None
     failure_reason: str | None = None
     recheck: Callable[[], Awaitable["SubmitResult"]] | None = None
@@ -119,7 +119,7 @@ class InputWriter:
         if matched is not None:
             return SubmitResult(
                 submitted=True,
-                cli_session_id=matched.session_id,
+                session_id=matched.session_id,
                 stream_offset=matched.stream_offset,
             )
 
@@ -221,7 +221,7 @@ class InputWriter:
         if matched is not None:
             return SubmitResult(
                 submitted=True,
-                cli_session_id=matched.session_id,
+                session_id=matched.session_id,
                 stream_offset=matched.stream_offset,
             )
         return SubmitResult(submitted=False)

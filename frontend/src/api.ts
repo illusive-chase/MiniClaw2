@@ -8,7 +8,6 @@ import type {
   NodeCategory,
   ReviewSubtype,
   PlanspaceMode,
-  TemplateDetail,
   TemplateSummary,
   SessionFile,
   SessionFileRole,
@@ -116,27 +115,10 @@ export async function updateSessionContextSpace(
   return res.json();
 }
 
-export async function bootstrapSessionContextSpace(
-  sessionId: string,
-  body: {
-    title?: string;
-    planspace_slug?: string;
-    binding_slug?: string;
-  } = {},
-): Promise<SessionContextSpaceInfo> {
-  const res = await fetch(`/sessions/${sessionId}/contextspace/bootstrap`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) throw new Error(`bootstrapSessionContextSpace failed: ${res.status}`);
-  return res.json();
-}
-
 export async function createPlanspace(
   sessionId: string,
   body: {
-    user_seed: string;
+    seed: string;
     mode?: PlanspaceMode;
     model_preset_id?: string;
   },
@@ -479,12 +461,6 @@ export async function getSessionFile(
 export async function listTemplates(): Promise<TemplateSummary[]> {
   const res = await fetch("/templates");
   if (!res.ok) throw new Error(`listTemplates failed: ${res.status}`);
-  return res.json();
-}
-
-export async function getTemplate(name: string): Promise<TemplateDetail> {
-  const res = await fetch(`/templates/${encodeURIComponent(name)}`);
-  if (!res.ok) throw new Error(`getTemplate failed: ${res.status}`);
   return res.json();
 }
 

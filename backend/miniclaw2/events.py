@@ -39,7 +39,6 @@ class InteractionRequest(BaseModel):
     interaction_type: Literal[
         "permission",
         "ask_user",
-        "checkpoint_review",
         "human_review_prose",
     ]
     tool_name: str
@@ -112,10 +111,11 @@ class UserMessage(BaseModel):
 
 
 class InteractionResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     type: Literal["interaction_response"]
     id: str
     allow: bool = True
-    decision: str | dict[str, Any] | None = None
     message: str = ""
     updated_input: dict[str, Any] | None = None
     response: dict[str, Any] | None = None

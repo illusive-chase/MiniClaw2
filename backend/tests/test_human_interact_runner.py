@@ -86,7 +86,6 @@ class HumanInteractRunnerTests(unittest.IsolatedAsyncioTestCase):
             brief=brief,
             state=NodeState.QUEUED,
             planspace_id=self.plug_id,
-            provider="claude",
             prompt="review please",
         )
         self.store.create_node(node)
@@ -140,7 +139,7 @@ class HumanInteractRunnerTests(unittest.IsolatedAsyncioTestCase):
             runner.resolve_gate(
                 prose_id_holder["id"],
                 allow=True,
-                message=prose_text,
+                response={"prose": prose_text},
             )
 
             await asyncio.wait_for(task, timeout=5.0)
@@ -191,7 +190,7 @@ class HumanInteractRunnerTests(unittest.IsolatedAsyncioTestCase):
             runner.resolve_gate(
                 prose_id_holder["id"],
                 allow=True,
-                message="   ",
+                response={"prose": "   "},
             )
             await asyncio.wait_for(task, timeout=5.0)
 

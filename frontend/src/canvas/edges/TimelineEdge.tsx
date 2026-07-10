@@ -161,33 +161,6 @@ function ResumeEdgeImpl(props: EdgeProps<EdgeData>) {
 
 export const ResumeEdge = memo(ResumeEdgeImpl);
 
-/** Solid arrow into a review agent. */
-function ReviewsEdgeImpl(props: EdgeProps) {
-  const { sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, selected } = props;
-  const [path] = getBezierPath({
-    sourceX,
-    sourceY,
-    targetX,
-    targetY,
-    sourcePosition,
-    targetPosition,
-    curvature: 0.22,
-  });
-  return (
-    <BaseEdge
-      path={path}
-      style={{
-        stroke: selected ? "rgb(var(--brand))" : "rgb(var(--state-review))",
-        strokeWidth: 1.4,
-        opacity: 0.85,
-      }}
-      markerEnd={props.markerEnd}
-    />
-  );
-}
-
-export const ReviewsEdge = memo(ReviewsEdgeImpl);
-
 /** Dashed — acausal carryover; auto-hidden unless endpoint hovered/selected. */
 function LoadsEdgeImpl(props: EdgeProps) {
   const { sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, selected, style } =

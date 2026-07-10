@@ -100,8 +100,7 @@ export const LANE = {
   timelineY: 220,
   projectContextLaneY: 8,
   contextLaneY: 110,
-  artifactOffsetX: 240,
-  artifactOffsetY: 140,
+  errorTerminalOffsetY: 140,
   agentWidth: 224,
   agentHeight: 132,
   agentSpacing: 280,
@@ -559,7 +558,7 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
       /* Drop below the agent so retries (next timeline slot at
        * baseX + agentSpacing) don't stack on top of the failure marker. */
       x: baseX,
-      y: baseY + LANE.artifactOffsetY,
+      y: baseY + LANE.errorTerminalOffsetY,
     };
     if (ownerParent?.startsWith("planspace:")) {
       recordChildExtent(

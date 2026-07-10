@@ -125,9 +125,7 @@ class RunnerPreviewRepairTests(unittest.IsolatedAsyncioTestCase):
         self.plug_id = create_planspace(
             self.project, title="repair-lane", mode="manual"
         )
-        settings = dict(self.project.settings_override)
-        settings["active_planspace_id"] = self.plug_id
-        self.project.settings_override = settings
+        self.project.active_planspace_id = self.plug_id
         self.store.update_project(self.project)
 
     async def asyncTearDown(self) -> None:
@@ -141,7 +139,6 @@ class RunnerPreviewRepairTests(unittest.IsolatedAsyncioTestCase):
             model_preset_id="opus-4-7",
             category=Category.REGULAR,
             state=NodeState.QUEUED,
-            provider="claude",
             prompt="do work",
         )
         self.store.create_node(node)
@@ -257,9 +254,7 @@ class RunnerPreviewRepairTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('"state": "error"', preview)
 
     async def test_stale_active_planspace_errors_before_provider_launch(self) -> None:
-        settings = dict(self.project.settings_override)
-        settings["active_planspace_id"] = "planspaces.deleted"
-        self.project.settings_override = settings
+        self.project.active_planspace_id = "planspaces.deleted"
         self.store.update_project(self.project)
         node = self._node()
         emitted: list[dict] = []

@@ -21,7 +21,6 @@ from __future__ import annotations
 import json
 import os
 import sys
-from typing import Any
 from urllib import error as urlerror
 from urllib import request as urlrequest
 
@@ -125,12 +124,6 @@ def _derive_ready_url() -> str | None:
 
 def _passthrough() -> int:
     return 0
-
-
-def _write_passthrough(_payload: dict[str, Any]) -> None:
-    # Intentionally a no-op: empty stdout + exit 0 tells Claude to fall
-    # back to its native TUI prompt.
-    return None
 
 
 if __name__ == "__main__":

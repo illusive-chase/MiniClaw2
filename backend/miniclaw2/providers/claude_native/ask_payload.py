@@ -105,75 +105,26 @@ def _extract_answers(
     response: dict[str, Any],
     parsed: ParsedAsk,
 ) -> dict[str, str]:
-    """Pull per-question answers out of an InteractionResponse-shaped dict.
-
-    We accept several shapes because the frontend has evolved:
-
-    - ``response.updated_input.answers`` — direct dict[question, str]
-    - ``response.response.answers`` — same, nested
-    - ``response.decision`` — string or dict; single-question shortcut
-    - free-text ``response.message`` — applied to the first question
-    """
+    """Convert canonical ``response.answers`` to Claude's answer mapping."""
     out: dict[str, str] = {}
-    candidates: list[dict[str, Any]] = []
-    updated = response.get("updated_input")
-    if isinstance(updated, dict):
-        raw = updated.get("answers")
-        if isinstance(raw, dict):
-            candidates.append(raw)
     nested = response.get("response")
-    if isinstance(nested, dict):
-        raw = nested.get("answers")
-        if isinstance(raw, dict):
-            candidates.append(raw)
-        if isinstance(nested.get("value"), dict):
-            candidates.append(nested["value"])
+    answers = nested.get("answers") if isinstance(nested, dict) else None
+    if not isinstance(answers, dict):
+        return out
 
     for question in parsed.questions:
-        text: str | None = None
-        for source in candidates:
-            val = source.get(question.question)
-            if val is None:
-                val = source.get(question.header)
-            if val is None:
+        keys = [question.raw.get("id"), question.question, question.header]
+        for key in keys:
+            if not isinstance(key, str) or not key:
                 continue
-            text = _stringify_answer(val)
-            if text is not None:
+            value = answers.get(key)
+            if not isinstance(value, dict):
+                continue
+            selected = value.get("answers")
+            if isinstance(selected, list):
+                parts = [str(item).strip() for item in selected if str(item).strip()]
+                if parts:
+                    out[question.question] = ", ".join(parts)
                 break
-        if text is not None:
-            out[question.question] = text
-
-    if not out and len(parsed.questions) == 1:
-        decision = response.get("decision")
-        if isinstance(decision, str) and decision.strip():
-            out[parsed.questions[0].question] = decision.strip()
-        elif isinstance(decision, dict):
-            text = _stringify_answer(decision)
-            if text is not None:
-                out[parsed.questions[0].question] = text
-        else:
-            message = response.get("message")
-            if isinstance(message, str) and message.strip():
-                out[parsed.questions[0].question] = message.strip()
 
     return out
-
-
-def _stringify_answer(val: Any) -> str | None:
-    if isinstance(val, str):
-        text = val.strip()
-        return text or None
-    if isinstance(val, list):
-        parts = [str(v).strip() for v in val if str(v).strip()]
-        return ", ".join(parts) if parts else None
-    if isinstance(val, dict):
-        for key in ("label", "answer", "text", "value"):
-            inner = val.get(key)
-            if isinstance(inner, str) and inner.strip():
-                return inner.strip()
-            if isinstance(inner, list):
-                parts = [str(v).strip() for v in inner if str(v).strip()]
-                if parts:
-                    return ", ".join(parts)
-        return None
-    return None

@@ -22,19 +22,20 @@ Trunk: `backend/miniclaw2/domain.py`.
 - `Category ∈ {planning, regular, review}` and
   `ReviewSubtype ∈ {agentic_review, human_interact_review, programmatic_review}`.
 - `Node` fields covering ontology in `PHILOSOPHY.md` §6.1: `parent_node_id`,
-  `planspace_id`, `context_sources`, `context_bundle_id`,
-  `context_bundle_path`, `model_preset_id`, `provider`, `provider_session_id`,
-  `provider_turn_id`, `cli_session_id`,
+  `planspace_id`, `context_bundle_id`, `context_bundle_path`,
+  `model_preset_id`, `provider_session_id`, `provider_turn_id`,
   `commit_before`, `commit_after`, `prompt`, `category`, `subtype`,
   `brief`, `prompt_draft`, `scheduled_deps`, `resume_from_node_id`,
   `verify_script_ref`, `proposed_by`, `obsolete_reason`, `summary`,
   `error`, `usage`, `system_context_snapshot`, `settings_snapshot`,
   `created_at`, `started_at`, `finished_at`.
-- `Project` fields: `root_path`, `name`, `model_preset_id`, `provider`, `head_commit`,
-  `parent_project_id`, `parent_commit`, `project_context_binding_id`,
+- `Project` fields: `root_path`, `name`, `model_preset_id`,
+  `project_context_binding_id`, `active_planspace_id`, `preferred_language`,
   `settings_override`, `temporary`, `template_id`,
   `layout_hints`, `layout_viewport`, `planspace_view`,
   `created_at`.
+- `Project.provider` and `Node.provider` are computed from
+  `model_preset_id` for wire/display use and are excluded from persisted JSON.
 - `HumanGate` model is inline-only:
   `GateSubtype ∈ {permission, ask_user}`. `permission` is emitted by
   the Codex adapter only; the native-CLI Claude provider runs with
@@ -125,7 +126,7 @@ Trunk: `backend/miniclaw2/runner.py`, `backend/miniclaw2/registry.py`.
 
 - Fresh provider session/thread on ordinary launch.
 - Resume via `parent_node_id` when launched with `resume_from_node_id`;
-  inherits `provider_session_id` / `cli_session_id`. Resumed agent
+  inherits the canonical `provider_session_id`. Resumed agent
   surfaces show `↻` continuation context.
 - Inline gates (permission for Codex, ask-user for both providers)
   normalize to `waiting` substate; resolution returns the node to
@@ -199,7 +200,7 @@ Trunk: `backend/miniclaw2/runner.py`, `backend/miniclaw2/registry.py`.
 
 ## 4. ContextSpace
 
-Trunk: `backend/miniclaw2/contextspace.py`, `backend/miniclaw2/context.py`.
+Trunk: `backend/miniclaw2/contextspace.py`.
 
 ### Landed
 
@@ -220,8 +221,8 @@ Trunk: `backend/miniclaw2/contextspace.py`, `backend/miniclaw2/context.py`.
   read through `.miniclaw2/graph/lanes/<lane>/`.
 - `ProjectBinding`, `PlugRef`, `ComposedContextBundle` carry binding
   resolution; `Project.project_context_binding_id` references the
-  current binding; active planspace lives in
-  `Project.settings_override["active_planspace_id"]`.
+  current binding; `Project.active_planspace_id` owns the current
+  planspace selection. Binding manifests describe available plugs only.
 - Provider-neutral `<project_root>/CONTEXT.md` loading at every node
   launch. Claude receives it via `system_prompt.append`; Codex
   prepends it to fresh-thread `turn/start` input. Resolved text is
@@ -313,8 +314,9 @@ Trunk: `frontend/src/canvas/Canvas.tsx`, `frontend/src/canvas/layout.ts`,
 - Agent tiles show category badges for planning / regular / review /
   human-interact review nodes; verifier tiles use the review tone and
   a programmatic label.
-- Edges: timeline spine, resume (`↻` mid-glyph), review-agent edges,
-  loads (dashed, auto-hidden unless endpoint hovered/selected).
+- Edges: dependency arrows, timeline spine, resume (`↻` mid-glyph),
+  loads (dashed, auto-hidden unless endpoint hovered/selected), and op
+  chevrons.
 - Op as edge chevron when the op has a downstream child; trailing
   ops without a child fall back to a tile.
 - Error terminal nodes downstream of failed runs carry the `error`
@@ -471,6 +473,10 @@ virtual into their subgraph.
 - `backend/miniclaw2/templates/` provides `loader.py`, `launcher.py`,
   and `bundled/` template definitions with `template.yaml`,
   `lane.yaml`, `prompts/`, `scripts/`, and optional `seed/`.
+- Current template metadata declares only `allowed_model_preset_ids`;
+  runtime loaders reject legacy `providers` and singular
+  `model_preset_id` fields. Store migration owns those conversions for
+  historical user templates.
 - REST exposes `GET /templates`, `GET /templates/{name}`, and
   `POST /templates/{name}/run`. The old `/scenarios` and
   `/sessions/{sid}/verify` endpoints have been removed.
@@ -560,7 +566,8 @@ multi-project surface has been built.
 
 ## 10. Persistence
 
-Trunk: `backend/miniclaw2/store.py`.
+Trunk: `backend/miniclaw2/store.py`, `backend/miniclaw2/migrations.py`,
+`backend/miniclaw2/replay.py`.
 
 ### Landed
 
@@ -576,9 +583,19 @@ Trunk: `backend/miniclaw2/store.py`.
   ```
 - Atomic JSON writes (tmp + rename). Single-writer per node is
   guaranteed by sequential intra-project execution.
+- Store schema v3 writes one canonical shape: only `model_preset_id`
+  persists provider selection, only `provider_session_id` persists
+  provider conversation identity, and ContextSpace/language selections
+  live in typed Project fields. Legacy conversion runs only in the
+  explicit CLI migration/repair layer, with per-file backups and audit.
+- Normal startup performs a cheap schema-version check and migrates only
+  old versions; current-schema consistency scans are explicit through
+  `--check-store`/`--repair-store`. `--dry-run-migration` executes against
+  a temporary copy and reports planned file changes.
 - Reconnect replay reads `events.jsonl` from `since_seq` then attaches
-  to the live tail; project-level WebSocket observers continue to
-  receive live events after the JSONL gap is replayed.
+  to the live tail. Event envelopes carry `schema_version`; legacy
+  variants are upgraded before runtime delivery. Project-level WebSocket
+  observers continue to receive live events after the JSONL gap is replayed.
 
 ### Pending
 
@@ -595,13 +612,17 @@ Quick reference; the on-disk shape is authoritative.
   `node_started {node_id, parent_node_id, kind, category, subtype, prompt}`,
   `node_updated`, `node_removed {id}`, `interaction_request
   {interaction_type, ...}` with `interaction_type ∈ {"permission",
-  "ask_user", "human_review_prose"}` (`checkpoint_review` remains
-  accepted in legacy replay/client types only; `permission` is emitted
-  by Codex only), `text_delta`, `thinking`, `activity`, `usage`,
+  "ask_user", "human_review_prose"}` (`checkpoint_review` appears only
+  in the versioned replay upgrader; `permission` is emitted by Codex
+  only), `text_delta`, `thinking`, `activity`, `usage`,
   `turn_done`, `error`.
 - Client → server: user prompt with optional `resume_from_node_id`,
   `interrupt`, interaction response,
   `replay_request {node_id, since_seq}`.
+- Interaction responses use one carrier per kind: ask-user answers at
+  `response.answers`, human-review text at `response.prose`, and
+  provider-neutral permission fields (`allow`, `scope`, `interrupt`,
+  `updated_input`, `message`). Provider adapters own vendor decisions.
 - REST: project CRUD, node and event introspection,
   `PATCH /sessions/{sid}/layout-hints`,
   `PATCH /sessions/{sid}/planspace-view`,

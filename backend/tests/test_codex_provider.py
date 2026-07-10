@@ -13,9 +13,43 @@ from miniclaw2.providers.codex import (
     CodexProvider,
     _CodexJsonRpcClient,
     _CODEX_STDIO_BUFFER_LIMIT_BYTES,
+    _codex_user_input_response,
     _thread_params,
     _turn_params,
 )
+
+
+class CodexUserInputResponseTest(unittest.TestCase):
+    def test_accepts_only_canonical_nested_answers(self) -> None:
+        self.assertEqual(
+            _codex_user_input_response(
+                {
+                    "response": {
+                        "answers": {
+                            "framework": {"answers": ["React"]},
+                            "checks": {"answers": ["types", "tests"]},
+                        }
+                    }
+                }
+            ),
+            {
+                "answers": {
+                    "framework": {"answers": ["React"]},
+                    "checks": {"answers": ["types", "tests"]},
+                }
+            },
+        )
+
+    def test_does_not_accept_legacy_top_level_or_scalar_answers(self) -> None:
+        self.assertEqual(
+            _codex_user_input_response(
+                {
+                    "answers": {"framework": "React"},
+                    "updated_input": {"answers": {"checks": ["types"]}},
+                }
+            ),
+            {"answers": {}},
+        )
 
 
 class _FakeStdin:

@@ -24,7 +24,6 @@ export type InteractionRequest = {
   interaction_type:
     | "permission"
     | "ask_user"
-    | "checkpoint_review"
     | "human_review_prose";
   tool_name: string;
   tool_input: Record<string, unknown>;
@@ -104,7 +103,6 @@ export type ClientMessage =
       type: "interaction_response";
       id: string;
       allow: boolean;
-      decision?: string | Record<string, unknown> | null;
       message?: string;
       updated_input?: Record<string, unknown> | null;
       response?: Record<string, unknown> | null;
@@ -133,8 +131,7 @@ export type SessionInfo = {
   template_id?: string | null;
   name?: string;
   project_context_binding_id?: string | null;
-  /** Persisted canvas positions keyed by node id (or synthetic id, e.g.
-   * `artifact:<nid>`). Optional for older sessions. */
+  /** Persisted canvas positions keyed by node id or synthetic graph id. */
   layout_hints?: Record<string, { x: number; y: number }>;
   /** Persisted React Flow viewport so pan/zoom survives project reopen. */
   layout_viewport?: CanvasViewport | null;
@@ -149,8 +146,6 @@ export type TemplateSummary = {
   node_count: number;
   nodes?: TemplateNodeSpec[];
 };
-
-export type TemplateDetail = TemplateSummary;
 
 export type TemplateNodeSpec = {
   id: string;
@@ -207,14 +202,12 @@ export type NodeInfo = {
   state: NodeState;
   parent_node_id?: string | null;
   planspace_id?: string | null;
-  context_sources: string[];
   context_bundle_id?: string | null;
   context_bundle_path?: string | null;
   model_preset_id?: string | null;
   provider: AgentProvider;
   provider_session_id?: string | null;
   provider_turn_id?: string | null;
-  cli_session_id?: string | null;
   commit_before?: string | null;
   commit_after?: string | null;
   prompt: string;
@@ -301,7 +294,6 @@ export type ContextSpaceBindingSummary = {
   local_paths: string[];
   matches_project_path: boolean;
   active_planspace_id?: string | null;
-  binding_active_planspace_id?: string | null;
   plugs: ContextSpacePlugSummary[];
 };
 
@@ -309,7 +301,6 @@ export type SessionContextSpaceInfo = {
   root: string;
   exists: boolean;
   project_context_binding_id?: string | null;
-  project_active_planspace_id?: string | null;
   resolved_binding_id?: string | null;
   active_planspace_id?: string | null;
   planspace_view?: Record<string, { hidden?: boolean }>;

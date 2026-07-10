@@ -105,7 +105,6 @@ class NodeRunner:
         gate_id: str,
         *,
         allow: bool,
-        decision: str | dict[str, Any] | None = None,
         message: str = "",
         updated_input: dict[str, Any] | None = None,
         response: dict[str, Any] | None = None,
@@ -121,7 +120,6 @@ class NodeRunner:
             fut.set_result,
             {
                 "allow": allow,
-                "decision": decision,
                 "message": message,
                 "updated_input": updated_input,
                 "response": response,
@@ -571,7 +569,7 @@ class NodeRunner:
             response = await future
         finally:
             self._gates.pop(interaction_id, None)
-        return _extract_prose_response(response).strip()
+        return _human_review_prose(response).strip()
 
     def _write_human_review_prose(self, prose: str) -> None:
         """Persist the prose to the durable node store AND the
@@ -770,11 +768,6 @@ class NodeRunner:
             )
         except ValueError:
             self.node.context_bundle_path = str(bundle.bundle_path)
-        self.node.context_sources = [
-            str(source.get("path") or "")
-            for source in bundle.sources
-            if source.get("path")
-        ]
         self.node.system_context_snapshot = bundle.project_context
         self.store.update_node(self.node)
         return bundle
@@ -791,9 +784,6 @@ class NodeRunner:
                 "reasoning_effort",
             }
         }
-        if self.node.kind is NodeKind.AGENT:
-            preset = get_model_preset(self.node.model_preset_id)
-            snapshot.update(preset.settings_snapshot())
         snapshot["cwd"] = self.project.root_path
         project_binding_id = (
             getattr(context_bundle, "project_binding_id", None)
@@ -854,7 +844,6 @@ class NodeRunner:
             return
         if ev.kind == "session" and ev.session_id:
             self.node.provider_session_id = ev.session_id
-            self.node.cli_session_id = ev.session_id
             self.store.update_node(self.node)
             await self._emit_node_updated()
             return
@@ -1065,25 +1054,15 @@ def _state_from_provider(value: str | None) -> NodeState | None:
     return None
 
 
-def _extract_prose_response(response: Any) -> str:
-    """Pull a prose string out of an InteractionResponse-shaped dict.
-
-    Tolerates ``message``, ``response.text``, ``response.prose``, or
-    ``response.message`` carriers. Returns ``""`` if none present.
-    """
+def _human_review_prose(response: Any) -> str:
+    """Return canonical ``response.prose`` from an interaction response."""
     if not isinstance(response, dict):
         return ""
-    message = response.get("message")
-    if isinstance(message, str) and message.strip():
-        return message
     nested = response.get("response")
     if isinstance(nested, dict):
-        for key in ("text", "prose", "message"):
-            value = nested.get(key)
-            if isinstance(value, str) and value.strip():
-                return value
-    if isinstance(message, str):
-        return message
+        prose = nested.get("prose")
+        if isinstance(prose, str):
+            return prose
     return ""
 
 

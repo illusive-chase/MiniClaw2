@@ -2,14 +2,10 @@ import { useState } from "react";
 import type { InteractionRequest } from "../types";
 
 type PermissionSuggestion = {
-  label?: string;
-  title?: string;
+  label: string;
   description?: string;
   message?: string;
   updated_input?: Record<string, unknown>;
-  updatedInput?: Record<string, unknown>;
-  input?: Record<string, unknown>;
-  decision?: string;
   scope?: string;
 };
 
@@ -18,7 +14,6 @@ type Props = {
   onRespond: (args: {
     allow: boolean;
     message?: string;
-    decision?: string;
     scope?: string;
     interrupt?: boolean;
     updatedInput?: Record<string, unknown> | null;
@@ -51,7 +46,6 @@ export function PermissionDialog({ request, onRespond, variant = "panel" }: Prop
     }
   };
   const respondAllow = (extra: {
-    decision?: string;
     scope?: string;
     message?: string;
   } = {}) => {
@@ -60,7 +54,6 @@ export function PermissionDialog({ request, onRespond, variant = "panel" }: Prop
     onRespond({
       allow: true,
       updatedInput,
-      decision: selectedSuggestion?.decision,
       scope: selectedSuggestion?.scope,
       message: selectedSuggestion?.message,
       ...extra,
@@ -68,7 +61,7 @@ export function PermissionDialog({ request, onRespond, variant = "panel" }: Prop
   };
   const applySuggestion = (suggestion: PermissionSuggestion) => {
     setSelectedSuggestion(suggestion);
-    const nextInput = suggestion.updated_input || suggestion.updatedInput || suggestion.input;
+    const nextInput = suggestion.updated_input;
     if (nextInput) {
       setInputText(JSON.stringify(nextInput, null, 2));
       setJsonError(null);
@@ -153,7 +146,6 @@ export function PermissionDialog({ request, onRespond, variant = "panel" }: Prop
         <button
           onClick={() =>
             respondAllow({
-              decision: "acceptForSession",
               scope: "session",
               message: reason || undefined,
             })
@@ -172,7 +164,6 @@ export function PermissionDialog({ request, onRespond, variant = "panel" }: Prop
           onClick={() =>
             onRespond({
               allow: false,
-              decision: "cancel",
               interrupt: true,
               message: reason || "Cancelled by user",
             })
@@ -188,20 +179,16 @@ export function PermissionDialog({ request, onRespond, variant = "panel" }: Prop
 
 function normalizeSuggestions(values: unknown[]): PermissionSuggestion[] {
   return values
-    .map((value) =>
-      value && typeof value === "object"
-        ? (value as PermissionSuggestion)
-        : null,
-    )
+    .map((value) => {
+      if (!value || typeof value !== "object") return null;
+      const suggestion = value as Partial<PermissionSuggestion>;
+      return typeof suggestion.label === "string" && suggestion.label
+        ? (suggestion as PermissionSuggestion)
+        : null;
+    })
     .filter((value): value is PermissionSuggestion => value !== null);
 }
 
 function suggestionLabel(suggestion: PermissionSuggestion): string {
-  return (
-    suggestion.label ||
-    suggestion.title ||
-    suggestion.decision ||
-    suggestion.description ||
-    "Apply suggestion"
-  );
+  return suggestion.label;
 }

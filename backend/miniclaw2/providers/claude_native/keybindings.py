@@ -24,15 +24,6 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
-UNSUPPORTED_SUBMIT_MODIFIERS = frozenset({
-    "ctrl+enter",
-    "control+enter",
-    "cmd+enter",
-    "meta+enter",  # meta+enter IS supported; kept here for docs — see resolver
-    "shift+enter",
-})
-
-
 @dataclass(slots=True)
 class SubmitKey:
     raw: str

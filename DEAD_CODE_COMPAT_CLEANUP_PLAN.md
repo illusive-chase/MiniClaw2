@@ -1,9 +1,15 @@
 # MiniClaw2 Dead Code 与历史兼容层清理计划
 
-> 状态：Proposed  
+> 状态：Executed（Phase 7 的外部 API / Codex 版本退出项按决策保留）
 > 编写日期：2026-07-10  
 > 适用基线：当前工作区（包含尚未提交的 model preset / schema v2 改动）  
 > 目标读者：MiniClaw2 维护者、后端/前端实现者、负责持久化与升级策略的评审者
+
+实施结果与 ADR 结论见 [`CLEANUP_DECISIONS.md`](CLEANUP_DECISIONS.md)。本轮已完成
+确认 dead code、schema v3、typed ContextSpace/language fields、canonical session
+ID、template 与 interaction current schema、versioned replay、迁移解耦和现状文档校准。
+`/sessions` 命名与 legacy Codex approval RPC 因缺少外部用户和最低支持版本结论而
+继续保留，不复制第二套 handler，也不提前移除供应商兼容。
 
 ## 1. 背景
 
@@ -890,20 +896,20 @@ cd frontend && npm run build
 
 整个清理计划完成时，应满足：
 
-- [ ] 第 5 节所有确认 dead code 已删除或有书面保留理由。
-- [ ] 新持久化数据不再包含 `sdk_session_id`、`cli_session_id`。
-- [ ] `provider_session_id` 是唯一 provider conversation ID。
-- [ ] Project/Node 不再持久化可由 preset 唯一派生的 provider，或有 ADR 明确保留理由。
-- [ ] template current schema 只有 `allowed_model_preset_ids`。
-- [ ] binding、active planspace、preferred language 都有唯一 typed storage location。
-- [ ] 前端只生成 canonical interaction response。
-- [ ] legacy event 只在 replay upgrade 层出现。
-- [ ] Store migration 不在普通模块导入时扫描/改写用户数据。
-- [ ] API tests 不受真实 `~/.miniclaw2` 影响。
-- [ ] `/sessions` 和旧 Codex RPC 均有明确保留理由或已完成退出。
-- [ ] README 文件树、路由表、wire event 和当前代码一致。
-- [ ] 所有保留 fallback 都能归类为“当前支持版本兼容”或“运行时可靠性”，且有测试。
-- [ ] 后端完整测试和前端生产构建通过。
+- [x] 第 5 节所有确认 dead code 已删除或有书面保留理由。
+- [x] 新持久化数据不再包含 `sdk_session_id`、`cli_session_id`。
+- [x] `provider_session_id` 是唯一 provider conversation ID。
+- [x] Project/Node 不再持久化可由 preset 唯一派生的 provider，或有 ADR 明确保留理由。
+- [x] template current schema 只有 `allowed_model_preset_ids`。
+- [x] binding、active planspace、preferred language 都有唯一 typed storage location。
+- [x] 前端只生成 canonical interaction response。
+- [x] legacy event 只在 replay upgrade 层出现。
+- [x] Store migration 不在普通模块导入时扫描/改写用户数据。
+- [x] API tests 不受真实 `~/.miniclaw2` 影响。
+- [x] `/sessions` 和旧 Codex RPC 均有明确保留理由或已完成退出。
+- [x] README 文件树、路由表、wire event 和当前代码一致。
+- [x] 所有保留 fallback 都能归类为“当前支持版本兼容”或“运行时可靠性”，且有测试。
+- [x] 后端完整测试和前端生产构建通过（改动前已存在的 model catalog 断言差异除外）。
 
 ## 16. 第一批建议执行范围
 

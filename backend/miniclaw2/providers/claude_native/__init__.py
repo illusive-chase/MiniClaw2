@@ -74,13 +74,13 @@ class ClaudeNativeSession:
         self._tool_allowlist = tool_allowlist
         self._data_dir = data_dir or default_data_dir()
 
-        self._cli_session_id: str = session_id or str(uuid4())
+        self._session_id: str = session_id or str(uuid4())
         self._pty: Any = None
         self._pty_reader_task: asyncio.Task[None] | None = None
         self._last_pty_output_ts: float = 0.0
         self._input: InputWriter | None = None
         self._jsonl_path: Path = jsonl_path(
-            cwd, self._cli_session_id, self._data_dir
+            cwd, self._session_id, self._data_dir
         )
         # Resume: seed offset from current EOF. Without this, drain() would
         # replay prior turns' records and a stale result/summary would trip
@@ -98,15 +98,15 @@ class ClaudeNativeSession:
         self._session_ready_event: asyncio.Event | None = None
 
     @property
-    def cli_session_id(self) -> str:
-        return self._cli_session_id
+    def session_id(self) -> str:
+        return self._session_id
 
     async def start(self) -> None:
         """Spawn ``claude`` and wait for its SessionStart hook (or 45s timeout)."""
         binary = resolve_claude_binary()
         argv = build_argv(
             binary=binary,
-            session_id=self._cli_session_id,
+            session_id=self._session_id,
             resume=self._resume_session_id is not None,
             model=self._model,
             effort=self._effort,
@@ -118,14 +118,14 @@ class ClaudeNativeSession:
             hook_token=hook_runtime.token(),
             node_id=self._node_id,
             project_id=self._project_id,
-            session_id=self._cli_session_id,
+            session_id=self._session_id,
         )
 
         # Register the session-ready waiter before spawning: the child can
         # run its SessionStart hook and POST /hook/* immediately after fork,
         # and signal_session_ready() drops signals for unregistered ids.
         self._session_ready_event = hook_runtime.register_session_ready(
-            self._cli_session_id
+            self._session_id
         )
 
         loop = asyncio.get_running_loop()
@@ -134,11 +134,11 @@ class ClaudeNativeSession:
                 None, _spawn_pty, argv, self._cwd, env
             )
         except ClaudeBinaryNotFoundError:
-            hook_runtime.unregister_session_ready(self._cli_session_id)
+            hook_runtime.unregister_session_ready(self._session_id)
             self._session_ready_event = None
             raise
         except Exception as exc:  # noqa: BLE001
-            hook_runtime.unregister_session_ready(self._cli_session_id)
+            hook_runtime.unregister_session_ready(self._session_id)
             self._session_ready_event = None
             raise ClaudeNativeError(f"failed to spawn claude PTY: {exc}") from exc
 
@@ -189,20 +189,20 @@ class ClaudeNativeSession:
         )
         if not result.submitted:
             resolved = self._resolve_from_pid_state()
-            if resolved is not None and resolved.session_id != self._cli_session_id:
+            if resolved is not None and resolved.session_id != self._session_id:
                 self._retarget(resolved.session_id, resolved.jsonl_path)
                 recheck = result.recheck
                 rechecked = await recheck() if recheck is not None else None
                 if rechecked is not None and rechecked.submitted:
                     if (
-                        rechecked.cli_session_id is not None
-                        and rechecked.cli_session_id != self._cli_session_id
+                        rechecked.session_id is not None
+                        and rechecked.session_id != self._session_id
                     ):
                         self._retarget(
-                            rechecked.cli_session_id,
+                            rechecked.session_id,
                             jsonl_path(
                                 self._cwd,
-                                rechecked.cli_session_id,
+                                rechecked.session_id,
                                 self._data_dir,
                             ),
                             stream_offset=rechecked.stream_offset,
@@ -211,13 +211,13 @@ class ClaudeNativeSession:
                         self._jsonl_offset = rechecked.stream_offset
                     return SubmitResult(
                         submitted=True,
-                        cli_session_id=self._cli_session_id,
+                        session_id=self._session_id,
                         stream_offset=self._jsonl_offset,
                     )
-        elif result.cli_session_id and result.cli_session_id != self._cli_session_id:
+        elif result.session_id and result.session_id != self._session_id:
             self._retarget(
-                result.cli_session_id,
-                jsonl_path(self._cwd, result.cli_session_id, self._data_dir),
+                result.session_id,
+                jsonl_path(self._cwd, result.session_id, self._data_dir),
                 stream_offset=result.stream_offset,
             )
         return result
@@ -234,7 +234,7 @@ class ClaudeNativeSession:
             terminal_record: dict[str, Any] | None = None
             for record in result.events:
                 sid = self._translator.observed_session_id(record)
-                if sid and sid != self._cli_session_id:
+                if sid and sid != self._session_id:
                     new_jsonl = jsonl_path(self._cwd, sid, self._data_dir)
                     self._retarget(
                         sid,
@@ -309,7 +309,7 @@ class ClaudeNativeSession:
         if self._dispatch_registered:
             hook_runtime.unregister_ask_dispatcher(self._node_id)
             self._dispatch_registered = False
-        hook_runtime.unregister_session_ready(self._cli_session_id)
+        hook_runtime.unregister_session_ready(self._session_id)
 
         pty = self._pty
         if pty is not None:
@@ -351,7 +351,7 @@ class ClaudeNativeSession:
         *,
         stream_offset: int | None = None,
     ) -> None:
-        self._cli_session_id = new_session_id
+        self._session_id = new_session_id
         self._jsonl_path = new_jsonl
         self._jsonl_offset = _retarget_offset(new_jsonl, stream_offset)
         if self._input is not None:

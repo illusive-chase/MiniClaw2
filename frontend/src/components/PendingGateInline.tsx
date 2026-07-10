@@ -29,7 +29,6 @@ export function PendingGateInline({
         onRespond={(args) =>
           onResolve({
             allow: args.allow,
-            decision: args.decision ?? null,
             scope: args.scope ?? null,
             interrupt: args.interrupt ?? false,
             message: args.message ?? "",
@@ -47,10 +46,6 @@ export function PendingGateInline({
         onRespond={(answers) =>
           onResolve({
             allow: true,
-            updated_input: {
-              ...pending.tool_input,
-              answers: toLegacyAnswers(answers),
-            },
             response: { answers },
           })
         }
@@ -61,14 +56,5 @@ export function PendingGateInline({
     <div className="text-[12px] text-ink-muted">
       Pending {pending.interaction_type} on {node.id.slice(0, 8)}.
     </div>
-  );
-}
-
-function toLegacyAnswers(answers: Record<string, { answers: string[] }>) {
-  return Object.fromEntries(
-    Object.entries(answers).map(([key, value]) => [
-      key,
-      value.answers.length <= 1 ? (value.answers[0] ?? "") : value.answers,
-    ]),
   );
 }

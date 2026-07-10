@@ -19,7 +19,7 @@ export function UsageStrip({ usage, className = "" }: Props) {
   );
 }
 
-export function formatUsagePair(usage?: TokenUsage | null): string {
+function formatUsagePair(usage?: TokenUsage | null): string {
   if (!usage) return "—";
   return `${formatTotal(contextTokens(usage))}/${formatTotal(outputAndCacheWriteTokens(usage))}`;
 }

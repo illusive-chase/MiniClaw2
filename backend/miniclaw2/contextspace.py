@@ -296,6 +296,7 @@ def ensure_project_binding(
     root = ensure_contextspace_root(store_root, created=created)
     existing = resolve_project_binding(project, root)
     if existing is not None:
+        project.project_context_binding_id = existing.id
         return existing
 
     project_title = _project_title(project)
@@ -320,6 +321,7 @@ def ensure_project_binding(
     binding = _load_binding_file(binding_path)
     if binding is None:
         raise RuntimeError(f"failed to create binding: {binding_id}")
+    project.project_context_binding_id = binding.id
     return binding
 
 
@@ -425,9 +427,6 @@ def describe_project_contextspace(
         "root": str(root),
         "exists": root.exists(),
         "project_context_binding_id": project.project_context_binding_id,
-        "project_active_planspace_id": _string_setting(
-            project, "active_planspace_id"
-        ),
         "resolved_binding_id": binding.id if binding else None,
         "active_planspace_id": active_planspace_id,
         "planspace_view": project.planspace_view,
@@ -614,11 +613,7 @@ def add_planspace_to_binding(
 
 
 def resolve_project_binding(project: Project, root: Path) -> ProjectBinding | None:
-    explicit = (
-        project.project_context_binding_id
-        or _string_setting(project, "project_context_binding_id")
-        or _string_setting(project, "context_binding_id")
-    )
+    explicit = project.project_context_binding_id
     if explicit:
         return _load_binding_by_id(root, explicit)
     return _find_binding_for_project_path(root, project.root_path)
@@ -654,7 +649,7 @@ def require_resolvable_active_planspace(
     launch must fail visibly instead of silently dropping the preview contract.
     """
     root = contextspace_root(store_root)
-    project_requested = _string_setting(project, "active_planspace_id")
+    project_requested = project.active_planspace_id
     binding = resolve_project_binding(project, root)
     if binding is None:
         if project_requested:
@@ -862,15 +857,11 @@ def _bindings_for_project_contextspace_delete(
 
 
 def _project_context_binding_ids(project: Project) -> set[str]:
-    out: set[str] = set()
-    for value in (
-        project.project_context_binding_id,
-        _string_setting(project, "project_context_binding_id"),
-        _string_setting(project, "context_binding_id"),
-    ):
-        if value:
-            out.add(value)
-    return out
+    return (
+        {project.project_context_binding_id}
+        if project.project_context_binding_id
+        else set()
+    )
 
 
 def _binding_project_owner_id(binding: ProjectBinding) -> str | None:
@@ -961,10 +952,7 @@ def _requested_active_planspace_id(
     project: Project,
     binding: ProjectBinding,
 ) -> str | None:
-    return (
-        _string_setting(project, "active_planspace_id")
-        or _string_value(binding.raw.get("active_planspace_id"))
-    )
+    return project.active_planspace_id
 
 
 def _raise_stale_active_planspace(
@@ -1001,9 +989,8 @@ def _binding_summary(
         value for value in (project_raw.get("local_paths") or [])
         if isinstance(value, str)
     ]
-    binding_active = _string_value(binding.raw.get("active_planspace_id"))
     is_resolved = binding.id == resolved_binding_id
-    active_for_binding = active_planspace_id if is_resolved else binding_active
+    active_for_binding = active_planspace_id if is_resolved else None
     plug_refs = _expand_required_plugs(root, binding.plugs)
     return {
         "id": binding.id,
@@ -1019,7 +1006,6 @@ def _binding_summary(
             binding, project.root_path
         ),
         "active_planspace_id": active_for_binding,
-        "binding_active_planspace_id": binding_active,
         "plugs": [
             _plug_summary(
                 root,
@@ -1312,10 +1298,6 @@ def _display_path(path: Path, root: Path) -> str:
         return str(path.relative_to(root))
     except ValueError:
         return str(path)
-
-
-def _string_setting(project: Project, key: str) -> str | None:
-    return _string_value(project.settings_override.get(key))
 
 
 def _string_value(value: Any) -> str | None:

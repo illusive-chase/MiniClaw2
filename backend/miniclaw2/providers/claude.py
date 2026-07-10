@@ -62,7 +62,7 @@ class ClaudeProvider:
             await self._session.start()
             yield AgentProviderEvent(
                 kind="session",
-                session_id=self._session.cli_session_id,
+                session_id=self._session.session_id,
             )
 
             result = await self._session.send(
@@ -147,4 +147,4 @@ class ClaudeProvider:
         self, context: AgentProviderContext
     ) -> str | None:
         node = context.node
-        return node.provider_session_id or node.cli_session_id
+        return node.provider_session_id

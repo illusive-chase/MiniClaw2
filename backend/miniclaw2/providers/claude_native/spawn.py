@@ -9,7 +9,6 @@ from __future__ import annotations
 import json
 import os
 import shutil
-from dataclasses import dataclass
 
 
 DISALLOWED_TOOLS = ("EnterPlanMode", "ExitPlanMode")
@@ -45,12 +44,6 @@ def _cached_resolve() -> str | None:
 
 
 _CACHED_BIN: str | None = None
-
-
-@dataclass(slots=True)
-class SpawnArgs:
-    argv: list[str]
-    env: dict[str, str]
 
 
 def build_argv(

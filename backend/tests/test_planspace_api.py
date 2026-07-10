@@ -13,7 +13,7 @@ from miniclaw2.domain import Node, NodeState, Project
 
 
 class PlanspaceApiTest(unittest.TestCase):
-    def test_create_planspace_accepts_user_seed_and_returns_launched_node(self) -> None:
+    def test_create_planspace_uses_seed_and_marks_user_seed_deprecated(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             project = Project(root_path=raw, name="Project")
             node = Node(
@@ -69,7 +69,15 @@ class PlanspaceApiTest(unittest.TestCase):
                         res = client.post(
                             f"/sessions/{project.id}/planspaces",
                             json={
-                                "user_seed": "Build auth",
+                                "seed": "Build auth",
+                                "mode": "manual",
+                                "model_preset_id": "gpt-5.5",
+                            },
+                        )
+                        deprecated = client.post(
+                            f"/sessions/{project.id}/planspaces",
+                            json={
+                                "user_seed": "Legacy auth",
                                 "mode": "manual",
                                 "model_preset_id": "gpt-5.5",
                             },
@@ -78,13 +86,25 @@ class PlanspaceApiTest(unittest.TestCase):
                         client.close()
 
             self.assertEqual(res.status_code, 200, res.text)
-            self.assertEqual(calls, [{
-                "sid": project.id,
-                "title": "",
-                "seed": "Build auth",
-                "mode": "manual",
-                "model_preset_id": "gpt-5.5",
-            }])
+            self.assertEqual(deprecated.status_code, 200, deprecated.text)
+            self.assertEqual(deprecated.headers["deprecation"], "true")
+            self.assertIn("user_seed is deprecated", deprecated.headers["warning"])
+            self.assertEqual(calls, [
+                {
+                    "sid": project.id,
+                    "title": "",
+                    "seed": "Build auth",
+                    "mode": "manual",
+                    "model_preset_id": "gpt-5.5",
+                },
+                {
+                    "sid": project.id,
+                    "title": "",
+                    "seed": "Legacy auth",
+                    "mode": "manual",
+                    "model_preset_id": "gpt-5.5",
+                },
+            ])
             body = res.json()
             self.assertEqual(body["node_id"], "node-123")
             self.assertEqual(body["planspace_id"], "planspaces.auth")

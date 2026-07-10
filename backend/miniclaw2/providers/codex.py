@@ -38,7 +38,7 @@ class CodexProvider:
             self._client = client
             try:
                 await client.initialize()
-                thread_id = context.node.provider_session_id or context.node.cli_session_id
+                thread_id = context.node.provider_session_id
                 fresh_thread = not thread_id
                 if not thread_id:
                     start = await client.request(
@@ -560,23 +560,6 @@ class _CodexJsonRpcClient:
 
 
 def _codex_legacy_decision(response: dict[str, Any]) -> Any:
-    decision = response.get("decision")
-    if isinstance(decision, dict):
-        return decision
-    if isinstance(decision, str):
-        legacy_map = {
-            "approved": "approved",
-            "approved_for_session": "approved_for_session",
-            "denied": "denied",
-            "abort": "abort",
-            "accept": "approved",
-            "acceptForSession": "approved_for_session",
-            "decline": "denied",
-            "cancel": "abort",
-        }
-        mapped = legacy_map.get(decision)
-        if mapped is not None:
-            return mapped
     if response.get("allow", True):
         if response.get("scope") == "session":
             return "approved_for_session"
@@ -664,19 +647,12 @@ def _set_if_present(target: dict[str, Any], key: str, value: Any) -> None:
 
 def _codex_user_input_response(response: dict[str, Any]) -> dict[str, Any]:
     raw = response.get("response")
-    if isinstance(raw, dict) and "answers" in raw:
-        return raw
-    updated = response.get("updated_input") or {}
-    answers = updated.get("answers") or response.get("answers") or {}
+    answers = raw.get("answers") if isinstance(raw, dict) else None
     normalized: dict[str, dict[str, list[str]]] = {}
     if isinstance(answers, dict):
         for key, value in answers.items():
             if isinstance(value, dict) and isinstance(value.get("answers"), list):
                 normalized[str(key)] = {"answers": [str(v) for v in value["answers"]]}
-            elif isinstance(value, list):
-                normalized[str(key)] = {"answers": [str(v) for v in value]}
-            elif value is not None:
-                normalized[str(key)] = {"answers": [str(value)]}
     return {"answers": normalized}
 
 
@@ -685,9 +661,6 @@ def _codex_decision(
     *,
     command: bool = False,
 ) -> Any:
-    decision = response.get("decision")
-    if decision:
-        return decision
     if response.get("allow", True):
         if response.get("scope") == "session":
             return "acceptForSession"

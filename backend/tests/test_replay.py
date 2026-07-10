@@ -7,7 +7,13 @@ from unittest.mock import patch
 
 from miniclaw2.domain import Node, NodeKind, NodeState, Project
 from miniclaw2.registry import ProjectRegistry
-from miniclaw2.replay import LiveReplayBuffer, covered_by_replay
+from miniclaw2.replay import (
+    EVENT_SCHEMA_VERSION,
+    LiveReplayBuffer,
+    covered_by_replay,
+    upgrade_event_record,
+    upgrade_legacy_interaction_response,
+)
 from miniclaw2.store import Store
 
 
@@ -74,6 +80,50 @@ class CoveredByReplayTest(unittest.TestCase):
             )
         )
 
+    def test_legacy_checkpoint_review_is_upgraded_before_replay(self) -> None:
+        upgraded = upgrade_event_record(
+            {
+                "seq": 3,
+                "event": {
+                    "type": "interaction_request",
+                    "interaction_type": "checkpoint_review",
+                    "tool_name": "checkpoint_review",
+                },
+            }
+        )
+
+        self.assertEqual(upgraded["schema_version"], EVENT_SCHEMA_VERSION)
+        self.assertEqual(
+            upgraded["event"]["interaction_type"],
+            "human_review_prose",
+        )
+        self.assertEqual(upgraded["event"]["tool_name"], "human_review_prose")
+
+    def test_legacy_ask_response_is_upgraded_to_canonical_answers(self) -> None:
+        upgraded = upgrade_legacy_interaction_response(
+            {
+                "type": "interaction_response",
+                "id": "gate-1",
+                "updated_input": {
+                    "answers": {
+                        "framework": "React",
+                        "checks": ["types", "tests"],
+                    }
+                },
+            }
+        )
+
+        self.assertEqual(
+            upgraded["response"],
+            {
+                "answers": {
+                    "framework": {"answers": ["React"]},
+                    "checks": {"answers": ["types", "tests"]},
+                }
+            },
+        )
+        self.assertNotIn("updated_input", upgraded)
+
 
 class FreshNodeLaunchTest(unittest.TestCase):
     def test_start_node_does_not_inherit_previous_provider_session(self) -> None:
@@ -89,7 +139,6 @@ class FreshNodeLaunchTest(unittest.TestCase):
                     state=NodeState.DONE,
                     model_preset_id="gpt-5.6",
                     provider_session_id="thread_previous",
-                    cli_session_id="thread_previous",
                 )
             )
 
@@ -112,7 +161,6 @@ class FreshNodeLaunchTest(unittest.TestCase):
             assert node is not None
             self.assertEqual(node.parent_node_id, None)
             self.assertEqual(node.provider_session_id, None)
-            self.assertEqual(node.cli_session_id, None)
             self.assertNotEqual(node.id, previous.id)
 
     def test_start_node_uses_explicit_model_preset_for_new_node(self) -> None:
@@ -145,7 +193,6 @@ class FreshNodeLaunchTest(unittest.TestCase):
             self.assertEqual(node.model_preset_id, "gpt-5.6")
             self.assertEqual(node.provider, "codex")
             self.assertEqual(node.provider_session_id, None)
-            self.assertEqual(node.cli_session_id, None)
 
     def test_start_node_can_explicitly_resume_from_source_node(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -160,7 +207,6 @@ class FreshNodeLaunchTest(unittest.TestCase):
                     state=NodeState.DONE,
                     model_preset_id="gpt-5.5",
                     provider_session_id="thread_source",
-                    cli_session_id="thread_source",
                 )
             )
 
@@ -189,7 +235,6 @@ class FreshNodeLaunchTest(unittest.TestCase):
             self.assertEqual(node.model_preset_id, "gpt-5.5")
             self.assertEqual(node.provider, "codex")
             self.assertEqual(node.provider_session_id, "thread_source")
-            self.assertEqual(node.cli_session_id, "thread_source")
             self.assertNotEqual(node.id, source.id)
 
     def test_start_node_resume_rejects_model_preset_mismatch(self) -> None:
@@ -205,7 +250,6 @@ class FreshNodeLaunchTest(unittest.TestCase):
                     state=NodeState.DONE,
                     model_preset_id="opus-4-7",
                     provider_session_id="thread_source",
-                    cli_session_id="thread_source",
                 )
             )
 
@@ -243,7 +287,6 @@ class FreshNodeLaunchTest(unittest.TestCase):
             self.assertEqual(node.model_preset_id, "opus-4-7")
             self.assertEqual(node.provider, "claude")
             self.assertEqual(node.provider_session_id, "thread_source")
-            self.assertEqual(node.cli_session_id, "thread_source")
 
     def test_start_node_rejects_resume_from_nonterminal_source_node(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -294,7 +337,13 @@ class ReplayBootstrapTest(unittest.TestCase):
 
             self.assertEqual(
                 registry.replay_node_events(project.id, "", 0),
-                [{"seq": 1, "event": {"type": "text_delta", "seq": 1}}],
+                [
+                    {
+                        "schema_version": EVENT_SCHEMA_VERSION,
+                        "seq": 1,
+                        "event": {"type": "text_delta", "seq": 1},
+                    }
+                ],
             )
 
 

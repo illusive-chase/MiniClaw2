@@ -22,6 +22,7 @@ from .contextspace import (
     resolve_active_planspace,
     set_planspace_mode,
 )
+from .events import NodeRemoved
 from .git_state import ensure_miniclaw_git_excluded
 from .domain import (
     TERMINAL_NODE_STATES,
@@ -40,7 +41,6 @@ from .model_catalog import (
     default_model_preset_id,
     normalize_active_model_preset_id,
     normalize_model_preset_id,
-    provider_for_model_preset,
 )
 from .preview import render_executed_preview, render_virtual_preview
 from .runner import NodeRunner
@@ -240,7 +240,6 @@ class ProjectRegistry:
             if model_preset_id is not None
             else default_model_preset_id()
         )
-        normalized_provider = provider_for_model_preset(normalized_model_preset_id)
         normalized_language = normalize_preferred_language(preferred_language)
         if temporary:
             root_path = create_temporary_root()
@@ -270,7 +269,6 @@ class ProjectRegistry:
             root_path=root_path,
             name=name,
             model_preset_id=normalized_model_preset_id,
-            provider=normalized_provider,
             preferred_language=normalized_language,
             project_context_binding_id=project_context_binding_id,
             settings_override=settings,
@@ -309,10 +307,6 @@ class ProjectRegistry:
             rt.project.preferred_language = normalize_preferred_language(
                 preferred_language
             )
-            settings = dict(rt.project.settings_override)
-            settings.pop("preferred_language", None)
-            settings.pop("language", None)
-            rt.project.settings_override = settings
         self.store.update_project(rt.project)
         return rt.project
 
@@ -334,12 +328,12 @@ class ProjectRegistry:
                 else None
             )
         if active_planspace_id is not _UNSET:
-            settings = dict(rt.project.settings_override)
-            if isinstance(active_planspace_id, str) and active_planspace_id.strip():
-                settings["active_planspace_id"] = active_planspace_id.strip()
-            else:
-                settings.pop("active_planspace_id", None)
-            rt.project.settings_override = settings
+            rt.project.active_planspace_id = (
+                active_planspace_id.strip()
+                if isinstance(active_planspace_id, str)
+                and active_planspace_id.strip()
+                else None
+            )
         self.store.update_project(rt.project)
         return rt.project
 
@@ -535,7 +529,7 @@ class ProjectRegistry:
                 return None
             if resume_source.state not in TERMINAL_NODE_STATES:
                 return None
-            if not (resume_source.provider_session_id or resume_source.cli_session_id):
+            if not resume_source.provider_session_id:
                 return None
 
         if resume_source is not None:
@@ -557,8 +551,6 @@ class ProjectRegistry:
                     next_model_preset_id = normalize_active_model_preset_id(
                         next_model_preset_id
                     )
-        normalized_provider = provider_for_model_preset(next_model_preset_id)
-
         extra_skill_ids = normalize_skill_ids(extra_skills)
         settings_snapshot: dict[str, Any] = {}
         if extra_skill_ids:
@@ -580,9 +572,7 @@ class ProjectRegistry:
             parent_node_id=actual_parent_id,
             planspace_id=active_lane,
             model_preset_id=next_model_preset_id,
-            provider=normalized_provider,
             provider_session_id=resume_source.provider_session_id if resume_source else None,
-            cli_session_id=resume_source.cli_session_id if resume_source else None,
             prompt=prompt,
             scheduled_deps=list(scheduled_deps or []),
             settings_snapshot=settings_snapshot,
@@ -642,7 +632,7 @@ class ProjectRegistry:
             return
         if finished_node.state is not NodeState.DONE:
             return
-        if not rt.project.settings_override.get("active_planspace_id"):
+        if not rt.project.active_planspace_id:
             return
         self._auto_promote_next_virtual(rt)
 
@@ -675,7 +665,6 @@ class ProjectRegistry:
             if model_preset_id is not None
             else rt.project.model_preset_id
         )
-        normalized_provider = provider_for_model_preset(next_model_preset_id)
         normalized_mode = normalize_planspace_mode(mode)
         plug_id = create_planspace(
             rt.project,
@@ -684,9 +673,7 @@ class ProjectRegistry:
             store_root=self.store.root,
             seed_text=seed,
         )
-        settings = dict(rt.project.settings_override)
-        settings["active_planspace_id"] = plug_id
-        rt.project.settings_override = settings
+        rt.project.active_planspace_id = plug_id
         self.store.update_project(rt.project)
 
         prompt_text = _render_concierge_prompt(seed.strip())
@@ -697,7 +684,6 @@ class ProjectRegistry:
             state=NodeState.QUEUED,
             planspace_id=plug_id,
             model_preset_id=next_model_preset_id,
-            provider=normalized_provider,
             prompt=prompt_text,
         )
         self.store.create_node(node)
@@ -737,9 +723,7 @@ class ProjectRegistry:
             store_root=self.store.root,
             seed_text=seed,
         )
-        settings = dict(rt.project.settings_override)
-        settings["active_planspace_id"] = plug_id
-        rt.project.settings_override = settings
+        rt.project.active_planspace_id = plug_id
         self.store.update_project(rt.project)
 
         node = self.create_virtual(
@@ -761,7 +745,7 @@ class ProjectRegistry:
     def _auto_promote_next_virtual(self, rt: ProjectRuntime) -> None:
         """Promote the next eligible virtual on the active lane if mode=auto."""
         project = rt.project
-        active_lane = project.settings_override.get("active_planspace_id") or ""
+        active_lane = project.active_planspace_id or ""
         if not active_lane:
             return
         try:
@@ -866,12 +850,10 @@ class ProjectRegistry:
                 return None
             if resume_parent.state not in TERMINAL_NODE_STATES:
                 return None
-            if not (resume_parent.provider_session_id or resume_parent.cli_session_id):
+            if not resume_parent.provider_session_id:
                 return None
             node.model_preset_id = resume_parent.model_preset_id
-            node.provider = resume_parent.provider
             node.provider_session_id = resume_parent.provider_session_id
-            node.cli_session_id = resume_parent.cli_session_id
             node.parent_node_id = resume_parent.id
         try:
             self.store.write_node_preview(pid, node.id, render_virtual_preview(node))
@@ -969,8 +951,6 @@ class ProjectRegistry:
                     next_model_preset_id = normalize_active_model_preset_id(
                         next_model_preset_id
                     )
-        next_provider = provider_for_model_preset(next_model_preset_id)
-
         try:
             next_category = (
                 category
@@ -1025,7 +1005,6 @@ class ProjectRegistry:
             parent_node_id=normalized_parent_id,
             planspace_id=lane_id,
             model_preset_id=next_model_preset_id,
-            provider=next_provider,
             prompt="",
             prompt_draft=str(prompt_draft),
             scheduled_deps=[],
@@ -1060,7 +1039,7 @@ class ProjectRegistry:
         except RuntimeError:
             pass
 
-        active_lane = rt.project.settings_override.get("active_planspace_id") or ""
+        active_lane = rt.project.active_planspace_id or ""
         if active_lane == lane_id:
             try:
                 mode = read_planspace_mode(
@@ -1206,10 +1185,8 @@ class ProjectRegistry:
                     next_model_preset_id
                 )
             update["model_preset_id"] = next_model_preset_id
-            update["provider"] = provider_for_model_preset(next_model_preset_id)
-
         updated = existing.model_copy(update=update)
-        updated = Node.model_validate(updated.model_dump())
+        updated = Node.model_validate(updated.model_dump(exclude={"provider"}))
         lane_id = updated.planspace_id or ""
         if has_cycle(self._lane_nodes_with(pid, lane_id, updated)):
             raise ValueError("scheduled_deps would introduce a cycle in the lane DAG")
@@ -1227,7 +1204,7 @@ class ProjectRegistry:
             }))
         except RuntimeError:
             pass
-        active_lane = rt.project.settings_override.get("active_planspace_id") or ""
+        active_lane = rt.project.active_planspace_id or ""
         if active_lane == lane_id:
             try:
                 mode = read_planspace_mode(
@@ -1286,11 +1263,8 @@ class ProjectRegistry:
         if not self.store.delete_node(pid, vid):
             return False, []
         try:
-            asyncio.get_running_loop().create_task(rt.broadcast({
-                "type": "node_removed",
-                "id": vid,
-                "seq": 0,
-            }))
+            event = NodeRemoved(id=vid).model_dump()
+            asyncio.get_running_loop().create_task(rt.broadcast(event))
         except RuntimeError:
             pass
         return True, []
@@ -1443,7 +1417,7 @@ class ProjectRegistry:
             raise ValueError(f"resume_from_node_id {source_id!r} is outside this lane")
         if source.state not in TERMINAL_NODE_STATES:
             raise ValueError("resume_from_node_id must reference a terminal node")
-        if not (source.provider_session_id or source.cli_session_id):
+        if not source.provider_session_id:
             raise ValueError("resume_from_node_id is not resumable")
         return source_id
 
@@ -1469,7 +1443,6 @@ class ProjectRegistry:
             state=NodeState.QUEUED,
             parent_node_id=agent_node.id,
             model_preset_id=agent_node.model_preset_id,
-            provider=agent_node.provider,
             planspace_id=agent_node.planspace_id,
         )
         self.store.create_node(op_node)
@@ -1518,7 +1491,6 @@ class ProjectRegistry:
         gate_id: str,
         *,
         allow: bool,
-        decision: str | dict[str, Any] | None = None,
         message: str = "",
         updated_input: dict[str, Any] | None = None,
         response: dict[str, Any] | None = None,
@@ -1533,7 +1505,6 @@ class ProjectRegistry:
         return rt.runner.resolve_gate(
             gate_id,
             allow=allow,
-            decision=decision,
             message=message,
             updated_input=updated_input,
             response=response,

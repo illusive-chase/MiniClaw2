@@ -85,9 +85,7 @@ class RunnerGateTimeoutTests(unittest.IsolatedAsyncioTestCase):
         self.plug_id = create_planspace(
             self.project, title="gate-lane", mode="manual"
         )
-        settings = dict(self.project.settings_override)
-        settings["active_planspace_id"] = self.plug_id
-        self.project.settings_override = settings
+        self.project.active_planspace_id = self.plug_id
         self.store.update_project(self.project)
 
     async def asyncTearDown(self) -> None:
@@ -101,7 +99,6 @@ class RunnerGateTimeoutTests(unittest.IsolatedAsyncioTestCase):
             model_preset_id="opus-4-7",
             category=Category.REGULAR,
             state=NodeState.QUEUED,
-            provider="claude",
             prompt="do work",
         )
         self.store.create_node(node)

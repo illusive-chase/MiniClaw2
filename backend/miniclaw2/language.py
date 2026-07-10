@@ -5,6 +5,8 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from .domain import Project
+
 logger = logging.getLogger(__name__)
 
 _CLEAR_VALUES = {"", "auto", "default", "none", "null", "system"}
@@ -78,20 +80,16 @@ def normalize_preferred_language(value: Any) -> str | None:
     raise ValueError("preferred_language is not a supported language label")
 
 
-def project_preferred_language(project: Any) -> str | None:
-    """Return a normalized language preference from a Project-like object."""
+def project_preferred_language(project: Project) -> str | None:
+    """Return the project's normalized typed language preference."""
 
-    raw = getattr(project, "preferred_language", None)
-    if raw is None:
-        settings = getattr(project, "settings_override", {}) or {}
-        if isinstance(settings, dict):
-            raw = settings.get("preferred_language") or settings.get("language")
+    raw = project.preferred_language
     try:
         return normalize_preferred_language(raw)
     except ValueError:
         logger.warning(
             "ignoring invalid persisted preferred_language for project %s: %r",
-            getattr(project, "id", "<unknown>"),
+            project.id,
             raw,
         )
         return None

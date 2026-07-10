@@ -273,9 +273,7 @@ class AutoPromoteOnRunnerDoneTests(unittest.IsolatedAsyncioTestCase):
             self.project, title="manual", mode="manual"
         )
         rt = self.registry._runtimes[self.project.id]
-        settings = dict(rt.project.settings_override)
-        settings["active_planspace_id"] = plug_id
-        rt.project.settings_override = settings
+        rt.project.active_planspace_id = plug_id
         self.store.update_project(rt.project)
 
         finished = self._make_finished_agent(plug_id)
@@ -295,9 +293,7 @@ class AutoPromoteOnRunnerDoneTests(unittest.IsolatedAsyncioTestCase):
             self.project, title="auto", mode="auto"
         )
         rt = self.registry._runtimes[self.project.id]
-        settings = dict(rt.project.settings_override)
-        settings["active_planspace_id"] = plug_id
-        rt.project.settings_override = settings
+        rt.project.active_planspace_id = plug_id
         self.store.update_project(rt.project)
 
         finished = self._make_finished_agent(plug_id)
@@ -334,9 +330,7 @@ class AutoPromoteOnRunnerDoneTests(unittest.IsolatedAsyncioTestCase):
             self.project, title="manual-first", mode="manual"
         )
         rt = self.registry._runtimes[self.project.id]
-        settings = dict(rt.project.settings_override)
-        settings["active_planspace_id"] = plug_id
-        rt.project.settings_override = settings
+        rt.project.active_planspace_id = plug_id
         self.store.update_project(rt.project)
         virtual = self._make_virtual(plug_id, prompt_draft="already ready")
 
@@ -362,9 +356,7 @@ class AutoPromoteOnRunnerDoneTests(unittest.IsolatedAsyncioTestCase):
             self.project, title="other", mode="manual"
         )
         rt = self.registry._runtimes[self.project.id]
-        settings = dict(rt.project.settings_override)
-        settings["active_planspace_id"] = active_lane
-        rt.project.settings_override = settings
+        rt.project.active_planspace_id = active_lane
         self.store.update_project(rt.project)
         virtual = self._make_virtual(other_lane, prompt_draft="wrong lane")
 
@@ -380,9 +372,7 @@ class AutoPromoteOnRunnerDoneTests(unittest.IsolatedAsyncioTestCase):
             self.project, title="active", mode="manual"
         )
         rt = self.registry._runtimes[self.project.id]
-        settings = dict(rt.project.settings_override)
-        settings["active_planspace_id"] = plug_id
-        rt.project.settings_override = settings
+        rt.project.active_planspace_id = plug_id
         self.store.update_project(rt.project)
         parent = self._make_finished_agent(plug_id)
         virtual = self._make_virtual(
@@ -409,9 +399,7 @@ class AutoPromoteOnRunnerDoneTests(unittest.IsolatedAsyncioTestCase):
             self.project, title="auto-deps", mode="auto"
         )
         rt = self.registry._runtimes[self.project.id]
-        settings = dict(rt.project.settings_override)
-        settings["active_planspace_id"] = plug_id
-        rt.project.settings_override = settings
+        rt.project.active_planspace_id = plug_id
         self.store.update_project(rt.project)
 
         finished = self._make_finished_agent(plug_id)
@@ -437,9 +425,7 @@ class AutoPromoteOnRunnerDoneTests(unittest.IsolatedAsyncioTestCase):
             self.project, title="auto-edit", mode="auto"
         )
         rt = self.registry._runtimes[self.project.id]
-        settings = dict(rt.project.settings_override)
-        settings["active_planspace_id"] = plug_id
-        rt.project.settings_override = settings
+        rt.project.active_planspace_id = plug_id
         self.store.update_project(rt.project)
 
         blocking = self._make_finished_agent(plug_id, finished=False)

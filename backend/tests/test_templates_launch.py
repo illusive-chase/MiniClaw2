@@ -27,7 +27,7 @@ class LaunchTemplateTest(unittest.TestCase):
                     project.settings_override.get("permission_mode"),
                     "bypassPermissions",
                 )
-                self.assertTrue(project.settings_override.get("active_planspace_id"))
+                self.assertTrue(project.active_planspace_id)
 
                 nodes = store.list_nodes(project.id)
                 self.assertEqual(len(nodes), 3)
@@ -36,7 +36,7 @@ class LaunchTemplateTest(unittest.TestCase):
                 self.assertEqual(first.state, "virtual")
                 self.assertEqual(
                     first.planspace_id,
-                    project.settings_override.get("active_planspace_id"),
+                    project.active_planspace_id,
                 )
                 self.assertIn("[OK]", first.prompt_draft or "")
                 self.assertIsNotNone(store.read_node_preview(project.id, first.id))

@@ -32,9 +32,7 @@ class VirtualEditRegistryTests(unittest.TestCase):
         self.registry = ProjectRegistry(store=self.store)
         self.lane = create_planspace(self.project, title="Work", mode="manual")
         runtime = self.registry._runtimes[self.project.id]
-        settings = dict(runtime.project.settings_override)
-        settings["active_planspace_id"] = self.lane
-        runtime.project.settings_override = settings
+        runtime.project.active_planspace_id = self.lane
         self.store.update_project(runtime.project)
 
     def tearDown(self) -> None:

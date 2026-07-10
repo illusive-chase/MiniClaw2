@@ -84,10 +84,7 @@ class ConciergeBootstrapTests(unittest.IsolatedAsyncioTestCase):
         # Project's active planspace updated.
         refreshed = self.registry.get_project(self.pid)
         assert refreshed is not None
-        self.assertEqual(
-            refreshed.settings_override.get("active_planspace_id"),
-            "planspaces.auth-flow",
-        )
+        self.assertEqual(refreshed.active_planspace_id, "planspaces.auth-flow")
 
         # The launched node is a planning agent with the right lane.
         node = runner.node

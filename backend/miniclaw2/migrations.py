@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import tempfile
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -15,6 +16,7 @@ import fcntl
 
 import yaml
 
+from .language import normalize_preferred_language
 from .model_catalog import (
     get_model_preset,
     legacy_provider_to_model_preset_id,
@@ -23,12 +25,35 @@ from .model_catalog import (
 )
 
 
-CURRENT_SCHEMA_VERSION = 2
+CURRENT_SCHEMA_VERSION = 3
 _SCHEMA_FILE = "schema.json"
-_MIGRATION_NAME = "model-presets-v2"
+_MIGRATION_NAME = "canonical-schema-v3"
 _OLD_MODEL_SETTING_KEYS = frozenset(
     {"model", "model_provider", "service_tier", "reasoning_effort"}
 )
+_OLD_PROJECT_SETTING_KEYS = frozenset({
+    "project_context_binding_id",
+    "context_binding_id",
+    "active_planspace_id",
+    "preferred_language",
+    "language",
+})
+_OLD_PROJECT_FIELDS = frozenset({
+    "provider",
+    "head_commit",
+    "parent_project_id",
+    "parent_commit",
+})
+_OLD_NODE_FIELDS = frozenset({
+    "provider",
+    "sdk_session_id",
+    "cli_session_id",
+    "context_sources",
+})
+_OLD_SNAPSHOT_KEYS = _OLD_MODEL_SETTING_KEYS | frozenset({
+    "model_preset_id",
+    "provider",
+})
 
 
 class StoreMigrationError(RuntimeError):
@@ -43,6 +68,8 @@ class StoreMigrationReport:
     changed_files: tuple[str, ...] = ()
     backup_root: Path | None = None
     repaired: bool = False
+    dry_run: bool = False
+    audit_path: Path | None = None
 
 
 def check_store(root: Path) -> StoreMigrationReport:
@@ -86,6 +113,49 @@ def migrate_store(root: Path) -> StoreMigrationReport:
         return _migrate_store_locked(root, repair=False)
 
 
+def dry_run_store_migration(root: Path) -> StoreMigrationReport:
+    """Run the migration against a temporary copy and report planned writes."""
+
+    source_root = root.expanduser()
+    source_context_root = _contextspace_root(source_root)
+    with tempfile.TemporaryDirectory(prefix="miniclaw2-migration-dry-run-") as raw:
+        scratch = Path(raw)
+        scratch_root = scratch / "store"
+        if source_root.exists():
+            shutil.copytree(source_root, scratch_root)
+        else:
+            scratch_root.mkdir(parents=True)
+
+        context_override: Path | None = None
+        if source_context_root != source_root / "contextspace":
+            context_override = scratch / "contextspace"
+            if source_context_root.exists():
+                shutil.copytree(source_context_root, context_override)
+            else:
+                context_override.mkdir(parents=True)
+
+        previous_context_home = os.environ.get("MINICLAW_CONTEXT_HOME")
+        try:
+            if context_override is not None:
+                os.environ["MINICLAW_CONTEXT_HOME"] = str(context_override)
+            report = migrate_store(scratch_root)
+        finally:
+            if previous_context_home is None:
+                os.environ.pop("MINICLAW_CONTEXT_HOME", None)
+            else:
+                os.environ["MINICLAW_CONTEXT_HOME"] = previous_context_home
+
+    return StoreMigrationReport(
+        root=source_root,
+        version_before=report.version_before,
+        version_after=report.version_after,
+        changed_files=report.changed_files,
+        backup_root=source_root / "migration-backups",
+        dry_run=True,
+        audit_path=source_root / "migrations" / f"{_MIGRATION_NAME}.jsonl",
+    )
+
+
 def repair_store(root: Path) -> StoreMigrationReport:
     """Repair legacy records even when the store is marked current."""
 
@@ -116,14 +186,6 @@ def _migrate_store_locked(root: Path, *, repair: bool) -> StoreMigrationReport:
             f"this MiniClaw2 build supports {CURRENT_SCHEMA_VERSION}"
         )
     if version >= CURRENT_SCHEMA_VERSION and not repair:
-        try:
-            _validate_current_schema(root)
-        except StoreMigrationError as exc:
-            raise StoreMigrationError(
-                f"{exc}\nStore is marked schema v{CURRENT_SCHEMA_VERSION} but contains "
-                "inconsistent records. Stop all MiniClaw2 processes, then run "
-                "`python -m miniclaw2 --repair-store`."
-            ) from exc
         return StoreMigrationReport(
             root=root,
             version_before=version,
@@ -133,9 +195,17 @@ def _migrate_store_locked(root: Path, *, repair: bool) -> StoreMigrationReport:
     timestamp = _utc_timestamp()
     backup_root = root / "migration-backups" / f"{_MIGRATION_NAME}-{timestamp}"
     audit_path = root / "migrations" / f"{_MIGRATION_NAME}.jsonl"
+    legacy_shape_counts: dict[str, int] = {}
     changed: list[str] = []
     try:
+        legacy_shape_counts = _count_legacy_shapes(root)
         _migrate_projects(root, backup_root, audit_path, changed=changed)
+        _migrate_context_bindings(
+            root,
+            backup_root,
+            audit_path,
+            changed=changed,
+        )
         _migrate_user_templates(root, backup_root, audit_path, changed=changed)
         _validate_current_schema(root)
         changed.extend(
@@ -162,6 +232,7 @@ def _migrate_store_locked(root: Path, *, repair: bool) -> StoreMigrationReport:
                 "changed_files": changed,
                 "repair": repair,
                 "backup_root": str(backup_root),
+                "legacy_shape_counts": legacy_shape_counts,
             },
         )
     except Exception as exc:  # noqa: BLE001
@@ -188,6 +259,7 @@ def _migrate_store_locked(root: Path, *, repair: bool) -> StoreMigrationReport:
         changed_files=tuple(changed),
         backup_root=backup_root,
         repaired=repair,
+        audit_path=audit_path,
     )
 
 
@@ -215,10 +287,57 @@ def _read_schema_version(path: Path) -> int:
     return raw
 
 
+def _count_legacy_shapes(root: Path) -> dict[str, int]:
+    counts: dict[str, int] = {}
+
+    def increment(name: str) -> None:
+        counts[name] = counts.get(name, 0) + 1
+
+    projects_root = root / "projects"
+    if projects_root.exists():
+        for project_path in projects_root.glob("*/project.json"):
+            project = _read_json(project_path)
+            for field in _OLD_PROJECT_FIELDS:
+                if field in project:
+                    increment(f"project.{field}")
+            settings = _dict(project.get("settings_override"))
+            for field in _OLD_MODEL_SETTING_KEYS | _OLD_PROJECT_SETTING_KEYS:
+                if field in settings:
+                    increment(f"project.settings_override.{field}")
+
+        for node_path in projects_root.glob("*/nodes/*/node.json"):
+            node = _read_json(node_path)
+            for field in _OLD_NODE_FIELDS:
+                if field in node:
+                    increment(f"node.{field}")
+            snapshot = _dict(node.get("settings_snapshot"))
+            for field in _OLD_SNAPSHOT_KEYS:
+                if field in snapshot:
+                    increment(f"node.settings_snapshot.{field}")
+
+    for _binding_path, binding in _binding_records(root):
+        if "active_planspace_id" in binding:
+            increment("binding.active_planspace_id")
+
+    templates_root = _contextspace_root(root) / "templates"
+    if templates_root.exists():
+        for template_path in templates_root.glob("*/template.yaml"):
+            try:
+                template = yaml.safe_load(
+                    template_path.read_text(encoding="utf-8")
+                ) or {}
+            except yaml.YAMLError:
+                continue
+            if not isinstance(template, dict):
+                continue
+            for field in ("providers", "model_preset_id"):
+                if field in template:
+                    increment(f"template.{field}")
+    return dict(sorted(counts.items()))
+
+
 def _validate_current_schema(root: Path) -> None:
-    """Fail fast when a store claims the current schema but still carries
-    provider-only model data.
-    """
+    """Fail fast when a store claims the current canonical schema."""
 
     projects_dir = root / "projects"
     if projects_dir.exists():
@@ -247,6 +366,7 @@ def _validate_current_schema(root: Path) -> None:
                         preview_path,
                         node_preset_id=node_preset_id or project_preset_id,
                     )
+    _validate_context_bindings_current(root)
     _validate_user_templates_current(root)
 
 
@@ -256,74 +376,70 @@ def _validate_project_current(path: Path, project: dict[str, Any]) -> str:
         project.get("model_preset_id"),
         owner="project",
     )
-    preset = get_model_preset(preset_id)
-    provider = _string(project.get("provider"))
-    if provider is not None and provider != preset.provider:
+    obsolete_fields = sorted(key for key in _OLD_PROJECT_FIELDS if key in project)
+    if obsolete_fields:
         raise StoreMigrationError(
-            f"{path}: provider {provider!r} does not match "
-            f"model_preset_id {preset.id!r}"
+            f"{path}: project contains obsolete fields {obsolete_fields}; "
+            "run the canonical schema migration"
         )
     settings = _dict(project.get("settings_override"))
-    legacy_keys = sorted(key for key in _OLD_MODEL_SETTING_KEYS if key in settings)
+    legacy_keys = sorted(
+        key
+        for key in (_OLD_MODEL_SETTING_KEYS | _OLD_PROJECT_SETTING_KEYS)
+        if key in settings
+    )
     if legacy_keys:
         raise StoreMigrationError(
-            f"{path}: settings_override contains obsolete model keys "
-            f"{legacy_keys}; run the model preset migration"
+            f"{path}: settings_override contains obsolete keys "
+            f"{legacy_keys}; run the canonical schema migration"
         )
-    return preset.id
+    for key in ("project_context_binding_id", "active_planspace_id"):
+        value = project.get(key)
+        if value is not None and not _string(value):
+            raise StoreMigrationError(f"{path}: {key} must be a string or null")
+    preferred_language = project.get("preferred_language")
+    try:
+        normalized_language = normalize_preferred_language(preferred_language)
+    except ValueError as exc:
+        raise StoreMigrationError(f"{path}: {exc}") from exc
+    if preferred_language != normalized_language:
+        raise StoreMigrationError(
+            f"{path}: preferred_language is not canonical; run the migration"
+        )
+    return preset_id
 
 
 def _validate_node_current(path: Path, node: dict[str, Any]) -> str | None:
+    obsolete_fields = sorted(key for key in _OLD_NODE_FIELDS if key in node)
+    if obsolete_fields:
+        raise StoreMigrationError(
+            f"{path}: node contains obsolete fields {obsolete_fields}; "
+            "run the canonical schema migration"
+        )
     kind = _string(node.get("kind")) or "agent"
+    snapshot = _dict(node.get("settings_snapshot"))
+    _validate_snapshot_if_present(path, snapshot)
     if kind != "agent":
         existing = _string(node.get("model_preset_id"))
         if existing:
             preset_id = _required_preset_id(path, existing, owner="node")
-            preset = get_model_preset(preset_id)
-            provider = _string(node.get("provider"))
-            if provider is not None and provider != preset.provider:
-                raise StoreMigrationError(
-                    f"{path}: provider {provider!r} does not match "
-                    f"model_preset_id {preset.id!r}"
-                )
-            return preset.id
+            return preset_id
         return None
 
     preset_id = _required_preset_id(path, node.get("model_preset_id"), owner="node")
-    preset = get_model_preset(preset_id)
-    provider = _string(node.get("provider"))
-    if provider is not None and provider != preset.provider:
-        raise StoreMigrationError(
-            f"{path}: provider {provider!r} does not match "
-            f"model_preset_id {preset.id!r}"
-        )
-    snapshot = _dict(node.get("settings_snapshot"))
-    _validate_snapshot_if_present(path, snapshot, preset)
-    return preset.id
+    return preset_id
 
 
 def _validate_snapshot_if_present(
     path: Path,
     snapshot: dict[str, Any],
-    preset: Any,
 ) -> None:
-    checks = {
-        "model_preset_id": preset.id,
-        "provider": preset.provider,
-        "model": preset.model,
-        "model_provider": preset.model_provider,
-        "service_tier": preset.service_tier,
-        "reasoning_effort": preset.reasoning_effort,
-    }
-    for key, expected in checks.items():
-        if key not in snapshot:
-            continue
-        value = snapshot.get(key)
-        if value != expected:
-            raise StoreMigrationError(
-                f"{path}: settings_snapshot {key} {value!r} does not match "
-                f"model_preset_id {preset.id!r}"
-            )
+    obsolete = sorted(key for key in _OLD_SNAPSHOT_KEYS if key in snapshot)
+    if obsolete:
+        raise StoreMigrationError(
+            f"{path}: settings_snapshot contains derived model fields {obsolete}; "
+            "run the canonical schema migration"
+        )
 
 
 def _validate_preview_current(
@@ -366,7 +482,12 @@ def _validate_user_templates_current(root: Path) -> None:
             raise StoreMigrationError(f"{template_path}: template.yaml must be a mapping")
         if "providers" in data:
             raise StoreMigrationError(
-                f"{template_path}: providers is obsolete; run the model preset migration"
+                f"{template_path}: providers is obsolete; run the schema migration"
+            )
+        if "model_preset_id" in data:
+            raise StoreMigrationError(
+                f"{template_path}: model_preset_id is obsolete; "
+                "use allowed_model_preset_ids"
             )
         raw = data.get("allowed_model_preset_ids")
         if not isinstance(raw, list) or not raw:
@@ -376,11 +497,20 @@ def _validate_user_templates_current(root: Path) -> None:
         _normalize_preset_list(template_path, raw)
 
 
+def _validate_context_bindings_current(root: Path) -> None:
+    for binding_path, raw in _binding_records(root):
+        if "active_planspace_id" in raw:
+            raise StoreMigrationError(
+                f"{binding_path}: active_planspace_id is project state and must "
+                "not be stored in a binding manifest"
+            )
+
+
 def _required_preset_id(path: Path, raw: Any, *, owner: str) -> str:
     if not isinstance(raw, str) or not raw.strip():
         raise StoreMigrationError(
             f"{path}: {owner} requires model_preset_id; "
-            "run the model preset migration"
+            "run the schema migration"
         )
     try:
         return normalize_model_preset_id(raw)
@@ -413,6 +543,7 @@ def _migrate_projects(
             project_legacy_provider,
             project_legacy_settings,
         )
+        _migrate_project_fields(project_path, project, root=root)
         changed.extend(
             _write_json_if_changed(
                 project_path,
@@ -494,9 +625,195 @@ def _resolve_project_preset(
         if key not in _OLD_MODEL_SETTING_KEYS
     }
     project["model_preset_id"] = preset.id
-    project["provider"] = preset.provider
     project["settings_override"] = cleaned_settings
     return preset.id
+
+
+def _migrate_project_fields(
+    path: Path,
+    project: dict[str, Any],
+    *,
+    root: Path,
+) -> None:
+    settings = _dict(project.get("settings_override"))
+    binding_id = _strict_selection(
+        path,
+        "project_context_binding_id",
+        (
+            (
+                "project.project_context_binding_id",
+                project.get("project_context_binding_id"),
+            ),
+            (
+                "settings_override.project_context_binding_id",
+                settings.get("project_context_binding_id"),
+            ),
+            (
+                "settings_override.context_binding_id",
+                settings.get("context_binding_id"),
+            ),
+        ),
+    )
+    if binding_id is None:
+        binding_id = _discover_project_binding_id(root, project, path=path)
+
+    binding = _load_binding_by_id(root, binding_id) if binding_id else None
+    binding_active = binding[1].get("active_planspace_id") if binding else None
+    active_planspace_id = _strict_selection(
+        path,
+        "active_planspace_id",
+        (
+            ("project.active_planspace_id", project.get("active_planspace_id")),
+            (
+                "settings_override.active_planspace_id",
+                settings.get("active_planspace_id"),
+            ),
+            ("binding.active_planspace_id", binding_active),
+        ),
+    )
+    if active_planspace_id is None and binding is not None:
+        planspace_ids = _binding_planspace_ids(binding[1])
+        if len(planspace_ids) == 1:
+            active_planspace_id = planspace_ids[0]
+
+    language_raw = project.get("preferred_language")
+    if language_raw is None:
+        if "preferred_language" in settings:
+            language_raw = settings.get("preferred_language")
+        elif "language" in settings:
+            language_raw = settings.get("language")
+    try:
+        preferred_language = normalize_preferred_language(language_raw)
+    except ValueError as exc:
+        raise StoreMigrationError(f"{path}: {exc}") from exc
+
+    for key in _OLD_PROJECT_FIELDS:
+        project.pop(key, None)
+    for key in _OLD_PROJECT_SETTING_KEYS:
+        settings.pop(key, None)
+    project["project_context_binding_id"] = binding_id
+    project["active_planspace_id"] = active_planspace_id
+    project["preferred_language"] = preferred_language
+    project["settings_override"] = settings
+
+
+def _strict_selection(
+    path: Path,
+    field: str,
+    candidates: tuple[tuple[str, Any], ...],
+) -> str | None:
+    resolved: list[tuple[str, str]] = []
+    for source, raw in candidates:
+        value = _string(raw)
+        if value is not None:
+            resolved.append((source, value.strip()))
+    unique = {value for _, value in resolved}
+    if len(unique) > 1:
+        details = ", ".join(f"{source}={value!r}" for source, value in resolved)
+        raise StoreMigrationError(
+            f"{path}: conflicting {field} values: {details}"
+        )
+    return resolved[0][1] if resolved else None
+
+
+def _binding_records(root: Path) -> list[tuple[Path, dict[str, Any]]]:
+    bindings_root = _contextspace_root(root) / "bindings" / "projects"
+    if not bindings_root.exists():
+        return []
+    records: list[tuple[Path, dict[str, Any]]] = []
+    for binding_path in sorted(bindings_root.glob("*.yaml")):
+        try:
+            raw = yaml.safe_load(binding_path.read_text(encoding="utf-8")) or {}
+        except yaml.YAMLError as exc:
+            raise StoreMigrationError(
+                f"{binding_path}: invalid binding YAML: {exc}"
+            ) from exc
+        if not isinstance(raw, dict):
+            raise StoreMigrationError(f"{binding_path}: binding must be a mapping")
+        records.append((binding_path, raw))
+    return records
+
+
+def _load_binding_by_id(
+    root: Path,
+    binding_id: str,
+) -> tuple[Path, dict[str, Any]] | None:
+    for binding_path, raw in _binding_records(root):
+        candidate_id = _string(raw.get("id")) or binding_path.stem
+        if candidate_id == binding_id:
+            return binding_path, raw
+    return None
+
+
+def _discover_project_binding_id(
+    root: Path,
+    project: dict[str, Any],
+    *,
+    path: Path,
+) -> str | None:
+    project_id = _string(project.get("id"))
+    root_path = _string(project.get("root_path"))
+    owned: list[str] = []
+    matched: list[str] = []
+    for binding_path, raw in _binding_records(root):
+        binding_id = _string(raw.get("id")) or binding_path.stem
+        project_raw = _dict(raw.get("project"))
+        if project_id and _string(project_raw.get("miniclaw_project_id")) == project_id:
+            owned.append(binding_id)
+            continue
+        if root_path and _binding_matches_root(project_raw, root_path):
+            matched.append(binding_id)
+    candidates = owned or matched
+    unique = sorted(set(candidates))
+    if len(unique) > 1:
+        raise StoreMigrationError(
+            f"{path}: multiple ContextSpace bindings match project: {unique}"
+        )
+    return unique[0] if unique else None
+
+
+def _binding_matches_root(project_raw: dict[str, Any], root_path: str) -> bool:
+    try:
+        expected = Path(root_path).expanduser().resolve()
+    except OSError:
+        expected = Path(root_path).expanduser()
+    local_paths = project_raw.get("local_paths")
+    if not isinstance(local_paths, list):
+        return False
+    for raw in local_paths:
+        if not isinstance(raw, str):
+            continue
+        try:
+            candidate = Path(raw).expanduser().resolve()
+        except OSError:
+            candidate = Path(raw).expanduser()
+        if candidate == expected:
+            return True
+    return False
+
+
+def _binding_planspace_ids(binding: dict[str, Any]) -> list[str]:
+    plugs = binding.get("plugs")
+    if not isinstance(plugs, list):
+        return []
+    out: list[str] = []
+    for item in plugs:
+        if isinstance(item, str):
+            plug_id = item
+            enabled = True
+        elif isinstance(item, dict):
+            plug_id = item.get("id")
+            enabled = bool(item.get("enabled", True))
+        else:
+            continue
+        if (
+            enabled
+            and isinstance(plug_id, str)
+            and plug_id.startswith("planspaces.")
+            and plug_id not in out
+        ):
+            out.append(plug_id)
+    return out
 
 
 def _migrate_node(
@@ -509,8 +826,18 @@ def _migrate_node(
 ) -> str | None:
     kind = _string(node.get("kind")) or "agent"
     snapshot = _dict(node.get("settings_snapshot"))
-    if "cli_session_id" not in node and "sdk_session_id" in node:
-        node["cli_session_id"] = node.get("sdk_session_id")
+    node_legacy_provider = _string(node.get("provider"))
+    provider_session_id = _string(node.get("provider_session_id"))
+    if provider_session_id is None:
+        provider_session_id = _string(node.get("cli_session_id"))
+    if provider_session_id is None:
+        provider_session_id = _string(node.get("sdk_session_id"))
+    if provider_session_id is not None:
+        node["provider_session_id"] = provider_session_id
+    else:
+        node.pop("provider_session_id", None)
+    for key in _OLD_NODE_FIELDS:
+        node.pop(key, None)
     if kind != "agent":
         existing = _string(node.get("model_preset_id"))
         if existing:
@@ -519,7 +846,6 @@ def _migrate_node(
             except ValueError as exc:
                 raise StoreMigrationError(f"{path}: {exc}") from exc
             node["model_preset_id"] = preset.id
-            node["provider"] = preset.provider
         node["settings_snapshot"] = _clean_snapshot(snapshot)
         return node.get("model_preset_id")
 
@@ -530,7 +856,7 @@ def _migrate_node(
         except ValueError as exc:
             raise StoreMigrationError(f"{path}: {exc}") from exc
     else:
-        provider = _string(node.get("provider")) or project_legacy_provider
+        provider = node_legacy_provider or project_legacy_provider
         settings_for_node = snapshot if _has_legacy_model_settings(snapshot) else {}
         if not settings_for_node and provider == project_legacy_provider:
             settings_for_node = project_legacy_settings
@@ -546,10 +872,7 @@ def _migrate_node(
             raise StoreMigrationError(f"{path}: {exc}") from exc
     preset = get_model_preset(preset_id)
     node["model_preset_id"] = preset.id
-    node["provider"] = preset.provider
-    cleaned_snapshot = _clean_snapshot(snapshot)
-    cleaned_snapshot.update(preset.settings_snapshot())
-    node["settings_snapshot"] = cleaned_snapshot
+    node["settings_snapshot"] = _clean_snapshot(snapshot)
     return preset.id
 
 
@@ -589,6 +912,27 @@ def _migrate_preview(
         audit_path,
         action="migrate_virtual_preview",
     )
+
+
+def _migrate_context_bindings(
+    root: Path,
+    backup_root: Path,
+    audit_path: Path,
+    *,
+    changed: list[str],
+) -> None:
+    for binding_path, raw in _binding_records(root):
+        raw.pop("active_planspace_id", None)
+        changed.extend(
+            _write_yaml_if_changed(
+                binding_path,
+                raw,
+                root,
+                backup_root,
+                audit_path,
+                action="migrate_context_binding",
+            )
+        )
 
 
 def _migrate_user_templates(
@@ -790,7 +1134,7 @@ def _clean_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
     return {
         key: value
         for key, value in snapshot.items()
-        if key not in _OLD_MODEL_SETTING_KEYS
+        if key not in _OLD_SNAPSHOT_KEYS
     }
 
 

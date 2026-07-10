@@ -204,7 +204,13 @@ class AskPayloadRoundtripTest(unittest.TestCase):
         self.assertEqual(parsed.questions[0].options[0].label, "React")
 
         directive = format_ask_directive(
-            {"updated_input": {"answers": {"Which framework?": "React"}}},
+            {
+                "response": {
+                    "answers": {
+                        "Which framework?": {"answers": ["React"]},
+                    }
+                }
+            },
             parsed,
         )
         answers = directive["hookSpecificOutput"]["updatedInput"]["answers"]
@@ -217,7 +223,7 @@ class AskPayloadRoundtripTest(unittest.TestCase):
         self.assertIsNone(parse_ask_payload({"tool_input": {}}))
         self.assertIsNone(parse_ask_payload({"tool_input": {"questions": []}}))
 
-    def test_free_text_fallback_from_decision(self) -> None:
+    def test_canonical_free_text_answer(self) -> None:
         payload = {
             "hook_event_name": "PreToolUse",
             "tool_name": "AskUserQuestion",
@@ -232,7 +238,16 @@ class AskPayloadRoundtripTest(unittest.TestCase):
         }
         parsed = parse_ask_payload(payload)
         assert parsed is not None
-        directive = format_ask_directive({"decision": "sure, sounds fine"}, parsed)
+        directive = format_ask_directive(
+            {
+                "response": {
+                    "answers": {
+                        "Any thoughts?": {"answers": ["sure, sounds fine"]},
+                    }
+                }
+            },
+            parsed,
+        )
         answers = directive["hookSpecificOutput"]["updatedInput"]["answers"]
         self.assertEqual(answers["Any thoughts?"], "sure, sounds fine")
 
@@ -673,7 +688,7 @@ class ClaudeNativeStreamTerminalTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_claude_provider_turns_bare_native_exhaustion_into_error(self) -> None:
         class BareSession:
-            cli_session_id = "claude-session"
+            session_id = "claude-session"
 
             def __init__(self, **_: Any) -> None:
                 self.closed = False
@@ -716,7 +731,7 @@ class ClaudeNativeStreamTerminalTest(unittest.IsolatedAsyncioTestCase):
         self,
     ) -> None:
         class RecordingSession:
-            cli_session_id = "claude-session"
+            session_id = "claude-session"
             seen_prompt: str | None = None
             seen_confirmation_text: str | None = None
 

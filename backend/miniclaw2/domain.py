@@ -1,4 +1,4 @@
-"""Domain models — Project, Node, HumanGate, ContextBundle.
+"""Domain models — Project, Node, HumanGate, and state enums.
 
 Schema matches PHILOSOPHY §6. The
 ontology is two-axis: ``kind`` distinguishes agent, op, and verifier;
@@ -15,7 +15,7 @@ from enum import StrEnum
 from typing import Any
 from uuid import uuid4
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
 
 from .model_catalog import (
     default_model_preset_id,
@@ -120,16 +120,15 @@ class TokenUsage(BaseModel):
 
 
 class Project(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     id: str = Field(default_factory=_new_id)
     root_path: str
     name: str = ""
     model_preset_id: str = Field(default_factory=default_model_preset_id)
-    provider: str = "codex"
     preferred_language: str | None = None
-    head_commit: str | None = None
-    parent_project_id: str | None = None
-    parent_commit: str | None = None
     project_context_binding_id: str | None = None
+    active_planspace_id: str | None = None
     settings_override: dict[str, Any] = Field(default_factory=dict)
     temporary: bool = False
     template_id: str | None = None
@@ -142,11 +141,17 @@ class Project(BaseModel):
     def _check_project_model_preset(self) -> "Project":
         preset_id = normalize_model_preset_id(self.model_preset_id)
         object.__setattr__(self, "model_preset_id", preset_id)
-        object.__setattr__(self, "provider", provider_for_model_preset(preset_id))
         return self
+
+    @computed_field
+    @property
+    def provider(self) -> str:
+        return provider_for_model_preset(self.model_preset_id)
 
 
 class Node(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     id: str = Field(default_factory=_new_id)
     project_id: str
     kind: NodeKind = NodeKind.AGENT
@@ -158,14 +163,11 @@ class Node(BaseModel):
     state: NodeState = NodeState.QUEUED
     parent_node_id: str | None = None
     planspace_id: str | None = None
-    context_sources: list[str] = Field(default_factory=list)
     context_bundle_id: str | None = None
     context_bundle_path: str | None = None
     model_preset_id: str | None = None
-    provider: str = "codex"
     provider_session_id: str | None = None
     provider_turn_id: str | None = None
-    cli_session_id: str | None = None
     commit_before: str | None = None
     commit_after: str | None = None
     prompt: str = ""
@@ -238,7 +240,6 @@ class Node(BaseModel):
                 raise ValueError("agent nodes require model_preset_id")
             preset_id = normalize_model_preset_id(self.model_preset_id)
             object.__setattr__(self, "model_preset_id", preset_id)
-            object.__setattr__(self, "provider", provider_for_model_preset(preset_id))
             # AGENT — category required, default to REGULAR
             if self.category is None:
                 object.__setattr__(self, "category", Category.REGULAR)
@@ -261,6 +262,13 @@ class Node(BaseModel):
                 raise ValueError("virtual nodes must not carry started_at/finished_at")
         return self
 
+    @computed_field
+    @property
+    def provider(self) -> str | None:
+        if self.model_preset_id is None:
+            return None
+        return provider_for_model_preset(self.model_preset_id)
+
 
 class HumanGate(BaseModel):
     id: str = Field(default_factory=_new_id)
@@ -274,15 +282,3 @@ class HumanGate(BaseModel):
     response: dict[str, Any] | None = None
     created_at: float = Field(default_factory=_now)
     resolved_at: float | None = None
-
-
-class ContextBundle(BaseModel):
-    """Legacy context edge shape used by ``compose_context_bundle``."""
-    id: str = Field(default_factory=_new_id)
-    source_node_id: str
-    claude_md: str = ""
-    memory: dict[str, str] = Field(default_factory=dict)
-    settings: dict[str, Any] = Field(default_factory=dict)
-    agents: list[dict[str, Any]] = Field(default_factory=list)
-    allowed_tools: list[str] = Field(default_factory=list)
-    created_at: float = Field(default_factory=_now)

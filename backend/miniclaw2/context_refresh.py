@@ -114,7 +114,6 @@ async def _run_agent_context_task(project: Project, record: ContextTask) -> None
         project_id=project.id,
         kind=NodeKind.AGENT,
         model_preset_id=project.model_preset_id,
-        provider=provider_name,
         prompt=preset,
     )
     context = AgentProviderContext(

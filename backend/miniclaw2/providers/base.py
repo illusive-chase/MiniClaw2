@@ -7,8 +7,6 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
-from pydantic import BaseModel
-
 from ..domain import GateSubtype, Node, Project
 from ..events import (
     Activity,
@@ -89,10 +87,6 @@ class AgentProvider(Protocol):
 
     async def interrupt(self) -> None:
         ...
-
-
-def dump_model(value: BaseModel) -> dict[str, Any]:
-    return value.model_dump()
 
 
 def compose_turn_text(prompt: str, launch_instructions: str = "") -> str:

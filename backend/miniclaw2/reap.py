@@ -25,7 +25,6 @@ from pathlib import Path
 from .domain import Category, Node, NodeKind, NodeState, Project, _new_id
 from .materialize import diff_lane
 from .preview import (
-    ExecutedPreview,
     Preview,
     PreviewValidationError,
     VirtualPreview,

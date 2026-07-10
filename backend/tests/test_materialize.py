@@ -34,7 +34,6 @@ class MaterializeTests(unittest.TestCase):
         self.project = Project(
             id="p1",
             root_path=str(self.project_root),
-            provider="claude",
         )
         self.store.create_project(self.project)
 

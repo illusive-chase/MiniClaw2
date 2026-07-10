@@ -212,13 +212,13 @@ def _parse_allowed_model_preset_ids(
 ) -> list[str]:
     if "providers" in template_data:
         raise TemplateError(
-            f"{name}: providers is obsolete; run the model preset migration"
+            f"{name}: providers is obsolete; run the schema migration"
         )
-    raw_single = template_data.get("model_preset_id")
-    if raw_single is not None:
-        raw: Any = [raw_single]
-    else:
-        raw = template_data.get("allowed_model_preset_ids")
+    if "model_preset_id" in template_data:
+        raise TemplateError(
+            f"{name}: model_preset_id is obsolete; use allowed_model_preset_ids"
+        )
+    raw = template_data.get("allowed_model_preset_ids")
     if not isinstance(raw, list) or not raw:
         raise TemplateError(
             f"{name}: allowed_model_preset_ids must be a non-empty list"

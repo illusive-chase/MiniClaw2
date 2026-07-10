@@ -39,7 +39,6 @@ class StaleNodeRepairTests(unittest.TestCase):
             model_preset_id="opus-4-7",
             category=Category.REGULAR,
             state=state,
-            provider="claude",
             prompt="do the thing",
             started_at=1.0,
         )
@@ -78,7 +77,6 @@ class StaleNodeRepairTests(unittest.TestCase):
             model_preset_id="opus-4-7",
             category=Category.REGULAR,
             state=NodeState.DONE,
-            provider="claude",
             prompt="done",
             started_at=1.0,
             finished_at=2.0,
@@ -90,7 +88,6 @@ class StaleNodeRepairTests(unittest.TestCase):
             model_preset_id="opus-4-7",
             category=Category.REGULAR,
             state=NodeState.VIRTUAL,
-            provider="claude",
             prompt_draft="pending",
             proposed_by="user",
         )
@@ -127,9 +124,7 @@ class RerunNodeTests(unittest.TestCase):
         self.registry = ProjectRegistry(store=self.store)
         self.lane = create_planspace(self.project, title="Work", mode="manual")
         runtime = self.registry._runtimes[self.project.id]
-        settings = dict(runtime.project.settings_override)
-        settings["active_planspace_id"] = self.lane
-        runtime.project.settings_override = settings
+        runtime.project.active_planspace_id = self.lane
         self.store.update_project(runtime.project)
 
     def tearDown(self) -> None:
@@ -145,7 +140,6 @@ class RerunNodeTests(unittest.TestCase):
             category=Category.REGULAR,
             state=state,
             planspace_id=self.lane,
-            provider="claude",
             prompt=prompt,
             started_at=1.0,
             finished_at=2.0,
@@ -205,7 +199,6 @@ class RerunNodeTests(unittest.TestCase):
             category=Category.REGULAR,
             state=NodeState.DONE,
             planspace_id=self.lane,
-            provider="claude",
             provider_session_id="prov-sess-1",
             prompt="original prompt",
             started_at=1.0,
@@ -220,7 +213,6 @@ class RerunNodeTests(unittest.TestCase):
             category=Category.REGULAR,
             state=NodeState.ERROR,
             planspace_id=self.lane,
-            provider="claude",
             prompt="follow up",
             parent_node_id=source.id,
             resume_from_node_id=source.id,

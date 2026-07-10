@@ -36,7 +36,7 @@ export function createAssistantTurn(id: string, streaming: boolean): ChatTurn {
   };
 }
 
-export function appendServerEvent(prev: ChatTurn[], event: ServerEvent): ChatTurn[] {
+function appendServerEvent(prev: ChatTurn[], event: ServerEvent): ChatTurn[] {
   if (event.type === "node_started") {
     return seedAgentTurns(prev, event.node_id, event.kind, event.prompt ?? "");
   }
@@ -61,7 +61,7 @@ export function appendServerEvent(prev: ChatTurn[], event: ServerEvent): ChatTur
   return prev;
 }
 
-export function seedAgentTurns(
+function seedAgentTurns(
   prev: ChatTurn[],
   nodeId: string,
   kind: string | undefined,
@@ -91,7 +91,7 @@ export function buildTurnsFromEvents(node: NodeInfo, records: EventRecord[]): Ch
   return turns;
 }
 
-export function appendAssistantText(prev: ChatTurn[], text: string): ChatTurn[] {
+function appendAssistantText(prev: ChatTurn[], text: string): ChatTurn[] {
   if (text.length === 0) return prev;
   return updateLastAssistantTurn(prev, (turn) => {
     const lastBlock = turn.blocks.at(-1);
@@ -115,7 +115,7 @@ export function appendAssistantText(prev: ChatTurn[], text: string): ChatTurn[] 
   });
 }
 
-export function appendAssistantThinking(prev: ChatTurn[], text: string): ChatTurn[] {
+function appendAssistantThinking(prev: ChatTurn[], text: string): ChatTurn[] {
   if (text.length === 0) return markAssistantBoundary(prev);
   return updateLastAssistantTurn(prev, (turn) => {
     const lastBlock = turn.blocks.at(-1);
@@ -138,7 +138,7 @@ export function appendAssistantThinking(prev: ChatTurn[], text: string): ChatTur
   });
 }
 
-export function mergeAssistantActivity(prev: ChatTurn[], activity: Activity): ChatTurn[] {
+function mergeAssistantActivity(prev: ChatTurn[], activity: Activity): ChatTurn[] {
   return updateLastAssistantTurn(prev, (turn) => {
     const lastBlock = turn.blocks.at(-1);
     const nextBlocks =
@@ -163,7 +163,7 @@ export function mergeAssistantActivity(prev: ChatTurn[], activity: Activity): Ch
   });
 }
 
-export function finishAssistantTurn(prev: ChatTurn[]): ChatTurn[] {
+function finishAssistantTurn(prev: ChatTurn[]): ChatTurn[] {
   return updateLastAssistantTurn(prev, (turn) => ({
     ...turn,
     streaming: false,
@@ -171,7 +171,7 @@ export function finishAssistantTurn(prev: ChatTurn[]): ChatTurn[] {
   }));
 }
 
-export function appendAssistantError(prev: ChatTurn[], message: string): ChatTurn[] {
+function appendAssistantError(prev: ChatTurn[], message: string): ChatTurn[] {
   return updateLastAssistantTurn(prev, (turn) => {
     const text = `Error: ${message}`;
     const lastBlock = turn.blocks.at(-1);

@@ -69,9 +69,7 @@ class UpdateVirtualPendingSkillsTests(unittest.TestCase):
             store_root=self.store.root,
             seed_text="seed",
         )
-        settings = dict(self.project.settings_override)
-        settings["active_planspace_id"] = lane
-        self.project.settings_override = settings
+        self.project.active_planspace_id = lane
         self.store.update_project(self.project)
         self.registry = ProjectRegistry(store=self.store)
         self.lane = lane
@@ -128,9 +126,7 @@ class PromotePendingSkillsTests(unittest.IsolatedAsyncioTestCase):
             store_root=self.store.root,
             seed_text="seed",
         )
-        settings = dict(self.project.settings_override)
-        settings["active_planspace_id"] = lane
-        self.project.settings_override = settings
+        self.project.active_planspace_id = lane
         self.store.update_project(self.project)
         self.registry = ProjectRegistry(store=self.store)
         self.lane = lane

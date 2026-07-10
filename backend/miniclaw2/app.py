@@ -228,10 +228,10 @@ class ApplyUserTemplateResponse(BaseModel):
     node_ids: list[str]
 
 
-def create_app() -> FastAPI:
+def create_app(registry: ProjectRegistry | None = None) -> FastAPI:
     from contextlib import asynccontextmanager
 
-    registry = ProjectRegistry(initialize=False)
+    registry = registry if registry is not None else ProjectRegistry(initialize=False)
 
     def initialize_registry() -> None:
         initialize = getattr(registry, "initialize", None)
@@ -466,7 +466,9 @@ def create_app() -> FastAPI:
 
     @app.post("/sessions/{sid}/planspaces", response_model=dict[str, Any])
     async def create_planspace(
-        sid: str, req: CreatePlanspaceRequest
+        sid: str,
+        req: CreatePlanspaceRequest,
+        response: Response,
     ) -> dict[str, Any]:
         project = registry.get_project(sid)
         if project is None:
@@ -475,7 +477,18 @@ def create_app() -> FastAPI:
             raise HTTPException(409, "turn in progress")
         if _context_task_running(project.id):
             raise HTTPException(409, "context refresh in progress")
+        if (
+            req.seed is not None
+            and req.user_seed is not None
+            and req.seed != req.user_seed
+        ):
+            raise HTTPException(400, "seed and deprecated user_seed disagree")
         seed = req.seed if req.seed is not None else req.user_seed
+        if req.user_seed is not None:
+            response.headers["Deprecation"] = "true"
+            response.headers["Warning"] = (
+                '299 MiniClaw2 "user_seed is deprecated; use seed"'
+            )
         if seed is None or not seed.strip():
             raise HTTPException(400, "seed must be non-empty")
         try:
@@ -954,7 +967,6 @@ def create_app() -> FastAPI:
                         allow=resp.allow,
                         message=resp.message,
                         updated_input=resp.updated_input,
-                        decision=resp.decision,
                         response=resp.response,
                         scope=resp.scope,
                         interrupt=resp.interrupt,

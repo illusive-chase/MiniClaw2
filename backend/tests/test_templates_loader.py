@@ -4,6 +4,7 @@ import unittest
 
 from miniclaw2.domain import Category, NodeKind, ReviewSubtype
 from miniclaw2.templates import TemplateError, list_templates, load_template
+from miniclaw2.templates.loader import _parse_allowed_model_preset_ids
 
 
 class TemplatesLoaderTest(unittest.TestCase):
@@ -45,6 +46,13 @@ class TemplatesLoaderTest(unittest.TestCase):
     def test_unknown_template_raises(self) -> None:
         with self.assertRaises(TemplateError):
             load_template("does-not-exist")
+
+    def test_current_loader_rejects_singular_model_preset(self) -> None:
+        with self.assertRaisesRegex(TemplateError, "model_preset_id is obsolete"):
+            _parse_allowed_model_preset_ids(
+                "legacy",
+                {"model_preset_id": "gpt-5.6"},
+            )
 
     def test_gui_calculator_has_build_verify_accept_lane(self) -> None:
         template = load_template("gui-calculator")

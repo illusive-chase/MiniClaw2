@@ -34,7 +34,6 @@ from ..domain import (
     Node,
     NodeKind,
     NodeState,
-    ReviewSubtype,
     TERMINAL_NODE_STATES,
 )
 from ..store import Store

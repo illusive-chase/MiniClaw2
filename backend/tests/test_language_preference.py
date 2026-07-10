@@ -114,7 +114,7 @@ class LanguagePreferenceRegistryTest(unittest.TestCase):
             registry2.delete_project(pid)
             self.assertFalse(root.exists())
 
-    def test_updating_preferred_language_removes_settings_fallbacks(self) -> None:
+    def test_runtime_uses_only_typed_preferred_language(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             store_root = Path(raw) / "store"
             registry = ProjectRegistry(store=Store(root=store_root))
@@ -125,7 +125,7 @@ class LanguagePreferenceRegistryTest(unittest.TestCase):
                 "custom_flag": "test-value",
             }
 
-            self.assertEqual(project_preferred_language(project), "Russian")
+            self.assertIsNone(project_preferred_language(project))
 
             updated = registry.update_project_preferences(
                 project.id,
@@ -135,8 +135,8 @@ class LanguagePreferenceRegistryTest(unittest.TestCase):
             assert updated is not None
             self.assertIsNone(updated.preferred_language)
             self.assertIsNone(project_preferred_language(updated))
-            self.assertNotIn("language", updated.settings_override)
-            self.assertNotIn("preferred_language", updated.settings_override)
+            self.assertEqual(updated.settings_override["language"], "Japanese")
+            self.assertEqual(updated.settings_override["preferred_language"], "Russian")
             self.assertEqual(updated.settings_override["custom_flag"], "test-value")
 
             updated.settings_override = {
@@ -152,8 +152,8 @@ class LanguagePreferenceRegistryTest(unittest.TestCase):
             assert updated is not None
             self.assertEqual(updated.preferred_language, "Hindi")
             self.assertEqual(project_preferred_language(updated), "Hindi")
-            self.assertNotIn("language", updated.settings_override)
-            self.assertNotIn("preferred_language", updated.settings_override)
+            self.assertEqual(updated.settings_override["language"], "Japanese")
+            self.assertEqual(updated.settings_override["preferred_language"], "Russian")
             self.assertEqual(updated.settings_override["custom_flag"], "test-value")
 
     def test_project_preferred_language_ignores_invalid_persisted_value(self) -> None:

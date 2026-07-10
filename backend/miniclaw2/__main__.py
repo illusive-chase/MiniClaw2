@@ -12,7 +12,13 @@ from pathlib import Path
 
 import uvicorn
 
-from .migrations import StoreMigrationError, check_store, repair_store
+from .migrations import (
+    StoreMigrationError,
+    check_store,
+    dry_run_store_migration,
+    migrate_store,
+    repair_store,
+)
 
 VITE_PORT = 5173
 
@@ -34,6 +40,11 @@ def main() -> None:
         action="store_true",
         help="Back up and repair legacy records in the on-disk store, then exit.",
     )
+    store_actions.add_argument(
+        "--dry-run-migration",
+        action="store_true",
+        help="Report migration changes without modifying the store, then exit.",
+    )
     parser.add_argument(
         "--store-path",
         type=Path,
@@ -47,19 +58,26 @@ def main() -> None:
     args = parser.parse_args()
 
     logging.basicConfig(level=args.log_level.upper())
-    if args.check_store or args.repair_store:
+    if args.check_store or args.repair_store or args.dry_run_migration:
         store_root = args.store_path or Path(
             os.environ.get("MINICLAW_HOME", Path.home() / ".miniclaw2")
         )
         try:
-            report = (
-                repair_store(store_root)
-                if args.repair_store
-                else check_store(store_root)
-            )
+            if args.repair_store:
+                report = repair_store(store_root)
+            elif args.dry_run_migration:
+                report = dry_run_store_migration(store_root)
+            else:
+                report = check_store(store_root)
         except StoreMigrationError as exc:
             sys.exit(f"Store validation failed: {exc}")
-        action = "repaired" if report.repaired else "valid"
+        action = (
+            "dry-run"
+            if report.dry_run
+            else "repaired"
+            if report.repaired
+            else "valid"
+        )
         print(
             f"Store {action}: {report.root} "
             f"(schema {report.version_before} -> {report.version_after}, "
@@ -67,7 +85,29 @@ def main() -> None:
         )
         if report.backup_root is not None:
             print(f"Backup: {report.backup_root}")
+        if report.audit_path is not None:
+            print(f"Audit: {report.audit_path}")
+        if report.dry_run and report.changed_files:
+            print("Planned files:")
+            for changed_file in report.changed_files:
+                print(f"  {changed_file}")
         return
+
+    store_root = Path(
+        os.environ.get("MINICLAW_HOME", Path.home() / ".miniclaw2")
+    )
+    try:
+        migration = migrate_store(store_root)
+    except StoreMigrationError as exc:
+        sys.exit(f"Store migration failed: {exc}")
+    if migration.changed_files:
+        print(
+            f"Store migrated: {migration.root} "
+            f"(schema {migration.version_before} -> {migration.version_after}, "
+            f"changed {len(migration.changed_files)} files)"
+        )
+        if migration.backup_root is not None:
+            print(f"Backup: {migration.backup_root}")
 
     # Broadcast the port to child processes (claude hook bridge reads
     # it via MINICLAW_HOOK_URL and MINICLAW_HOOK_TOKEN from its env at
