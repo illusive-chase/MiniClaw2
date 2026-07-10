@@ -1,6 +1,7 @@
 # MiniClaw2 Dead Code 与历史兼容层清理计划
 
-> 状态：Executed（Phase 7 的外部 API / Codex 版本退出项按决策保留）
+> 状态：Executed（一次性 Store migration 已在唯一 Store 升至 v3 后删除；Phase 7
+> 的外部 API / Codex 版本退出项按决策保留）
 > 编写日期：2026-07-10  
 > 适用基线：当前工作区（包含尚未提交的 model preset / schema v2 改动）  
 > 目标读者：MiniClaw2 维护者、后端/前端实现者、负责持久化与升级策略的评审者
@@ -8,6 +9,8 @@
 实施结果与 ADR 结论见 [`CLEANUP_DECISIONS.md`](CLEANUP_DECISIONS.md)。本轮已完成
 确认 dead code、schema v3、typed ContextSpace/language fields、canonical session
 ID、template 与 interaction current schema、versioned replay、迁移解耦和现状文档校准。
+唯一 Store 完成 v3 迁移并通过校验后，一次性 migration 实现、CLI 和 fixtures 已删除；
+下文相关内容保留为历史实施记录，不再描述当前生产入口。
 `/sessions` 命名与 legacy Codex approval RPC 因缺少外部用户和最低支持版本结论而
 继续保留，不复制第二套 handler，也不提前移除供应商兼容。
 
@@ -904,7 +907,7 @@ cd frontend && npm run build
 - [x] binding、active planspace、preferred language 都有唯一 typed storage location。
 - [x] 前端只生成 canonical interaction response。
 - [x] legacy event 只在 replay upgrade 层出现。
-- [x] Store migration 不在普通模块导入时扫描/改写用户数据。
+- [x] 唯一 Store 完成 v3 迁移后，Store migration 代码和 CLI 已删除。
 - [x] API tests 不受真实 `~/.miniclaw2` 影响。
 - [x] `/sessions` 和旧 Codex RPC 均有明确保留理由或已完成退出。
 - [x] README 文件树、路由表、wire event 和当前代码一致。

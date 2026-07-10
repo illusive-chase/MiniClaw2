@@ -1,6 +1,7 @@
 # Dead-code and compatibility cleanup decisions
 
-Status: accepted for the schema v3 cleanup implemented on 2026-07-10.
+Status: accepted for the schema v3 cleanup implemented on 2026-07-10;
+the one-off Store migration was retired after the sole Store reached v3.
 
 This record resolves the internal decisions required by
 `DEAD_CODE_COMPAT_CLEANUP_PLAN.md`. Decisions that require information about
@@ -8,15 +9,14 @@ external users or supported vendor versions remain explicitly conservative.
 
 ## ADR-001: Store migration lifecycle
 
-- `python -m miniclaw2` runs the schema migration before Uvicorn starts.
-- Constructing `Store` never migrates or scans the whole store.
-- A current schema version takes the cheap startup path. Full consistency
-  validation is explicit through `--check-store`; `--repair-store` repairs a
-  current-version store containing legacy records.
-- `--dry-run-migration` migrates a temporary copy and reports planned files,
-  backup root, and audit path without modifying the source.
-- Migrations use per-file backup, rollback, audit records, legacy-shape counts,
-  and write the schema marker only after validation succeeds.
+- The schema v3 migration was a one-off transition for the sole MiniClaw2 Store.
+- After that Store validated at v3, the startup migration, migration/repair CLI,
+  legacy converters, and migration fixtures were removed.
+- Runtime loading accepts only the canonical current shape. Schema v1/v2 Stores
+  are no longer supported; restoring the retired migration from repository
+  history is required before opening one.
+- Event replay versioning is independent of Store migration and remains active
+  for existing unversioned `events.jsonl` records.
 
 ## ADR-002: Provider persistence
 
@@ -24,16 +24,16 @@ external users or supported vendor versions remain explicitly conservative.
 - `Project.provider` and `Node.provider` are computed properties used by wire
   responses and runtime display.
 - Provider adapter selection derives from the model preset catalog.
-- Historical provider/model fields are accepted only by schema migration.
+- Historical provider/model fields are no longer accepted.
 
 ## ADR-003: ContextSpace selection ownership
 
 - `Project.project_context_binding_id` is the explicit binding owner.
 - `Project.active_planspace_id` is the active planspace owner.
 - `Project.preferred_language` is the language owner.
-- Schema migration absorbs legacy settings keys, rejects conflicting binding or
-  planspace selections, removes binding-manifest active state, and persists a
-  sole discoverable planspace when unambiguous.
+- The completed migration absorbed legacy settings keys, rejected conflicting
+  binding or planspace selections, removed binding-manifest active state, and
+  persisted a sole discoverable planspace when unambiguous.
 - Root-path matching remains a discovery mechanism for projects without an
   explicit binding. Creating or migrating a binding persists the typed id.
 

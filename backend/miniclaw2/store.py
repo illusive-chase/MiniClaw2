@@ -99,9 +99,7 @@ class Store:
                     out.append(_validate_project_record(pf, self._read_json(pf)))
                 except (ValueError, ValidationError):
                     logger.error(
-                        "skipping invalid project record %s; run "
-                        "`python -m miniclaw2 --check-store` and "
-                        "`python -m miniclaw2 --repair-store`",
+                        "skipping invalid current-schema project record %s",
                         pf,
                         exc_info=True,
                     )
@@ -156,9 +154,7 @@ class Store:
                     out.append(Node.model_validate(self._read_json(nf)))
                 except (ValueError, ValidationError):
                     logger.error(
-                        "skipping invalid node record %s; run "
-                        "`python -m miniclaw2 --check-store` and "
-                        "`python -m miniclaw2 --repair-store`",
+                        "skipping invalid current-schema node record %s",
                         nf,
                         exc_info=True,
                     )
@@ -247,7 +243,5 @@ class Store:
 def _validate_project_record(path: Path, payload: dict[str, Any]) -> Project:
     preset_id = payload.get("model_preset_id")
     if not isinstance(preset_id, str) or not preset_id.strip():
-        raise ValueError(
-            f"{path}: project requires model_preset_id; run --repair-store"
-        )
+        raise ValueError(f"{path}: project requires model_preset_id")
     return Project.model_validate(payload)

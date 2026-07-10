@@ -212,7 +212,7 @@ def _parse_allowed_model_preset_ids(
 ) -> list[str]:
     if "providers" in template_data:
         raise TemplateError(
-            f"{name}: providers is obsolete; run the schema migration"
+            f"{name}: providers is obsolete; use allowed_model_preset_ids"
         )
     if "model_preset_id" in template_data:
         raise TemplateError(

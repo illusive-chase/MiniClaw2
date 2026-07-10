@@ -475,8 +475,8 @@ virtual into their subgraph.
   `lane.yaml`, `prompts/`, `scripts/`, and optional `seed/`.
 - Current template metadata declares only `allowed_model_preset_ids`;
   runtime loaders reject legacy `providers` and singular
-  `model_preset_id` fields. Store migration owns those conversions for
-  historical user templates.
+  `model_preset_id` fields. Historical template shapes are no longer
+  supported.
 - REST exposes `GET /templates`, `GET /templates/{name}`, and
   `POST /templates/{name}/run`. The old `/scenarios` and
   `/sessions/{sid}/verify` endpoints have been removed.
@@ -566,8 +566,7 @@ multi-project surface has been built.
 
 ## 10. Persistence
 
-Trunk: `backend/miniclaw2/store.py`, `backend/miniclaw2/migrations.py`,
-`backend/miniclaw2/replay.py`.
+Trunk: `backend/miniclaw2/store.py`, `backend/miniclaw2/replay.py`.
 
 ### Landed
 
@@ -586,12 +585,9 @@ Trunk: `backend/miniclaw2/store.py`, `backend/miniclaw2/migrations.py`,
 - Store schema v3 writes one canonical shape: only `model_preset_id`
   persists provider selection, only `provider_session_id` persists
   provider conversation identity, and ContextSpace/language selections
-  live in typed Project fields. Legacy conversion runs only in the
-  explicit CLI migration/repair layer, with per-file backups and audit.
-- Normal startup performs a cheap schema-version check and migrates only
-  old versions; current-schema consistency scans are explicit through
-  `--check-store`/`--repair-store`. `--dry-run-migration` executes against
-  a temporary copy and reports planned file changes.
+  live in typed Project fields. Runtime loading accepts only this canonical
+  shape; the completed one-off Store migration and its maintenance CLI have
+  been retired.
 - Reconnect replay reads `events.jsonl` from `since_seq` then attaches
   to the live tail. Event envelopes carry `schema_version`; legacy
   variants are upgraded before runtime delivery. Project-level WebSocket

@@ -145,36 +145,6 @@ data but cannot be newly selected. Current request bodies use
 `model_preset_id` and reject the old `provider`, `model`, and
 `model_provider` selection fields.
 
-### Store schema upgrades
-
-Stop all running MiniClaw2 processes before upgrading or repairing a
-store so an older process cannot write legacy records after migration.
-Normal startup migrates stores older than the current schema and writes
-backups under `$MINICLAW_HOME/migration-backups/` plus an audit log under
-`$MINICLAW_HOME/migrations/`.
-
-Validate a current store without modifying it:
-
-```bash
-python -m miniclaw2 --check-store
-```
-
-Preview all files an upgrade would change without modifying the source
-store:
-
-```bash
-python -m miniclaw2 --dry-run-migration
-```
-
-If a store is marked current but contains a legacy or inconsistent
-record, repair it explicitly after stopping all MiniClaw2 processes:
-
-```bash
-python -m miniclaw2 --repair-store
-```
-
-Use `--store-path /path/to/store` with any of these maintenance actions.
-
 Opt a project into auto-commit (a `commit` op node is appended after
 each agent/gate node reaches `done`, rewriting that node's
 `commit_after` so the per-node diff becomes a real two-commit diff):
@@ -191,7 +161,6 @@ curl -X POST http://127.0.0.1:8000/sessions \
 backend/miniclaw2/
   domain.py        # Project, Node, HumanGate + state enums
   store.py         # JSON/JSONL filesystem store under $MINICLAW_HOME
-  migrations.py    # explicit schema migration, dry-run, backup, audit, repair
   model_catalog.py # model preset catalog and provider derivation
   runner.py        # provider-neutral NodeRunner state machine
   providers/       # native Claude CLI (PTY+JSONL) and Codex app-server adapters
