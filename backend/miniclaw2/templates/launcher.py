@@ -21,9 +21,13 @@ def launch_template(
     model_preset_id: str,
     registry: ProjectRegistry,
 ) -> tuple[Project, Template]:
-    template = load_template(name)
-    model_preset_id = _require_template_model_preset(template, model_preset_id)
-    provider = provider_for_model_preset(model_preset_id)
+    template = load_template(name, store_root=registry.store.root)
+    model_preset_id = _require_template_model_preset(
+        template, model_preset_id, store_root=registry.store.root
+    )
+    provider = provider_for_model_preset(
+        model_preset_id, store_root=registry.store.root
+    )
 
     project = registry.create_project(
         cwd=None,
@@ -85,7 +89,7 @@ def apply_user_template(
     if not active_lane:
         raise TemplateError("activate a direction first")
     model_preset_id = _require_template_model_preset(
-        template, project.model_preset_id
+        template, project.model_preset_id, store_root=registry.store.root
     )
 
     if anchor_node_id:
@@ -116,7 +120,9 @@ def _stamp_lane(
     *,
     anchor_node_id: str | None,
 ) -> list[Node]:
-    model_preset_id = _require_template_model_preset(template, model_preset_id)
+    model_preset_id = _require_template_model_preset(
+        template, model_preset_id, store_root=registry.store.root
+    )
     slug_to_node_id: dict[str, str] = {}
     pending: list[tuple[TemplateNodeSpec, Node]] = []
     for spec in template.nodes:
@@ -162,9 +168,13 @@ def _stamp_lane(
 def _require_template_model_preset(
     template: Template,
     model_preset_id: str,
+    *,
+    store_root: Path | None = None,
 ) -> str:
     try:
-        normalized = normalize_active_model_preset_id(model_preset_id)
+        normalized = normalize_active_model_preset_id(
+            model_preset_id, store_root=store_root
+        )
     except ValueError as exc:
         raise TemplateError(str(exc)) from exc
     if normalized not in template.allowed_model_preset_ids:

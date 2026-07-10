@@ -138,10 +138,16 @@ class ClaudeProvider:
         return format_ask_directive(response, parsed)
 
     def _resolve_model(self, context: AgentProviderContext) -> str | None:
-        return get_model_preset(context.node.model_preset_id).model
+        return get_model_preset(
+            context.node.model_preset_id,
+            store_root=getattr(context, "store_root", None),
+        ).model
 
     def _resolve_effort(self, context: AgentProviderContext) -> str | None:
-        return get_model_preset(context.node.model_preset_id).reasoning_effort
+        return get_model_preset(
+            context.node.model_preset_id,
+            store_root=getattr(context, "store_root", None),
+        ).reasoning_effort
 
     def _resume_session_id(
         self, context: AgentProviderContext

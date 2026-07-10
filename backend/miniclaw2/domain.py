@@ -12,10 +12,19 @@ from __future__ import annotations
 
 import time
 from enum import StrEnum
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, StrictInt, computed_field, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    PrivateAttr,
+    StrictInt,
+    computed_field,
+    model_validator,
+)
 
 from .model_catalog import (
     default_model_preset_id,
@@ -121,6 +130,7 @@ class TokenUsage(BaseModel):
 
 class Project(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    _model_catalog_root: Path | None = PrivateAttr(default=None)
 
     id: str = Field(default_factory=_new_id)
     root_path: str
@@ -140,18 +150,32 @@ class Project(BaseModel):
 
     @model_validator(mode="after")
     def _check_project_model_preset(self) -> "Project":
-        preset_id = normalize_model_preset_id(self.model_preset_id)
+        preset_id = self.model_preset_id.strip()
+        if not preset_id:
+            raise ValueError("model_preset_id is required")
         object.__setattr__(self, "model_preset_id", preset_id)
         return self
+
+    def bind_model_catalog(self, store_root: Path) -> "Project":
+        self._model_catalog_root = store_root
+        normalize_model_preset_id(self.model_preset_id, store_root=store_root)
+        return self
+
+    @property
+    def model_catalog_root(self) -> Path | None:
+        return self._model_catalog_root
 
     @computed_field
     @property
     def provider(self) -> str:
-        return provider_for_model_preset(self.model_preset_id)
+        return provider_for_model_preset(
+            self.model_preset_id, store_root=self._model_catalog_root
+        )
 
 
 class Node(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    _model_catalog_root: Path | None = PrivateAttr(default=None)
 
     id: str = Field(default_factory=_new_id)
     project_id: str
@@ -239,7 +263,7 @@ class Node(BaseModel):
         else:
             if self.model_preset_id is None or not self.model_preset_id.strip():
                 raise ValueError("agent nodes require model_preset_id")
-            preset_id = normalize_model_preset_id(self.model_preset_id)
+            preset_id = self.model_preset_id.strip()
             object.__setattr__(self, "model_preset_id", preset_id)
             # AGENT — category required, default to REGULAR
             if self.category is None:
@@ -263,12 +287,26 @@ class Node(BaseModel):
                 raise ValueError("virtual nodes must not carry started_at/finished_at")
         return self
 
+    def bind_model_catalog(self, store_root: Path) -> "Node":
+        self._model_catalog_root = store_root
+        if self.model_preset_id is not None:
+            normalize_model_preset_id(
+                self.model_preset_id, store_root=store_root
+            )
+        return self
+
+    @property
+    def model_catalog_root(self) -> Path | None:
+        return self._model_catalog_root
+
     @computed_field
     @property
     def provider(self) -> str | None:
         if self.model_preset_id is None:
             return None
-        return provider_for_model_preset(self.model_preset_id)
+        return provider_for_model_preset(
+            self.model_preset_id, store_root=self._model_catalog_root
+        )
 
 
 class HumanGate(BaseModel):

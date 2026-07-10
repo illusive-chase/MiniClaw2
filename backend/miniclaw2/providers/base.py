@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Protocol
 
 from ..domain import GateSubtype, Node, Project
@@ -71,6 +72,7 @@ class AgentProviderContext:
     launch_instructions: str = ""
     minimal_mode: bool = False
     tool_allowlist: list[str] | None = None
+    store_root: Path | None = None
 
     async def request_gate(self, gate: GateRequest) -> dict[str, Any]:
         return await self.request_gate_handler(gate)

@@ -75,6 +75,7 @@ class Store:
     # ---- project ----
 
     def create_project(self, project: Project) -> Project:
+        project.bind_model_catalog(self.root)
         d = self._project_dir(project.id)
         (d / "nodes").mkdir(parents=True, exist_ok=True)
         self._write_json(
@@ -84,6 +85,7 @@ class Store:
         return project
 
     def update_project(self, project: Project) -> None:
+        project.bind_model_catalog(self.root)
         self._write_json(
             self._project_file(project.id),
             project.model_dump(exclude={"provider"}),
@@ -100,7 +102,11 @@ class Store:
             pf = pdir / "project.json"
             if pf.exists():
                 try:
-                    out.append(_validate_project_record(pf, self._read_json(pf)))
+                    out.append(
+                        _validate_project_record(
+                            pf, self._read_json(pf)
+                        ).bind_model_catalog(self.root)
+                    )
                 except (ValueError, ValidationError):
                     logger.error(
                         "skipping invalid current-schema project record %s",
@@ -119,6 +125,7 @@ class Store:
     # ---- node ----
 
     def create_node(self, node: Node) -> Node:
+        node.bind_model_catalog(self.root)
         d = self.node_dir(node.project_id, node.id)
         d.mkdir(parents=True, exist_ok=True)
         self._write_json(
@@ -131,9 +138,12 @@ class Store:
         path = self._node_file(pid, nid)
         if not path.exists():
             return None
-        return Node.model_validate(self._read_json(path))
+        return Node.model_validate(self._read_json(path)).bind_model_catalog(
+            self.root
+        )
 
     def update_node(self, node: Node) -> None:
+        node.bind_model_catalog(self.root)
         self._write_json(
             self._node_file(node.project_id, node.id),
             node.model_dump(exclude={"provider"}),
@@ -155,7 +165,11 @@ class Store:
             nf = ndir / "node.json"
             if nf.exists():
                 try:
-                    out.append(Node.model_validate(self._read_json(nf)))
+                    out.append(
+                        Node.model_validate(self._read_json(nf)).bind_model_catalog(
+                            self.root
+                        )
+                    )
                 except (ValueError, ValidationError):
                     logger.error(
                         "skipping invalid current-schema node record %s",

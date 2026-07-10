@@ -104,7 +104,7 @@ class Template:
         }
 
 
-def list_templates() -> list[Template]:
+def list_templates(store_root: Path | None = None) -> list[Template]:
     out: list[Template] = []
     if not TEMPLATES_DIR.exists():
         return out
@@ -116,15 +116,15 @@ def list_templates() -> list[Template]:
             continue
         if not (child / "template.yaml").exists():
             continue
-        out.append(load_template(child.name))
+        out.append(load_template(child.name, store_root=store_root))
     return out
 
 
-def load_template(name: str) -> Template:
+def load_template(name: str, store_root: Path | None = None) -> Template:
     root = TEMPLATES_DIR / name
     if not root.is_dir():
         raise TemplateError(f"template not found: {name}")
-    return _load_from_root(root, name)
+    return _load_from_root(root, name, store_root=store_root)
 
 
 def list_user_templates(store_root: Path | None = None) -> list[Template]:
@@ -139,7 +139,7 @@ def list_user_templates(store_root: Path | None = None) -> list[Template]:
         if not (child / "template.yaml").exists():
             continue
         try:
-            out.append(_load_from_root(child, child.name))
+            out.append(_load_from_root(child, child.name, store_root=store_root))
         except TemplateError:
             # Skip malformed user templates rather than fail the whole list.
             continue
@@ -150,10 +150,15 @@ def load_user_template(slug: str, store_root: Path | None = None) -> Template:
     root = user_templates_root(store_root) / slug
     if not root.is_dir():
         raise TemplateError(f"user template not found: {slug}")
-    return _load_from_root(root, slug)
+    return _load_from_root(root, slug, store_root=store_root)
 
 
-def _load_from_root(root: Path, name: str) -> Template:
+def _load_from_root(
+    root: Path,
+    name: str,
+    *,
+    store_root: Path | None = None,
+) -> Template:
     template_data = _read_yaml(root / "template.yaml", name, "template.yaml")
     lane_data = _read_yaml(root / "lane.yaml", name, "lane.yaml")
 
@@ -166,6 +171,7 @@ def _load_from_root(root: Path, name: str) -> Template:
     allowed_model_preset_ids = _parse_allowed_model_preset_ids(
         name,
         template_data,
+        store_root=store_root,
     )
 
     permission_mode = template_data.get("permission_mode")
@@ -209,6 +215,8 @@ def _load_from_root(root: Path, name: str) -> Template:
 def _parse_allowed_model_preset_ids(
     name: str,
     template_data: dict[str, Any],
+    *,
+    store_root: Path | None = None,
 ) -> list[str]:
     if "providers" in template_data:
         raise TemplateError(
@@ -230,7 +238,7 @@ def _parse_allowed_model_preset_ids(
                 f"{name}: allowed_model_preset_ids entries must be strings"
             )
         try:
-            preset_id = normalize_model_preset_id(item)
+            preset_id = normalize_model_preset_id(item, store_root=store_root)
         except ValueError as exc:
             raise TemplateError(f"{name}: {exc}") from exc
         if preset_id not in out:

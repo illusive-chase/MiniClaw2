@@ -106,7 +106,9 @@ async def _run_agent_context_task(project: Project, record: ContextTask) -> None
     from .runner import _make_provider  # local import to avoid cycle
 
     preset = _load_preset(record.mode)
-    provider_name = provider_for_model_preset(project.model_preset_id)
+    provider_name = provider_for_model_preset(
+        project.model_preset_id, store_root=project.model_catalog_root
+    )
     provider = _make_provider(provider_name)
     record.provider = provider
 
@@ -124,6 +126,7 @@ async def _run_agent_context_task(project: Project, record: ContextTask) -> None
         launch_instructions="",
         minimal_mode=True,
         tool_allowlist=list(_TOOL_ALLOWLIST),
+        store_root=project.model_catalog_root,
     )
 
     context_path = Path(project.root_path) / "CONTEXT.md"

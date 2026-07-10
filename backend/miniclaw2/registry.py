@@ -595,7 +595,9 @@ class ProjectRegistry:
         if resume_source is not None:
             if (
                 model_preset_id is not None
-                and normalize_model_preset_id(model_preset_id)
+                and normalize_model_preset_id(
+                    model_preset_id, store_root=self.store.root
+                )
                 != resume_source.model_preset_id
             ):
                 raise ValueError(
@@ -606,10 +608,12 @@ class ProjectRegistry:
             if model_preset_id is None:
                 next_model_preset_id = rt.project.model_preset_id
             else:
-                next_model_preset_id = normalize_model_preset_id(model_preset_id)
+                next_model_preset_id = normalize_model_preset_id(
+                    model_preset_id, store_root=self.store.root
+                )
                 if next_model_preset_id != rt.project.model_preset_id:
                     next_model_preset_id = normalize_active_model_preset_id(
-                        next_model_preset_id
+                        next_model_preset_id, store_root=self.store.root
                     )
         extra_skill_ids = normalize_skill_ids(extra_skills)
         settings_snapshot: dict[str, Any] = {}
@@ -805,7 +809,9 @@ class ProjectRegistry:
         if provider is not None:
             raise ValueError("provider is no longer accepted; use model_preset_id")
         next_model_preset_id = (
-            normalize_active_model_preset_id(model_preset_id)
+            normalize_active_model_preset_id(
+                model_preset_id, store_root=self.store.root
+            )
             if model_preset_id is not None
             else rt.project.model_preset_id
         )
@@ -854,7 +860,9 @@ class ProjectRegistry:
         if provider is not None:
             raise ValueError("provider is no longer accepted; use model_preset_id")
         next_model_preset_id = (
-            normalize_active_model_preset_id(model_preset_id)
+            normalize_active_model_preset_id(
+                model_preset_id, store_root=self.store.root
+            )
             if model_preset_id is not None
             else rt.project.model_preset_id
         )
@@ -1079,7 +1087,9 @@ class ProjectRegistry:
         if resume_source_for_provider is not None:
             if (
                 model_preset_id is not None
-                and normalize_model_preset_id(model_preset_id)
+                and normalize_model_preset_id(
+                    model_preset_id, store_root=self.store.root
+                )
                 != resume_source_for_provider.model_preset_id
             ):
                 raise ValueError(
@@ -1090,10 +1100,12 @@ class ProjectRegistry:
             if model_preset_id is None:
                 next_model_preset_id = rt.project.model_preset_id
             else:
-                next_model_preset_id = normalize_model_preset_id(model_preset_id)
+                next_model_preset_id = normalize_model_preset_id(
+                    model_preset_id, store_root=self.store.root
+                )
                 if not _allow_compatibility_model_preset:
                     next_model_preset_id = normalize_active_model_preset_id(
-                        next_model_preset_id
+                        next_model_preset_id, store_root=self.store.root
                     )
         try:
             next_category = (
@@ -1313,7 +1325,9 @@ class ProjectRegistry:
         if model_preset_id is not _UNSET:
             if model_preset_id is None:
                 raise ValueError("model_preset_id is required")
-            next_model_preset_id = normalize_model_preset_id(str(model_preset_id))
+            next_model_preset_id = normalize_model_preset_id(
+                str(model_preset_id), store_root=self.store.root
+            )
             if existing.resume_from_node_id:
                 resume_source = self.store.load_node(pid, existing.resume_from_node_id)
                 source_model_preset_id = (
@@ -1327,7 +1341,7 @@ class ProjectRegistry:
                     )
             if next_model_preset_id != existing.model_preset_id:
                 next_model_preset_id = normalize_active_model_preset_id(
-                    next_model_preset_id
+                    next_model_preset_id, store_root=self.store.root
                 )
             update["model_preset_id"] = next_model_preset_id
         updated = existing.model_copy(update=update)

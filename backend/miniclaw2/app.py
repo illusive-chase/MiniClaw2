@@ -384,6 +384,15 @@ def create_app(registry: ProjectRegistry | None = None) -> FastAPI:
                 node.model_preset_id == preset_id for node in nodes
             ):
                 raise HTTPException(409, "cannot delete a model preset used by a project")
+        templates = [
+            *list_templates(registry.store.root),
+            *list_user_templates(registry.store.root),
+        ]
+        if any(
+            preset_id in template.allowed_model_preset_ids
+            for template in templates
+        ):
+            raise HTTPException(409, "cannot delete a model preset used by a template")
         save_global_config(
             config.model_copy(
                 update={
@@ -897,12 +906,15 @@ def create_app(registry: ProjectRegistry | None = None) -> FastAPI:
 
     @app.get("/templates", response_model=list[TemplateSummary])
     def list_templates_endpoint() -> list[TemplateSummary]:
-        return [TemplateSummary(**s.metadata()) for s in list_templates()]
+        return [
+            TemplateSummary(**s.metadata())
+            for s in list_templates(registry.store.root)
+        ]
 
     @app.get("/templates/{name}", response_model=TemplateDetail)
     def get_template(name: str) -> TemplateDetail:
         try:
-            template = load_template(name)
+            template = load_template(name, store_root=registry.store.root)
         except TemplateError as exc:
             raise HTTPException(404, str(exc)) from exc
         return TemplateDetail(**template.metadata())

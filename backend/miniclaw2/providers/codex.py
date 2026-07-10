@@ -577,7 +577,10 @@ def _thread_params(
     base: dict[str, Any],
 ) -> dict[str, Any]:
     settings = context.project.settings_override
-    preset = get_model_preset(context.node.model_preset_id)
+    preset = get_model_preset(
+        context.node.model_preset_id,
+        store_root=getattr(context, "store_root", None),
+    )
     params = dict(base)
     _set_if_present(params, "model", preset.model)
     # Generic presets leave this unset so app-server inherits the selected

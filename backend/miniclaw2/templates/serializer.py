@@ -154,7 +154,7 @@ def serialize_selection(
         raise
 
     try:
-        return _load_from_root(target_dir, slug)
+        return _load_from_root(target_dir, slug, store_root=store.root)
     except TemplateError:
         shutil.rmtree(target_dir, ignore_errors=True)
         raise

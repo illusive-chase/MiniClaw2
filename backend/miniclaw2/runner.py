@@ -478,7 +478,9 @@ class NodeRunner:
         carries the per-turn prompt into the provider context while
         provider metadata events still update the canonical node.
         """
-        preset = get_model_preset(self.node.model_preset_id)
+        preset = get_model_preset(
+            self.node.model_preset_id, store_root=self.store.root
+        )
         provider = _make_provider(preset.provider)
         self._provider = provider
         turn_node = self.node.model_copy(update={"prompt": prompt})
@@ -488,6 +490,7 @@ class NodeRunner:
             request_gate_handler=self._request_gate,
             system_context=system_context,
             launch_instructions=launch_instructions,
+            store_root=self.store.root,
         )
         final_state: NodeState | None = None
         error_msg: str | None = None

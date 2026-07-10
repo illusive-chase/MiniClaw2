@@ -81,7 +81,7 @@ class GlobalStateApiTest(unittest.TestCase):
         self.assertEqual(response.status_code, 409)
         self.assertIn("default", response.json()["detail"])
 
-    def test_starter_preset_has_no_builtin_protection(self) -> None:
+    def test_template_referenced_preset_cannot_be_deleted(self) -> None:
         preset = next(
             item
             for item in self.client.get("/global-state").json()["model_presets"]
@@ -104,7 +104,46 @@ class GlobalStateApiTest(unittest.TestCase):
         )
 
         deleted = self.client.delete("/global-state/model-presets/opus-4-7")
-        self.assertEqual(deleted.status_code, 204)
+        self.assertEqual(deleted.status_code, 409)
+        self.assertIn("template", deleted.json()["detail"])
+
+        templates = self.client.get("/templates")
+        self.assertEqual(templates.status_code, 200)
+
+    def test_store_specific_preset_can_create_session(self) -> None:
+        preset = {
+            "id": "store-custom",
+            "label": "Store custom",
+            "provider": "codex",
+            "model": "store-model",
+            "status": "active",
+        }
+        created_preset = self.client.post(
+            "/global-state/model-presets",
+            json=preset,
+        )
+        self.assertEqual(created_preset.status_code, 201)
+
+        created_session = self.client.post(
+            "/sessions",
+            json={
+                "cwd": self.workspace.name,
+                "model_preset_id": "store-custom",
+            },
+        )
+        self.assertEqual(created_session.status_code, 200)
+        self.assertEqual(created_session.json()["model_preset_id"], "store-custom")
+        self.assertEqual(created_session.json()["provider"], "codex")
+
+        node = self.registry.start_node(
+            created_session.json()["id"],
+            "Use the custom preset",
+            model_preset_id="store-custom",
+        )
+        self.assertIsNotNone(node)
+        assert node is not None
+        self.assertEqual(node.model_preset_id, "store-custom")
+        self.assertEqual(node.provider, "codex")
 
     def test_global_defaults_apply_when_create_fields_are_omitted(self) -> None:
         updated = self.client.patch(
