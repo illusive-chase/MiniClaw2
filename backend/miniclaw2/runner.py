@@ -837,8 +837,11 @@ class NodeRunner:
         self.node.settings_snapshot = snapshot
 
     def _validate_launch_settings(self) -> None:
+        launch_project = self.project.model_copy(
+            update={"active_planspace_id": self.node.planspace_id}
+        )
         require_resolvable_active_planspace(
-            self.project,
+            launch_project,
             store_root=self.store.root,
         )
 

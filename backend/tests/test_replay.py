@@ -52,7 +52,7 @@ class LiveReplayBufferTest(unittest.TestCase):
             [{"type": "text_delta", "text": "later", "node_id": "n1", "seq": 13}],
         )
 
-    def test_releases_other_node_events_after_replay(self) -> None:
+    def test_keeps_other_node_events_buffered_until_their_replay(self) -> None:
         buffer = LiveReplayBuffer()
 
         buffer.push_live({"type": "node_started", "node_id": "n2", "seq": 1})
@@ -62,14 +62,22 @@ class LiveReplayBufferTest(unittest.TestCase):
 
         self.assertEqual(
             buffer.mark_live_ready(replay_node_id="n1", replayed_through_seq=99),
+            [],
+        )
+        self.assertIsNone(
+            buffer.push_live({
+                "type": "text_delta", "text": "new", "node_id": "n2", "seq": 3
+            })
+        )
+        self.assertEqual(
+            buffer.mark_live_ready(replay_node_id="n2", replayed_through_seq=2),
             [
-                {"type": "node_started", "node_id": "n2", "seq": 1},
-                {"type": "text_delta", "text": "other", "node_id": "n2", "seq": 2},
+                {"type": "text_delta", "text": "new", "node_id": "n2", "seq": 3},
             ],
         )
         self.assertEqual(
-            buffer.push_live({"type": "node_updated", "node_id": "n3", "seq": 0}),
-            {"type": "node_updated", "node_id": "n3", "seq": 0},
+            buffer.push_live({"type": "node_updated", "node_id": "n2", "seq": 0}),
+            {"type": "node_updated", "node_id": "n2", "seq": 0},
         )
 
     def test_node_less_events_are_not_covered_by_node_replay(self) -> None:
@@ -81,6 +89,8 @@ class LiveReplayBufferTest(unittest.TestCase):
             buffer.mark_live_ready(replay_node_id="n1", replayed_through_seq=99),
             [removed],
         )
+        later = {"type": "node_removed", "removed_node_id": "n3", "seq": 0}
+        self.assertEqual(buffer.push_live(later), later)
 
 
 class CoveredByReplayTest(unittest.TestCase):

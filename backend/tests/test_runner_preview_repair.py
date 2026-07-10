@@ -11,8 +11,14 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import yaml
+
 from miniclaw2 import runner as runner_module
-from miniclaw2.contextspace import create_planspace
+from miniclaw2.contextspace import (
+    contextspace_root,
+    create_planspace,
+    resolve_project_binding,
+)
 from miniclaw2.domain import Category, Node, NodeKind, NodeState, Project
 from miniclaw2.providers import AgentProviderContext, AgentProviderEvent
 from miniclaw2.runner import NodeRunner
@@ -285,9 +291,9 @@ class RunnerPreviewRepairTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('"state": "error"', preview)
 
     async def test_stale_active_planspace_errors_before_provider_launch(self) -> None:
-        self.project.active_planspace_id = "planspaces.deleted"
-        self.store.update_project(self.project)
         node = self._node()
+        node.planspace_id = "planspaces.deleted"
+        self.store.update_node(node)
         emitted: list[dict] = []
 
         async def on_event(payload: dict) -> None:
@@ -315,6 +321,53 @@ class RunnerPreviewRepairTests(unittest.IsolatedAsyncioTestCase):
             )
         )
         self.assertEqual(emitted[-1].get("type"), "turn_done")
+
+    async def test_unbound_queued_planspace_errors_before_provider_launch(self) -> None:
+        node = self._node()
+        queued_planspace_id = node.planspace_id
+        assert queued_planspace_id is not None
+        current_planspace_id = create_planspace(
+            self.project, title="current-lane", mode="manual"
+        )
+        self.project.active_planspace_id = current_planspace_id
+        self.store.update_project(self.project)
+
+        binding = resolve_project_binding(
+            self.project, contextspace_root(self.store.root)
+        )
+        self.assertIsNotNone(binding)
+        assert binding is not None
+        binding_raw = dict(binding.raw)
+        binding_raw["plugs"] = [
+            ref
+            for ref in binding_raw.get("plugs", [])
+            if not isinstance(ref, dict) or ref.get("id") != queued_planspace_id
+        ]
+        binding.path.write_text(
+            yaml.safe_dump(binding_raw, sort_keys=False), encoding="utf-8"
+        )
+
+        emitted: list[dict] = []
+
+        async def on_event(payload: dict) -> None:
+            emitted.append(payload)
+
+        provider = _RepairProvider(repair_succeeds=True)
+        runner = NodeRunner(node, self.project, self.store, on_event)
+        with patch.object(runner_module, "_make_provider", return_value=provider):
+            await asyncio.wait_for(runner.run(), timeout=5.0)
+
+        self.assertEqual(provider.prompts, [])
+        self.assertEqual(node.state, NodeState.ERROR)
+        self.assertIn("Stale launch settings", node.error or "")
+        self.assertIn(queued_planspace_id, node.error or "")
+        self.assertTrue(
+            any(
+                event.get("type") == "error"
+                and queued_planspace_id in event.get("message", "")
+                for event in emitted
+            )
+        )
 
 
 if __name__ == "__main__":
