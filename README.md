@@ -75,9 +75,7 @@ MiniClaw2 spawns it in the project cwd.
 
 See [`IMPLEMENTATION_STATUS.md`](IMPLEMENTATION_STATUS.md) for the
 single source of truth on what has landed, and
-[`PHILOSOPHY.md`](PHILOSOPHY.md) for the design position. Compatibility
-and schema choices from the cleanup are recorded in
-[`CLEANUP_DECISIONS.md`](CLEANUP_DECISIONS.md).
+[`PHILOSOPHY.md`](PHILOSOPHY.md) for the design position.
 
 ## Run It
 

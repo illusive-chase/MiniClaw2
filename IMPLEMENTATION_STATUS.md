@@ -439,6 +439,12 @@ UI affordances and features MiniClaw2 does not expose on top of it.
 - Codex `requestUserInput`, command/file/permission approvals mapped
   onto the same gate envelope; session-scoped allow via
   `acceptForSession`.
+- The Codex adapter accepts both current
+  `item/commandExecution/requestApproval` / `item/fileChange/requestApproval`
+  requests and the older `execCommandApproval` / `applyPatchApproval` methods.
+  The older methods return their historical decision strings
+  (`approved`, `approved_for_session`, `denied`, `abort`). They remain until
+  the minimum supported Codex app-server version is defined.
 
 ### Pending
 
@@ -589,8 +595,11 @@ Trunk: `backend/miniclaw2/store.py`, `backend/miniclaw2/replay.py`.
   shape; the completed one-off Store migration and its maintenance CLI have
   been retired.
 - Reconnect replay reads `events.jsonl` from `since_seq` then attaches
-  to the live tail. Event envelopes carry `schema_version`; legacy
-  variants are upgraded before runtime delivery. Project-level WebSocket
+  to the live tail. New event envelopes carry `schema_version: 2`; existing
+  records without a version are treated as version 1, and historical
+  `checkpoint_review` requests are upgraded to `human_review_prose` before
+  runtime delivery. This replay compatibility remains necessary until the
+  append-only historical event logs are rewritten. Project-level WebSocket
   observers continue to receive live events after the JSONL gap is replayed.
 
 ### Pending
@@ -619,6 +628,13 @@ Quick reference; the on-disk shape is authoritative.
   `response.answers`, human-review text at `response.prose`, and
   provider-neutral permission fields (`allow`, `scope`, `interrupt`,
   `updated_input`, `message`). Provider adapters own vendor decisions.
+- `/sessions` is the sole current project API namespace; it is historical
+  naming, not an alias backed by a second `/projects` implementation.
+- `POST /sessions/{sid}/planspaces` accepts deprecated `user_seed` as an input
+  alias for `seed` and returns `Deprecation` / `Warning` headers when used.
+- `SessionInfo.provider` remains a response-only value derived from
+  `model_preset_id`; it is not persisted and is retained only for HTTP response
+  compatibility.
 - REST: project CRUD, node and event introspection,
   `PATCH /sessions/{sid}/layout-hints`,
   `PATCH /sessions/{sid}/planspace-view`,
