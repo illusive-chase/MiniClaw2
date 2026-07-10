@@ -115,7 +115,6 @@ Ctrl-C stops both processes.
 
 Env:
 
-- `MINICLAW_ANTHROPIC_MODEL` (default `claude-sonnet-4-6`)
 - `MINICLAW_HOME` (default `~/.miniclaw2`) — root for the on-disk store.
 - `MINICLAW_CONTEXT_HOME` (optional) — overrides the default
   `$MINICLAW_HOME/contextspace` ContextSpace root.
@@ -136,8 +135,35 @@ Create a Codex-backed project manually:
 ```bash
 curl -X POST http://127.0.0.1:8000/sessions \
   -H 'content-type: application/json' \
-  -d '{"cwd":"'"$PWD"'","provider":"codex","name":"MiniClaw2"}'
+  -d '{"cwd":"'"$PWD"'","model_preset_id":"gpt-5.5","name":"MiniClaw2"}'
 ```
+
+Model selection is preset-based. Query `GET /model-presets` for the
+available ids; current request bodies use `model_preset_id` and reject
+the old `provider`, `model`, and `model_provider` selection fields.
+
+### Store schema upgrades
+
+Stop all running MiniClaw2 processes before upgrading or repairing a
+store so an older process cannot write legacy records after migration.
+Normal startup migrates stores older than the current schema and writes
+backups under `$MINICLAW_HOME/migration-backups/` plus an audit log under
+`$MINICLAW_HOME/migrations/`.
+
+Validate a current store without modifying it:
+
+```bash
+python -m miniclaw2 --check-store
+```
+
+If a store is marked current but contains a legacy or inconsistent
+record, repair it explicitly after stopping all MiniClaw2 processes:
+
+```bash
+python -m miniclaw2 --repair-store
+```
+
+Use `--store-path /path/to/store` to inspect or repair a copied store.
 
 Opt a project into auto-commit (a `commit` op node is appended after
 each agent/gate node reaches `done`, rewriting that node's
@@ -186,7 +212,7 @@ frontend/src/
     ProjectPanel.tsx       # project settings + ContextSpace activation
   components/
     ProjectsLanding.tsx    # persistent project list + Tests modal
-    NewProjectModal.tsx    # create/select cwd + provider
+    NewProjectModal.tsx    # create/select cwd + model preset
     TestsPanel.tsx         # bundled template launcher
     ToolActivity.tsx       # provider tool result rendering
     PermissionDialog.tsx, AskUserDialog.tsx
@@ -276,8 +302,9 @@ The current code has moved beyond the original chat-wrapper plan:
 - Domain model on disk: `Project` / `Node` / `HumanGate` survive a
   process restart via JSON/JSONL. SQLite from `DESIGN.md` remains
   deferred.
-- Provider layer is split out of the state machine. Claude remains the
-  default provider; Codex can be selected per project/template.
+- Provider layer is split out of the state machine. Projects and agents
+  select a model preset; its provider and concrete model are derived from
+  the central catalog. The default preset is `gpt-5.5` via Codex.
 - New nodes start fresh by default. Resume edges are explicit and copy
   the parent's provider session/thread id into the child node.
 - The graph UI redesign is partially landed: persistent projects,

@@ -79,7 +79,7 @@ class FreshNodeLaunchTest(unittest.TestCase):
     def test_start_node_does_not_inherit_previous_provider_session(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             store = Store(root=Path(tmp))
-            project = Project(root_path=tmp, provider="codex")
+            project = Project(root_path=tmp, model_preset_id="gpt-5.5")
             store.create_project(project)
 
             previous = store.create_node(
@@ -87,7 +87,7 @@ class FreshNodeLaunchTest(unittest.TestCase):
                     project_id=project.id,
                     kind=NodeKind.AGENT,
                     state=NodeState.DONE,
-                    provider="codex",
+                    model_preset_id="gpt-5.5",
                     provider_session_id="thread_previous",
                     cli_session_id="thread_previous",
                 )
@@ -115,10 +115,10 @@ class FreshNodeLaunchTest(unittest.TestCase):
             self.assertEqual(node.cli_session_id, None)
             self.assertNotEqual(node.id, previous.id)
 
-    def test_start_node_uses_explicit_provider_for_new_node(self) -> None:
+    def test_start_node_uses_explicit_model_preset_for_new_node(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             store = Store(root=Path(tmp))
-            project = Project(root_path=tmp, provider="claude")
+            project = Project(root_path=tmp, model_preset_id="opus-4-7")
             store.create_project(project)
 
             registry = ProjectRegistry(store=store)
@@ -132,12 +132,17 @@ class FreshNodeLaunchTest(unittest.TestCase):
                 return _FakeTask()
 
             with patch("miniclaw2.registry.asyncio.create_task", side_effect=fake_create_task):
-                runner = registry.start_node(project.id, "hello", provider="codex")
+                runner = registry.start_node(
+                    project.id,
+                    "hello",
+                    model_preset_id="gpt-5.5",
+                )
 
             self.assertIsNotNone(runner)
 
             node = store.latest_node(project.id)
             assert node is not None
+            self.assertEqual(node.model_preset_id, "gpt-5.5")
             self.assertEqual(node.provider, "codex")
             self.assertEqual(node.provider_session_id, None)
             self.assertEqual(node.cli_session_id, None)
@@ -145,7 +150,7 @@ class FreshNodeLaunchTest(unittest.TestCase):
     def test_start_node_can_explicitly_resume_from_source_node(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             store = Store(root=Path(tmp))
-            project = Project(root_path=tmp, provider="codex")
+            project = Project(root_path=tmp, model_preset_id="gpt-5.5")
             store.create_project(project)
 
             source = store.create_node(
@@ -153,7 +158,7 @@ class FreshNodeLaunchTest(unittest.TestCase):
                     project_id=project.id,
                     kind=NodeKind.AGENT,
                     state=NodeState.DONE,
-                    provider="codex",
+                    model_preset_id="gpt-5.5",
                     provider_session_id="thread_source",
                     cli_session_id="thread_source",
                 )
@@ -181,15 +186,16 @@ class FreshNodeLaunchTest(unittest.TestCase):
             node = store.latest_node(project.id)
             assert node is not None
             self.assertEqual(node.parent_node_id, source.id)
+            self.assertEqual(node.model_preset_id, "gpt-5.5")
             self.assertEqual(node.provider, "codex")
             self.assertEqual(node.provider_session_id, "thread_source")
             self.assertEqual(node.cli_session_id, "thread_source")
             self.assertNotEqual(node.id, source.id)
 
-    def test_start_node_resume_rejects_provider_mismatch(self) -> None:
+    def test_start_node_resume_rejects_model_preset_mismatch(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             store = Store(root=Path(tmp))
-            project = Project(root_path=tmp, provider="claude")
+            project = Project(root_path=tmp, model_preset_id="opus-4-7")
             store.create_project(project)
 
             source = store.create_node(
@@ -197,7 +203,7 @@ class FreshNodeLaunchTest(unittest.TestCase):
                     project_id=project.id,
                     kind=NodeKind.AGENT,
                     state=NodeState.DONE,
-                    provider="claude",
+                    model_preset_id="opus-4-7",
                     provider_session_id="thread_source",
                     cli_session_id="thread_source",
                 )
@@ -214,19 +220,19 @@ class FreshNodeLaunchTest(unittest.TestCase):
                 return _FakeTask()
 
             with patch("miniclaw2.registry.asyncio.create_task", side_effect=fake_create_task):
-                with self.assertRaisesRegex(ValueError, "inherit provider"):
+                with self.assertRaisesRegex(ValueError, "inherit model_preset_id"):
                     registry.start_node(
                         project.id,
                         "continue from source",
                         resume_from_node_id=source.id,
-                        provider="codex",
+                        model_preset_id="gpt-5.5",
                     )
 
                 runner = registry.start_node(
                     project.id,
                     "continue from source",
                     resume_from_node_id=source.id,
-                    provider="claude",
+                    model_preset_id="opus-4-7",
                 )
 
             self.assertIsNotNone(runner)
@@ -234,6 +240,7 @@ class FreshNodeLaunchTest(unittest.TestCase):
             node = store.latest_node(project.id)
             assert node is not None
             self.assertEqual(node.parent_node_id, source.id)
+            self.assertEqual(node.model_preset_id, "opus-4-7")
             self.assertEqual(node.provider, "claude")
             self.assertEqual(node.provider_session_id, "thread_source")
             self.assertEqual(node.cli_session_id, "thread_source")
@@ -241,7 +248,7 @@ class FreshNodeLaunchTest(unittest.TestCase):
     def test_start_node_rejects_resume_from_nonterminal_source_node(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             store = Store(root=Path(tmp))
-            project = Project(root_path=tmp, provider="codex")
+            project = Project(root_path=tmp, model_preset_id="gpt-5.5")
             store.create_project(project)
 
             # Registry init sweeps stale non-terminal nodes to CANCELLED; add
@@ -253,7 +260,7 @@ class FreshNodeLaunchTest(unittest.TestCase):
                     project_id=project.id,
                     kind=NodeKind.AGENT,
                     state=NodeState.RUNNING,
-                    provider="codex",
+                    model_preset_id="gpt-5.5",
                     provider_session_id="thread_source",
                 )
             )
@@ -272,14 +279,14 @@ class ReplayBootstrapTest(unittest.TestCase):
     def test_replay_node_events_bootstraps_latest_node_when_id_is_empty(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             store = Store(root=Path(tmp))
-            project = Project(root_path=tmp, provider="claude")
+            project = Project(root_path=tmp, model_preset_id="opus-4-7")
             store.create_project(project)
             first = store.create_node(
                 Node(
                     project_id=project.id,
                     kind=NodeKind.AGENT,
                     state=NodeState.DONE,
-                    provider="claude",
+                    model_preset_id="opus-4-7",
                 )
             )
             store.append_event(project.id, first.id, 1, {"type": "text_delta", "seq": 1})

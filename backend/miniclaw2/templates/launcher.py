@@ -7,6 +7,7 @@ from pathlib import Path
 
 from ..contextspace import create_planspace
 from ..domain import Node, NodeKind, NodeState, Project
+from ..model_catalog import normalize_model_preset_id, provider_for_model_preset
 from ..preview import render_virtual_preview
 from ..registry import ProjectRegistry
 from .loader import Template, TemplateError, TemplateNodeSpec, load_template
@@ -14,18 +15,16 @@ from .loader import Template, TemplateError, TemplateNodeSpec, load_template
 
 def launch_template(
     name: str,
-    provider: str,
+    model_preset_id: str,
     registry: ProjectRegistry,
 ) -> tuple[Project, Template]:
     template = load_template(name)
-    if provider.lower() not in template.providers:
-        raise TemplateError(
-            f"template {name!r} does not support provider {provider!r}"
-        )
+    model_preset_id = _require_template_model_preset(template, model_preset_id)
+    provider = provider_for_model_preset(model_preset_id)
 
     project = registry.create_project(
         cwd=None,
-        provider=provider,
+        model_preset_id=model_preset_id,
         auto_commit=template.auto_commit or None,
         permission_mode=template.permission_mode,
         approval_policy=_approval_policy_for(provider, template.permission_mode),
@@ -51,7 +50,7 @@ def launch_template(
         _stamp_lane(
             template,
             project,
-            provider.lower(),
+            model_preset_id,
             planspace_id,
             registry,
             anchor_node_id=None,
@@ -84,6 +83,9 @@ def apply_user_template(
     active_lane = project.settings_override.get("active_planspace_id") or ""
     if not active_lane:
         raise TemplateError("activate a direction first")
+    model_preset_id = _require_template_model_preset(
+        template, project.model_preset_id
+    )
 
     if anchor_node_id:
         anchor = registry.store.load_node(project.id, anchor_node_id)
@@ -97,7 +99,7 @@ def apply_user_template(
     return _stamp_lane(
         template,
         project,
-        project.provider,
+        model_preset_id,
         active_lane,
         registry,
         anchor_node_id=anchor_node_id,
@@ -107,23 +109,32 @@ def apply_user_template(
 def _instantiate_lane(
     template: Template,
     project: Project,
-    provider: str,
+    model_preset_id: str,
     planspace_id: str,
     registry: ProjectRegistry,
 ) -> None:
     """Legacy shim kept for callers outside this module."""
-    _stamp_lane(template, project, provider, planspace_id, registry, anchor_node_id=None)
+    _stamp_lane(
+        template,
+        project,
+        model_preset_id,
+        planspace_id,
+        registry,
+        anchor_node_id=None,
+    )
 
 
 def _stamp_lane(
     template: Template,
     project: Project,
-    provider: str,
+    model_preset_id: str,
     planspace_id: str,
     registry: ProjectRegistry,
     *,
     anchor_node_id: str | None,
 ) -> list[Node]:
+    model_preset_id = _require_template_model_preset(template, model_preset_id)
+    provider = provider_for_model_preset(model_preset_id)
     slug_to_node_id: dict[str, str] = {}
     pending: list[tuple[TemplateNodeSpec, Node]] = []
     for spec in template.nodes:
@@ -135,6 +146,7 @@ def _stamp_lane(
             brief=spec.brief,
             state=NodeState.VIRTUAL,
             planspace_id=planspace_id,
+            model_preset_id=model_preset_id if spec.kind is NodeKind.AGENT else None,
             provider=provider,
             prompt="",
             prompt_draft=spec.prompt if spec.kind is NodeKind.AGENT else None,
@@ -164,6 +176,21 @@ def _stamp_lane(
         )
         created.append(node)
     return created
+
+
+def _require_template_model_preset(
+    template: Template,
+    model_preset_id: str,
+) -> str:
+    try:
+        normalized = normalize_model_preset_id(model_preset_id)
+    except ValueError as exc:
+        raise TemplateError(str(exc)) from exc
+    if normalized not in template.allowed_model_preset_ids:
+        raise TemplateError(
+            f"template {template.name!r} does not support model preset {normalized!r}"
+        )
+    return normalized
 
 
 def _seed_workspace(template: Template, root: Path) -> None:

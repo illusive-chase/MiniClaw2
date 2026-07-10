@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from .domain import Node, NodeKind, Project
+from .model_catalog import provider_for_model_preset
 from .providers import AgentProvider, AgentProviderContext, GateRequest
 
 logger = logging.getLogger(__name__)
@@ -105,13 +106,15 @@ async def _run_agent_context_task(project: Project, record: ContextTask) -> None
     from .runner import _make_provider  # local import to avoid cycle
 
     preset = _load_preset(record.mode)
-    provider = _make_provider(project.provider)
+    provider_name = provider_for_model_preset(project.model_preset_id)
+    provider = _make_provider(provider_name)
     record.provider = provider
 
     node = Node(
         project_id=project.id,
         kind=NodeKind.AGENT,
-        provider=project.provider,
+        model_preset_id=project.model_preset_id,
+        provider=provider_name,
         prompt=preset,
     )
     context = AgentProviderContext(

@@ -1,6 +1,7 @@
 import { useState } from "react";
-import type { ContextBundle, NodeInfo } from "../types";
+import type { ContextBundle, ModelPreset, NodeInfo } from "../types";
 import { UsageStrip } from "../components/UsageStrip";
+import { modelPresetLabel } from "../modelPresets";
 
 /**
  * The "schema escape hatch" — every word the PRD §6 wants hidden from the
@@ -10,11 +11,13 @@ import { UsageStrip } from "../components/UsageStrip";
  */
 export function InspectDrawer({
   node,
+  modelPresets,
   contextBundle,
   contextBundleLoading,
   eventCount,
 }: {
   node: NodeInfo;
+  modelPresets: ModelPreset[];
   contextBundle: ContextBundle | null;
   contextBundleLoading: boolean;
   eventCount: number;
@@ -42,6 +45,7 @@ export function InspectDrawer({
             ["state", node.state],
             ["category", node.category ?? "-"],
             ["subtype", node.subtype ?? "-"],
+            ["model preset", modelPresetLabel(modelPresets, node.model_preset_id)],
             ["provider", node.provider],
             ["provider session", node.provider_session_id ?? node.cli_session_id ?? "-"],
             ["provider turn", node.provider_turn_id ?? "-"],

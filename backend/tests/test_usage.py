@@ -15,9 +15,11 @@ class NodeUsageTest(unittest.IsolatedAsyncioTestCase):
     async def test_usage_event_updates_node_snapshot_and_broadcasts_node(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             store = Store(root=Path(tmp) / "store")
-            project = Project(root_path=tmp, provider="codex")
+            project = Project(root_path=tmp, model_preset_id="gpt-5.5")
             store.create_project(project)
-            node = store.create_node(Node(project_id=project.id, provider="codex"))
+            node = store.create_node(
+                Node(project_id=project.id, model_preset_id="gpt-5.5")
+            )
 
             emitted: list[dict[str, object]] = []
 

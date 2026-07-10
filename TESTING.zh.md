@@ -57,10 +57,10 @@ npm run dev        # 默认 http://127.0.0.1:5173
 可开 follow-up；意图 chip 里的 **Hand off for review** 会让 agent 写 brief，完成后
 系统自动追加 passive gate 节点。
 
-### 0.3 关于 provider 的说明
+### 0.3 关于模型档位与 provider 的说明
 
-**每个场景都必须分别用 Claude 和 Codex 各跑一次，两个 provider 都通过才算这个
-场景通过。** 这是有意为之的——provider 之间的差异本身就是有价值的信号
+**每个场景都必须分别用 `gpt-5.5` 和 `opus-4-7` 两个模型档位各跑一次，两个
+provider 都通过才算这个场景通过。** 这是有意为之的——provider 之间的差异本身就是有价值的信号
 （适配层有问题 vs. provider 自身能力问题，都需要暴露）。
 
 ---
@@ -71,8 +71,8 @@ npm run dev        # 默认 http://127.0.0.1:5173
 2. 你应该看到十行场景（按从简单到复杂的顺序）：`hello-text`、`bash-uname`、
    `write-readme`、`permission-approve`、`plan-mode-approval`、
    `interrupt-midstream`、`context-md-respected`、`resume-fix-after-reject`、
-   `reconnect-replay`、`gui-calculator`，每行右侧有 `Run · claude` 和
-   `Run · codex` 两个按钮。
+   `reconnect-replay`、`gui-calculator`，每行右侧有
+   `运行 · Claude Opus 4.7` 和 `运行 · GPT-5.5` 两个按钮。
 3. 点击任一按钮，前端会：
    - 调用 `POST /scenarios/<name>/run`；
    - 后端创建一个临时 git workspace（`/var/folders/.../miniclaw2-tmp-xxxx/`）；
@@ -94,7 +94,7 @@ npm run dev        # 默认 http://127.0.0.1:5173
 
 ### 2.2 操作步骤
 
-1. 在 Tests 面板，点击 `hello-text` 那一行的 `Run · claude`。
+1. 在 Tests 面板，点击 `hello-text` 那一行的 `运行 · Claude Opus 4.7`。
 2. 等 1–5 秒，画布时间线上出现一个 agent 节点；右侧 AgentPanel 里逐渐出现 assistant
    回复（markdown 渲染）。
 3. 节点进入 `done` 状态后，主聊天列下方会出现 **Verify** 卡片。
@@ -122,9 +122,9 @@ npm run dev        # 默认 http://127.0.0.1:5173
 
 **只有 verify.sh 通过 + 三项全勾上**，左上角才会出现绿色 `passed` 徽章。
 
-### 2.6 然后切换 provider
+### 2.6 然后切换模型档位
 
-切到 Tests 面板，点 `hello-text` 那行的 `Run · codex`，重复 2.2–2.5。两个
+切到 Tests 面板，点 `hello-text` 那行的 `运行 · GPT-5.5`，重复 2.2–2.5。两个
 provider 都通过，此场景才算 PASS。
 
 ---
@@ -138,7 +138,7 @@ Bash 工具链路：工具调用事件、`result_kind=stdout` 渲染、assistant
 
 ### 3.2 操作步骤
 
-1. Tests 面板 → `bash-uname` → `Run · claude`。
+1. Tests 面板 → `bash-uname` → `运行 · Claude Opus 4.7`。
 2. 时间线出现 agent 节点，右侧面板里：
    - 先看到一个 Bash 工具 tile（可展开），里面是 `uname -a` 的真实输出；
    - 然后是 assistant 用一句话总结这是什么系统。
@@ -167,9 +167,9 @@ verify.sh 会检查事件流里是否有 `activity` 事件 `result_kind == "stdo
 - [ ] assistant 的总结句和 Bash 输出一致（不会把 Darwin 说成 Linux 或反过来）。
 - [ ] 时间线里只出现了一次 Bash 工具调用。
 
-### 3.6 切换 provider
+### 3.6 切换模型档位
 
-同上，`Run · codex` 再跑一次。
+同上，`运行 · GPT-5.5` 再跑一次。
 
 ---
 
@@ -182,7 +182,7 @@ Edit / Write 工具链路：工具能否真的把内容落到文件，节点 dif
 
 ### 4.2 操作步骤
 
-1. Tests 面板 → `write-readme` → `Run · claude`。
+1. Tests 面板 → `write-readme` → `运行 · Claude Opus 4.7`。
 2. 画布上出现 agent 节点；右侧 AgentPanel 的 Activity 区域里能看到 Edit /
    Write 相关工具调用（provider 提供 diff 时会在工具输出里显示）。
 3. 节点进入 `done` 后，运行 Verify；如果需要人工复核文件内容，可以查看工具输出
@@ -213,7 +213,7 @@ verify.sh 在 workspace 根目录下检查：
 - [ ] assistant 的"我写好了"那句话不是谎话（diff 已经证实文件确实写了）。
 - [ ] 没有额外被创建的文件。
 
-### 4.6 切换 provider
+### 4.6 切换模型档位
 
 同上。
 
@@ -232,7 +232,7 @@ runner 才会继续，Bash 才会真的执行。这条路径如果挂了，所�
 
 ### 5.2 操作步骤
 
-1. Tests 面板 → `permission-approve` → `Run · claude`。
+1. Tests 面板 → `permission-approve` → `运行 · Claude Opus 4.7`。
 2. 时间线上出现 agent 节点（脉冲蓝色 → 短暂之后变成绿色 `waiting`）。
 3. 右侧 side panel 会选中这个 agent，并在顶部出现 **Pending response**；
    里面是 Bash 工具的权限请求；
@@ -267,9 +267,9 @@ verify.sh 在 `events.jsonl` 里同时找两样东西：
 - [ ] Allow 之后时间线出现 Bash 工具 tile，stdout 内容是 `hello-from-bash`。
 - [ ] assistant 的回复准确描述了打印的内容（不是拒答、不是幻觉）。
 
-### 5.6 切换 provider
+### 5.6 切换模型档位
 
-`Run · codex` 再跑一次。如果 Codex 在 `permission_mode: default` 下没有触发
+`运行 · GPT-5.5` 再跑一次。如果 Codex 在 `permission_mode: default` 下没有触发
 权限请求（而是直接放行），verify.sh 会判负 —— 这是适配层信号，记下来反馈，
 不要在 acceptance 强行打勾。
 
@@ -285,7 +285,7 @@ Plan-mode 链路：project 用 `permission_mode: plan` 启动，agent 必须先�
 
 ### 6.2 操作步骤
 
-1. Tests 面板 → `plan-mode-approval` → `Run · claude`。
+1. Tests 面板 → `plan-mode-approval` → `运行 · Claude Opus 4.7`。
 2. agent 节点出现并进入 `waiting`；右侧 `gate` 标签页里能看到 plan-approval
    类型的请求，里面列出 agent 想写的文件（`PLAN_OK.txt`）和内容
    (`plan-approved`)。
@@ -325,9 +325,9 @@ verify.sh 检查：
 - [ ] assistant 的确认句没说谎（diff 已经证实文件确实写了）。
 - [ ] 没有额外被创建的文件。
 
-### 6.6 切换 provider
+### 6.6 切换模型档位
 
-`Run · codex` 再跑一次。Codex 是否对 `permission_mode: plan` 给出
+`运行 · GPT-5.5` 再跑一次。Codex 是否对 `permission_mode: plan` 给出
 plan_approval 风格的请求，本身就是这条 verify 的检验项之一。
 
 ---
@@ -343,7 +343,7 @@ plan_approval 风格的请求，本身就是这条 verify 的检验项之一。
 
 ### 7.2 操作步骤
 
-1. Tests 面板 → `interrupt-midstream` → `Run · claude`。
+1. Tests 面板 → `interrupt-midstream` → `运行 · Claude Opus 4.7`。
 2. agent 节点开始 streaming：右侧 Bash 工具 tile 里能看到
    `line 1` / `line 2` / `line 3`…… 一秒一行往外吐。
 3. **等到看到至少三四行之后（大约 3–5 秒）**，点聊天输入框旁边的 **Stop**
@@ -387,9 +387,9 @@ verify.sh 从 `MINICLAW_HOME` 里翻出该 project 最新的 `node.json` 检查�
       依然在那里，没被清空。
 - [ ] Stop 之后没有新的 assistant turn 出来"自我总结"。
 
-### 7.6 切换 provider
+### 7.6 切换模型档位
 
-`Run · codex` 再跑一次。注意 Codex 的 stop / interrupt 链路是独立适配的，
+`运行 · GPT-5.5` 再跑一次。注意 Codex 的 stop / interrupt 链路是独立适配的，
 两个 provider 都必须能干净 cancel 才算这条场景过。
 
 ---
@@ -407,7 +407,7 @@ verify.sh 从 `MINICLAW_HOME` 里翻出该 project 最新的 `node.json` 检查�
 
 ### 8.2 操作步骤
 
-1. Tests 面板 → `context-md-respected` → `Run · claude`。
+1. Tests 面板 → `context-md-respected` → `运行 · Claude Opus 4.7`。
 2. 时间线出现一个 agent 节点，prompt 只是「2 + 3 等于多少？」这种家常算术题
    ——上下文里的「每次回复都要以 `[CTX-OK]` 结尾」才是实际信号。
 3. 等几秒，节点进入 `done`；右侧 AgentPanel 的 Result 区域里的 assistant 回复应当在末尾带
@@ -441,9 +441,9 @@ verify.sh 做两件事：
 - [ ] 回复末尾出现 `[CTX-OK]` 标记。
 - [ ] 时间线里没有任何工具调用 tile。
 
-### 8.6 切换 provider
+### 8.6 切换模型档位
 
-`Run · codex` 再跑一次。Codex 是把 CONTEXT.md 内容 prepend 到 `turn/start`
+`运行 · GPT-5.5` 再跑一次。Codex 是把 CONTEXT.md 内容 prepend 到 `turn/start`
 输入上的；如果 Codex 端拿不到 marker 但 Claude 端拿得到，说明适配层在 Codex
 分支上漏了 context 注入——记下来反馈，不要在 acceptance 强行打勾。
 
@@ -466,7 +466,7 @@ scenario expander 在 review 完成后启动 `fix` 节点，并通过 `resume_fr
 
 ### 9.2 操作步骤
 
-1. Tests 面板 → `resume-fix-after-reject` → `Run · claude`。
+1. Tests 面板 → `resume-fix-after-reject` → `运行 · Claude Opus 4.7`。
 2. `build` 节点开始 streaming，最终会做两件事：
    - 在 workspace 根写出 `mathutils.py`,**只**导出 `add(a, b)`;
    - 在 `.miniclaw2/outputs/<build-id>/brief.md` 写出一份三段式 review
@@ -527,9 +527,9 @@ verify.sh 一次性核对：
 - [ ] `fix` 完成后 `mathutils.py` 同时包含原有的 `add` 和新的 `subtract`
       函数(没有把 `add` 删/改坏)。
 
-### 9.6 切换 provider
+### 9.6 切换模型档位
 
-`Run · codex` 再跑一次。Codex 的 resume 是 thread id 继承（`threadId`），
+`运行 · GPT-5.5` 再跑一次。Codex 的 resume 是 thread id 继承（`threadId`），
 和 Claude 的 `resume=<sid>` 不是同一条码。如果 Claude 通过但 Codex 端 fix
 拿不到 build 的会话(verify 里 `fix did not inherit build's provider
 session`)——记下来,适配层信号。
@@ -551,7 +551,7 @@ WebSocket 重连 + replay 路径：agent 在 streaming 时,客户端的 WS 被�
 
 ### 10.2 操作步骤
 
-1. Tests 面板 → `reconnect-replay` → `Run · claude`。
+1. Tests 面板 → `reconnect-replay` → `运行 · Claude Opus 4.7`。
 2. 画布上出现 agent 节点开始 streaming；右侧 AgentPanel 的 Result 区域里 assistant 文本一
    行一行往外吐——每行是 `Fact N: …`(Python 的一句历史)。
 3. **等到看到至少三四条 fact 之后（大概 2–5 秒）**，打开 header 右侧的
@@ -598,9 +598,9 @@ verify.sh 只能从磁盘上观察「JSONL 是不是连续的」——客户端�
       连续重复两次。
 - [ ] 节点最终进入 `done`(深灰色 tile,不是红色 error),末行带 `[END]`。
 
-### 10.6 切换 provider
+### 10.6 切换模型档位
 
-`Run · codex` 再跑一次。Codex 是逐 delta 流的,逐 token 颗粒度更细,所以掉
+`运行 · GPT-5.5` 再跑一次。Codex 是逐 delta 流的,逐 token 颗粒度更细,所以掉
 线窗口里看到的「丢字 vs 接上」会比 Claude 端更明显。如果 Claude 端通过但
 Codex 端在 replay 之后看到了重复或乱序——记下来,可能是 Codex 适配层在 seq
 归一化上的 bug。
@@ -665,14 +665,14 @@ http://localhost:5173/
 
 - name：`ContextSpace Manual Test`
 - cwd：`/private/tmp/miniclaw2-contextspace-test/workspace`
-- provider：`codex` 或 `claude`
+- 模型档位：`gpt-5.5` 或 `opus-4-7`
 
 也可以直接用 API 创建：
 
 ```bash
 curl -s -X POST http://127.0.0.1:8000/sessions \
   -H 'content-type: application/json' \
-  -d '{"cwd":"/private/tmp/miniclaw2-contextspace-test/workspace","provider":"codex","name":"ContextSpace Manual Test"}'
+  -d '{"cwd":"/private/tmp/miniclaw2-contextspace-test/workspace","model_preset_id":"gpt-5.5","name":"ContextSpace Manual Test"}'
 ```
 
 ### 11.4 在 UI 里 bootstrap ContextSpace
@@ -828,7 +828,7 @@ rm -rf /tmp/miniclaw2-tmp-*                # Linux
   在 §5、§6 覆盖了）。`ask_user` 还没有专门的内置 scenario。
 - Tier 3 旗舰 `gui-calculator`（构建 PySide6/Qt 计算器 → 被动 review gate →
   auto-commit 改写 `commit_after`）。**它已经在仪表盘里可以跑**，运行方式
-  同其它场景：点 `Run · claude` / `Run · codex`，画布上会出现 build
+  同其它场景：点 `运行 · Claude Opus 4.7` / `运行 · GPT-5.5`，画布上会出现 build
   agent → 自动 commit op → 被动 review gate；review brief 由 build agent
   现场写，你在 GatePanel 里以自由文本提交评审意见。GUI 行为的人工
   验收清单见 `backend/miniclaw2/scenarios/bundled/gui-calculator/acceptance.md`

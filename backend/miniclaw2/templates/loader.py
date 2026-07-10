@@ -30,6 +30,7 @@ from ..domain import (
     ReviewSubtype,
     normalize_planspace_mode,
 )
+from ..model_catalog import normalize_model_preset_id
 from ..virtual_graph import has_cycle
 
 TEMPLATES_DIR = Path(__file__).parent / "bundled"
@@ -84,7 +85,7 @@ class TemplateNodeSpec:
 class Template:
     name: str
     brief: str
-    providers: list[str]
+    allowed_model_preset_ids: list[str]
     auto_commit: bool
     permission_mode: str | None
     lane_mode: PlanspaceMode
@@ -96,7 +97,7 @@ class Template:
         return {
             "name": self.name,
             "brief": self.brief,
-            "providers": list(self.providers),
+            "allowed_model_preset_ids": list(self.allowed_model_preset_ids),
             "auto_commit": self.auto_commit,
             "node_count": len(self.nodes),
             "nodes": [node.metadata() for node in self.nodes],
@@ -162,9 +163,10 @@ def _load_from_root(root: Path, name: str) -> Template:
     name = raw_name.strip()
 
     brief = _brief(root, template_data, name)
-    providers = template_data.get("providers") or ["claude", "codex"]
-    if not isinstance(providers, list) or not all(isinstance(p, str) for p in providers):
-        raise TemplateError(f"{name}: providers must be a list of strings")
+    allowed_model_preset_ids = _parse_allowed_model_preset_ids(
+        name,
+        template_data,
+    )
 
     permission_mode = template_data.get("permission_mode")
     if permission_mode is not None:
@@ -194,7 +196,7 @@ def _load_from_root(root: Path, name: str) -> Template:
     return Template(
         name=name,
         brief=brief,
-        providers=[p.lower() for p in providers],
+        allowed_model_preset_ids=allowed_model_preset_ids,
         auto_commit=bool(template_data.get("auto_commit", False)),
         permission_mode=permission_mode,
         lane_mode=lane_mode,
@@ -202,6 +204,38 @@ def _load_from_root(root: Path, name: str) -> Template:
         seed=seed,
         root=root,
     )
+
+
+def _parse_allowed_model_preset_ids(
+    name: str,
+    template_data: dict[str, Any],
+) -> list[str]:
+    if "providers" in template_data:
+        raise TemplateError(
+            f"{name}: providers is obsolete; run the model preset migration"
+        )
+    raw_single = template_data.get("model_preset_id")
+    if raw_single is not None:
+        raw: Any = [raw_single]
+    else:
+        raw = template_data.get("allowed_model_preset_ids")
+    if not isinstance(raw, list) or not raw:
+        raise TemplateError(
+            f"{name}: allowed_model_preset_ids must be a non-empty list"
+        )
+    out: list[str] = []
+    for item in raw:
+        if not isinstance(item, str):
+            raise TemplateError(
+                f"{name}: allowed_model_preset_ids entries must be strings"
+            )
+        try:
+            preset_id = normalize_model_preset_id(item)
+        except ValueError as exc:
+            raise TemplateError(f"{name}: {exc}") from exc
+        if preset_id not in out:
+            out.append(preset_id)
+    return out
 
 
 def _read_yaml(path: Path, name: str, label: str) -> dict[str, Any]:

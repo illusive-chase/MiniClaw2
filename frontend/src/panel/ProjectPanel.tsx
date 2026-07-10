@@ -2,10 +2,11 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 
 import { LANGUAGE_OPTIONS } from "../languages";
+import { defaultModelPresetId, modelPresetDetail, modelPresetLabel } from "../modelPresets";
 import type {
-  AgentProvider,
   ContextSpaceBindingSummary,
   ContextSpacePlugSummary,
+  ModelPreset,
   PlanspaceMode,
   SessionContextSpaceInfo,
   SessionInfo,
@@ -13,6 +14,7 @@ import type {
 
 export type ProjectPanelProps = {
   session: SessionInfo | null;
+  modelPresets: ModelPreset[];
   contextSpace: SessionContextSpaceInfo | null;
   contextSpaceLoading: boolean;
   contextSpaceSaving: boolean;
@@ -25,12 +27,12 @@ export type ProjectPanelProps = {
   onNewDirection: (
     userSeed: string,
     mode: PlanspaceMode,
-    provider: AgentProvider,
+    modelPresetId: string,
   ) => void;
   onStartBlankDirection: (
     userSeed: string,
     mode: PlanspaceMode,
-    provider: AgentProvider,
+    modelPresetId: string,
   ) => void;
   onNewSkill?: (userSeed: string) => Promise<void> | void;
   onContextInit: () => void;
@@ -49,6 +51,7 @@ export type ProjectPanelProps = {
  */
 export function ProjectPanel({
   session,
+  modelPresets,
   contextSpace,
   contextSpaceLoading,
   contextSpaceSaving,
@@ -71,8 +74,7 @@ export function ProjectPanel({
   const [composerOpen, setComposerOpen] = useState(false);
   const [seed, setSeed] = useState("");
   const [newDirectionMode, setNewDirectionMode] = useState<PlanspaceMode>("manual");
-  const [newDirectionProvider, setNewDirectionProvider] =
-    useState<AgentProvider>("claude");
+  const [newDirectionModelPresetId, setNewDirectionModelPresetId] = useState("");
   const seedRef = useRef<HTMLTextAreaElement | null>(null);
   const lastRequestVersionRef = useRef(0);
   const [skillOpen, setSkillOpen] = useState(false);
@@ -94,8 +96,10 @@ export function ProjectPanel({
   const busy = contextSpaceSaving || refreshing || settingsSaving;
 
   useEffect(() => {
-    setNewDirectionProvider(session?.provider ?? "claude");
-  }, [session?.id, session?.provider]);
+    setNewDirectionModelPresetId(
+      defaultModelPresetId(modelPresets, session?.model_preset_id),
+    );
+  }, [modelPresets, session?.id, session?.model_preset_id]);
 
   useEffect(() => {
     if (newDirectionRequestVersion <= 0) {
@@ -120,14 +124,19 @@ export function ProjectPanel({
   const submitNewDirection = (kind: "concierge" | "blank") => {
     const trimmed = seed.trim();
     if (!trimmed || busy) return;
+    const modelPresetId = defaultModelPresetId(
+      modelPresets,
+      newDirectionModelPresetId || session.model_preset_id,
+    );
+    if (!modelPresetId) return;
     if (kind === "concierge") {
-      onNewDirection(trimmed, newDirectionMode, newDirectionProvider);
+      onNewDirection(trimmed, newDirectionMode, modelPresetId);
     } else {
-      onStartBlankDirection(trimmed, newDirectionMode, newDirectionProvider);
+      onStartBlankDirection(trimmed, newDirectionMode, modelPresetId);
     }
     setSeed("");
     setNewDirectionMode("manual");
-    setNewDirectionProvider(session.provider ?? "claude");
+    setNewDirectionModelPresetId(defaultModelPresetId(modelPresets, session.model_preset_id));
     setComposerOpen(false);
   };
 
@@ -150,8 +159,8 @@ export function ProjectPanel({
           <SectionLabel>Settings</SectionLabel>
           <dl className="mt-1 grid grid-cols-[140px_1fr] gap-x-3 gap-y-1.5 rounded-md border border-line bg-surface-sunken px-3 py-2 text-[11.5px]">
             <KV
-              label="Default provider"
-              value={session.provider ?? "claude"}
+              label="Default model"
+              value={modelPresetLabel(modelPresets, session.model_preset_id)}
             />
             <KV label="Temporary" value={session.temporary ? "yes" : "no"} />
             <KV label="Template" value={session.template_id ?? "(none)"} />
@@ -339,18 +348,24 @@ export function ProjectPanel({
                 ))}
               </div>
               <label className="mt-2 flex items-center justify-between gap-3 rounded-md border border-line bg-surface px-3 py-2 text-[11.5px]">
-                <span className="text-ink-subtle">Provider</span>
+                <span className="text-ink-subtle">Model preset</span>
                 <select
-                  value={newDirectionProvider}
+                  value={newDirectionModelPresetId}
                   onChange={(event) =>
-                    setNewDirectionProvider(event.target.value as AgentProvider)
+                    setNewDirectionModelPresetId(event.target.value)
                   }
-                  className="min-w-[130px] rounded border border-line bg-surface-sunken px-2 py-1 text-[11.5px] text-ink-strong focus:border-brand focus:outline-none"
+                  className="min-w-[170px] rounded border border-line bg-surface-sunken px-2 py-1 text-[11.5px] text-ink-strong focus:border-brand focus:outline-none"
                 >
-                  <option value="claude">Claude</option>
-                  <option value="codex">Codex</option>
+                  {modelPresets.map((preset) => (
+                    <option key={preset.id} value={preset.id}>
+                      {preset.label}
+                    </option>
+                  ))}
                 </select>
               </label>
+              <div className="mt-1 pl-3 text-[10.5px] text-ink-subtle">
+                {modelPresetDetail(modelPresets, newDirectionModelPresetId)}
+              </div>
               <div className="mt-2 flex justify-end gap-2">
                 <button
                   type="button"
@@ -361,7 +376,7 @@ export function ProjectPanel({
                 </button>
                 <button
                   type="button"
-                  disabled={busy || seed.trim().length === 0}
+                  disabled={busy || seed.trim().length === 0 || !newDirectionModelPresetId}
                   onClick={() => submitNewDirection("concierge")}
                   className="rounded-md bg-brand px-2.5 py-1 text-[11px] font-medium text-white shadow-card transition hover:brightness-[0.95] disabled:cursor-not-allowed disabled:opacity-40"
                 >
@@ -369,7 +384,7 @@ export function ProjectPanel({
                 </button>
                 <button
                   type="button"
-                  disabled={busy || seed.trim().length === 0}
+                  disabled={busy || seed.trim().length === 0 || !newDirectionModelPresetId}
                   onClick={() => submitNewDirection("blank")}
                   title="Skip the concierge - start with one empty virtual you'll fill in yourself."
                   className="rounded-md border border-line-strong bg-surface-raised px-2.5 py-1 text-[11px] font-medium text-ink transition hover:border-brand hover:text-ink-strong disabled:cursor-not-allowed disabled:opacity-40"

@@ -1,12 +1,14 @@
 import { useEffect, useState } from "react";
 import { listTemplates, runTemplate } from "../api";
-import type { TemplateSummary, SessionInfo } from "../types";
+import type { ModelPreset, TemplateSummary, SessionInfo } from "../types";
+import { modelPresetDetail, modelPresetLabel } from "../modelPresets";
 
 type Props = {
+  modelPresets: ModelPreset[];
   onLaunched: (session: SessionInfo, templateName: string) => void;
 };
 
-export function TestsPanel({ onLaunched }: Props) {
+export function TestsPanel({ modelPresets, onLaunched }: Props) {
   const [templates, setTemplates] = useState<TemplateSummary[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [launching, setLaunching] = useState<string | null>(null);
@@ -25,12 +27,12 @@ export function TestsPanel({ onLaunched }: Props) {
     };
   }, []);
 
-  const onRun = async (name: string, provider: "claude" | "codex") => {
-    const key = `${name}:${provider}`;
+  const onRun = async (name: string, modelPresetId: string) => {
+    const key = `${name}:${modelPresetId}`;
     setLaunching(key);
     setError(null);
     try {
-      const session = await runTemplate(name, provider);
+      const session = await runTemplate(name, modelPresetId);
       onLaunched(session, name);
     } catch (err) {
       setError(String(err));
@@ -89,19 +91,20 @@ export function TestsPanel({ onLaunched }: Props) {
                 </div>
               </div>
               <div className="flex shrink-0 gap-2">
-                {s.providers.map((provider) => (
+                {s.allowed_model_preset_ids.map((modelPresetId) => (
                   <button
-                    key={provider}
+                    key={modelPresetId}
                     type="button"
                     onClick={() =>
-                      void onRun(s.name, provider as "claude" | "codex")
+                      void onRun(s.name, modelPresetId)
                     }
                     disabled={launching !== null}
+                    title={modelPresetDetail(modelPresets, modelPresetId) || undefined}
                     className="inline-flex h-8 items-center rounded-md border border-line bg-surface px-3 text-xs text-ink transition hover:border-brand/40 hover:bg-brand-soft hover:text-brand-ink disabled:opacity-40"
                   >
-                    {launching === `${s.name}:${provider}`
-                      ? "Launching…"
-                      : `Run · ${provider}`}
+                    {launching === `${s.name}:${modelPresetId}`
+                      ? "启动中…"
+                      : `运行 · ${modelPresetLabel(modelPresets, modelPresetId)}`}
                   </button>
                 ))}
               </div>

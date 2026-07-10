@@ -15,12 +15,13 @@ class LaunchTemplateTest(unittest.TestCase):
             store = Store(root=Path(raw))
             registry = ProjectRegistry(store=store)
 
-            project, template = launch_template("hello-text", "claude", registry)
+            project, template = launch_template("hello-text", "opus-4-7", registry)
 
             try:
                 self.assertEqual(template.name, "hello-text")
                 self.assertTrue(project.temporary)
                 self.assertEqual(project.template_id, "hello-text")
+                self.assertEqual(project.model_preset_id, "opus-4-7")
                 self.assertEqual(project.provider, "claude")
                 self.assertEqual(
                     project.settings_override.get("permission_mode"),
@@ -56,7 +57,7 @@ class LaunchTemplateTest(unittest.TestCase):
             store = Store(root=Path(raw))
             registry = ProjectRegistry(store=store)
 
-            project, template = launch_template("bash-uname", "codex", registry)
+            project, template = launch_template("bash-uname", "gpt-5.5", registry)
 
             try:
                 self.assertEqual(template.name, "bash-uname")
@@ -75,7 +76,7 @@ class LaunchTemplateTest(unittest.TestCase):
             finally:
                 registry.delete_project(project.id)
 
-    def test_unsupported_provider_raises(self) -> None:
+    def test_unsupported_model_preset_raises(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             store = Store(root=Path(raw))
             registry = ProjectRegistry(store=store)
@@ -87,7 +88,7 @@ class LaunchTemplateTest(unittest.TestCase):
             store = Store(root=Path(raw))
             registry = ProjectRegistry(store=store)
             with self.assertRaises(TemplateError):
-                launch_template("does-not-exist", "claude", registry)
+                launch_template("does-not-exist", "opus-4-7", registry)
 
 
 if __name__ == "__main__":

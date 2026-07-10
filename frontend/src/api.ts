@@ -3,9 +3,9 @@ import type {
   EventRecord,
   NodeDiff,
   NodeInfo,
+  ModelPreset,
   ReviewBrief,
   NodeCategory,
-  AgentProvider,
   ReviewSubtype,
   PlanspaceMode,
   TemplateDetail,
@@ -50,9 +50,7 @@ async function readErrorDetail(res: Response): Promise<string | null> {
 export async function createSession(
   body: {
     cwd?: string;
-    model?: string;
-    model_provider?: string;
-    provider?: string;
+    model_preset_id?: string;
     preferred_language?: string | null;
     temporary?: boolean;
     name?: string;
@@ -68,6 +66,12 @@ export async function createSession(
   if (!res.ok) {
     throw new ApiError("createSession", res.status, await readErrorDetail(res));
   }
+  return res.json();
+}
+
+export async function listModelPresets(): Promise<ModelPreset[]> {
+  const res = await fetch("/model-presets");
+  if (!res.ok) throw new Error(`listModelPresets failed: ${res.status}`);
   return res.json();
 }
 
@@ -134,7 +138,7 @@ export async function createPlanspace(
   body: {
     user_seed: string;
     mode?: PlanspaceMode;
-    provider?: AgentProvider;
+    model_preset_id?: string;
   },
 ): Promise<{ planspace_id: string; binding_id: string; node_id: string }> {
   const res = await fetch(`/sessions/${sessionId}/planspaces`, {
@@ -150,7 +154,7 @@ export type CreateBlankPlanspacePayload = {
   title?: string;
   seed: string;
   mode: PlanspaceMode;
-  provider?: AgentProvider;
+  model_preset_id?: string;
 };
 
 export async function createBlankPlanspace(
@@ -224,7 +228,7 @@ export type UpdateVirtualPayload = {
   motivation?: string | null;
   scheduled_deps?: string[];
   pending_extra_skills?: string[];
-  provider?: AgentProvider;
+  model_preset_id?: string;
   obsolete_reason?: string | null;
 };
 
@@ -237,7 +241,7 @@ export type CreateVirtualPayload = {
   scheduled_deps?: string[];
   pending_extra_skills?: string[];
   agent_op_kind?: string | null;
-  provider?: AgentProvider;
+  model_preset_id?: string;
   planspace_id?: string | null;
   parent_node_id?: string | null;
   resume_from_node_id?: string | null;
@@ -486,12 +490,12 @@ export async function getTemplate(name: string): Promise<TemplateDetail> {
 
 export async function runTemplate(
   name: string,
-  provider: "claude" | "codex",
+  modelPresetId: string,
 ): Promise<SessionInfo> {
   const res = await fetch(`/templates/${encodeURIComponent(name)}/run`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ provider }),
+    body: JSON.stringify({ model_preset_id: modelPresetId }),
   });
   if (!res.ok) throw new Error(`runTemplate failed: ${res.status}`);
   return res.json();

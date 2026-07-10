@@ -26,7 +26,10 @@ class TemplatesLoaderTest(unittest.TestCase):
         for template in list_templates():
             with self.subTest(template=template.name):
                 self.assertTrue(template.brief)
-                self.assertEqual(set(template.providers), {"claude", "codex"})
+                self.assertEqual(
+                    set(template.allowed_model_preset_ids),
+                    {"opus-4-7", "gpt-5.5"},
+                )
                 self.assertGreaterEqual(len(template.nodes), 3)
                 self.assertTrue(any(n.kind is NodeKind.VERIFIER for n in template.nodes))
 

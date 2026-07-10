@@ -58,6 +58,7 @@ def _project_with_agent(
         Node(
             project_id=project.id,
             kind=NodeKind.AGENT,
+            model_preset_id="gpt-5.5",
             state=agent_state,
             commit_before=initial,
             commit_after=initial,

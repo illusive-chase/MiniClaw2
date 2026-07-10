@@ -78,8 +78,8 @@ frontend:
 - The Projects landing page exposes a **Tests** button. It opens a
   modal listing every bundled scenario discovered by the backend
   (`GET /scenarios`).
-- Each row shows the scenario's name, one-line brief, and a per-
-  provider Run button (Claude / Codex).
+- Each row shows the scenario's name, one-line brief, and one Run button
+  per allowed model preset (`GPT-5.5` / `Claude Opus 4.7`).
 - Clicking Run creates a fresh temporary project, seeds the
   scenario's starter files into it, creates the first node, and
   opens the resulting project canvas.
@@ -158,7 +158,7 @@ Each scenario lives under `backend/miniclaw2/scenarios/bundled/<name>/`:
 ```yaml
 name: hello-text
 brief: "Simplest end-to-end run: agent produces a sensible text reply."
-providers: [claude, codex]        # always both
+allowed_model_preset_ids: [gpt-5.5, opus-4-7]
 auto_commit: false
 nodes:
   - id: turn1
@@ -175,7 +175,7 @@ Extended shape (Tiers 2–4 — current implementation):
 ```yaml
 name: gui-calculator
 brief: "Build a PySide6 Qt calculator, review it, snapshot it."
-providers: [claude, codex]
+allowed_model_preset_ids: [gpt-5.5, opus-4-7]
 auto_commit: true
 permission_mode: default          # or "plan" for plan-mode-approval
 seed:
@@ -426,13 +426,13 @@ npm run dev
 ```
 
 Create or select a session whose cwd is
-`/private/tmp/miniclaw2-contextspace-test/workspace` and provider is
-either `codex` or `claude`. The API equivalent is:
+`/private/tmp/miniclaw2-contextspace-test/workspace` and model preset is
+either `gpt-5.5` or `opus-4-7`. The API equivalent is:
 
 ```bash
 curl -s -X POST http://127.0.0.1:8000/sessions \
   -H 'content-type: application/json' \
-  -d '{"cwd":"/private/tmp/miniclaw2-contextspace-test/workspace","provider":"codex","name":"ContextSpace Manual Test"}'
+  -d '{"cwd":"/private/tmp/miniclaw2-contextspace-test/workspace","model_preset_id":"gpt-5.5","name":"ContextSpace Manual Test"}'
 ```
 
 Frontend steps:

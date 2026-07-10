@@ -13,6 +13,7 @@ from typing import Any
 
 from ..domain import GateSubtype
 from ..events import Activity, TextDelta, Thinking, Usage
+from ..model_catalog import get_model_preset
 from .base import AgentProviderContext, AgentProviderEvent, GateRequest, compose_turn_text
 
 logger = logging.getLogger(__name__)
@@ -587,10 +588,12 @@ def _thread_params(
     base: dict[str, Any],
 ) -> dict[str, Any]:
     settings = context.project.settings_override
+    preset = get_model_preset(context.node.model_preset_id)
     params = dict(base)
-    _set_if_present(params, "model", settings.get("model"))
-    _set_if_present(params, "modelProvider", settings.get("model_provider"))
-    _set_if_present(params, "serviceTier", settings.get("service_tier"))
+    _set_if_present(params, "model", preset.model)
+    _set_if_present(params, "modelProvider", preset.model_provider)
+    _set_if_present(params, "serviceTier", preset.service_tier)
+    _set_if_present(params, "reasoningEffort", preset.reasoning_effort)
     if getattr(context, "minimal_mode", False):
         # Out-of-band framework agent: no UI to answer approvals on, so
         # disable interactive approvals and avoid inheriting a project

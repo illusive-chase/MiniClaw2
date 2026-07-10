@@ -7,7 +7,6 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from miniclaw2.app import create_app
 from miniclaw2.domain import (
     Category,
     Node,
@@ -37,7 +36,7 @@ def _seeded_registry(root: Path) -> tuple[ProjectRegistry, Store]:
 def _make_project_with_lane(registry: ProjectRegistry) -> tuple[str, str]:
     """Create a temporary project + activate a fresh planspace. Returns (pid, lane)."""
     project = registry.create_project(
-        cwd=None, provider="claude", temporary=True
+        cwd=None, model_preset_id="opus-4-7", temporary=True
     )
     from miniclaw2.contextspace import create_planspace
 
@@ -72,7 +71,7 @@ def _add_virtual(
         kind=NodeKind.AGENT,
         state=NodeState.VIRTUAL,
         planspace_id=lane,
-        provider="claude",
+        model_preset_id="opus-4-7",
         prompt="",
         prompt_draft=prompt_draft,
         category=category,
@@ -140,7 +139,7 @@ class UserTemplateSerializerTest(unittest.TestCase):
             kind=NodeKind.AGENT,
             state=NodeState.DONE,
             planspace_id=lane,
-            provider="claude",
+            model_preset_id="opus-4-7",
             prompt="Original turn.",
             provider_session_id="sess-a",
             started_at=1.0,
@@ -180,7 +179,6 @@ class UserTemplateSerializerTest(unittest.TestCase):
             op_kind="commit",
             state=NodeState.DONE,
             planspace_id=lane,
-            provider="claude",
         )
         self.store.create_node(op)
 
@@ -207,7 +205,6 @@ class UserTemplateSerializerTest(unittest.TestCase):
             ),
             state=NodeState.VIRTUAL,
             planspace_id=lane,
-            provider="claude",
             verify_script_ref="/tmp/verify.sh",
             scheduled_deps=[a.id],
             proposed_by="test",
@@ -231,7 +228,7 @@ class UserTemplateSerializerTest(unittest.TestCase):
             kind=NodeKind.AGENT,
             state=NodeState.DONE,
             planspace_id=lane,
-            provider="claude",
+            model_preset_id="opus-4-7",
             prompt="One.",
             provider_session_id="sess-a",
             started_at=1.0,
@@ -293,7 +290,7 @@ class UserTemplateSerializerTest(unittest.TestCase):
             kind=NodeKind.AGENT,
             state=NodeState.RUNNING,
             planspace_id=lane,
-            provider="claude",
+            model_preset_id="opus-4-7",
             prompt="Working…",
             started_at=1.0,
         )
@@ -310,7 +307,7 @@ class UserTemplateSerializerTest(unittest.TestCase):
             kind=NodeKind.AGENT,
             state=NodeState.DONE,
             planspace_id=lane,
-            provider="claude",
+            model_preset_id="opus-4-7",
             prompt="Reify me.",
             started_at=1.0,
             finished_at=2.0,
@@ -384,7 +381,7 @@ class ApplyUserTemplateTest(unittest.TestCase):
         template = load_user_template(slug, self.store.root)
 
         project = self.registry.create_project(
-            cwd=None, provider="claude", temporary=True
+            cwd=None, model_preset_id="opus-4-7", temporary=True
         )
         # settings_override["active_planspace_id"] is unset.
         with self.assertRaises(Exception):
@@ -395,6 +392,8 @@ class UserTemplateHttpApiTest(unittest.TestCase):
     def setUp(self) -> None:
         self._home = tempfile.TemporaryDirectory()
         os.environ["MINICLAW_HOME"] = self._home.name
+        from miniclaw2.app import create_app
+
         self.client = TestClient(create_app())
 
     def tearDown(self) -> None:
@@ -405,7 +404,7 @@ class UserTemplateHttpApiTest(unittest.TestCase):
     def test_save_apply_and_delete_round_trip(self) -> None:
         # Set up a project with a couple of virtuals in the active lane.
         launched = self.client.post(
-            "/templates/hello-text/run", json={"provider": "claude"}
+            "/templates/hello-text/run", json={"model_preset_id": "opus-4-7"}
         )
         self.assertEqual(launched.status_code, 200, launched.text)
         sid = launched.json()["id"]
@@ -454,7 +453,7 @@ class UserTemplateHttpApiTest(unittest.TestCase):
 
     def test_save_returns_400_on_invalid_selection(self) -> None:
         launched = self.client.post(
-            "/templates/hello-text/run", json={"provider": "claude"}
+            "/templates/hello-text/run", json={"model_preset_id": "opus-4-7"}
         )
         sid = launched.json()["id"]
         # Empty selection.

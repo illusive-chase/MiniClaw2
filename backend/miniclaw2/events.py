@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 # ---------- Server -> Client ----------
@@ -67,6 +67,7 @@ class NodeStarted(BaseModel):
     parent_node_id: str | None = None
     kind: str = "agent"
     provider: str | None = None
+    model_preset_id: str | None = None
     category: str | None = None
     subtype: str | None = None
     agent_op_kind: str | None = None
@@ -100,12 +101,14 @@ class ErrorEvent(BaseModel):
 # ---------- Client -> Server ----------
 
 class UserMessage(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     type: Literal["user_message"]
     text: str
     resume_from_node_id: str | None = None
     extra_skills: list[str] | None = None
     agent_op_kind: str | None = None
-    provider: str | None = None
+    model_preset_id: str | None = None
 
 
 class InteractionResponse(BaseModel):

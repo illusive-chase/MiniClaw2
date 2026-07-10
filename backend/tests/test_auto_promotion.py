@@ -63,6 +63,7 @@ class PromotionCandidateTests(unittest.TestCase):
             id=nid,
             project_id=self.project.id,
             kind=NodeKind.AGENT,
+            model_preset_id="gpt-5.5",
             category=Category.REGULAR,
             state=NodeState.VIRTUAL,
             planspace_id=self.lane,
@@ -81,6 +82,7 @@ class PromotionCandidateTests(unittest.TestCase):
             id=nid,
             project_id=self.project.id,
             kind=NodeKind.AGENT,
+            model_preset_id="gpt-5.5",
             category=Category.REGULAR,
             state=state,
             planspace_id=self.lane,
@@ -149,6 +151,7 @@ class PromotionCandidateTests(unittest.TestCase):
                         id=f"dep-{state.value}",
                         project_id=project.id,
                         kind=NodeKind.AGENT,
+                        model_preset_id="gpt-5.5",
                         category=Category.REVIEW,
                         subtype=ReviewSubtype.AGENTIC_REVIEW,
                         brief=ReviewBrief(
@@ -167,6 +170,7 @@ class PromotionCandidateTests(unittest.TestCase):
                         id=f"child-{state.value}",
                         project_id=project.id,
                         kind=NodeKind.AGENT,
+                        model_preset_id="gpt-5.5",
                         category=Category.REGULAR,
                         state=NodeState.VIRTUAL,
                         planspace_id=self.lane,
@@ -222,6 +226,7 @@ class AutoPromoteOnRunnerDoneTests(unittest.IsolatedAsyncioTestCase):
         node = Node(
             project_id=self.project.id,
             kind=NodeKind.AGENT,
+            model_preset_id="gpt-5.5",
             category=Category.REGULAR,
             state=NodeState.DONE if finished else NodeState.RUNNING,
             planspace_id=planspace_id,
@@ -242,6 +247,7 @@ class AutoPromoteOnRunnerDoneTests(unittest.IsolatedAsyncioTestCase):
         kwargs: dict[str, object] = dict(
             project_id=self.project.id,
             kind=NodeKind.AGENT,
+            model_preset_id="gpt-5.5",
             category=Category.REGULAR,
             state=NodeState.VIRTUAL,
             planspace_id=planspace_id,

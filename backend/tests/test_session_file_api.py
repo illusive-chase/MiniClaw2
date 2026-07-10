@@ -27,7 +27,7 @@ class SessionFileApiTest(unittest.TestCase):
     def _create_session(self) -> str:
         res = self.client.post(
             "/sessions",
-            json={"cwd": self._cwd.name, "provider": "claude"},
+            json={"cwd": self._cwd.name, "model_preset_id": "opus-4-7"},
         )
         self.assertEqual(res.status_code, 200, res.text)
         return res.json()["id"]

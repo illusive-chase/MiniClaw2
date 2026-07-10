@@ -33,6 +33,7 @@ def _agent_node(
         id=node_id,
         project_id="p1",
         kind=NodeKind.AGENT,
+        model_preset_id="gpt-5.5",
         state=NodeState.RUNNING,
         category=category,
         subtype=subtype,

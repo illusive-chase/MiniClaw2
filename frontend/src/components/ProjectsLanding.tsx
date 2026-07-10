@@ -1,18 +1,25 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { deleteSession, listSessions, renameSession } from "../api";
 import { languageLabel } from "../languages";
-import type { SessionInfo } from "../types";
+import type { ModelPreset, SessionInfo } from "../types";
+import { modelPresetLabel } from "../modelPresets";
 import { TestsPanel } from "./TestsPanel";
 import { ThemeToggle } from "./ThemeToggle";
 
 type Props = {
   onOpen: (session: SessionInfo) => void;
   onCreate: () => void;
+  modelPresets: ModelPreset[];
   /** template runner kicks off a new project — open the result */
   onTemplateLaunched?: (session: SessionInfo, templateName: string) => void;
 };
 
-export function ProjectsLanding({ onOpen, onCreate, onTemplateLaunched }: Props) {
+export function ProjectsLanding({
+  onOpen,
+  onCreate,
+  modelPresets,
+  onTemplateLaunched,
+}: Props) {
   const [sessions, setSessions] = useState<SessionInfo[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [testsOpen, setTestsOpen] = useState(false);
@@ -113,7 +120,7 @@ export function ProjectsLanding({ onOpen, onCreate, onTemplateLaunched }: Props)
             <p className="text-sm text-ink-muted">
               Start your first project to launch agents against a working tree.
               Projects persist across sessions; each node within is a single
-              agent turn with its own provider context and git diff.
+              agent turn with its own model preset and git diff.
             </p>
             <button
               type="button"
@@ -140,6 +147,7 @@ export function ProjectsLanding({ onOpen, onCreate, onTemplateLaunched }: Props)
                 <ProjectCard
                   key={s.id}
                   session={s}
+                  modelPresets={modelPresets}
                   onOpen={() => onOpen(s)}
                   onRename={(name) => onRename(s.id, name)}
                   onDelete={() => onDelete(s.id)}
@@ -178,6 +186,7 @@ export function ProjectsLanding({ onOpen, onCreate, onTemplateLaunched }: Props)
             </div>
             <div className="flex-1 overflow-y-auto">
               <TestsPanel
+                modelPresets={modelPresets}
                 onLaunched={(s, name) => {
                   setTestsOpen(false);
                   if (onTemplateLaunched) onTemplateLaunched(s, name);
@@ -194,11 +203,13 @@ export function ProjectsLanding({ onOpen, onCreate, onTemplateLaunched }: Props)
 
 function ProjectCard({
   session,
+  modelPresets,
   onOpen,
   onRename,
   onDelete,
 }: {
   session: SessionInfo;
+  modelPresets: ModelPreset[];
   onOpen: () => void;
   onRename: (name: string) => Promise<void>;
   onDelete: () => Promise<void>;
@@ -364,6 +375,9 @@ function ProjectCard({
             {languageLabel(session.preferred_language)}
           </span>
         )}
+        <span className="rounded border border-line bg-surface-sunken px-1.5 py-0.5 text-ink-muted">
+          {modelPresetLabel(modelPresets, session.model_preset_id)}
+        </span>
         {session.template_id && (
           <span className="rounded border border-brand/30 bg-brand-soft px-1.5 py-0.5 text-brand-ink dark:text-brand">
             {session.template_id}

@@ -98,6 +98,7 @@ class RunnerGateTimeoutTests(unittest.IsolatedAsyncioTestCase):
         node = Node(
             project_id=self.project.id,
             kind=NodeKind.AGENT,
+            model_preset_id="opus-4-7",
             category=Category.REGULAR,
             state=NodeState.QUEUED,
             provider="claude",

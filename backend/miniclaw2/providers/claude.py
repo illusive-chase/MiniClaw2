@@ -10,11 +10,11 @@ we can route it through MiniClaw2's existing gate flow — see
 from __future__ import annotations
 
 import logging
-import os
 from collections.abc import AsyncIterator
 from typing import Any
 
 from ..domain import GateSubtype
+from ..model_catalog import get_model_preset
 from .base import AgentProviderContext, AgentProviderEvent, GateRequest
 from .claude_native import ClaudeNativeError, ClaudeNativeSession
 from .claude_native.ask_payload import format_ask_directive, parse_ask_payload
@@ -137,13 +137,7 @@ class ClaudeProvider:
         return format_ask_directive(response, parsed)
 
     def _resolve_model(self, context: AgentProviderContext) -> str | None:
-        model = context.project.settings_override.get("model")
-        if isinstance(model, str) and model.strip():
-            return model.strip()
-        env = os.environ.get("MINICLAW_ANTHROPIC_MODEL")
-        if env:
-            return env
-        return None
+        return get_model_preset(context.node.model_preset_id).model
 
     def _resume_session_id(
         self, context: AgentProviderContext

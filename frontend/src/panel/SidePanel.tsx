@@ -6,7 +6,7 @@ import type {
   InteractionRequest,
   NodeDiff,
   NodeInfo,
-  AgentProvider,
+  ModelPreset,
   PlanspaceMode,
   SessionContextSpaceInfo,
   SessionInfo,
@@ -27,6 +27,7 @@ export type SidePanelProps = {
   selection: CanvasSelection;
   nodes: NodeInfo[];
   session: SessionInfo | null;
+  modelPresets: ModelPreset[];
 
   /* selected-node data */
   events: EventRecord[];
@@ -64,12 +65,12 @@ export type SidePanelProps = {
   onNewDirection: (
     userSeed: string,
     mode: PlanspaceMode,
-    provider: AgentProvider,
+    modelPresetId: string,
   ) => void;
   onStartBlankDirection: (
     userSeed: string,
     mode: PlanspaceMode,
-    provider: AgentProvider,
+    modelPresetId: string,
   ) => void;
   onNewSkill?: (userSeed: string) => Promise<void> | void;
   onCreateContinuationVirtual: (nodeId: string) => void;
@@ -136,6 +137,7 @@ function Inner(props: SidePanelProps & { nodesById: Map<string, NodeInfo> }) {
   const {
     selection,
     session,
+    modelPresets,
     events,
     eventsLoading,
     diff,
@@ -193,6 +195,7 @@ function Inner(props: SidePanelProps & { nodesById: Map<string, NodeInfo> }) {
     return (
       <ProjectPanel
         session={session}
+        modelPresets={modelPresets}
         contextSpace={contextSpace}
         contextSpaceLoading={contextSpaceLoading}
         contextSpaceSaving={contextSpaceSaving}
@@ -224,6 +227,7 @@ function Inner(props: SidePanelProps & { nodesById: Map<string, NodeInfo> }) {
         sessionId={session.id}
         node={node}
         nodesById={nodesById}
+        modelPresets={modelPresets}
         events={events}
         eventsLoading={eventsLoading}
         contextBundle={contextBundle}

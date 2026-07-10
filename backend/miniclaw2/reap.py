@@ -158,7 +158,7 @@ def reap_lane(
 
     # --- Categorize remaining preview writes ---
     new_virtuals: list[tuple[str, VirtualPreview]] = []  # (slug, preview)
-    mutated_virtuals: list[tuple[Node, VirtualPreview]] = []  # (existing_node, preview)
+    mutated_virtuals: list[tuple[Node, VirtualPreview, str]] = []  # (existing_node, preview, rel)
     for ident, (preview, rel) in parsed.items():
         if ident == node.id:
             continue
@@ -194,7 +194,7 @@ def reap_lane(
                 )
                 result.fatal = True
                 return result
-            mutated_virtuals.append((existing, preview))
+            mutated_virtuals.append((existing, preview, rel))
 
     # --- Category enforcement ---
     if (new_virtuals or mutated_virtuals) and node.category is not Category.PLANNING \
@@ -222,7 +222,6 @@ def reap_lane(
         draft = virtual_preview_to_node(
             preview,
             project_id=project.id,
-            provider=node.provider,
             canonical_id=canonical,
         )
         # Provenance + lane are framework-controlled; the agent's claim is overridden.
@@ -244,14 +243,26 @@ def reap_lane(
         return result
 
     mutated_node_updates: list[Node] = []
-    for existing, preview in mutated_virtuals:
+    for existing, preview, rel in mutated_virtuals:
         updated = virtual_preview_to_node(
             preview,
             project_id=project.id,
-            provider=existing.provider,
             canonical_id=existing.id,
             verify_script_ref=existing.verify_script_ref,
         )
+        if existing.resume_from_node_id:
+            resume_source = store.load_node(project.id, existing.resume_from_node_id)
+            expected_preset = (
+                resume_source.model_preset_id
+                if resume_source is not None and resume_source.model_preset_id
+                else existing.model_preset_id
+            )
+            if updated.model_preset_id != expected_preset:
+                result.rejection_reasons.append(
+                    f"{rel}: resume virtuals inherit model_preset_id from their source node"
+                )
+                result.fatal = True
+                return result
         # Framework-controlled metadata follows the original, not the rewritten preview.
         updated.proposed_by = existing.proposed_by
         updated.created_at = existing.created_at

@@ -23,14 +23,14 @@ Trunk: `backend/miniclaw2/domain.py`.
   `ReviewSubtype ∈ {agentic_review, human_interact_review, programmatic_review}`.
 - `Node` fields covering ontology in `PHILOSOPHY.md` §6.1: `parent_node_id`,
   `planspace_id`, `context_sources`, `context_bundle_id`,
-  `context_bundle_path`, `provider`, `provider_session_id`,
+  `context_bundle_path`, `model_preset_id`, `provider`, `provider_session_id`,
   `provider_turn_id`, `cli_session_id`,
   `commit_before`, `commit_after`, `prompt`, `category`, `subtype`,
   `brief`, `prompt_draft`, `scheduled_deps`, `resume_from_node_id`,
   `verify_script_ref`, `proposed_by`, `obsolete_reason`, `summary`,
   `error`, `usage`, `system_context_snapshot`, `settings_snapshot`,
   `created_at`, `started_at`, `finished_at`.
-- `Project` fields: `root_path`, `name`, `provider`, `head_commit`,
+- `Project` fields: `root_path`, `name`, `model_preset_id`, `provider`, `head_commit`,
   `parent_project_id`, `parent_commit`, `project_context_binding_id`,
   `settings_override`, `temporary`, `template_id`,
   `layout_hints`, `layout_viewport`, `planspace_view`,

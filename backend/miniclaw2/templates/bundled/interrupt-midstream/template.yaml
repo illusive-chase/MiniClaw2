@@ -1,8 +1,8 @@
 name: interrupt-midstream
 brief: Long-running Bash; user hits Stop; node ends cancelled; partial output preserved.
-providers:
-- claude
-- codex
+allowed_model_preset_ids:
+- gpt-5.5
+- opus-4-7
 auto_commit: false
 permission_mode: bypassPermissions
 lane_mode: manual

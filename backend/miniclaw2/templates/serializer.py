@@ -88,6 +88,12 @@ def serialize_selection(
     ordered = _topological_order(nodes)
     slug_map = {node.id: f"n{idx}" for idx, node in enumerate(ordered)}
     selection_ids = set(slug_map)
+    allowed_model_preset_ids: list[str] = []
+    for node in ordered:
+        if node.model_preset_id and node.model_preset_id not in allowed_model_preset_ids:
+            allowed_model_preset_ids.append(node.model_preset_id)
+    if not allowed_model_preset_ids:
+        raise SerializerError("selection has no model preset metadata")
 
     lane_entries: list[dict[str, Any]] = []
     prompt_writes: list[tuple[str, str]] = []
@@ -129,7 +135,7 @@ def serialize_selection(
     template_yaml: dict[str, Any] = {
         "name": display_name,
         "brief": brief_text or f"User template: {display_name}",
-        "providers": ["claude", "codex"],
+        "allowed_model_preset_ids": allowed_model_preset_ids,
         "lane_mode": "manual",
     }
     lane_yaml = {"nodes": lane_entries}

@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useState } from "react";
 import { deleteUserTemplate, listUserTemplates } from "../api";
-import type { TemplateSummary } from "../types";
+import type { ModelPreset, TemplateSummary } from "../types";
+import { modelPresetLabel } from "../modelPresets";
 
 type Props = {
   /** Bumped by callers after save/apply so the dock refetches. */
   refreshToken: number;
+  modelPresets: ModelPreset[];
   onError?: (message: string) => void;
   onClose: () => void;
 };
@@ -17,6 +19,7 @@ type Props = {
  */
 export function TemplateLibraryDock({
   refreshToken,
+  modelPresets,
   onError,
   onClose,
 }: Props) {
@@ -124,6 +127,14 @@ export function TemplateLibraryDock({
                   <div className="mt-1 text-[10px] uppercase tracking-[0.12em] text-ink-subtle">
                     {tpl.node_count} {tpl.node_count === 1 ? "node" : "nodes"}
                   </div>
+                  {tpl.allowed_model_preset_ids.length > 0 && (
+                    <div className="mt-1 truncate text-[10px] text-ink-subtle">
+                      档位：{" "}
+                      {tpl.allowed_model_preset_ids
+                        .map((id) => modelPresetLabel(modelPresets, id))
+                        .join(", ")}
+                    </div>
+                  )}
                 </div>
                 <button
                   type="button"

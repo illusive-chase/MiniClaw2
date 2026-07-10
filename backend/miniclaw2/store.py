@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any
 
 from .domain import HumanGate, Node, Project
+from .migrations import migrate_store
 
 
 def _root() -> Path:
@@ -37,6 +38,7 @@ class Store:
     def __init__(self, root: Path | None = None) -> None:
         self.root = root or _root()
         (self.root / "projects").mkdir(parents=True, exist_ok=True)
+        migrate_store(self.root)
 
     # ---- paths ----
 

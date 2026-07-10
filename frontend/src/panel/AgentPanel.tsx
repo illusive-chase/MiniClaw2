@@ -6,11 +6,11 @@ import rehypeHighlight from "rehype-highlight";
 import { getNodePreview } from "../api";
 import type {
   Activity,
-  AgentProvider,
   ContextBundle,
   ContextBundleSource,
   EventRecord,
   InteractionRequest,
+  ModelPreset,
   NodeCategory,
   NodeInfo,
   ReviewBrief,
@@ -26,11 +26,13 @@ import {
 import { canResumeNode } from "../nodeUtil";
 import { GateReviewForm } from "./gateReview";
 import { InspectDrawer } from "./InspectDrawer";
+import { modelPresetDetail, modelPresetLabel } from "../modelPresets";
 
 export type AgentPanelProps = {
   sessionId: string;
   node: NodeInfo;
   nodesById: Map<string, NodeInfo>;
+  modelPresets: ModelPreset[];
   events: EventRecord[];
   eventsLoading: boolean;
   contextBundle: ContextBundle | null;
@@ -54,6 +56,7 @@ export function AgentPanel({
   sessionId,
   node,
   nodesById,
+  modelPresets,
   events,
   eventsLoading,
   contextBundle,
@@ -128,7 +131,10 @@ export function AgentPanel({
             <div className="flex flex-wrap items-center gap-1.5">
               <StatePill state={node.state} />
               <CategoryPill node={node} />
-              <ProviderPill provider={node.provider} />
+              <ModelPresetPill
+                modelPresetId={node.model_preset_id}
+                modelPresets={modelPresets}
+              />
             </div>
             <h2 className="mt-1.5 line-clamp-2 font-display text-[15px] font-semibold leading-snug text-ink-strong">
               {headline}
@@ -194,6 +200,7 @@ export function AgentPanel({
           <VirtualNodeBody
             node={node}
             nodesById={nodesById}
+            modelPresets={modelPresets}
             skills={skills}
             onUpdateVirtual={onUpdateVirtual}
             focusRequestVersion={focusRequestVersion}
@@ -275,6 +282,7 @@ export function AgentPanel({
             <section className="mb-2">
               <InspectDrawer
                 node={node}
+                modelPresets={modelPresets}
                 contextBundle={contextBundle}
                 contextBundleLoading={contextBundleLoading}
                 eventCount={events.length}
@@ -320,7 +328,7 @@ function SectionHeading({
 type VirtualDraft = {
   promptDraft: string;
   motivation: string;
-  provider: AgentProvider;
+  modelPresetId: string;
   category: NodeCategory;
   subtype: ReviewSubtype;
   brief: ReviewBrief;
@@ -332,12 +340,14 @@ type VirtualDraft = {
 function VirtualNodeBody({
   node,
   nodesById,
+  modelPresets,
   skills,
   onUpdateVirtual,
   focusRequestVersion,
 }: {
   node: NodeInfo;
   nodesById: Map<string, NodeInfo>;
+  modelPresets: ModelPreset[];
   skills?: SkillSummary[];
   onUpdateVirtual: (nodeId: string, payload: UpdateVirtualPayload) => Promise<void>;
   focusRequestVersion: number;
@@ -349,6 +359,7 @@ function VirtualNodeBody({
     <EditableVirtualNodeBody
       node={node}
       nodesById={nodesById}
+      modelPresets={modelPresets}
       skills={skills}
       onUpdateVirtual={onUpdateVirtual}
       focusRequestVersion={focusRequestVersion}
@@ -359,12 +370,14 @@ function VirtualNodeBody({
 function EditableVirtualNodeBody({
   node,
   nodesById,
+  modelPresets,
   skills,
   onUpdateVirtual,
   focusRequestVersion,
 }: {
   node: NodeInfo;
   nodesById: Map<string, NodeInfo>;
+  modelPresets: ModelPreset[];
   skills?: SkillSummary[];
   onUpdateVirtual: (nodeId: string, payload: UpdateVirtualPayload) => Promise<void>;
   focusRequestVersion: number;
@@ -398,7 +411,7 @@ function EditableVirtualNodeBody({
     node.category,
     node.subtype,
     node.brief,
-    node.provider,
+    node.model_preset_id,
     node.scheduled_deps,
     node.pending_extra_skills,
     node.obsolete_reason,
@@ -495,31 +508,46 @@ function EditableVirtualNodeBody({
                 className={fieldClassName + " font-mono text-[11.5px]"}
               />
             </FieldLabel>
-            <FieldLabel label="Provider">
+            <FieldLabel label="模型档位">
               <select
-                value={draft.provider}
-                disabled={Boolean(node.resume_from_node_id)}
+                value={draft.modelPresetId}
+                disabled={Boolean(node.resume_from_node_id) || modelPresets.length === 0}
                 onChange={(e) =>
                   setDraft((current) => ({
                     ...current,
-                    provider: e.target.value as AgentProvider,
+                    modelPresetId: e.target.value,
                   }))
                 }
                 className={inputClassName + " disabled:opacity-50"}
                 title={
                   node.resume_from_node_id
-                    ? "Continuation nodes inherit the provider from their resume source."
-                    : "Provider used when this node is promoted."
+                    ? "延续节点继承源节点的模型档位。"
+                    : "此 virtual 提升运行时使用的模型档位。"
                 }
               >
-                <option value="claude">Claude</option>
-                <option value="codex">Codex</option>
+                {modelPresets.length === 0 && (
+                  <option value="">没有可用模型档位</option>
+                )}
+                {draft.modelPresetId &&
+                  !modelPresets.some((preset) => preset.id === draft.modelPresetId) && (
+                    <option value={draft.modelPresetId}>{draft.modelPresetId}</option>
+                  )}
+                {modelPresets.map((preset) => (
+                  <option key={preset.id} value={preset.id}>
+                    {preset.label}
+                  </option>
+                ))}
               </select>
             </FieldLabel>
+            {draft.modelPresetId && (
+              <div className="rounded-md border border-line bg-surface px-3 py-2 text-[11px] text-ink-muted">
+                {modelPresetDetail(modelPresets, draft.modelPresetId) ||
+                  draft.modelPresetId}
+              </div>
+            )}
             {node.resume_from_node_id && (
               <div className="rounded-md border border-line bg-surface px-3 py-2 text-[11px] text-ink-muted">
-                Continuation nodes use the same provider session as their
-                source node.
+                延续节点复用源节点的底层会话，因此模型档位不可切换。
               </div>
             )}
           </div>
@@ -725,7 +753,12 @@ function EditableVirtualNodeBody({
               <button
                 type="button"
                 onClick={save}
-                disabled={saving || !dirty || !draft.promptDraft.trim()}
+                disabled={
+                  saving ||
+                  !dirty ||
+                  !draft.promptDraft.trim() ||
+                  (!node.resume_from_node_id && !draft.modelPresetId)
+                }
                 className="rounded-md bg-brand px-3 py-1.5 text-[12px] font-medium text-white shadow-card transition hover:brightness-[0.95] disabled:cursor-not-allowed disabled:opacity-40"
               >
                 {saving ? "Saving..." : "Save changes"}
@@ -963,7 +996,7 @@ function virtualDraftFromNode(node: NodeInfo): VirtualDraft {
   return {
     promptDraft: node.prompt_draft || node.prompt || "",
     motivation: node.summary || "",
-    provider: node.provider || "claude",
+    modelPresetId: node.model_preset_id || "",
     category: node.category || "regular",
     subtype: node.subtype || "agentic_review",
     brief: node.brief || {
@@ -989,10 +1022,10 @@ function virtualPayloadFromDraft(
     pending_extra_skills: draft.pendingExtraSkills,
     obsolete_reason: draft.obsoleteReason.trim() || null,
   };
-  // Provider is locked to the resume source for continuation virtuals;
+  // Model preset is locked to the resume source for continuation virtuals;
   // omit it from the payload so the backend doesn't have to re-check equality.
   if (!node.resume_from_node_id) {
-    payload.provider = draft.provider;
+    payload.model_preset_id = draft.modelPresetId;
   }
   if (draft.category === "review") {
     payload.subtype = draft.subtype;
@@ -1386,10 +1419,20 @@ function CategoryPill({ node }: { node: NodeInfo }) {
   );
 }
 
-function ProviderPill({ provider }: { provider: AgentProvider }) {
-  const label = provider === "codex" ? "Codex" : "Claude";
+function ModelPresetPill({
+  modelPresetId,
+  modelPresets,
+}: {
+  modelPresetId?: string | null;
+  modelPresets: ModelPreset[];
+}) {
+  const label = modelPresetLabel(modelPresets, modelPresetId);
+  const detail = modelPresetDetail(modelPresets, modelPresetId);
   return (
-    <span className="inline-block rounded border border-line bg-surface px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.12em] text-ink-muted">
+    <span
+      className="inline-block rounded border border-line bg-surface px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.12em] text-ink-muted"
+      title={detail || undefined}
+    >
       {label}
     </span>
   );

@@ -17,6 +17,12 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field, model_validator
 
+from .model_catalog import (
+    default_model_preset_id,
+    normalize_model_preset_id,
+    provider_for_model_preset,
+)
+
 
 def _new_id() -> str:
     return uuid4().hex[:12]
@@ -117,7 +123,8 @@ class Project(BaseModel):
     id: str = Field(default_factory=_new_id)
     root_path: str
     name: str = ""
-    provider: str = "claude"
+    model_preset_id: str = Field(default_factory=default_model_preset_id)
+    provider: str = "codex"
     preferred_language: str | None = None
     head_commit: str | None = None
     parent_project_id: str | None = None
@@ -130,6 +137,13 @@ class Project(BaseModel):
     layout_hints: dict[str, dict[str, float]] = Field(default_factory=dict)
     layout_viewport: dict[str, float] | None = None
     planspace_view: dict[str, dict[str, bool]] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _check_project_model_preset(self) -> "Project":
+        preset_id = normalize_model_preset_id(self.model_preset_id)
+        object.__setattr__(self, "model_preset_id", preset_id)
+        object.__setattr__(self, "provider", provider_for_model_preset(preset_id))
+        return self
 
 
 class Node(BaseModel):
@@ -147,7 +161,8 @@ class Node(BaseModel):
     context_sources: list[str] = Field(default_factory=list)
     context_bundle_id: str | None = None
     context_bundle_path: str | None = None
-    provider: str = "claude"
+    model_preset_id: str | None = None
+    provider: str = "codex"
     provider_session_id: str | None = None
     provider_turn_id: str | None = None
     cli_session_id: str | None = None
@@ -219,6 +234,11 @@ class Node(BaseModel):
             if not self.verify_script_ref:
                 raise ValueError("verifier nodes require verify_script_ref")
         else:
+            if self.model_preset_id is None or not self.model_preset_id.strip():
+                raise ValueError("agent nodes require model_preset_id")
+            preset_id = normalize_model_preset_id(self.model_preset_id)
+            object.__setattr__(self, "model_preset_id", preset_id)
+            object.__setattr__(self, "provider", provider_for_model_preset(preset_id))
             # AGENT — category required, default to REGULAR
             if self.category is None:
                 object.__setattr__(self, "category", Category.REGULAR)

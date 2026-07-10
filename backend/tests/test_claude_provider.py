@@ -105,32 +105,33 @@ def _write_jsonl(path: Path, *records: dict[str, Any]) -> list[int]:
 
 
 class ClaudeProviderModelResolutionTest(unittest.TestCase):
-    def test_settings_override_takes_precedence(self) -> None:
-        node = Node(project_id="p", prompt="hi")
+    def test_node_model_preset_resolves_claude_model(self) -> None:
+        node = Node(project_id="p", prompt="hi", model_preset_id="opus-4-7")
         project = Project(
             root_path="/tmp/workspace",
-            settings_override={"model": "claude-opus-4-7"},
+            model_preset_id="gpt-5.5",
+            settings_override={"model": "ignored-legacy-model"},
         )
         ctx = AgentProviderContext(
             node=node,
             project=project,
             request_gate_handler=_request_gate,
         )
-        self.assertEqual(ClaudeProvider()._resolve_model(ctx), "claude-opus-4-7")
+        self.assertEqual(ClaudeProvider()._resolve_model(ctx), "opus-4-7")
 
-    def test_missing_model_returns_none(self) -> None:
-        node = Node(project_id="p", prompt="hi")
-        project = Project(root_path="/tmp/workspace")
+    def test_project_settings_do_not_override_node_preset(self) -> None:
+        node = Node(project_id="p", prompt="hi", model_preset_id="opus-4-7")
+        project = Project(
+            root_path="/tmp/workspace",
+            model_preset_id="gpt-5.5",
+            settings_override={"model": "legacy-project-model"},
+        )
         ctx = AgentProviderContext(
             node=node,
             project=project,
             request_gate_handler=_request_gate,
         )
-        clean_env = {
-            k: v for k, v in os.environ.items() if k != "MINICLAW_ANTHROPIC_MODEL"
-        }
-        with patch.dict(os.environ, clean_env, clear=True):
-            self.assertIsNone(ClaudeProvider()._resolve_model(ctx))
+        self.assertEqual(ClaudeProvider()._resolve_model(ctx), "opus-4-7")
 
 
 class BuildArgvTest(unittest.TestCase):
@@ -692,8 +693,8 @@ class ClaudeNativeStreamTerminalTest(unittest.IsolatedAsyncioTestCase):
             async def close(self) -> None:
                 self.closed = True
 
-        node = Node(project_id="p", prompt="hi")
-        project = Project(root_path="/tmp/workspace")
+        node = Node(project_id="p", prompt="hi", model_preset_id="opus-4-7")
+        project = Project(root_path="/tmp/workspace", model_preset_id="opus-4-7")
         ctx = AgentProviderContext(
             node=node,
             project=project,
@@ -741,8 +742,9 @@ class ClaudeNativeStreamTerminalTest(unittest.IsolatedAsyncioTestCase):
         node = Node(
             project_id="p",
             prompt="Implement the concrete node prompt",
+            model_preset_id="opus-4-7",
         )
-        project = Project(root_path="/tmp/workspace")
+        project = Project(root_path="/tmp/workspace", model_preset_id="opus-4-7")
         ctx = AgentProviderContext(
             node=node,
             project=project,

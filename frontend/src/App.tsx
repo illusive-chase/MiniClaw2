@@ -23,6 +23,7 @@ import {
   updateVirtual,
   listSkills,
   deleteSkill,
+  listModelPresets,
   type SkillSummary,
   type UpdateVirtualPayload,
 } from "./api";
@@ -46,7 +47,7 @@ import type {
   NodeInfo,
   ServerEvent,
   CanvasViewport,
-  AgentProvider,
+  ModelPreset,
   SessionContextSpaceInfo,
   SessionInfo,
   PlanspaceMode,
@@ -75,6 +76,7 @@ export function App() {
   const [route, setRoute] = useState<Route>("landing");
   const [session, setSession] = useState<SessionInfo | null>(null);
   const [nodes, setNodes] = useState<NodeInfo[]>([]);
+  const [modelPresets, setModelPresets] = useState<ModelPreset[]>([]);
 
   const [selection, setSelection] = useState<CanvasSelection>({ kind: "none" });
   /* For data-fetching purposes we track the "currently inspected nodeId" — the
@@ -126,6 +128,20 @@ export function App() {
   const prevContextRefreshRunningRef = useRef(false);
   const [sessionSettingsSaving, setSessionSettingsSaving] = useState(false);
   const [sessionSettingsError, setSessionSettingsError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    listModelPresets()
+      .then((next) => {
+        if (!cancelled) setModelPresets(next);
+      })
+      .catch((err) => {
+        console.error("list model presets failed:", err);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const [pendingGate, setPendingGate] = useState<PendingGateState | null>(null);
   const [pendingReview, setPendingReview] = useState<PendingGateState | null>(null);
@@ -367,7 +383,7 @@ export function App() {
           prompt_draft: userSeed,
           category: "regular",
           agent_op_kind: "skill_edit",
-          provider: session.provider ?? "claude",
+          model_preset_id: session.model_preset_id,
           planspace_id: active,
         });
         setNodes((prev) => {
@@ -387,7 +403,7 @@ export function App() {
     },
     [
       session?.id,
-      session?.provider,
+      session?.model_preset_id,
       sessionContextSpace?.active_planspace_id,
       virtualCreateDisabled,
       selectAndOpenNode,
@@ -607,7 +623,7 @@ export function App() {
   );
 
   const startNewDirection = useCallback(
-    async (userSeed: string, mode: PlanspaceMode, provider: AgentProvider) => {
+    async (userSeed: string, mode: PlanspaceMode, modelPresetId: string) => {
       if (!session?.id || sessionSettingsSaving || projectRunnerBusy) return;
       setSessionContextSpaceSaving(true);
       setSessionContextSpaceError(null);
@@ -616,7 +632,7 @@ export function App() {
         const created = await createPlanspace(session.id, {
           user_seed: userSeed,
           mode,
-          provider,
+          model_preset_id: modelPresetId,
         });
         selectAndOpenNode(created.node_id);
         await refreshContextSpace();
@@ -639,7 +655,7 @@ export function App() {
   );
 
   const startBlankDirection = useCallback(
-    async (userSeed: string, mode: PlanspaceMode, provider: AgentProvider) => {
+    async (userSeed: string, mode: PlanspaceMode, modelPresetId: string) => {
       if (!session?.id || sessionSettingsSaving || projectRunnerBusy) return;
       setSessionContextSpaceSaving(true);
       setSessionContextSpaceError(null);
@@ -647,7 +663,7 @@ export function App() {
         const created = await createBlankPlanspace(session.id, {
           seed: userSeed,
           mode,
-          provider,
+          model_preset_id: modelPresetId,
         });
         selectAndOpenNode(created.node_id);
         setFocusRequestVersion((version) => version + 1);
@@ -753,7 +769,7 @@ export function App() {
     async (payload: {
       planspace_id: string;
       scheduled_deps?: string[];
-      provider?: AgentProvider;
+      model_preset_id?: string | null;
       resume_from_node_id?: string | null;
     }) => {
       if (!session?.id || virtualCreateDisabled) return;
@@ -765,7 +781,7 @@ export function App() {
           category: "regular",
           motivation: "",
           scheduled_deps: payload.scheduled_deps ?? [],
-          provider: payload.provider ?? session.provider ?? "claude",
+          model_preset_id: payload.model_preset_id ?? session.model_preset_id,
           planspace_id: payload.planspace_id,
           resume_from_node_id: payload.resume_from_node_id ?? null,
         });
@@ -784,26 +800,25 @@ export function App() {
         setProjectMutationPending(false);
       }
     },
-    [session?.id, session?.provider, virtualCreateDisabled, selectAndOpenNode],
+    [session?.id, session?.model_preset_id, virtualCreateDisabled, selectAndOpenNode],
   );
 
   const createUnparentedVirtual = useCallback(
     (planspaceId: string) => {
-      // Prefer the planspace's own provider (from its earliest node) over
-      // the project-level default, so a codex planspace on a claude project
-      // doesn't silently default new virtuals back to claude.
+      // Prefer the planspace's own model preset (from its earliest node) over
+      // the project-level default.
       const laneNodes = nodes.filter((n) => n.planspace_id === planspaceId);
       const laneAnchor = laneNodes.reduce<NodeInfo | null>((acc, n) => {
         if (acc === null) return n;
         return n.created_at < acc.created_at ? n : acc;
       }, null);
-      const provider = laneAnchor?.provider ?? session?.provider ?? "claude";
+      const modelPresetId = laneAnchor?.model_preset_id ?? session?.model_preset_id ?? null;
       void createVirtualNode({
         planspace_id: planspaceId,
-        provider,
+        model_preset_id: modelPresetId,
       });
     },
-    [createVirtualNode, nodes, session?.provider],
+    [createVirtualNode, nodes, session?.model_preset_id],
   );
 
   const createDependencyVirtual = useCallback(
@@ -814,10 +829,10 @@ export function App() {
       void createVirtualNode({
         planspace_id: planspaceId,
         scheduled_deps: [parent.id],
-        provider: parent.provider,
+        model_preset_id: parent.model_preset_id ?? session?.model_preset_id ?? null,
       });
     },
-    [createVirtualNode, nodes, sessionContextSpace?.active_planspace_id],
+    [createVirtualNode, nodes, session?.model_preset_id, sessionContextSpace?.active_planspace_id],
   );
 
   const createContinuationVirtual = useCallback(
@@ -827,7 +842,7 @@ export function App() {
       if (!parent || !planspaceId || !canResumeNode(parent)) return;
       void createVirtualNode({
         planspace_id: planspaceId,
-        provider: parent.provider,
+        model_preset_id: parent.model_preset_id ?? null,
         resume_from_node_id: parent.id,
       });
     },
@@ -1390,6 +1405,7 @@ export function App() {
       pendingGateForNode: (nodeId) =>
         activePendingGate?.nodeId === nodeId ? activePendingGate.request : null,
       onResolveGate,
+      modelPresets,
     });
   }, [
     activePendingGate,
@@ -1405,6 +1421,7 @@ export function App() {
     projectRunnerBusy,
     canInterruptRunner,
     composerLocked,
+    modelPresets,
   ]);
 
   /* Canvas layout changes -> serialized backend PATCHes. Best-effort: log on
@@ -1452,10 +1469,12 @@ export function App() {
         <ProjectsLanding
           onOpen={openProject}
           onCreate={() => setNewProjectModalOpen(true)}
+          modelPresets={modelPresets}
           onTemplateLaunched={(s) => openProject(s)}
         />
         <NewProjectModal
           open={newProjectModalOpen}
+          modelPresets={modelPresets}
           onCancel={() => setNewProjectModalOpen(false)}
           onCreated={(next) => {
             setNewProjectModalOpen(false);
@@ -1630,6 +1649,7 @@ export function App() {
             {panelState.mode === "templates" ? (
               <TemplateLibraryDock
                 refreshToken={libraryRefreshToken}
+                modelPresets={modelPresets}
                 onClose={closePanel}
               />
             ) : (
@@ -1638,6 +1658,7 @@ export function App() {
                 selection={selection}
                 nodes={nodes}
                 session={session}
+                modelPresets={modelPresets}
                 events={selectedEvents}
                 eventsLoading={selectedEventsLoading}
                 diff={selectedDiff}

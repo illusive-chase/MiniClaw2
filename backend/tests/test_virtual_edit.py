@@ -9,7 +9,6 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
-import miniclaw2.app as app_module
 from miniclaw2.contextspace import create_planspace
 from miniclaw2.domain import (
     Category,
@@ -56,6 +55,7 @@ class VirtualEditRegistryTests(unittest.TestCase):
             category=category,
             state=NodeState.VIRTUAL,
             planspace_id=self.lane,
+            model_preset_id="gpt-5.5",
             prompt_draft=f"draft {nid}",
             proposed_by="user",
             scheduled_deps=deps or [],
@@ -90,23 +90,25 @@ class VirtualEditRegistryTests(unittest.TestCase):
         self.assertIn('"prompt_draft": "new draft"', preview)
         self.assertIn('"obsolete_reason": "superseded"', preview)
 
-    def test_update_virtual_can_change_provider(self) -> None:
+    def test_update_virtual_can_change_model_preset(self) -> None:
         node = self._virtual("provider-node")
 
         updated = self.registry.update_virtual(
             self.project.id,
             node.id,
-            provider="codex",
+            model_preset_id="opus-4-7",
         )
 
         self.assertIsNotNone(updated)
         assert updated is not None
-        self.assertEqual(updated.provider, "codex")
+        self.assertEqual(updated.model_preset_id, "opus-4-7")
+        self.assertEqual(updated.provider, "claude")
         reloaded = self.store.load_node(self.project.id, node.id)
         assert reloaded is not None
-        self.assertEqual(reloaded.provider, "codex")
+        self.assertEqual(reloaded.model_preset_id, "opus-4-7")
+        self.assertEqual(reloaded.provider, "claude")
 
-    def test_update_resume_virtual_rejects_provider_change(self) -> None:
+    def test_update_resume_virtual_rejects_model_preset_change(self) -> None:
         source = Node(
             id="resume-source",
             project_id=self.project.id,
@@ -114,7 +116,7 @@ class VirtualEditRegistryTests(unittest.TestCase):
             category=Category.REGULAR,
             state=NodeState.DONE,
             planspace_id=self.lane,
-            provider="codex",
+            model_preset_id="gpt-5.5",
             provider_session_id="session-1",
             prompt="old",
         )
@@ -130,22 +132,24 @@ class VirtualEditRegistryTests(unittest.TestCase):
         unchanged = self.registry.update_virtual(
             self.project.id,
             created.id,
-            motivation="still inherits source provider",
-            provider="codex",
+            motivation="still inherits source model preset",
+            model_preset_id="gpt-5.5",
         )
         self.assertIsNotNone(unchanged)
         assert unchanged is not None
+        self.assertEqual(unchanged.model_preset_id, "gpt-5.5")
         self.assertEqual(unchanged.provider, "codex")
 
-        with self.assertRaisesRegex(ValueError, "inherit provider"):
+        with self.assertRaisesRegex(ValueError, "inherit model_preset_id"):
             self.registry.update_virtual(
                 self.project.id,
                 created.id,
-                provider="claude",
+                model_preset_id="opus-4-7",
             )
 
         reloaded = self.store.load_node(self.project.id, created.id)
         assert reloaded is not None
+        self.assertEqual(reloaded.model_preset_id, "gpt-5.5")
         self.assertEqual(reloaded.provider, "codex")
 
     def test_update_virtual_rejects_cycle(self) -> None:
@@ -220,6 +224,7 @@ class VirtualEditRegistryTests(unittest.TestCase):
             category=Category.REGULAR,
             state=NodeState.DONE,
             planspace_id=self.lane,
+            model_preset_id="gpt-5.5",
             started_at=1.0,
             finished_at=2.0,
         )
@@ -261,16 +266,17 @@ class VirtualEditRegistryTests(unittest.TestCase):
         assert preview is not None
         self.assertIn('"prompt_draft": "new planned work"', preview)
 
-    def test_create_virtual_can_select_provider(self) -> None:
+    def test_create_virtual_can_select_model_preset(self) -> None:
         created = self.registry.create_virtual(
             self.project.id,
             prompt_draft="codex planned work",
-            provider="codex",
+            model_preset_id="opus-4-7",
         )
 
         self.assertIsNotNone(created)
         assert created is not None
-        self.assertEqual(created.provider, "codex")
+        self.assertEqual(created.model_preset_id, "opus-4-7")
+        self.assertEqual(created.provider, "claude")
 
     def test_create_virtual_rejects_missing_dependency(self) -> None:
         with self.assertRaisesRegex(ValueError, "does not resolve"):
@@ -345,7 +351,7 @@ class VirtualEditRegistryTests(unittest.TestCase):
             category=Category.REGULAR,
             state=NodeState.ERROR,
             planspace_id=self.lane,
-            provider="codex",
+            model_preset_id="gpt-5.5",
             provider_session_id="session-1",
             prompt="old",
         )
@@ -360,9 +366,10 @@ class VirtualEditRegistryTests(unittest.TestCase):
         self.assertIsNotNone(created)
         assert created is not None
         self.assertEqual(created.resume_from_node_id, source.id)
+        self.assertEqual(created.model_preset_id, "gpt-5.5")
         self.assertEqual(created.provider, "codex")
 
-    def test_create_virtual_resume_rejects_provider_mismatch(self) -> None:
+    def test_create_virtual_resume_rejects_model_preset_mismatch(self) -> None:
         source = Node(
             id="source-mismatch",
             project_id=self.project.id,
@@ -370,18 +377,18 @@ class VirtualEditRegistryTests(unittest.TestCase):
             category=Category.REGULAR,
             state=NodeState.ERROR,
             planspace_id=self.lane,
-            provider="codex",
+            model_preset_id="gpt-5.5",
             provider_session_id="session-1",
             prompt="old",
         )
         self.store.create_node(source)
 
-        with self.assertRaisesRegex(ValueError, "inherit provider"):
+        with self.assertRaisesRegex(ValueError, "inherit model_preset_id"):
             self.registry.create_virtual(
                 self.project.id,
                 prompt_draft="continue",
                 resume_from_node_id=source.id,
-                provider="claude",
+                model_preset_id="opus-4-7",
             )
 
     def test_create_virtual_rejects_unresumable_resume_source(self) -> None:
@@ -392,6 +399,7 @@ class VirtualEditRegistryTests(unittest.TestCase):
             category=Category.REGULAR,
             state=NodeState.DONE,
             planspace_id=self.lane,
+            model_preset_id="gpt-5.5",
             prompt="old",
         )
         self.store.create_node(source)
@@ -432,6 +440,7 @@ class VirtualEditRegistryTests(unittest.TestCase):
             category=Category.REGULAR,
             state=NodeState.DONE,
             planspace_id=self.lane,
+            model_preset_id="gpt-5.5",
             started_at=1.0,
             finished_at=2.0,
         )
@@ -464,45 +473,49 @@ class VirtualEditRegistryTests(unittest.TestCase):
 class VirtualEditApiTests(unittest.TestCase):
     def test_patch_virtual_forwards_only_supplied_fields(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
-            project = Project(root_path=raw, name="Project")
-            node = Node(
-                id="virt-1",
-                project_id=project.id,
-                state=NodeState.VIRTUAL,
-                prompt_draft="updated",
-                summary="new motivation",
-            )
-            calls: list[dict[str, object]] = []
+            with patch.dict(os.environ, {"MINICLAW_HOME": str(Path(raw) / "home")}):
+                import miniclaw2.app as app_module
 
-            class _Registry:
-                store = SimpleNamespace(root=Path(raw) / "store")
+                project = Project(root_path=raw, name="Project")
+                node = Node(
+                    id="virt-1",
+                    project_id=project.id,
+                    state=NodeState.VIRTUAL,
+                    model_preset_id="gpt-5.5",
+                    prompt_draft="updated",
+                    summary="new motivation",
+                )
+                calls: list[dict[str, object]] = []
 
-                def get_project(self, sid: str) -> Project | None:
-                    return project if sid == project.id else None
+                class _Registry:
+                    store = SimpleNamespace(root=Path(raw) / "store")
 
-                def is_running(self, sid: str) -> bool:
-                    return False
+                    def get_project(self, sid: str) -> Project | None:
+                        return project if sid == project.id else None
 
-                def get_node(self, sid: str, nid: str) -> Node | None:
-                    return node if sid == project.id and nid == node.id else None
+                    def is_running(self, sid: str) -> bool:
+                        return False
 
-                def update_virtual(self, sid: str, vid: str, **kwargs: object) -> Node | None:
-                    calls.append({"sid": sid, "vid": vid, **kwargs})
-                    return node
+                    def get_node(self, sid: str, nid: str) -> Node | None:
+                        return node if sid == project.id and nid == node.id else None
 
-            with patch.object(app_module, "ProjectRegistry", return_value=_Registry()):
-                client = TestClient(app_module.create_app())
-                try:
-                    res = client.patch(
-                        f"/sessions/{project.id}/virtuals/{node.id}",
-                        json={
-                            "prompt_draft": "updated",
-                            "motivation": "new motivation",
-                            "obsolete_reason": None,
-                        },
-                    )
-                finally:
-                    client.close()
+                    def update_virtual(self, sid: str, vid: str, **kwargs: object) -> Node | None:
+                        calls.append({"sid": sid, "vid": vid, **kwargs})
+                        return node
+
+                with patch.object(app_module, "ProjectRegistry", return_value=_Registry()):
+                    client = TestClient(app_module.create_app())
+                    try:
+                        res = client.patch(
+                            f"/sessions/{project.id}/virtuals/{node.id}",
+                            json={
+                                "prompt_draft": "updated",
+                                "motivation": "new motivation",
+                                "obsolete_reason": None,
+                            },
+                        )
+                    finally:
+                        client.close()
 
             self.assertEqual(res.status_code, 200, res.text)
             self.assertEqual(calls, [{
@@ -518,30 +531,33 @@ class VirtualEditApiTests(unittest.TestCase):
 
     def test_delete_virtual_returns_blockers_body(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
-            project = Project(root_path=raw, name="Project")
-            calls: list[dict[str, object]] = []
+            with patch.dict(os.environ, {"MINICLAW_HOME": str(Path(raw) / "home")}):
+                import miniclaw2.app as app_module
 
-            class _Registry:
-                store = SimpleNamespace(root=Path(raw) / "store")
+                project = Project(root_path=raw, name="Project")
+                calls: list[dict[str, object]] = []
 
-                def get_project(self, sid: str) -> Project | None:
-                    return project if sid == project.id else None
+                class _Registry:
+                    store = SimpleNamespace(root=Path(raw) / "store")
 
-                def delete_virtual(self, sid: str, vid: str) -> tuple[bool, list[str]]:
-                    calls.append({"sid": sid, "vid": vid})
-                    return False, ["child"]
+                    def get_project(self, sid: str) -> Project | None:
+                        return project if sid == project.id else None
 
-            with patch.object(app_module, "ProjectRegistry", return_value=_Registry()):
-                with patch.object(
-                    app_module,
-                    "context_refresh_status",
-                    return_value={"running": False},
-                ):
-                    client = TestClient(app_module.create_app())
-                    try:
-                        res = client.delete(f"/sessions/{project.id}/virtuals/parent")
-                    finally:
-                        client.close()
+                    def delete_virtual(self, sid: str, vid: str) -> tuple[bool, list[str]]:
+                        calls.append({"sid": sid, "vid": vid})
+                        return False, ["child"]
+
+                with patch.object(app_module, "ProjectRegistry", return_value=_Registry()):
+                    with patch.object(
+                        app_module,
+                        "context_refresh_status",
+                        return_value={"running": False},
+                    ):
+                        client = TestClient(app_module.create_app())
+                        try:
+                            res = client.delete(f"/sessions/{project.id}/virtuals/parent")
+                        finally:
+                            client.close()
 
             self.assertEqual(res.status_code, 409, res.text)
             self.assertEqual(calls, [{"sid": project.id, "vid": "parent"}])
@@ -549,28 +565,31 @@ class VirtualEditApiTests(unittest.TestCase):
 
     def test_delete_virtual_success_returns_204(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
-            project = Project(root_path=raw, name="Project")
+            with patch.dict(os.environ, {"MINICLAW_HOME": str(Path(raw) / "home")}):
+                import miniclaw2.app as app_module
 
-            class _Registry:
-                store = SimpleNamespace(root=Path(raw) / "store")
+                project = Project(root_path=raw, name="Project")
 
-                def get_project(self, sid: str) -> Project | None:
-                    return project if sid == project.id else None
+                class _Registry:
+                    store = SimpleNamespace(root=Path(raw) / "store")
 
-                def delete_virtual(self, sid: str, vid: str) -> tuple[bool, list[str]]:
-                    return True, []
+                    def get_project(self, sid: str) -> Project | None:
+                        return project if sid == project.id else None
 
-            with patch.object(app_module, "ProjectRegistry", return_value=_Registry()):
-                with patch.object(
-                    app_module,
-                    "context_refresh_status",
-                    return_value={"running": False},
-                ):
-                    client = TestClient(app_module.create_app())
-                    try:
-                        res = client.delete(f"/sessions/{project.id}/virtuals/virt")
-                    finally:
-                        client.close()
+                    def delete_virtual(self, sid: str, vid: str) -> tuple[bool, list[str]]:
+                        return True, []
+
+                with patch.object(app_module, "ProjectRegistry", return_value=_Registry()):
+                    with patch.object(
+                        app_module,
+                        "context_refresh_status",
+                        return_value={"running": False},
+                    ):
+                        client = TestClient(app_module.create_app())
+                        try:
+                            res = client.delete(f"/sessions/{project.id}/virtuals/virt")
+                        finally:
+                            client.close()
 
             self.assertEqual(res.status_code, 204, res.text)
 

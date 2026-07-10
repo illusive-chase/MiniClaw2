@@ -80,6 +80,7 @@ class HumanInteractRunnerTests(unittest.IsolatedAsyncioTestCase):
         node = Node(
             project_id=self.project.id,
             kind=NodeKind.AGENT,
+            model_preset_id="opus-4-7",
             category=Category.REVIEW,
             subtype=ReviewSubtype.HUMAN_INTERACT_REVIEW,
             brief=brief,

@@ -49,6 +49,7 @@ def _virtual_payload(**over) -> dict:
         "state": "virtual",
         "lane": "auth-flow",
         "proposed_by": "node:n1",
+        "model_preset_id": "gpt-5.5",
         "motivation": "needed before launch",
         "prompt_draft": "Implement /forgot-password ...",
     }
@@ -121,6 +122,7 @@ class ValidatePreviewForNodeTests(unittest.TestCase):
             category=Category.REGULAR,
             state=NodeState.DONE,
             planspace_id="auth-flow",
+            model_preset_id="gpt-5.5",
             started_at=1.0,
             finished_at=2.0,
         )
@@ -160,6 +162,7 @@ class RenderPreviewTests(unittest.TestCase):
             category=Category.REGULAR,
             state=NodeState.DONE,
             planspace_id="auth-flow",
+            model_preset_id="gpt-5.5",
             started_at=1.0,
             finished_at=2.0,
         )
@@ -181,6 +184,7 @@ class RenderPreviewTests(unittest.TestCase):
             category=Category.PLANNING,
             state=NodeState.VIRTUAL,
             planspace_id="auth-flow",
+            model_preset_id="gpt-5.5",
             prompt_draft="Do X",
             proposed_by="node:n0",
             summary="why we want X",
@@ -215,11 +219,12 @@ class VirtualPreviewToNodeTests(unittest.TestCase):
         preview = parse_preview(json.dumps(_virtual_payload()))
         assert isinstance(preview, VirtualPreview)
         node = virtual_preview_to_node(
-            preview, project_id="p1", provider="claude", canonical_id="canon-1"
+            preview, project_id="p1", canonical_id="canon-1"
         )
         self.assertEqual(node.id, "canon-1")
         self.assertEqual(node.state, NodeState.VIRTUAL)
         self.assertEqual(node.category, Category.REGULAR)
+        self.assertEqual(node.model_preset_id, "gpt-5.5")
         self.assertEqual(node.prompt_draft, "Implement /forgot-password ...")
 
     def test_review_virtual_promotes_with_brief(self) -> None:
@@ -231,7 +236,7 @@ class VirtualPreviewToNodeTests(unittest.TestCase):
         preview = parse_preview(json.dumps(payload))
         assert isinstance(preview, VirtualPreview)
         node = virtual_preview_to_node(
-            preview, project_id="p1", provider="claude", canonical_id="canon-2"
+            preview, project_id="p1", canonical_id="canon-2"
         )
         self.assertEqual(node.category, Category.REVIEW)
         self.assertEqual(node.subtype, ReviewSubtype.AGENTIC_REVIEW)
@@ -251,7 +256,6 @@ class VirtualPreviewToNodeTests(unittest.TestCase):
         node = virtual_preview_to_node(
             preview,
             project_id="p1",
-            provider="claude",
             canonical_id="canon-3",
             verify_script_ref="/tmp/check.sh",
         )

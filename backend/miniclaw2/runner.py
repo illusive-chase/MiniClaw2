@@ -56,6 +56,7 @@ from .launch_prompt import (
     build_skill_init_block,
 )
 from .materialize import GRAPH_DIRNAME, materialize_active_lane, node_dir, snapshot_lane
+from .model_catalog import get_model_preset
 from .preview import render_executed_preview
 from .providers import (
     AgentProvider,
@@ -462,7 +463,8 @@ class NodeRunner:
         carries the per-turn prompt into the provider context while
         provider metadata events still update the canonical node.
         """
-        provider = _make_provider(self.node.provider or self.project.provider)
+        preset = get_model_preset(self.node.model_preset_id)
+        provider = _make_provider(preset.provider)
         self._provider = provider
         turn_node = self.node.model_copy(update={"prompt": prompt})
         context = AgentProviderContext(
@@ -778,9 +780,21 @@ class NodeRunner:
         return bundle
 
     def _snapshot_launch_settings(self, context_bundle: Any | None = None) -> None:
-        snapshot: dict[str, Any] = dict(self.project.settings_override)
+        snapshot: dict[str, Any] = {
+            key: value
+            for key, value in self.project.settings_override.items()
+            if key
+            not in {
+                "model",
+                "model_provider",
+                "service_tier",
+                "reasoning_effort",
+            }
+        }
+        if self.node.kind is NodeKind.AGENT:
+            preset = get_model_preset(self.node.model_preset_id)
+            snapshot.update(preset.settings_snapshot())
         snapshot["cwd"] = self.project.root_path
-        snapshot["provider"] = self.node.provider or self.project.provider
         project_binding_id = (
             getattr(context_bundle, "project_binding_id", None)
             if context_bundle is not None
@@ -890,6 +904,7 @@ class NodeRunner:
                 parent_node_id=self.node.parent_node_id,
                 kind=self.node.kind.value,
                 provider=self.node.provider,
+                model_preset_id=self.node.model_preset_id,
                 category=(
                     self.node.category.value
                     if self.node.category is not None
@@ -983,7 +998,7 @@ class NodeRunner:
 
 
 def _make_provider(provider: str) -> AgentProvider:
-    normalized = (provider or "claude").lower()
+    normalized = (provider or "").lower()
     if normalized == "codex":
         return CodexProvider()
     if normalized == "claude":

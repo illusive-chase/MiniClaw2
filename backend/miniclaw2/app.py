@@ -18,7 +18,7 @@ from fastapi import FastAPI, HTTPException, Request, Response, WebSocket, WebSoc
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from .contextspace import (
     delete_skill,
@@ -37,6 +37,7 @@ from .events import (
 )
 from .git_state import node_diff
 from .language import project_preferred_language
+from .model_catalog import list_model_presets
 from .providers import GateTimeoutError
 from .providers.claude_native import hook_runtime
 from .providers.claude_native.hook_installer import install_hooks
@@ -66,10 +67,10 @@ _HOOK_ASK_TIMEOUT_SECONDS = 590.0
 
 
 class CreateSessionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     cwd: str | None = None
-    model: str | None = None
-    model_provider: str | None = None
-    provider: str | None = None
+    model_preset_id: str | None = None
     auto_commit: bool | None = None
     preferred_language: str | None = None
     temporary: bool = False
@@ -95,7 +96,8 @@ class SessionInfo(BaseModel):
     id: str
     created_at: float
     turns: int
-    provider: str = "claude"
+    model_preset_id: str
+    provider: str = "codex"
     preferred_language: str | None = None
     temporary: bool = False
     template_id: str | None = None
@@ -117,18 +119,22 @@ class UpdatePlanspaceViewRequest(BaseModel):
 
 
 class CreatePlanspaceRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     title: str = ""
     seed: str | None = None
     user_seed: str | None = None
     mode: str | None = None
-    provider: str | None = None
+    model_preset_id: str | None = None
 
 
 class CreateBlankPlanspaceRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     title: str | None = None
     seed: str
     mode: str | None = None
-    provider: str | None = None
+    model_preset_id: str | None = None
 
 
 class UpdatePlanspaceModeRequest(BaseModel):
@@ -136,6 +142,8 @@ class UpdatePlanspaceModeRequest(BaseModel):
 
 
 class UpdateVirtualRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     prompt_draft: str | None = None
     category: str | None = None
     subtype: str | None = None
@@ -143,11 +151,13 @@ class UpdateVirtualRequest(BaseModel):
     motivation: str | None = None
     scheduled_deps: list[str] | None = None
     pending_extra_skills: list[str] | None = None
-    provider: str | None = None
+    model_preset_id: str | None = None
     obsolete_reason: str | None = None
 
 
 class CreateVirtualRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     prompt_draft: str
     category: str | None = None
     subtype: str | None = None
@@ -156,7 +166,7 @@ class CreateVirtualRequest(BaseModel):
     scheduled_deps: list[str] | None = None
     pending_extra_skills: list[str] | None = None
     agent_op_kind: str | None = None
-    provider: str | None = None
+    model_preset_id: str | None = None
     planspace_id: str | None = None
     parent_node_id: str | None = None
     resume_from_node_id: str | None = None
@@ -176,7 +186,7 @@ class NodeDiffResponse(BaseModel):
 class TemplateSummary(BaseModel):
     name: str
     brief: str
-    providers: list[str]
+    allowed_model_preset_ids: list[str]
     auto_commit: bool
     node_count: int
     nodes: list[dict[str, Any]] = Field(default_factory=list)
@@ -185,14 +195,16 @@ class TemplateSummary(BaseModel):
 class TemplateDetail(BaseModel):
     name: str
     brief: str
-    providers: list[str]
+    allowed_model_preset_ids: list[str]
     auto_commit: bool
     node_count: int
     nodes: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class TemplateRunRequest(BaseModel):
-    provider: str
+    model_config = ConfigDict(extra="forbid")
+
+    model_preset_id: str
 
 
 class SaveUserTemplateRequest(BaseModel):
@@ -219,8 +231,16 @@ class ApplyUserTemplateResponse(BaseModel):
 def create_app() -> FastAPI:
     from contextlib import asynccontextmanager
 
+    registry = ProjectRegistry(initialize=False)
+
+    def initialize_registry() -> None:
+        initialize = getattr(registry, "initialize", None)
+        if initialize is not None:
+            initialize()
+
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
+        initialize_registry()
         # Generate the shared token before spawning any claude PTYs, and
         # merge the AskUserQuestion / SessionStart hooks into the user's
         # ~/.claude/settings.json. Both are idempotent.
@@ -239,10 +259,14 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
-    registry = ProjectRegistry()
+
+    @app.get("/model-presets", response_model=list[dict[str, Any]])
+    def list_model_presets_endpoint() -> list[dict[str, Any]]:
+        return [preset.metadata() for preset in list_model_presets()]
 
     @app.middleware("http")
     async def record_hook_port(request: Request, call_next):
+        initialize_registry()
         _record_hook_port_from_scope(request.scope)
         return await call_next(request)
 
@@ -297,9 +321,7 @@ def create_app() -> FastAPI:
         try:
             project = registry.create_project(
                 cwd=None if req.temporary else (req.cwd or os.getcwd()),
-                model=req.model,
-                model_provider=req.model_provider,
-                provider=req.provider,
+                model_preset_id=req.model_preset_id,
                 auto_commit=req.auto_commit,
                 preferred_language=req.preferred_language,
                 temporary=req.temporary,
@@ -462,7 +484,7 @@ def create_app() -> FastAPI:
                 title=req.title.strip(),
                 seed=seed,
                 mode=req.mode,
-                provider=req.provider,
+                model_preset_id=req.model_preset_id,
             )
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
@@ -496,7 +518,7 @@ def create_app() -> FastAPI:
                 title=(req.title or "").strip(),
                 seed=req.seed,
                 mode=req.mode,
-                provider=req.provider,
+                model_preset_id=req.model_preset_id,
             )
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
@@ -550,7 +572,7 @@ def create_app() -> FastAPI:
                 scheduled_deps=req.scheduled_deps,
                 pending_extra_skills=req.pending_extra_skills,
                 agent_op_kind=req.agent_op_kind,
-                provider=req.provider,
+                model_preset_id=req.model_preset_id,
                 planspace_id=req.planspace_id,
                 parent_node_id=req.parent_node_id,
                 resume_from_node_id=req.resume_from_node_id,
@@ -733,7 +755,7 @@ def create_app() -> FastAPI:
     @app.post("/templates/{name}/run", response_model=SessionInfo)
     async def run_template(name: str, req: TemplateRunRequest) -> SessionInfo:
         try:
-            project, _ = launch_template(name, req.provider, registry)
+            project, _ = launch_template(name, req.model_preset_id, registry)
         except TemplateError as exc:
             raise HTTPException(400, str(exc)) from exc
         except ValueError as exc:
@@ -844,6 +866,7 @@ def create_app() -> FastAPI:
 
     @app.websocket("/ws/{sid}")
     async def ws(websocket: WebSocket, sid: str) -> None:
+        initialize_registry()
         _record_hook_port_from_scope(websocket.scope)
         project = registry.get_project(sid)
         if project is None:
@@ -886,7 +909,14 @@ def create_app() -> FastAPI:
 
                 if msg_type == "user_message":
                     await mark_live_ready()
-                    msg = UserMessage(**raw)
+                    try:
+                        msg = UserMessage(**raw)
+                    except ValidationError as exc:
+                        await _send(send_now, {
+                            "type": "error",
+                            "message": str(exc),
+                        })
+                        continue
                     if _context_task_running(project.id):
                         await _send(send_now, {
                             "type": "error",
@@ -900,7 +930,7 @@ def create_app() -> FastAPI:
                             resume_from_node_id=msg.resume_from_node_id,
                             extra_skills=msg.extra_skills,
                             agent_op_kind=msg.agent_op_kind,
-                            provider=msg.provider,
+                            model_preset_id=msg.model_preset_id,
                         )
                     except ValueError as exc:
                         await _send(send_now, {
@@ -997,6 +1027,7 @@ def _session_info(registry: ProjectRegistry, project: Any) -> SessionInfo:
         id=project.id,
         created_at=project.created_at,
         turns=registry.turn_count(project.id),
+        model_preset_id=project.model_preset_id,
         provider=project.provider,
         preferred_language=project_preferred_language(project),
         temporary=project.temporary,

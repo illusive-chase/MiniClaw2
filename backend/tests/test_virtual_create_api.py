@@ -6,13 +6,13 @@ import unittest
 
 from fastapi.testclient import TestClient
 
-from miniclaw2.app import create_app
-
 
 class VirtualCreateApiTest(unittest.TestCase):
     def setUp(self) -> None:
         self._home = tempfile.TemporaryDirectory()
         os.environ["MINICLAW_HOME"] = self._home.name
+        from miniclaw2.app import create_app
+
         self.client = TestClient(create_app())
 
     def tearDown(self) -> None:
@@ -23,7 +23,7 @@ class VirtualCreateApiTest(unittest.TestCase):
     def test_create_virtual_in_template_active_lane(self) -> None:
         launched = self.client.post(
             "/templates/hello-text/run",
-            json={"provider": "claude"},
+            json={"model_preset_id": "gpt-5.5"},
         )
         self.assertEqual(launched.status_code, 200, launched.text)
         session = launched.json()
@@ -39,7 +39,7 @@ class VirtualCreateApiTest(unittest.TestCase):
                 "prompt_draft": "Add an extra user-authored check.",
                 "motivation": "Manual template extension",
                 "category": "regular",
-                "provider": "codex",
+                "model_preset_id": "opus-4-7",
                 "scheduled_deps": [first["id"]],
             },
         )
@@ -51,7 +51,8 @@ class VirtualCreateApiTest(unittest.TestCase):
         self.assertEqual(node["state"], "virtual")
         self.assertEqual(node["kind"], "agent")
         self.assertEqual(node["category"], "regular")
-        self.assertEqual(node["provider"], "codex")
+        self.assertEqual(node["model_preset_id"], "opus-4-7")
+        self.assertEqual(node["provider"], "claude")
         self.assertEqual(node["prompt_draft"], "Add an extra user-authored check.")
         self.assertEqual(node["summary"], "Manual template extension")
         self.assertEqual(node["scheduled_deps"], [first["id"]])
@@ -71,7 +72,7 @@ class VirtualCreateApiTest(unittest.TestCase):
     def test_create_virtual_rejects_missing_dependency(self) -> None:
         launched = self.client.post(
             "/templates/hello-text/run",
-            json={"provider": "claude"},
+            json={"model_preset_id": "gpt-5.5"},
         )
         self.assertEqual(launched.status_code, 200, launched.text)
         sid = launched.json()["id"]
@@ -86,6 +87,29 @@ class VirtualCreateApiTest(unittest.TestCase):
 
         self.assertEqual(created.status_code, 400, created.text)
         self.assertIn("does not resolve", created.json()["detail"])
+
+    def test_provider_only_payloads_are_rejected(self) -> None:
+        session_res = self.client.post("/sessions", json={"provider": "claude"})
+        self.assertEqual(session_res.status_code, 422, session_res.text)
+        self.assertIn("provider", session_res.text)
+
+        launched = self.client.post(
+            "/templates/hello-text/run",
+            json={"model_preset_id": "gpt-5.5"},
+        )
+        self.assertEqual(launched.status_code, 200, launched.text)
+        sid = launched.json()["id"]
+
+        created = self.client.post(
+            f"/sessions/{sid}/virtuals",
+            json={
+                "prompt_draft": "Old client payload.",
+                "provider": "claude",
+            },
+        )
+
+        self.assertEqual(created.status_code, 422, created.text)
+        self.assertIn("provider", created.text)
 
 
 if __name__ == "__main__":

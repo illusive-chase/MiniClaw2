@@ -56,6 +56,7 @@ class ComposeExtraSkillsTests(unittest.TestCase):
     def _node(self, extra_skills: list[str]) -> Node:
         return Node(
             project_id=self.project.id,
+            model_preset_id="gpt-5.5",
             prompt="hi",
             settings_snapshot={"extra_skills": extra_skills},
         )
@@ -134,7 +135,11 @@ class ComposeExtraSkillsTests(unittest.TestCase):
         self.assertEqual(skill_sources[0]["plug_id"], "skills.vim")
 
     def test_no_extra_skills_key_is_noop(self) -> None:
-        node = Node(project_id=self.project.id, prompt="hi")
+        node = Node(
+            project_id=self.project.id,
+            model_preset_id="gpt-5.5",
+            prompt="hi",
+        )
         # Should compose without raising and without any skill sources.
         bundle = compose_context_bundle(self.project, node)
         skill_sources = [s for s in bundle.sources if s.get("kind") == "skill"]

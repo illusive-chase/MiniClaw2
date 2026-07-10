@@ -1,6 +1,6 @@
 import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Handle, Position, type NodeProps } from "reactflow";
-import type { InteractionRequest, NodeInfo, NodeState } from "../../types";
+import type { InteractionRequest, ModelPreset, NodeInfo, NodeState } from "../../types";
 import {
   PendingGateInline,
   type ResolveGatePayload,
@@ -8,6 +8,7 @@ import {
 import type { AgentNodeData } from "../layout";
 import { stateMeta } from "./stateMeta";
 import { canResumeNode } from "../../nodeUtil";
+import { modelPresetDetail, modelPresetLabel, providerLabel } from "../../modelPresets";
 
 /**
  * Agent tile: rounded rectangle, ~224x130. The primary work unit.
@@ -200,7 +201,10 @@ function AgentNodeImpl({ data, selected }: NodeProps<AgentNodeData>) {
   };
 
   return (
-    <div className="group relative w-[224px]" title={tooltipForAgent(node, isActive)}>
+    <div
+      className="group relative w-[224px]"
+      title={tooltipForAgent(node, isActive, agentNodeContext.modelPresets)}
+    >
       {/* `relative` here so the rail/bar (absolute children below) treat THIS
        * div as their containing block — otherwise they'd anchor to the outer
        * `group relative` ancestor and escape this div's `overflow-hidden`,
@@ -248,8 +252,14 @@ function AgentNodeImpl({ data, selected }: NodeProps<AgentNodeData>) {
       <div className="flex items-center justify-between gap-2 px-3.5 pb-1.5 pt-2 text-[10px] text-ink-subtle">
         <span className="flex min-w-0 items-center gap-1">
           <span className="font-mono">{node.id.slice(0, 8)}</span>
-          <span className="rounded border border-line bg-surface/70 px-1 py-0.5 text-[8.5px] font-medium uppercase tracking-[0.1em] text-ink-muted">
-            {providerLabel(node.provider)}
+          <span
+            className="max-w-[92px] truncate rounded border border-line bg-surface/70 px-1 py-0.5 text-[8.5px] font-medium uppercase tracking-[0.1em] text-ink-muted"
+            title={
+              modelPresetDetail(agentNodeContext.modelPresets, node.model_preset_id) ||
+              providerLabel(node.provider)
+            }
+          >
+            {modelPresetLabel(agentNodeContext.modelPresets, node.model_preset_id)}
           </span>
         </span>
         {isVirtual ? (
@@ -431,6 +441,7 @@ export type AgentNodeContext = {
   canRerun: boolean;
   pendingGateForNode: (nodeId: string) => InteractionRequest | null;
   onResolveGate: (id: string, payload: ResolveGatePayload) => void;
+  modelPresets: ModelPreset[];
 };
 
 let agentNodeContext: AgentNodeContext = {
@@ -447,6 +458,7 @@ let agentNodeContext: AgentNodeContext = {
   canRerun: false,
   pendingGateForNode: () => null,
   onResolveGate: () => {},
+  modelPresets: [],
 };
 
 export function setAgentNodeContext(ctx: AgentNodeContext): void {
@@ -626,10 +638,6 @@ function compactTokens(n: number): string {
   return String(n);
 }
 
-function providerLabel(provider: NodeInfo["provider"]): string {
-  return provider === "codex" ? "codex" : "claude";
-}
-
 function formatStartTime(node: NodeInfo): string {
   const at = node.started_at ?? node.created_at;
   return new Date(at * 1000).toLocaleTimeString([], {
@@ -638,10 +646,16 @@ function formatStartTime(node: NodeInfo): string {
   });
 }
 
-function tooltipForAgent(node: NodeInfo, isActive: boolean): string {
+function tooltipForAgent(
+  node: NodeInfo,
+  isActive: boolean,
+  modelPresets: ModelPreset[],
+): string {
   const promptText = node.prompt_draft || node.prompt;
   const prompt = promptText ? `"${promptText.slice(0, 80)}"` : "(no prompt)";
   const status = isActive ? " · active" : "";
   const category = node.category ? ` · ${node.category}` : "";
-  return `Agent ${node.state}${category} · ${node.provider}${status}\n${prompt}\n${node.id}`;
+  const preset = modelPresetLabel(modelPresets, node.model_preset_id);
+  const provider = providerLabel(node.provider);
+  return `Agent ${node.state}${category} · ${preset} (${provider})${status}\n${prompt}\n${node.id}`;
 }

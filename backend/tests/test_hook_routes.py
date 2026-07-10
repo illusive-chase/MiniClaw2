@@ -62,6 +62,10 @@ class HookAskRouteTest(unittest.TestCase):
         try:
             with (
                 tempfile.TemporaryDirectory() as raw,
+                patch.dict(
+                    os.environ,
+                    {"MINICLAW_HOME": str(Path(raw) / "store")},
+                ),
                 patch.object(app_module, "install_hooks", return_value=Path(raw)),
                 patch.object(app_module, "_HOOK_ASK_TIMEOUT_SECONDS", 0.01),
                 TestClient(app_module.create_app()) as client,
@@ -82,6 +86,10 @@ class HookAskRouteTest(unittest.TestCase):
         with (
             patch.dict(os.environ, {"MINICLAW2_HOOK_PORT": "", "MINICLAW2_PORT": ""}),
             tempfile.TemporaryDirectory() as raw,
+            patch.dict(
+                os.environ,
+                {"MINICLAW_HOME": str(Path(raw) / "store")},
+            ),
             patch.object(app_module, "install_hooks", return_value=Path(raw)),
             TestClient(app_module.create_app()) as client,
         ):
@@ -96,6 +104,10 @@ class HookAskRouteTest(unittest.TestCase):
         with (
             patch.dict(os.environ, {"MINICLAW2_HOOK_PORT": "43123"}),
             tempfile.TemporaryDirectory() as raw,
+            patch.dict(
+                os.environ,
+                {"MINICLAW_HOME": str(Path(raw) / "store")},
+            ),
             patch.object(app_module, "install_hooks", return_value=Path(raw)),
             TestClient(app_module.create_app()) as client,
         ):

@@ -62,6 +62,7 @@ export type NodeStarted = {
   parent_node_id?: string | null;
   kind?: string;
   provider?: AgentProvider | null;
+  model_preset_id?: string | null;
   category?: NodeCategory | null;
   subtype?: ReviewSubtype | null;
   prompt?: string;
@@ -97,7 +98,7 @@ export type ClientMessage =
       resume_from_node_id?: string | null;
       extra_skills?: string[] | null;
       agent_op_kind?: string | null;
-      provider?: AgentProvider | null;
+      model_preset_id?: string | null;
     }
   | {
       type: "interaction_response";
@@ -125,6 +126,7 @@ export type SessionInfo = {
   id: string;
   created_at: number;
   turns: number;
+  model_preset_id: string;
   provider?: AgentProvider;
   preferred_language?: string | null;
   temporary?: boolean;
@@ -142,7 +144,7 @@ export type SessionInfo = {
 export type TemplateSummary = {
   name: string;
   brief: string;
-  providers: string[];
+  allowed_model_preset_ids: string[];
   auto_commit: boolean;
   node_count: number;
   nodes?: TemplateNodeSpec[];
@@ -163,6 +165,17 @@ export type TemplateNodeSpec = {
 
 export type NodeKind = "agent" | "op" | "verifier";
 export type AgentProvider = "claude" | "codex";
+export type ModelPreset = {
+  id: string;
+  label: string;
+  provider: AgentProvider;
+  model: string;
+  model_provider?: string | null;
+  service_tier?: string | null;
+  reasoning_effort?: string | null;
+  description?: string;
+  is_default?: boolean;
+};
 export type NodeCategory = "planning" | "regular" | "review";
 export type ReviewSubtype =
   | "agentic_review"
@@ -196,6 +209,7 @@ export type NodeInfo = {
   context_sources: string[];
   context_bundle_id?: string | null;
   context_bundle_path?: string | null;
+  model_preset_id?: string | null;
   provider: AgentProvider;
   provider_session_id?: string | null;
   provider_turn_id?: string | null;

@@ -18,7 +18,7 @@ from miniclaw2.domain import (
 
 class NodeInvariantTests(unittest.TestCase):
     def test_agent_node_defaults_to_regular_category(self) -> None:
-        node = Node(project_id="p1", kind=NodeKind.AGENT)
+        node = Node(project_id="p1", kind=NodeKind.AGENT, model_preset_id="gpt-5.5")
         self.assertIs(node.category, Category.REGULAR)
 
     def test_op_node_rejects_category(self) -> None:
@@ -36,11 +36,17 @@ class NodeInvariantTests(unittest.TestCase):
 
     def test_review_agent_requires_subtype_and_brief(self) -> None:
         with self.assertRaises(ValidationError):
-            Node(project_id="p1", kind=NodeKind.AGENT, category=Category.REVIEW)
+            Node(
+                project_id="p1",
+                kind=NodeKind.AGENT,
+                model_preset_id="gpt-5.5",
+                category=Category.REVIEW,
+            )
         with self.assertRaises(ValidationError):
             Node(
                 project_id="p1",
                 kind=NodeKind.AGENT,
+                model_preset_id="gpt-5.5",
                 category=Category.REVIEW,
                 subtype=ReviewSubtype.AGENTIC_REVIEW,
             )
@@ -50,6 +56,7 @@ class NodeInvariantTests(unittest.TestCase):
         node = Node(
             project_id="p1",
             kind=NodeKind.AGENT,
+            model_preset_id="gpt-5.5",
             category=Category.REVIEW,
             subtype=ReviewSubtype.AGENTIC_REVIEW,
             brief=brief,
@@ -72,6 +79,7 @@ class NodeInvariantTests(unittest.TestCase):
             Node(
                 project_id="p1",
                 kind=NodeKind.AGENT,
+                model_preset_id="gpt-5.5",
                 category=Category.REVIEW,
                 subtype=ReviewSubtype.PROGRAMMATIC_REVIEW,
                 brief=brief,
@@ -82,6 +90,7 @@ class NodeInvariantTests(unittest.TestCase):
             Node(
                 project_id="p1",
                 kind=NodeKind.AGENT,
+                model_preset_id="gpt-5.5",
                 category=Category.REGULAR,
                 subtype=ReviewSubtype.AGENTIC_REVIEW,
             )
@@ -91,6 +100,7 @@ class NodeInvariantTests(unittest.TestCase):
             Node(
                 project_id="p1",
                 kind=NodeKind.AGENT,
+                model_preset_id="gpt-5.5",
                 category=Category.PLANNING,
                 state=NodeState.VIRTUAL,
                 started_at=123.0,

@@ -86,13 +86,22 @@ class _FakeGateContext:
 
 
 class _FakeProviderContext:
-    def __init__(self, *, settings_override: dict[str, Any] | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        settings_override: dict[str, Any] | None = None,
+        model_preset_id: str = "gpt-5.5",
+    ) -> None:
         from miniclaw2.domain import Node, Project
 
-        self.node = Node(project_id="project-1", prompt="Create README.md")
+        self.node = Node(
+            project_id="project-1",
+            prompt="Create README.md",
+            model_preset_id=model_preset_id,
+        )
         self.project = Project(
             root_path="/tmp/workspace",
-            provider="codex",
+            model_preset_id=model_preset_id,
             settings_override=settings_override or {},
         )
         self.system_context = ""
@@ -118,6 +127,9 @@ class CodexProviderTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(thread_params["approvalPolicy"], "never")
         self.assertEqual(thread_params["sandbox"], "workspace-write")
+        self.assertEqual(thread_params["model"], "gpt-5.5")
+        self.assertEqual(thread_params["modelProvider"], "openai")
+        self.assertEqual(thread_params["reasoningEffort"], "medium")
         self.assertEqual(turn_params["approvalPolicy"], "never")
         expected_project_root = str(Path("/tmp/workspace").resolve(strict=False))
         self.assertEqual(
@@ -139,6 +151,9 @@ class CodexProviderTest(unittest.IsolatedAsyncioTestCase):
 
         expected_project_root = str(Path("/tmp/workspace").resolve(strict=False))
         self.assertEqual(thread_params["sandbox"], "workspace-write")
+        self.assertEqual(thread_params["model"], "gpt-5.5")
+        self.assertEqual(thread_params["modelProvider"], "openai")
+        self.assertEqual(thread_params["reasoningEffort"], "medium")
         self.assertEqual(
             turn_params["sandboxPolicy"],
             {

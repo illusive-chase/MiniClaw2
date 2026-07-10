@@ -19,6 +19,7 @@ class PlanspaceApiTest(unittest.TestCase):
             node = Node(
                 id="node-123",
                 project_id=project.id,
+                model_preset_id="gpt-5.5",
                 planspace_id="planspaces.auth",
                 prompt="bootstrap",
             )
@@ -40,14 +41,14 @@ class PlanspaceApiTest(unittest.TestCase):
                     title: str,
                     seed: str,
                     mode: str | None = None,
-                    provider: str | None = None,
+                    model_preset_id: str | None = None,
                 ) -> object:
                     calls.append({
                         "sid": sid,
                         "title": title,
                         "seed": seed,
                         "mode": mode,
-                        "provider": provider,
+                        "model_preset_id": model_preset_id,
                     })
                     return SimpleNamespace(node=node)
 
@@ -70,7 +71,7 @@ class PlanspaceApiTest(unittest.TestCase):
                             json={
                                 "user_seed": "Build auth",
                                 "mode": "manual",
-                                "provider": "codex",
+                                "model_preset_id": "gpt-5.5",
                             },
                         )
                     finally:
@@ -82,7 +83,7 @@ class PlanspaceApiTest(unittest.TestCase):
                 "title": "",
                 "seed": "Build auth",
                 "mode": "manual",
-                "provider": "codex",
+                "model_preset_id": "gpt-5.5",
             }])
             body = res.json()
             self.assertEqual(body["node_id"], "node-123")
@@ -95,6 +96,7 @@ class PlanspaceApiTest(unittest.TestCase):
             node = Node(
                 id="blank-1",
                 project_id=project.id,
+                model_preset_id="gpt-5.5",
                 planspace_id="planspaces.blank",
                 state=NodeState.VIRTUAL,
                 prompt_draft="",
@@ -117,14 +119,14 @@ class PlanspaceApiTest(unittest.TestCase):
                     title: str,
                     seed: str,
                     mode: str | None = None,
-                    provider: str | None = None,
+                    model_preset_id: str | None = None,
                 ) -> Node | None:
                     calls.append({
                         "sid": sid,
                         "title": title,
                         "seed": seed,
                         "mode": mode,
-                        "provider": provider,
+                        "model_preset_id": model_preset_id,
                     })
                     return node
 
@@ -153,7 +155,7 @@ class PlanspaceApiTest(unittest.TestCase):
                                     "title": "Blank",
                                     "seed": "Start from scratch",
                                     "mode": "auto",
-                                    "provider": "codex",
+                                    "model_preset_id": "gpt-5.5",
                                 },
                             )
                         finally:
@@ -165,7 +167,7 @@ class PlanspaceApiTest(unittest.TestCase):
                 "title": "Blank",
                 "seed": "Start from scratch",
                 "mode": "auto",
-                "provider": "codex",
+                "model_preset_id": "gpt-5.5",
             }])
             body = res.json()
             self.assertEqual(body["node_id"], "blank-1")
@@ -284,6 +286,7 @@ class PlanspaceApiTest(unittest.TestCase):
             node = Node(
                 id="virt-1",
                 project_id=project.id,
+                model_preset_id="gpt-5.5",
                 state=NodeState.QUEUED,
                 planspace_id="planspaces.auth",
                 prompt="run this",

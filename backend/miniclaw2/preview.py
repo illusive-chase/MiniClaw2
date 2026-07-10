@@ -90,6 +90,7 @@ class VirtualPreview(BaseModel):
     state: Literal["virtual"]
     lane: str
     proposed_by: str
+    model_preset_id: str | None = None
     motivation: str
     prompt_draft: str = ""
     subtype: Literal[
@@ -115,6 +116,8 @@ class VirtualPreview(BaseModel):
             if self.prompt_draft:
                 raise ValueError("verifier virtuals must not carry prompt_draft")
             return self
+        if self.model_preset_id is None or not self.model_preset_id.strip():
+            raise ValueError("agent virtuals require model_preset_id")
         if self.subtype == "programmatic_review":
             raise ValueError("programmatic_review virtuals require kind=verifier")
         if self.category == "review":
@@ -234,6 +237,7 @@ def render_virtual_preview(node: Node) -> str:
         "state": "virtual",
         "lane": node.planspace_id or "",
         "proposed_by": node.proposed_by or "unknown",
+        "model_preset_id": node.model_preset_id,
         "motivation": node.summary or "",  # virtuals carry motivation in summary slot
         "prompt_draft": node.prompt_draft or "",
         "scheduled_deps": list(node.scheduled_deps),
@@ -253,7 +257,6 @@ def virtual_preview_to_node(
     preview: VirtualPreview,
     *,
     project_id: str,
-    provider: str,
     canonical_id: str,
     verify_script_ref: str | None = None,
 ) -> Node:
@@ -268,7 +271,7 @@ def virtual_preview_to_node(
         kind=kind,
         state=NodeState.VIRTUAL,
         planspace_id=preview.lane or None,
-        provider=provider,
+        model_preset_id=preview.model_preset_id,
         prompt="",
         prompt_draft=preview.prompt_draft,
         category=Category(preview.category),

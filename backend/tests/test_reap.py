@@ -47,6 +47,7 @@ def _virtual_payload(slug: str, lane: str, deps: list[str] | None = None,
         "state": "virtual",
         "lane": lane,
         "proposed_by": "node:source",
+        "model_preset_id": "gpt-5.5",
         "motivation": "m",
         "prompt_draft": "Do thing",
     }
@@ -66,7 +67,7 @@ class ReapTestBase(unittest.TestCase):
         self.project = Project(
             id="p1",
             root_path=str(self.project_root),
-            provider="claude",
+            model_preset_id="gpt-5.5",
         )
         self.store.create_project(self.project)
 
@@ -81,6 +82,7 @@ class ReapTestBase(unittest.TestCase):
             category=category,
             state=NodeState.DONE,
             planspace_id="lane-A",
+            model_preset_id="gpt-5.5",
             started_at=1.0,
             finished_at=2.0,
         )
@@ -207,6 +209,7 @@ class ReapSlugCanonicalizationTests(ReapTestBase):
             category=Category.REGULAR,
             state=NodeState.DONE,
             planspace_id="lane-B",
+            model_preset_id="gpt-5.5",
             started_at=1.0,
             finished_at=2.0,
         )
@@ -237,6 +240,7 @@ class ReapSlugCanonicalizationTests(ReapTestBase):
             category=Category.REGULAR,
             state=NodeState.VIRTUAL,
             planspace_id="lane-B",
+            model_preset_id="gpt-5.5",
             prompt_draft="x",
             proposed_by="user",
             summary="m",
@@ -268,6 +272,7 @@ class ReapSlugCanonicalizationTests(ReapTestBase):
             category=Category.REGULAR,
             state=NodeState.DONE,
             planspace_id="lane-A",
+            model_preset_id="gpt-5.5",
             started_at=1.0,
             finished_at=2.0,
         )
@@ -278,6 +283,7 @@ class ReapSlugCanonicalizationTests(ReapTestBase):
             category=Category.REGULAR,
             state=NodeState.VIRTUAL,
             planspace_id="lane-A",
+            model_preset_id="gpt-5.5",
             prompt_draft="initial fix",
             scheduled_deps=[resume_source.id],
             resume_from_node_id=resume_source.id,
@@ -321,6 +327,7 @@ class ReapCycleDetectionTests(ReapTestBase):
             category=Category.REGULAR,
             state=NodeState.VIRTUAL,
             planspace_id="lane-A",
+            model_preset_id="gpt-5.5",
             prompt_draft="x",
             proposed_by="user",
             summary="m",
@@ -354,6 +361,7 @@ class ReapDeletionTests(ReapTestBase):
             category=Category.REGULAR,
             state=NodeState.VIRTUAL,
             planspace_id="lane-A",
+            model_preset_id="gpt-5.5",
             prompt_draft="x",
             proposed_by="user",
             summary="m",

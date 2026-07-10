@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import { ApiError, createSession } from "../api";
 import { LANGUAGE_OPTIONS } from "../languages";
-import type { SessionInfo } from "../types";
+import type { ModelPreset, SessionInfo } from "../types";
+import { defaultModelPresetId, modelPresetDetail } from "../modelPresets";
 
 type Props = {
   open: boolean;
+  modelPresets: ModelPreset[];
   onCancel: () => void;
   onCreated: (session: SessionInfo) => void;
 };
@@ -26,9 +28,15 @@ function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-export function NewProjectModal({ open, onCancel, onCreated }: Props) {
+export function NewProjectModal({
+  open,
+  modelPresets,
+  onCancel,
+  onCreated,
+}: Props) {
   const [name, setName] = useState("");
   const [preferredLanguage, setPreferredLanguage] = useState("");
+  const [modelPresetId, setModelPresetId] = useState("");
   const [cwd, setCwd] = useState("");
   const [temporary, setTemporary] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -39,13 +47,14 @@ export function NewProjectModal({ open, onCancel, onCreated }: Props) {
     if (open) {
       setName("");
       setPreferredLanguage("");
+      setModelPresetId(defaultModelPresetId(modelPresets));
       setCwd("");
       setTemporary(false);
       setSubmitting(false);
       setError(null);
       window.setTimeout(() => nameRef.current?.focus(), 0);
     }
-  }, [open]);
+  }, [open, modelPresets]);
 
   if (!open) return null;
 
@@ -54,6 +63,7 @@ export function NewProjectModal({ open, onCancel, onCreated }: Props) {
     const payload = (createMissingCwd: boolean) => ({
       name: name.trim() || undefined,
       preferred_language: preferredLanguage || null,
+      model_preset_id: modelPresetId || undefined,
       cwd: temporary ? undefined : (cwdInput || undefined),
       temporary,
       create_missing_cwd: createMissingCwd,
@@ -149,6 +159,32 @@ export function NewProjectModal({ open, onCancel, onCreated }: Props) {
 
           <label className="flex flex-col gap-1">
             <span className="text-[10px] font-medium uppercase tracking-[0.14em] text-ink-subtle">
+              模型档位
+            </span>
+            <select
+              value={modelPresetId}
+              onChange={(e) => setModelPresetId(e.target.value)}
+              disabled={modelPresets.length === 0}
+              className="rounded-md border border-line bg-surface-sunken px-3 py-2 text-sm text-ink-strong focus:border-brand focus:outline-none disabled:opacity-40"
+            >
+              {modelPresets.length === 0 && (
+                <option value="">没有可用模型档位</option>
+              )}
+              {modelPresets.map((preset) => (
+                <option key={preset.id} value={preset.id}>
+                  {preset.label}
+                </option>
+              ))}
+            </select>
+            {modelPresetId && (
+              <span className="text-[11px] text-ink-muted">
+                {modelPresetDetail(modelPresets, modelPresetId) || modelPresetId}
+              </span>
+            )}
+          </label>
+
+          <label className="flex flex-col gap-1">
+            <span className="text-[10px] font-medium uppercase tracking-[0.14em] text-ink-subtle">
               Working directory{" "}
               <span className="text-ink-subtle/70">(optional)</span>
             </span>
@@ -195,7 +231,7 @@ export function NewProjectModal({ open, onCancel, onCreated }: Props) {
           </button>
           <button
             type="button"
-            disabled={submitting}
+            disabled={submitting || !modelPresetId}
             onClick={() => void submit()}
             className="rounded-md bg-brand px-3 py-1.5 text-xs font-medium text-white shadow-card transition hover:brightness-[0.95] disabled:opacity-40"
           >

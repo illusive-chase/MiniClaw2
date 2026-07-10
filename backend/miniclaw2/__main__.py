@@ -12,6 +12,8 @@ from pathlib import Path
 
 import uvicorn
 
+from .migrations import StoreMigrationError, check_store, repair_store
+
 VITE_PORT = 5173
 
 
@@ -21,6 +23,22 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--reload", action="store_true")
     parser.add_argument("--log-level", default="info")
+    store_actions = parser.add_mutually_exclusive_group()
+    store_actions.add_argument(
+        "--check-store",
+        action="store_true",
+        help="Validate the on-disk store without modifying it, then exit.",
+    )
+    store_actions.add_argument(
+        "--repair-store",
+        action="store_true",
+        help="Back up and repair legacy records in the on-disk store, then exit.",
+    )
+    parser.add_argument(
+        "--store-path",
+        type=Path,
+        help="Store used by --check-store/--repair-store (defaults to MINICLAW_HOME).",
+    )
     parser.add_argument(
         "--dev",
         action="store_true",
@@ -29,6 +47,28 @@ def main() -> None:
     args = parser.parse_args()
 
     logging.basicConfig(level=args.log_level.upper())
+    if args.check_store or args.repair_store:
+        store_root = args.store_path or Path(
+            os.environ.get("MINICLAW_HOME", Path.home() / ".miniclaw2")
+        )
+        try:
+            report = (
+                repair_store(store_root)
+                if args.repair_store
+                else check_store(store_root)
+            )
+        except StoreMigrationError as exc:
+            sys.exit(f"Store validation failed: {exc}")
+        action = "repaired" if report.repaired else "valid"
+        print(
+            f"Store {action}: {report.root} "
+            f"(schema {report.version_before} -> {report.version_after}, "
+            f"changed {len(report.changed_files)} files)"
+        )
+        if report.backup_root is not None:
+            print(f"Backup: {report.backup_root}")
+        return
+
     # Broadcast the port to child processes (claude hook bridge reads
     # it via MINICLAW_HOOK_URL and MINICLAW_HOOK_TOKEN from its env at
     # spawn time; keeping this here lets the app compute the URL before
