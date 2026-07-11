@@ -100,10 +100,11 @@ python -m miniclaw2 --host 127.0.0.1 --port 8000 [--reload]
 build` in `frontend/`) whenever you change UI code.
 
 **Dev** — same command spawns `npm run dev` alongside the backend so
-Vite's proxy routes `/model-presets`, `/sessions`, `/templates`, and
-`/ws` back to the backend port. Add `--reload` to enable both backend
-auto-reload and frontend HMR; without it, neither side reloads on source
-changes:
+Vite's proxy routes the frontend API paths (including `/global-state`,
+`/model-presets`, `/sessions`, `/skills`, `/templates`, and
+`/user-templates`) plus `/ws` back to the backend port. Add `--reload` to
+enable both backend auto-reload and frontend HMR; without it, neither side
+reloads on source changes:
 
 ```bash
 python -m miniclaw2 --dev [--reload]

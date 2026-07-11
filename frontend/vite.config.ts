@@ -11,9 +11,12 @@ export default defineConfig({
     port: 5173,
     hmr: reloadEnabled,
     proxy: {
+      "/global-state": backendUrl,
       "/model-presets": backendUrl,
       "/sessions": backendUrl,
+      "/skills": backendUrl,
       "/templates": backendUrl,
+      "/user-templates": backendUrl,
       "/ws": {
         target: backendWsUrl,
         ws: true,
