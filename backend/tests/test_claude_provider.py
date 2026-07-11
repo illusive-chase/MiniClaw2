@@ -283,19 +283,79 @@ class AskPayloadRoundtripTest(unittest.TestCase):
 
 
 class JsonlDrainTest(unittest.TestCase):
-    def test_summary_is_not_a_turn_terminal_record(self) -> None:
-        from miniclaw2.providers.claude_native.transcript import is_end_of_turn
-
-        self.assertFalse(is_end_of_turn({"type": "summary"}))
-        self.assertTrue(is_end_of_turn({"type": "result"}))
-
-    def test_summary_does_not_emit_final_usage(self) -> None:
+    def test_non_conversation_records_do_not_emit_events_or_usage(self) -> None:
         from miniclaw2.providers.claude_native.transcript import TranscriptTranslator
 
-        events = TranscriptTranslator().translate(
-            {"type": "summary", "usage": {"input_tokens": 10}}
+        translator = TranscriptTranslator()
+
+        self.assertEqual(
+            translator.translate(
+                {"type": "summary", "usage": {"input_tokens": 10}}
+            ),
+            [],
         )
-        self.assertEqual(events, [])
+        self.assertEqual(
+            translator.translate(
+                {"type": "result", "usage": {"input_tokens": 20}}
+            ),
+            [],
+        )
+        self.assertIsNone(translator.final_usage())
+
+    def test_assistant_usage_deduplicates_message_fragments(self) -> None:
+        from miniclaw2.providers.claude_native.transcript import TranscriptTranslator
+
+        translator = TranscriptTranslator()
+        for record in (
+            {
+                "type": "assistant",
+                "message": {
+                    "id": "message-1",
+                    "content": [{"type": "thinking", "thinking": "work"}],
+                    "usage": {
+                        "input_tokens": 3,
+                        "output_tokens": 5,
+                        "cache_read_input_tokens": 7,
+                        "cache_creation_input_tokens": 11,
+                    },
+                },
+            },
+            {
+                "type": "assistant",
+                "message": {
+                    "id": "message-1",
+                    "content": [{"type": "text", "text": "done"}],
+                    "usage": {
+                        "input_tokens": 3,
+                        "output_tokens": 5,
+                        "cache_read_input_tokens": 7,
+                        "cache_creation_input_tokens": 11,
+                    },
+                },
+            },
+            {
+                "type": "assistant",
+                "message": {
+                    "id": "message-2",
+                    "content": [{"type": "text", "text": "next"}],
+                    "usage": {
+                        "input_tokens": 13,
+                        "output_tokens": 17,
+                        "cache_read_input_tokens": 19,
+                        "cache_creation_input_tokens": 23,
+                    },
+                },
+            },
+        ):
+            translator.translate(record)
+
+        usage = translator.final_usage()
+        assert usage is not None
+        self.assertEqual(usage.input_tokens, 16)
+        self.assertEqual(usage.output_tokens, 22)
+        self.assertEqual(usage.cache_read_tokens, 26)
+        self.assertEqual(usage.cache_creation_tokens, 34)
+        self.assertTrue(usage.final)
 
     def test_partial_line_is_preserved(self) -> None:
         from miniclaw2.providers.claude_native.transcript import drain
@@ -485,8 +545,8 @@ class ClaudeNativeStreamTerminalTest(unittest.IsolatedAsyncioTestCase):
             _write_jsonl(
                 path,
                 {
-                    "type": "result",
-                    "subtype": "success",
+                    "type": "system",
+                    "subtype": "prior-turn-metadata",
                 },
             )
 
@@ -506,8 +566,8 @@ class ClaudeNativeStreamTerminalTest(unittest.IsolatedAsyncioTestCase):
                     },
                 },
                 {
-                    "type": "result",
-                    "subtype": "success",
+                    "type": "system",
+                    "subtype": "prior-turn-metadata",
                 },
                 {
                     "type": "user",
@@ -523,12 +583,14 @@ class ClaudeNativeStreamTerminalTest(unittest.IsolatedAsyncioTestCase):
                     },
                 },
                 {
-                    "type": "result",
-                    "subtype": "success",
+                    "type": "system",
+                    "subtype": "current-turn-metadata",
                 },
             )
 
             session._retarget("new-session", path, stream_offset=offsets[2])
+            session._turn_complete_event = asyncio.Event()
+            session._turn_complete_event.set()
             events = await _collect(session.stream_events())
 
         text = "".join(
@@ -574,18 +636,20 @@ class ClaudeNativeStreamTerminalTest(unittest.IsolatedAsyncioTestCase):
                     },
                 },
                 {
-                    "type": "result",
+                    "type": "system",
                     "sessionId": actual_session_id,
-                    "subtype": "success",
+                    "subtype": "prior-turn-metadata",
                 },
                 observed,
                 {
-                    "type": "result",
+                    "type": "system",
                     "sessionId": actual_session_id,
-                    "subtype": "success",
+                    "subtype": "current-turn-metadata",
                 },
             )
             _write_jsonl(session._jsonl_path, observed)
+            session._turn_complete_event = asyncio.Event()
+            session._turn_complete_event.set()
 
             events = await _collect(session.stream_events())
 
@@ -627,9 +691,9 @@ class ClaudeNativeStreamTerminalTest(unittest.IsolatedAsyncioTestCase):
                     },
                 },
                 {
-                    "type": "result",
+                    "type": "system",
                     "sessionId": actual_session_id,
-                    "subtype": "success",
+                    "subtype": "prior-turn-metadata",
                 },
             )
             _write_jsonl(
@@ -665,30 +729,7 @@ class ClaudeNativeStreamTerminalTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertNotIn("stale response", text)
 
-    async def test_result_record_emits_explicit_done(self) -> None:
-        with tempfile.TemporaryDirectory() as raw:
-            session = _stream_session(raw, _FakePty(alive=True))
-            session._jsonl_path.write_text(
-                json.dumps(
-                    {
-                        "type": "result",
-                        "subtype": "success",
-                        "usage": {"input_tokens": 1, "output_tokens": 2},
-                    }
-                )
-                + "\n",
-                encoding="utf-8",
-            )
-
-            events = await _collect(session.stream_events())
-
-        self.assertEqual(events[-1].kind, "done")
-        self.assertEqual(events[-1].final_state, "done")
-        self.assertTrue(
-            any(ev.kind == "event" and ev.event.type == "usage" for ev in events)
-        )
-
-    async def test_stop_hook_emits_done_without_result_record(self) -> None:
+    async def test_stop_hook_emits_final_usage_then_done(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             session = _stream_session(raw, _FakePty(alive=True))
             session._turn_complete_event = asyncio.Event()
@@ -698,7 +739,14 @@ class ClaudeNativeStreamTerminalTest(unittest.IsolatedAsyncioTestCase):
                 {
                     "type": "assistant",
                     "message": {
+                        "id": "final-message",
                         "content": [{"type": "text", "text": "finished"}],
+                        "usage": {
+                            "input_tokens": 2,
+                            "output_tokens": 3,
+                            "cache_read_input_tokens": 5,
+                            "cache_creation_input_tokens": 7,
+                        },
                     },
                 },
             )
@@ -707,6 +755,15 @@ class ClaudeNativeStreamTerminalTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(events[-1].kind, "done")
         self.assertEqual(events[-1].final_state, "done")
+        usage_event = events[-2]
+        self.assertEqual(usage_event.kind, "event")
+        assert usage_event.event is not None
+        self.assertEqual(usage_event.event.type, "usage")
+        self.assertEqual(usage_event.event.input_tokens, 2)
+        self.assertEqual(usage_event.event.output_tokens, 3)
+        self.assertEqual(usage_event.event.cache_read_tokens, 5)
+        self.assertEqual(usage_event.event.cache_creation_tokens, 7)
+        self.assertTrue(usage_event.event.final)
 
     async def test_pending_tool_is_not_killed_by_stall_watchdog(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

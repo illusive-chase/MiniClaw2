@@ -30,7 +30,7 @@ from .spawn import (
     build_env,
     resolve_claude_binary,
 )
-from .transcript import TranscriptTranslator, drain, is_end_of_turn
+from .transcript import TranscriptTranslator, drain
 
 logger = logging.getLogger(__name__)
 
@@ -82,9 +82,8 @@ class ClaudeNativeSession:
         self._jsonl_path: Path = jsonl_path(
             cwd, self._session_id, self._data_dir
         )
-        # Resume: seed offset from current EOF. Without this, drain() would
-        # replay prior turns' records and a stale result/summary would trip
-        # seen_end_of_turn before the resumed turn even streams.
+        # Resume: seed offset from current EOF so drain() does not replay prior
+        # turns as current output or include their usage in this turn.
         self._jsonl_offset: int = 0
         if session_id is not None:
             try:
@@ -242,7 +241,6 @@ class ClaudeNativeSession:
             if result.events:
                 last_transcript_progress_ts = loop.time()
 
-            terminal_record: dict[str, Any] | None = None
             for record in result.events:
                 sid = self._translator.observed_session_id(record)
                 if sid and sid != self._session_id:
@@ -260,20 +258,13 @@ class ClaudeNativeSession:
                 for ev in self._translator.translate(record):
                     yield ev
 
-                if is_end_of_turn(record):
-                    terminal_record = record
-
-            if terminal_record is not None:
-                yield _terminal_event_for_record(
-                    terminal_record,
-                    interrupted=self._interrupt_requested,
-                )
-                return
-
             if (
                 self._turn_complete_event is not None
                 and self._turn_complete_event.is_set()
             ):
+                usage_event = self._final_usage_event()
+                if usage_event is not None:
+                    yield usage_event
                 yield AgentProviderEvent(
                     kind="done",
                     final_state=(
@@ -283,6 +274,9 @@ class ClaudeNativeSession:
                 return
 
             if not _pty_child_alive(self._pty):
+                usage_event = self._final_usage_event()
+                if usage_event is not None:
+                    yield usage_event
                 if self._interrupt_requested:
                     yield AgentProviderEvent(kind="done", final_state="cancelled")
                 else:
@@ -302,6 +296,9 @@ class ClaudeNativeSession:
                 )
                 stall_timeout = _stream_stall_timeout_seconds()
                 if loop.time() - last_progress_ts > stall_timeout:
+                    usage_event = self._final_usage_event()
+                    if usage_event is not None:
+                        yield usage_event
                     if self._interrupt_requested:
                         yield AgentProviderEvent(kind="done", final_state="cancelled")
                     else:
@@ -314,6 +311,12 @@ class ClaudeNativeSession:
                         )
                     return
             await asyncio.sleep(_STREAM_POLL_INTERVAL)
+
+    def _final_usage_event(self) -> AgentProviderEvent | None:
+        usage = self._translator.final_usage()
+        if usage is None:
+            return None
+        return AgentProviderEvent(kind="event", event=usage)
 
     async def interrupt(self) -> None:
         self._interrupt_requested = True
@@ -514,61 +517,6 @@ def _stream_stall_timeout_seconds() -> float:
     except ValueError:
         return _STREAM_STALL_TIMEOUT_SECONDS
     return value if value > 0 else _STREAM_STALL_TIMEOUT_SECONDS
-
-
-def _terminal_event_for_record(
-    record: dict[str, Any],
-    *,
-    interrupted: bool,
-) -> AgentProviderEvent:
-    if interrupted or _record_indicates_cancel(record):
-        return AgentProviderEvent(kind="done", final_state="cancelled")
-    if _record_indicates_error(record):
-        return AgentProviderEvent(
-            kind="error",
-            error=_record_error_message(record),
-        )
-    return AgentProviderEvent(kind="done", final_state="done")
-
-
-def _record_indicates_cancel(record: dict[str, Any]) -> bool:
-    status = _record_status(record)
-    return any(token in status for token in ("cancel", "interrupt", "abort"))
-
-
-def _record_indicates_error(record: dict[str, Any]) -> bool:
-    if record.get("is_error") is True:
-        return True
-    status = _record_status(record)
-    return any(token in status for token in ("error", "fail"))
-
-
-def _record_status(record: dict[str, Any]) -> str:
-    values: list[str] = []
-    for key in ("subtype", "status", "conclusion"):
-        value = record.get(key)
-        if isinstance(value, str):
-            values.append(value)
-    return " ".join(values).lower()
-
-
-def _record_error_message(record: dict[str, Any]) -> str:
-    error = record.get("error")
-    if isinstance(error, dict):
-        message = error.get("message")
-        if isinstance(message, str) and message:
-            return message
-    if isinstance(error, str) and error:
-        return error
-    message = record.get("message")
-    if isinstance(message, str) and message:
-        return message
-    status = _record_status(record)
-    return (
-        f"claude turn ended with error status: {status}"
-        if status
-        else "claude turn ended with an error result"
-    )
 
 
 __all__ = [

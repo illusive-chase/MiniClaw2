@@ -138,6 +138,7 @@ class TranscriptTranslator:
 
     def __init__(self) -> None:
         self._pending_tools: dict[str, Activity] = {}
+        self._usage_by_message_id: dict[str, Usage] = {}
         self._session_id_emitted = False
 
     def translate(self, record: dict[str, Any]) -> list[AgentProviderEvent]:
@@ -153,8 +154,6 @@ class TranscriptTranslator:
             out.extend(self._assistant(record))
         elif rtype == "user":
             out.extend(self._user(record))
-        elif rtype == "result":
-            out.extend(self._result(record))
         return out
 
     def observed_session_id(self, record: dict[str, Any]) -> str | None:
@@ -165,10 +164,31 @@ class TranscriptTranslator:
     def has_pending_tools(self) -> bool:
         return bool(self._pending_tools)
 
+    def final_usage(self) -> Usage | None:
+        if not self._usage_by_message_id:
+            return None
+        return Usage(
+            input_tokens=sum(
+                usage.input_tokens for usage in self._usage_by_message_id.values()
+            ),
+            output_tokens=sum(
+                usage.output_tokens for usage in self._usage_by_message_id.values()
+            ),
+            cache_read_tokens=sum(
+                usage.cache_read_tokens for usage in self._usage_by_message_id.values()
+            ),
+            cache_creation_tokens=sum(
+                usage.cache_creation_tokens
+                for usage in self._usage_by_message_id.values()
+            ),
+            final=True,
+        )
+
     def _assistant(self, record: dict[str, Any]) -> list[AgentProviderEvent]:
         message = record.get("message")
         if not isinstance(message, dict):
             return []
+        self._record_usage(message)
         content = message.get("content")
         if not isinstance(content, list):
             return []
@@ -243,29 +263,19 @@ class TranscriptTranslator:
             out.append(AgentProviderEvent(kind="event", event=pending))
         return out
 
-    def _result(self, record: dict[str, Any]) -> list[AgentProviderEvent]:
-        usage_raw = record.get("usage") or {}
-        message = record.get("message")
-        if not isinstance(usage_raw, dict) and isinstance(message, dict):
-            usage_raw = message.get("usage") or {}
+    def _record_usage(self, message: dict[str, Any]) -> None:
+        message_id = message.get("id")
+        usage_raw = message.get("usage")
+        if not isinstance(message_id, str) or not message_id:
+            return
         if not isinstance(usage_raw, dict):
-            usage_raw = {}
-        return [
-            AgentProviderEvent(
-                kind="event",
-                event=Usage(
-                    input_tokens=_int(usage_raw, "input_tokens"),
-                    output_tokens=_int(usage_raw, "output_tokens"),
-                    cache_read_tokens=_int(usage_raw, "cache_read_input_tokens"),
-                    cache_creation_tokens=_int(usage_raw, "cache_creation_input_tokens"),
-                    final=True,
-                ),
-            )
-        ]
-
-
-def is_end_of_turn(record: dict[str, Any]) -> bool:
-    return record.get("type") == "result"
+            return
+        self._usage_by_message_id[message_id] = Usage(
+            input_tokens=_int(usage_raw, "input_tokens"),
+            output_tokens=_int(usage_raw, "output_tokens"),
+            cache_read_tokens=_int(usage_raw, "cache_read_input_tokens"),
+            cache_creation_tokens=_int(usage_raw, "cache_creation_input_tokens"),
+        )
 
 
 # ---------------------------------------------------------------------------

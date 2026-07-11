@@ -99,12 +99,13 @@ Trunk: `backend/miniclaw2/providers/` (`base.py`, `claude.py`, `codex.py`).
   out-of-band context tasks treat bare generator exhaustion as a
   provider error. The contract text lives on
   `providers/base.AgentProviderEvent`.
-- Claude turn termination is explicit: the Claude Code `Stop` hook signals
-  normal interactive turn completion, while print-mode `result` records
-  remain a compatibility path for `done` / `cancelled` / `error`. A
-  `summary` record is context compaction, not a turn boundary. PTY child
-  death and a configurable 30-minute no-progress stall without a pending
-  tool surface as provider errors (or `cancelled` after an interrupt). Set
+- Claude turn termination is explicit: the Claude Code `Stop` hook is the
+  authoritative interactive turn-completion signal. Transcript metadata such
+  as context-compaction summaries is never treated as a turn boundary. Usage
+  is accumulated from unique assistant message ids and emitted once as final
+  usage before termination. PTY child death and a configurable 30-minute
+  no-progress stall (when no tool is pending) surface as provider errors, or
+  as `cancelled` after an interrupt. Set
   `MINICLAW_CLAUDE_STREAM_STALL_SECONDS` to override the stall deadline.
 - The ask-gate timeout chain is strictly ordered so each layer gives
   up before the layer beneath it kills the transport: runner-side gate
