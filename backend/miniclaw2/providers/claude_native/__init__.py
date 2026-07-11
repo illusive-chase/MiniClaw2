@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
 from typing import Any
@@ -37,8 +38,7 @@ AskDispatcher = Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]
 
 _SESSION_READY_TIMEOUT = 45.0
 _STREAM_POLL_INTERVAL = 0.1
-_STREAM_IDLE_TICK_LIMIT = 20  # 20 * 0.1s = 2s of quiescence
-_PTY_QUIESCENT_SECONDS = 2.0
+_STREAM_STALL_TIMEOUT_SECONDS = 30 * 60.0
 _CLOSE_TIMEOUT = 3.0
 
 
@@ -96,6 +96,7 @@ class ClaudeNativeSession:
         self._interrupt_requested = False
         self._dispatch_registered = False
         self._session_ready_event: asyncio.Event | None = None
+        self._turn_complete_event: asyncio.Event | None = None
 
     @property
     def session_id(self) -> str:
@@ -127,6 +128,9 @@ class ClaudeNativeSession:
         self._session_ready_event = hook_runtime.register_session_ready(
             self._session_id
         )
+        self._turn_complete_event = hook_runtime.register_turn_complete(
+            self._node_id
+        )
 
         loop = asyncio.get_running_loop()
         try:
@@ -135,11 +139,15 @@ class ClaudeNativeSession:
             )
         except ClaudeBinaryNotFoundError:
             hook_runtime.unregister_session_ready(self._session_id)
+            hook_runtime.unregister_turn_complete(self._node_id)
             self._session_ready_event = None
+            self._turn_complete_event = None
             raise
         except Exception as exc:  # noqa: BLE001
             hook_runtime.unregister_session_ready(self._session_id)
+            hook_runtime.unregister_turn_complete(self._node_id)
             self._session_ready_event = None
+            self._turn_complete_event = None
             raise ClaudeNativeError(f"failed to spawn claude PTY: {exc}") from exc
 
         submit_result = resolve_submit_key(self._data_dir)
@@ -226,10 +234,13 @@ class ClaudeNativeSession:
         if self._input is None:
             raise ClaudeNativeError("session.start() has not been called")
 
-        idle_ticks = 0
+        loop = asyncio.get_running_loop()
+        last_transcript_progress_ts = loop.time()
         while not self._closed:
             result = drain(self._jsonl_path, self._jsonl_offset)
             self._jsonl_offset = result.new_offset
+            if result.events:
+                last_transcript_progress_ts = loop.time()
 
             terminal_record: dict[str, Any] | None = None
             for record in result.events:
@@ -259,6 +270,18 @@ class ClaudeNativeSession:
                 )
                 return
 
+            if (
+                self._turn_complete_event is not None
+                and self._turn_complete_event.is_set()
+            ):
+                yield AgentProviderEvent(
+                    kind="done",
+                    final_state=(
+                        "cancelled" if self._interrupt_requested else "done"
+                    ),
+                )
+                return
+
             if not _pty_child_alive(self._pty):
                 if self._interrupt_requested:
                     yield AgentProviderEvent(kind="done", final_state="cancelled")
@@ -266,27 +289,27 @@ class ClaudeNativeSession:
                     yield AgentProviderEvent(
                         kind="error",
                         error=(
-                            "claude PTY exited before an end-of-turn marker"
+                            "claude PTY exited before a turn-complete signal"
                             + _pty_exit_detail(self._pty)
                         ),
                     )
                 return
 
-            if result.events:
-                idle_ticks = 0
-            else:
-                idle_ticks += 1
-                if (
-                    idle_ticks > _STREAM_IDLE_TICK_LIMIT
-                    and self._pty_output_quiescent()
-                ):
+            if not self._translator.has_pending_tools:
+                last_progress_ts = max(
+                    last_transcript_progress_ts,
+                    self._last_pty_output_ts,
+                )
+                stall_timeout = _stream_stall_timeout_seconds()
+                if loop.time() - last_progress_ts > stall_timeout:
                     if self._interrupt_requested:
                         yield AgentProviderEvent(kind="done", final_state="cancelled")
                     else:
                         yield AgentProviderEvent(
                             kind="error",
                             error=(
-                                "claude stream went idle before an end-of-turn marker"
+                                "claude stream stalled for "
+                                f"{stall_timeout:g}s before a turn-complete signal"
                             ),
                         )
                     return
@@ -310,6 +333,7 @@ class ClaudeNativeSession:
             hook_runtime.unregister_ask_dispatcher(self._node_id)
             self._dispatch_registered = False
         hook_runtime.unregister_session_ready(self._session_id)
+        hook_runtime.unregister_turn_complete(self._node_id)
 
         pty = self._pty
         if pty is not None:
@@ -356,14 +380,6 @@ class ClaudeNativeSession:
         self._jsonl_offset = _retarget_offset(new_jsonl, stream_offset)
         if self._input is not None:
             self._input.update_jsonl_path(new_jsonl)
-
-    def _pty_output_quiescent(self) -> bool:
-        if self._last_pty_output_ts == 0.0:
-            return True
-        return (
-            asyncio.get_event_loop().time() - self._last_pty_output_ts
-            > _PTY_QUIESCENT_SECONDS
-        )
 
     async def _drain_pty_output(self) -> None:
         loop = asyncio.get_running_loop()
@@ -487,6 +503,17 @@ def _pty_exit_detail(pty: Any) -> str:
     if signalstatus is not None:
         parts.append(f"signal {signalstatus}")
     return f" ({', '.join(parts)})" if parts else ""
+
+
+def _stream_stall_timeout_seconds() -> float:
+    raw = os.environ.get("MINICLAW_CLAUDE_STREAM_STALL_SECONDS")
+    if raw is None:
+        return _STREAM_STALL_TIMEOUT_SECONDS
+    try:
+        value = float(raw)
+    except ValueError:
+        return _STREAM_STALL_TIMEOUT_SECONDS
+    return value if value > 0 else _STREAM_STALL_TIMEOUT_SECONDS
 
 
 def _terminal_event_for_record(

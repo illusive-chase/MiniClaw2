@@ -153,13 +153,17 @@ class TranscriptTranslator:
             out.extend(self._assistant(record))
         elif rtype == "user":
             out.extend(self._user(record))
-        elif rtype == "summary" or rtype == "result":
+        elif rtype == "result":
             out.extend(self._result(record))
         return out
 
     def observed_session_id(self, record: dict[str, Any]) -> str | None:
         sid = record.get("sessionId")
         return sid if isinstance(sid, str) and sid else None
+
+    @property
+    def has_pending_tools(self) -> bool:
+        return bool(self._pending_tools)
 
     def _assistant(self, record: dict[str, Any]) -> list[AgentProviderEvent]:
         message = record.get("message")
@@ -261,8 +265,7 @@ class TranscriptTranslator:
 
 
 def is_end_of_turn(record: dict[str, Any]) -> bool:
-    rtype = record.get("type")
-    return rtype == "result" or rtype == "summary"
+    return record.get("type") == "result"
 
 
 # ---------------------------------------------------------------------------

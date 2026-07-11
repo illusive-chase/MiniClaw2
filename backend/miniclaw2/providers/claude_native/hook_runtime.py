@@ -8,6 +8,8 @@ Each ``ClaudeNativeSession`` registers:
   ``request_gate_handler`` and back;
 - a ``session_ready`` event keyed by session id — the hook endpoint sets
   it when Claude Code's ``SessionStart`` hook fires.
+- a ``turn_complete`` event keyed by node id — the hook endpoint sets it
+  when Claude Code's ``Stop`` hook fires.
 
 The token is generated on first access via ``secrets.token_urlsafe`` and
 kept in memory for the daemon's lifetime.
@@ -32,6 +34,7 @@ class _State:
     port: int = 0
     ask_dispatchers: dict[str, AskDispatch] = field(default_factory=dict)
     session_ready_events: dict[str, asyncio.Event] = field(default_factory=dict)
+    turn_complete_events: dict[str, asyncio.Event] = field(default_factory=dict)
 
 
 _STATE = _State()
@@ -100,6 +103,29 @@ def unregister_session_ready(session_id: str) -> None:
 
 def signal_session_ready(session_id: str) -> bool:
     event = _STATE.session_ready_events.get(session_id)
+    if event is None:
+        return False
+    if not event.is_set():
+        event.set()
+    return True
+
+
+def register_turn_complete(node_id: str) -> asyncio.Event:
+    event = _STATE.turn_complete_events.get(node_id)
+    if event is None:
+        event = asyncio.Event()
+        _STATE.turn_complete_events[node_id] = event
+    else:
+        event.clear()
+    return event
+
+
+def unregister_turn_complete(node_id: str) -> None:
+    _STATE.turn_complete_events.pop(node_id, None)
+
+
+def signal_turn_complete(node_id: str) -> bool:
+    event = _STATE.turn_complete_events.get(node_id)
     if event is None:
         return False
     if not event.is_set():

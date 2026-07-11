@@ -264,7 +264,7 @@ def create_app(registry: ProjectRegistry | None = None) -> FastAPI:
         if schedule_all is not None:
             schedule_all()
         # Generate the shared token before spawning any claude PTYs, and
-        # merge the AskUserQuestion / SessionStart hooks into the user's
+        # merge the AskUserQuestion / SessionStart / Stop hooks into the user's
         # ~/.claude/settings.json. Both are idempotent.
         hook_runtime.ensure_token()
         _set_hook_port_from_env()
@@ -455,6 +455,16 @@ def create_app(registry: ProjectRegistry | None = None) -> FastAPI:
         if not isinstance(session_id, str) or not session_id:
             raise HTTPException(400, "session_id required")
         hook_runtime.signal_session_ready(session_id)
+        return JSONResponse({"ok": True})
+
+    @app.post("/hook/turn-complete")
+    async def hook_turn_complete(request: Request) -> JSONResponse:
+        _require_hook_token(request)
+        body = await request.json()
+        node_id = body.get("node_id")
+        if not isinstance(node_id, str) or not node_id:
+            raise HTTPException(400, "node_id required")
+        hook_runtime.signal_turn_complete(node_id)
         return JSONResponse({"ok": True})
 
     @app.post("/sessions", response_model=SessionInfo)

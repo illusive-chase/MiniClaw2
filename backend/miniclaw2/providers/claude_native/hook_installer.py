@@ -1,4 +1,4 @@
-"""Idempotently install our ``PreToolUse``/``SessionStart`` hooks into
+"""Idempotently install our ``PreToolUse``/``SessionStart``/``Stop`` hooks into
 ``~/.claude/settings.json``.
 
 Matching is by substring — a dev install (``python -m ...`` in a
@@ -22,8 +22,10 @@ from typing import Any
 
 _HOOK_MARKER = "miniclaw2.claude_hook_bridge"
 _SESSION_READY_MARKER = "--session-ready"
+_TURN_COMPLETE_MARKER = "--turn-complete"
 _ASK_HOOK_TIMEOUT_SECONDS = 700
 _SESSION_READY_HOOK_TIMEOUT_SECONDS = 15
+_TURN_COMPLETE_HOOK_TIMEOUT_SECONDS = 15
 
 
 def install_hooks(settings_path: Path | None = None) -> Path:
@@ -40,6 +42,7 @@ def install_hooks(settings_path: Path | None = None) -> Path:
 
     ask_command = _quoted_python() + f" -m {_HOOK_MARKER}"
     ready_command = ask_command + f" {_SESSION_READY_MARKER}"
+    turn_complete_command = ask_command + f" {_TURN_COMPLETE_MARKER}"
 
     ask_entry = {
         "type": "command",
@@ -51,6 +54,11 @@ def install_hooks(settings_path: Path | None = None) -> Path:
         "command": ready_command,
         "timeout": _SESSION_READY_HOOK_TIMEOUT_SECONDS,
     }
+    turn_complete_entry = {
+        "type": "command",
+        "command": turn_complete_command,
+        "timeout": _TURN_COMPLETE_HOOK_TIMEOUT_SECONDS,
+    }
 
     _replace_group(
         hooks,
@@ -60,6 +68,7 @@ def install_hooks(settings_path: Path | None = None) -> Path:
         is_ours=lambda e: (
             _HOOK_MARKER in _entry_command(e)
             and _SESSION_READY_MARKER not in _entry_command(e)
+            and _TURN_COMPLETE_MARKER not in _entry_command(e)
         ),
     )
     _replace_group(
@@ -70,6 +79,16 @@ def install_hooks(settings_path: Path | None = None) -> Path:
         is_ours=lambda e: (
             _HOOK_MARKER in _entry_command(e)
             and _SESSION_READY_MARKER in _entry_command(e)
+        ),
+    )
+    _replace_group(
+        hooks,
+        "Stop",
+        matcher=None,
+        entry=turn_complete_entry,
+        is_ours=lambda e: (
+            _HOOK_MARKER in _entry_command(e)
+            and _TURN_COMPLETE_MARKER in _entry_command(e)
         ),
     )
 

@@ -76,9 +76,9 @@ Trunk: `backend/miniclaw2/providers/` (`base.py`, `claude.py`, `codex.py`).
   `--disallowed-tools EnterPlanMode,ExitPlanMode`, and bypass per-tool
   permission prompts via `--dangerously-skip-permissions`. `CONTEXT.md`
   is appended via `--append-system-prompt`. Assistant text, thinking
-  blocks, tool_use/tool_result pairs, and end-of-turn `summary` events
-  map onto the same `AgentProviderEvent` shapes previously emitted by
-  the SDK. Interrupt sends Ctrl-C over the PTY. `AskUserQuestion` is
+  blocks and tool_use/tool_result pairs map onto the same
+  `AgentProviderEvent` shapes previously emitted by the SDK. Interrupt
+  sends Ctrl-C over the PTY. `AskUserQuestion` is
   intercepted by a `PreToolUse` hook (`claude_hook_bridge`) that POSTs
   to FastAPI, which routes the payload through
   `GateSubtype.ASK_USER` and writes the user's answer back into the
@@ -99,11 +99,13 @@ Trunk: `backend/miniclaw2/providers/` (`base.py`, `claude.py`, `codex.py`).
   out-of-band context tasks treat bare generator exhaustion as a
   provider error. The contract text lives on
   `providers/base.AgentProviderEvent`.
-- Claude turn termination is explicit: the end-of-turn JSONL record is
-  classified into `done` / `cancelled` / `error`; PTY child death and
-  stream idle without an end-of-turn marker surface as provider errors
-  (or `cancelled` after a requested interrupt) instead of implicit
-  success.
+- Claude turn termination is explicit: the Claude Code `Stop` hook signals
+  normal interactive turn completion, while print-mode `result` records
+  remain a compatibility path for `done` / `cancelled` / `error`. A
+  `summary` record is context compaction, not a turn boundary. PTY child
+  death and a configurable 30-minute no-progress stall without a pending
+  tool surface as provider errors (or `cancelled` after an interrupt). Set
+  `MINICLAW_CLAUDE_STREAM_STALL_SECONDS` to override the stall deadline.
 - The ask-gate timeout chain is strictly ordered so each layer gives
   up before the layer beneath it kills the transport: runner-side gate
   supervision 570s (`GateRequest.timeout_seconds`; expiry emits an
@@ -113,7 +115,7 @@ Trunk: `backend/miniclaw2/providers/` (`base.py`, `claude.py`, `codex.py`).
   the ordering. Gates on deadline-free transports (Codex permission
   gates, human review prose) remain unbounded.
 - Installed Claude hook entries carry explicit timeouts
-  (AskUserQuestion 700s, SessionStart 15s). The hook callback port is
+  (AskUserQuestion 700s, SessionStart 15s, Stop 15s). The hook callback port is
   set from `MINICLAW2_HOOK_PORT` / `MINICLAW2_PORT` at app startup and
   otherwise captured from the actual HTTP/WS request scope.
 - Session-transcript retargeting seeds its JSONL offset from the

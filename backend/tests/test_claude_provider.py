@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import tempfile
@@ -282,6 +283,20 @@ class AskPayloadRoundtripTest(unittest.TestCase):
 
 
 class JsonlDrainTest(unittest.TestCase):
+    def test_summary_is_not_a_turn_terminal_record(self) -> None:
+        from miniclaw2.providers.claude_native.transcript import is_end_of_turn
+
+        self.assertFalse(is_end_of_turn({"type": "summary"}))
+        self.assertTrue(is_end_of_turn({"type": "result"}))
+
+    def test_summary_does_not_emit_final_usage(self) -> None:
+        from miniclaw2.providers.claude_native.transcript import TranscriptTranslator
+
+        events = TranscriptTranslator().translate(
+            {"type": "summary", "usage": {"input_tokens": 10}}
+        )
+        self.assertEqual(events, [])
+
     def test_partial_line_is_preserved(self) -> None:
         from miniclaw2.providers.claude_native.transcript import drain
 
@@ -629,7 +644,10 @@ class ClaudeNativeStreamTerminalTest(unittest.IsolatedAsyncioTestCase):
             )
 
             with (
-                patch("miniclaw2.providers.claude_native._STREAM_IDLE_TICK_LIMIT", 0),
+                patch(
+                    "miniclaw2.providers.claude_native._STREAM_STALL_TIMEOUT_SECONDS",
+                    0,
+                ),
                 patch("miniclaw2.providers.claude_native._STREAM_POLL_INTERVAL", 0),
             ):
                 events = await _collect(session.stream_events())
@@ -670,6 +688,89 @@ class ClaudeNativeStreamTerminalTest(unittest.IsolatedAsyncioTestCase):
             any(ev.kind == "event" and ev.event.type == "usage" for ev in events)
         )
 
+    async def test_stop_hook_emits_done_without_result_record(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            session = _stream_session(raw, _FakePty(alive=True))
+            session._turn_complete_event = asyncio.Event()
+            session._turn_complete_event.set()
+            _write_jsonl(
+                session._jsonl_path,
+                {
+                    "type": "assistant",
+                    "message": {
+                        "content": [{"type": "text", "text": "finished"}],
+                    },
+                },
+            )
+
+            events = await _collect(session.stream_events())
+
+        self.assertEqual(events[-1].kind, "done")
+        self.assertEqual(events[-1].final_state, "done")
+
+    async def test_pending_tool_is_not_killed_by_stall_watchdog(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            session = _stream_session(raw, _FakePty(alive=True))
+            session._turn_complete_event = asyncio.Event()
+            _write_jsonl(
+                session._jsonl_path,
+                {
+                    "type": "assistant",
+                    "message": {
+                        "content": [
+                            {
+                                "type": "tool_use",
+                                "id": "pdf-read",
+                                "name": "Read",
+                                "input": {"file_path": "paper.pdf"},
+                            }
+                        ],
+                    },
+                },
+            )
+
+            with (
+                patch(
+                    "miniclaw2.providers.claude_native._STREAM_STALL_TIMEOUT_SECONDS",
+                    0,
+                ),
+                patch("miniclaw2.providers.claude_native._STREAM_POLL_INTERVAL", 0),
+            ):
+                task = asyncio.create_task(_collect(session.stream_events()))
+                await asyncio.sleep(0.01)
+                self.assertFalse(task.done())
+                with session._jsonl_path.open("a", encoding="utf-8") as stream:
+                    stream.write(
+                        json.dumps(
+                            {
+                                "type": "user",
+                                "message": {
+                                    "content": [
+                                        {
+                                            "type": "tool_result",
+                                            "tool_use_id": "pdf-read",
+                                            "content": "pages loaded",
+                                        }
+                                    ]
+                                },
+                            }
+                        )
+                        + "\n"
+                    )
+                session._turn_complete_event.set()
+                events = await asyncio.wait_for(task, timeout=1)
+
+        self.assertEqual(events[-1].kind, "done")
+        self.assertTrue(
+            any(
+                event.kind == "event"
+                and event.event is not None
+                and event.event.type == "activity"
+                and event.event.status == "finish"
+                for event in events
+            )
+        )
+
     async def test_child_death_before_terminal_record_emits_error(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             session = _stream_session(
@@ -681,7 +782,7 @@ class ClaudeNativeStreamTerminalTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(events), 1)
         self.assertEqual(events[0].kind, "error")
-        self.assertIn("exited before an end-of-turn marker", events[0].error or "")
+        self.assertIn("exited before a turn-complete signal", events[0].error or "")
         self.assertIn("exit status 7", events[0].error or "")
 
     async def test_interrupt_child_exit_emits_cancelled_done(self) -> None:
@@ -697,13 +798,16 @@ class ClaudeNativeStreamTerminalTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(events[0].kind, "done")
         self.assertEqual(events[0].final_state, "cancelled")
 
-    async def test_interrupt_idle_alive_child_emits_cancelled_done(self) -> None:
+    async def test_interrupt_stalled_alive_child_emits_cancelled_done(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             pty = _FakePty(alive=True, exit_on_interrupt=False)
             session = _stream_session(raw, pty)
 
             with (
-                patch("miniclaw2.providers.claude_native._STREAM_IDLE_TICK_LIMIT", 0),
+                patch(
+                    "miniclaw2.providers.claude_native._STREAM_STALL_TIMEOUT_SECONDS",
+                    0,
+                ),
                 patch("miniclaw2.providers.claude_native._STREAM_POLL_INTERVAL", 0),
             ):
                 await session.interrupt()

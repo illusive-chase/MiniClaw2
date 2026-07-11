@@ -1,10 +1,14 @@
 """Subprocess entrypoint invoked by Claude Code as a hook.
 
-Two behaviors:
+Three behaviors:
 
 - ``python -m miniclaw2.claude_hook_bridge --session-ready`` — POSTs
   ``{"session_id": <MINICLAW_SESSION_ID>}`` to ``/hook/session-ready``
   so ``ClaudeNativeSession.start()`` can unblock.
+
+- ``python -m miniclaw2.claude_hook_bridge --turn-complete`` — POSTs
+  ``{"node_id": <MINICLAW_NODE_ID>}`` to ``/hook/turn-complete`` when
+  Claude Code's ``Stop`` hook fires.
 
 - ``python -m miniclaw2.claude_hook_bridge`` (no flag) — reads the
   Claude ``PreToolUse`` payload from stdin, POSTs it to ``/hook/ask``
@@ -27,10 +31,13 @@ from urllib import request as urlrequest
 
 _ASK_TIMEOUT_SECONDS = 600
 _READY_TIMEOUT_SECONDS = 10
+_TURN_COMPLETE_TIMEOUT_SECONDS = 10
 
 
 def main(argv: list[str] | None = None) -> int:
     args = argv if argv is not None else sys.argv[1:]
+    if "--turn-complete" in args:
+        return _post_turn_complete()
     if "--session-ready" in args:
         return _post_session_ready()
     return _handle_ask()
@@ -110,16 +117,56 @@ def _post_session_ready() -> int:
     return 0
 
 
+def _post_turn_complete() -> int:
+    try:
+        raw = sys.stdin.read()
+    except Exception:  # noqa: BLE001
+        return 0
+    if raw.strip():
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
+            return 0
+        if payload.get("hook_event_name") != "Stop":
+            return 0
+
+    node_id = os.environ.get("MINICLAW_NODE_ID")
+    token = os.environ.get("MINICLAW_HOOK_TOKEN")
+    url = _derive_hook_url("turn-complete")
+    if not (node_id and token and url):
+        return 0
+
+    body = json.dumps({"node_id": node_id}).encode("utf-8")
+    req = urlrequest.Request(
+        url,
+        data=body,
+        method="POST",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        },
+    )
+    try:
+        urlrequest.urlopen(req, timeout=_TURN_COMPLETE_TIMEOUT_SECONDS).close()
+    except (urlerror.URLError, TimeoutError, OSError):
+        pass
+    return 0
+
+
 def _derive_ready_url() -> str | None:
+    return _derive_hook_url("session-ready")
+
+
+def _derive_hook_url(endpoint: str) -> str | None:
     ask_url = os.environ.get("MINICLAW_HOOK_URL")
     if not ask_url:
         return None
     if ask_url.endswith("/hook/ask"):
-        return ask_url[: -len("/hook/ask")] + "/hook/session-ready"
+        return ask_url[: -len("/hook/ask")] + f"/hook/{endpoint}"
     if "/hook/" in ask_url:
         base, _sep, _tail = ask_url.rpartition("/hook/")
-        return base + "/hook/session-ready"
-    return ask_url.rstrip("/") + "/hook/session-ready"
+        return base + f"/hook/{endpoint}"
+    return ask_url.rstrip("/") + f"/hook/{endpoint}"
 
 
 def _passthrough() -> int:

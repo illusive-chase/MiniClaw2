@@ -292,6 +292,26 @@ class CodexProviderTest(unittest.IsolatedAsyncioTestCase):
                 ):
                     await receive_task
 
+    async def test_receive_waits_for_late_turn_completed_event(self) -> None:
+        fake_proc = _FakeProcess()
+        with patch(
+            "miniclaw2.providers.codex.asyncio.create_subprocess_exec",
+            return_value=fake_proc,
+        ):
+            async with _CodexJsonRpcClient() as client:
+                receive_task = asyncio.create_task(client.receive())
+                await asyncio.sleep(0.01)
+                self.assertFalse(receive_task.done())
+                fake_proc.feed_stdout(
+                    {
+                        "method": "turn/completed",
+                        "params": {"turn": {"status": "completed"}},
+                    }
+                )
+                message = await asyncio.wait_for(receive_task, timeout=1)
+
+        self.assertEqual(message["method"], "turn/completed")
+
     async def test_request_timeout_is_bounded(self) -> None:
         fake_proc = _FakeProcess()
         with patch(

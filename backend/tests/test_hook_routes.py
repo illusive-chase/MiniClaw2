@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import os
 import tempfile
@@ -25,8 +26,42 @@ class HookInstallerTest(unittest.TestCase):
             data = json.loads(settings.read_text(encoding="utf-8"))
             pre_tool = data["hooks"]["PreToolUse"][0]["hooks"][0]
             session_start = data["hooks"]["SessionStart"][0]["hooks"][0]
+            stop = data["hooks"]["Stop"][0]["hooks"][0]
             self.assertGreater(pre_tool["timeout"], 600)
             self.assertEqual(session_start["timeout"], 15)
+            self.assertEqual(stop["timeout"], 15)
+            self.assertIn("--turn-complete", stop["command"])
+
+
+class HookBridgeTest(unittest.TestCase):
+    def test_turn_complete_posts_stop_signal(self) -> None:
+        from miniclaw2 import claude_hook_bridge
+
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "MINICLAW_HOOK_URL": "http://127.0.0.1:43123/hook/ask",
+                    "MINICLAW_HOOK_TOKEN": "token",
+                    "MINICLAW_NODE_ID": "node-1",
+                },
+            ),
+            patch.object(
+                claude_hook_bridge.sys,
+                "stdin",
+                io.StringIO(json.dumps({"hook_event_name": "Stop"})),
+            ),
+            patch.object(claude_hook_bridge.urlrequest, "urlopen") as urlopen,
+        ):
+            result = claude_hook_bridge.main(["--turn-complete"])
+
+        request = urlopen.call_args.args[0]
+        self.assertEqual(result, 0)
+        self.assertEqual(
+            request.full_url,
+            "http://127.0.0.1:43123/hook/turn-complete",
+        )
+        self.assertEqual(json.loads(request.data), {"node_id": "node-1"})
 
 
 class AskTimeoutChainTest(unittest.TestCase):
@@ -52,6 +87,30 @@ class AskTimeoutChainTest(unittest.TestCase):
 
 
 class HookAskRouteTest(unittest.TestCase):
+    def test_hook_turn_complete_signals_active_node(self) -> None:
+        node_id = "node-complete"
+        event = hook_runtime.register_turn_complete(node_id)
+        try:
+            with (
+                tempfile.TemporaryDirectory() as raw,
+                patch.dict(
+                    os.environ,
+                    {"MINICLAW_HOME": str(Path(raw) / "store")},
+                ),
+                patch.object(app_module, "install_hooks", return_value=Path(raw)),
+                TestClient(app_module.create_app()) as client,
+            ):
+                res = client.post(
+                    "/hook/turn-complete",
+                    json={"node_id": node_id},
+                    headers={"Authorization": f"Bearer {hook_runtime.token()}"},
+                )
+        finally:
+            hook_runtime.unregister_turn_complete(node_id)
+
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(event.is_set())
+
     def test_hook_ask_timeout_returns_passthrough_status(self) -> None:
         async def slow_dispatcher(_payload: dict) -> dict:
             await asyncio.sleep(1)
