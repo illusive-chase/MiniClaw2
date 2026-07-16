@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 
@@ -22,6 +22,17 @@ class GitDiff:
 
 
 @dataclass(slots=True)
+class GitFileStatus:
+    path: str
+    index_status: str = "."
+    worktree_status: str = "."
+    old_path: str | None = None
+    additions: int = 0
+    deletions: int = 0
+    binary: bool = False
+
+
+@dataclass(slots=True)
 class GitStatus:
     is_repo: bool = False
     head: str | None = None
@@ -31,6 +42,7 @@ class GitStatus:
     ahead: int | None = None
     behind: int | None = None
     dirty_count: int = 0
+    files: list[GitFileStatus] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -45,42 +57,161 @@ class CommitDescriptor:
 
 def git_status(cwd: str) -> GitStatus:
     """Return branch, upstream and worktree state in one porcelain call."""
-    result = _git(cwd, ["status", "--porcelain=v2", "--branch", "--untracked-files=all"])
+    result = _git(
+        cwd,
+        ["status", "--porcelain=v2", "--branch", "-z", "--untracked-files=all"],
+    )
     if result.returncode != 0:
         return GitStatus()
     status = GitStatus(is_repo=True)
-    for line in result.stdout.splitlines():
-        if line.startswith("# branch.head "):
-            branch = line.removeprefix("# branch.head ").strip()
+    records = result.stdout.split("\x00")
+    index = 0
+    while index < len(records):
+        record = records[index]
+        index += 1
+        if not record:
+            continue
+        if record.startswith("# branch.head "):
+            branch = record.removeprefix("# branch.head ").strip()
             status.branch = None if branch in {"(detached)", ""} else branch
             status.detached = branch == "(detached)"
-        elif line.startswith("# branch.oid "):
-            oid = line.removeprefix("# branch.oid ").strip()
+            continue
+        if record.startswith("# branch.oid "):
+            oid = record.removeprefix("# branch.oid ").strip()
             status.head = None if oid in {"(initial)", ""} else oid
-        elif line.startswith("# branch.upstream "):
-            status.upstream = line.removeprefix("# branch.upstream ").strip() or None
-        elif line.startswith("# branch.ab "):
-            parts = line.removeprefix("# branch.ab ").split()
+            continue
+        if record.startswith("# branch.upstream "):
+            status.upstream = record.removeprefix("# branch.upstream ").strip() or None
+            continue
+        if record.startswith("# branch.ab "):
+            parts = record.removeprefix("# branch.ab ").split()
             if len(parts) == 2:
                 try:
                     status.ahead = int(parts[0].removeprefix("+"))
                     status.behind = int(parts[1].removeprefix("-"))
                 except ValueError:
                     pass
-        elif line and not line.startswith("#"):
-            # Porcelain v2 ordinary/untracked/renamed records all carry a path.
-            if line.startswith(("? ", "! ")):
-                path = line[2:]
-            elif line.startswith("1 "):
-                path = line.split(" ", 8)[-1]
-            elif line.startswith("2 "):
-                path = line.split(" ", 9)[-1].split("\t", 1)[0]
-            else:
-                path = line.rsplit(" ", 1)[-1]
-            if path == MINICLAW_GENERATED_DIR or path.startswith(MINICLAW_GENERATED_EXCLUDE):
-                continue
-            status.dirty_count += 1
+            continue
+        file_status: GitFileStatus | None = None
+        if record.startswith("1 "):
+            parts = record.split(" ", 8)
+            if len(parts) == 9:
+                file_status = GitFileStatus(
+                    path=parts[8],
+                    index_status=parts[1][0],
+                    worktree_status=parts[1][1],
+                )
+        elif record.startswith("2 "):
+            parts = record.split(" ", 9)
+            if len(parts) == 10:
+                old_path = records[index] if index < len(records) else None
+                index += 1
+                file_status = GitFileStatus(
+                    path=parts[9],
+                    old_path=old_path or None,
+                    index_status=parts[1][0],
+                    worktree_status=parts[1][1],
+                )
+        elif record.startswith("u "):
+            parts = record.split(" ", 10)
+            if len(parts) == 11:
+                file_status = GitFileStatus(
+                    path=parts[10],
+                    index_status=parts[1][0],
+                    worktree_status=parts[1][1],
+                )
+        elif record.startswith("? "):
+            file_status = GitFileStatus(
+                path=record[2:], index_status="?", worktree_status="?"
+            )
+        if file_status is None:
+            continue
+        if _is_generated_path(file_status.path) and (
+            file_status.old_path is None or _is_generated_path(file_status.old_path)
+        ):
+            continue
+        status.files.append(file_status)
+
+    stats: dict[str, tuple[int, int, bool]] = {}
+    _merge_numstat(stats, _git(cwd, ["diff", "--cached", "--numstat", "-z", "--find-renames"]))
+    _merge_numstat(stats, _git(cwd, ["diff", "--numstat", "-z", "--find-renames"]))
+    for item in status.files:
+        if item.index_status == "?" and item.worktree_status == "?":
+            item.additions, item.binary = _untracked_file_stat(Path(cwd) / item.path)
+            continue
+        additions, deletions, binary = stats.get(item.path, (0, 0, False))
+        item.additions = additions
+        item.deletions = deletions
+        item.binary = binary
+    status.dirty_count = len(status.files)
     return status
+
+
+def _is_generated_path(path: str) -> bool:
+    return path == MINICLAW_GENERATED_DIR or path.startswith(MINICLAW_GENERATED_EXCLUDE)
+
+
+def _merge_numstat(
+    target: dict[str, tuple[int, int, bool]],
+    result: subprocess.CompletedProcess[str],
+) -> None:
+    """Merge a NUL-delimited ``git diff --numstat`` result by destination path."""
+    if result.returncode != 0:
+        return
+    records = result.stdout.split("\x00")
+    index = 0
+    while index < len(records):
+        record = records[index]
+        index += 1
+        if not record:
+            continue
+        parts = record.split("\t", 2)
+        if len(parts) != 3:
+            continue
+        raw_additions, raw_deletions, path = parts
+        if not path:
+            # With -z, renamed paths are emitted as an empty path followed by
+            # separate source and destination records.
+            index += 1
+            if index >= len(records):
+                break
+            path = records[index]
+            index += 1
+        binary = raw_additions == "-" or raw_deletions == "-"
+        try:
+            additions = 0 if binary else int(raw_additions)
+            deletions = 0 if binary else int(raw_deletions)
+        except ValueError:
+            continue
+        previous = target.get(path, (0, 0, False))
+        target[path] = (
+            previous[0] + additions,
+            previous[1] + deletions,
+            previous[2] or binary,
+        )
+
+
+def _untracked_file_stat(path: Path) -> tuple[int, bool]:
+    """Return Git-like added-line and binary estimates for an untracked path."""
+    try:
+        if path.is_symlink():
+            return 1, False
+        line_count = 0
+        ends_with_newline = True
+        inspected = bytearray()
+        with path.open("rb") as handle:
+            while chunk := handle.read(64 * 1024):
+                if len(inspected) < 8000:
+                    inspected.extend(chunk[: 8000 - len(inspected)])
+                line_count += chunk.count(b"\n")
+                ends_with_newline = chunk.endswith(b"\n")
+        if b"\x00" in inspected:
+            return 0, True
+        if path.stat().st_size and not ends_with_newline:
+            line_count += 1
+        return line_count, False
+    except OSError:
+        return 0, False
 
 
 def _rebase_in_progress(cwd: str) -> bool:

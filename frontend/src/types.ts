@@ -92,6 +92,17 @@ export type GitStatus = {
   ahead?: number | null;
   behind?: number | null;
   dirty_count: number;
+  files: GitFileStatus[];
+};
+
+export type GitFileStatus = {
+  path: string;
+  old_path?: string | null;
+  index_status: string;
+  worktree_status: string;
+  additions: number;
+  deletions: number;
+  binary: boolean;
 };
 
 export type CommitDescriptor = {
@@ -104,7 +115,11 @@ export type CommitDescriptor = {
 };
 
 export type GitState = { status: GitStatus; commits: CommitDescriptor[] };
-export type GitStatusEvent = GitStatus & { type: "git_status"; seq?: number };
+export type GitStatusEvent = Omit<GitStatus, "files"> & {
+  type: "git_status";
+  files?: GitFileStatus[];
+  seq?: number;
+};
 
 export type ServerEvent =
   | TextDelta

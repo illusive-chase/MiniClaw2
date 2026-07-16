@@ -58,6 +58,48 @@ class GitStateTest(unittest.TestCase):
             self.assertEqual(status.head, head)
             self.assertEqual(status.dirty_count, 1)
 
+    def test_status_reports_file_states_and_line_counts(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            repo = Path(raw)
+            _init_repo(repo)
+            seed = repo / "seed.txt"
+            seed.write_text("seed changed\nsecond\n", encoding="utf-8")
+            subprocess.run(["git", "add", "seed.txt"], cwd=repo, check=True)
+            seed.write_text("seed changed\nsecond\nthird\n", encoding="utf-8")
+            (repo / "new file.txt").write_text("alpha\nbeta", encoding="utf-8")
+            (repo / "image.bin").write_bytes(b"image\x00data")
+
+            status = git_status(str(repo))
+            files = {item.path: item for item in status.files}
+
+            self.assertEqual(status.dirty_count, 3)
+            self.assertEqual(files["seed.txt"].index_status, "M")
+            self.assertEqual(files["seed.txt"].worktree_status, "M")
+            self.assertEqual(files["seed.txt"].additions, 3)
+            self.assertEqual(files["seed.txt"].deletions, 1)
+            self.assertEqual(files["new file.txt"].additions, 2)
+            self.assertFalse(files["new file.txt"].binary)
+            self.assertTrue(files["image.bin"].binary)
+
+    def test_status_reports_renamed_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            repo = Path(raw)
+            _init_repo(repo)
+            subprocess.run(
+                ["git", "mv", "seed.txt", "renamed seed.txt"],
+                cwd=repo,
+                check=True,
+            )
+
+            status = git_status(str(repo))
+
+            self.assertEqual(status.dirty_count, 1)
+            self.assertEqual(status.files[0].path, "renamed seed.txt")
+            self.assertEqual(status.files[0].old_path, "seed.txt")
+            self.assertEqual(status.files[0].index_status, "R")
+            self.assertEqual(status.files[0].additions, 0)
+            self.assertEqual(status.files[0].deletions, 0)
+
     def test_commit_graph_orders_oldest_first_and_counts_external(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             repo = Path(raw)

@@ -45,6 +45,7 @@ import { applyUserTemplate } from "./api";
 import { ProjectsLanding } from "./components/ProjectsLanding";
 import { ThemeToggle } from "./components/ThemeToggle";
 import { UsageStrip } from "./components/UsageStrip";
+import { GitWorkspaceStatus } from "./components/GitWorkspaceStatus";
 import type {
   ContextBundle,
   EventRecord,
@@ -1349,7 +1350,7 @@ export function App() {
           setSelection({ kind: "none" });
         }
       } else if (ev.type === "git_status") {
-        setGitStatus({
+        setGitStatus((current) => ({
           is_repo: ev.is_repo,
           head: ev.head,
           branch: ev.branch,
@@ -1358,7 +1359,8 @@ export function App() {
           ahead: ev.ahead,
           behind: ev.behind,
           dirty_count: ev.dirty_count,
-        });
+          files: ev.files ?? current?.files ?? [],
+        }));
         void refreshGit();
       }
       appendSelectedEvent(eventNodeId, ev);
@@ -1734,15 +1736,7 @@ export function App() {
                 <span className="inline-block h-1.5 w-1.5 rounded-full bg-current" />
                 ws {status}
               </span>
-              <span
-                className={"inline-flex items-center gap-1 " + (gitStatus?.is_repo ? "text-ink-muted" : "text-ink-subtle")}
-                title={gitStatus?.is_repo ? `${gitStatus.branch ?? "detached"}${gitStatus.upstream ? ` · upstream ${gitStatus.upstream}` : ""}` : "Not a Git repository"}
-              >
-                <span className="inline-block h-1.5 w-1.5 rounded-full bg-current" />
-                {gitStatus?.is_repo
-                  ? `git ${gitStatus.dirty_count ? gitStatus.dirty_count : "clean"}${gitStatus.ahead || gitStatus.behind ? ` ↑${gitStatus.ahead ?? 0} ↓${gitStatus.behind ?? 0}` : ""}`
-                  : "git —"}
-              </span>
+              <GitWorkspaceStatus status={gitStatus} onRefresh={refreshGit} />
               {gitError && <span className="max-w-[18rem] truncate text-state-error" title={gitError}>{gitError}</span>}
               {session?.read_only && (
                 <span className="rounded border border-state-waiting/40 bg-state-waiting-soft px-1.5 py-0.5 font-sans text-state-waiting">
