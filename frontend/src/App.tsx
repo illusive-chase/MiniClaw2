@@ -1359,10 +1359,11 @@ export function App() {
           behind: ev.behind,
           dirty_count: ev.dirty_count,
         });
+        void refreshGit();
       }
       appendSelectedEvent(eventNodeId, ev);
     },
-    [appendSelectedEvent, inspectNode, refreshNodes, selectAndOpenNode],
+    [appendSelectedEvent, inspectNode, refreshGit, refreshNodes, selectAndOpenNode],
   );
 
   const { status, send } = useSessionSocket(
@@ -1681,39 +1682,32 @@ export function App() {
         : "text-state-error";
 
   const gitQuiescent = !nodes.some((node) => node.state === "running" || node.state === "queued");
-  const runGitAction = async (action: "pull" | "push") => {
+  const pullInFlight = nodes.some(
+    (node) =>
+      node.kind === "op" &&
+      node.op_kind === "pull" &&
+      (node.state === "running" || node.state === "queued"),
+  );
+  const runGitAction = async (action: "commit" | "pull" | "push", message = "") => {
     if (!session?.id || readOnly || !gitStatus?.is_repo || gitAction) return;
     setGitAction(action);
     setGitError(null);
     try {
-      if (action === "pull") {
+      if (action === "commit") {
+        await gitCommit(session.id, message);
+      } else if (action === "pull") {
         await gitPull(session.id);
       } else {
-        const result = await gitPush(session.id);
-        setGitStatus(result.status);
+        await gitPush(session.id);
       }
-      await refreshGit();
-      await refreshNodes();
     } catch (err) {
       setGitError(err instanceof Error ? err.message : String(err));
     } finally {
+      await Promise.all([refreshGit(), refreshNodes()]);
       setGitAction(null);
     }
   };
-  const commitGitMessage = async (message: string) => {
-    if (!session?.id || gitAction) return;
-    setGitAction("commit");
-    setGitError(null);
-    try {
-      await gitCommit(session.id, message);
-      await refreshNodes();
-    } catch (err) {
-      setGitError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setGitAction(null);
-      await refreshGit();
-    }
-  };
+  const commitGitMessage = (message: string) => runGitAction("commit", message);
 
   return (
     <>
@@ -1789,7 +1783,7 @@ export function App() {
           <button type="button" onClick={() => void runGitAction("pull")} disabled={readOnly || !gitStatus?.is_repo || !!gitAction || !gitQuiescent} className="inline-flex h-8 items-center rounded-md border border-line bg-surface px-2.5 text-xs text-ink-muted disabled:cursor-not-allowed disabled:opacity-40" title="Pull with rebase">
             {gitAction === "pull" ? "…" : "Pull"}
           </button>
-          <button type="button" onClick={() => void runGitAction("push")} disabled={readOnly || !gitStatus?.is_repo || !!gitAction} className="inline-flex h-8 items-center rounded-md border border-line bg-surface px-2.5 text-xs text-ink-muted disabled:cursor-not-allowed disabled:opacity-40" title="Push upstream">
+          <button type="button" onClick={() => void runGitAction("push")} disabled={readOnly || !gitStatus?.is_repo || !!gitAction || pullInFlight} className="inline-flex h-8 items-center rounded-md border border-line bg-surface px-2.5 text-xs text-ink-muted disabled:cursor-not-allowed disabled:opacity-40" title="Push upstream">
             {gitAction === "push" ? "…" : "Push"}
           </button>
 
@@ -1883,6 +1877,7 @@ export function App() {
                 onClose={closePanel}
                 selection={selection}
                 gitCommits={gitCommits}
+                gitHead={gitStatus?.head ?? null}
                 gitDirtyCount={gitStatus?.dirty_count ?? 0}
                 gitActionPending={gitAction === "commit"}
                 onGitCommit={commitGitMessage}
@@ -2153,6 +2148,9 @@ function graphNodeIdForSelection(selection: CanvasSelection): string | null {
   }
   if (selection.kind === "planspace") {
     return `planspace:${selection.planspaceId}`;
+  }
+  if (selection.kind === "commit") {
+    return selection.sha ? `commit:${selection.sha}` : "commit:ghost";
   }
   return null;
 }

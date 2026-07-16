@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+import logging
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 
 MINICLAW_GENERATED_DIR = ".miniclaw2"
 MINICLAW_GENERATED_EXCLUDE = f"{MINICLAW_GENERATED_DIR}/"
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -43,9 +45,6 @@ class CommitDescriptor:
 
 def git_status(cwd: str) -> GitStatus:
     """Return branch, upstream and worktree state in one porcelain call."""
-    probe = _git(cwd, ["rev-parse", "--git-dir"])
-    if probe.returncode != 0:
-        return GitStatus()
     result = _git(cwd, ["status", "--porcelain=v2", "--branch", "--untracked-files=all"])
     if result.returncode != 0:
         return GitStatus()
@@ -84,14 +83,43 @@ def git_status(cwd: str) -> GitStatus:
     return status
 
 
+def _rebase_in_progress(cwd: str) -> bool:
+    result = _git(
+        cwd,
+        [
+            "rev-parse",
+            "--git-path",
+            "rebase-merge",
+            "--git-path",
+            "rebase-apply",
+        ],
+    )
+    if result.returncode != 0:
+        return False
+    for raw_path in result.stdout.splitlines():
+        path = Path(raw_path.strip())
+        if not raw_path.strip():
+            continue
+        if not path.is_absolute():
+            path = Path(cwd) / path
+        if path.exists():
+            return True
+    return False
+
+
 def git_pull_rebase(cwd: str) -> tuple[str | None, str | None]:
-    """Pull with rebase, aborting an incomplete/conflicting rebase."""
+    """Pull with rebase without disturbing a pre-existing rebase."""
+    if _rebase_in_progress(cwd):
+        return (
+            git_head(cwd),
+            "a rebase is already in progress in the worktree; resolve or abort it first",
+        )
     result = _git(cwd, ["pull", "--rebase"], timeout=120)
     if result.returncode == 0:
         return git_head(cwd), None
-    # A failed pull may leave a rebase state. Always restore the shared tree.
     conflicts = _git(cwd, ["diff", "--name-only", "--diff-filter=U"], timeout=30)
-    _git(cwd, ["rebase", "--abort"], timeout=30)
+    if _rebase_in_progress(cwd):
+        _git(cwd, ["rebase", "--abort"], timeout=30)
     detail = result.stderr.strip() or result.stdout.strip() or "git pull --rebase failed"
     if conflicts.stdout.strip():
         detail = f"{detail}; conflicting files: {', '.join(conflicts.stdout.splitlines())}"
@@ -120,6 +148,8 @@ def commit_graph(
     cwd: str,
     referenced_shas: set[str] | list[str],
     alias_map: dict[str, str] | None = None,
+    ref_timestamps: dict[str, float] | None = None,
+    status: GitStatus | None = None,
 ) -> list[CommitDescriptor]:
     """Derive referenced commit hubs from Git history without storing mirrors."""
     aliases = alias_map or {}
@@ -130,36 +160,95 @@ def commit_graph(
             sha = aliases[sha]
         return sha
     refs = {resolve(sha) for sha in referenced_shas if sha}
-    current = git_status(cwd)
+    current = status or git_status(cwd)
     if current.head:
         refs.add(resolve(current.head))
     if not current.is_repo or not current.head:
-        return [CommitDescriptor(sha=sha, live=False, message="", aliases=[old for old in referenced_shas if resolve(old) == sha]) for sha in refs]
-    rev = _git(cwd, ["rev-list", "--topo-order", current.head], timeout=30)
-    newest_first = [line.strip() for line in rev.stdout.splitlines() if line.strip()] if rev.returncode == 0 else []
+        return [
+            CommitDescriptor(
+                sha=sha,
+                live=False,
+                message="",
+                aliases=sorted(
+                    old
+                    for old in referenced_shas
+                    if resolve(old) == sha and old != sha
+                ),
+            )
+            for sha in sorted(refs)
+        ]
+    rev = _git(
+        cwd,
+        [
+            "rev-list",
+            "--topo-order",
+            "--no-commit-header",
+            "--format=%H%x00%s%x00%ct",
+            current.head,
+        ],
+        timeout=30,
+    )
+    history: dict[str, tuple[int, str, float | None]] = {}
+    newest_first: list[str] = []
+    if rev.returncode == 0:
+        for line in rev.stdout.splitlines():
+            fields = line.split("\x00")
+            if len(fields) != 3:
+                continue
+            sha, message, raw_ts = fields
+            try:
+                ts = float(raw_ts)
+            except ValueError:
+                ts = None
+            newest_first.append(sha)
+            history[sha] = (0, message, ts)
+    else:
+        logger.warning(
+            "failed to load git commit graph for %s: %s",
+            cwd,
+            rev.stderr.strip() or rev.stdout.strip() or "git rev-list failed",
+        )
     live_order = list(reversed(newest_first))
+    history = {
+        sha: (index, history[sha][1], history[sha][2])
+        for index, sha in enumerate(live_order)
+    }
     live_set = set(live_order)
     ordered_refs = [sha for sha in live_order if sha in refs]
     stale = [sha for sha in refs if sha not in live_set]
-    # Preserve deterministic placement for stale epochs; their node timestamp
-    # ordering is unavailable at this read-side boundary, so append them.
-    ordered = ordered_refs + sorted(stale)
+    resolved_timestamps: dict[str, float] = {}
+    for sha, ts in (ref_timestamps or {}).items():
+        resolved = resolve(sha)
+        current_ts = resolved_timestamps.get(resolved)
+        if current_ts is None or ts < current_ts:
+            resolved_timestamps[resolved] = ts
+    stale_buckets: list[list[str]] = [[] for _ in range(len(ordered_refs) + 1)]
+    for sha in stale:
+        stale_ts = resolved_timestamps.get(sha)
+        insertion = len(ordered_refs)
+        if stale_ts is not None:
+            for index, live_sha in enumerate(ordered_refs):
+                live_ts = history[live_sha][2]
+                if live_ts is not None and live_ts > stale_ts:
+                    insertion = index
+                    break
+        stale_buckets[insertion].append(sha)
+    ordered: list[str] = []
+    for index, live_sha in enumerate(ordered_refs):
+        ordered.extend(sorted(stale_buckets[index]))
+        ordered.append(live_sha)
+    ordered.extend(sorted(stale_buckets[-1]))
     descriptors: list[CommitDescriptor] = []
     previous_index = -1
     for sha in ordered:
         message = "stale commit"
         ts: float | None = None
         if sha in live_set:
-            show = _git(cwd, ["show", "-s", "--format=%s%x00%ct", sha], timeout=10)
-            if show.returncode == 0:
-                fields = show.stdout.rstrip("\n").split("\x00", 1)
-                message = fields[0]
-                if len(fields) == 2:
-                    try: ts = float(fields[1])
-                    except ValueError: pass
-        index = live_order.index(sha) if sha in live_set else previous_index + 1
-        external = max(0, index - previous_index - 1) if previous_index >= 0 else 0
-        previous_index = index
+            index, message, ts = history[sha]
+            external = max(0, index - previous_index - 1) if previous_index >= 0 else 0
+            previous_index = index
+        else:
+            external = 0
         descriptors.append(CommitDescriptor(
             sha=sha, live=sha in live_set, message=message, ts=ts,
             external_count_before=external,

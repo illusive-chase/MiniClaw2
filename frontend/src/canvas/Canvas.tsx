@@ -34,11 +34,10 @@ import {
   DependencyEdge,
   LoadsEdge,
   ProducesEdge,
-  OpChevronEdge,
   ResumeEdge,
   TimelineEdge,
-  setOpChevronContext,
 } from "./edges/TimelineEdge";
+import { CommitEdge } from "./edges/CommitEdge";
 import { ErrorTerminalNode } from "./nodes/ErrorTerminalNode";
 import { ArtifactNode } from "./nodes/ArtifactNode";
 import { CommitNode } from "./nodes/CommitNode";
@@ -60,7 +59,7 @@ const EDGE_TYPES = {
   resume: ResumeEdge,
   loads: LoadsEdge,
   produces: ProducesEdge,
-  opChevron: OpChevronEdge,
+  commit: CommitEdge,
 };
 
 const DEFAULT_VIEWPORT: Viewport = { x: 0, y: 0, zoom: 0.9 };
@@ -234,15 +233,6 @@ function CanvasInner({
       flushPendingLayout();
     };
   }, [flushPendingLayout]);
-
-  /* Op chevrons live inside edges, so React Flow's selection callback never
-   * sees their clicks. We wire the click into a module-level singleton so the
-   * EdgeLabelRenderer button can push selection up here. */
-  useEffect(() => {
-    setOpChevronContext({
-      onSelectOp: (opNodeId) => onSelectionChange({ kind: "op", nodeId: opNodeId }),
-    });
-  }, [onSelectionChange]);
 
   const built = useMemo(
     () =>
@@ -507,6 +497,10 @@ function CanvasInner({
         onSelectionChange({ kind: "projectRoot" });
       } else if (n.type === "commit") {
         const data = n.data as import("./layout").CommitNodeData;
+        pendingUserSelectionRef.current = {
+          nodeId: data.ghost ? "commit:ghost" : `commit:${data.commit.sha}`,
+          preserveExisting: event.shiftKey,
+        };
         onSelectionChange({ kind: "commit", sha: data.ghost ? null : data.commit.sha });
       } else if (n.type === "planspaceLane") {
         const data = n.data as import("./layout").PlanspaceLaneData;
@@ -843,20 +837,6 @@ function decorateEdges(
       const endpoint = e.source === selectedNodeId || e.target === selectedNodeId
         || e.source === hoveredNodeId || e.target === hoveredNodeId;
       return { ...e, style: { ...(e.style ?? {}), opacity: endpoint ? 0.75 : 0 } };
-    }
-    if (e.type === "opChevron") {
-      const opId = (e.data as { op?: { id?: string } } | undefined)?.op?.id;
-      if (opId && opId === selectedNodeId) {
-        return {
-          ...e,
-          data: { ...(e.data as object), opSelected: true },
-          selected: true,
-        };
-      }
-      return {
-        ...e,
-        data: { ...(e.data as object), opSelected: false },
-      };
     }
     if (selectedNodeId && (e.source === selectedNodeId || e.target === selectedNodeId)) {
       return { ...e, selected: true };

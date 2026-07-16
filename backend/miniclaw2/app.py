@@ -614,20 +614,27 @@ def create_app(registry: ProjectRegistry | None = None) -> FastAPI:
             for sha in (node.commit_before, node.commit_after)
             if sha
         }
-        commits = commit_graph(project.root_path, refs, registry.store.read_git_aliases(sid))
+        ref_timestamps: dict[str, float] = {}
+        for node in nodes:
+            for sha in (node.commit_before, node.commit_after):
+                if sha and (sha not in ref_timestamps or node.created_at < ref_timestamps[sha]):
+                    ref_timestamps[sha] = node.created_at
+        commits = commit_graph(
+            project.root_path,
+            refs,
+            registry.store.read_git_aliases(sid),
+            ref_timestamps,
+            status,
+        )
         return {"status": asdict(status), "commits": [asdict(item) for item in commits]}
 
     @app.post("/sessions/{sid}/git/commit", response_model=dict[str, Any])
-    def git_commit(sid: str, req: GitCommitRequest) -> dict[str, Any]:
+    async def git_commit(sid: str, req: GitCommitRequest) -> dict[str, Any]:
         project = registry.get_project(sid)
         if project is None:
             raise HTTPException(404, "session not found")
         try:
             node = registry.spawn_git_op(sid, "commit", message=req.message)
-        except NonNativeProjectError:
-            raise
-        except StoreReadOnlyError:
-            raise
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
         if node is None:
@@ -635,7 +642,7 @@ def create_app(registry: ProjectRegistry | None = None) -> FastAPI:
         return {"node": node.model_dump()}
 
     @app.post("/sessions/{sid}/git/pull", response_model=dict[str, Any])
-    def git_pull(sid: str) -> dict[str, Any]:
+    async def git_pull(sid: str) -> dict[str, Any]:
         project = registry.get_project(sid)
         if project is None:
             raise HTTPException(404, "session not found")
@@ -659,11 +666,7 @@ def create_app(registry: ProjectRegistry | None = None) -> FastAPI:
         status, error = result
         if error is not None:
             raise HTTPException(409, error)
-        return {"status": {
-            "is_repo": status.is_repo, "head": status.head, "branch": status.branch,
-            "detached": status.detached, "upstream": status.upstream,
-            "ahead": status.ahead, "behind": status.behind, "dirty_count": status.dirty_count,
-        }}
+        return {"status": asdict(status)}
 
     @app.patch("/sessions/{sid}", response_model=SessionInfo)
     def rename_session(sid: str, req: RenameSessionRequest) -> SessionInfo:

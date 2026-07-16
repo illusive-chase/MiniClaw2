@@ -291,6 +291,50 @@ class ProjectConcurrencySchedulerTests(unittest.IsolatedAsyncioTestCase):
         await self._settle()
         self.assertIn(waiting.id, runtime.runners)
 
+    async def test_pull_guard_stops_scheduler_after_launching_pull(self) -> None:
+        runtime = self.registry._runtimes[self.project.id]
+        pull = Node(
+            id="queued-pull",
+            project_id=self.project.id,
+            kind=NodeKind.OP,
+            op_kind="pull",
+            state=NodeState.QUEUED,
+            model_preset_id="gpt-5.5",
+        )
+        work = Node(
+            id="queued-work",
+            project_id=self.project.id,
+            state=NodeState.QUEUED,
+            model_preset_id="gpt-5.5",
+        )
+        self.store.create_node(pull)
+        self.store.create_node(work)
+        runtime.priority_node_ids.extend([pull.id, work.id])
+
+        self.registry._schedule_queued(runtime)
+        await self._settle()
+
+        self.assertIn(pull.id, runtime.runners)
+        self.assertNotIn(work.id, runtime.runners)
+
+    async def test_push_rejects_queued_pull(self) -> None:
+        runtime = self.registry._runtimes[self.project.id]
+        pull = Node(
+            id="push-blocked-pull",
+            project_id=self.project.id,
+            kind=NodeKind.OP,
+            op_kind="pull",
+            state=NodeState.QUEUED,
+            model_preset_id="gpt-5.5",
+        )
+        self.store.create_node(pull)
+
+        result = await self.registry.git_push(self.project.id)
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertEqual(result[1], "pull in progress")
+
 
 class ProjectConcurrencyLegacyStoreTests(unittest.TestCase):
     def test_project_json_without_concurrency_uses_default(self) -> None:

@@ -68,7 +68,12 @@ export type ProjectRootNodeData = {
   title: string;
 };
 
-export type CommitNodeData = { commit: CommitDescriptor; head: boolean; ghost?: boolean };
+export type CommitNodeData = {
+  commit: CommitDescriptor;
+  head: boolean;
+  ghost?: boolean;
+  dirtyCount?: number;
+};
 
 export type PlanspaceColor = {
   name: string;
@@ -297,30 +302,24 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
       selectable: true,
     });
     const previous = index === 0 ? "root" : `commit:${gitCommits[index - 1].sha}`;
-    rfEdges.push({ id: `commit-trunk:${previous}:${commit.sha}`, source: previous, target: `commit:${commit.sha}`, type: "default", style: { stroke: "#9ca3af", strokeWidth: 1.2 } });
+    rfEdges.push({
+      id: `commit-trunk:${previous}:${commit.sha}`,
+      source: previous,
+      target: `commit:${commit.sha}`,
+      type: "commit",
+      data: {
+        externalCount: commit.external_count_before,
+        dashed: !commit.live,
+      },
+    });
   });
   if (gitDirtyCount > 0) {
     const ghostId = "commit:ghost";
     const ghostX = commitStartX + gitCommits.length * 112;
-    rfNodes.push({ id: ghostId, type: "commit", position: layoutHints[ghostId] ?? { x: ghostX, y: LANE.timelineY }, width: 76, height: 76, data: { commit: { sha: "ghost", live: false, message: "Uncommitted changes", external_count_before: 0, aliases: [] }, head: false, ghost: true }, draggable: true, selectable: true });
-    const previous = gitCommits.length ? `commit:${gitCommits.at(-1)!.sha}` : "root";
-    rfEdges.push({ id: `commit-trunk:${previous}:ghost`, source: previous, target: ghostId, type: "default", style: { stroke: "#9ca3af", strokeDasharray: "4 4", strokeWidth: 1.2 } });
-  }
-
-  /* Index ops by the child node they sit between, so we can keep folding them
-   * onto the existing chevron edge. Trailing ops (no child yet) keep their tile
-   * rendering so the auto-commit stays visible. */
-  const opByChildId = new Map<string, NodeInfo>();
-  const opsWithChild = new Set<string>();
-  for (const node of visibleNodes) {
-    if (node.kind !== "op" || node.state === "done") continue;
-    const childIdx = visibleNodes.findIndex(
-      (n) => n.parent_node_id === node.id && n.kind !== "op",
-    );
-    if (childIdx >= 0) {
-      opByChildId.set(visibleNodes[childIdx].id, node);
-      opsWithChild.add(node.id);
-    }
+    rfNodes.push({ id: ghostId, type: "commit", position: layoutHints[ghostId] ?? { x: ghostX, y: LANE.timelineY }, width: 76, height: 76, data: { commit: { sha: "ghost", live: false, message: "Uncommitted changes", external_count_before: 0, aliases: [] }, head: false, ghost: true, dirtyCount: gitDirtyCount }, draggable: true, selectable: true });
+    const previousLive = [...gitCommits].reverse().find((commit) => commit.live);
+    const previous = previousLive ? `commit:${previousLive.sha}` : "root";
+    rfEdges.push({ id: `commit-trunk:${previous}:ghost`, source: previous, target: ghostId, type: "commit", data: { dashed: true } });
   }
 
   const planspaceColorOverrides = collectPlanspaceColorOverrides(
@@ -365,15 +364,18 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
     }
     for (const member of members) {
       if (!incoming.has(member.id)) {
-        rfEdges.push({ id: `commit-source:${epochSha}:${member.id}`, source: `commit:${epochSha}`, target: member.id, type: "default", style: { stroke: "#9ca3af", strokeWidth: 1 } });
+        rfEdges.push({ id: `commit-source:${epochSha}:${member.id}`, source: `commit:${epochSha}`, target: member.id, type: "commit" });
       }
       if (outgoing.has(member.id) || !member.commit_after) continue;
       const after = commitForSha(member.commit_after);
       const epochIndex = gitCommits.findIndex((commit) => commit.sha === epochSha);
       let target = after && after.sha !== epochSha ? `commit:${after.sha}` : null;
-      if (!target && epochIndex >= 0 && epochIndex + 1 < gitCommits.length) target = `commit:${gitCommits[epochIndex + 1].sha}`;
+      if (!target && epochIndex >= 0) {
+        const next = gitCommits.slice(epochIndex + 1).find((commit) => commit.live);
+        if (next) target = `commit:${next.sha}`;
+      }
       if (!target && gitDirtyCount > 0) target = "commit:ghost";
-      if (target) rfEdges.push({ id: `commit-sink:${member.id}:${target}`, source: member.id, target, type: "default", style: { stroke: "#9ca3af", strokeWidth: 1 } });
+      if (target) rfEdges.push({ id: `commit-sink:${member.id}:${target}`, source: member.id, target, type: "commit", data: { dashed: target === "commit:ghost" } });
     }
   }
 
@@ -389,7 +391,6 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
     laneAbsPos,
     visibleNodes,
     allNodeById,
-    opsWithChild,
     layoutHints,
   );
   freeCursorX = Math.max(freeCursorX, LANE.rootX + 180 + trunkExtent);
@@ -482,8 +483,6 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
 
     if (node.kind === "op") {
       if (node.state === "done") return;
-      /* Folded into a chevron edge — skip rendering as a tile. */
-      if (opsWithChild.has(node.id)) return;
       const parent = node.parent_node_id ? (nodeById.get(node.parent_node_id) ?? null) : null;
       const position = planspaceId
         ? placeInLane(LANE.opSpacing, LANE.opWidth, LANE.opHeight, LANE.planspaceLaneAgentRowY)
@@ -537,32 +536,6 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
       });
     }
 
-    /* Ops are not part of the scheduled dependency DAG. Keep their existing
-     * filesystem edge rendering so auto-commit tiles still read as attached to
-     * the run that spawned them. Work-node edges are generated below from
-     * scheduled_deps + continue sources only. */
-    const interposedOp = opByChildId.get(node.id);
-    if (interposedOp) {
-      const grandparentId =
-        interposedOp.parent_node_id && nodeById.has(interposedOp.parent_node_id)
-          ? interposedOp.parent_node_id
-          : "root";
-      rfEdges.push({
-        id: `op:${interposedOp.id}->${node.id}`,
-        source: grandparentId,
-        target: node.id,
-        type: "opChevron",
-        data: { childState: node.state, op: interposedOp },
-      });
-    } else if (node.kind === "op" && node.parent_node_id && nodeById.has(node.parent_node_id)) {
-      rfEdges.push({
-        id: `tl:${node.parent_node_id}->${node.id}`,
-        source: node.parent_node_id,
-        target: node.id,
-        type: "timeline",
-        data: { childState: node.state },
-      });
-    }
   });
 
   /* Dependency arrows — scheduled_deps are the planning/template DAG. Home is
@@ -1067,7 +1040,6 @@ function initialFreeCursorX(
   laneAbsPos: Map<string, { x: number; y: number }>,
   visibleNodes: NodeInfo[],
   byId: Map<string, NodeInfo>,
-  opsWithChild: Set<string>,
   layoutHints: Record<string, { x: number; y: number }>,
 ): number {
   const base = LANE.rootX + 180;
@@ -1080,7 +1052,7 @@ function initialFreeCursorX(
   let occupiedRight = LANE.planspaceLanePaddingX + LANE.agentWidth;
   for (const node of visibleNodes) {
     if (resolvePlanspaceId(node, byId) !== firstLaneId) continue;
-    const geometry = renderedWorkNodeGeometry(node, opsWithChild);
+    const geometry = renderedWorkNodeGeometry(node);
     if (!geometry) continue;
     const position = layoutHints[node.id] ?? {
       x: laneCursor,
@@ -1106,10 +1078,9 @@ function initialFreeCursorX(
 
 function renderedWorkNodeGeometry(
   node: NodeInfo,
-  opsWithChild: Set<string>,
 ): { spacing: number; width: number } | null {
   if (node.kind === "op") {
-    if (opsWithChild.has(node.id)) return null;
+    if (node.state === "done") return null;
     return { spacing: LANE.opSpacing, width: LANE.opWidth };
   }
   return { spacing: LANE.agentSpacing, width: LANE.agentWidth };

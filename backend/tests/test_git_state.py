@@ -9,6 +9,7 @@ from miniclaw2.git_state import (
     commit_all,
     commit_graph,
     ensure_miniclaw_git_excluded,
+    git_pull_rebase,
     git_status,
 )
 
@@ -83,6 +84,45 @@ class GitStateTest(unittest.TestCase):
             self.assertEqual(len(graph), 1)
             self.assertEqual(graph[0].sha, live)
             self.assertEqual(graph[0].aliases, ["old-a"])
+
+    def test_commit_graph_interleaves_timestamped_stale_epoch(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            repo = Path(raw)
+            initial = _init_repo(repo)
+            (repo / "live.txt").write_text("live\n", encoding="utf-8")
+            subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-q", "-m", "live"], cwd=repo, check=True)
+            head = _head(repo)
+
+            graph = commit_graph(
+                str(repo),
+                {initial, head, "reset-away"},
+                ref_timestamps={"reset-away": 0},
+            )
+
+            self.assertEqual([item.sha for item in graph], ["reset-away", initial, head])
+
+    def test_non_repo_commit_graph_is_deterministic_and_aliases_exclude_self(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            graph = commit_graph(raw, {"b", "a"}, {"a": "b"})
+
+            self.assertEqual([item.sha for item in graph], ["b"])
+            self.assertEqual(graph[0].aliases, ["a"])
+
+    def test_pull_does_not_abort_preexisting_rebase(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            repo = Path(raw)
+            _init_repo(repo)
+            rebase_dir = repo / ".git" / "rebase-merge"
+            rebase_dir.mkdir()
+            marker = rebase_dir / "head-name"
+            marker.write_text("refs/heads/main\n", encoding="utf-8")
+
+            head, error = git_pull_rebase(str(repo))
+
+            self.assertIsNotNone(head)
+            self.assertIn("already in progress", error or "")
+            self.assertTrue(marker.exists())
 
     def test_commit_all_excludes_miniclaw_generated_paths(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { CanvasSelection } from "../canvas/Canvas";
 import type {
   ClientMessage,
@@ -109,6 +109,7 @@ export type SidePanelProps = {
 
   onClose: () => void;
   gitCommits?: CommitDescriptor[];
+  gitHead?: string | null;
   gitDirtyCount?: number;
   gitActionPending?: boolean;
   onGitCommit?: (message: string) => Promise<void> | void;
@@ -237,15 +238,80 @@ function Inner(props: SidePanelProps & { nodesById: Map<string, NodeInfo> }) {
 
   if (selection.kind === "commit") {
     const commit = selection.sha ? gitCommits.find((item) => item.sha === selection.sha) : null;
+    const headCommit = props.gitHead
+      ? gitCommits.find((item) => item.sha === props.gitHead)
+      : [...gitCommits].reverse().find((item) => item.live);
+    const currentEpochSummaries = headCommit
+      ? props.nodes
+          .filter(
+            (node) =>
+              node.kind !== "op" &&
+              !!node.commit_before &&
+              (node.commit_before === headCommit.sha ||
+                headCommit.aliases.includes(node.commit_before)),
+          )
+          .map((node) => node.summary?.trim())
+          .filter((summary): summary is string => !!summary)
+      : [];
     if (!selection.sha) {
-      return <GitCommitPanel dirtyCount={props.gitDirtyCount ?? 0} pending={props.gitActionPending ?? false} readOnly={!!session?.read_only} onCommit={props.onGitCommit} />;
+      return <GitCommitPanel dirtyCount={props.gitDirtyCount ?? 0} pending={props.gitActionPending ?? false} readOnly={!!session?.read_only} onCommit={props.onGitCommit} suggestedMessage={currentEpochSummaries.join("; ") || "Changes from MiniClaw2"} />;
     }
+    if (!commit) {
+      return (
+        <div className="flex h-full flex-col overflow-y-auto bg-surface px-4 py-4 text-sm">
+          <div className="text-[10px] font-medium uppercase tracking-[0.14em] text-ink-subtle">Git commit</div>
+          <h2 className="mt-2 font-mono text-[14px] font-semibold text-ink-strong">{selection.sha.slice(0, 12)}</h2>
+          <p className="mt-3 text-[13px] leading-relaxed text-ink-muted">Commit metadata unavailable.</p>
+        </div>
+      );
+    }
+    const members = props.nodes.filter(
+      (node) =>
+        node.kind !== "op" &&
+        !!node.commit_before &&
+        (node.commit_before === commit.sha || commit.aliases.includes(node.commit_before)),
+    );
+    const associatedOps = props.nodes.filter(
+      (node) =>
+        node.kind === "op" &&
+        !!node.commit_after &&
+        (node.commit_after === commit.sha || commit.aliases.includes(node.commit_after)),
+    );
+    const isHead = commit.sha === props.gitHead;
     return (
       <div className="flex h-full flex-col overflow-y-auto bg-surface px-4 py-4 text-sm">
         <div className="text-[10px] font-medium uppercase tracking-[0.14em] text-ink-subtle">Git commit</div>
-        <h2 className="mt-2 font-mono text-[14px] font-semibold text-ink-strong">{commit?.sha.slice(0, 12) ?? "uncommitted changes"}</h2>
-        <p className="mt-3 text-[13px] leading-relaxed text-ink">{commit?.message ?? "Working tree changes are not committed yet."}</p>
-        {commit && <div className="mt-4 rounded-md border border-line bg-surface-sunken px-3 py-2 text-[11px] text-ink-muted">{commit.live ? "present in repository" : "stale: no longer reachable"}</div>}
+        <h2 className="mt-2 font-mono text-[14px] font-semibold text-ink-strong">{commit.sha.slice(0, 12)}</h2>
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {isHead && <span className="rounded-full bg-brand-soft px-2 py-0.5 text-[10px] font-medium text-brand-ink">HEAD</span>}
+          <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${commit.live ? "bg-state-done-soft text-state-done" : "bg-state-waiting-soft text-state-waiting"}`}>{commit.live ? "live" : "stale"}</span>
+        </div>
+        <p className="mt-3 text-[13px] leading-relaxed text-ink">{commit.message}</p>
+        {commit.ts && <div className="mt-2 text-[11px] text-ink-subtle">{new Date(commit.ts * 1000).toLocaleString()}</div>}
+        <div className="mt-5 text-[10px] font-medium uppercase tracking-[0.14em] text-ink-subtle">Epoch members</div>
+        <div className="mt-2 space-y-1.5">
+          {members.length === 0 && <div className="text-[11px] text-ink-subtle">No recorded members.</div>}
+          {members.map((node) => (
+            <button key={node.id} type="button" onClick={() => onSelectNode(node.id)} className="block w-full rounded-md border border-line bg-surface-raised px-3 py-2 text-left transition hover:border-line-strong">
+              <span className="block font-mono text-[10px] text-ink-muted">{node.id.slice(0, 8)}</span>
+              <span className="mt-0.5 block truncate text-[11px] text-ink">{node.summary || node.prompt || "Agent node"}</span>
+            </button>
+          ))}
+        </div>
+        {associatedOps.length > 0 && (
+          <>
+            <div className="mt-5 text-[10px] font-medium uppercase tracking-[0.14em] text-ink-subtle">Commit operations</div>
+            <div className="mt-2 space-y-1.5">
+              {associatedOps.map((op) => (
+                <button key={op.id} type="button" onClick={() => onSelectNode(op.id)} className="block w-full rounded-md border border-line bg-surface-raised px-3 py-2 text-left transition hover:border-line-strong">
+                  <span className="block text-[11px] font-medium text-ink">{op.parent_node_id ? "Automatic commit" : "Manual commit"}</span>
+                  <span className="mt-0.5 block font-mono text-[10px] text-ink-muted">{op.id.slice(0, 8)} · {op.state}</span>
+                  {op.parent_node_id && <span className="mt-0.5 block font-mono text-[10px] text-brand">agent {op.parent_node_id.slice(0, 8)}</span>}
+                </button>
+              ))}
+            </div>
+          </>
+        )}
       </div>
     );
   }
@@ -360,8 +426,9 @@ function Inner(props: SidePanelProps & { nodesById: Map<string, NodeInfo> }) {
   return <Missing />;
 }
 
-function GitCommitPanel({ dirtyCount, pending, readOnly, onCommit }: { dirtyCount: number; pending: boolean; readOnly: boolean; onCommit?: (message: string) => Promise<void> | void }) {
-  const [message, setMessage] = useState("Changes from MiniClaw2");
+function GitCommitPanel({ dirtyCount, pending, readOnly, onCommit, suggestedMessage }: { dirtyCount: number; pending: boolean; readOnly: boolean; onCommit?: (message: string) => Promise<void> | void; suggestedMessage: string }) {
+  const [message, setMessage] = useState(suggestedMessage);
+  useEffect(() => setMessage(suggestedMessage), [suggestedMessage]);
   const disabled = readOnly || pending || dirtyCount === 0 || !message.trim();
   return (
     <div className="flex h-full flex-col bg-surface px-4 py-4">

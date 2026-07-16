@@ -113,6 +113,7 @@ class ProjectRuntime:
         self.project = project
         self.runners: dict[str, NodeRunner] = {}
         self.runner_tasks: dict[str, asyncio.Task[None]] = {}
+        self.background_tasks: set[asyncio.Task[Any]] = set()
         self.priority_node_ids: list[str] = []
         self.closed = False
         self.reap_lock = asyncio.Lock()
@@ -749,13 +750,9 @@ class ProjectRegistry:
     def _schedule_queued(self, rt: ProjectRuntime) -> None:
         if not self.is_native_project(rt.project):
             return
-        # A rebase owns the shared worktree for its entire lifetime.
-        if any(
-            runner.node.kind is NodeKind.OP and runner.node.op_kind == "pull"
-            for runner in rt.runners.values()
-        ):
-            return
         while rt.has_capacity():
+            if self._pull_active(rt):
+                return
             priority = [
                 node_id
                 for node_id in rt.priority_node_ids
@@ -786,6 +783,23 @@ class ProjectRegistry:
                 return
             if self._launch_node(rt, queued[0]) is None:
                 return
+
+    @staticmethod
+    def _pull_active(rt: ProjectRuntime) -> bool:
+        return any(
+            runner.node.kind is NodeKind.OP and runner.node.op_kind == "pull"
+            for runner in rt.runners.values()
+        )
+
+    def _pull_in_flight(self, rt: ProjectRuntime) -> bool:
+        if self._pull_active(rt):
+            return True
+        return any(
+            node.kind is NodeKind.OP
+            and node.op_kind == "pull"
+            and node.state is NodeState.QUEUED
+            for node in self.store.list_nodes(rt.project.id)
+        )
 
     def _on_runner_done(
         self,
@@ -856,7 +870,21 @@ class ProjectRegistry:
             status = await asyncio.to_thread(git_status, rt.project.root_path)
             await rt.broadcast(GitStatus(**asdict(status)).model_dump())
 
-        loop.create_task(publish())
+        task = loop.create_task(publish())
+        rt.background_tasks.add(task)
+
+        def finish(done: asyncio.Task[None]) -> None:
+            rt.background_tasks.discard(done)
+            if done.cancelled():
+                return
+            error = done.exception()
+            if error is not None:
+                logger.error(
+                    "failed to broadcast git status",
+                    exc_info=(type(error), error, error.__traceback__),
+                )
+
+        task.add_done_callback(finish)
 
     def git_status(self, pid: str):
         rt = self._runtimes.get(pid)
@@ -895,6 +923,10 @@ class ProjectRegistry:
         if rt is None:
             return None
         self.require_native(pid)
+        if self._pull_in_flight(rt):
+            from .git_state import git_status as read_git_status
+
+            return read_git_status(rt.project.root_path), "pull in progress"
         from .git_state import git_push
         return await asyncio.to_thread(git_push, rt.project.root_path)
 

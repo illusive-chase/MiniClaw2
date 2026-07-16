@@ -20,11 +20,12 @@ sequenced — dependencies are noted inline where they matter.
 - Node-less `git_status` telemetry and session Git endpoints expose status,
   commit, pull-rebase, and push verbs.
 - Commit and pull are durable op nodes. Pull is quiescence-guarded, runs
-  asynchronously, aborts conflicts, and reports conflicting files. Push is a
-  direct remote action with header-level errors.
+  asynchronously, aborts only conflicts it started, and reports conflicting
+  files. Push rejects queued or active pulls before the direct remote action.
 - `commit_graph` derives oldest-first commit hubs, resolves framework-captured
-  rebase aliases, and reports collapsed external commits. The canvas renders
-  the trunk, stale hubs, and dirty working-tree ghost; successful ops fold in.
+  rebase aliases, interleaves timestamped stale epochs, and reports collapsed
+  external commits. The canvas renders the trunk, stale hubs, and dirty
+  working-tree ghost; successful ops fold in.
 
 ### Pending
 
