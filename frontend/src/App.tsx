@@ -1736,7 +1736,21 @@ export function App() {
                 <span className="inline-block h-1.5 w-1.5 rounded-full bg-current" />
                 ws {status}
               </span>
-              <GitWorkspaceStatus status={gitStatus} onRefresh={refreshGit} />
+              <GitWorkspaceStatus
+                status={gitStatus}
+                action={gitAction}
+                canCommit={!readOnly && !!gitStatus?.is_repo && !gitAction && !!gitStatus.dirty_count}
+                canPull={!readOnly && !!gitStatus?.is_repo && !gitAction && gitQuiescent}
+                canPush={!readOnly && !!gitStatus?.is_repo && !gitAction && !pullInFlight}
+                onRefresh={refreshGit}
+                onCommit={() => {
+                  setSelection({ kind: "commit", sha: null });
+                  inspectNode(null);
+                  openDetails();
+                }}
+                onPull={() => void runGitAction("pull")}
+                onPush={() => void runGitAction("push")}
+              />
               {gitError && <span className="max-w-[18rem] truncate text-state-error" title={gitError}>{gitError}</span>}
               {session?.read_only && (
                 <span className="rounded border border-state-waiting/40 bg-state-waiting-soft px-1.5 py-0.5 font-sans text-state-waiting">
@@ -1769,16 +1783,6 @@ export function App() {
             title="Open new direction composer"
           >
             + New direction
-          </button>
-
-          <button type="button" onClick={() => { setSelection({ kind: "commit", sha: null }); inspectNode(null); openDetails(); }} disabled={readOnly || !gitStatus?.is_repo || !!gitAction || !gitStatus?.dirty_count} className="inline-flex h-8 items-center rounded-md border border-line bg-surface px-2.5 text-xs text-ink-muted disabled:cursor-not-allowed disabled:opacity-40" title="Commit working tree">
-            {gitAction === "commit" ? "…" : "Commit"}
-          </button>
-          <button type="button" onClick={() => void runGitAction("pull")} disabled={readOnly || !gitStatus?.is_repo || !!gitAction || !gitQuiescent} className="inline-flex h-8 items-center rounded-md border border-line bg-surface px-2.5 text-xs text-ink-muted disabled:cursor-not-allowed disabled:opacity-40" title="Pull with rebase">
-            {gitAction === "pull" ? "…" : "Pull"}
-          </button>
-          <button type="button" onClick={() => void runGitAction("push")} disabled={readOnly || !gitStatus?.is_repo || !!gitAction || pullInFlight} className="inline-flex h-8 items-center rounded-md border border-line bg-surface px-2.5 text-xs text-ink-muted disabled:cursor-not-allowed disabled:opacity-40" title="Push upstream">
-            {gitAction === "push" ? "…" : "Push"}
           </button>
 
           <button
