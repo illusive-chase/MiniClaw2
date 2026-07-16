@@ -37,13 +37,31 @@ It is JSON with this exact shape (unknown fields are rejected):
   "lane": "<<lane_id>>",
   "motivation": "<why this node ran>",
   "summary": "<what you did and the key outcome>",
-  "next_implications": "<what this enables or blocks downstream>"
+  "next_implications": "<what this enables or blocks downstream>",
+  "artifacts": []
 }
 ```
 
 If the run errored, set `"state": "error"`; if cancelled,
 `"state": "cancelled"`. If you do not write a valid preview the
 framework will re-prompt you, then write a stub if you still don't.
+
+## Publishing artifacts (only when explicitly requested)
+
+To show a file to the human, write it under:
+
+    <<outputs_path>>
+
+then list its filename in the `artifacts` field of your preview:
+
+    "artifacts": ["report.md"]
+
+Only declared files ending in `.md`, `.json`, or `.html` are shown.
+An `.html` file must be a single self-contained document — inline
+CSS and JS, no external assets, no companion files. Keep artifacts
+few and final: they are a publication for the human, not a scratch
+space. Files you do not declare remain readable by later agents but
+are never shown to the human.
 
 Use the `Write` tool against the absolute path above. Do not edit
 any other file under `<<lane_path>>/`.

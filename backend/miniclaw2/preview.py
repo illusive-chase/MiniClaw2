@@ -13,7 +13,7 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, ValidationError, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from .domain import Category, Node, NodeKind, NodeState, ReviewBrief, ReviewSubtype
 
@@ -44,6 +44,7 @@ class ExecutedPreview(BaseModel):
     motivation: str
     summary: str
     next_implications: str
+    artifacts: list[str] = Field(default_factory=list)
     subtype: Literal[
         "agentic_review",
         "human_interact_review",

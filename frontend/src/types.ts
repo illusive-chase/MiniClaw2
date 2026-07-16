@@ -227,6 +227,15 @@ export type NodeState =
   | "error"
   | "cancelled";
 
+export type ArtifactRef = {
+  name: string;
+  bytes: number;
+  mtime: number;
+  sha256: string;
+  status: "published" | "dropped";
+  reason?: string | null;
+};
+
 export type NodeInfo = {
   id: string;
   project_id: string;
@@ -258,6 +267,7 @@ export type NodeInfo = {
   summary?: string | null;
   error?: string | null;
   usage?: TokenUsage | null;
+  artifacts?: ArtifactRef[];
   system_context_snapshot?: string;
   settings_snapshot?: Record<string, unknown>;
   created_at: number;
@@ -381,4 +391,13 @@ export type SessionFile = {
     source?: string;
     previous?: string;
   };
+};
+
+export type ArtifactFile = {
+  name: string;
+  text: string;
+  bytes: number;
+  mtime: number;
+  sha256: string;
+  truncated: boolean;
 };

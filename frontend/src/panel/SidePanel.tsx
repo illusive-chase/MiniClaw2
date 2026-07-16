@@ -17,6 +17,7 @@ import { ContextNodePanel } from "./ContextNodePanel";
 import { OpPanel } from "./OpPanel";
 import { PlanspaceFilePanel } from "./PlanspaceFilePanel";
 import { ProjectPanel } from "./ProjectPanel";
+import { ArtifactPanel } from "./ArtifactPanel";
 
 type ResolveGatePayload = Omit<
   Extract<ClientMessage, { type: "interaction_response" }>,
@@ -59,6 +60,11 @@ export type SidePanelProps = {
     judgment: string;
   }) => void;
   onSelectNode: (nodeId: string) => void;
+  onSelectArtifact: (
+    nodeId: string,
+    name: string,
+    ext: "md" | "json" | "html",
+  ) => void;
   onPreferredLanguageChange: (preferredLanguage: string | null) => void;
   onConcurrencyChange: (concurrency: number) => void;
   onActivatePlanspace: (binding_id: string, planspace_id: string) => void;
@@ -157,6 +163,7 @@ function Inner(props: SidePanelProps & { nodesById: Map<string, NodeInfo> }) {
     onResolveGate,
     onResolveReview,
     onSelectNode,
+    onSelectArtifact,
     onPreferredLanguageChange,
     onConcurrencyChange,
     onActivatePlanspace,
@@ -249,6 +256,7 @@ function Inner(props: SidePanelProps & { nodesById: Map<string, NodeInfo> }) {
         canRerun={canRerun && !session.read_only}
         canMutate={!session.read_only}
         focusRequestVersion={focusRequestVersion}
+        onSelectArtifact={onSelectArtifact}
       />
     );
   }
@@ -257,6 +265,23 @@ function Inner(props: SidePanelProps & { nodesById: Map<string, NodeInfo> }) {
     const node = nodesById.get(selection.nodeId);
     if (!node) return <Missing />;
     return <OpPanel node={node} diff={diff} diffLoading={diffLoading} />;
+  }
+
+  if (selection.kind === "artifact") {
+    const node = nodesById.get(selection.nodeId);
+    if (!node || !session) return <Missing />;
+    const artifact = (node.artifacts ?? []).find(
+      (candidate) => candidate.status === "published" && candidate.name === selection.name,
+    );
+    if (!artifact) return <Missing />;
+    return (
+      <ArtifactPanel
+        sessionId={session.id}
+        nodeId={node.id}
+        artifact={artifact}
+        ext={selection.ext}
+      />
+    );
   }
 
   if (selection.kind === "planspace") {

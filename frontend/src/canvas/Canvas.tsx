@@ -18,6 +18,7 @@ import ReactFlow, {
 import "reactflow/dist/style.css";
 
 import type { ContextBundle, NodeInfo } from "../types";
+import { artifactRawUrl } from "../api";
 import {
   buildGraph,
   type RFNode,
@@ -32,12 +33,14 @@ import { PlanspaceLaneNode } from "./nodes/PlanspaceLaneNode";
 import {
   DependencyEdge,
   LoadsEdge,
+  ProducesEdge,
   OpChevronEdge,
   ResumeEdge,
   TimelineEdge,
   setOpChevronContext,
 } from "./edges/TimelineEdge";
 import { ErrorTerminalNode } from "./nodes/ErrorTerminalNode";
+import { ArtifactNode } from "./nodes/ArtifactNode";
 
 const NODE_TYPES = {
   agent: AgentNode,
@@ -46,6 +49,7 @@ const NODE_TYPES = {
   projectRoot: ProjectRootNode,
   planspaceLane: PlanspaceLaneNode,
   errorTerminal: ErrorTerminalNode,
+  artifact: ArtifactNode,
 };
 
 const EDGE_TYPES = {
@@ -53,6 +57,7 @@ const EDGE_TYPES = {
   timeline: TimelineEdge,
   resume: ResumeEdge,
   loads: LoadsEdge,
+  produces: ProducesEdge,
   opChevron: OpChevronEdge,
 };
 
@@ -72,11 +77,13 @@ export type CanvasSelection =
       plugId?: string | null;
     }
   | { kind: "planspace"; planspaceId: string }
+  | { kind: "artifact"; nodeId: string; name: string; ext: "md" | "json" | "html" }
   | { kind: "projectRoot" }
   | { kind: "none" };
 
 export type CanvasProps = {
   nodes: NodeInfo[];
+  sessionId: string;
   selectedNodeId: string | null;
   activeNodeIds: string[];
   projectTitle: string;
@@ -135,6 +142,7 @@ export function Canvas(props: CanvasProps) {
 
 function CanvasInner({
   nodes,
+  sessionId,
   selectedNodeId,
   activeNodeIds,
   projectTitle,
@@ -500,9 +508,33 @@ function CanvasInner({
           kind: "agent",
           nodeId: data.ownerNodeId,
         });
+      } else if (n.type === "artifact") {
+        const data = n.data as import("./layout").ArtifactNodeData;
+        if (!data.artifact) {
+          onSelectionChange({ kind: "agent", nodeId: data.ownerNodeId });
+          return;
+        }
+        const ext = data.artifact.name.split(".").pop() as "md" | "json" | "html";
+        pendingUserSelectionRef.current = {
+          nodeId: n.id,
+          preserveExisting: event.shiftKey,
+        };
+        if (ext === "html") {
+          window.open(
+            artifactRawUrl(sessionId, data.ownerNodeId, data.artifact.name),
+            "_blank",
+            "noopener",
+          );
+        }
+        onSelectionChange({
+          kind: "artifact",
+          nodeId: data.ownerNodeId,
+          name: data.artifact.name,
+          ext,
+        });
       }
     },
-    [onSelectionChange],
+    [onSelectionChange, sessionId],
   );
 
   /* Empty-canvas tap: clear selection. */

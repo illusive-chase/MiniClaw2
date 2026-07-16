@@ -25,6 +25,7 @@ from pathlib import Path
 from .domain import Category, Node, NodeKind, NodeState, Project, _new_id
 from .materialize import diff_lane
 from .preview import (
+    ExecutedPreview,
     Preview,
     PreviewValidationError,
     VirtualPreview,
@@ -42,6 +43,7 @@ _PREVIEW_RE = re.compile(r"^nodes/([^/]+)/preview\.json$")
 @dataclass
 class ReapResult:
     own_preview_ok: bool = False
+    own_preview: ExecutedPreview | None = None
     new_virtuals: list[Node] = field(default_factory=list)
     modified_virtuals: list[Node] = field(default_factory=list)
     rejection_reasons: list[str] = field(default_factory=list)
@@ -154,6 +156,7 @@ def reap_lane(
             result.rejection_reasons.append(f"{own_rel}: {issue}")
         return result
     result.own_preview_ok = True
+    result.own_preview = own_preview
 
     # --- Categorize remaining preview writes ---
     new_virtuals: list[tuple[str, VirtualPreview]] = []  # (slug, preview)

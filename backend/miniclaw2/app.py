@@ -20,6 +20,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, ValidationError
 
+from .artifacts import INLINE_TEXT_CAP, stored_artifact_path
 from .contextspace import (
     delete_skill,
     describe_project_contextspace,
@@ -983,6 +984,64 @@ def create_app(registry: ProjectRegistry | None = None) -> FastAPI:
         if text is None:
             raise HTTPException(404, "preview not yet written")
         return {"text": text}
+
+    @app.get(
+        "/sessions/{sid}/nodes/{nid}/artifacts/{name}",
+        response_model=None,
+    )
+    def get_node_artifact(
+        sid: str,
+        nid: str,
+        name: str,
+        raw: bool = False,
+    ) -> Response | dict[str, Any]:
+        if registry.get_project(sid) is None:
+            raise HTTPException(404, "session not found")
+        node = registry.get_node(sid, nid)
+        if node is None:
+            raise HTTPException(404, "node not found")
+        artifact = next(
+            (
+                ref
+                for ref in node.artifacts
+                if ref.status == "published" and ref.name == name
+            ),
+            None,
+        )
+        if artifact is None:
+            raise HTTPException(404, "published artifact not found")
+        path = stored_artifact_path(registry.store, sid, nid, artifact.name)
+        try:
+            content = path.read_bytes()
+        except OSError as exc:
+            raise HTTPException(404, "artifact content not found") from exc
+
+        if not raw:
+            inline = content[:INLINE_TEXT_CAP]
+            return {
+                "name": artifact.name,
+                "text": inline.decode("utf-8", errors="replace"),
+                "bytes": artifact.bytes,
+                "mtime": artifact.mtime,
+                "sha256": artifact.sha256,
+                "truncated": len(content) > INLINE_TEXT_CAP,
+            }
+
+        suffix = Path(artifact.name).suffix
+        content_type = {
+            ".html": "text/html; charset=utf-8",
+            ".md": "text/plain; charset=utf-8",
+            ".json": "application/json",
+        }.get(suffix)
+        if content_type is None:
+            raise HTTPException(404, "published artifact type is not supported")
+        headers = {"X-Content-Type-Options": "nosniff"}
+        if suffix == ".html":
+            headers["Content-Security-Policy"] = (
+                "sandbox allow-scripts; connect-src 'none'"
+            )
+        headers["Content-Type"] = content_type
+        return Response(content=content, headers=headers)
 
     @app.get("/sessions/{sid}/nodes/{nid}/context-bundle", response_model=dict[str, Any])
     def get_node_context_bundle(sid: str, nid: str) -> dict[str, Any]:

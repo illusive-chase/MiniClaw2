@@ -191,6 +191,32 @@ function LoadsEdgeImpl(props: EdgeProps) {
 
 export const LoadsEdge = memo(LoadsEdgeImpl);
 
+function ProducesEdgeImpl(props: EdgeProps) {
+  const { sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, selected } = props;
+  const [path] = getBezierPath({
+    sourceX,
+    sourceY,
+    targetX,
+    targetY,
+    sourcePosition,
+    targetPosition,
+    curvature: 0.32,
+  });
+  return (
+    <BaseEdge
+      path={path}
+      style={{
+        stroke: selected ? "rgb(var(--brand))" : "rgb(var(--ink-subtle))",
+        strokeWidth: selected ? 1.8 : 1.1,
+        strokeDasharray: "4 4",
+        opacity: selected ? 0.95 : 0.5,
+      }}
+    />
+  );
+}
+
+export const ProducesEdge = memo(ProducesEdgeImpl);
+
 /* ───────── op chevron ─────────
  *
  * Edge type that *carries* an op: a timeline transition from one timeline node

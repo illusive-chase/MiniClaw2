@@ -46,7 +46,10 @@ def _agent_node(
 class RegularBlockTests(unittest.TestCase):
     def test_substitutions_applied(self) -> None:
         node = _agent_node(node_id="n-abc", lane_id="lane-X")
-        block = build_category_launch_block(node)
+        block = build_category_launch_block(
+            node,
+            outputs_path="/tmp/project/.miniclaw2/outputs/n-abc",
+        )
         self.assertIn("regular execution node", block)
         # placeholder substitutions
         self.assertNotIn("<<lane_path>>", block)
@@ -57,6 +60,8 @@ class RegularBlockTests(unittest.TestCase):
         self.assertIn('"lane": "lane-X"', block)
         # JSON braces from the example preserved
         self.assertIn('"category": "regular"', block)
+        self.assertIn("/tmp/project/.miniclaw2/outputs/n-abc", block)
+        self.assertIn('"artifacts": ["report.md"]', block)
         # No virtual write rights for regular
         self.assertIn("Do not", block)
 

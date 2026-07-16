@@ -59,6 +59,11 @@ export type AgentPanelProps = {
   canRerun: boolean;
   canMutate: boolean;
   focusRequestVersion: number;
+  onSelectArtifact: (
+    nodeId: string,
+    name: string,
+    ext: "md" | "json" | "html",
+  ) => void;
 };
 
 export function AgentPanel({
@@ -84,6 +89,7 @@ export function AgentPanel({
   canRerun,
   canMutate,
   focusRequestVersion,
+  onSelectArtifact,
 }: AgentPanelProps) {
   const headline = (
     node.summary ||
@@ -267,6 +273,44 @@ export function AgentPanel({
               />
             </section>
 
+            {(node.artifacts?.length ?? 0) > 0 && (
+              <section className="mb-5">
+                <SectionHeading>Artifacts</SectionHeading>
+                <ul className="mt-2 space-y-1.5">
+                  {(node.artifacts ?? []).map((artifact, index) => {
+                    const ext = artifact.name.split(".").pop() as "md" | "json" | "html";
+                    return (
+                      <li key={`${artifact.name}:${artifact.status}:${index}`}>
+                        {artifact.status === "published" ? (
+                          <button
+                            type="button"
+                            onClick={() => onSelectArtifact(node.id, artifact.name, ext)}
+                            className="flex w-full items-center justify-between gap-3 rounded-md border border-line bg-surface-raised px-3 py-2 text-left transition hover:border-line-strong"
+                          >
+                            <span className="min-w-0 truncate font-mono text-[11.5px] text-ink-strong">
+                              {artifact.name}
+                            </span>
+                            <span className="flex-none text-[10px] uppercase text-ink-subtle">
+                              {formatArtifactBytes(artifact.bytes)}
+                            </span>
+                          </button>
+                        ) : (
+                          <div className="rounded-md border border-dashed border-line bg-surface-sunken px-3 py-2 opacity-70">
+                            <div className="truncate font-mono text-[11.5px] text-ink-muted">
+                              {artifact.name}
+                            </div>
+                            <div className="mt-0.5 text-[10.5px] text-ink-subtle">
+                              Dropped: {artifact.reason || "invalid artifact"}
+                            </div>
+                          </div>
+                        )}
+                      </li>
+                    );
+                  })}
+                </ul>
+              </section>
+            )}
+
             <section className="mb-5">
               <details
                 key={node.id}
@@ -341,6 +385,12 @@ function SectionHeading({
       {right}
     </div>
   );
+}
+
+function formatArtifactBytes(bytes: number): string {
+  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
+  if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
+  return `${bytes} B`;
 }
 
 type VirtualDraft = {

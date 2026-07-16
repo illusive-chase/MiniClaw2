@@ -47,7 +47,7 @@ class StoreIdentityMigrationTests(unittest.TestCase):
             self.assertTrue((root / "machine.json").is_file())
             self.assertEqual(
                 json.loads((root / "schema.json").read_text())["schema_version"],
-                4,
+                5,
             )
             self.assertTrue(list((root / "migration-backups").glob("*/projects/*/project.json")))
             ignore = (root / ".gitignore").read_text()

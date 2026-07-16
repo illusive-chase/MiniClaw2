@@ -24,10 +24,12 @@ import {
   listSkills,
   deleteSkill,
   getGlobalState,
+  artifactRawUrl,
   type SkillSummary,
   type UpdateVirtualPayload,
 } from "./api";
 import { Canvas, type CanvasSelection } from "./canvas/Canvas";
+import { artifactNodeId } from "./canvas/layout";
 import { setAgentNodeContext } from "./canvas/nodes/AgentNode";
 import { setPlanspaceLaneContext } from "./canvas/nodes/PlanspaceLaneNode";
 import { SidePanel } from "./panel/SidePanel";
@@ -1430,7 +1432,7 @@ export function App() {
 
   const onSelectionChange = useCallback((sel: CanvasSelection) => {
     setSelection(sel);
-    if (sel.kind === "agent" || sel.kind === "op") {
+    if (sel.kind === "agent" || sel.kind === "op" || sel.kind === "artifact") {
       inspectNode(sel.nodeId);
     } else if (sel.kind === "none") {
       inspectNode(null);
@@ -1500,6 +1502,19 @@ export function App() {
       openDetails();
     },
     [inspectNode, nodes, openDetails],
+  );
+
+  const onSelectArtifact = useCallback(
+    (nodeId: string, name: string, ext: "md" | "json" | "html") => {
+      if (!nodes.some((node) => node.id === nodeId)) return;
+      if (ext === "html" && session?.id) {
+        window.open(artifactRawUrl(session.id, nodeId, name), "_blank", "noopener");
+      }
+      setSelection({ kind: "artifact", nodeId, name, ext });
+      inspectNode(nodeId);
+      openDetails();
+    },
+    [inspectNode, nodes, openDetails, session?.id],
   );
 
   /* Wire per-agent canvas affordances and inline pending-response tiles into
@@ -1701,6 +1716,7 @@ export function App() {
           {initialLoadComplete ? (
             <Canvas
               key={session?.id ?? "no-session"}
+              sessionId={session?.id ?? ""}
               nodes={nodes}
               selectedNodeId={selectedCanvasNodeId}
               activeNodeIds={activeCanvasNodeIds}
@@ -1797,6 +1813,7 @@ export function App() {
                 onResolveGate={onResolveGate}
                 onResolveReview={onResolveReview}
                 onSelectNode={onSelectNode}
+                onSelectArtifact={onSelectArtifact}
                 onPreferredLanguageChange={updatePreferredLanguage}
                 onConcurrencyChange={updateConcurrency}
                 onActivatePlanspace={activatePlanspace}
@@ -2019,6 +2036,9 @@ function graphNodeIdForSelection(selection: CanvasSelection): string | null {
   }
   if (selection.kind === "context") {
     return `ctx:${selection.identityKey}`;
+  }
+  if (selection.kind === "artifact") {
+    return artifactNodeId(selection.nodeId, selection.name);
   }
   if (selection.kind === "projectRoot") {
     return "root";

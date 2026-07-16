@@ -123,7 +123,7 @@ resolving to the absolute
 `<project_root>/.miniclaw2/outputs/<node-id>/`):
 
 ```markdown
-## Publishing artifacts (optional)
+## Publishing artifacts (only when explicitly requested)
 
 To show a file to the human, write it under:
 

@@ -64,6 +64,15 @@ class ParsePreviewTests(unittest.TestCase):
         self.assertIsInstance(preview, ExecutedPreview)
         self.assertEqual(preview.id, "n1")
         self.assertEqual(preview.summary, "done")
+        self.assertEqual(preview.artifacts, [])
+
+    def test_executed_preview_accepts_artifact_declarations(self) -> None:
+        preview = parse_preview(
+            json.dumps(_executed_payload(artifacts=["report.md", "demo.html"]))
+        )
+        self.assertIsInstance(preview, ExecutedPreview)
+        assert isinstance(preview, ExecutedPreview)
+        self.assertEqual(preview.artifacts, ["report.md", "demo.html"])
 
     def test_virtual_round_trip(self) -> None:
         payload = _virtual_payload()

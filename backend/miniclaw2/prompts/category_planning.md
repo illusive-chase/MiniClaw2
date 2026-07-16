@@ -38,11 +38,29 @@ the plan.
   "lane": "<<lane_id>>",
   "motivation": "<why this planning pass ran>",
   "summary": "<the planning move you made>",
-  "next_implications": "<what the lane now expects to happen>"
+  "next_implications": "<what the lane now expects to happen>",
+  "artifacts": []
 }
 ```
 
 Use `"error"` or `"cancelled"` for `state` on failure paths.
+
+## Publishing artifacts (only when explicitly requested)
+
+To show a file to the human, write it under:
+
+    <<outputs_path>>
+
+then list its filename in the `artifacts` field of your preview:
+
+    "artifacts": ["report.md"]
+
+Only declared files ending in `.md`, `.json`, or `.html` are shown.
+An `.html` file must be a single self-contained document — inline
+CSS and JS, no external assets, no companion files. Keep artifacts
+few and final: they are a publication for the human, not a scratch
+space. Files you do not declare remain readable by later agents but
+are never shown to the human.
 
 ### 2. Virtual previews (the plan)
 

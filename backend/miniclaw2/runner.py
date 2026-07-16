@@ -21,6 +21,11 @@ from uuid import uuid4
 
 from pydantic import BaseModel
 
+from .artifacts import (
+    clear_published_artifacts,
+    publish_artifacts,
+    workspace_artifacts_dir,
+)
 from .contextspace import (
     StaleLaunchSettingsError,
     compose_context_bundle,
@@ -64,7 +69,13 @@ from .materialize import (
     snapshot_lane,
 )
 from .model_catalog import get_model_preset
-from .preview import render_executed_preview
+from .preview import (
+    ExecutedPreview,
+    PreviewValidationError,
+    parse_preview,
+    render_executed_preview,
+    validate_preview_for_node,
+)
 from .providers import (
     AgentProvider,
     AgentProviderContext,
@@ -204,7 +215,14 @@ class NodeRunner:
                         launch_instructions = _compose_launch_instructions(
                             _skill_init_block(self.node, self.store.root),
                             build_category_launch_block(
-                                self.node, lane_path=self._lane_prompt_path()
+                                self.node,
+                                lane_path=self._lane_prompt_path(),
+                                outputs_path=str(
+                                    workspace_artifacts_dir(
+                                        self.project,
+                                        self.node.id,
+                                    )
+                                ),
                             ),
                             build_dependency_launch_block(
                                 self.node, lane_path=self._lane_prompt_path()
@@ -531,6 +549,10 @@ class NodeRunner:
     # ---- materialization + reap ----
 
     def _materialize_lane(self) -> None:
+        workspace_artifacts_dir(self.project, self.node.id).mkdir(
+            parents=True,
+            exist_ok=True,
+        )
         lane_id = self.node.planspace_id or ""
         if not lane_id:
             self._lane_root = None
@@ -688,6 +710,8 @@ class NodeRunner:
             return False, "; ".join(result.rejection_reasons)
         if not result.own_preview_ok:
             return False, "; ".join(result.rejection_reasons)
+        if result.own_preview is None:
+            return False, "reap did not return the running node preview"
         own_path = node_dir(self._lane_root, self.node.id) / "preview.json"
         try:
             text = own_path.read_text(encoding="utf-8")
@@ -695,6 +719,12 @@ class NodeRunner:
         except OSError as exc:
             logger.exception("failed to persist own preview to durable store")
             return False, f"failed to persist own preview: {exc}"
+        publish_artifacts(
+            self.project,
+            self.node,
+            result.own_preview.artifacts,
+            self.store,
+        )
         for virtual in result.new_virtuals + result.modified_virtuals:
             self.store.update_node(virtual)
         return True, ""
@@ -708,8 +738,13 @@ class NodeRunner:
         skip reap entirely — virtual writes from failed sessions are
         discarded.
         """
-        if provider_final_state is not NodeState.DONE or self._lane_root is None:
+        if provider_final_state is not NodeState.DONE:
             self._write_stub_preview(provider_final_state)
+            return provider_final_state
+        if self._lane_root is None:
+            ok, _reason = self._try_persist_unlaned_preview()
+            if not ok:
+                self._write_stub_preview(provider_final_state)
             return provider_final_state
         ok, reason = await self._try_reap_and_persist()
         if not ok:
@@ -717,6 +752,36 @@ class NodeRunner:
             self._write_stub_preview(NodeState.ERROR, reason=reason)
             return NodeState.ERROR
         return provider_final_state
+
+    def _try_persist_unlaned_preview(self) -> tuple[bool, str]:
+        own_path = (
+            node_dir(runner_lane_root(self.project, self.node.id, ""), self.node.id)
+            / "preview.json"
+        )
+        try:
+            text = own_path.read_text(encoding="utf-8")
+            preview = parse_preview(text)
+        except PreviewValidationError as exc:
+            return False, "; ".join(exc.issues)
+        except OSError as exc:
+            return False, f"cannot read own preview: {exc}"
+        if not isinstance(preview, ExecutedPreview):
+            return False, "running node wrote a virtual preview as its own"
+        issues = validate_preview_for_node(preview, self.node)
+        if issues:
+            return False, "; ".join(issues)
+        try:
+            self.store.write_node_preview(self.project.id, self.node.id, text)
+            publish_artifacts(
+                self.project,
+                self.node,
+                preview.artifacts,
+                self.store,
+            )
+        except OSError as exc:
+            logger.exception("failed to persist unlaned preview")
+            return False, f"failed to persist own preview: {exc}"
+        return True, ""
 
     def _persist_executed_preview(
         self,
@@ -744,6 +809,7 @@ class NodeRunner:
             self.node.state = original_state
 
     def _write_stub_preview(self, final_state: NodeState, *, reason: str = "") -> None:
+        clear_published_artifacts(self.project, self.node, self.store)
         self._persist_executed_preview(
             final_state,
             motivation=self.node.prompt[:200] if self.node.prompt else "(no motivation recorded)",

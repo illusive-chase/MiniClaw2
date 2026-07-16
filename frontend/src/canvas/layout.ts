@@ -1,5 +1,5 @@
 import type { Edge, Node } from "reactflow";
-import type { ContextBundle, NodeInfo } from "../types";
+import type { ArtifactRef, ContextBundle, NodeInfo } from "../types";
 
 /* ───────── canvas node payloads ───────── */
 
@@ -26,6 +26,12 @@ export type ErrorTerminalData = {
   /** The owning agent node whose error this surfaces. */
   ownerNodeId: string;
   message: string;
+};
+
+export type ArtifactNodeData = {
+  ownerNodeId: string;
+  artifact: ArtifactRef | null;
+  overflowCount: number;
 };
 
 export type ContextNodeData = {
@@ -88,7 +94,8 @@ export type RFNodeData =
   | ContextNodeData
   | ProjectRootNodeData
   | PlanspaceLaneData
-  | ErrorTerminalData;
+  | ErrorTerminalData
+  | ArtifactNodeData;
 
 export type RFNode = Node<RFNodeData>;
 export type RFEdge = Edge;
@@ -101,6 +108,7 @@ export const LANE = {
   projectContextLaneY: 8,
   contextLaneY: 110,
   errorTerminalOffsetY: 140,
+  artifactOffsetY: 140,
   agentWidth: 224,
   agentHeight: 132,
   agentSpacing: 280,
@@ -598,6 +606,70 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
     });
   });
 
+  /* Published artifacts — terminal-only tiles fanned beneath their producer. */
+  visibleNodes.forEach((node) => {
+    if (node.kind === "op") return;
+    const published = (node.artifacts ?? []).filter((ref) => ref.status === "published");
+    if (published.length === 0) return;
+    const visibleArtifacts = published.length <= 4 ? published : published.slice(0, 3);
+    const tileCount = visibleArtifacts.length + (published.length > 4 ? 1 : 0);
+    const sourceNode = rfNodes.find((candidate) => candidate.id === node.id);
+    const baseX = sourceNode?.position.x ?? LANE.rootX;
+    const baseY = sourceNode?.position.y ?? LANE.timelineY;
+    const ownerParent = sourceNode?.parentNode;
+    const centeredStart = baseX + LANE.agentWidth / 2 - (tileCount * 170 - 10) / 2;
+    const startX = ownerParent
+      ? Math.max(LANE.planspaceLanePaddingX, centeredStart)
+      : centeredStart;
+    const entries: Array<{ artifact: ArtifactRef | null; overflowCount: number }> = [
+      ...visibleArtifacts.map((artifact) => ({ artifact, overflowCount: 0 })),
+      ...(published.length > 4
+        ? [{ artifact: null, overflowCount: published.length - 3 }]
+        : []),
+    ];
+    entries.forEach((entry, index) => {
+      const tileId = entry.artifact
+        ? artifactNodeId(node.id, entry.artifact.name)
+        : artifactOverflowNodeId(node.id);
+      const position = layoutHints[tileId] ?? {
+        x: startX + index * 170,
+        y: baseY + LANE.artifactOffsetY,
+      };
+      if (ownerParent?.startsWith("planspace:")) {
+        recordChildExtent(
+          ownerParent.slice("planspace:".length),
+          position.x,
+          position.y,
+          160,
+          80,
+        );
+      }
+      rfNodes.push({
+        id: tileId,
+        type: "artifact",
+        position,
+        width: 160,
+        height: 70,
+        data: {
+          ownerNodeId: node.id,
+          artifact: entry.artifact,
+          overflowCount: entry.overflowCount,
+        },
+        draggable: true,
+        selectable: true,
+        ...(ownerParent ? { parentNode: ownerParent, extent: "parent" as const } : {}),
+      });
+      rfEdges.push({
+        id: `produces:${node.id}->${tileId}`,
+        source: node.id,
+        sourceHandle: "produces",
+        target: tileId,
+        targetHandle: "produces",
+        type: "produces",
+      });
+    });
+  });
+
   /* context lane — one node per distinct (scope, kind, path) tuple across all bundles */
   type CtxAggregate = {
     identityKey: string;
@@ -823,6 +895,14 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
 
 export function contextIdentityKey(scope: string, kind: string, path: string): string {
   return `${scope}::${kind}::${path}`;
+}
+
+export function artifactNodeId(nodeId: string, name: string): string {
+  return `artifact:${nodeId}:${encodeURIComponent(name)}`;
+}
+
+export function artifactOverflowNodeId(nodeId: string): string {
+  return `artifact-overflow:${nodeId}`;
 }
 
 export function filenameOf(p: string): string {

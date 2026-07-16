@@ -29,7 +29,7 @@ Trunk: `backend/miniclaw2/domain.py`.
   `brief`, `prompt_draft`, `scheduled_deps`, `pending_extra_skills`,
   `resume_from_node_id`,
   `verify_script_ref`, `proposed_by`, `obsolete_reason`, `summary`,
-  `error`, `usage`, `system_context_snapshot`, `settings_snapshot`,
+  `error`, `usage`, `artifacts`, `system_context_snapshot`, `settings_snapshot`,
   `created_at`, `started_at`, `finished_at`.
 - `Project` fields: `root_path`, `name`, `model_preset_id`,
   `project_context_binding_id`, `active_planspace_id`, `preferred_language`,
@@ -363,11 +363,12 @@ Trunk: `frontend/src/canvas/Canvas.tsx`, `frontend/src/canvas/layout.ts`,
 
 - React Flow canvas; one canvas per project; pan/zoom per-project.
 - Node kinds rendered: `AgentNode`, `OpNode`, `ContextNode`,
-  `ErrorTerminalNode`, `PlanspaceLaneNode`, `ProjectRootNode`. Passive
-  `GateNode`, `ArtifactNode`, and the old phantom composer node have
-  been removed.
-- Polymorphic side panel: `AgentPanel`, `ContextNodePanel`, `OpPanel`,
-  lane panel, `ProjectPanel` switched by selection (`SidePanel.tsx`).
+  `ArtifactNode`, `ErrorTerminalNode`, `PlanspaceLaneNode`,
+  `ProjectRootNode`. Passive `GateNode` and the old phantom composer
+  node have been removed.
+- Polymorphic side panel: `AgentPanel`, `ContextNodePanel`,
+  `ArtifactPanel`, `OpPanel`, lane panel, `ProjectPanel` switched by
+  selection (`SidePanel.tsx`).
 - The new-direction composer offers two bootstraps: `Draft with
   concierge` launches the planning bootstrap agent, while `Start blank`
   creates a bound planspace with one empty virtual node and focuses its
@@ -385,8 +386,8 @@ Trunk: `frontend/src/canvas/Canvas.tsx`, `frontend/src/canvas/layout.ts`,
   human-interact review nodes; verifier tiles use the review tone and
   a programmatic label.
 - Edges: dependency arrows, timeline spine, resume (`↻` mid-glyph),
-  loads (dashed, auto-hidden unless endpoint hovered/selected), and op
-  chevrons.
+  loads (dashed, auto-hidden unless endpoint hovered/selected), produces
+  (agent to published artifact), and op chevrons.
 - Op as edge chevron when the op has a downstream child; trailing
   ops without a child fall back to a tile.
 - Error terminal nodes downstream of failed runs carry the `error`
@@ -403,7 +404,9 @@ Trunk: `frontend/src/canvas/Canvas.tsx`, `frontend/src/canvas/layout.ts`,
   planspace-colored "loaded context" lane.
 - `AgentPanel` shows virtual node draft/provenance/dependencies/brief
   for virtuals; executed nodes show agent input, persisted
-  `preview.json`, activity, thinking, and inspect drawer.
+  `preview.json`, published/dropped artifacts, activity, thinking, and
+  inspect drawer. Markdown/JSON artifacts render inline; HTML opens in
+  a sandboxed window.
 - Agent tiles and the inspector show model-preset identity. Error/cancelled
   agents expose rerun, which creates and focuses a new virtual instead of
   mutating execution history.
@@ -498,6 +501,12 @@ surface; the durable node store is the source of truth.
   with a framework-written "preview contract abandoned" stub preview.
 - Cancelled/error runs skip virtual reap and get framework stub
   previews.
+- Executed previews may declare bare artifact filenames. Terminal reap
+  validates `.md`/`.json`/`.html` files under
+  `.miniclaw2/outputs/<nid>/`, applies per-file/per-node/count caps,
+  replaces the durable node artifact directory, and stamps published or
+  dropped manifest entries onto `Node`. Artifact failures do not enter
+  the preview-repair loop.
 - Anti-self-poisoning prompt is appended last in launch instruction
   composition and applies to preview content as guidance.
 
@@ -681,6 +690,7 @@ Trunk: `backend/miniclaw2/store.py`, `backend/miniclaw2/replay.py`.
   projects/<pid>/nodes/<nid>/node.json
   projects/<pid>/nodes/<nid>/events.jsonl
   projects/<pid>/nodes/<nid>/gates.jsonl
+  projects/<pid>/nodes/<nid>/artifacts/<name>
   contextspace/...                # see §4
   ```
 - Atomic JSON writes (tmp + rename). Each node has one event writer; different
@@ -690,12 +700,13 @@ Trunk: `backend/miniclaw2/store.py`, `backend/miniclaw2/replay.py`.
   process to cancelled terminal records, including framework stub previews,
   without blocking other projects on a malformed entry; queued nodes remain
   pending and resume scheduling after startup.
-- Store schema v4 writes one canonical shape: only `model_preset_id`
+- Store schema v5 writes one canonical shape: only `model_preset_id`
   persists provider selection, only `provider_session_id` persists
   provider conversation identity, and ContextSpace/language selections
   live in typed Project fields. Runtime loading accepts only this canonical
-  shape. Startup performs the v4 compatibility migration atomically, backing
-  up and stamping pre-sync project records with the local machine identity.
+  shape; v5 adds the defaulted node artifact manifest. Startup performs the
+  compatibility migration atomically, backing up and stamping pre-sync project
+  records with the local machine identity.
 - `$MINICLAW_HOME` can be initialized as a Git repository and exchanged with
   a user-provided remote only through `miniclaw2 sync init <git-url>` or the
   Global settings **Sync now** action. Local durable writes are committed on a
@@ -749,8 +760,9 @@ Trunk: `backend/miniclaw2/store.py`, `backend/miniclaw2/replay.py`.
   repo monotonically; archiving, compaction, or LFS is deferred until
   repo size hurts.
 - Encryption at rest (git-crypt/age) for partially trusted remotes.
-- Artifact sync: `outputs/<nid>/` stays local to the machine that can
-  run the project; a size-capped opt-in could come later.
+- Workspace `outputs/<nid>/` stays local to the native project machine;
+  its explicitly published, size-capped subset lives under durable node
+  metadata and syncs with the project subtree.
 - Cross-machine live streaming (backend-to-backend event relay); viewer
   freshness beyond pull-on-sync is a different feature.
 - Merging two non-empty stores at bootstrap. Multi-master writing is an
@@ -791,6 +803,7 @@ Quick reference; the on-disk shape is authoritative.
 - REST: `GET /model-presets`; `GET /global-state`,
   `POST /global-state/sync/setup`, `POST /global-state/sync`; project CRUD, preferences, node/event
   introspection, failed-node rerun, per-node diff/preview/context-bundle reads,
+  published artifact JSON/raw reads,
   `PATCH /sessions/{sid}/layout-hints`,
   `PATCH /sessions/{sid}/planspace-view`,
   `PATCH /sessions/{sid}/planspaces/{planspace_id}/mode`,

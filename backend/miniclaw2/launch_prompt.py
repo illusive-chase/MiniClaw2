@@ -51,11 +51,16 @@ def _lane_path(node: Node) -> str:
     return f"{GRAPH_DIRNAME}/{lane_id}".rstrip("/")
 
 
-def _substitutions(node: Node, lane_path: str | None = None) -> dict[str, str]:
+def _substitutions(
+    node: Node,
+    lane_path: str | None = None,
+    outputs_path: str | None = None,
+) -> dict[str, str]:
     subs: dict[str, str] = {
         "lane_path": lane_path or _lane_path(node),
         "node_id": node.id,
         "lane_id": node.planspace_id or "",
+        "outputs_path": outputs_path or "",
     }
     brief = node.brief
     if brief is not None:
@@ -65,7 +70,12 @@ def _substitutions(node: Node, lane_path: str | None = None) -> dict[str, str]:
     return subs
 
 
-def build_category_launch_block(node: Node, *, lane_path: str | None = None) -> str:
+def build_category_launch_block(
+    node: Node,
+    *,
+    lane_path: str | None = None,
+    outputs_path: str | None = None,
+) -> str:
     """Return the category-aware launch instruction block for ``node``.
 
     Returns an empty string for op nodes (they do not get a launch
@@ -75,7 +85,7 @@ def build_category_launch_block(node: Node, *, lane_path: str | None = None) -> 
     if template is None:
         return ""
     rendered = template
-    for token, value in _substitutions(node, lane_path).items():
+    for token, value in _substitutions(node, lane_path, outputs_path).items():
         rendered = rendered.replace(f"<<{token}>>", value)
     return rendered.strip()
 

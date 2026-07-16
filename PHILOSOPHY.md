@@ -273,10 +273,13 @@ records. Five relations matter:
   from the project's CONTEXT context node down to every tile. No
   other markdown participates in loads — STATUS.md and PLAN.md are
   retired.
+- **produces** — a terminal node's explicitly published artifacts.
+  Rendered from the producing node to each artifact tile.
 
 Out of scope: `fork` (cross-project worktrees) remains as a future
-direction; not part of the current ontology. `produces` retires —
-artifact paths are observed in the transcript, not declared.
+direction; not part of the current ontology. Agent-to-agent artifact
+paths read are observed in the transcript; artifacts published to the
+user are declared on the executed preview.
 
 
 ## 7. ContextSpace
@@ -362,8 +365,8 @@ fields plus framework-stamped metadata:
 - **next_implications** — what it enables or blocks downstream.
 
 Framework-stamped meta: id, category, subtype (for review), lane,
-state, ran_at. Artifact paths and refs read are observed in the
-transcript, not declared on the preview.
+state, ran_at. Artifact paths read are observed in the transcript;
+artifacts published to the user are declared on the preview.
 
 Review virtuals additionally carry a structured brief
 (`check_what` / `expected` / `abnormal`) describing what the

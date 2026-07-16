@@ -13,7 +13,7 @@ from __future__ import annotations
 import time
 from enum import StrEnum
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from uuid import uuid4
 
 from pydantic import (
@@ -128,6 +128,17 @@ class TokenUsage(BaseModel):
     cumulative_cache_creation_tokens: int | None = None
 
 
+class ArtifactRef(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    bytes: int
+    mtime: float
+    sha256: str
+    status: Literal["published", "dropped"]
+    reason: str | None = None
+
+
 class Project(BaseModel):
     model_config = ConfigDict(extra="forbid")
     _model_catalog_root: Path | None = PrivateAttr(default=None)
@@ -218,6 +229,7 @@ class Node(BaseModel):
     summary: str | None = None
     error: str | None = None
     usage: TokenUsage | None = None
+    artifacts: list[ArtifactRef] = Field(default_factory=list)
     system_context_snapshot: str = ""
     settings_snapshot: dict[str, Any] = Field(default_factory=dict)
     created_at: float = Field(default_factory=_now)
@@ -226,6 +238,9 @@ class Node(BaseModel):
 
     @model_validator(mode="after")
     def _check_invariants(self) -> "Node":
+        artifact_names = [artifact.name for artifact in self.artifacts]
+        if len(artifact_names) != len(set(artifact_names)):
+            raise ValueError("artifact names must be unique per node")
         if self.kind is not NodeKind.AGENT:
             if self.agent_op_kind is not None:
                 raise ValueError(

@@ -16,6 +16,7 @@ import type {
   CanvasViewport,
   SessionInfo,
   SessionContextSpaceInfo,
+  ArtifactFile,
 } from "./types";
 
 export class ApiError extends Error {
@@ -525,6 +526,28 @@ export async function getNodePreview(
   );
   if (res.status === 404) return null;
   if (!res.ok) throw new Error(`getNodePreview failed: ${res.status}`);
+  return res.json();
+}
+
+export function artifactRawUrl(
+  sessionId: string,
+  nodeId: string,
+  name: string,
+): string {
+  return `/sessions/${encodeURIComponent(sessionId)}/nodes/${encodeURIComponent(nodeId)}/artifacts/${encodeURIComponent(name)}?raw=1`;
+}
+
+export async function getNodeArtifact(
+  sessionId: string,
+  nodeId: string,
+  name: string,
+): Promise<ArtifactFile> {
+  const res = await fetch(
+    `/sessions/${encodeURIComponent(sessionId)}/nodes/${encodeURIComponent(nodeId)}/artifacts/${encodeURIComponent(name)}`,
+  );
+  if (!res.ok) {
+    throw new ApiError("getNodeArtifact", res.status, await readErrorDetail(res));
+  }
   return res.json();
 }
 

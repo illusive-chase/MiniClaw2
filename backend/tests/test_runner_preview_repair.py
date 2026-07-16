@@ -14,6 +14,7 @@ from unittest.mock import patch
 import yaml
 
 from miniclaw2 import runner as runner_module
+from miniclaw2.artifacts import stored_artifacts_dir, workspace_artifacts_dir
 from miniclaw2.contextspace import (
     contextspace_root,
     create_planspace,
@@ -80,6 +81,49 @@ class _BareProvider:
     async def run(self, context: AgentProviderContext):
         self.prompts.append(context.node.prompt)
         yield AgentProviderEvent(kind="session", session_id="stub-session")
+
+    async def interrupt(self) -> None:
+        return None
+
+
+class _UnlanedArtifactProvider:
+    name = "stub"
+
+    async def run(self, context: AgentProviderContext):
+        node = context.node
+        outputs = workspace_artifacts_dir(context.project, node.id)
+        (outputs / "report.md").write_text("# Report\n", encoding="utf-8")
+        path = (
+            Path(context.project.root_path)
+            / ".miniclaw2"
+            / "graph"
+            / "runs"
+            / node.id
+            / "lanes"
+            / "nodes"
+            / node.id
+            / "preview.json"
+        )
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(
+                {
+                    "id": node.id,
+                    "kind": "agent",
+                    "category": "regular",
+                    "state": "done",
+                    "ran_at": "2026-06-15T00:00:00+00:00",
+                    "lane": "",
+                    "motivation": "publish a report",
+                    "summary": "report published",
+                    "next_implications": "none",
+                    "artifacts": ["report.md"],
+                }
+            ),
+            encoding="utf-8",
+        )
+        yield AgentProviderEvent(kind="session", session_id="stub-session")
+        yield AgentProviderEvent(kind="done", final_state="done")
 
     async def interrupt(self) -> None:
         return None
@@ -289,6 +333,34 @@ class RunnerPreviewRepairTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(preview)
         assert preview is not None
         self.assertIn('"state": "error"', preview)
+
+    async def test_unlaned_run_persists_preview_artifact_declarations(self) -> None:
+        node = self._node()
+        node.planspace_id = None
+        self.store.update_node(node)
+
+        async def on_event(_payload: dict) -> None:
+            return None
+
+        runner = NodeRunner(node, self.project, self.store, on_event)
+        with patch.object(
+            runner_module,
+            "_make_provider",
+            return_value=_UnlanedArtifactProvider(),
+        ):
+            await asyncio.wait_for(runner.run(), timeout=5.0)
+
+        self.assertEqual(node.state, NodeState.DONE)
+        self.assertEqual([artifact.name for artifact in node.artifacts], ["report.md"])
+        preview = self.store.read_node_preview(self.project.id, node.id)
+        self.assertIsNotNone(preview)
+        assert preview is not None
+        self.assertIn("report published", preview)
+        durable = stored_artifacts_dir(self.store, self.project.id, node.id)
+        self.assertEqual(
+            (durable / "report.md").read_text(encoding="utf-8"),
+            "# Report\n",
+        )
 
     async def test_stale_active_planspace_errors_before_provider_launch(self) -> None:
         node = self._node()

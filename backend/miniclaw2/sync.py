@@ -19,8 +19,8 @@ import yaml
 
 MACHINE_FILENAME = "machine.json"
 SCHEMA_FILENAME = "schema.json"
-SCHEMA_VERSION = 4
-SCHEMA_NAME = "canonical-schema-v4"
+SCHEMA_VERSION = 5
+SCHEMA_NAME = "canonical-schema-v5"
 DEFAULT_COMMIT_DEBOUNCE_SECONDS = 30.0
 
 
@@ -138,7 +138,7 @@ def resolve_machine_copy(root: Path, *, label: str | None = None) -> MachineIden
 
 
 def ensure_store_metadata(root: Path, identity: MachineIdentity) -> None:
-    """Create v4 metadata and stamp records from pre-sync stores."""
+    """Create current metadata and stamp records from pre-sync stores."""
     schema_path = root / SCHEMA_FILENAME
     existing_version = 0
     if schema_path.exists():
@@ -164,7 +164,7 @@ def ensure_store_metadata(root: Path, identity: MachineIdentity) -> None:
         backup_root = (
             root
             / "migration-backups"
-            / f"canonical-schema-v4-{int(time.time())}"
+            / f"canonical-schema-v5-{int(time.time())}"
         )
         for project_file, project_payload in legacy_files:
             relative = project_file.relative_to(root)
