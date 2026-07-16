@@ -1,3 +1,4 @@
+import { useState } from "react";
 import type { CanvasSelection } from "../canvas/Canvas";
 import type {
   ClientMessage,
@@ -10,6 +11,7 @@ import type {
   PlanspaceMode,
   SessionContextSpaceInfo,
   SessionInfo,
+  CommitDescriptor,
 } from "../types";
 import type { SkillSummary, UpdateVirtualPayload } from "../api";
 import { AgentPanel } from "./AgentPanel";
@@ -106,6 +108,10 @@ export type SidePanelProps = {
   onDeleteSkill?: (slug: string) => Promise<void> | void;
 
   onClose: () => void;
+  gitCommits?: CommitDescriptor[];
+  gitDirtyCount?: number;
+  gitActionPending?: boolean;
+  onGitCommit?: (message: string) => Promise<void> | void;
 };
 
 /**
@@ -134,7 +140,7 @@ export function SidePanel(props: SidePanelProps) {
         </button>
       </div>
       <div className="min-h-0 flex-1">
-        <Inner {...props} nodesById={nodesById} />
+      <Inner {...props} nodesById={nodesById} />
       </div>
     </div>
   );
@@ -190,6 +196,7 @@ function Inner(props: SidePanelProps & { nodesById: Map<string, NodeInfo> }) {
     skills,
     onDeleteSkill,
     nodesById,
+    gitCommits = [],
   } = props;
 
   if (selection.kind === "none") {
@@ -225,6 +232,21 @@ function Inner(props: SidePanelProps & { nodesById: Map<string, NodeInfo> }) {
         newDirectionRequestVersion={newDirectionRequestVersion}
         onNewDirectionRequestHandled={onNewDirectionRequestHandled}
       />
+    );
+  }
+
+  if (selection.kind === "commit") {
+    const commit = selection.sha ? gitCommits.find((item) => item.sha === selection.sha) : null;
+    if (!selection.sha) {
+      return <GitCommitPanel dirtyCount={props.gitDirtyCount ?? 0} pending={props.gitActionPending ?? false} readOnly={!!session?.read_only} onCommit={props.onGitCommit} />;
+    }
+    return (
+      <div className="flex h-full flex-col overflow-y-auto bg-surface px-4 py-4 text-sm">
+        <div className="text-[10px] font-medium uppercase tracking-[0.14em] text-ink-subtle">Git commit</div>
+        <h2 className="mt-2 font-mono text-[14px] font-semibold text-ink-strong">{commit?.sha.slice(0, 12) ?? "uncommitted changes"}</h2>
+        <p className="mt-3 text-[13px] leading-relaxed text-ink">{commit?.message ?? "Working tree changes are not committed yet."}</p>
+        {commit && <div className="mt-4 rounded-md border border-line bg-surface-sunken px-3 py-2 text-[11px] text-ink-muted">{commit.live ? "present in repository" : "stale: no longer reachable"}</div>}
+      </div>
     );
   }
 
@@ -336,6 +358,19 @@ function Inner(props: SidePanelProps & { nodesById: Map<string, NodeInfo> }) {
   }
 
   return <Missing />;
+}
+
+function GitCommitPanel({ dirtyCount, pending, readOnly, onCommit }: { dirtyCount: number; pending: boolean; readOnly: boolean; onCommit?: (message: string) => Promise<void> | void }) {
+  const [message, setMessage] = useState("Changes from MiniClaw2");
+  const disabled = readOnly || pending || dirtyCount === 0 || !message.trim();
+  return (
+    <div className="flex h-full flex-col bg-surface px-4 py-4">
+      <div className="text-[10px] font-medium uppercase tracking-[0.14em] text-ink-subtle">Commit changes</div>
+      <p className="mt-2 text-[12px] text-ink-muted">{dirtyCount === 0 ? "Working tree clean." : `${dirtyCount} changed ${dirtyCount === 1 ? "file" : "files"}.`}</p>
+      <textarea value={message} onChange={(event) => setMessage(event.target.value)} disabled={readOnly || pending} rows={5} className="mt-4 resize-none rounded-md border border-line bg-surface-raised px-3 py-2 text-[13px] text-ink outline-none focus:border-brand" placeholder="Commit message" />
+      <button type="button" disabled={disabled} onClick={() => void onCommit?.(message.trim())} className="mt-3 inline-flex h-9 items-center justify-center rounded-md bg-brand px-3 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-40">{pending ? "Committing…" : "Commit"}</button>
+    </div>
+  );
 }
 
 function Missing() {

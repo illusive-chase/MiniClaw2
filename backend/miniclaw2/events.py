@@ -93,6 +93,21 @@ class NodeRemoved(BaseModel):
     seq: int = 0
 
 
+class GitStatus(BaseModel):
+    """Ephemeral project Git telemetry; intentionally has no node_id."""
+
+    type: Literal["git_status"] = "git_status"
+    is_repo: bool = False
+    head: str | None = None
+    branch: str | None = None
+    detached: bool = False
+    upstream: str | None = None
+    ahead: int | None = None
+    behind: int | None = None
+    dirty_count: int = 0
+    seq: int = 0
+
+
 class TurnDone(BaseModel):
     type: Literal["turn_done"] = "turn_done"
     node_id: str = ""

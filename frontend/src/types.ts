@@ -83,6 +83,29 @@ export type NodeRemoved = {
   seq?: number;
 };
 
+export type GitStatus = {
+  is_repo: boolean;
+  head?: string | null;
+  branch?: string | null;
+  detached: boolean;
+  upstream?: string | null;
+  ahead?: number | null;
+  behind?: number | null;
+  dirty_count: number;
+};
+
+export type CommitDescriptor = {
+  sha: string;
+  live: boolean;
+  message: string;
+  ts?: number | null;
+  external_count_before: number;
+  aliases: string[];
+};
+
+export type GitState = { status: GitStatus; commits: CommitDescriptor[] };
+export type GitStatusEvent = GitStatus & { type: "git_status"; seq?: number };
+
 export type ServerEvent =
   | TextDelta
   | Thinking
@@ -93,7 +116,8 @@ export type ServerEvent =
   | ErrorEvent
   | NodeStarted
   | NodeUpdated
-  | NodeRemoved;
+  | NodeRemoved
+  | GitStatusEvent;
 
 export type ClientMessage =
     | {

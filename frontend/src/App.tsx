@@ -24,6 +24,10 @@ import {
   listSkills,
   deleteSkill,
   getGlobalState,
+  getGitState,
+  gitCommit,
+  gitPull,
+  gitPush,
   artifactRawUrl,
   type SkillSummary,
   type UpdateVirtualPayload,
@@ -54,6 +58,8 @@ import type {
   SessionContextSpaceInfo,
   SessionInfo,
   PlanspaceMode,
+  GitStatus,
+  CommitDescriptor,
 } from "./types";
 import { useSessionSocket } from "./ws";
 import { canResumeNode } from "./nodeUtil";
@@ -81,6 +87,10 @@ export function App() {
   const [nodes, setNodes] = useState<NodeInfo[]>([]);
   const [modelPresets, setModelPresets] = useState<ModelPreset[]>([]);
   const [globalState, setGlobalState] = useState<GlobalState | null>(null);
+  const [gitStatus, setGitStatus] = useState<GitStatus | null>(null);
+  const [gitCommits, setGitCommits] = useState<CommitDescriptor[]>([]);
+  const [gitAction, setGitAction] = useState<"commit" | "pull" | "push" | null>(null);
+  const [gitError, setGitError] = useState<string | null>(null);
 
   const [selection, setSelection] = useState<CanvasSelection>({ kind: "none" });
   /* For data-fetching purposes we track the "currently inspected nodeId" — the
@@ -314,6 +324,10 @@ export function App() {
     setSessionContextSpaceError(null);
     setSessionSettingsSaving(false);
     setSessionSettingsError(null);
+    setGitStatus(null);
+    setGitCommits([]);
+    setGitAction(null);
+    setGitError(null);
     setProjectMutationPending(false);
     setPendingGates({});
     setPendingReviews({});
@@ -542,6 +556,18 @@ export function App() {
     }
   }, [inspectNode, session?.id]);
 
+  const refreshGit = useCallback(async () => {
+    if (!session?.id) return;
+    try {
+      const state = await getGitState(session.id);
+      setGitStatus(state.status);
+      setGitCommits(state.commits);
+      setGitError(null);
+    } catch (err) {
+      console.warn("get git state failed:", err);
+    }
+  }, [session?.id]);
+
   /* context space */
   const refreshContextSpace = useCallback(async () => {
     if (!session?.id) return;
@@ -576,7 +602,7 @@ export function App() {
     }
     setInitialLoadComplete(false);
     let cancelled = false;
-    void Promise.allSettled([refreshNodes(), refreshContextSpace()]).then(() => {
+    void Promise.allSettled([refreshNodes(), refreshContextSpace(), refreshGit()]).then(() => {
       if (!cancelled) setInitialLoadComplete(true);
     });
     /* Skills are user-wide — fetched independently of nodes/contextspace and
@@ -586,7 +612,14 @@ export function App() {
     return () => {
       cancelled = true;
     };
-  }, [session?.id, refreshNodes, refreshContextSpace, refreshSkills]);
+  }, [session?.id, refreshNodes, refreshContextSpace, refreshGit, refreshSkills]);
+
+  useEffect(() => {
+    if (!session?.id) return;
+    const onFocus = () => void refreshGit();
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, [refreshGit, session?.id]);
 
   useEffect(() => {
     if (!sessionContextSpace?.context_refresh?.running) return;
@@ -1315,6 +1348,17 @@ export function App() {
           inspectNode(null);
           setSelection({ kind: "none" });
         }
+      } else if (ev.type === "git_status") {
+        setGitStatus({
+          is_repo: ev.is_repo,
+          head: ev.head,
+          branch: ev.branch,
+          detached: ev.detached,
+          upstream: ev.upstream,
+          ahead: ev.ahead,
+          behind: ev.behind,
+          dirty_count: ev.dirty_count,
+        });
       }
       appendSelectedEvent(eventNodeId, ev);
     },
@@ -1434,6 +1478,8 @@ export function App() {
     setSelection(sel);
     if (sel.kind === "agent" || sel.kind === "op" || sel.kind === "artifact") {
       inspectNode(sel.nodeId);
+    } else if (sel.kind === "commit") {
+      inspectNode(null);
     } else if (sel.kind === "none") {
       inspectNode(null);
     }
@@ -1634,6 +1680,41 @@ export function App() {
         ? "text-state-waiting"
         : "text-state-error";
 
+  const gitQuiescent = !nodes.some((node) => node.state === "running" || node.state === "queued");
+  const runGitAction = async (action: "pull" | "push") => {
+    if (!session?.id || readOnly || !gitStatus?.is_repo || gitAction) return;
+    setGitAction(action);
+    setGitError(null);
+    try {
+      if (action === "pull") {
+        await gitPull(session.id);
+      } else {
+        const result = await gitPush(session.id);
+        setGitStatus(result.status);
+      }
+      await refreshGit();
+      await refreshNodes();
+    } catch (err) {
+      setGitError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setGitAction(null);
+    }
+  };
+  const commitGitMessage = async (message: string) => {
+    if (!session?.id || gitAction) return;
+    setGitAction("commit");
+    setGitError(null);
+    try {
+      await gitCommit(session.id, message);
+      await refreshNodes();
+    } catch (err) {
+      setGitError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setGitAction(null);
+      await refreshGit();
+    }
+  };
+
   return (
     <>
     <div className="flex h-screen flex-col bg-surface text-ink">
@@ -1659,6 +1740,16 @@ export function App() {
                 <span className="inline-block h-1.5 w-1.5 rounded-full bg-current" />
                 ws {status}
               </span>
+              <span
+                className={"inline-flex items-center gap-1 " + (gitStatus?.is_repo ? "text-ink-muted" : "text-ink-subtle")}
+                title={gitStatus?.is_repo ? `${gitStatus.branch ?? "detached"}${gitStatus.upstream ? ` · upstream ${gitStatus.upstream}` : ""}` : "Not a Git repository"}
+              >
+                <span className="inline-block h-1.5 w-1.5 rounded-full bg-current" />
+                {gitStatus?.is_repo
+                  ? `git ${gitStatus.dirty_count ? gitStatus.dirty_count : "clean"}${gitStatus.ahead || gitStatus.behind ? ` ↑${gitStatus.ahead ?? 0} ↓${gitStatus.behind ?? 0}` : ""}`
+                  : "git —"}
+              </span>
+              {gitError && <span className="max-w-[18rem] truncate text-state-error" title={gitError}>{gitError}</span>}
               {session?.read_only && (
                 <span className="rounded border border-state-waiting/40 bg-state-waiting-soft px-1.5 py-0.5 font-sans text-state-waiting">
                   read-only · native to {session.native_machine_label} · as of {session.last_sync_at ? new Date(session.last_sync_at * 1000).toLocaleString() : "never synced"}
@@ -1690,6 +1781,16 @@ export function App() {
             title="Open new direction composer"
           >
             + New direction
+          </button>
+
+          <button type="button" onClick={() => { setSelection({ kind: "commit", sha: null }); inspectNode(null); openDetails(); }} disabled={readOnly || !gitStatus?.is_repo || !!gitAction || !gitStatus?.dirty_count} className="inline-flex h-8 items-center rounded-md border border-line bg-surface px-2.5 text-xs text-ink-muted disabled:cursor-not-allowed disabled:opacity-40" title="Commit working tree">
+            {gitAction === "commit" ? "…" : "Commit"}
+          </button>
+          <button type="button" onClick={() => void runGitAction("pull")} disabled={readOnly || !gitStatus?.is_repo || !!gitAction || !gitQuiescent} className="inline-flex h-8 items-center rounded-md border border-line bg-surface px-2.5 text-xs text-ink-muted disabled:cursor-not-allowed disabled:opacity-40" title="Pull with rebase">
+            {gitAction === "pull" ? "…" : "Pull"}
+          </button>
+          <button type="button" onClick={() => void runGitAction("push")} disabled={readOnly || !gitStatus?.is_repo || !!gitAction} className="inline-flex h-8 items-center rounded-md border border-line bg-surface px-2.5 text-xs text-ink-muted disabled:cursor-not-allowed disabled:opacity-40" title="Push upstream">
+            {gitAction === "push" ? "…" : "Push"}
           </button>
 
           <button
@@ -1727,6 +1828,9 @@ export function App() {
               activePlanspaceId={sessionContextSpace?.active_planspace_id ?? null}
               canCreateVirtual={!virtualCreateDisabled}
               skills={skills}
+              gitCommits={gitCommits}
+              gitHead={gitStatus?.head ?? null}
+              gitDirtyCount={gitStatus?.dirty_count ?? 0}
               initialLayoutHints={session?.layout_hints}
               initialLayoutViewport={session?.layout_viewport ?? null}
               onSelectionChange={onSelectionChange}
@@ -1778,6 +1882,10 @@ export function App() {
               <SidePanel
                 onClose={closePanel}
                 selection={selection}
+                gitCommits={gitCommits}
+                gitDirtyCount={gitStatus?.dirty_count ?? 0}
+                gitActionPending={gitAction === "commit"}
+                onGitCommit={commitGitMessage}
                 nodes={nodes}
                 session={sessionWithRuntimeCounts}
                 modelPresets={modelPresets}

@@ -11,6 +11,7 @@ import asyncio
 import logging
 import os
 from collections.abc import Awaitable, Callable
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -36,7 +37,7 @@ from .events import (
     ReplayRequest,
     UserMessage,
 )
-from .git_state import node_diff
+from .git_state import commit_graph, node_diff
 from .global_config import (
     ModelPreset,
     SyncSettings,
@@ -216,6 +217,11 @@ class NodeDiffResponse(BaseModel):
     kind: str
     text: str
     error: str | None = None
+
+
+class GitCommitRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    message: str = ""
 
 
 class TemplateSummary(BaseModel):
@@ -592,6 +598,72 @@ def create_app(registry: ProjectRegistry | None = None) -> FastAPI:
         if project is None:
             raise HTTPException(404, "session not found")
         return _session_info(registry, project)
+
+    @app.get("/sessions/{sid}/git", response_model=dict[str, Any])
+    def get_git_state(sid: str) -> dict[str, Any]:
+        project = registry.get_project(sid)
+        if project is None:
+            raise HTTPException(404, "session not found")
+        status = registry.git_status(sid)
+        if status is None:
+            raise HTTPException(404, "session not found")
+        nodes = registry.list_nodes(sid) or []
+        refs = {
+            sha
+            for node in nodes
+            for sha in (node.commit_before, node.commit_after)
+            if sha
+        }
+        commits = commit_graph(project.root_path, refs, registry.store.read_git_aliases(sid))
+        return {"status": asdict(status), "commits": [asdict(item) for item in commits]}
+
+    @app.post("/sessions/{sid}/git/commit", response_model=dict[str, Any])
+    def git_commit(sid: str, req: GitCommitRequest) -> dict[str, Any]:
+        project = registry.get_project(sid)
+        if project is None:
+            raise HTTPException(404, "session not found")
+        try:
+            node = registry.spawn_git_op(sid, "commit", message=req.message)
+        except NonNativeProjectError:
+            raise
+        except StoreReadOnlyError:
+            raise
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        if node is None:
+            raise HTTPException(409, "project unavailable")
+        return {"node": node.model_dump()}
+
+    @app.post("/sessions/{sid}/git/pull", response_model=dict[str, Any])
+    def git_pull(sid: str) -> dict[str, Any]:
+        project = registry.get_project(sid)
+        if project is None:
+            raise HTTPException(404, "session not found")
+        require_native_project(sid)
+        if not registry.quiescent(sid):
+            raise HTTPException(409, "project must be idle before pulling")
+        node = registry.spawn_git_op(sid, "pull")
+        if node is None:
+            raise HTTPException(409, "project unavailable")
+        return {"node": node.model_dump()}
+
+    @app.post("/sessions/{sid}/git/push", response_model=dict[str, Any])
+    async def git_push(sid: str) -> dict[str, Any]:
+        project = registry.get_project(sid)
+        if project is None:
+            raise HTTPException(404, "session not found")
+        require_native_project(sid)
+        result = await registry.git_push(sid)
+        if result is None:
+            raise HTTPException(404, "session not found")
+        status, error = result
+        if error is not None:
+            raise HTTPException(409, error)
+        return {"status": {
+            "is_repo": status.is_repo, "head": status.head, "branch": status.branch,
+            "detached": status.detached, "upstream": status.upstream,
+            "ahead": status.ahead, "behind": status.behind, "dirty_count": status.dirty_count,
+        }}
 
     @app.patch("/sessions/{sid}", response_model=SessionInfo)
     def rename_session(sid: str, req: RenameSessionRequest) -> SessionInfo:

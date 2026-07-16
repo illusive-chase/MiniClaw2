@@ -17,6 +17,8 @@ import type {
   SessionInfo,
   SessionContextSpaceInfo,
   ArtifactFile,
+  GitState,
+  GitStatus,
 } from "./types";
 
 export class ApiError extends Error {
@@ -165,6 +167,37 @@ export async function listSessions(): Promise<SessionInfo[]> {
 export async function getSession(id: string): Promise<SessionInfo> {
   const res = await fetch(`/sessions/${id}`);
   if (!res.ok) throw new Error(`getSession failed: ${res.status}`);
+  return res.json();
+}
+
+export async function getGitState(sessionId: string): Promise<GitState> {
+  const res = await fetch(`/sessions/${sessionId}/git`);
+  if (!res.ok) throw new ApiError("getGitState", res.status, await readErrorDetail(res));
+  return res.json();
+}
+
+export async function gitCommit(
+  sessionId: string,
+  message: string,
+): Promise<{ node: NodeInfo }> {
+  const res = await fetch(`/sessions/${sessionId}/git/commit`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ message }),
+  });
+  if (!res.ok) throw new ApiError("gitCommit", res.status, await readErrorDetail(res));
+  return res.json();
+}
+
+export async function gitPull(sessionId: string): Promise<{ node: NodeInfo }> {
+  const res = await fetch(`/sessions/${sessionId}/git/pull`, { method: "POST" });
+  if (!res.ok) throw new ApiError("gitPull", res.status, await readErrorDetail(res));
+  return res.json();
+}
+
+export async function gitPush(sessionId: string): Promise<{ status: GitStatus }> {
+  const res = await fetch(`/sessions/${sessionId}/git/push`, { method: "POST" });
+  if (!res.ok) throw new ApiError("gitPush", res.status, await readErrorDetail(res));
   return res.json();
 }
 

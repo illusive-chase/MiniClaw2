@@ -17,7 +17,7 @@ import ReactFlow, {
 } from "reactflow";
 import "reactflow/dist/style.css";
 
-import type { ContextBundle, NodeInfo } from "../types";
+import type { CommitDescriptor, ContextBundle, NodeInfo } from "../types";
 import { artifactRawUrl } from "../api";
 import {
   buildGraph,
@@ -41,6 +41,7 @@ import {
 } from "./edges/TimelineEdge";
 import { ErrorTerminalNode } from "./nodes/ErrorTerminalNode";
 import { ArtifactNode } from "./nodes/ArtifactNode";
+import { CommitNode } from "./nodes/CommitNode";
 
 const NODE_TYPES = {
   agent: AgentNode,
@@ -50,6 +51,7 @@ const NODE_TYPES = {
   planspaceLane: PlanspaceLaneNode,
   errorTerminal: ErrorTerminalNode,
   artifact: ArtifactNode,
+  commit: CommitNode,
 };
 
 const EDGE_TYPES = {
@@ -79,6 +81,7 @@ export type CanvasSelection =
   | { kind: "planspace"; planspaceId: string }
   | { kind: "artifact"; nodeId: string; name: string; ext: "md" | "json" | "html" }
   | { kind: "projectRoot" }
+  | { kind: "commit"; sha: string | null }
   | { kind: "none" };
 
 export type CanvasProps = {
@@ -130,6 +133,9 @@ export type CanvasProps = {
     updates: Record<string, { x: number; y: number }>,
     viewport?: Viewport | null,
   ) => void;
+  gitCommits?: CommitDescriptor[];
+  gitHead?: string | null;
+  gitDirtyCount?: number;
 };
 
 export function Canvas(props: CanvasProps) {
@@ -160,6 +166,9 @@ function CanvasInner({
   onTemplateDrop,
   onAttachSkillToVirtual,
   onLayoutHintsChange,
+  gitCommits,
+  gitHead,
+  gitDirtyCount,
 }: CanvasProps) {
   const layoutHintsRef = useRef<Record<string, { x: number; y: number }>>(
     sanitizeLayoutHints(initialLayoutHints),
@@ -248,6 +257,9 @@ function CanvasInner({
         activePlanspaceId,
         canCreateVirtual,
         skills,
+        gitCommits,
+        gitHead,
+        gitDirtyCount,
       }),
     [
       nodes,
@@ -259,6 +271,9 @@ function CanvasInner({
       activePlanspaceId,
       canCreateVirtual,
       skills,
+      gitCommits,
+      gitHead,
+      gitDirtyCount,
       layoutHydrationVersion,
     ],
   );
@@ -490,6 +505,9 @@ function CanvasInner({
           preserveExisting: event.shiftKey,
         };
         onSelectionChange({ kind: "projectRoot" });
+      } else if (n.type === "commit") {
+        const data = n.data as import("./layout").CommitNodeData;
+        onSelectionChange({ kind: "commit", sha: data.ghost ? null : data.commit.sha });
       } else if (n.type === "planspaceLane") {
         const data = n.data as import("./layout").PlanspaceLaneData;
         pendingUserSelectionRef.current = {

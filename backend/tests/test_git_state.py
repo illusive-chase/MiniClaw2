@@ -5,7 +5,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from miniclaw2.git_state import commit_all, ensure_miniclaw_git_excluded
+from miniclaw2.git_state import (
+    commit_all,
+    commit_graph,
+    ensure_miniclaw_git_excluded,
+    git_status,
+)
 
 
 def _init_repo(path: Path) -> str:
@@ -31,6 +36,54 @@ def _head(path: Path) -> str:
 
 
 class GitStateTest(unittest.TestCase):
+    def test_status_degrades_outside_repo(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            status = git_status(raw)
+            self.assertFalse(status.is_repo)
+            self.assertIsNone(status.head)
+
+    def test_status_counts_non_framework_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            repo = Path(raw)
+            head = _init_repo(repo)
+            (repo / "real.txt").write_text("real\n", encoding="utf-8")
+            generated = repo / ".miniclaw2" / "graph"
+            generated.mkdir(parents=True)
+            (generated / "preview.json").write_text("{}", encoding="utf-8")
+
+            status = git_status(str(repo))
+
+            self.assertTrue(status.is_repo)
+            self.assertEqual(status.head, head)
+            self.assertEqual(status.dirty_count, 1)
+
+    def test_commit_graph_orders_oldest_first_and_counts_external(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            repo = Path(raw)
+            first = _init_repo(repo)
+            commits = [first]
+            for index in range(2):
+                (repo / f"c{index}.txt").write_text(str(index), encoding="utf-8")
+                subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+                subprocess.run(["git", "commit", "-q", "-m", f"c{index}"], cwd=repo, check=True)
+                commits.append(_head(repo))
+
+            graph = commit_graph(str(repo), {commits[0], commits[2]})
+
+            self.assertEqual([item.sha for item in graph], [commits[0], commits[2]])
+            self.assertEqual(graph[1].external_count_before, 1)
+
+    def test_commit_graph_resolves_aliases_transitively(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            repo = Path(raw)
+            live = _init_repo(repo)
+
+            graph = commit_graph(str(repo), {"old-a"}, {"old-a": "old-b", "old-b": live})
+
+            self.assertEqual(len(graph), 1)
+            self.assertEqual(graph[0].sha, live)
+            self.assertEqual(graph[0].aliases, ["old-a"])
+
     def test_commit_all_excludes_miniclaw_generated_paths(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             repo = Path(raw)

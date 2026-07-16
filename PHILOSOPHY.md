@@ -185,8 +185,9 @@ mutation. Two axes: **kind** (how it executes) and **category**
   resolving the gate continues the same session.
 - **op** — a non-agent, fast, always-immediate state transition that
   appears on the timeline so the project's full mutation history is
-  visible. The commit op auto-appends after every executed node and
-  is framework-injected; ops do not appear as virtuals.
+  visible. Commit ops may be framework-injected or manually requested;
+  pull ops run `git pull --rebase`. Successful Git ops fold into derived
+  commit hubs, while failed ops remain selectable tiles.
 
 There is no `gate` kind. The gate concept is preserved as a category
 (see below) — a virtual review node, agentic or human-interact.
@@ -256,15 +257,17 @@ timeline can show a project-state diff per node.
 
 ### 6.3 Edges (derived, not stored)
 
-Edges are read off node/project fields, not modelled as separate
-records. Five relations matter:
+Edges are read off node/project fields and Git, not modelled as separate
+records. Six relations matter:
 
 - **dep** — virtual's `scheduled_deps`. The planning DAG, rendered
   as the primary edge.
-- **timeline** — FS-state dependency between consecutive executed
-  nodes (the actual linear worktree history). Rendered as a thin
-  underlay beneath dep edges so the user can trace "what state did
-  this node actually start from?"
+- **commit** — FS state reified as derived commit hubs on the project
+  baseline. The trunk joins project root, referenced commits, and an
+  uncommitted ghost; source/sink edges attach each same-`commit_before`
+  epoch to that trunk. Git owns commit existence and metadata, node records
+  own their historical before/after SHAs, and op nodes own action history.
+  Hubs and commit edges are views, never stored records.
 - **resume** — explicit provider conversation continuation.
 - **reviews** — derived: a review virtual's `scheduled_deps` pointing
   at the upstream node it inspects, plus `category=review`.
@@ -558,7 +561,9 @@ separate:
 
 - **Shape encodes kind.** Stable across state changes. Tile (agent),
   chevron-on-edge (op), layered card (context), home glyph (project
-  root), dashed outline (virtual — not yet real). The hexagon for
+  root), circle-on-baseline (commit), dashed outline (virtual — not yet
+  real). A commit ring marks HEAD, dashed amber marks a rebased-away
+  commit, and dashed grey marks the uncommitted ghost. The hexagon for
   the retired `gate` kind is gone.
 - **Color encodes state.** Distinct colors for running, paused,
   awaiting_human_input, done, error.

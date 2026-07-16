@@ -53,7 +53,7 @@ from .events import (
     TurnDone,
     Usage,
 )
-from .git_state import commit_all, git_head
+from .git_state import commit_all, git_head, git_pull_rebase, local_only_shas
 from .language import language_launch_instruction, project_preferred_language
 from .launch_prompt import (
     anti_self_poisoning_block,
@@ -314,8 +314,10 @@ class NodeRunner:
 
         try:
             if self.node.op_kind == "commit":
-                message = f"miniclaw:node:{self.node.parent_node_id or self.node.id}"
-                new_head, err = commit_all(self.project.root_path, message)
+                message = self.node.prompt.strip() or f"miniclaw:node:{self.node.parent_node_id or self.node.id}"
+                new_head, err = await asyncio.to_thread(
+                    commit_all, self.project.root_path, message
+                )
                 if err is not None:
                     error_msg = err
                     final_state = NodeState.ERROR
@@ -324,6 +326,24 @@ class NodeRunner:
                     self.node.commit_after = self.node.commit_before
                 else:
                     self.node.summary = f"commit {new_head[:8]}"
+                    self.node.commit_after = new_head
+            elif self.node.op_kind == "pull":
+                old_local = await asyncio.to_thread(local_only_shas, self.project.root_path)
+                new_head, err = await asyncio.to_thread(
+                    git_pull_rebase, self.project.root_path
+                )
+                if err is not None:
+                    error_msg = err
+                    final_state = NodeState.ERROR
+                else:
+                    new_local = await asyncio.to_thread(local_only_shas, self.project.root_path)
+                    if old_local is not None and new_local is not None and len(old_local) == len(new_local):
+                        aliases = dict(zip(old_local, new_local, strict=False))
+                        if aliases:
+                            merged = self.store.read_git_aliases(self.project.id)
+                            merged.update(aliases)
+                            self.store.write_git_aliases(self.project.id, merged)
+                    self.node.summary = f"rebased to {new_head[:8]}" if new_head else "already up to date"
                     self.node.commit_after = new_head
             else:
                 error_msg = f"unknown op_kind: {self.node.op_kind}"

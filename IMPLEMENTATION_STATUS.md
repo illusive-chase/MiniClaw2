@@ -11,6 +11,27 @@ split into **Landed** and **Pending**. Pending items are not
 sequenced — dependencies are noted inline where they matter.
 
 
+## 3a. Project-level Git control
+
+### Landed
+
+- `git_status` derives repository, branch/detached, upstream ahead/behind,
+  and dirty counts in one porcelain-v2 read, excluding `.miniclaw2/`.
+- Node-less `git_status` telemetry and session Git endpoints expose status,
+  commit, pull-rebase, and push verbs.
+- Commit and pull are durable op nodes. Pull is quiescence-guarded, runs
+  asynchronously, aborts conflicts, and reports conflicting files. Push is a
+  direct remote action with header-level errors.
+- `commit_graph` derives oldest-first commit hubs, resolves framework-captured
+  rebase aliases, and reports collapsed external commits. The canvas renders
+  the trunk, stale hubs, and dirty working-tree ghost; successful ops fold in.
+
+### Pending
+
+- Branch switching, merge pulls, and concierge conflict resolution remain out
+  of scope as specified by `PROPOSAL_GIT.md` §13.
+
+
 ## 1. Backend domain model
 
 Trunk: `backend/miniclaw2/domain.py`.
@@ -385,7 +406,7 @@ Trunk: `frontend/src/canvas/Canvas.tsx`, `frontend/src/canvas/layout.ts`,
 - Agent tiles show category badges for planning / regular / review /
   human-interact review nodes; verifier tiles use the review tone and
   a programmatic label.
-- Edges: dependency arrows, timeline spine, resume (`↻` mid-glyph),
+- Edges: dependency arrows, derived commit trunk, resume (`↻` mid-glyph),
   loads (dashed, auto-hidden unless endpoint hovered/selected), produces
   (agent to published artifact), and op chevrons.
 - Published artifact tiles fan beneath their producing agent in the

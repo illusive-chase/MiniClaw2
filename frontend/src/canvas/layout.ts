@@ -1,5 +1,5 @@
 import type { Edge, Node } from "reactflow";
-import type { ArtifactRef, ContextBundle, NodeInfo } from "../types";
+import type { ArtifactRef, CommitDescriptor, ContextBundle, NodeInfo } from "../types";
 
 /* ───────── canvas node payloads ───────── */
 
@@ -68,6 +68,8 @@ export type ProjectRootNodeData = {
   title: string;
 };
 
+export type CommitNodeData = { commit: CommitDescriptor; head: boolean; ghost?: boolean };
+
 export type PlanspaceColor = {
   name: string;
   bg: string;
@@ -92,6 +94,7 @@ export type RFNodeData =
   | OpNodeData
   | ContextNodeData
   | ProjectRootNodeData
+  | CommitNodeData
   | PlanspaceLaneData
   | ErrorTerminalData
   | ArtifactNodeData;
@@ -195,6 +198,9 @@ export type BuildGraphArgs = {
   /** user-wide skills enumerated from GET /skills; dimmed on the shelf when
    *  no live node has loaded them */
   skills?: SkillEnumeration[];
+  gitCommits?: CommitDescriptor[];
+  gitHead?: string | null;
+  gitDirtyCount?: number;
 };
 
 export type BuildGraphResult = {
@@ -221,6 +227,9 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
     activePlanspaceId,
     canCreateVirtual,
     skills = [],
+    gitCommits = [],
+    gitHead = null,
+    gitDirtyCount = 0,
   } = args;
 
   const rfNodes: RFNode[] = [];
@@ -240,6 +249,7 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
     planspaceOrder.push(id);
   }
   const planspaceIndex = new Map(planspaceOrder.map((id, index) => [id, index]));
+  const trunkExtent = (gitCommits.length + (gitDirtyCount > 0 ? 1 : 0)) * 112;
 
   /* Lane absolute positions: deterministic from index, overridable by a saved
    * hint keyed `planspace:<id>`. Children inside the lane get parent-relative
@@ -249,7 +259,7 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
   for (const id of planspaceOrder) {
     const idx = planspaceIndex.get(id) ?? 0;
     const defaultPos = {
-      x: LANE.rootX + 180 - LANE.planspaceLanePaddingX,
+      x: LANE.rootX + 180 + trunkExtent - LANE.planspaceLanePaddingX,
       y: LANE.timelineY + idx * LANE.planspaceLaneSpacing - LANE.planspaceLaneAgentRowY,
     };
     laneAbsPos.set(id, layoutHints[`planspace:${id}`] ?? defaultPos);
@@ -274,13 +284,36 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
     selectable: true,
   });
 
+  const commitStartX = LANE.rootX + 104;
+  gitCommits.forEach((commit, index) => {
+    rfNodes.push({
+      id: `commit:${commit.sha}`,
+      type: "commit",
+      position: layoutHints[`commit:${commit.sha}`] ?? { x: commitStartX + index * 112, y: LANE.timelineY },
+      width: 76,
+      height: 76,
+      data: { commit, head: commit.sha === gitHead },
+      draggable: true,
+      selectable: true,
+    });
+    const previous = index === 0 ? "root" : `commit:${gitCommits[index - 1].sha}`;
+    rfEdges.push({ id: `commit-trunk:${previous}:${commit.sha}`, source: previous, target: `commit:${commit.sha}`, type: "default", style: { stroke: "#9ca3af", strokeWidth: 1.2 } });
+  });
+  if (gitDirtyCount > 0) {
+    const ghostId = "commit:ghost";
+    const ghostX = commitStartX + gitCommits.length * 112;
+    rfNodes.push({ id: ghostId, type: "commit", position: layoutHints[ghostId] ?? { x: ghostX, y: LANE.timelineY }, width: 76, height: 76, data: { commit: { sha: "ghost", live: false, message: "Uncommitted changes", external_count_before: 0, aliases: [] }, head: false, ghost: true }, draggable: true, selectable: true });
+    const previous = gitCommits.length ? `commit:${gitCommits.at(-1)!.sha}` : "root";
+    rfEdges.push({ id: `commit-trunk:${previous}:ghost`, source: previous, target: ghostId, type: "default", style: { stroke: "#9ca3af", strokeDasharray: "4 4", strokeWidth: 1.2 } });
+  }
+
   /* Index ops by the child node they sit between, so we can keep folding them
    * onto the existing chevron edge. Trailing ops (no child yet) keep their tile
    * rendering so the auto-commit stays visible. */
   const opByChildId = new Map<string, NodeInfo>();
   const opsWithChild = new Set<string>();
   for (const node of visibleNodes) {
-    if (node.kind !== "op") continue;
+    if (node.kind !== "op" || node.state === "done") continue;
     const childIdx = visibleNodes.findIndex(
       (n) => n.parent_node_id === node.id && n.kind !== "op",
     );
@@ -308,6 +341,42 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
     }
   }
 
+  const commitForSha = (sha: string | null | undefined) =>
+    sha ? gitCommits.find((commit) => commit.sha === sha || commit.aliases.includes(sha)) : undefined;
+  const epochMembers = new Map<string, NodeInfo[]>();
+  for (const node of visibleNodes) {
+    if (node.kind === "op" || !node.commit_before) continue;
+    const epoch = commitForSha(node.commit_before);
+    if (!epoch) continue;
+    epochMembers.set(epoch.sha, [...(epochMembers.get(epoch.sha) ?? []), node]);
+  }
+  for (const [epochSha, members] of epochMembers) {
+    const ids = new Set(members.map((member) => member.id));
+    const incoming = new Set<string>();
+    const outgoing = new Set<string>();
+    for (const member of members) {
+      const predecessors = [
+        ...(member.scheduled_deps ?? []),
+        member.resume_from_node_id,
+        member.parent_node_id,
+      ].filter((id): id is string => !!id && ids.has(id));
+      if (predecessors.length) incoming.add(member.id);
+      for (const predecessor of predecessors) outgoing.add(predecessor);
+    }
+    for (const member of members) {
+      if (!incoming.has(member.id)) {
+        rfEdges.push({ id: `commit-source:${epochSha}:${member.id}`, source: `commit:${epochSha}`, target: member.id, type: "default", style: { stroke: "#9ca3af", strokeWidth: 1 } });
+      }
+      if (outgoing.has(member.id) || !member.commit_after) continue;
+      const after = commitForSha(member.commit_after);
+      const epochIndex = gitCommits.findIndex((commit) => commit.sha === epochSha);
+      let target = after && after.sha !== epochSha ? `commit:${after.sha}` : null;
+      if (!target && epochIndex >= 0 && epochIndex + 1 < gitCommits.length) target = `commit:${gitCommits[epochIndex + 1].sha}`;
+      if (!target && gitDirtyCount > 0) target = "commit:ghost";
+      if (target) rfEdges.push({ id: `commit-sink:${member.id}:${target}`, source: member.id, target, type: "default", style: { stroke: "#9ca3af", strokeWidth: 1 } });
+    }
+  }
+
   /* Main timeline. Two coordinate regimes coexist:
    *   - Nodes WITH a planspace become children of `planspace:<id>` lanes:
    *     position is relative to lane, advanced by a per-lane cursor.
@@ -323,6 +392,7 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
     opsWithChild,
     layoutHints,
   );
+  freeCursorX = Math.max(freeCursorX, LANE.rootX + 180 + trunkExtent);
   const laneCursors = new Map<string, number>();
   const advanceLane = (laneId: string, by: number): number => {
     const cur = laneCursors.get(laneId) ?? LANE.planspaceLanePaddingX;
@@ -411,6 +481,7 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
     };
 
     if (node.kind === "op") {
+      if (node.state === "done") return;
       /* Folded into a chevron edge — skip rendering as a tile. */
       if (opsWithChild.has(node.id)) return;
       const parent = node.parent_node_id ? (nodeById.get(node.parent_node_id) ?? null) : null;

@@ -6,6 +6,7 @@ import asyncio
 import logging
 import math
 import time
+from dataclasses import asdict
 from collections.abc import Awaitable, Callable
 from functools import lru_cache
 from pathlib import Path
@@ -22,8 +23,8 @@ from .contextspace import (
     resolve_active_planspace,
     set_planspace_mode,
 )
-from .events import NodeRemoved
-from .git_state import ensure_miniclaw_git_excluded
+from .events import NodeRemoved, GitStatus
+from .git_state import ensure_miniclaw_git_excluded, git_status
 from .domain import (
     TERMINAL_NODE_STATES,
     Category,
@@ -748,6 +749,12 @@ class ProjectRegistry:
     def _schedule_queued(self, rt: ProjectRuntime) -> None:
         if not self.is_native_project(rt.project):
             return
+        # A rebase owns the shared worktree for its entire lifetime.
+        if any(
+            runner.node.kind is NodeKind.OP and runner.node.op_kind == "pull"
+            for runner in rt.runners.values()
+        ):
+            return
         while rt.has_capacity():
             priority = [
                 node_id
@@ -834,7 +841,62 @@ class ProjectRegistry:
             spawned_op = True
         if not spawned_op and finished_node.state is NodeState.DONE:
             self._auto_promote_eligible_virtuals(rt)
+        if not spawned_op:
+            self._broadcast_git_status(rt)
         self._schedule_queued(rt)
+
+    def _broadcast_git_status(self, rt: ProjectRuntime) -> None:
+        """Schedule a node-less, ephemeral Git status event."""
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+
+        async def publish() -> None:
+            status = await asyncio.to_thread(git_status, rt.project.root_path)
+            await rt.broadcast(GitStatus(**asdict(status)).model_dump())
+
+        loop.create_task(publish())
+
+    def git_status(self, pid: str):
+        rt = self._runtimes.get(pid)
+        if rt is None:
+            return None
+        return git_status(rt.project.root_path)
+
+    def quiescent(self, pid: str) -> bool:
+        rt = self._runtimes.get(pid)
+        if rt is None:
+            return False
+        return not rt.is_running() and self.queued_count(pid) == 0
+
+    def spawn_git_op(self, pid: str, op_kind: str, *, message: str = "") -> Node | None:
+        rt = self._runtimes.get(pid)
+        if rt is None:
+            return None
+        self.require_native(pid)
+        if op_kind not in {"commit", "pull"}:
+            raise ValueError(f"unknown git op_kind: {op_kind}")
+        node = Node(
+            project_id=pid,
+            kind=NodeKind.OP,
+            op_kind=op_kind,
+            state=NodeState.QUEUED,
+            prompt=message.strip(),
+            model_preset_id=rt.project.model_preset_id,
+        )
+        self.store.create_node(node)
+        rt.priority_node_ids.append(node.id)
+        self._schedule_queued(rt)
+        return self.store.load_node(pid, node.id) or node
+
+    async def git_push(self, pid: str):
+        rt = self._runtimes.get(pid)
+        if rt is None:
+            return None
+        self.require_native(pid)
+        from .git_state import git_push
+        return await asyncio.to_thread(git_push, rt.project.root_path)
 
     def create_planspace_and_launch_concierge(
         self,

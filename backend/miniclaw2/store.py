@@ -98,6 +98,28 @@ class Store:
     def _preview_file(self, pid: str, nid: str) -> Path:
         return self.node_dir(pid, nid) / "preview.json"
 
+    def _git_aliases_file(self, pid: str) -> Path:
+        return self._project_dir(pid) / "git_aliases.json"
+
+    def read_git_aliases(self, pid: str) -> dict[str, str]:
+        path = self._git_aliases_file(pid)
+        if not path.exists():
+            return {}
+        try:
+            payload = self._read_json(path)
+        except (OSError, ValueError):
+            return {}
+        return {
+            str(old): str(new)
+            for old, new in payload.items()
+            if isinstance(old, str) and isinstance(new, str) and old and new
+        }
+
+    def write_git_aliases(self, pid: str, aliases: dict[str, str]) -> None:
+        self.assert_writable()
+        self._write_json(self._git_aliases_file(pid), dict(aliases))
+        self.sync.schedule_commit(f"update git aliases for project {pid}")
+
     # ---- project ----
 
     def create_project(self, project: Project) -> Project:
