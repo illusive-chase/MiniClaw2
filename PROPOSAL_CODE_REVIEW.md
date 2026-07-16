@@ -2,10 +2,10 @@
 
 Status: proposed design (discussed 2026-07-16), not yet implemented.
 
-Companion to `PROPOSAL_GIT.md` (epochs, the ghost commit, quiescence),
-`CODEX_REVIEW.md` (the codex-side gap analysis this proposal closes),
-and `PHILOSOPHY.md` §4/§6. When this document and the code disagree,
-this document is the position to argue from until accepted or revised.
+Companion to `IMPLEMENTATION_STATUS.md` §3a (the landed Git layer:
+epochs, the ghost commit, quiescence) and `PHILOSOPHY.md` §4/§6. When
+this document and the code disagree, this document is the position to
+argue from until accepted or revised.
 
 
 ## 1. Motivation
@@ -21,8 +21,7 @@ state:
   (`runner.py:367`).
 
 Meanwhile both providers ship a specialized, purpose-trained code
-reviewer that MiniClaw2 cannot reach (`CODEX_REVIEW.md` documents the
-codex half of this gap):
+reviewer that MiniClaw2 cannot reach:
 
 - **Codex** app-server exposes `review/start` with structured targets
   (`uncommittedChanges`, `baseBranch`, `commit`, `custom`) and
@@ -32,8 +31,9 @@ codex half of this gap):
   which reviews the current diff at a configurable effort level and
   emits a findings report.
 
-And the thing worth reviewing now has a name: since
-`PROPOSAL_GIT.md`, uncommitted work is a first-class concept — the
+And the thing worth reviewing now has a name: since the Git layer
+landed (`IMPLEMENTATION_STATUS.md` §3a), uncommitted work is a
+first-class concept — the
 **epoch** (all nodes sharing one `commit_before`) accumulating toward
 the **ghost commit**. Agent nodes never auto-commit; work piles up in
 the shared worktree until a commit op runs `commit_all()`
@@ -83,7 +83,7 @@ Four decisions settled in discussion (2026-07-16):
 4. **Snapshot + serialize.** The reviewed diff is snapshotted at
    launch for audit, and the scheduler gives code_review nodes
    exclusive workspace access, extending the pull-op quiescence
-   pattern (`registry.py:787`, `PROPOSAL_GIT.md` §6).
+   pattern (`registry.py:787`, `IMPLEMENTATION_STATUS.md` §3a).
 
 
 ## 3. Domain model
@@ -133,8 +133,8 @@ because code_review nodes never enter the reap pipeline (§5).
 
 ## 4. Git entanglement
 
-This is the part the feature must get right, and `PROPOSAL_GIT.md`
-already built the vocabulary.
+This is the part the feature must get right, and the landed Git layer
+(`IMPLEMENTATION_STATUS.md` §3a) already built the vocabulary.
 
 ### 4.1 The target is the epoch
 
@@ -160,8 +160,9 @@ The snapshot is written to the durable node dir as
 (`runner.py:208`), *not* an artifact, because the artifact whitelist
 is `.md/.json/.html` (`artifacts.py:18`) and widening it for this is
 not worth it. This is the immutable "what the reviewer actually saw"
-record, in the spirit of §2 of `PROPOSAL_GIT.md`: the report and the
-snapshot are facts about the run; git state remains git's business.
+record, in the spirit of the derive-don't-mirror authority split
+(`PHILOSOPHY.md` §6.3, `IMPLEMENTATION_STATUS.md` §3a): the report and
+the snapshot are facts about the run; git state remains git's business.
 
 After the provider returns, the runner recomputes the fingerprint.
 On mismatch (a terminal-side edit mid-review — the scheduler prevents
@@ -211,12 +212,12 @@ deferred to v2 (§10). Documented, not worked around.
 The intended workflow shape, expressible today with existing
 machinery: a code_review virtual with `scheduled_deps` on the epoch's
 work nodes, and a commit op that follows it. The ghost commit's
-composer panel (`GitCommitPanel`, `PROPOSAL_GIT.md` §7.5) grows a
+composer panel (`GitCommitPanel`) grows a
 **Review** action beside Commit (§8) so the gate is one click. On the
 canvas, the node is a member of its epoch like any other — the
-derived commit-edge rules of `PROPOSAL_GIT.md` §7.2 apply unchanged,
-so it naturally edges into the hub for the commit that gathers the
-epoch it reviewed.
+derived commit-edge rules (`IMPLEMENTATION_STATUS.md` §3a) apply
+unchanged, so it naturally edges into the hub for the commit that
+gathers the epoch it reviewed.
 
 
 ## 5. Runner: `_run_code_review()`
@@ -231,7 +232,7 @@ framework-owned output contract. No lane materialization, no
    `.miniclaw2/`, `git_state.py:47`), finish immediately: state DONE,
    synthesized preview with summary "working tree clean — nothing to
    review", no provider call. Mirrors the ghost composer's degrade
-   case (`PROPOSAL_GIT.md` §11).
+   case (`IMPLEMENTATION_STATUS.md` §3a).
 2. **Snapshot** per §4.2; persist `reviewed-diff.patch`.
 3. **Provider review turn.** Call `provider.run_review(context,
    spec)` (§6). Events stream through the existing
@@ -342,12 +343,14 @@ imitation (silent semantic substitution is worse than refusal).
   body, priority, confidence, and code locations plus
   `overall_correctness`/`overall_explanation`; the exact item shape
   must be pinned against the local app-server schema at
-  implementation time (`CODEX_REVIEW.md`'s standing caveat).
+  implementation time (the §1 caveat: verified against codex-cli
+  0.144.1, re-confirm on upgrade).
 - **Capability detection**: after `initialize`, probe for
   `review/start` support (schema/capabilities advertisement, or a
   version floor on the CLI). Unsupported → `kind="error"` naming the
-  minimum codex-cli version. This implements recommendation 6 of
-  `CODEX_REVIEW.md`.
+  minimum codex-cli version. `review/start` is an app-server protocol
+  capability, so detection must precede use — an old codex-cli would
+  otherwise fail opaquely.
 - `spec.focus` has no channel on the `uncommittedChanges` target;
   it is dropped for codex in v1 (noted in the API docs; the `custom`
   target can carry it in v2).
@@ -399,9 +402,11 @@ honestly interchangeable behind one subtype.
 ## 7. What the node does *not* get
 
 - **No lane, no reap.** The node writes nothing under
-  `.miniclaw2/graph/`; `reap_lane` never runs for it. This closes
-  compatibility problem 4 of `CODEX_REVIEW.md` by construction
-  rather than by adaptation.
+  `.miniclaw2/graph/`; `reap_lane` never runs for it. This closes the
+  output-contract mismatch (a native reviewer emits findings but never
+  writes the `preview.json` that terminal reap validates, which would
+  mark the node a preview-contract error) by construction rather than
+  by adaptation.
 - **No virtual mutations.** Review category normally grants virtual
   write rights at reap (`reap.py`); since code_review skips reap,
   the right is moot. The planning loop reads the report artifact
@@ -437,10 +442,9 @@ honestly interchangeable behind one subtype.
   panel alongside the existing per-node diff view (`app.py:1049`).
 - **WS surface unchanged**: no new client input types — creation and
   promotion ride existing REST; progress rides existing node events.
-  (`CODEX_REVIEW.md` §"扩展 FastAPI/WebSocket" anticipated a
-  `start_review` WS message; a REST spawn endpoint + normal node
-  lifecycle turns out to be sufficient because the review is a node,
-  not a modal session state.)
+  (The codex gap analysis anticipated a `start_review` WS message; a
+  REST spawn endpoint + normal node lifecycle turns out to be
+  sufficient because the review is a node, not a modal session state.)
 
 
 ## 9. Edge cases
@@ -510,8 +514,7 @@ Each stage lands independently and leaves the app functional.
    fixture drains, focus-argument composition.
 5. **API + UI.** `/git/review` endpoint, ghost-composer Review
    button, node panel report rendering, virtual-creation plumbing.
-6. **Docs.** Rewrite the "MiniClaw2 当前没有以下能力" and "未来接入"
-   sections of `CODEX_REVIEW.md` against what landed; ledger entry in
+6. **Docs.** Ledger entry in
    `IMPLEMENTATION_STATUS.md`; one-line subtype additions to the
    planning prompt templates; `PHILOSOPHY.md` §6.1 gains the
    review-gates-the-ghost sentence.

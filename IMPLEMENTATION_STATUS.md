@@ -13,24 +13,98 @@ sequenced — dependencies are noted inline where they matter.
 
 ## 3a. Project-level Git control
 
+Trunk: `backend/miniclaw2/git_state.py`, `frontend/src/canvas/layout.ts`
+(commit layer), `frontend/src/panel/SidePanel.tsx` (`GitCommitPanel`).
+
+The governing decision is **derive, don't mirror** (`PHILOSOPHY.md` §6.3):
+commit hubs and commit edges are render-time joins keyed on `commit:<sha>`,
+never stored records. Three authorities split the facts — node records own
+the immutable `commit_before` / `commit_after` pair, the git repository owns
+commit existence/metadata/order, and stored op nodes own only the action
+record. Mirroring is unwinnable (agents commit mid-run, users commit in
+terminals, rebases rewrite shas); derivation turns every drift scenario into
+a rendering case instead of a corruption case. Vocabulary: an **epoch** is
+the set of executed work nodes sharing one `commit_before` (user-facing
+phrasing: "changes since the last commit"); the **ghost** is the dashed hub
+for the not-yet-made commit, rendered iff the tree is dirty; a **stale hub**
+is a referenced sha no longer in history; the **alias map** is project-level
+`git_aliases.json` `{old_sha: new_sha}` captured only when the framework
+itself rebases.
+
 ### Landed
 
 - `git_status` derives repository, branch/detached, upstream ahead/behind,
-  and dirty counts in one porcelain-v2 read, excluding `.miniclaw2/`.
-- Node-less `git_status` telemetry and session Git endpoints expose status,
-  commit, pull-rebase, and push verbs.
-- Commit and pull are durable op nodes. Pull is quiescence-guarded, runs
-  asynchronously, aborts only conflicts it started, and reports conflicting
-  files. Push rejects queued or active pulls before the direct remote action.
-- `commit_graph` derives oldest-first commit hubs, resolves framework-captured
-  rebase aliases, interleaves timestamped stale epochs, and reports collapsed
-  external commits. The canvas renders the trunk, stale hubs, and dirty
-  working-tree ghost; successful ops fold in.
+  and dirty counts in one porcelain-v2 read, excluding `.miniclaw2/` so the
+  pill agrees with what `commit_all` will stage. Untracked files are
+  enumerated individually (`--untracked-files=all`); switching to `normal`
+  would collapse untracked directories and undercount the pill.
+- Node-less `git_status` telemetry: broadcast from `_on_runner_done` after
+  terminal nodes and git ops, refetched on window focus to catch
+  terminal-side changes. The event deliberately carries no `node_id` — the
+  replay buffer holds any node-addressed event until that node's replay is
+  ready, which never happens for a synthetic id.
+- Header controls: status pill (`git —` / `git clean` / `git 3~` with
+  `↑a ↓b`), Commit (selects the ghost; the side panel is the composer — no
+  modal), Pull, and Push. All disable when read-only or not a repo.
+- Commit and pull are durable op nodes; `parent_node_id=None` marks a manual
+  commit and the message rides in `node.prompt` (falls back to
+  `miniclaw:node:<id>`). Pull is `git pull --rebase` only; on conflict it
+  aborts only rebases it started (a pre-existing user rebase fails the pull
+  without touching the tree) and reports the conflicting-file list in
+  `node.error`; resolution is deliberately manual. Failed git ops stay
+  visible as selectable error tiles; successful ops stop rendering as tiles
+  and fold into the commit hub they produced.
+- Push is deliberately **not an op** (it mutates remote state, not the
+  worktree, so it earns no timeline presence): a direct backend action whose
+  errors surface in the header. It rejects queued or active pulls with 409.
+- Quiescence is two-layered: the pull endpoint 409s while any node runs or
+  queues (checked atomically with the spawn on the event loop), and the
+  scheduler re-checks for an active pull op on every launch iteration, so
+  nothing starts mid-rebase while never blocking the pull's own launch.
+  Manual commit is deliberately unguarded — it snapshots whatever is
+  mid-flight, matching auto-commit semantics.
+- `commit_graph` derives oldest-first hubs from one formatted
+  `rev-list --topo-order` pass: `{sha, live, message, ts,
+  external_count_before, aliases}`. Referenced set = every node's
+  `commit_before`/`commit_after` plus HEAD, resolved transitively through
+  the alias map. Stale epochs interleave into trunk order by their member
+  nodes' timestamps; `external_count_before` counts unreferenced commits
+  between consecutive referenced ones, rendered as a `+N` badge on the
+  trunk edge rather than as N hubs.
+- Alias capture: the pull op records `git rev-list --reverse
+  @{upstream}..HEAD` before and after the rebase; equal lengths give a
+  positional old→new map (atomic store write). On length mismatch the map
+  is not written and affected epochs render stale — the honest fallback.
+  External rebases also render stale. Node records never rewrite.
+- Canvas: trunk `root → C₀ → … → ghost` on the project baseline; hubs are
+  64px circles (sha7, live solid / stale dashed-amber / HEAD ring / ghost
+  dashed showing the dirty count), draggable via `layoutHints`
+  key `commit:<sha>`. Epoch source/sink edges touch only the sources and
+  sinks of each epoch's dep-sub-DAG (transitive reduction within the
+  epoch); a sink targets the earliest rendered **live** commit at-or-after
+  its `commit_after`, else the ghost when rendered, else no edge.
+- Selection kind `{kind: "commit", sha | null}` routes to `GitCommitPanel`:
+  HEAD/live/stale badges, message, timestamp, clickable epoch member list,
+  associated op metadata (auto vs manual, parent agent). The ghost variant
+  is the commit composer, prefilled from the current epoch's node summaries;
+  it re-checks the dirty count and degrades to "working tree clean".
+- Edge cases: empty repo renders `root → ghost` only; detached HEAD keeps
+  the pill and ring with `branch=None`; no upstream omits ahead/behind and
+  fails pull/push with git's own message; `.miniclaw2/`-only changes mean
+  dirty count 0 and no ghost.
 
 ### Pending
 
-- Branch switching, merge pulls, and concierge conflict resolution remain out
-  of scope as specified by `PROPOSAL_GIT.md` §13.
+- Push→pull serialization is one-directional: push rejects in-flight pulls,
+  but a pull can still be spawned while a push subprocess is in flight
+  (push is not a node, so quiescence does not see it).
+- `rev-list` failure/timeout logs and renders every referenced commit stale;
+  no degraded flag reaches the wire.
+- Per-file dirty listing for the composer (counts only today).
+- Branch switching / branch UI (the pill shows the branch read-only),
+  merge/non-rebase pulls (the trunk stays linear), and concierge conflict
+  resolution (auto-abort + manual resolution first) are deliberately out of
+  scope.
 
 
 ## 1. Backend domain model
@@ -252,9 +326,11 @@ Trunk: `backend/miniclaw2/runner.py`, `backend/miniclaw2/registry.py`.
 
 ### Op — landed
 
-- `commit` op only. Auto-appended after any `agent` node that
-  reaches `done` when `project.settings_override.auto_commit` is
-  truthy. Commits as `miniclaw:node:<id>`, staging everything except
+- `commit` and `pull` ops (§3a). The commit op is auto-appended after any
+  `agent` node that reaches `done` when
+  `project.settings_override.auto_commit` is truthy, and spawned manually
+  (`parent_node_id=None`, message in `node.prompt`) from the commit
+  composer. Auto-commits use `miniclaw:node:<id>`, staging everything except
   framework-generated `.miniclaw2/` paths (pathspec-excluded and
   defensively unstaged; no-op detection checks the staged diff).
   `.miniclaw2/` is also appended to `.git/info/exclude` at project
@@ -389,8 +465,8 @@ Trunk: `frontend/src/canvas/Canvas.tsx`, `frontend/src/canvas/layout.ts`,
   `ProjectRootNode`. Passive `GateNode` and the old phantom composer
   node have been removed.
 - Polymorphic side panel: `AgentPanel`, `ContextNodePanel`,
-  `ArtifactPanel`, `OpPanel`, lane panel, `ProjectPanel` switched by
-  selection (`SidePanel.tsx`).
+  `ArtifactPanel`, `OpPanel`, `GitCommitPanel`, lane panel, `ProjectPanel`
+  switched by selection (`SidePanel.tsx`).
 - The new-direction composer offers two bootstraps: `Draft with
   concierge` launches the planning bootstrap agent, while `Start blank`
   creates a bound planspace with one empty virtual node and focuses its
@@ -407,16 +483,19 @@ Trunk: `frontend/src/canvas/Canvas.tsx`, `frontend/src/canvas/layout.ts`,
 - Agent tiles show category badges for planning / regular / review /
   human-interact review nodes; verifier tiles use the review tone and
   a programmatic label.
-- Edges: dependency arrows, derived commit trunk, resume (`↻` mid-glyph),
-  loads (dashed, auto-hidden unless endpoint hovered/selected), produces
-  (agent to published artifact), and op chevrons.
+- Edges: dependency arrows, derived commit edges (trunk plus epoch
+  source/sink, with `+N` external-commit badges), resume (`↻` mid-glyph),
+  loads (dashed, auto-hidden unless endpoint hovered/selected), and produces
+  (agent to published artifact).
 - Published artifact tiles fan beneath their producing agent in the
   `ContextNode` visual language, capped at 4 (more collapses to 3 plus
   a `+k more` overflow tile that opens the agent panel). Dropped
   entries get no tiles; they surface only in `AgentPanel`, greyed with
   their drop reason.
-- Op as edge chevron when the op has a downstream child; trailing
-  ops without a child fall back to a tile.
+- Op tiles render for queued/running/error ops; done ops fold into the
+  commit hub they produced. The op-chevron/timeline edge encodings for ops
+  are retired — the commit trunk is the sole encoding of FS state
+  (`TimelineEdge` survives for error terminals).
 - Error terminal nodes downstream of failed runs carry the `error`
   text in red.
 - Planspace lanes render with persisted manifest color overrides
@@ -842,7 +921,9 @@ Quick reference; the on-disk shape is authoritative.
   "ask_user", "human_review_prose"}` (`checkpoint_review` appears only
   in the versioned replay upgrader; `permission` is emitted by Codex
   only), `text_delta`, `thinking`, `activity`, `usage`,
-  `turn_done`, `error`.
+  `turn_done`, `error`. Registry-emitted and node-less: `git_status
+  {is_repo, head, branch, detached, upstream, ahead, behind, dirty_count}`
+  (ephemeral, `seq: 0`; must never carry a `node_id` — see §3a).
 - Client → server: user prompt with optional `resume_from_node_id`,
   `extra_skills`, `agent_op_kind`, and `model_preset_id`; `interrupt`;
   interaction response;
@@ -864,6 +945,11 @@ Quick reference; the on-disk shape is authoritative.
   `POST /global-state/sync/setup`, `POST /global-state/sync`; project CRUD, preferences, node/event
   introspection, failed-node rerun, per-node diff/preview/context-bundle reads,
   published artifact JSON/raw reads,
+  `GET /sessions/{sid}/git` (status + derived commit descriptors),
+  `POST /sessions/{sid}/git/commit {message}` (spawns the commit op),
+  `POST /sessions/{sid}/git/pull` (409 unless quiescent; spawns the pull op),
+  `POST /sessions/{sid}/git/push` (direct action; 409 with git stderr or
+  while a pull is in flight),
   `PATCH /sessions/{sid}/layout-hints`,
   `PATCH /sessions/{sid}/planspace-view`,
   `PATCH /sessions/{sid}/planspaces/{planspace_id}/mode`,
