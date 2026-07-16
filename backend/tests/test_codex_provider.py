@@ -14,6 +14,7 @@ from miniclaw2.providers.codex import (
     _CodexJsonRpcClient,
     _CODEX_STDIO_BUFFER_LIMIT_BYTES,
     _codex_user_input_response,
+    _activity_from_item,
     _thread_params,
     _turn_params,
 )
@@ -147,6 +148,19 @@ class _FakeProviderContext:
 
 
 class CodexProviderTest(unittest.IsolatedAsyncioTestCase):
+    def test_command_activity_keeps_full_command(self) -> None:
+        command = "printf '%s' " + "x" * 300
+
+        activity = _activity_from_item(
+            {"type": "commandExecution", "id": "cmd-1", "command": command},
+            "start",
+        )
+
+        self.assertIsNotNone(activity)
+        assert activity is not None
+        self.assertEqual(activity.summary, command[:200] + "...")
+        self.assertEqual(activity.command, command)
+
     async def test_command_output_delta_preserves_untruncated_result(self) -> None:
         provider = CodexProvider()
         delta = "0123456789" * 50

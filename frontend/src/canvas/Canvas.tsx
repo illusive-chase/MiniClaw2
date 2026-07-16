@@ -821,7 +821,7 @@ function decorateEdges(
   hoveredNodeId: string | null,
 ): Edge[] {
   return edges.map((e) => {
-    if (e.type === "loads") {
+    if (e.type === "loads" || e.type === "produces") {
       const endpoint = e.source === selectedNodeId || e.target === selectedNodeId
         || e.source === hoveredNodeId || e.target === hoveredNodeId;
       return { ...e, style: { ...(e.style ?? {}), opacity: endpoint ? 0.75 : 0 } };

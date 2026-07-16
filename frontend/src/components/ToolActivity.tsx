@@ -22,6 +22,16 @@ export const ToolActivity = memo(function ToolActivity({ items }: { items: Activ
                   {a.summary}
                 </div>
               )}
+              {a.command && (
+                <details className="mt-1.5">
+                  <summary className="cursor-pointer select-none text-[11px] text-ink-muted hover:text-ink">
+                    full command ({a.command.length} chars)
+                  </summary>
+                  <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-md border border-line bg-surface-raised p-2 font-mono text-[11px] leading-relaxed text-ink">
+                    {a.command}
+                  </pre>
+                </details>
+              )}
             </div>
           </div>
           {a.result && (
@@ -67,6 +77,7 @@ function areActivityListsEqual(
       activity.status === candidate.status &&
       activity.name === candidate.name &&
       activity.summary === candidate.summary &&
+      activity.command === candidate.command &&
       activity.result === candidate.result &&
       activity.result_kind === candidate.result_kind
     );

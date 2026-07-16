@@ -30,6 +30,7 @@ class Activity(BaseModel):
     id: str
     name: str
     summary: str = ""
+    command: str | None = None
     result: str | None = None
     result_kind: Literal["stdout", "diff", "text", "json"] | None = None
     node_id: str = ""

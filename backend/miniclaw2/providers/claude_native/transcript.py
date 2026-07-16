@@ -227,6 +227,7 @@ class TranscriptTranslator:
                     id=block_id,
                     name=name,
                     summary=summary,
+                    command=_tool_command(name, tool_input),
                 )
                 if not is_task:
                     # Task progress is many events over one tool call — no cache.
@@ -296,6 +297,14 @@ def _stringify_input(value: Any) -> str:
         return json.dumps(value, ensure_ascii=False)
     except (TypeError, ValueError):
         return str(value)
+
+
+def _tool_command(name: str, value: Any) -> str | None:
+    if name.lower() not in {"bash", "shell", "command"}:
+        return None
+    if isinstance(value, dict) and isinstance(value.get("command"), str):
+        return value["command"]
+    return value if isinstance(value, str) else None
 
 
 def _kind_for_tool(name: str, text: str, *, is_error: bool) -> str:

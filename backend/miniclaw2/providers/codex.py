@@ -699,6 +699,7 @@ def _activity_from_item(item: dict[str, Any], status: str) -> Activity | None:
             id=item_id,
             name="command",
             summary=_truncate(str(summary)),
+            command=str(summary),
             result=result_text,
             result_kind=result_kind,  # type: ignore[arg-type]
         )

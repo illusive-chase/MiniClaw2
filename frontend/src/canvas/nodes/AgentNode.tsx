@@ -21,7 +21,6 @@ import { modelPresetDetail, modelPresetLabel, providerLabel } from "../../modelP
 function AgentNodeImpl({ data, selected }: NodeProps<AgentNodeData>) {
   const {
     node,
-    index,
     resumeParent,
     isActive,
     planspaceColor,
@@ -237,9 +236,8 @@ function AgentNodeImpl({ data, selected }: NodeProps<AgentNodeData>) {
           <StateChip state={node.state} />
           <CategoryChip node={node} />
         </div>
-        <span className="font-mono text-[10px] text-ink-subtle">
-          {index + 1}
-          <span className="text-ink-subtle/70"> · {isVirtual ? "plan" : "run"}</span>
+        <span className="font-mono text-[10px] text-ink-subtle" title={node.id}>
+          {node.id.slice(0, 6)}
         </span>
       </div>
 
@@ -251,7 +249,6 @@ function AgentNodeImpl({ data, selected }: NodeProps<AgentNodeData>) {
       {/* footer */}
       <div className="flex items-center justify-between gap-2 px-3.5 pb-1.5 pt-2 text-[10px] text-ink-subtle">
         <span className="flex min-w-0 items-center gap-1">
-          <span className="font-mono">{node.id.slice(0, 8)}</span>
           <span
             className="max-w-[92px] truncate rounded border border-line bg-surface/70 px-1 py-0.5 text-[8.5px] font-medium uppercase tracking-[0.1em] text-ink-muted"
             title={
@@ -288,14 +285,6 @@ function AgentNodeImpl({ data, selected }: NodeProps<AgentNodeData>) {
       {meta.ring && (
         <span
           className="pointer-events-none absolute inset-0 rounded-lg review-ring"
-          aria-hidden="true"
-        />
-      )}
-
-      {/* live runner dot */}
-      {isActive && (
-        <span
-          className="pointer-events-none absolute right-2 top-2 inline-block h-1.5 w-1.5 rounded-full bg-state-running shadow-[0_0_0_3px_rgb(var(--state-running)/0.25)]"
           aria-hidden="true"
         />
       )}

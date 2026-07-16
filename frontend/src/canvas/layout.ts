@@ -5,7 +5,6 @@ import type { ArtifactRef, ContextBundle, NodeInfo } from "../types";
 
 export type AgentNodeData = {
   node: NodeInfo;
-  index: number;
   resumeParent: NodeInfo | null;
   /** true when this node is currently active in the project runner */
   isActive: boolean;
@@ -346,7 +345,7 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
     laneChildCount.set(laneId, (laneChildCount.get(laneId) ?? 0) + 1);
   };
 
-  visibleNodes.forEach((node, index) => {
+  visibleNodes.forEach((node) => {
     const resumeParent = findResumeParent(node, nodeById);
     const isActive = activeNodeIds.includes(node.id);
     const stored = layoutHints[node.id];
@@ -453,7 +452,6 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
         height: 86,
         data: {
           node,
-          index,
           resumeParent,
           isActive,
           planspaceColor,

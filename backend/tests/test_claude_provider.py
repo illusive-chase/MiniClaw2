@@ -283,6 +283,33 @@ class AskPayloadRoundtripTest(unittest.TestCase):
 
 
 class JsonlDrainTest(unittest.TestCase):
+    def test_bash_activity_keeps_full_command(self) -> None:
+        from miniclaw2.providers.claude_native.transcript import TranscriptTranslator
+
+        command = "printf '%s' " + "x" * 300
+        events = TranscriptTranslator().translate(
+            {
+                "type": "assistant",
+                "message": {
+                    "id": "message-command",
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": "tool-command",
+                            "name": "Bash",
+                            "input": {"command": command},
+                        }
+                    ],
+                },
+            }
+        )
+
+        self.assertEqual(len(events), 1)
+        activity = events[0].event
+        self.assertIsNotNone(activity)
+        assert activity is not None
+        self.assertEqual(activity.command, command)
+
     def test_non_conversation_records_do_not_emit_events_or_usage(self) -> None:
         from miniclaw2.providers.claude_native.transcript import TranscriptTranslator
 

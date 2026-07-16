@@ -267,6 +267,7 @@ function mergeActivityProgress(current: Activity, next: Activity): Activity {
   return {
     ...next,
     summary: current.summary || next.summary,
+    command: current.command || next.command,
     result: result.slice(-4096),
     result_kind: next.result_kind ?? "stdout",
   };

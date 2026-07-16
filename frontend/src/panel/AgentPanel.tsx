@@ -33,6 +33,7 @@ import { InspectDrawer } from "./InspectDrawer";
 import {
   modelPresetDetail,
   modelPresetLabel,
+  providerLabel,
   selectableModelPresets,
 } from "../modelPresets";
 
@@ -97,7 +98,6 @@ export function AgentPanel({
     node.prompt ||
     "(no prompt)"
   ).trim();
-  const resumeParentLabel = node.parent_node_id ? node.parent_node_id.slice(0, 8) : null;
   const turns = useIncrementalTurns(node, events);
   const transcriptItems = useMemo(() => flattenTranscript(turns), [turns]);
   const readyToPromote = useMemo(
@@ -146,20 +146,10 @@ export function AgentPanel({
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-1.5">
               <StatePill state={node.state} />
-              <CategoryPill node={node} />
-              <ModelPresetPill
-                modelPresetId={node.model_preset_id}
-                modelPresets={modelPresets}
-              />
             </div>
             <h2 className="mt-1.5 line-clamp-2 font-display text-[15px] font-semibold leading-snug text-ink-strong">
               {headline}
             </h2>
-            {resumeParentLabel && node.parent_node_id && (
-              <div className="mt-1 text-[11px] text-ink-muted">
-                continuing from <span className="font-mono">{resumeParentLabel}</span>
-              </div>
-            )}
           </div>
           <div className="flex flex-none items-center gap-1.5">
             {(node.state === "running" ||
@@ -217,6 +207,9 @@ export function AgentPanel({
             This project is read-only on this machine.
           </div>
         )}
+        <section className="mb-5">
+          <BasicInformationCard node={node} modelPresets={modelPresets} />
+        </section>
         {node.state === "virtual" ? (
           <fieldset disabled={!canMutate} className={canMutate ? "contents" : "contents opacity-75"}>
             <VirtualNodeBody
@@ -1173,6 +1166,41 @@ function AgentInputCard({
   );
 }
 
+function BasicInformationCard({
+  node,
+  modelPresets,
+}: {
+  node: NodeInfo;
+  modelPresets: ModelPreset[];
+}) {
+  const presetLabel = modelPresetLabel(modelPresets, node.model_preset_id);
+  const presetDetail = modelPresetDetail(modelPresets, node.model_preset_id);
+  const resumeSource = node.resume_from_node_id || node.parent_node_id || "-";
+  return (
+    <div className="overflow-hidden rounded-md border border-line bg-surface-sunken">
+      <div className="border-b border-line px-3 py-2">
+        <SectionHeading>Basic information</SectionHeading>
+      </div>
+      <div className="px-3 py-3">
+        <KVGrid
+          rows={[
+            ["Node ID", node.id],
+            ["Type", node.kind === "verifier" ? "programmatic verifier" : node.kind],
+            ["Category", nodeCategoryLabel(node)],
+            ["Model", presetDetail ? `${presetLabel} · ${presetDetail}` : presetLabel],
+            ["Provider", providerLabel(node.provider)],
+            ["Planspace", node.planspace_id || "-"],
+            ["Continues from", resumeSource],
+            ["Created", formatTimestamp(node.created_at)],
+            ["Started", formatTimestamp(node.started_at)],
+            ["Finished", formatTimestamp(node.finished_at)],
+          ]}
+        />
+      </div>
+    </div>
+  );
+}
+
 function PromptBlock({
   label,
   text,
@@ -1548,8 +1576,8 @@ function StatePill({ state }: { state: NodeInfo["state"] }) {
   );
 }
 
-function CategoryPill({ node }: { node: NodeInfo }) {
-  const label =
+function nodeCategoryLabel(node: NodeInfo): string {
+  return (
     node.kind === "verifier"
       ? "programmatic"
       : node.category === "planning"
@@ -1558,31 +1586,13 @@ function CategoryPill({ node }: { node: NodeInfo }) {
         ? node.subtype === "human_interact_review"
           ? "human review"
           : "review"
-        : "regular";
-  return (
-    <span className="inline-block rounded border border-line bg-surface px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.12em] text-ink-muted">
-      {label}
-    </span>
+        : "regular"
   );
 }
 
-function ModelPresetPill({
-  modelPresetId,
-  modelPresets,
-}: {
-  modelPresetId?: string | null;
-  modelPresets: ModelPreset[];
-}) {
-  const label = modelPresetLabel(modelPresets, modelPresetId);
-  const detail = modelPresetDetail(modelPresets, modelPresetId);
-  return (
-    <span
-      className="inline-block rounded border border-line bg-surface px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.12em] text-ink-muted"
-      title={detail || undefined}
-    >
-      {label}
-    </span>
-  );
+function formatTimestamp(value?: number | null): string {
+  if (!value) return "-";
+  return new Date(value * 1000).toLocaleString();
 }
 
 function KVGrid({

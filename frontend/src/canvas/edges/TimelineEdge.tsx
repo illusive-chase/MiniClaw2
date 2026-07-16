@@ -53,7 +53,6 @@ function TimelineEdgeImpl(props: EdgeProps<EdgeData>) {
           ? "edge-march 0.9s linear infinite"
           : undefined,
       }}
-      markerEnd={props.markerEnd}
     />
   );
 }
@@ -192,7 +191,7 @@ function LoadsEdgeImpl(props: EdgeProps) {
 export const LoadsEdge = memo(LoadsEdgeImpl);
 
 function ProducesEdgeImpl(props: EdgeProps) {
-  const { sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, selected } = props;
+  const { sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, selected, style } = props;
   const [path] = getBezierPath({
     sourceX,
     sourceY,
@@ -202,6 +201,7 @@ function ProducesEdgeImpl(props: EdgeProps) {
     targetPosition,
     curvature: 0.32,
   });
+  const visible = (style as React.CSSProperties | undefined)?.opacity ?? 0;
   return (
     <BaseEdge
       path={path}
@@ -209,8 +209,10 @@ function ProducesEdgeImpl(props: EdgeProps) {
         stroke: selected ? "rgb(var(--brand))" : "rgb(var(--ink-subtle))",
         strokeWidth: selected ? 1.8 : 1.1,
         strokeDasharray: "4 4",
-        opacity: selected ? 0.95 : 0.5,
+        opacity: selected ? 0.95 : visible,
+        transition: "opacity 180ms ease",
       }}
+      markerEnd={props.markerEnd}
     />
   );
 }

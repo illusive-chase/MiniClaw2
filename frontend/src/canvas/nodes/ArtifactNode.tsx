@@ -20,17 +20,9 @@ function ArtifactNodeImpl({ data, selected }: NodeProps<ArtifactNodeData>) {
           : "rounded-md hover:ring-2 hover:ring-line-strong/45 hover:ring-offset-2 hover:ring-offset-surface-sunken")
       }
     >
-      <span
-        aria-hidden="true"
-        className="absolute -bottom-1 -right-1 h-full w-full rounded-md border border-line/60 bg-surface-sunken"
-      />
-      <span
-        aria-hidden="true"
-        className="absolute -bottom-0.5 -right-0.5 h-full w-full rounded-md border border-line/80 bg-surface-raised/80"
-      />
       <div
         className={
-          "relative flex h-[70px] flex-col rounded-md border bg-surface-raised px-2.5 py-1.5 shadow-card " +
+          "relative flex h-[70px] flex-col rounded-md border border-dashed bg-surface-sunken/60 px-2.5 py-1.5 transition " +
           (selected ? "border-brand" : "border-line hover:border-line-strong")
         }
       >
