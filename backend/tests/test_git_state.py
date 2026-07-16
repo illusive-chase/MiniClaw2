@@ -151,6 +151,40 @@ class GitStateTest(unittest.TestCase):
             self.assertEqual([item.sha for item in graph], ["b"])
             self.assertEqual(graph[0].aliases, ["a"])
 
+    def test_pull_conflict_aborts_own_rebase_and_restores_tree(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            origin = root / "origin"
+            origin.mkdir()
+            _init_repo(origin)
+            clone = root / "clone"
+            subprocess.run(
+                ["git", "clone", "-q", str(origin), str(clone)], check=True
+            )
+            subprocess.run(["git", "config", "user.email", "t@t.t"], cwd=clone, check=True)
+            subprocess.run(["git", "config", "user.name", "t"], cwd=clone, check=True)
+            (origin / "seed.txt").write_text("remote\n", encoding="utf-8")
+            subprocess.run(["git", "commit", "-aqm", "remote"], cwd=origin, check=True)
+            (clone / "seed.txt").write_text("local\n", encoding="utf-8")
+            subprocess.run(["git", "commit", "-aqm", "local"], cwd=clone, check=True)
+            local_head = _head(clone)
+
+            head, error = git_pull_rebase(str(clone))
+
+            self.assertIsNotNone(error)
+            self.assertIn("seed.txt", error or "")
+            self.assertEqual(head, local_head)
+            self.assertFalse((clone / ".git" / "rebase-merge").exists())
+            self.assertFalse((clone / ".git" / "rebase-apply").exists())
+            porcelain = subprocess.run(
+                ["git", "status", "--porcelain"],
+                cwd=clone,
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+            self.assertEqual(porcelain, "")
+
     def test_pull_does_not_abort_preexisting_rebase(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             repo = Path(raw)

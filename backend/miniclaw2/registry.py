@@ -791,9 +791,7 @@ class ProjectRegistry:
             for runner in rt.runners.values()
         )
 
-    def _pull_in_flight(self, rt: ProjectRuntime) -> bool:
-        if self._pull_active(rt):
-            return True
+    def _queued_pull_exists(self, rt: ProjectRuntime) -> bool:
         return any(
             node.kind is NodeKind.OP
             and node.op_kind == "pull"
@@ -923,10 +921,10 @@ class ProjectRegistry:
         if rt is None:
             return None
         self.require_native(pid)
-        if self._pull_in_flight(rt):
+        if self._pull_active(rt) or await asyncio.to_thread(self._queued_pull_exists, rt):
             from .git_state import git_status as read_git_status
 
-            return read_git_status(rt.project.root_path), "pull in progress"
+            return await asyncio.to_thread(read_git_status, rt.project.root_path), "pull in progress"
         from .git_state import git_push
         return await asyncio.to_thread(git_push, rt.project.root_path)
 

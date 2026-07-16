@@ -317,6 +317,24 @@ class ProjectConcurrencySchedulerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(pull.id, runtime.runners)
         self.assertNotIn(work.id, runtime.runners)
 
+    async def test_git_status_broadcast_is_node_less(self) -> None:
+        runtime = self.registry._runtimes[self.project.id]
+        events: list[dict[str, object]] = []
+
+        async def observe(event: dict[str, object]) -> None:
+            events.append(event)
+
+        token = runtime.add_observer(observe)
+        try:
+            self.registry._broadcast_git_status(runtime)
+            await asyncio.gather(*runtime.background_tasks)
+        finally:
+            runtime.remove_observer(token)
+
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["type"], "git_status")
+        self.assertNotIn("node_id", events[0])
+
     async def test_push_rejects_queued_pull(self) -> None:
         runtime = self.registry._runtimes[self.project.id]
         pull = Node(

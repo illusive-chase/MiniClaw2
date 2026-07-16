@@ -428,13 +428,16 @@ function Inner(props: SidePanelProps & { nodesById: Map<string, NodeInfo> }) {
 
 function GitCommitPanel({ dirtyCount, pending, readOnly, onCommit, suggestedMessage }: { dirtyCount: number; pending: boolean; readOnly: boolean; onCommit?: (message: string) => Promise<void> | void; suggestedMessage: string }) {
   const [message, setMessage] = useState(suggestedMessage);
-  useEffect(() => setMessage(suggestedMessage), [suggestedMessage]);
+  const [edited, setEdited] = useState(false);
+  useEffect(() => {
+    if (!edited) setMessage(suggestedMessage);
+  }, [edited, suggestedMessage]);
   const disabled = readOnly || pending || dirtyCount === 0 || !message.trim();
   return (
     <div className="flex h-full flex-col bg-surface px-4 py-4">
       <div className="text-[10px] font-medium uppercase tracking-[0.14em] text-ink-subtle">Commit changes</div>
       <p className="mt-2 text-[12px] text-ink-muted">{dirtyCount === 0 ? "Working tree clean." : `${dirtyCount} changed ${dirtyCount === 1 ? "file" : "files"}.`}</p>
-      <textarea value={message} onChange={(event) => setMessage(event.target.value)} disabled={readOnly || pending} rows={5} className="mt-4 resize-none rounded-md border border-line bg-surface-raised px-3 py-2 text-[13px] text-ink outline-none focus:border-brand" placeholder="Commit message" />
+      <textarea value={message} onChange={(event) => { setEdited(true); setMessage(event.target.value); }} disabled={readOnly || pending} rows={5} className="mt-4 resize-none rounded-md border border-line bg-surface-raised px-3 py-2 text-[13px] text-ink outline-none focus:border-brand" placeholder="Commit message" />
       <button type="button" disabled={disabled} onClick={() => void onCommit?.(message.trim())} className="mt-3 inline-flex h-9 items-center justify-center rounded-md bg-brand px-3 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-40">{pending ? "Committing…" : "Commit"}</button>
     </div>
   );

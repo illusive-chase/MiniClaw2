@@ -81,7 +81,7 @@ export function GitWorkspaceStatus({ status, onRefresh }: GitWorkspaceStatusProp
         <div
           role="dialog"
           aria-label="Git working tree status"
-          className="absolute left-0 top-[calc(100%+0.45rem)] z-50 w-[min(32rem,calc(100vw-2rem))] overflow-hidden rounded-md border border-line bg-surface-raised font-sans text-ink shadow-modal"
+          className="fixed left-1/2 top-14 z-50 w-[min(32rem,calc(100vw-2rem))] -translate-x-1/2 overflow-hidden rounded-md border border-line bg-surface-raised font-sans text-ink shadow-modal"
         >
           <div className="flex items-start justify-between gap-4 border-b border-line px-3.5 py-3">
             <div className="min-w-0">
