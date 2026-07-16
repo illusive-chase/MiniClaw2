@@ -388,6 +388,11 @@ Trunk: `frontend/src/canvas/Canvas.tsx`, `frontend/src/canvas/layout.ts`,
 - Edges: dependency arrows, timeline spine, resume (`↻` mid-glyph),
   loads (dashed, auto-hidden unless endpoint hovered/selected), produces
   (agent to published artifact), and op chevrons.
+- Published artifact tiles fan beneath their producing agent in the
+  `ContextNode` visual language, capped at 4 (more collapses to 3 plus
+  a `+k more` overflow tile that opens the agent panel). Dropped
+  entries get no tiles; they surface only in `AgentPanel`, greyed with
+  their drop reason.
 - Op as edge chevron when the op has a downstream child; trailing
   ops without a child fall back to a tile.
 - Error terminal nodes downstream of failed runs carry the `error`
@@ -503,16 +508,49 @@ surface; the durable node store is the source of truth.
   previews.
 - Executed previews may declare bare artifact filenames. Terminal reap
   validates `.md`/`.json`/`.html` files under
-  `.miniclaw2/outputs/<nid>/`, applies per-file/per-node/count caps,
-  replaces the durable node artifact directory, and stamps published or
-  dropped manifest entries onto `Node`. Artifact failures do not enter
-  the preview-repair loop.
+  `.miniclaw2/outputs/<nid>/`, applies per-file/per-node/count caps
+  (constants in `artifacts.py`), replaces the durable node artifact
+  directory, and stamps published or dropped manifest entries onto
+  `Node`. Artifact failures do not enter the preview-repair loop;
+  error/cancel stub previews clear any previously published artifacts.
+- The category launch templates carry the publishing contract: write
+  under the node's own outputs directory (the `<<outputs_path>>`
+  substitution resolves the absolute path) and declare the filename in
+  the preview's `artifacts` field. Undeclared files are never rendered
+  or synced but keep flowing to downstream agents through the untouched
+  lane projection (`materialize.py`); publication is a parallel,
+  narrower path to the human. Verifier and op previews are
+  framework-written and never publish.
+- Published artifacts are served from the store copy at
+  `GET /sessions/{sid}/nodes/{nid}/artifacts/{name}` (`?raw=1` for
+  bytes). `name` must exactly match a `published` manifest entry —
+  never a free path, so no enumeration or traversal surface. JSON mode
+  truncates inline `text` at 512 KiB with a `truncated` flag; raw
+  `.html` is served with
+  `Content-Security-Policy: sandbox allow-scripts; connect-src 'none'`
+  plus nosniff, forcing agent-authored HTML into an opaque origin with
+  no access to the MiniClaw2 API. The endpoint has no native-machine
+  gate: read-only machines get full artifact content from the synced
+  store copy.
 - Anti-self-poisoning prompt is appended last in launch instruction
   composition and applies to preview content as guidance.
 
 ### Deferred
 
 - Live mid-session graph-write canvas updates; v1 remains reap-only.
+- Live artifact updates during a run — artifacts appear only at
+  terminal transition; a rescan on the `waiting` transition is the
+  cheap extension if long-running nodes make this painful.
+- Non-text artifact types (`.png`, `.svg`, `.csv`, `.pdf`) — the
+  pipeline generalizes, but each type needs a rendering and sync-size
+  decision.
+- Multi-file HTML (companion assets); the single self-contained file
+  rule keeps serving, validation, and the sandbox story trivial.
+- Inline sandboxed-iframe HTML preview in the side panel (pure
+  addition over the current new-window path).
+- Artifact history across reruns (reap replaces the store copy; prior
+  versions survive only in `$MINICLAW_HOME` git history) and zip/export
+  bundling.
 
 
 ## 7. CLI-parity gaps
