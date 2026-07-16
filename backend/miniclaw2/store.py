@@ -29,9 +29,22 @@ from pydantic import ValidationError
 
 from .domain import HumanGate, Node, Project
 from .replay import EVENT_SCHEMA_VERSION, upgrade_event_record
+from .sync import (
+    MachineIdentity,
+    SyncManager,
+    ensure_machine_identity,
+    ensure_store_metadata,
+    get_sync_manager,
+    machine_hostname_mismatch,
+    schema_is_newer,
+)
 
 
 logger = logging.getLogger(__name__)
+
+
+class StoreReadOnlyError(RuntimeError):
+    """The store cannot safely accept writes on this machine."""
 
 
 def _root() -> Path:
@@ -45,9 +58,19 @@ class Store:
     def __init__(self, root: Path | None = None) -> None:
         self.root = root or _root()
         (self.root / "projects").mkdir(parents=True, exist_ok=True)
+        self.machine: MachineIdentity = ensure_machine_identity(self.root)
+        ensure_store_metadata(self.root, self.machine)
         from .global_config import ensure_global_config
 
         ensure_global_config(self.root)
+        self.sync: SyncManager = get_sync_manager(self.root, self.machine)
+        self.read_only_reason: str | None = None
+        if schema_is_newer(self.root):
+            self.read_only_reason = "store schema is newer than this MiniClaw2 version"
+        elif machine_hostname_mismatch(self.machine):
+            self.read_only_reason = (
+                "machine hostname changed; resolve rename versus copied store first"
+            )
 
     # ---- paths ----
 
@@ -75,6 +98,11 @@ class Store:
     # ---- project ----
 
     def create_project(self, project: Project) -> Project:
+        self.assert_writable()
+        if not project.machine_id:
+            project.machine_id = self.machine.id
+        if not project.machine_label:
+            project.machine_label = self.machine.label
         project.bind_model_catalog(self.root)
         d = self._project_dir(project.id)
         (d / "nodes").mkdir(parents=True, exist_ok=True)
@@ -82,14 +110,17 @@ class Store:
             self._project_file(project.id),
             project.model_dump(exclude={"provider"}),
         )
+        self.sync.schedule_commit(f'create project "{project.name or project.id}"')
         return project
 
     def update_project(self, project: Project) -> None:
+        self.assert_writable()
         project.bind_model_catalog(self.root)
         self._write_json(
             self._project_file(project.id),
             project.model_dump(exclude={"provider"}),
         )
+        self.sync.schedule_commit(f'update project "{project.name or project.id}"')
 
     def list_projects(self) -> list[Project]:
         projects_dir = self.root / "projects"
@@ -116,15 +147,18 @@ class Store:
         return out
 
     def delete_project(self, pid: str) -> bool:
+        self.assert_writable()
         d = self._project_dir(pid)
         if not d.exists():
             return False
         shutil.rmtree(d)
+        self.sync.schedule_commit(f"delete project {pid}")
         return True
 
     # ---- node ----
 
     def create_node(self, node: Node) -> Node:
+        self.assert_writable()
         node.bind_model_catalog(self.root)
         d = self.node_dir(node.project_id, node.id)
         d.mkdir(parents=True, exist_ok=True)
@@ -132,6 +166,7 @@ class Store:
             self._node_file(node.project_id, node.id),
             node.model_dump(exclude={"provider"}),
         )
+        self.sync.schedule_commit(f"create node {node.id}")
         return node
 
     def load_node(self, pid: str, nid: str) -> Node | None:
@@ -143,17 +178,21 @@ class Store:
         )
 
     def update_node(self, node: Node) -> None:
+        self.assert_writable()
         node.bind_model_catalog(self.root)
         self._write_json(
             self._node_file(node.project_id, node.id),
             node.model_dump(exclude={"provider"}),
         )
+        self.sync.schedule_commit(f"node {node.id} {node.state.value}")
 
     def delete_node(self, pid: str, nid: str) -> bool:
+        self.assert_writable()
         d = self.node_dir(pid, nid)
         if not d.exists():
             return False
         shutil.rmtree(d)
+        self.sync.schedule_commit(f"delete node {nid}")
         return True
 
     def list_nodes(self, pid: str) -> list[Node]:
@@ -186,11 +225,13 @@ class Store:
     # ---- node preview ----
 
     def write_node_preview(self, pid: str, nid: str, text: str) -> None:
+        self.assert_writable()
         path = self._preview_file(pid, nid)
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(path.suffix + ".tmp")
         tmp.write_text(text, encoding="utf-8")
         tmp.replace(path)
+        self.sync.schedule_commit(f"update preview for node {nid}")
 
     def read_node_preview(self, pid: str, nid: str) -> str | None:
         path = self._preview_file(pid, nid)
@@ -201,6 +242,7 @@ class Store:
     # ---- events ----
 
     def append_event(self, pid: str, nid: str, seq: int, event: dict[str, Any]) -> None:
+        self.assert_writable()
         path = self._events_file(pid, nid)
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a", encoding="utf-8") as f:
@@ -216,6 +258,7 @@ class Store:
                 + "\n"
             )
             f.flush()
+        self.sync.schedule_commit(f"update transcript for node {nid}")
 
     def replay_events(self, pid: str, nid: str, since_seq: int = 0) -> list[dict[str, Any]]:
         path = self._events_file(pid, nid)
@@ -239,6 +282,7 @@ class Store:
     # ---- gates ----
 
     def append_gate(self, pid: str, gate: HumanGate, action: str) -> None:
+        self.assert_writable()
         path = self._gates_file(pid, gate.node_id)
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a", encoding="utf-8") as f:
@@ -247,6 +291,7 @@ class Store:
                 + "\n"
             )
             f.flush()
+        self.sync.schedule_commit(f"update gate for node {gate.node_id}")
 
     # ---- low-level ----
 
@@ -260,6 +305,10 @@ class Store:
     @staticmethod
     def _read_json(path: Path) -> dict[str, Any]:
         return json.loads(path.read_text(encoding="utf-8"))
+
+    def assert_writable(self) -> None:
+        if self.read_only_reason is not None:
+            raise StoreReadOnlyError(self.read_only_reason)
 
 
 def _validate_project_record(path: Path, payload: dict[str, Any]) -> Project:

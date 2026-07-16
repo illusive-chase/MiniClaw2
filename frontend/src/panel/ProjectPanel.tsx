@@ -100,7 +100,7 @@ export function ProjectPanel({
   );
   const notesExist = !!contextSpace?.context_file?.exists;
   const refreshing = !!contextSpace?.context_refresh?.running;
-  const busy = contextSpaceSaving || refreshing || settingsSaving;
+  const busy = contextSpaceSaving || refreshing || settingsSaving || !!session?.read_only;
   const activeModelPresets = selectableModelPresets(modelPresets);
 
   useEffect(() => {
@@ -160,6 +160,11 @@ export function ProjectPanel({
         <div className="mt-1 font-mono text-[10.5px] text-ink-muted">
           {session.id}
         </div>
+        {session.read_only && (
+          <div className="mt-2 inline-flex rounded border border-state-waiting/40 bg-state-waiting-soft px-2 py-1 text-[10.5px] text-state-waiting">
+            read-only · native to {session.native_machine_label} · as of {session.last_sync_at ? new Date(session.last_sync_at * 1000).toLocaleString() : "never synced"}
+          </div>
+        )}
       </div>
 
       <div className="flex-1 overflow-y-auto bg-surface px-4 py-3 text-sm">
@@ -182,7 +187,7 @@ export function ProjectPanel({
             <span className="text-ink-subtle">Preferred language</span>
             <select
               value={session.preferred_language ?? ""}
-              disabled={settingsSaving}
+              disabled={busy}
               onChange={(event) => {
                 onPreferredLanguageChange(event.target.value || null);
               }}
@@ -202,7 +207,7 @@ export function ProjectPanel({
               min={1}
               step={1}
               value={session.concurrency}
-              disabled={settingsSaving}
+              disabled={busy}
               onChange={(event) => {
                 onConcurrencyChange(Math.max(1, Number(event.target.value) || 1));
               }}

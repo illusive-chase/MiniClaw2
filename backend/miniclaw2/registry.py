@@ -55,6 +55,13 @@ logger = logging.getLogger(__name__)
 
 _UNSET: object = object()
 
+
+class NonNativeProjectError(PermissionError):
+    def __init__(self, project: Project) -> None:
+        label = project.machine_label or project.machine_id or "another machine"
+        super().__init__(f'project is read-only here; it is native to "{label}"')
+        self.project = project
+
 _PROMPTS_DIR = Path(__file__).with_name("prompts")
 _CONCIERGE_TEMPLATE = "concierge_bootstrap.md"
 
@@ -179,12 +186,44 @@ class ProjectRegistry:
         self._initialized = True
         for project in store.list_projects():
             self._runtimes[project.id] = ProjectRuntime(project)
-            self._repair_stale_nodes(project.id)
+            if self.is_native_project(project) and store.read_only_reason is None:
+                self._repair_stale_nodes(project.id)
 
     def schedule_all(self) -> None:
         """Fill execution slots for durable queued work after startup."""
         for runtime in self._runtimes.values():
-            self._schedule_queued(runtime)
+            if self.is_native_project(runtime.project):
+                self._schedule_queued(runtime)
+
+    def reload_from_store(self) -> None:
+        """Refresh project metadata after a successful manual merge."""
+        loaded = {project.id: project for project in self.store.list_projects()}
+        for project_id, project in loaded.items():
+            runtime = self._runtimes.get(project_id)
+            if runtime is None:
+                self._runtimes[project_id] = ProjectRuntime(project)
+            elif not runtime.is_running():
+                runtime.project = project
+        for project_id in list(self._runtimes):
+            runtime = self._runtimes[project_id]
+            if project_id not in loaded and not runtime.is_running():
+                self._runtimes.pop(project_id, None)
+
+    def is_native_project(self, project: Project) -> bool:
+        return bool(project.machine_id) and project.machine_id == self.store.machine.id
+
+    def is_native(self, pid: str) -> bool:
+        project = self.get_project(pid)
+        return project is not None and self.is_native_project(project)
+
+    def require_native(self, pid: str) -> Project:
+        self.store.assert_writable()
+        project = self.get_project(pid)
+        if project is None:
+            raise KeyError(pid)
+        if not self.is_native_project(project):
+            raise NonNativeProjectError(project)
+        return project
 
     def _repair_stale_nodes(self, pid: str) -> None:
         """Mark nodes stuck in non-terminal states as cancelled on load.
@@ -317,6 +356,7 @@ class ProjectRegistry:
         rt = self._runtimes.get(pid)
         if rt is None:
             return None
+        self.require_native(pid)
         rt.project.name = name
         self.store.update_project(rt.project)
         return rt.project
@@ -331,6 +371,7 @@ class ProjectRegistry:
         rt = self._runtimes.get(pid)
         if rt is None:
             return None
+        self.require_native(pid)
         if preferred_language is not _UNSET:
             rt.project.preferred_language = normalize_preferred_language(
                 preferred_language
@@ -357,6 +398,7 @@ class ProjectRegistry:
         rt = self._runtimes.get(pid)
         if rt is None:
             return None
+        self.require_native(pid)
         if project_context_binding_id is not _UNSET:
             rt.project.project_context_binding_id = (
                 project_context_binding_id.strip()
@@ -385,6 +427,7 @@ class ProjectRegistry:
         rt = self._runtimes.get(pid)
         if rt is None:
             return None
+        self.require_native(pid)
         merged = dict(rt.project.layout_hints)
         for nid, pos in updates.items():
             if not isinstance(pos, dict):
@@ -426,6 +469,7 @@ class ProjectRegistry:
         rt = self._runtimes.get(pid)
         if rt is None:
             return None
+        self.require_native(pid)
         merged = dict(rt.project.planspace_view)
         for planspace_id, pref in planspaces.items():
             if not isinstance(planspace_id, str) or not planspace_id.strip():
@@ -452,6 +496,7 @@ class ProjectRegistry:
         rt = self._runtimes.get(pid)
         if rt is None:
             return None
+        self.require_native(pid)
         written = set_planspace_mode(
             rt.project,
             planspace_id,
@@ -467,12 +512,14 @@ class ProjectRegistry:
             and planspace_id == active_lane
         ):
             self._auto_promote_eligible_virtuals(rt)
+        self.store.sync.schedule_commit(f"update planspace {planspace_id}")
         return written
 
     def delete_project(self, pid: str) -> bool:
         rt = self._runtimes.get(pid)
         if rt is None:
             return False
+        self.require_native(pid)
         rt.closed = True
         for runner in list(rt.runners.values()):
             try:
@@ -581,6 +628,7 @@ class ProjectRegistry:
         rt = self._runtimes.get(pid)
         if rt is None:
             return None
+        self.require_native(pid)
 
         resume_source: Node | None = None
         if resume_from_node_id:
@@ -696,6 +744,8 @@ class ProjectRegistry:
         return runner
 
     def _schedule_queued(self, rt: ProjectRuntime) -> None:
+        if not self.is_native_project(rt.project):
+            return
         while rt.has_capacity():
             priority = [
                 node_id
@@ -802,7 +852,10 @@ class ProjectRegistry:
         node on success, or ``None`` if the project is already running.
         """
         rt = self._runtimes.get(pid)
-        if rt is None or rt.is_running():
+        if rt is None:
+            return None
+        self.require_native(pid)
+        if rt.is_running():
             return None
         if not seed.strip():
             raise ValueError("seed must be non-empty")
@@ -853,7 +906,10 @@ class ProjectRegistry:
     ) -> Node | None:
         """Create a planspace and seed it with one empty editable virtual."""
         rt = self._runtimes.get(pid)
-        if rt is None or rt.is_running():
+        if rt is None:
+            return None
+        self.require_native(pid)
+        if rt.is_running():
             return None
         if not seed.strip():
             raise ValueError("seed must be non-empty")
@@ -974,6 +1030,7 @@ class ProjectRegistry:
         rt = self._runtimes.get(pid)
         if rt is None:
             return None
+        self.require_native(pid)
         node = self.store.load_node(pid, vid)
         if node is None:
             return None
@@ -1067,6 +1124,7 @@ class ProjectRegistry:
         rt = self._runtimes.get(pid)
         if rt is None:
             return None
+        self.require_native(pid)
         if provider is not None:
             raise ValueError("provider is no longer accepted; use model_preset_id")
 
@@ -1235,6 +1293,7 @@ class ProjectRegistry:
         rt = self._runtimes.get(pid)
         if rt is None:
             return None
+        self.require_native(pid)
         existing = self.store.load_node(pid, vid)
         if existing is None:
             return None
@@ -1388,6 +1447,7 @@ class ProjectRegistry:
         rt = self._runtimes.get(pid)
         if rt is None:
             return False, []
+        self.require_native(pid)
         if rt.is_running():
             raise RuntimeError("turn in progress")
         node = self.store.load_node(pid, vid)
@@ -1440,6 +1500,7 @@ class ProjectRegistry:
         rt = self._runtimes.get(pid)
         if rt is None:
             return None
+        self.require_native(pid)
         original = self.store.load_node(pid, nid)
         if original is None:
             return None
@@ -1613,6 +1674,7 @@ class ProjectRegistry:
         rt = self._runtimes.get(pid)
         if rt is None:
             return False
+        self.require_native(pid)
         runner = rt.get_runner(node_id)
         task = rt.runner_tasks.get(node_id)
         if runner is None or task is None or task.done():
@@ -1639,6 +1701,7 @@ class ProjectRegistry:
         rt = self._runtimes.get(pid)
         if rt is None:
             return False
+        self.require_native(pid)
         runners = (
             [rt.get_runner(node_id)]
             if node_id is not None

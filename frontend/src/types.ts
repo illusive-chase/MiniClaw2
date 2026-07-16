@@ -138,6 +138,11 @@ export type SessionInfo = {
   temporary?: boolean;
   template_id?: string | null;
   name?: string;
+  machine_id: string;
+  native_machine_label: string;
+  is_native: boolean;
+  read_only: boolean;
+  last_sync_at?: number | null;
   project_context_binding_id?: string | null;
   /** Persisted canvas positions keyed by node id or synthetic graph id. */
   layout_hints?: Record<string, { x: number; y: number }>;
@@ -189,6 +194,17 @@ export type GlobalState = {
   config_path: string;
   defaults: GlobalDefaults;
   model_presets: ModelPreset[];
+  sync: {
+    configured: boolean;
+    remote_url?: string | null;
+    status: "up-to-date" | "changed";
+    changed: boolean;
+    last_sync_at?: number | null;
+    machine_id: string;
+    machine_label: string;
+    hostname_mismatch: boolean;
+    privacy_notice: string;
+  };
 };
 export type NodeCategory = "planning" | "regular" | "review";
 export type ReviewSubtype =

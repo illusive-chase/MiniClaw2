@@ -57,6 +57,7 @@ export type AgentPanelProps = {
   onRerunNode: (nodeId: string) => void;
   canInterrupt: boolean;
   canRerun: boolean;
+  canMutate: boolean;
   focusRequestVersion: number;
 };
 
@@ -81,6 +82,7 @@ export function AgentPanel({
   onRerunNode,
   canInterrupt,
   canRerun,
+  canMutate,
   focusRequestVersion,
 }: AgentPanelProps) {
   const headline = (
@@ -179,7 +181,7 @@ export function AgentPanel({
                   ↻ Rerun
                 </button>
               )}
-            {node.state === "virtual" ? (
+            {node.state === "virtual" && canMutate ? (
               <button
                 type="button"
                 onClick={() => onPromoteVirtual(node.id)}
@@ -189,7 +191,7 @@ export function AgentPanel({
               >
                 Promote
               </button>
-            ) : canResumeNode(node) ? (
+            ) : canMutate && canResumeNode(node) ? (
               <button
                 type="button"
                 onClick={() => onCreateContinuationVirtual(node.id)}
@@ -204,15 +206,22 @@ export function AgentPanel({
       </div>
 
       <div className="flex-1 overflow-y-auto bg-surface px-4 py-3 text-sm">
+        {!canMutate && (
+          <div className="mb-3 rounded-md border border-state-waiting/30 bg-state-waiting-soft px-3 py-2 text-[11px] text-state-waiting">
+            This project is read-only on this machine.
+          </div>
+        )}
         {node.state === "virtual" ? (
-          <VirtualNodeBody
-            node={node}
-            nodesById={nodesById}
-            modelPresets={modelPresets}
-            skills={skills}
-            onUpdateVirtual={onUpdateVirtual}
-            focusRequestVersion={focusRequestVersion}
-          />
+          <fieldset disabled={!canMutate} className={canMutate ? "contents" : "contents opacity-75"}>
+            <VirtualNodeBody
+              node={node}
+              nodesById={nodesById}
+              modelPresets={modelPresets}
+              skills={skills}
+              onUpdateVirtual={onUpdateVirtual}
+              focusRequestVersion={canMutate ? focusRequestVersion : 0}
+            />
+          </fieldset>
         ) : (
           <>
             {pendingReview && (

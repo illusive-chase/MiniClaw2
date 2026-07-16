@@ -267,7 +267,6 @@ def ensure_contextspace_root(
             "kind": "contextspace",
             "name": "default",
             "created_by": "miniclaw2",
-            "git": {"expected": True},
             "defaults": {
                 "context_budget": {
                     "system_max_chars": 8000,
@@ -283,7 +282,7 @@ def ensure_contextspace_root(
         root / "README.md",
         "# MiniClaw2 ContextSpace\n\n"
         "This repository stores MiniClaw2 planspaces, bindings, skills, "
-        "and context snapshots outside code repositories.\n",
+        "and context snapshots inside the MiniClaw2 metadata store.\n",
         root,
         created_items,
     )

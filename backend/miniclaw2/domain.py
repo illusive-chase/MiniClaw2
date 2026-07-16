@@ -134,6 +134,8 @@ class Project(BaseModel):
 
     id: str = Field(default_factory=_new_id)
     root_path: str
+    machine_id: str = ""
+    machine_label: str = ""
     name: str = ""
     model_preset_id: str = Field(default_factory=default_model_preset_id)
     concurrency: StrictInt = Field(default=1, ge=1)

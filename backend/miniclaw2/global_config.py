@@ -74,12 +74,19 @@ class GlobalDefaults(BaseModel):
     concurrency: StrictInt = Field(default=1, ge=1)
 
 
+class SyncSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    remote_url: str | None = None
+
+
 class GlobalConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     version: Literal[1] = 1
     defaults: GlobalDefaults
     model_presets: list[ModelPreset]
+    sync: SyncSettings = Field(default_factory=SyncSettings)
 
     @model_validator(mode="after")
     def validate_catalog(self) -> "GlobalConfig":

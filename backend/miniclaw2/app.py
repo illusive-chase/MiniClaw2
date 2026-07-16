@@ -38,6 +38,7 @@ from .events import (
 from .git_state import node_diff
 from .global_config import (
     ModelPreset,
+    SyncSettings,
     global_config_path,
     load_global_config,
     save_global_config,
@@ -47,8 +48,10 @@ from .model_catalog import list_model_presets
 from .providers import GateTimeoutError
 from .providers.claude_native import hook_runtime
 from .providers.claude_native.hook_installer import install_hooks
-from .registry import ProjectRegistry
+from .registry import NonNativeProjectError, ProjectRegistry
 from .replay import LiveReplayBuffer
+from .store import StoreReadOnlyError
+from .sync import SyncError
 from .templates import (
     SerializerError,
     TemplateError,
@@ -95,6 +98,13 @@ class UpdateGlobalDefaultsRequest(BaseModel):
     concurrency: StrictInt | None = Field(default=None, ge=1)
 
 
+class SetupSyncRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    remote_url: str
+    privacy_acknowledged: bool = False
+
+
 class RenameSessionRequest(BaseModel):
     name: str
 
@@ -122,6 +132,11 @@ class SessionInfo(BaseModel):
     temporary: bool = False
     template_id: str | None = None
     name: str = ""
+    machine_id: str = ""
+    native_machine_label: str = ""
+    is_native: bool = True
+    read_only: bool = False
+    last_sync_at: float | None = None
     project_context_binding_id: str | None = None
     layout_hints: dict[str, dict[str, float]] = Field(default_factory=dict)
     layout_viewport: dict[str, float] | None = None
@@ -257,6 +272,15 @@ def create_app(registry: ProjectRegistry | None = None) -> FastAPI:
         if initialize is not None:
             initialize()
 
+    def project_is_native(sid: str) -> bool:
+        checker = getattr(registry, "is_native", None)
+        return bool(checker(sid)) if checker is not None else True
+
+    def require_native_project(sid: str) -> None:
+        guard = getattr(registry, "require_native", None)
+        if guard is not None:
+            guard(sid)
+
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
         initialize_registry()
@@ -282,6 +306,18 @@ def create_app(registry: ProjectRegistry | None = None) -> FastAPI:
         allow_headers=["*"],
     )
 
+    @app.exception_handler(NonNativeProjectError)
+    async def non_native_project_error(
+        _request: Request, exc: NonNativeProjectError
+    ) -> JSONResponse:
+        return JSONResponse(status_code=403, content={"detail": str(exc)})
+
+    @app.exception_handler(StoreReadOnlyError)
+    async def read_only_store_error(
+        _request: Request, exc: StoreReadOnlyError
+    ) -> JSONResponse:
+        return JSONResponse(status_code=409, content={"detail": str(exc)})
+
     @app.get("/model-presets", response_model=list[dict[str, Any]])
     def list_model_presets_endpoint() -> list[dict[str, Any]]:
         return [
@@ -293,10 +329,44 @@ def create_app(registry: ProjectRegistry | None = None) -> FastAPI:
     def get_global_state() -> dict[str, Any]:
         return _global_state_payload(registry.store.root)
 
+    @app.post("/global-state/sync/setup", response_model=dict[str, Any])
+    def setup_sync(req: SetupSyncRequest) -> dict[str, Any]:
+        registry.store.assert_writable()
+        if not req.privacy_acknowledged:
+            raise HTTPException(
+                400,
+                "confirm that the private remote will contain full agent transcripts and tool output",
+            )
+        remote_url = req.remote_url.strip()
+        if not remote_url:
+            raise HTTPException(400, "git remote URL is required")
+        try:
+            registry.store.sync.setup_existing_store(remote_url)
+            config = load_global_config(registry.store.root)
+            save_global_config(
+                config.model_copy(update={"sync": SyncSettings(remote_url=remote_url)}),
+                registry.store.root,
+            )
+            registry.store.sync.schedule_commit("configure metadata sync")
+            registry.store.sync.sync_now()
+        except SyncError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        return _global_state_payload(registry.store.root)
+
+    @app.post("/global-state/sync", response_model=dict[str, Any])
+    def sync_now() -> dict[str, Any]:
+        try:
+            registry.store.sync.sync_now()
+            registry.reload_from_store()
+        except SyncError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        return _global_state_payload(registry.store.root)
+
     @app.patch("/global-state/defaults", response_model=dict[str, Any])
     def update_global_defaults(
         req: UpdateGlobalDefaultsRequest,
     ) -> dict[str, Any]:
+        registry.store.assert_writable()
         config = load_global_config(registry.store.root)
         updates: dict[str, Any] = {}
         if "default_model_preset_id" in req.model_fields_set:
@@ -325,12 +395,14 @@ def create_app(registry: ProjectRegistry | None = None) -> FastAPI:
                 ),
                 registry.store.root,
             )
+            registry.store.sync.schedule_commit("update global defaults")
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
         return _global_state_payload(registry.store.root)
 
     @app.post("/global-state/model-presets", response_model=dict[str, Any], status_code=201)
     def create_model_preset(preset: ModelPreset) -> dict[str, Any]:
+        registry.store.assert_writable()
         config = load_global_config(registry.store.root)
         if any(item.id == preset.id for item in config.model_presets):
             raise HTTPException(409, f"model preset already exists: {preset.id}")
@@ -341,6 +413,7 @@ def create_app(registry: ProjectRegistry | None = None) -> FastAPI:
                 ),
                 registry.store.root,
             )
+            registry.store.sync.schedule_commit(f"create model preset {preset.id}")
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
         return _global_state_payload(registry.store.root)
@@ -350,6 +423,7 @@ def create_app(registry: ProjectRegistry | None = None) -> FastAPI:
         preset_id: str,
         preset: ModelPreset,
     ) -> dict[str, Any]:
+        registry.store.assert_writable()
         if preset.id != preset_id:
             raise HTTPException(400, "preset id in path and body must match")
         config = load_global_config(registry.store.root)
@@ -367,12 +441,14 @@ def create_app(registry: ProjectRegistry | None = None) -> FastAPI:
                 ),
                 registry.store.root,
             )
+            registry.store.sync.schedule_commit(f"update model preset {preset.id}")
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
         return _global_state_payload(registry.store.root)
 
     @app.delete("/global-state/model-presets/{preset_id}", status_code=204)
     def delete_model_preset(preset_id: str) -> Response:
+        registry.store.assert_writable()
         config = load_global_config(registry.store.root)
         if not any(item.id == preset_id for item in config.model_presets):
             raise HTTPException(404, f"model preset not found: {preset_id}")
@@ -403,6 +479,7 @@ def create_app(registry: ProjectRegistry | None = None) -> FastAPI:
             ),
             registry.store.root,
         )
+        registry.store.sync.schedule_commit(f"delete model preset {preset_id}")
         return Response(status_code=204)
 
     @app.middleware("http")
@@ -602,6 +679,7 @@ def create_app(registry: ProjectRegistry | None = None) -> FastAPI:
             raise HTTPException(404, "session not found")
         if role != "context":
             raise HTTPException(400, "role must be 'context'")
+        require_native_project(sid)
         result = read_project_context(project)
         if result is None:
             raise HTTPException(404, "file not found")
@@ -612,6 +690,7 @@ def create_app(registry: ProjectRegistry | None = None) -> FastAPI:
         project = registry.get_project(sid)
         if project is None:
             raise HTTPException(404, "session not found")
+        require_native_project(sid)
         if registry.is_running(sid):
             raise HTTPException(409, "turn in progress")
         try:
@@ -627,6 +706,7 @@ def create_app(registry: ProjectRegistry | None = None) -> FastAPI:
         project = registry.get_project(sid)
         if project is None:
             raise HTTPException(404, "session not found")
+        require_native_project(sid)
         if registry.is_running(sid):
             raise HTTPException(409, "turn in progress")
         try:
@@ -835,6 +915,7 @@ def create_app(registry: ProjectRegistry | None = None) -> FastAPI:
         project = registry.get_project(sid)
         if project is None:
             raise HTTPException(404, "session not found")
+        require_native_project(sid)
         await cancel_context_task(project.id)
         return describe_project_contextspace(project, store_root=registry.store.root)
 
@@ -885,6 +966,7 @@ def create_app(registry: ProjectRegistry | None = None) -> FastAPI:
         project = registry.get_project(sid)
         if project is None:
             raise HTTPException(404, "session not found")
+        require_native_project(sid)
         node = registry.get_node(sid, nid)
         if node is None:
             raise HTTPException(404, "node not found")
@@ -958,8 +1040,10 @@ def create_app(registry: ProjectRegistry | None = None) -> FastAPI:
 
     @app.delete("/user-templates/{slug}", status_code=204)
     def delete_user_template_endpoint(slug: str) -> Response:
+        registry.store.assert_writable()
         if not delete_user_template(slug, registry.store.root):
             raise HTTPException(404, f"user template not found: {slug}")
+        registry.store.sync.schedule_commit(f"delete template {slug}")
         return Response(status_code=204)
 
     @app.get("/skills", response_model=list[dict[str, Any]])
@@ -968,12 +1052,14 @@ def create_app(registry: ProjectRegistry | None = None) -> FastAPI:
 
     @app.delete("/skills/{slug}", status_code=204)
     def delete_skill_endpoint(slug: str) -> Response:
+        registry.store.assert_writable()
         try:
             removed = delete_skill(slug, store_root=registry.store.root)
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
         if not removed:
             raise HTTPException(404, f"skill not found: {slug}")
+        registry.store.sync.schedule_commit(f"delete skill {slug}")
         return Response(status_code=204)
 
     @app.post(
@@ -987,6 +1073,7 @@ def create_app(registry: ProjectRegistry | None = None) -> FastAPI:
         project = registry.get_project(sid)
         if project is None:
             raise HTTPException(404, "session not found")
+        require_native_project(sid)
         try:
             template = serialize_selection(
                 registry.store,
@@ -1002,6 +1089,7 @@ def create_app(registry: ProjectRegistry | None = None) -> FastAPI:
             raise HTTPException(400, str(exc)) from exc
         # ``template.root`` is the on-disk directory; its basename is the slug.
         slug = template.root.name
+        registry.store.sync.schedule_commit(f"save template {slug}")
         return SaveUserTemplateResponse(
             slug=slug,
             name=template.name,
@@ -1083,6 +1171,14 @@ def create_app(registry: ProjectRegistry | None = None) -> FastAPI:
             while True:
                 raw = await websocket.receive_json()
                 msg_type = raw.get("type")
+
+                if msg_type in {"user_message", "interaction_response", "interrupt"} and not project_is_native(sid):
+                    await mark_live_ready()
+                    await _send(send_now, {
+                        "type": "error",
+                        "message": str(NonNativeProjectError(project)),
+                    })
+                    continue
 
                 if msg_type == "user_message":
                     await mark_live_ready()
@@ -1201,6 +1297,10 @@ def create_app(registry: ProjectRegistry | None = None) -> FastAPI:
 
 def _global_state_payload(store_root: Path) -> dict[str, Any]:
     config = load_global_config(store_root)
+    # The manager is keyed by the same store root and performs no network IO.
+    from .sync import get_sync_manager
+
+    sync_status = get_sync_manager(store_root).status()
     default_id = config.defaults.default_model_preset_id
     return {
         "config_path": str(global_config_path(store_root)),
@@ -1211,10 +1311,19 @@ def _global_state_payload(store_root: Path) -> dict[str, Any]:
             ).metadata()
             for preset in config.model_presets
         ],
+        "sync": {
+            **sync_status,
+            "remote_url": sync_status["remote_url"] or config.sync.remote_url,
+            "privacy_notice": (
+                "The remote contains full agent transcripts, prompts, tool output, and code. "
+                "Use a private remote."
+            ),
+        },
     }
 
 
 def _session_info(registry: ProjectRegistry, project: Any) -> SessionInfo:
+    is_native = registry.is_native_project(project)
     return SessionInfo(
         id=project.id,
         created_at=project.created_at,
@@ -1228,6 +1337,11 @@ def _session_info(registry: ProjectRegistry, project: Any) -> SessionInfo:
         temporary=project.temporary,
         template_id=project.template_id,
         name=project.name,
+        machine_id=project.machine_id,
+        native_machine_label=project.machine_label or project.machine_id,
+        is_native=is_native,
+        read_only=not is_native or registry.store.read_only_reason is not None,
+        last_sync_at=registry.store.sync.identity.last_sync_at,
         project_context_binding_id=project.project_context_binding_id,
         layout_hints=project.layout_hints,
         layout_viewport=project.layout_viewport,

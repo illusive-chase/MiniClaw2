@@ -55,7 +55,8 @@ WebSocket, paired with a React + Vite + React Flow frontend.
 
 ## Scope
 
-In: persistent project list, graph canvas workspace, streaming markdown
+In: persistent project list, manual Git-backed metadata synchronization,
+native-machine project ownership with cross-machine read-only viewing, graph canvas workspace, streaming markdown
 assistant output, tool activity with result panels, ask-user (both
 providers) and permission (Codex) interactions, on-disk persistence per
 project and node, interrupt, extended-thinking surface, WebSocket
@@ -67,8 +68,9 @@ active planspace / bundle snapshots, virtual-node lanes, review agents,
 
 Out (for now): per-token streaming for Claude, auth, cost tracking,
 model/settings pickers in the primary UI, multi-project lane
-visualization, fork/worktree graph operations, schema-generated review
-forms, and automatic ContextSpace git commits. Vendor-specific on-disk
+visualization, fork/worktree graph operations, and schema-generated review
+forms. ContextSpace history is included in ordinary metadata sync commits.
+Vendor-specific on-disk
 context (`CLAUDE.md`, `.claude/settings.json`, `.claude/agents`,
 `.mcp.json`) is now applied by the native `claude` binary itself when
 MiniClaw2 spawns it in the project cwd.
@@ -114,11 +116,41 @@ python -m miniclaw2 --dev [--reload]
 
 Ctrl-C stops both processes.
 
+## Metadata Sync
+
+`$MINICLAW_HOME` can be synchronized through any Git remote. Projects have a
+single native machine: the machine that creates a project is its only writer;
+other machines can inspect the graph, transcripts, previews, and history but
+cannot run or edit it. Global settings and ContextSpace files use Git's
+local-hunk-wins merge policy, while a `schema.json` conflict stops sync for
+manual resolution.
+
+For an existing store and an empty remote, open **Global settings**, enter the
+remote URL under **Metadata sync**, acknowledge that the private remote will
+contain complete prompts, transcripts, tool output, and code, then choose
+**Set up sync**. The equivalent CLI is:
+
+```bash
+python -m miniclaw2 sync init <git-url>
+```
+
+Run the same command on a fresh machine with an empty `$MINICLAW_HOME` to clone
+the remote and generate a new local `machine.json`. After setup, remote I/O is
+manual-only: press **Sync now** in Global settings. Durable changes are
+committed locally in a roughly 30-second coalescing window, but MiniClaw2 does
+not fetch or push on startup, shutdown, or a timer.
+
+Before upgrading MiniClaw2, sync once; after the upgraded process writes a
+store migration, sync again. A copied store whose hostname no longer matches
+`machine.json` prompts once at CLI startup to distinguish a renamed machine
+from a copy. Choosing “copied” creates a new machine ID.
+
 Env:
 
 - `MINICLAW_HOME` (default `~/.miniclaw2`) — root for the on-disk store.
 - `MINICLAW_CONTEXT_HOME` (optional) — overrides the default
-  `$MINICLAW_HOME/contextspace` ContextSpace root.
+  `$MINICLAW_HOME/contextspace` ContextSpace root. Metadata sync requires this
+  override to be unset or point to that default location.
 - `MINICLAW_FRONTEND_DIST` (optional) — override the served frontend
   build directory. Set automatically by `python -m miniclaw2` to
   `<repo>/frontend/dist`; only export manually for non-editable
@@ -189,6 +221,7 @@ curl -X POST http://127.0.0.1:8000/sessions \
 backend/miniclaw2/
   domain.py        # Project, Node, HumanGate + state enums
   store.py         # JSON/JSONL filesystem store under $MINICLAW_HOME
+  sync.py          # machine identity, local commits, explicit Git synchronization
   global_config.py # validated global defaults + configurable preset storage
   model_catalog.py # preset lookup and provider derivation from global config
   runner.py        # provider-neutral NodeRunner state machine
@@ -237,8 +270,11 @@ On-disk layout (under `$MINICLAW_HOME`, default `~/.miniclaw2`):
 
 ```
 config.json             # global defaults and complete model preset catalog
+schema.json             # canonical store schema version (currently v4)
+machine.json            # local UUID + label + sync checkpoint (gitignored)
+.gitignore              # excludes machine identity, backups, and temp writes
 projects/<pid>/
-  project.json
+  project.json          # includes native machine id + display label
   nodes/<nid>/
     node.json           # full Node fields, rewritten on each state transition
     events.jsonl        # {schema_version, seq, event} per line, append-only

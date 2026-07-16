@@ -84,6 +84,29 @@ export async function getGlobalState(): Promise<GlobalState> {
   return res.json();
 }
 
+export async function setupSync(remoteUrl: string): Promise<GlobalState> {
+  const res = await fetch("/global-state/sync/setup", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      remote_url: remoteUrl,
+      privacy_acknowledged: true,
+    }),
+  });
+  if (!res.ok) {
+    throw new ApiError("setupSync", res.status, await readErrorDetail(res));
+  }
+  return res.json();
+}
+
+export async function syncNow(): Promise<GlobalState> {
+  const res = await fetch("/global-state/sync", { method: "POST" });
+  if (!res.ok) {
+    throw new ApiError("syncNow", res.status, await readErrorDetail(res));
+  }
+  return res.json();
+}
+
 export async function updateGlobalDefaults(
   body: Partial<GlobalDefaults>,
 ): Promise<GlobalState> {

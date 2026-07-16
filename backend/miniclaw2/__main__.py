@@ -12,10 +12,29 @@ from pathlib import Path
 
 import uvicorn
 
+from .global_config import (
+    SyncSettings,
+    load_global_config,
+    miniclaw_home,
+    save_global_config,
+)
+from .store import Store
+from .sync import (
+    SyncError,
+    bootstrap_store,
+    ensure_machine_identity,
+    machine_hostname_mismatch,
+    resolve_machine_copy,
+    resolve_machine_rename,
+)
+
 VITE_PORT = 5173
 
 
 def main() -> None:
+    if len(sys.argv) > 1 and sys.argv[1] == "sync":
+        _sync_cli(sys.argv[2:])
+        return
     parser = argparse.ArgumentParser(prog="miniclaw2")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8000)
@@ -33,6 +52,7 @@ def main() -> None:
     args = parser.parse_args()
 
     logging.basicConfig(level=args.log_level.upper())
+    _resolve_identity_mismatch(miniclaw_home())
 
     # Broadcast the port to child processes (claude hook bridge reads
     # it via MINICLAW_HOOK_URL and MINICLAW_HOOK_TOKEN from its env at
@@ -98,6 +118,61 @@ def main() -> None:
                 vite_proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 vite_proc.kill()
+
+
+def _sync_cli(argv: list[str]) -> None:
+    parser = argparse.ArgumentParser(prog="miniclaw2 sync")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    init_parser = subparsers.add_parser("init", help="configure metadata sync")
+    init_parser.add_argument("git_url")
+    args = parser.parse_args(argv)
+
+    root = miniclaw_home()
+    try:
+        existing = list(root.iterdir()) if root.exists() else []
+        if existing:
+            _resolve_identity_mismatch(root)
+            store = Store(root)
+            store.sync.setup_existing_store(args.git_url)
+        else:
+            bootstrap_store(root, args.git_url)
+            store = Store(root)
+            if store.sync.remote_url() is None:
+                store.sync.setup_existing_store(args.git_url)
+        config = load_global_config(root)
+        save_global_config(
+            config.model_copy(
+                update={"sync": SyncSettings(remote_url=args.git_url.strip())}
+            ),
+            root,
+        )
+        store.sync.schedule_commit("configure metadata sync")
+        store.sync.sync_now()
+    except SyncError as exc:
+        parser.exit(1, f"metadata sync setup failed: {exc}\n")
+    print(f"metadata sync configured at {root}")
+
+
+def _resolve_identity_mismatch(root: Path) -> None:
+    identity = ensure_machine_identity(root)
+    if not machine_hostname_mismatch(identity):
+        return
+    if not sys.stdin.isatty():
+        raise SystemExit(
+            "machine hostname differs from machine.json; run MiniClaw2 in a "
+            "terminal once to resolve renamed machine versus copied store"
+        )
+    answer = input(
+        f'machine.json belongs to "{identity.hostname}", but this host is different. '
+        "Was the machine [r]enamed or was the store [c]opied? "
+    ).strip().lower()
+    if answer in {"r", "rename", "renamed"}:
+        resolve_machine_rename(root)
+        return
+    if answer in {"c", "copy", "copied"}:
+        resolve_machine_copy(root)
+        return
+    raise SystemExit("identity not changed; start MiniClaw2 again and choose r or c")
 
 
 if __name__ == "__main__":

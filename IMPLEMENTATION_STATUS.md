@@ -674,12 +674,26 @@ Trunk: `backend/miniclaw2/store.py`, `backend/miniclaw2/replay.py`.
   process to cancelled terminal records, including framework stub previews,
   without blocking other projects on a malformed entry; queued nodes remain
   pending and resume scheduling after startup.
-- Store schema v3 writes one canonical shape: only `model_preset_id`
+- Store schema v4 writes one canonical shape: only `model_preset_id`
   persists provider selection, only `provider_session_id` persists
   provider conversation identity, and ContextSpace/language selections
   live in typed Project fields. Runtime loading accepts only this canonical
-  shape; the completed one-off Store migration and its maintenance CLI have
-  been retired.
+  shape. Startup performs the v4 compatibility migration atomically, backing
+  up and stamping pre-sync project records with the local machine identity.
+- `$MINICLAW_HOME` can be initialized as a Git repository and exchanged with
+  a user-provided remote only through `miniclaw2 sync init <git-url>` or the
+  Global settings **Sync now** action. Local durable writes are committed on a
+  coalescing timer; no startup, shutdown, or periodic remote I/O occurs.
+- `machine.json` is gitignored and carries a generated UUID, hostname/label,
+  and the last successful sync checkpoint. Project records persist the native
+  machine UUID and label. Registry and API guards reject every project
+  mutation on non-native machines while retaining graph, transcript, preview,
+  and history reads. Stale active states from remote projects are not repaired
+  or scheduled locally.
+- Sync uses fetch, merge, and push. Normal conflicts retry with Git's
+  local-hunk-wins strategy; `schema.json` conflicts abort. New project
+  subtrees remain single-writer, failed pushes roll the local merge back, and
+  both-non-empty bootstrap is refused.
 - Reconnect replay reads `events.jsonl` from `since_seq` then attaches
   to the live tail. New event envelopes carry `schema_version: 2`; existing
   records without a version are treated as version 1, and historical
@@ -725,7 +739,8 @@ Quick reference; the on-disk shape is authoritative.
 - `SessionInfo.provider` remains a response-only value derived from
   `model_preset_id`; it is not persisted and is retained only for HTTP response
   compatibility.
-- REST: `GET /model-presets`; project CRUD, preferences, node/event
+- REST: `GET /model-presets`; `GET /global-state`,
+  `POST /global-state/sync/setup`, `POST /global-state/sync`; project CRUD, preferences, node/event
   introspection, failed-node rerun, per-node diff/preview/context-bundle reads,
   `PATCH /sessions/{sid}/layout-hints`,
   `PATCH /sessions/{sid}/planspace-view`,

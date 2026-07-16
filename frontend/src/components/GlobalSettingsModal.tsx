@@ -4,6 +4,8 @@ import {
   deleteModelPreset,
   getGlobalState,
   replaceModelPreset,
+  setupSync,
+  syncNow,
   updateGlobalDefaults,
 } from "../api";
 import { LANGUAGE_OPTIONS } from "../languages";
@@ -33,6 +35,9 @@ export function GlobalSettingsModal({ open, state, onClose, onChanged }: Props) 
   const [draft, setDraft] = useState<ModelPreset | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+  const [remoteUrl, setRemoteUrl] = useState("");
+  const [privacyAcknowledged, setPrivacyAcknowledged] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -40,6 +45,8 @@ export function GlobalSettingsModal({ open, state, onClose, onChanged }: Props) 
     setDefaults(state?.defaults ?? null);
     setDraft(null);
     setEditingId(null);
+    setRemoteUrl(state?.sync.remote_url ?? "");
+    setPrivacyAcknowledged(state?.sync.configured ?? false);
     setError(null);
     if (!state) {
       getGlobalState().then(onChanged).catch((err) => setError(String(err)));
@@ -104,6 +111,22 @@ export function GlobalSettingsModal({ open, state, onClose, onChanged }: Props) 
     }
   };
 
+  const runSync = async () => {
+    setSyncing(true);
+    setError(null);
+    try {
+      const next = state?.sync.configured
+        ? await syncNow()
+        : await setupSync(remoteUrl.trim());
+      onChanged(next);
+      setRemoteUrl(next.sync.remote_url ?? remoteUrl);
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setSyncing(false);
+    }
+  };
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-surface-scrim/60 backdrop-blur-sm">
       <div className="flex max-h-[92vh] w-[860px] max-w-[96vw] flex-col overflow-hidden rounded-xl border border-line bg-surface-raised shadow-modal">
@@ -119,6 +142,43 @@ export function GlobalSettingsModal({ open, state, onClose, onChanged }: Props) 
 
         <div className="flex-1 space-y-6 overflow-y-auto bg-surface-sunken p-5">
           {error && <div className="rounded-md border border-state-error/30 bg-state-error-soft px-3 py-2 text-xs text-state-error">{error}</div>}
+
+          <section className="rounded-lg border border-line bg-surface-raised p-4 shadow-card">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <div className="font-display text-sm font-semibold text-ink-strong">Metadata sync</div>
+                <div className="mt-1 text-[11px] leading-relaxed text-ink-muted">
+                  Manual-only Git sync. MiniClaw2 never contacts the remote until you press Sync now.
+                </div>
+              </div>
+              <span className={`rounded border px-2 py-1 text-[10px] font-medium ${state?.sync.status === "changed" ? "border-state-waiting/40 bg-state-waiting-soft text-state-waiting" : "border-state-done/40 bg-state-done-soft text-state-done"}`}>
+                {state?.sync.configured ? state.sync.status : "not configured"}
+              </span>
+            </div>
+            {!state?.sync.configured && (
+              <div className="mt-3 space-y-3">
+                <Field label="Git remote URL">
+                  <input value={remoteUrl} onChange={(event) => setRemoteUrl(event.target.value)} className={inputClass} placeholder="git@github.com:you/miniclaw-metadata.git" />
+                </Field>
+                <label className="flex items-start gap-2 rounded-md border border-state-waiting/30 bg-state-waiting-soft px-3 py-2 text-[11px] leading-relaxed text-ink">
+                  <input type="checkbox" checked={privacyAcknowledged} onChange={(event) => setPrivacyAcknowledged(event.target.checked)} className="mt-0.5 accent-brand" />
+                  <span>{state?.sync.privacy_notice ?? "The remote contains full agent transcripts, prompts, tool output, and code. Use a private remote."}</span>
+                </label>
+              </div>
+            )}
+            {state?.sync.configured && (
+              <div className="mt-3 space-y-1 font-mono text-[10px] text-ink-muted">
+                <div className="truncate">{state.sync.remote_url}</div>
+                <div>Machine: {state.sync.machine_label}</div>
+                <div>Last sync: {state.sync.last_sync_at ? new Date(state.sync.last_sync_at * 1000).toLocaleString() : "never"}</div>
+              </div>
+            )}
+            <div className="mt-3 flex justify-end">
+              <button type="button" disabled={syncing || (!state?.sync.configured && (!remoteUrl.trim() || !privacyAcknowledged))} onClick={() => void runSync()} className={primaryButton}>
+                {syncing ? "Syncing…" : state?.sync.configured ? "Sync now" : "Set up sync"}
+              </button>
+            </div>
+          </section>
 
           {defaults && (
             <section className="rounded-lg border border-line bg-surface-raised p-4 shadow-card">

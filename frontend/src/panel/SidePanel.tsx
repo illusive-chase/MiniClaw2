@@ -235,8 +235,8 @@ function Inner(props: SidePanelProps & { nodesById: Map<string, NodeInfo> }) {
         eventsLoading={eventsLoading}
         contextBundle={contextBundle}
         contextBundleLoading={contextBundleLoading}
-        pendingGate={pendingGate}
-        pendingReview={pendingReview}
+        pendingGate={session.read_only ? null : pendingGate}
+        pendingReview={session.read_only ? null : pendingReview}
         skills={skills}
         onResolveGate={onResolveGate}
         onResolveReview={onResolveReview}
@@ -245,8 +245,9 @@ function Inner(props: SidePanelProps & { nodesById: Map<string, NodeInfo> }) {
         onUpdateVirtual={onUpdateVirtual}
         onInterruptNode={onInterruptNode}
         onRerunNode={onRerunNode}
-        canInterrupt={canInterrupt}
-        canRerun={canRerun}
+        canInterrupt={canInterrupt && !session.read_only}
+        canRerun={canRerun && !session.read_only}
+        canMutate={!session.read_only}
         focusRequestVersion={focusRequestVersion}
       />
     );
@@ -263,7 +264,7 @@ function Inner(props: SidePanelProps & { nodesById: Map<string, NodeInfo> }) {
       <PlanspaceLanePanel
         planspaceId={selection.planspaceId}
         contextSpace={contextSpace}
-        saving={contextSpaceSaving}
+        saving={contextSpaceSaving || !!session?.read_only}
         onModeChange={onPlanspaceModeChange}
       />
     );

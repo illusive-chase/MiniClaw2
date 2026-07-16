@@ -397,6 +397,7 @@ export function App() {
   );
   const projectRunnerActive = activeNodesFromList.length > 0;
   const projectRunnerBusy = projectMutationPending || projectRunnerActive;
+  const readOnly = session?.read_only ?? false;
   const activeCanvasNodeIds = useMemo(
     () => activeNodesFromList.map((node) => node.id),
     [activeNodesFromList],
@@ -418,8 +419,9 @@ export function App() {
     (inspectedNodeId && validPendingReviews[inspectedNodeId]) ||
     Object.values(validPendingReviews)[0] ||
     null;
-  const composerLocked = !!activePendingGate || !!activePendingReview;
+  const composerLocked = !readOnly && (!!activePendingGate || !!activePendingReview);
   const virtualCreateDisabled =
+    readOnly ||
     projectMutationPending ||
     sessionSettingsSaving ||
     !!sessionContextSpace?.context_refresh?.running;
@@ -995,6 +997,16 @@ export function App() {
   const togglePlanspaceVisibility = useCallback(
     async (planspaceId: string, hidden: boolean) => {
       if (!session?.id) return;
+      if (readOnly) {
+        setSessionContextSpace((current) => current ? {
+          ...current,
+          planspace_view: {
+            ...(current.planspace_view ?? {}),
+            [planspaceId]: { hidden },
+          },
+        } : current);
+        return;
+      }
       setSessionContextSpaceSaving(true);
       setSessionContextSpaceError(null);
       try {
@@ -1008,7 +1020,7 @@ export function App() {
         setSessionContextSpaceSaving(false);
       }
     },
-    [session?.id],
+    [readOnly, session?.id],
   );
 
   const updatePreferredLanguage = useCallback(
@@ -1440,10 +1452,10 @@ export function App() {
 
   const onAgentNodeContextMenu = useCallback(
     (nodeId: string | null, x: number, y: number) => {
-      if (!nodeId) return; // right-click on non-agent → no menu
+      if (!nodeId || readOnly) return; // right-click on non-agent → no menu
       setTemplateContextMenu({ nodeId, x, y });
     },
-    [],
+    [readOnly],
   );
 
   const openSaveTemplateModal = useCallback(
@@ -1457,7 +1469,7 @@ export function App() {
 
   const onTemplateDrop = useCallback(
     async (slug: string, anchorNodeId: string | null) => {
-      if (!session?.id) return;
+      if (!session?.id || readOnly) return;
       try {
         await applyUserTemplate(session.id, slug, anchorNodeId);
         // Manual-lane stamps do not emit node_updated events.
@@ -1470,7 +1482,7 @@ export function App() {
         );
       }
     },
-    [refreshNodes, session?.id],
+    [readOnly, refreshNodes, session?.id],
   );
 
   /* select a specific node id (used by panel "jump to" affordances and the
@@ -1503,11 +1515,11 @@ export function App() {
       onInterruptNode: interruptNode,
       onRerunNode: rerunFailedNode,
       canCreateVirtual: !virtualCreateDisabled,
-      canPromoteVirtual: !projectMutationPending,
-      canInterrupt: canInterruptRunner,
-      canRerun: !projectMutationPending,
+      canPromoteVirtual: !projectMutationPending && !readOnly,
+      canInterrupt: canInterruptRunner && !readOnly,
+      canRerun: !projectMutationPending && !readOnly,
       pendingGateForNode: (nodeId) =>
-        validPendingGates[nodeId]?.request ?? null,
+        readOnly ? null : validPendingGates[nodeId]?.request ?? null,
       onResolveGate,
       modelPresets,
     });
@@ -1523,6 +1535,7 @@ export function App() {
     rerunFailedNode,
     virtualCreateDisabled,
     projectMutationPending,
+    readOnly,
     canInterruptRunner,
     composerLocked,
     modelPresets,
@@ -1535,7 +1548,7 @@ export function App() {
       updates: Record<string, { x: number; y: number }>,
       layoutViewport?: CanvasViewport | null,
     ) => {
-      if (!session?.id) return;
+      if (!session?.id || readOnly) return;
       if (Object.keys(updates).length === 0 && !layoutViewport) return;
       const sessionId = session.id;
       const updatesSnapshot = Object.fromEntries(
@@ -1564,7 +1577,7 @@ export function App() {
         }
       });
     },
-    [session?.id],
+    [readOnly, session?.id],
   );
 
   if (route === "landing") {
@@ -1631,6 +1644,11 @@ export function App() {
                 <span className="inline-block h-1.5 w-1.5 rounded-full bg-current" />
                 ws {status}
               </span>
+              {session?.read_only && (
+                <span className="rounded border border-state-waiting/40 bg-state-waiting-soft px-1.5 py-0.5 font-sans text-state-waiting">
+                  read-only · native to {session.native_machine_label} · as of {session.last_sync_at ? new Date(session.last_sync_at * 1000).toLocaleString() : "never synced"}
+                </span>
+              )}
             </div>
           </div>
         </div>
@@ -1652,7 +1670,7 @@ export function App() {
               setNewDirectionRequestVersion((version) => version + 1);
               openDetails();
             }}
-            disabled={sessionSettingsSaving || projectMutationPending}
+            disabled={sessionSettingsSaving || projectMutationPending || readOnly}
             className="inline-flex h-8 items-center rounded-md border border-line bg-surface px-2.5 text-xs font-medium text-ink-muted transition hover:border-line-strong hover:bg-surface-sunken hover:text-ink disabled:cursor-not-allowed disabled:opacity-40"
             title="Open new direction composer"
           >
@@ -1710,7 +1728,7 @@ export function App() {
 
           {/* Cross-node pending banner — only show if the pending node isn't the
               one the user is currently inspecting. */}
-          {pendingBanner(activePendingGate, activePendingReview, inspectedNodeId) && (
+          {!readOnly && pendingBanner(activePendingGate, activePendingReview, inspectedNodeId) && (
             <PendingBanner
               label={
                 pendingBanner(activePendingGate, activePendingReview, inspectedNodeId)!.label
@@ -1791,8 +1809,8 @@ export function App() {
                 onUpdateVirtual={updateVirtualNode}
                 onInterruptNode={interruptNode}
                 onRerunNode={rerunFailedNode}
-                canInterrupt={canInterruptRunner}
-                canRerun={!projectMutationPending}
+                canInterrupt={canInterruptRunner && !readOnly}
+                canRerun={!projectMutationPending && !readOnly}
                 onPlanspaceModeChange={changePlanspaceMode}
                 onContextInit={runContextInit}
                 onContextRefresh={runContextRefresh}

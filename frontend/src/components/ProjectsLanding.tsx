@@ -215,7 +215,10 @@ export function ProjectsLanding({
         open={settingsOpen}
         state={globalState}
         onClose={() => setSettingsOpen(false)}
-        onChanged={onGlobalStateChanged}
+        onChanged={(next) => {
+          onGlobalStateChanged(next);
+          void refresh();
+        }}
       />
     </div>
   );
@@ -344,7 +347,7 @@ function ProjectCard({
               : "opacity-0 group-hover:opacity-100")
           }
         >
-          {!editing && (
+          {!editing && !session.read_only && (
             <button
               type="button"
               onClick={(e) => {
@@ -357,7 +360,7 @@ function ProjectCard({
               <PencilIcon />
             </button>
           )}
-          <button
+          {!session.read_only && <button
             type="button"
             onClick={handleDelete}
             title={
@@ -378,7 +381,7 @@ function ProjectCard({
             }
           >
             <TrashIcon />
-          </button>
+          </button>}
         </div>
       </div>
 
@@ -390,6 +393,11 @@ function ProjectCard({
       )}
 
       <div className="flex flex-wrap items-center gap-1.5 text-[10px]">
+        {session.read_only && (
+          <span className="rounded border border-state-waiting/40 bg-state-waiting-soft px-1.5 py-0.5 text-state-waiting">
+            read-only · native to {session.native_machine_label}
+          </span>
+        )}
         {session.preferred_language && (
           <span className="rounded border border-line bg-surface-sunken px-1.5 py-0.5 text-ink-muted">
             {languageLabel(session.preferred_language)}
