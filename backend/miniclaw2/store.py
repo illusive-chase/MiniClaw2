@@ -64,13 +64,16 @@ class Store:
 
         ensure_global_config(self.root)
         self.sync: SyncManager = get_sync_manager(self.root, self.machine)
-        self.read_only_reason: str | None = None
+
+    @property
+    def read_only_reason(self) -> str | None:
         if schema_is_newer(self.root):
-            self.read_only_reason = "store schema is newer than this MiniClaw2 version"
-        elif machine_hostname_mismatch(self.machine):
-            self.read_only_reason = (
+            return "store schema is newer than this MiniClaw2 version"
+        if machine_hostname_mismatch(self.machine):
+            return (
                 "machine hostname changed; resolve rename versus copied store first"
             )
+        return None
 
     # ---- paths ----
 
@@ -307,8 +310,9 @@ class Store:
         return json.loads(path.read_text(encoding="utf-8"))
 
     def assert_writable(self) -> None:
-        if self.read_only_reason is not None:
-            raise StoreReadOnlyError(self.read_only_reason)
+        reason = self.read_only_reason
+        if reason is not None:
+            raise StoreReadOnlyError(reason)
 
 
 def _validate_project_record(path: Path, payload: dict[str, Any]) -> Project:

@@ -73,6 +73,14 @@ export function ProjectsLanding({
     [refresh],
   );
 
+  const onSettingsChanged = useCallback(
+    (next: GlobalState) => {
+      onGlobalStateChanged(next);
+      void refresh();
+    },
+    [onGlobalStateChanged, refresh],
+  );
+
   return (
     <div className="flex h-full flex-col bg-surface text-ink">
       <header className="flex items-center justify-between gap-4 border-b border-line bg-surface-raised px-8 py-5">
@@ -215,10 +223,7 @@ export function ProjectsLanding({
         open={settingsOpen}
         state={globalState}
         onClose={() => setSettingsOpen(false)}
-        onChanged={(next) => {
-          onGlobalStateChanged(next);
-          void refresh();
-        }}
+        onChanged={onSettingsChanged}
       />
     </div>
   );

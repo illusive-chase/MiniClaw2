@@ -191,6 +191,8 @@ class ProjectRegistry:
 
     def schedule_all(self) -> None:
         """Fill execution slots for durable queued work after startup."""
+        if self.store.read_only_reason is not None:
+            return
         for runtime in self._runtimes.values():
             if self.is_native_project(runtime.project):
                 self._schedule_queued(runtime)

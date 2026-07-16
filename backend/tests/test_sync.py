@@ -5,6 +5,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
@@ -12,7 +13,7 @@ from miniclaw2.app import create_app
 from miniclaw2.domain import Node, NodeState, Project
 from miniclaw2.global_config import load_global_config, save_global_config
 from miniclaw2.registry import ProjectRegistry
-from miniclaw2.store import Store
+from miniclaw2.store import Store, StoreReadOnlyError
 from miniclaw2.sync import SchemaConflictError, SyncError, bootstrap_store
 
 
@@ -217,6 +218,39 @@ class GitMetadataSyncTests(unittest.TestCase):
         self.assertEqual(self.store_a.sync.status()["status"], "changed")
         reloaded = Store(self.root_a)
         self.assertEqual(reloaded.sync.status()["status"], "changed")
+
+    def test_remote_schema_upgrade_makes_live_store_read_only(self) -> None:
+        schema_b = json.loads((self.root_b / "schema.json").read_text())
+        schema_b["schema_version"] += 1
+        (self.root_b / "schema.json").write_text(
+            json.dumps(schema_b, indent=2) + "\n", encoding="utf-8"
+        )
+        self.store_b.sync.sync_now()
+
+        self.assertIsNone(self.store_a.read_only_reason)
+        self.store_a.sync.sync_now()
+
+        self.assertEqual(
+            self.store_a.read_only_reason,
+            "store schema is newer than this MiniClaw2 version",
+        )
+        with self.assertRaises(StoreReadOnlyError):
+            self.store_a.create_project(
+                Project(root_path="/machine-a/blocked", name="Blocked")
+            )
+
+    def test_read_only_store_does_not_schedule_native_projects(self) -> None:
+        schema = json.loads((self.root_a / "schema.json").read_text())
+        schema["schema_version"] += 1
+        (self.root_a / "schema.json").write_text(
+            json.dumps(schema, indent=2) + "\n", encoding="utf-8"
+        )
+        registry = ProjectRegistry(self.store_a)
+
+        with patch.object(registry, "_schedule_queued") as schedule_queued:
+            registry.schedule_all()
+
+        schedule_queued.assert_not_called()
 
     def test_failed_push_rolls_back_the_fetched_merge(self) -> None:
         project_b = self.store_b.create_project(
