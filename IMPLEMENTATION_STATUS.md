@@ -34,6 +34,7 @@ Trunk: `backend/miniclaw2/domain.py`.
 - `Project` fields: `root_path`, `name`, `model_preset_id`,
   `project_context_binding_id`, `active_planspace_id`, `preferred_language`,
   `settings_override`, `temporary`, `template_id`,
+  `machine_id`, `machine_label`,
   `layout_hints`, `layout_viewport`, `planspace_view`,
   `created_at`.
 - `Project.provider` and `Node.provider` are computed from
@@ -326,6 +327,11 @@ Trunk: `backend/miniclaw2/contextspace.py`.
   removes one with strict slug/path validation. The frontend exposes known
   skills as reusable context tiles, supports delete, selection from a virtual's
   editor, and drag-to-attach onto a virtual node.
+- ContextSpace changes are versioned by the store repo's metadata-sync
+  commits (§10). The nested `git: {expected: true}` expectation in
+  `contextspace.yaml` is dropped by the v4 migration, and sync requires
+  the ContextSpace root inside `$MINICLAW_HOME` — a divergent
+  `MINICLAW_CONTEXT_HOME` refuses sync setup and sync.
 
 ### Pending
 
@@ -337,7 +343,6 @@ Trunk: `backend/miniclaw2/contextspace.py`.
 - Global-plug/binding authoring UI and a direct manifest/markdown editor for
   injection mode, `max_chars`, and existing skill contents. Skill creation is
   currently agent-assisted rather than a structured form.
-- Automatic ContextSpace git commits (v1 keeps changes visible).
 - Cross-provider reviewer nodes (the ontology supports review agents;
   no UI to configure provider override yet).
 - Fork merge semantics.
@@ -442,6 +447,17 @@ Trunk: `frontend/src/canvas/Canvas.tsx`, `frontend/src/canvas/layout.ts`,
   modal for bundled templates. New-project creation supports a named or
   temporary workspace, cwd creation confirmation, preferred language, and an
   active model preset.
+- Non-native (or newer-schema) projects render read-only: a badge
+  (`read-only · native to <label> · as of <last sync>`) on the canvas
+  header and project panel, promote/interrupt/rerun/edit controls
+  disabled, pending gates and context menus suppressed, and pan/zoom/
+  drag kept session-only — layout is never persisted from a read-only
+  viewer (the backend also rejects it).
+- Global Settings modal carries the metadata-sync section: remote URL
+  setup gated on a privacy acknowledgment (the remote holds full agent
+  transcripts, prompts, tool output, and code; use a private remote), a
+  `Sync now` / `Set up sync` button, the binary up-to-date/changed
+  status, machine label, and last-sync time.
 
 ### Pending
 
@@ -694,6 +710,25 @@ Trunk: `backend/miniclaw2/store.py`, `backend/miniclaw2/replay.py`.
   local-hunk-wins strategy; `schema.json` conflicts abort. New project
   subtrees remain single-writer, failed pushes roll the local merge back, and
   both-non-empty bootstrap is refused.
+- A hostname mismatch between `machine.json` and the actual host is the
+  copied-store detector: startup asks once whether the machine was
+  renamed (keep uuid, refresh hostname/label) or the store was copied
+  (regenerate uuid, which demotes projects native to the original
+  machine to read-only). Sync refuses to run while the mismatch is
+  unresolved.
+- A store whose `schema_version` is newer than the code opens read-only
+  (`Store.read_only_reason`): startup repair, scheduling, and all
+  mutating operations are blocked, and the wire `read_only` flag is set
+  on every project.
+- Local commits carry structured per-boundary messages coalesced on the
+  debounce timer and are authored as `MiniClaw2 (<machine label>)`, so
+  `git log` doubles as a cross-machine activity ledger.
+- Sync status is computed locally as a binary up-to-date/changed (dirty
+  tree, HEAD past the last synced commit, or a failed prior sync).
+  Manual-only sync means remote divergence is discovered at Sync-now
+  time, and viewer freshness on non-native projects is exactly as fresh
+  as the last button press — the read-only badge's "as of" timestamp is
+  what keeps a stale `running` state honest.
 - Reconnect replay reads `events.jsonl` from `since_seq` then attaches
   to the live tail. New event envelopes carry `schema_version: 2`; existing
   records without a version are treated as version 1, and historical
@@ -707,6 +742,20 @@ Trunk: `backend/miniclaw2/store.py`, `backend/miniclaw2/replay.py`.
 - SQLite migration. Deferred until cross-project queries (e.g. "list
   all nodes in `awaiting_human_input` across the workspace") actually
   become hot.
+- Adopt-project ownership transfer (rewrite `machine_id` + `root_path`,
+  invalidate stale provider sessions). Until built, a retired or dead
+  machine's projects remain read-only everywhere.
+- Sync retention/compaction — `events.jsonl` transcripts grow the store
+  repo monotonically; archiving, compaction, or LFS is deferred until
+  repo size hurts.
+- Encryption at rest (git-crypt/age) for partially trusted remotes.
+- Artifact sync: `outputs/<nid>/` stays local to the machine that can
+  run the project; a size-capped opt-in could come later.
+- Cross-machine live streaming (backend-to-backend event relay); viewer
+  freshness beyond pull-on-sync is a different feature.
+- Merging two non-empty stores at bootstrap. Multi-master writing is an
+  explicit non-goal — the native-machine convention is the concurrency
+  model.
 
 
 ## 11. Wire envelopes (current set)

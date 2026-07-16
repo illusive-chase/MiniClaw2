@@ -49,7 +49,8 @@ it is opaque end to end:
   files at all.
 
 Meanwhile PHILOSOPHY §8 deliberately removed the former
-`output_kind` / result-file ontology, and PROPOSAL_SYNC §1 classifies
+`output_kind` / result-file ontology, and the landed metadata-sync
+design (IMPLEMENTATION_STATUS §10) classifies
 `<project_root>/.miniclaw2` as a regenerable projection that does not
 sync ("Artifacts do not sync").
 
@@ -202,7 +203,7 @@ the project checkout and never syncs, but
 subtree that metadata sync already carries. Published artifacts are
 written there by the native machine only (reap runs only where the
 node ran), so they merge trivially like every other node file. This
-amends PROPOSAL_SYNC's "Artifacts do not sync" to: *workspace outputs
+amends the sync design's "Artifacts do not sync" to: *workspace outputs
 do not sync; published artifacts are node metadata and do*. The size
 caps in §6 exist precisely to keep this sane — published artifacts
 are text (`.md`/`.json`/`.html`), not build products.
