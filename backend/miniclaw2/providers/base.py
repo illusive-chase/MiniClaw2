@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
-from ..domain import GateSubtype, Node, Project
+from ..domain import GateSubtype, Node, Project, ReviewTarget
 from ..events import (
     Activity,
     ErrorEvent,
@@ -61,6 +61,32 @@ class AgentProviderEvent:
     turn_id: str | None = None
     error: str | None = None
     final_state: str | None = None
+    report: ReviewReport | None = None
+
+
+@dataclass(slots=True)
+class ReviewSpec:
+    target: ReviewTarget
+    focus: str | None = None
+
+
+@dataclass(slots=True)
+class ReviewFinding:
+    title: str
+    body: str
+    file: str | None = None
+    line_start: int | None = None
+    line_end: int | None = None
+    priority: str | None = None
+    confidence: float | None = None
+
+
+@dataclass(slots=True)
+class ReviewReport:
+    raw_markdown: str
+    findings: list[ReviewFinding] | None = None
+    verdict: str | None = None
+    explanation: str | None = None
 
 
 @dataclass(slots=True)
@@ -85,6 +111,11 @@ class AgentProvider(Protocol):
     name: str
 
     async def run(self, context: AgentProviderContext) -> AsyncIterator[AgentProviderEvent]:
+        ...
+
+    async def run_review(
+        self, context: AgentProviderContext, spec: ReviewSpec
+    ) -> AsyncIterator[AgentProviderEvent]:
         ...
 
     async def interrupt(self) -> None:

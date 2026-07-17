@@ -250,7 +250,9 @@ export type NodeCategory = "planning" | "regular" | "review";
 export type ReviewSubtype =
   | "agentic_review"
   | "human_interact_review"
-  | "programmatic_review";
+  | "programmatic_review"
+  | "code_review";
+export type ReviewTarget = { type: "uncommitted" };
 export type PlanspaceMode = "auto" | "manual";
 export type ReviewBrief = {
   check_what: string;
@@ -297,6 +299,7 @@ export type NodeInfo = {
   category?: NodeCategory | null;
   subtype?: ReviewSubtype | null;
   brief?: ReviewBrief | null;
+  review_target?: ReviewTarget | null;
   prompt_draft?: string | null;
   scheduled_deps?: string[];
   pending_extra_skills?: string[];

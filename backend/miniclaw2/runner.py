@@ -10,11 +10,13 @@ and write their own ``preview.json`` directly.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import shutil
 import time
 from collections.abc import Awaitable, Callable
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -53,7 +55,14 @@ from .events import (
     TurnDone,
     Usage,
 )
-from .git_state import commit_all, git_head, git_pull_rebase, local_only_shas
+from .git_state import (
+    commit_all,
+    git_head,
+    git_pull_rebase,
+    git_review_snapshot,
+    git_status,
+    local_only_shas,
+)
 from .language import language_launch_instruction, project_preferred_language
 from .launch_prompt import (
     anti_self_poisoning_block,
@@ -82,6 +91,8 @@ from .providers import (
     AgentProviderEvent,
     GateRequest,
     GateTimeoutError,
+    ReviewReport,
+    ReviewSpec,
 )
 from .providers.claude import ClaudeProvider
 from .providers.codex import CodexProvider
@@ -91,6 +102,10 @@ from .store import Store
 logger = logging.getLogger(__name__)
 
 _PREVIEW_REPAIR_RETRIES = 3
+_STALE_REVIEW_WARNING = (
+    "⚠️ Review snapshot is stale: the working tree changed while the native "
+    "review was running. See reviewed-diff.patch for the audited input."
+)
 
 
 class NodeRunner:
@@ -171,6 +186,8 @@ class NodeRunner:
                 await self._run_op()
             elif self.node.kind is NodeKind.VERIFIER:
                 await self._run_verifier()
+            elif self.node.subtype is ReviewSubtype.CODE_REVIEW:
+                await self._run_code_review()
             else:
                 await self._run_agent()
         finally:
@@ -363,6 +380,183 @@ class NodeRunner:
         self._transition(final_state, finished=True)
         await self._emit_node_updated()
         await self._emit(TurnDone())
+
+    async def _run_code_review(self) -> None:
+        """Run a provider-native review without lane materialization or reap."""
+        self.node.commit_before = git_head(self.project.root_path)
+        final_state = NodeState.DONE
+        error_msg: str | None = None
+        report: ReviewReport | None = None
+        artifacts: list[str] = []
+        snapshot = None
+        stale = False
+        try:
+            self._snapshot_launch_settings()
+            self._transition(NodeState.RUNNING, started=True)
+            await self._emit_node_started()
+            await self._emit_node_updated()
+
+            if git_status(self.project.root_path).dirty_count == 0:
+                self.node.summary = "working tree clean — nothing to review"
+            else:
+                snapshot = await asyncio.to_thread(
+                    git_review_snapshot, self.project.root_path
+                )
+                snapshot_path = self.store.node_dir(
+                    self.project.id, self.node.id
+                ) / "reviewed-diff.patch"
+                snapshot_path.write_text(snapshot.patch, encoding="utf-8")
+                final_state, error_msg, report = await self._run_native_review(
+                    system_context=""
+                )
+                if final_state is NodeState.DONE and report is None:
+                    final_state = NodeState.ERROR
+                    error_msg = (
+                        "native code review completed without a recognizable report"
+                    )
+                if report is not None:
+                    current = await asyncio.to_thread(
+                        git_review_snapshot, self.project.root_path
+                    )
+                    stale = current != snapshot
+                    artifacts = self._publish_code_review_report(
+                        report, stale=stale
+                    )
+        except asyncio.CancelledError:
+            final_state = NodeState.CANCELLED
+            await self.interrupt()
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("code review runner failed")
+            error_msg = f"Unexpected code review error: {exc}"
+            final_state = NodeState.ERROR
+            await self._emit(ErrorEvent(message=error_msg))
+        finally:
+            self._provider = None
+            self._resolve_open_gates()
+
+        if error_msg is not None:
+            self.node.error = error_msg
+        self.node.commit_after = git_head(self.project.root_path)
+        if final_state is NodeState.DONE:
+            if report is None:
+                summary = self.node.summary or "working tree clean — nothing to review"
+                motivation = "code review of uncommitted changes"
+                implications = "no uncommitted changes require review"
+            else:
+                summary = _review_summary(report)
+                implications = _review_implications(report)
+                head = (
+                    snapshot.head_sha if snapshot is not None else None
+                ) or "unknown"
+                motivation = (
+                    self.node.brief.check_what
+                    if self.node.brief is not None
+                    else f"code review of uncommitted changes since {head[:7]}"
+                )
+                if stale:
+                    summary = _STALE_REVIEW_WARNING + "\n\n" + summary
+            self.node.summary = summary
+            self._persist_executed_preview(
+                final_state,
+                motivation=motivation,
+                summary=summary,
+                next_implications=implications,
+                artifacts=artifacts,
+            )
+        else:
+            self._write_stub_preview(
+                final_state, reason=error_msg or "code review cancelled"
+            )
+        self._transition(final_state, finished=True)
+        await self._emit_node_updated()
+        await self._emit(TurnDone())
+
+    async def _run_native_review(
+        self, *, system_context: str
+    ) -> tuple[NodeState, str | None, ReviewReport | None]:
+        preset = get_model_preset(
+            self.node.model_preset_id, store_root=self.store.root
+        )
+        provider = _make_provider(preset.provider)
+        run_review = getattr(provider, "run_review", None)
+        if run_review is None:
+            return (
+                NodeState.ERROR,
+                f"{provider.name} provider does not support native code review",
+                None,
+            )
+        self._provider = provider
+        context = AgentProviderContext(
+            node=self.node,
+            project=self.project,
+            request_gate_handler=self._request_gate,
+            system_context=system_context,
+            store_root=self.store.root,
+        )
+        focus = (
+            self.node.brief.check_what
+            if self.node.brief is not None
+            else (self.node.prompt.strip() or None)
+        )
+        target = self.node.review_target
+        if target is None:
+            return NodeState.ERROR, "code review target is missing", None
+        spec = ReviewSpec(target=target, focus=focus)
+        report: ReviewReport | None = None
+        terminal_seen = False
+        async for event in run_review(context, spec):
+            await self._handle_provider_event(event)
+            if event.kind == "review" and event.report is not None:
+                report = event.report
+            elif event.kind == "done":
+                terminal_seen = True
+                state = _state_from_provider(event.final_state)
+                if event.final_state is not None and state is None:
+                    return (
+                        NodeState.ERROR,
+                        f"{provider.name} provider returned unknown final_state: "
+                        f"{event.final_state}",
+                        report,
+                    )
+                return state or NodeState.DONE, None, report
+            elif event.kind == "error":
+                terminal_seen = True
+                return NodeState.ERROR, event.error or "provider review error", report
+        if not terminal_seen:
+            return (
+                NodeState.ERROR,
+                f"{provider.name} review stream ended without a terminal event",
+                report,
+            )
+        return NodeState.ERROR, "provider review failed", report
+
+    def _publish_code_review_report(
+        self, report: ReviewReport, *, stale: bool
+    ) -> list[str]:
+        output_dir = workspace_artifacts_dir(self.project, self.node.id)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        markdown = report.raw_markdown.strip()
+        if stale:
+            markdown = _STALE_REVIEW_WARNING + "\n\n" + markdown
+        names = ["code-review-report.md"]
+        (output_dir / names[0]).write_text(markdown + "\n", encoding="utf-8")
+        if report.findings is not None:
+            names.append("code-review-findings.json")
+            (output_dir / names[-1]).write_text(
+                json.dumps(
+                    [asdict(finding) for finding in report.findings],
+                    ensure_ascii=False,
+                    indent=2,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+        publish_artifacts(self.project, self.node, names, self.store)
+        return [
+            ref.name
+            for ref in self.node.artifacts
+            if ref.status == "published"
+        ]
 
     async def _run_verifier(self) -> None:
         """Run a deterministic verifier script and write an executed preview."""
@@ -810,6 +1004,7 @@ class NodeRunner:
         motivation: str,
         summary: str,
         next_implications: str,
+        artifacts: list[str] | None = None,
     ) -> None:
         original_state = self.node.state
         if final_state not in (NodeState.DONE, NodeState.ERROR, NodeState.CANCELLED):
@@ -821,6 +1016,7 @@ class NodeRunner:
                 motivation=motivation,
                 summary=summary,
                 next_implications=next_implications,
+                artifacts=artifacts,
             )
             self.store.write_node_preview(self.project.id, self.node.id, text)
         except Exception:  # noqa: BLE001
@@ -1198,3 +1394,28 @@ def _tail_text(text: str, limit: int) -> str:
     if len(text) <= limit:
         return text
     return text[-limit:]
+
+
+def _review_summary(report: ReviewReport) -> str:
+    if report.verdict:
+        detail = (report.explanation or "").strip()
+        return f"{report.verdict}: {detail}".strip().rstrip(":")[:1000]
+    text = report.raw_markdown.strip()
+    if not text:
+        return "native code review completed"
+    paragraph = text.split("\n\n", 1)[0].strip()
+    return paragraph[:1000]
+
+
+def _review_implications(report: ReviewReport) -> str:
+    if report.findings:
+        lines: list[str] = []
+        for finding in report.findings[:8]:
+            location = finding.file or ""
+            if location and finding.line_start is not None:
+                location += f":{finding.line_start}"
+            lines.append(
+                f"{finding.title} ({location})" if location else finding.title
+            )
+        return "\n".join(lines)
+    return "See code-review-report.md for the native review findings."

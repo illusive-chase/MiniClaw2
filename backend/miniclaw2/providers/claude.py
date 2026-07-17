@@ -15,7 +15,13 @@ from typing import Any
 
 from ..domain import GateSubtype
 from ..model_catalog import get_model_preset
-from .base import AgentProviderContext, AgentProviderEvent, GateRequest
+from .base import (
+    AgentProviderContext,
+    AgentProviderEvent,
+    GateRequest,
+    ReviewReport,
+    ReviewSpec,
+)
 from .claude_native import ClaudeNativeError, ClaudeNativeSession
 from .claude_native.ask_payload import format_ask_directive, parse_ask_payload
 
@@ -112,6 +118,80 @@ class ClaudeProvider:
         if session is not None:
             await session.interrupt()
 
+    async def run_review(
+        self, context: AgentProviderContext, spec: ReviewSpec
+    ) -> AsyncIterator[AgentProviderEvent]:
+        if spec.target.type != "uncommitted":
+            yield AgentProviderEvent(
+                kind="error", error=f"unsupported Claude review target: {spec.target.type}"
+            )
+            return
+        try:
+            self._session = ClaudeNativeSession(
+                cwd=context.project.root_path,
+                node_id=context.node.id,
+                project_id=context.project.id,
+                ask_dispatcher=lambda payload: self._dispatch_ask(payload, context),
+                model=self._resolve_model(context),
+                effort=self._resolve_effort(context),
+                session_id=self._resume_session_id(context),
+                system_prompt_append="",
+            )
+            await self._session.start()
+            yield AgentProviderEvent(kind="session", session_id=self._session.session_id)
+            scope = (
+                "Review only uncommitted changes: staged, unstaged, and untracked "
+                "files (git diff HEAD plus untracked files)."
+            )
+            command = "/code-review " + scope
+            if spec.focus:
+                command += " Focus: " + " ".join(spec.focus.split())
+            result = await self._session.send(command, confirmation_text=command)
+            if not result.submitted:
+                yield AgentProviderEvent(
+                    kind="error",
+                    error="claude code-review submit failed: "
+                    + (result.failure_reason or "unknown reason"),
+                )
+                return
+            async for event in self._session.stream_events():
+                if event.kind == "done":
+                    report = self._session.last_assistant_text.strip()
+                    if _unknown_code_review_command(report):
+                        yield AgentProviderEvent(
+                            kind="error",
+                            error=(
+                                "native code review requires a Claude Code version "
+                                "that provides /code-review"
+                            ),
+                        )
+                        return
+                    if report:
+                        yield AgentProviderEvent(
+                            kind="review",
+                            report=ReviewReport(raw_markdown=report),
+                        )
+                    yield event
+                    return
+                yield event
+                if event.kind == "error":
+                    return
+        except ClaudeNativeError as exc:
+            yield AgentProviderEvent(kind="error", error=str(exc))
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("claude native review failed")
+            yield AgentProviderEvent(
+                kind="error", error=f"unexpected claude review error: {exc}"
+            )
+        finally:
+            session = self._session
+            self._session = None
+            if session is not None:
+                try:
+                    await session.close()
+                except Exception:  # noqa: BLE001
+                    logger.debug("review session close failed", exc_info=True)
+
     async def _dispatch_ask(
         self,
         payload: dict[str, Any],
@@ -154,3 +234,10 @@ class ClaudeProvider:
     ) -> str | None:
         node = context.node
         return node.provider_session_id
+
+
+def _unknown_code_review_command(text: str) -> bool:
+    lowered = text.lower()
+    return "unknown slash command" in lowered or (
+        "unknown command" in lowered and "/code-review" in lowered
+    )

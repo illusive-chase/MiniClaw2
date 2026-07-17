@@ -600,7 +600,9 @@ function CategoryChip({ node }: { node: NodeInfo }) {
       : node.category === "review"
         ? node.subtype === "human_interact_review"
           ? "human"
-          : "review"
+          : node.subtype === "code_review"
+            ? "code"
+            : "review"
         : "work";
   const tone =
     node.category === "planning"

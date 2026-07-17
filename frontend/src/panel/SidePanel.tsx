@@ -112,7 +112,9 @@ export type SidePanelProps = {
   gitHead?: string | null;
   gitDirtyCount?: number;
   gitActionPending?: boolean;
+  gitReviewPending?: boolean;
   onGitCommit?: (message: string) => Promise<void> | void;
+  onGitReview?: () => Promise<void> | void;
 };
 
 /**
@@ -254,7 +256,7 @@ function Inner(props: SidePanelProps & { nodesById: Map<string, NodeInfo> }) {
           .filter((summary): summary is string => !!summary)
       : [];
     if (!selection.sha) {
-      return <GitCommitPanel dirtyCount={props.gitDirtyCount ?? 0} pending={props.gitActionPending ?? false} readOnly={!!session?.read_only} onCommit={props.onGitCommit} suggestedMessage={currentEpochSummaries.join("; ") || "Changes from MiniClaw2"} />;
+      return <GitCommitPanel dirtyCount={props.gitDirtyCount ?? 0} pending={props.gitActionPending ?? false} reviewPending={props.gitReviewPending ?? false} readOnly={!!session?.read_only} onCommit={props.onGitCommit} onReview={props.onGitReview} suggestedMessage={currentEpochSummaries.join("; ") || "Changes from MiniClaw2"} />;
     }
     if (!commit) {
       return (
@@ -328,6 +330,8 @@ function Inner(props: SidePanelProps & { nodesById: Map<string, NodeInfo> }) {
         modelPresets={modelPresets}
         events={events}
         eventsLoading={eventsLoading}
+        diff={diff}
+        diffLoading={diffLoading}
         contextBundle={contextBundle}
         contextBundleLoading={contextBundleLoading}
         pendingGate={session.read_only ? null : pendingGate}
@@ -426,19 +430,23 @@ function Inner(props: SidePanelProps & { nodesById: Map<string, NodeInfo> }) {
   return <Missing />;
 }
 
-function GitCommitPanel({ dirtyCount, pending, readOnly, onCommit, suggestedMessage }: { dirtyCount: number; pending: boolean; readOnly: boolean; onCommit?: (message: string) => Promise<void> | void; suggestedMessage: string }) {
+function GitCommitPanel({ dirtyCount, pending, reviewPending, readOnly, onCommit, onReview, suggestedMessage }: { dirtyCount: number; pending: boolean; reviewPending: boolean; readOnly: boolean; onCommit?: (message: string) => Promise<void> | void; onReview?: () => Promise<void> | void; suggestedMessage: string }) {
   const [message, setMessage] = useState(suggestedMessage);
   const [edited, setEdited] = useState(false);
   useEffect(() => {
     if (!edited) setMessage(suggestedMessage);
   }, [edited, suggestedMessage]);
-  const disabled = readOnly || pending || dirtyCount === 0 || !message.trim();
+  const busy = pending || reviewPending;
+  const disabled = readOnly || busy || dirtyCount === 0 || !message.trim();
   return (
     <div className="flex h-full flex-col bg-surface px-4 py-4">
       <div className="text-[10px] font-medium uppercase tracking-[0.14em] text-ink-subtle">Commit changes</div>
       <p className="mt-2 text-[12px] text-ink-muted">{dirtyCount === 0 ? "Working tree clean." : `${dirtyCount} changed ${dirtyCount === 1 ? "file" : "files"}.`}</p>
-      <textarea value={message} onChange={(event) => { setEdited(true); setMessage(event.target.value); }} disabled={readOnly || pending} rows={5} className="mt-4 resize-none rounded-md border border-line bg-surface-raised px-3 py-2 text-[13px] text-ink outline-none focus:border-brand" placeholder="Commit message" />
-      <button type="button" disabled={disabled} onClick={() => void onCommit?.(message.trim())} className="mt-3 inline-flex h-9 items-center justify-center rounded-md bg-brand px-3 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-40">{pending ? "Committing…" : "Commit"}</button>
+      <textarea value={message} onChange={(event) => { setEdited(true); setMessage(event.target.value); }} disabled={readOnly || busy} rows={5} className="mt-4 resize-none rounded-md border border-line bg-surface-raised px-3 py-2 text-[13px] text-ink outline-none focus:border-brand" placeholder="Commit message" />
+      <div className="mt-3 grid grid-cols-2 gap-2">
+        <button type="button" disabled={readOnly || busy || dirtyCount === 0} onClick={() => void onReview?.()} className="inline-flex h-9 items-center justify-center rounded-md border border-line bg-surface-raised px-3 text-sm font-medium text-ink disabled:cursor-not-allowed disabled:opacity-40">{reviewPending ? "Reviewing…" : "Review"}</button>
+        <button type="button" disabled={disabled} onClick={() => void onCommit?.(message.trim())} className="inline-flex h-9 items-center justify-center rounded-md bg-brand px-3 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-40">{pending ? "Committing…" : "Commit"}</button>
+      </div>
     </div>
   );
 }

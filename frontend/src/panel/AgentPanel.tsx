@@ -12,6 +12,7 @@ import type {
   InteractionRequest,
   ModelPreset,
   NodeCategory,
+  NodeDiff,
   NodeInfo,
   ReviewBrief,
   ReviewSubtype,
@@ -44,6 +45,8 @@ export type AgentPanelProps = {
   modelPresets: ModelPreset[];
   events: EventRecord[];
   eventsLoading: boolean;
+  diff: NodeDiff | null;
+  diffLoading: boolean;
   contextBundle: ContextBundle | null;
   contextBundleLoading: boolean;
   pendingGate: InteractionRequest | null;
@@ -74,6 +77,8 @@ export function AgentPanel({
   modelPresets,
   events,
   eventsLoading,
+  diff,
+  diffLoading,
   contextBundle,
   contextBundleLoading,
   pendingGate,
@@ -265,6 +270,27 @@ export function AgentPanel({
                 node={node}
               />
             </section>
+
+            {node.subtype === "code_review" && (
+              <section className="mb-5">
+                <details className="overflow-hidden rounded-md border border-line bg-surface-sunken">
+                  <summary className="cursor-pointer px-3 py-2">
+                    <SectionHeading>Reviewed snapshot</SectionHeading>
+                  </summary>
+                  <div className="border-t border-line p-3">
+                    {diffLoading ? (
+                      <p className="text-[11px] text-ink-muted">Loading reviewed diff…</p>
+                    ) : diff?.error ? (
+                      <p className="text-[11px] text-state-error">{diff.error}</p>
+                    ) : (
+                      <pre className="max-h-80 overflow-auto whitespace-pre-wrap break-words font-mono text-[10.5px] leading-relaxed text-ink-muted">
+                        {diff?.text || "Snapshot not available yet."}
+                      </pre>
+                    )}
+                  </div>
+                </details>
+              </section>
+            )}
 
             {(node.artifacts?.length ?? 0) > 0 && (
               <section className="mb-5">
@@ -660,6 +686,7 @@ function EditableVirtualNodeBody({
                   {([
                     ["agentic_review", "Agentic"],
                     ["human_interact_review", "Human"],
+                    ["code_review", "Code"],
                   ] as const).map(([value, label]) => (
                     <button
                       key={value}
@@ -681,7 +708,7 @@ function EditableVirtualNodeBody({
                     </button>
                   ))}
                 </div>
-                <FieldLabel label="Check">
+                <FieldLabel label={draft.subtype === "code_review" ? "Focus (optional)" : "Check"}>
                   <textarea
                     value={draft.brief.check_what}
                     onChange={(e) =>
@@ -697,7 +724,7 @@ function EditableVirtualNodeBody({
                     className={fieldClassName}
                   />
                 </FieldLabel>
-                <FieldLabel label="Expected">
+                {draft.subtype !== "code_review" && <FieldLabel label="Expected">
                   <textarea
                     value={draft.brief.expected}
                     onChange={(e) =>
@@ -712,8 +739,8 @@ function EditableVirtualNodeBody({
                     rows={2}
                     className={fieldClassName}
                   />
-                </FieldLabel>
-                <FieldLabel label="Abnormal">
+                </FieldLabel>}
+                {draft.subtype !== "code_review" && <FieldLabel label="Abnormal">
                   <textarea
                     value={draft.brief.abnormal}
                     onChange={(e) =>
@@ -728,7 +755,12 @@ function EditableVirtualNodeBody({
                     rows={2}
                     className={fieldClassName}
                   />
-                </FieldLabel>
+                </FieldLabel>}
+                {draft.subtype === "code_review" && (
+                  <p className="text-[11px] leading-relaxed text-ink-muted">
+                    Reviews staged, unstaged, and untracked changes with the selected provider's native reviewer. The prompt and focus may be empty.
+                  </p>
+                )}
               </div>
             )}
           </div>
@@ -1096,10 +1128,19 @@ function virtualPayloadFromDraft(
   }
   if (draft.category === "review") {
     payload.subtype = draft.subtype;
-    payload.brief = draft.brief;
+    payload.brief =
+      draft.subtype === "code_review" &&
+      !draft.brief.check_what.trim() &&
+      !draft.brief.expected.trim() &&
+      !draft.brief.abnormal.trim()
+        ? null
+        : draft.brief;
+    payload.review_target =
+      draft.subtype === "code_review" ? { type: "uncommitted" } : null;
   } else {
     payload.subtype = null;
     payload.brief = null;
+    payload.review_target = null;
   }
   return payload;
 }
@@ -1585,7 +1626,9 @@ function nodeCategoryLabel(node: NodeInfo): string {
       : node.category === "review"
         ? node.subtype === "human_interact_review"
           ? "human review"
-          : "review"
+          : node.subtype === "code_review"
+            ? "code review"
+            : "review"
         : "regular"
   );
 }
@@ -1620,7 +1663,7 @@ function isTerminal(state: NodeInfo["state"]): boolean {
 
 function virtualReady(node: NodeInfo, byId: Map<string, NodeInfo>): boolean {
   if (node.state !== "virtual" || node.obsolete_reason) return false;
-  if (!(node.prompt_draft || "").trim()) return false;
+  if (node.subtype !== "code_review" && !(node.prompt_draft || "").trim()) return false;
   for (const depId of node.scheduled_deps ?? []) {
     const dep = byId.get(depId);
     if (!dep) continue;

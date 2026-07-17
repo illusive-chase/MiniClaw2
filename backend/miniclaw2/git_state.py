@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import hashlib
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -43,6 +44,14 @@ class GitStatus:
     behind: int | None = None
     dirty_count: int = 0
     files: list[GitFileStatus] = field(default_factory=list)
+
+
+@dataclass(slots=True, frozen=True)
+class GitReviewSnapshot:
+    head_sha: str | None
+    dirty_paths: tuple[str, ...]
+    patch: str
+    diff_sha256: str
 
 
 @dataclass(slots=True)
@@ -145,6 +154,35 @@ def git_status(cwd: str) -> GitStatus:
         item.binary = binary
     status.dirty_count = len(status.files)
     return status
+
+
+def git_review_snapshot(cwd: str) -> GitReviewSnapshot:
+    """Capture the uncommitted tree as an auditable patch and fingerprint."""
+    status = git_status(cwd)
+    dirty_paths = tuple(sorted(item.path for item in status.files))
+    tracked = _git(cwd, ["diff", "HEAD", "--binary", "--no-ext-diff"])
+    parts = [tracked.stdout] if tracked.returncode == 0 else []
+    untracked = sorted(
+        item.path
+        for item in status.files
+        if item.index_status == "?" and item.worktree_status == "?"
+    )
+    if untracked:
+        parts.append("\n# Untracked files\n" + "".join(f"# {path}\n" for path in untracked))
+    for path in untracked:
+        result = _git(
+            cwd,
+            ["diff", "--no-index", "--binary", "--no-ext-diff", "--", "/dev/null", path],
+        )
+        if result.returncode in {0, 1} and result.stdout:
+            parts.append(result.stdout)
+    patch = "\n".join(part.rstrip("\n") for part in parts if part).rstrip() + "\n"
+    return GitReviewSnapshot(
+        head_sha=status.head,
+        dirty_paths=dirty_paths,
+        patch=patch,
+        diff_sha256=hashlib.sha256(patch.encode("utf-8")).hexdigest(),
+    )
 
 
 def _is_generated_path(path: str) -> bool:

@@ -40,6 +40,8 @@ def _template_for_node(node: Node) -> str | None:
     if node.category is Category.PLANNING:
         return _load_template(_CATEGORY_PLANNING)
     if node.category is Category.REVIEW:
+        if node.subtype is ReviewSubtype.CODE_REVIEW:
+            raise ValueError("code_review nodes must bypass launch prompt templates")
         if node.subtype is ReviewSubtype.HUMAN_INTERACT_REVIEW:
             return _load_template(_CATEGORY_HUMAN_INTERACT_REVIEW)
         return _load_template(_CATEGORY_AGENTIC_REVIEW)

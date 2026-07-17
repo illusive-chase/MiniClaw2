@@ -140,6 +140,7 @@ class TranscriptTranslator:
         self._pending_tools: dict[str, Activity] = {}
         self._usage_by_message_id: dict[str, Usage] = {}
         self._session_id_emitted = False
+        self._last_assistant_text = ""
 
     def translate(self, record: dict[str, Any]) -> list[AgentProviderEvent]:
         rtype = record.get("type")
@@ -184,6 +185,10 @@ class TranscriptTranslator:
             final=True,
         )
 
+    @property
+    def last_assistant_text(self) -> str:
+        return self._last_assistant_text
+
     def _assistant(self, record: dict[str, Any]) -> list[AgentProviderEvent]:
         message = record.get("message")
         if not isinstance(message, dict):
@@ -193,6 +198,15 @@ class TranscriptTranslator:
         if not isinstance(content, list):
             return []
         out: list[AgentProviderEvent] = []
+        text_blocks = [
+            str(block.get("text") or "")
+            for block in content
+            if isinstance(block, dict) and block.get("type") == "text"
+        ]
+        if any(text_blocks):
+            self._last_assistant_text = "\n".join(
+                block for block in text_blocks if block
+            ).strip()
         for block in content:
             if not isinstance(block, dict):
                 continue

@@ -8,6 +8,7 @@ import {
   getSession,
   getNodeContextBundle,
   getNodeDiff,
+  getReviewedDiff,
   getSessionContextSpace,
   initProjectContext,
   listNodeEvents,
@@ -26,6 +27,7 @@ import {
   getGlobalState,
   getGitState,
   gitCommit,
+  gitReview,
   gitPull,
   gitPush,
   artifactRawUrl,
@@ -90,7 +92,7 @@ export function App() {
   const [globalState, setGlobalState] = useState<GlobalState | null>(null);
   const [gitStatus, setGitStatus] = useState<GitStatus | null>(null);
   const [gitCommits, setGitCommits] = useState<CommitDescriptor[]>([]);
-  const [gitAction, setGitAction] = useState<"commit" | "pull" | "push" | null>(null);
+  const [gitAction, setGitAction] = useState<"commit" | "review" | "pull" | "push" | null>(null);
   const [gitError, setGitError] = useState<string | null>(null);
 
   const [selection, setSelection] = useState<CanvasSelection>({ kind: "none" });
@@ -1143,7 +1145,9 @@ export function App() {
     }
     let cancelled = false;
     setSelectedDiffLoading(true);
-    getNodeDiff(session.id, inspectedNodeId)
+    const loadDiff =
+      selectedNode?.subtype === "code_review" ? getReviewedDiff : getNodeDiff;
+    loadDiff(session.id, inspectedNodeId)
       .then((diff) => {
         if (!cancelled) setSelectedDiff(diff);
       })
@@ -1164,6 +1168,7 @@ export function App() {
     inspectedNodeId,
     selectedNode?.commit_before,
     selectedNode?.commit_after,
+    selectedNode?.subtype,
     selectedNode?.state,
   ]);
 
@@ -1690,13 +1695,16 @@ export function App() {
       node.op_kind === "pull" &&
       (node.state === "running" || node.state === "queued"),
   );
-  const runGitAction = async (action: "commit" | "pull" | "push", message = "") => {
+  const runGitAction = async (action: "commit" | "review" | "pull" | "push", message = "") => {
     if (!session?.id || readOnly || !gitStatus?.is_repo || gitAction) return;
     setGitAction(action);
     setGitError(null);
     try {
       if (action === "commit") {
         await gitCommit(session.id, message);
+      } else if (action === "review") {
+        const result = await gitReview(session.id);
+        selectAndOpenNode(result.node.id);
       } else if (action === "pull") {
         await gitPull(session.id);
       } else {
@@ -1710,6 +1718,7 @@ export function App() {
     }
   };
   const commitGitMessage = (message: string) => runGitAction("commit", message);
+  const reviewGitChanges = () => runGitAction("review");
 
   return (
     <>
@@ -1878,7 +1887,9 @@ export function App() {
                 gitHead={gitStatus?.head ?? null}
                 gitDirtyCount={gitStatus?.dirty_count ?? 0}
                 gitActionPending={gitAction === "commit"}
+                gitReviewPending={gitAction === "review"}
                 onGitCommit={commitGitMessage}
+                onGitReview={reviewGitChanges}
                 nodes={nodes}
                 session={sessionWithRuntimeCounts}
                 modelPresets={modelPresets}

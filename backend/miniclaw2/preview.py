@@ -15,7 +15,15 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
-from .domain import Category, Node, NodeKind, NodeState, ReviewBrief, ReviewSubtype
+from .domain import (
+    Category,
+    Node,
+    NodeKind,
+    NodeState,
+    ReviewBrief,
+    ReviewSubtype,
+    ReviewTarget,
+)
 
 
 class PreviewValidationError(ValueError):
@@ -49,6 +57,7 @@ class ExecutedPreview(BaseModel):
         "agentic_review",
         "human_interact_review",
         "programmatic_review",
+        "code_review",
     ] | None = None
 
     @model_validator(mode="after")
@@ -98,8 +107,10 @@ class VirtualPreview(BaseModel):
         "agentic_review",
         "human_interact_review",
         "programmatic_review",
+        "code_review",
     ] | None = None
     brief: ExecutedPreviewBrief | None = None
+    review_target: ReviewTarget | None = None
     scheduled_deps: list[str] = []
     obsolete_reason: str | None = None
 
@@ -122,13 +133,19 @@ class VirtualPreview(BaseModel):
         if self.category == "review":
             if self.subtype is None:
                 raise ValueError("review virtuals require a subtype")
-            if self.brief is None:
+            if self.subtype != "code_review" and self.brief is None:
                 raise ValueError("review virtuals require a brief")
+            if self.subtype == "code_review" and self.review_target is None:
+                self.review_target = ReviewTarget()
+            if self.subtype != "code_review" and self.review_target is not None:
+                raise ValueError("review_target is only valid on code_review virtuals")
         else:
             if self.subtype is not None:
                 raise ValueError("non-review virtuals must not carry a subtype")
             if self.brief is not None:
                 raise ValueError("non-review virtuals must not carry a brief")
+            if self.review_target is not None:
+                raise ValueError("review_target is only valid on code_review virtuals")
         return self
 
 
@@ -192,7 +209,8 @@ def validate_preview_for_node(preview: Preview, node: Node) -> list[str]:
 
 
 def render_executed_preview(node: Node, *, motivation: str, summary: str,
-                            next_implications: str) -> str:
+                            next_implications: str,
+                            artifacts: list[str] | None = None) -> str:
     """Render a stub preview for the framework to write on agent failure
     or for the op runner. Maps node fields into the schema.
     """
@@ -214,6 +232,7 @@ def render_executed_preview(node: Node, *, motivation: str, summary: str,
         "motivation": motivation,
         "summary": summary,
         "next_implications": next_implications,
+        "artifacts": list(artifacts or []),
     }
     if node.kind in {NodeKind.AGENT, NodeKind.VERIFIER}:
         payload["category"] = (node.category or Category.REGULAR).value
@@ -242,10 +261,15 @@ def render_virtual_preview(node: Node) -> str:
         "scheduled_deps": list(node.scheduled_deps),
     }
     if node.category is Category.REVIEW:
-        if node.subtype is None or node.brief is None:
-            raise ValueError("review virtual missing subtype or brief")
+        if node.subtype is None:
+            raise ValueError("review virtual missing subtype")
+        if node.subtype is not ReviewSubtype.CODE_REVIEW and node.brief is None:
+            raise ValueError("review virtual missing brief")
         payload["subtype"] = node.subtype.value
-        payload["brief"] = node.brief.model_dump()
+        if node.brief is not None:
+            payload["brief"] = node.brief.model_dump()
+        if node.review_target is not None:
+            payload["review_target"] = node.review_target.model_dump()
     if node.obsolete_reason is not None:
         payload["obsolete_reason"] = node.obsolete_reason
     preview = VirtualPreview.model_validate(payload)
@@ -281,6 +305,7 @@ def virtual_preview_to_node(
         category=Category(preview.category),
         subtype=subtype,
         brief=brief,
+        review_target=preview.review_target,
         scheduled_deps=list(preview.scheduled_deps),
         verify_script_ref=verify_script_ref,
         proposed_by=preview.proposed_by,

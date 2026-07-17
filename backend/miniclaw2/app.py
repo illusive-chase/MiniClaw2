@@ -184,6 +184,7 @@ class UpdateVirtualRequest(BaseModel):
     category: str | None = None
     subtype: str | None = None
     brief: dict[str, Any] | None = None
+    review_target: dict[str, Any] | None = None
     motivation: str | None = None
     scheduled_deps: list[str] | None = None
     pending_extra_skills: list[str] | None = None
@@ -198,6 +199,7 @@ class CreateVirtualRequest(BaseModel):
     category: str | None = None
     subtype: str | None = None
     brief: dict[str, Any] | None = None
+    review_target: dict[str, Any] | None = None
     motivation: str | None = None
     scheduled_deps: list[str] | None = None
     pending_extra_skills: list[str] | None = None
@@ -641,6 +643,19 @@ def create_app(registry: ProjectRegistry | None = None) -> FastAPI:
             raise HTTPException(409, "project unavailable")
         return {"node": node.model_dump()}
 
+    @app.post("/sessions/{sid}/git/review", response_model=dict[str, Any])
+    async def git_review(sid: str) -> dict[str, Any]:
+        project = registry.get_project(sid)
+        if project is None:
+            raise HTTPException(404, "session not found")
+        try:
+            node = registry.spawn_code_review(sid)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        if node is None:
+            raise HTTPException(409, "project unavailable")
+        return {"node": node.model_dump()}
+
     @app.post("/sessions/{sid}/git/pull", response_model=dict[str, Any])
     async def git_pull(sid: str) -> dict[str, Any]:
         project = registry.get_project(sid)
@@ -904,6 +919,7 @@ def create_app(registry: ProjectRegistry | None = None) -> FastAPI:
                 category=req.category,
                 subtype=req.subtype,
                 brief=req.brief,
+                review_target=req.review_target,
                 motivation=req.motivation,
                 scheduled_deps=req.scheduled_deps,
                 pending_extra_skills=req.pending_extra_skills,
@@ -1048,6 +1064,21 @@ def create_app(registry: ProjectRegistry | None = None) -> FastAPI:
             raise HTTPException(404, "node not found")
         diff = node_diff(project.root_path, node.commit_before, node.commit_after)
         return NodeDiffResponse(kind=diff.kind, text=diff.text, error=diff.error)
+
+    @app.get(
+        "/sessions/{sid}/nodes/{nid}/reviewed-diff",
+        response_model=NodeDiffResponse,
+    )
+    def get_reviewed_diff(sid: str, nid: str) -> NodeDiffResponse:
+        if registry.get_project(sid) is None:
+            raise HTTPException(404, "session not found")
+        node = registry.get_node(sid, nid)
+        if node is None:
+            raise HTTPException(404, "node not found")
+        path = registry.store.node_dir(sid, nid) / "reviewed-diff.patch"
+        if not path.exists():
+            raise HTTPException(404, "review snapshot not yet written")
+        return NodeDiffResponse(kind="patch", text=path.read_text(encoding="utf-8"))
 
     @app.get("/sessions/{sid}/nodes/{nid}/preview", response_model=dict[str, Any])
     def get_node_preview(sid: str, nid: str) -> dict[str, Any]:

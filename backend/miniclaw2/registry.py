@@ -35,6 +35,7 @@ from .domain import (
     Project,
     ReviewBrief,
     ReviewSubtype,
+    ReviewTarget,
     normalize_planspace_mode,
 )
 from .language import normalize_preferred_language
@@ -751,7 +752,7 @@ class ProjectRegistry:
         if not self.is_native_project(rt.project):
             return
         while rt.has_capacity():
-            if self._pull_active(rt):
+            if self._exclusive_node_active(rt):
                 return
             priority = [
                 node_id
@@ -766,8 +767,16 @@ class ProjectRegistry:
             rt.priority_node_ids = priority
             if priority:
                 node = self.store.load_node(rt.project.id, priority[0])
+                if (
+                    node is not None
+                    and self._is_exclusive_node(node)
+                    and rt.active_count
+                ):
+                    return
                 if node is not None and self._launch_node(rt, node) is not None:
                     rt.priority_node_ids.pop(0)
+                    if self._is_exclusive_node(node):
+                        return
                     continue
                 return
             queued = sorted(
@@ -781,11 +790,28 @@ class ProjectRegistry:
             )
             if not queued:
                 return
+            if self._is_exclusive_node(queued[0]) and rt.active_count:
+                return
             if self._launch_node(rt, queued[0]) is None:
+                return
+            if self._is_exclusive_node(queued[0]):
                 return
 
     @staticmethod
-    def _pull_active(rt: ProjectRuntime) -> bool:
+    def _is_exclusive_node(node: Node) -> bool:
+        return (
+            node.kind is NodeKind.OP and node.op_kind == "pull"
+        ) or node.subtype is ReviewSubtype.CODE_REVIEW
+
+    @classmethod
+    def _exclusive_node_active(cls, rt: ProjectRuntime) -> bool:
+        return any(
+            cls._is_exclusive_node(runner.node)
+            for runner in rt.runners.values()
+        )
+
+    @classmethod
+    def _pull_active(cls, rt: ProjectRuntime) -> bool:
         return any(
             runner.node.kind is NodeKind.OP and runner.node.op_kind == "pull"
             for runner in rt.runners.values()
@@ -909,6 +935,28 @@ class ProjectRegistry:
             op_kind=op_kind,
             state=NodeState.QUEUED,
             prompt=message.strip(),
+            model_preset_id=rt.project.model_preset_id,
+        )
+        self.store.create_node(node)
+        rt.priority_node_ids.append(node.id)
+        self._schedule_queued(rt)
+        return self.store.load_node(pid, node.id) or node
+
+    def spawn_code_review(self, pid: str) -> Node | None:
+        rt = self._runtimes.get(pid)
+        if rt is None:
+            return None
+        self.require_native(pid)
+        status = git_status(rt.project.root_path)
+        if not status.is_repo:
+            raise ValueError("code review requires a Git repository")
+        node = Node(
+            project_id=pid,
+            kind=NodeKind.AGENT,
+            category=Category.REVIEW,
+            subtype=ReviewSubtype.CODE_REVIEW,
+            review_target=ReviewTarget(),
+            state=NodeState.QUEUED,
             model_preset_id=rt.project.model_preset_id,
         )
         self.store.create_node(node)
@@ -1130,7 +1178,10 @@ class ProjectRegistry:
             return None
         if node.state is not NodeState.VIRTUAL or node.obsolete_reason:
             return None
-        if not (node.prompt_draft or "").strip():
+        if (
+            node.subtype is not ReviewSubtype.CODE_REVIEW
+            and not (node.prompt_draft or "").strip()
+        ):
             return None
         active = resolve_active_planspace(
             rt.project, contextspace_root(self.store.root)
@@ -1198,6 +1249,7 @@ class ProjectRegistry:
         category: str | Category | None = Category.REGULAR,
         subtype: str | ReviewSubtype | None = None,
         brief: dict[str, Any] | ReviewBrief | None = None,
+        review_target: dict[str, Any] | ReviewTarget | None = None,
         motivation: str | None = None,
         scheduled_deps: list[str] | None = None,
         pending_extra_skills: list[str] | None = None,
@@ -1289,14 +1341,33 @@ class ProjectRegistry:
                 except Exception as exc:  # noqa: BLE001
                     raise ValueError(f"invalid review brief: {exc}") from exc
 
+        next_review_target: ReviewTarget | None = None
+        if review_target is not None:
+            try:
+                next_review_target = (
+                    review_target
+                    if isinstance(review_target, ReviewTarget)
+                    else ReviewTarget.model_validate(review_target)
+                )
+            except Exception as exc:  # noqa: BLE001
+                raise ValueError(f"invalid review_target: {exc}") from exc
+
         if next_category is not Category.REVIEW:
             next_subtype = None
             next_brief = None
+            next_review_target = None
         else:
             if next_subtype is None:
                 raise ValueError("review virtuals require a subtype")
-            if next_brief is None:
+            if (
+                next_subtype is not ReviewSubtype.CODE_REVIEW
+                and next_brief is None
+            ):
                 raise ValueError("review virtuals require a brief")
+            if next_subtype is ReviewSubtype.CODE_REVIEW:
+                next_review_target = next_review_target or ReviewTarget()
+            elif next_review_target is not None:
+                raise ValueError("review_target is only valid on code_review virtuals")
 
         node_kwargs: dict[str, Any] = {}
         if node_id is not None:
@@ -1309,6 +1380,7 @@ class ProjectRegistry:
             category=next_category,
             subtype=next_subtype,
             brief=next_brief,
+            review_target=next_review_target,
             state=NodeState.VIRTUAL,
             parent_node_id=normalized_parent_id,
             planspace_id=lane_id,
@@ -1371,6 +1443,7 @@ class ProjectRegistry:
         category: str | Category | None | object = _UNSET,
         subtype: str | ReviewSubtype | None | object = _UNSET,
         brief: dict[str, Any] | ReviewBrief | None | object = _UNSET,
+        review_target: dict[str, Any] | ReviewTarget | None | object = _UNSET,
         motivation: str | None | object = _UNSET,
         scheduled_deps: list[str] | None | object = _UNSET,
         pending_extra_skills: list[str] | None | object = _UNSET,
@@ -1396,9 +1469,9 @@ class ProjectRegistry:
 
         update: dict[str, Any] = {}
         if prompt_draft is not _UNSET:
-            if prompt_draft is None or not str(prompt_draft).strip():
-                raise ValueError("prompt_draft must be non-empty")
-            update["prompt_draft"] = str(prompt_draft)
+            update["prompt_draft"] = (
+                "" if prompt_draft is None else str(prompt_draft)
+            )
         if motivation is not _UNSET:
             update["summary"] = "" if motivation is None else str(motivation)
         if obsolete_reason is not _UNSET:
@@ -1447,16 +1520,43 @@ class ProjectRegistry:
                     raise ValueError(f"invalid review brief: {exc}") from exc
             update["brief"] = next_brief
 
+        next_review_target = existing.review_target
+        if review_target is not _UNSET:
+            if review_target is None:
+                next_review_target = None
+            elif isinstance(review_target, ReviewTarget):
+                next_review_target = review_target
+            else:
+                try:
+                    next_review_target = ReviewTarget.model_validate(review_target)
+                except Exception as exc:  # noqa: BLE001
+                    raise ValueError(f"invalid review_target: {exc}") from exc
+            update["review_target"] = next_review_target
+
         if next_category is not Category.REVIEW:
             update["subtype"] = None
             update["brief"] = None
+            update["review_target"] = None
         else:
             if next_subtype is None:
                 raise ValueError("review virtuals require a subtype")
-            if next_brief is None:
+            if (
+                next_subtype is not ReviewSubtype.CODE_REVIEW
+                and next_brief is None
+            ):
                 raise ValueError("review virtuals require a brief")
             update["subtype"] = next_subtype
             update["brief"] = next_brief
+            if next_subtype is ReviewSubtype.CODE_REVIEW:
+                update["review_target"] = next_review_target or ReviewTarget()
+            elif next_review_target is not None:
+                raise ValueError("review_target is only valid on code_review virtuals")
+        next_prompt_draft = update.get("prompt_draft", existing.prompt_draft or "")
+        if (
+            next_subtype is not ReviewSubtype.CODE_REVIEW
+            and not str(next_prompt_draft).strip()
+        ):
+            raise ValueError("prompt_draft must be non-empty")
 
         if scheduled_deps is not _UNSET:
             deps = self._normalize_virtual_scheduled_deps(

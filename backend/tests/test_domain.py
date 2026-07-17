@@ -13,6 +13,7 @@ from miniclaw2.domain import (
     NodeState,
     ReviewBrief,
     ReviewSubtype,
+    ReviewTarget,
 )
 
 
@@ -63,6 +64,23 @@ class NodeInvariantTests(unittest.TestCase):
         )
         self.assertIs(node.subtype, ReviewSubtype.AGENTIC_REVIEW)
         self.assertEqual(node.brief.check_what, "a")
+
+    def test_code_review_defaults_target_and_allows_empty_brief(self) -> None:
+        node = Node(
+            project_id="p1",
+            model_preset_id="gpt-5.5",
+            category=Category.REVIEW,
+            subtype=ReviewSubtype.CODE_REVIEW,
+        )
+        self.assertEqual(node.review_target, ReviewTarget(type="uncommitted"))
+
+    def test_review_target_is_forbidden_elsewhere(self) -> None:
+        with self.assertRaises(ValidationError):
+            Node(
+                project_id="p1",
+                model_preset_id="gpt-5.5",
+                review_target=ReviewTarget(),
+            )
 
     def test_verifier_requires_programmatic_review_fields(self) -> None:
         brief = ReviewBrief(check_what="a", expected="b", abnormal="c")

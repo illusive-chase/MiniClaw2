@@ -4,7 +4,7 @@ import type { GitFileStatus, GitStatus } from "../types";
 
 type GitWorkspaceStatusProps = {
   status: GitStatus | null;
-  action: "commit" | "pull" | "push" | null;
+  action: "commit" | "review" | "pull" | "push" | null;
   canCommit: boolean;
   canPull: boolean;
   canPush: boolean;

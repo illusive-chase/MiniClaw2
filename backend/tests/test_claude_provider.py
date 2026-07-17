@@ -15,7 +15,7 @@ from miniclaw2.providers.base import (
     AgentProviderEvent,
     GateRequest,
 )
-from miniclaw2.providers.claude import ClaudeProvider
+from miniclaw2.providers.claude import ClaudeProvider, _unknown_code_review_command
 from miniclaw2.providers.claude_native import ClaudeNativeSession
 from miniclaw2.providers.claude_native.ask_payload import (
     format_ask_directive,
@@ -41,6 +41,14 @@ async def _ask_dispatcher(_payload: dict[str, Any]) -> dict[str, Any]:
 
 async def _collect(provider_events):
     return [event async for event in provider_events]
+
+
+class ClaudeCodeReviewDetectionTest(unittest.TestCase):
+    def test_unknown_slash_command_is_not_a_report(self) -> None:
+        self.assertTrue(
+            _unknown_code_review_command("Unknown slash command: /code-review")
+        )
+        self.assertFalse(_unknown_code_review_command("# Review\n\nNo findings."))
 
 
 class _FakePty:

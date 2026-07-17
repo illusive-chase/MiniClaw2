@@ -14,13 +14,22 @@ from typing import Any
 from ..domain import GateSubtype
 from ..events import Activity, TextDelta, Thinking, Usage
 from ..model_catalog import get_model_preset
-from .base import AgentProviderContext, AgentProviderEvent, GateRequest, compose_turn_text
+from .base import (
+    AgentProviderContext,
+    AgentProviderEvent,
+    GateRequest,
+    ReviewFinding,
+    ReviewReport,
+    ReviewSpec,
+    compose_turn_text,
+)
 
 logger = logging.getLogger(__name__)
 
 _CODEX_REQUEST_TIMEOUT_SECONDS = 60.0
 _CODEX_STDERR_TAIL_LINES = 20
 _CODEX_STDIO_BUFFER_LIMIT_BYTES = 16 * 1024 * 1024
+_MIN_REVIEW_VERSION = (0, 144, 1)
 
 
 class CodexProvider:
@@ -104,6 +113,91 @@ class CodexProvider:
             finally:
                 self._client = None
 
+    async def run_review(
+        self, context: AgentProviderContext, spec: ReviewSpec
+    ) -> AsyncIterator[AgentProviderEvent]:
+        self._stop = False
+        if spec.target.type != "uncommitted":
+            yield AgentProviderEvent(
+                kind="error", error=f"unsupported Codex review target: {spec.target.type}"
+            )
+            return
+        async with _CodexJsonRpcClient(cwd=context.project.root_path) as client:
+            self._client = client
+            try:
+                initialized = await client.initialize()
+                if not _codex_review_capable(initialized):
+                    yield AgentProviderEvent(
+                        kind="error",
+                        error="native code review requires codex-cli 0.144.1 or newer",
+                    )
+                    return
+                thread_id = context.node.provider_session_id
+                if not thread_id:
+                    started = await client.request(
+                        "thread/start",
+                        _thread_params(context, {"cwd": context.project.root_path}),
+                    )
+                    thread_id = started.get("thread", {}).get("id")
+                    if not thread_id:
+                        raise RuntimeError(
+                            f"Codex thread/start returned no thread id: {started}"
+                        )
+                    yield AgentProviderEvent(kind="session", session_id=thread_id)
+                else:
+                    resumed = await client.request(
+                        "thread/resume",
+                        _thread_params(
+                            context,
+                            {"threadId": thread_id, "cwd": context.project.root_path},
+                        ),
+                    )
+                    resumed_id = resumed.get("thread", {}).get("id")
+                    if resumed_id and resumed_id != thread_id:
+                        thread_id = resumed_id
+                        yield AgentProviderEvent(kind="session", session_id=thread_id)
+                self._thread_id = thread_id
+                try:
+                    response = await client.request(
+                        "review/start",
+                        {
+                            "threadId": thread_id,
+                            "target": {"type": "uncommittedChanges"},
+                            "delivery": "inline",
+                        },
+                    )
+                except RuntimeError as exc:
+                    if "method" in str(exc).lower() or "review/start" in str(exc):
+                        yield AgentProviderEvent(
+                            kind="error",
+                            error="native code review requires codex-cli 0.144.1 or newer",
+                        )
+                        return
+                    raise
+                turn_id = response.get("turn", {}).get("id")
+                if not turn_id:
+                    raise RuntimeError(f"Codex review/start returned no turn id: {response}")
+                self._turn_id = turn_id
+                yield AgentProviderEvent(kind="turn", turn_id=turn_id)
+                while not self._stop:
+                    message = await client.receive()
+                    async for event in self._handle_message(message, context, client):
+                        yield event
+                        if event.kind in {"done", "error"}:
+                            self._stop = True
+                    if self._stop:
+                        break
+            except asyncio.CancelledError:
+                await self.interrupt()
+                raise
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("Codex native review failed")
+                yield AgentProviderEvent(
+                    kind="error", error=f"Codex native review error: {exc}"
+                )
+            finally:
+                self._client = None
+
     async def interrupt(self) -> None:
         client = self._client
         if client is None or self._thread_id is None or self._turn_id is None:
@@ -177,7 +271,13 @@ class CodexProvider:
             return
 
         if method == "item/completed":
-            activity = _activity_from_item(params.get("item") or {}, "finish")
+            item = params.get("item") or {}
+            if item.get("type") == "exitedReviewMode":
+                yield AgentProviderEvent(
+                    kind="review", report=_review_report_from_codex(item.get("review"))
+                )
+                return
+            activity = _activity_from_item(item, "finish")
             if activity is not None:
                 yield AgentProviderEvent(kind="event", event=activity)
             return
@@ -796,6 +896,97 @@ def _usage_from_token_usage(token_usage: Any) -> Usage:
         ),
         final=False,
     )
+
+
+def _codex_review_capable(initialized: dict[str, Any]) -> bool:
+    server = initialized.get("serverInfo") or initialized.get("server_info") or {}
+    raw = server.get("version") if isinstance(server, dict) else None
+    if not isinstance(raw, str) or not raw:
+        return True
+    numbers: list[int] = []
+    for part in raw.split(".")[:3]:
+        digits = "".join(character for character in part if character.isdigit())
+        if not digits:
+            return True
+        numbers.append(int(digits))
+    while len(numbers) < 3:
+        numbers.append(0)
+    return tuple(numbers) >= _MIN_REVIEW_VERSION
+
+
+def _review_report_from_codex(value: Any) -> ReviewReport:
+    raw = str(value or "").strip()
+    payload: dict[str, Any] | None = None
+    try:
+        decoded = json.loads(raw)
+        if isinstance(decoded, dict):
+            payload = decoded
+    except json.JSONDecodeError:
+        payload = None
+    if payload is None:
+        return ReviewReport(raw_markdown=raw or "Codex review completed.")
+    findings: list[ReviewFinding] = []
+    for entry in payload.get("findings") or []:
+        if not isinstance(entry, dict):
+            continue
+        location = entry.get("code_location") or entry.get("codeLocation") or {}
+        line_range = location.get("line_range") or location.get("lineRange") or {}
+        findings.append(
+            ReviewFinding(
+                title=str(entry.get("title") or "Finding"),
+                body=str(entry.get("body") or ""),
+                file=(
+                    str(location.get("absolute_file_path") or location.get("absoluteFilePath"))
+                    if location.get("absolute_file_path") or location.get("absoluteFilePath")
+                    else None
+                ),
+                line_start=_optional_int(line_range.get("start")),
+                line_end=_optional_int(line_range.get("end")),
+                priority=(str(entry["priority"]) if entry.get("priority") is not None else None),
+                confidence=_optional_float(
+                    entry.get("confidence_score", entry.get("confidenceScore"))
+                ),
+            )
+        )
+    verdict = payload.get("overall_correctness", payload.get("overallCorrectness"))
+    explanation = payload.get(
+        "overall_explanation", payload.get("overallExplanation")
+    )
+    markdown_parts: list[str] = []
+    if verdict is not None:
+        markdown_parts.append(f"# Verdict\n\n**{verdict}**")
+    if explanation:
+        markdown_parts.append(str(explanation))
+    if findings:
+        markdown_parts.append("# Findings")
+        for finding in findings:
+            location = finding.file or ""
+            if location and finding.line_start is not None:
+                location += f":{finding.line_start}"
+            heading = f"## {finding.title}"
+            if location:
+                heading += f"\n\n`{location}`"
+            markdown_parts.append(f"{heading}\n\n{finding.body}".strip())
+    return ReviewReport(
+        raw_markdown="\n\n".join(markdown_parts) or raw,
+        findings=findings,
+        verdict=str(verdict) if verdict is not None else None,
+        explanation=str(explanation) if explanation is not None else None,
+    )
+
+
+def _optional_int(value: Any) -> int | None:
+    try:
+        return int(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _optional_float(value: Any) -> float | None:
+    try:
+        return float(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
 
 
 def _usage_optional_int(sources: tuple[dict[str, Any], ...], *keys: str) -> int | None:

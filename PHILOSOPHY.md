@@ -199,16 +199,21 @@ There is no `gate` kind. The gate concept is preserved as a category
 - **regular** — may only write its own preview. Virtual writes by
   regular nodes are rejected at reap (re-prompted). Regular nodes
   execute work, not plan.
-- **review** — like planning, may reshape the plan via virtuals.
+- **review** — normally like planning and may reshape the plan via virtuals.
   Reviews carry a structured brief
   (`check_what` / `expected` / `abnormal`) written by the proposer.
-  Two subtypes:
+  Provider-backed subtypes:
   - **agentic_review** — runs the reviewer agent against the brief
     and the upstream's preview/transcript/artifacts.
   - **human_interact_review** — at promotion, pauses in an
     `awaiting_human_input` substate to collect free-form prose from
     the user. The reviewer agent is then launched with brief +
     upstream + human prose, synthesizes a preview.
+  - **code_review** — gates the uncommitted ghost before it becomes a
+    commit. The provider's native reviewer inspects the working tree while
+    the scheduler holds exclusive workspace access; the framework snapshots
+    the reviewed diff and synthesizes a report-only preview. It does not
+    materialize a lane or mutate virtuals, and its brief/focus is optional.
 
 Questions, decisions, and out-of-scope items are not separate
 categories; they are things a node may *say in prose* inside its
@@ -251,6 +256,9 @@ isolation: agents can observe each other's partial changes, make
 conflicting edits, or race on repository-wide operations. Dependency
 edges and human supervision are the coordination mechanism; projects
 that require hard isolation should still use separate worktrees/forks.
+Native code-review nodes are the deliberate exception: the scheduler drains
+the pool to them and holds the workspace exclusively so the ghost commit is a
+stable review target.
 
 Each node records the pre- and post-state of the worktree, so the
 timeline can show a project-state diff per node.

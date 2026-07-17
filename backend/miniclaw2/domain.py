@@ -68,6 +68,13 @@ class ReviewSubtype(StrEnum):
     AGENTIC_REVIEW = "agentic_review"
     HUMAN_INTERACT_REVIEW = "human_interact_review"
     PROGRAMMATIC_REVIEW = "programmatic_review"
+    CODE_REVIEW = "code_review"
+
+
+class ReviewTarget(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["uncommitted"] = "uncommitted"
 
 
 class PlanspaceMode(StrEnum):
@@ -214,6 +221,7 @@ class Node(BaseModel):
     category: Category | None = None
     subtype: ReviewSubtype | None = None
     brief: ReviewBrief | None = None
+    review_target: ReviewTarget | None = None
     # Virtual-node-only fields. ``prompt_draft`` becomes ``prompt`` at
     # promotion; ``scheduled_deps`` are node ids that must reach a
     # terminal state before this virtual is eligible to promote.
@@ -260,7 +268,11 @@ class Node(BaseModel):
         if self.kind is NodeKind.OP:
             if self.category is not None:
                 raise ValueError("op nodes must not carry a category")
-            if self.subtype is not None or self.brief is not None:
+            if (
+                self.subtype is not None
+                or self.brief is not None
+                or self.review_target is not None
+            ):
                 raise ValueError("op nodes must not carry review fields")
             if self.verify_script_ref is not None:
                 raise ValueError("op nodes must not carry verify_script_ref")
@@ -273,6 +285,10 @@ class Node(BaseModel):
                 )
             if self.brief is None:
                 raise ValueError("verifier nodes require a brief")
+            if self.review_target is not None:
+                raise ValueError(
+                    "review_target is only valid on code_review nodes"
+                )
             if self.prompt or self.prompt_draft:
                 raise ValueError("verifier nodes must not carry prompt text")
             if not self.verify_script_ref:
@@ -290,13 +306,29 @@ class Node(BaseModel):
                     raise ValueError("regular agents must not carry a subtype")
                 if self.brief is not None:
                     raise ValueError("regular agents must not carry a brief")
+                if self.review_target is not None:
+                    raise ValueError(
+                        "review_target is only valid on code_review nodes"
+                    )
             elif self.category is Category.REVIEW:
                 if self.subtype is None:
                     raise ValueError("review agents require a subtype")
                 if self.subtype is ReviewSubtype.PROGRAMMATIC_REVIEW:
                     raise ValueError("programmatic_review requires kind=verifier")
-                if self.brief is None:
+                if (
+                    self.subtype is not ReviewSubtype.CODE_REVIEW
+                    and self.brief is None
+                ):
                     raise ValueError("review agents require a brief")
+                if self.subtype is ReviewSubtype.CODE_REVIEW:
+                    if self.review_target is None:
+                        object.__setattr__(self, "review_target", ReviewTarget())
+                elif self.review_target is not None:
+                    raise ValueError(
+                        "review_target is only valid on code_review nodes"
+                    )
+            elif self.review_target is not None:
+                raise ValueError("review_target is only valid on code_review nodes")
             if self.verify_script_ref is not None:
                 raise ValueError("agent nodes must not carry verify_script_ref")
         if self.state is NodeState.VIRTUAL:

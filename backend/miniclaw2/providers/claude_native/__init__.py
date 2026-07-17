@@ -312,6 +312,10 @@ class ClaudeNativeSession:
                     return
             await asyncio.sleep(_STREAM_POLL_INTERVAL)
 
+    @property
+    def last_assistant_text(self) -> str:
+        return self._translator.last_assistant_text
+
     def _final_usage_event(self) -> AgentProviderEvent | None:
         usage = self._translator.final_usage()
         if usage is None:

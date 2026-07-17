@@ -90,7 +90,7 @@ If the virtual is a **review**, it must additionally carry:
 
 ```json
 {
-  "subtype": "agentic_review" | "human_interact_review",
+  "subtype": "agentic_review" | "human_interact_review" | "code_review",
   "brief": {
     "check_what": "<machine- or human-checkable concern>",
     "expected": "<what would mean the upstream is fine>",
@@ -98,6 +98,10 @@ If the virtual is a **review**, it must additionally carry:
   }
 }
 ```
+
+For `code_review`, use `"review_target": {"type": "uncommitted"}` (or omit
+it for that default). Its `brief` and `prompt_draft` may be empty because the
+provider-native reviewer owns the rubric; when present they are focus text.
 
 Do not include `model_preset_id`, `provider`, or concrete model fields in
 any virtual preview you write. Model selection is framework-owned: new
@@ -112,7 +116,8 @@ field from the rewritten preview.
 To **rewrite** an existing virtual, write a new preview at its
 current path. The id and `proposed_by` field will be preserved by
 the framework — you are free to update `motivation`, `prompt_draft`,
-`category`, `scheduled_deps`, and (for reviews) `subtype` and `brief`.
+`category`, `scheduled_deps`, and (for reviews) `subtype`, `brief`, and
+`review_target`.
 Model preset and continuation/resume provider settings are
 framework-controlled and cannot be changed from a preview.
 

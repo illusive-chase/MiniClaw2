@@ -109,7 +109,10 @@ new question, propose another `human_interact_review`.
 }
 ```
 
-Review virtuals additionally carry `subtype` and `brief`.
+Review virtuals additionally carry `subtype` and `brief`. A `code_review`
+virtual may instead omit both `brief` and `prompt_draft`; it uses
+`"review_target": {"type": "uncommitted"}` by default and produces a
+framework-owned, report-only preview from the provider-native reviewer.
 
 Do not include `model_preset_id`, `provider`, or concrete model fields in
 any virtual preview you write. Model selection is framework-owned: new

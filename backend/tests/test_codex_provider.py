@@ -17,10 +17,31 @@ from miniclaw2.providers.codex import (
     _activity_from_item,
     _thread_params,
     _turn_params,
+    _review_report_from_codex,
 )
 
 
 class CodexUserInputResponseTest(unittest.TestCase):
+    def test_native_review_json_maps_to_normalized_report(self) -> None:
+        report = _review_report_from_codex(json.dumps({
+            "findings": [{
+                "title": "Bug",
+                "body": "Details",
+                "priority": 1,
+                "confidence_score": 0.9,
+                "code_location": {
+                    "absolute_file_path": "/repo/a.py",
+                    "line_range": {"start": 4, "end": 5},
+                },
+            }],
+            "overall_correctness": "patch is incorrect",
+            "overall_explanation": "A bug remains.",
+        }))
+
+        self.assertEqual(report.verdict, "patch is incorrect")
+        self.assertEqual(report.findings[0].line_start, 4)  # type: ignore[index]
+        self.assertIn("# Findings", report.raw_markdown)
+
     def test_accepts_only_canonical_nested_answers(self) -> None:
         self.assertEqual(
             _codex_user_input_response(

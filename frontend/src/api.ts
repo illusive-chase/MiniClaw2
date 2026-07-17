@@ -189,6 +189,12 @@ export async function gitCommit(
   return res.json();
 }
 
+export async function gitReview(sessionId: string): Promise<{ node: NodeInfo }> {
+  const res = await fetch(`/sessions/${sessionId}/git/review`, { method: "POST" });
+  if (!res.ok) throw new ApiError("gitReview", res.status, await readErrorDetail(res));
+  return res.json();
+}
+
 export async function gitPull(sessionId: string): Promise<{ node: NodeInfo }> {
   const res = await fetch(`/sessions/${sessionId}/git/pull`, { method: "POST" });
   if (!res.ok) throw new ApiError("gitPull", res.status, await readErrorDetail(res));
@@ -322,6 +328,7 @@ export type UpdateVirtualPayload = {
   category?: NodeCategory;
   subtype?: ReviewSubtype | null;
   brief?: ReviewBrief | null;
+  review_target?: { type: "uncommitted" } | null;
   motivation?: string | null;
   scheduled_deps?: string[];
   pending_extra_skills?: string[];
@@ -334,6 +341,7 @@ export type CreateVirtualPayload = {
   category?: NodeCategory;
   subtype?: ReviewSubtype | null;
   brief?: ReviewBrief | null;
+  review_target?: { type: "uncommitted" } | null;
   motivation?: string | null;
   scheduled_deps?: string[];
   pending_extra_skills?: string[];
@@ -537,6 +545,15 @@ export async function getNodeDiff(
 ): Promise<NodeDiff> {
   const res = await fetch(`/sessions/${sessionId}/nodes/${nodeId}/diff`);
   if (!res.ok) throw new Error(`getNodeDiff failed: ${res.status}`);
+  return res.json();
+}
+
+export async function getReviewedDiff(
+  sessionId: string,
+  nodeId: string,
+): Promise<NodeDiff> {
+  const res = await fetch(`/sessions/${sessionId}/nodes/${nodeId}/reviewed-diff`);
+  if (!res.ok) throw new Error(`getReviewedDiff failed: ${res.status}`);
   return res.json();
 }
 

@@ -6,6 +6,9 @@ from .base import (
     AgentProviderEvent,
     GateRequest,
     GateTimeoutError,
+    ReviewFinding,
+    ReviewReport,
+    ReviewSpec,
 )
 from .claude import ClaudeProvider
 from .codex import CodexProvider
@@ -16,6 +19,9 @@ __all__ = [
     "AgentProviderEvent",
     "GateRequest",
     "GateTimeoutError",
+    "ReviewFinding",
+    "ReviewReport",
+    "ReviewSpec",
     "ClaudeProvider",
     "CodexProvider",
 ]

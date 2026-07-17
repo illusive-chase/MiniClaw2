@@ -63,6 +63,11 @@ itself rebases.
   nothing starts mid-rebase while never blocking the pull's own launch.
   Manual commit is deliberately unguarded — it snapshots whatever is
   mid-flight, matching auto-commit semantics.
+- Native `code_review` nodes extend the scheduler's pull-style exclusivity:
+  the pool drains before a queued review and no later node launches until it
+  finishes. The runner snapshots the ghost as `reviewed-diff.patch`, detects
+  terminal-side divergence, and publishes the normalized native report before
+  the user commits the epoch.
 - `commit_graph` derives oldest-first hubs from one formatted
   `rev-list --topo-order` pass: `{sha, live, message, ts,
   external_count_before, aliases}`. Referenced set = every node's
@@ -116,13 +121,14 @@ Trunk: `backend/miniclaw2/domain.py`.
 - `NodeKind ∈ {agent, op, verifier}`.
 - `NodeState ∈ {virtual, queued, running, waiting, awaiting_human_input, done, error, cancelled}`.
 - `Category ∈ {planning, regular, review}` and
-  `ReviewSubtype ∈ {agentic_review, human_interact_review, programmatic_review}`.
+  `ReviewSubtype ∈ {agentic_review, human_interact_review, programmatic_review,
+  code_review}`.
 - `Node` fields covering ontology in `PHILOSOPHY.md` §6.1: `parent_node_id`,
   `planspace_id`, `context_bundle_id`, `context_bundle_path`,
   `model_preset_id`, `provider_session_id`, `provider_turn_id`, `op_kind`,
   `agent_op_kind`,
   `commit_before`, `commit_after`, `prompt`, `category`, `subtype`,
-  `brief`, `prompt_draft`, `scheduled_deps`, `pending_extra_skills`,
+  `brief`, `review_target`, `prompt_draft`, `scheduled_deps`, `pending_extra_skills`,
   `resume_from_node_id`,
   `verify_script_ref`, `proposed_by`, `obsolete_reason`, `summary`,
   `error`, `usage`, `artifacts`, `system_context_snapshot`, `settings_snapshot`,
@@ -308,6 +314,14 @@ Trunk: `backend/miniclaw2/runner.py`, `backend/miniclaw2/registry.py`.
   launches the reviewer agent.
 - The reviewer's verdict is represented by its preview and any virtual
   graph mutations reaped from `.miniclaw2/graph/`.
+- `code_review` invokes the preset provider's native reviewer against
+  uncommitted Git state (`review/start` for Codex, bare `/code-review` for
+  Claude Code). It skips lane materialization and reap: the framework writes
+  `reviewed-diff.patch`, publishes `code-review-report.md` plus Codex's
+  structured findings when available, and synthesizes the executed preview.
+  The ghost composer exposes this path through `POST /git/review` and its
+  Review button. A changed worktree after launch leaves the node done but
+  prefixes the report and preview with a stale-snapshot warning.
 
 ### Verifier — landed
 

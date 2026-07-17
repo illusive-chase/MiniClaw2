@@ -1,6 +1,6 @@
 # Proposal: Native Code Review Nodes
 
-Status: proposed design (discussed 2026-07-16), not yet implemented.
+Status: implemented 2026-07-17 (design discussed 2026-07-16).
 
 Companion to `IMPLEMENTATION_STATUS.md` §3a (the landed Git layer:
 epochs, the ghost commit, quiescence) and `PHILOSOPHY.md` §4/§6. When
