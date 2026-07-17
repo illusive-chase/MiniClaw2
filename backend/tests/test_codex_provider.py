@@ -8,8 +8,10 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
-from miniclaw2.domain import GateSubtype
+from miniclaw2.domain import GateSubtype, ReviewTarget
+from miniclaw2.providers.base import ReviewSpec
 from miniclaw2.providers.codex import (
+    CodexRpcError,
     CodexProvider,
     _CodexJsonRpcClient,
     _CODEX_STDIO_BUFFER_LIMIT_BYTES,
@@ -169,6 +171,50 @@ class _FakeProviderContext:
 
 
 class CodexProviderTest(unittest.IsolatedAsyncioTestCase):
+    async def test_review_error_classification_uses_json_rpc_code(self) -> None:
+        async def collect_for(code: int) -> list[Any]:
+            class _ClientStub:
+                async def initialize(self) -> dict[str, Any]:
+                    return {"serverInfo": {"version": "0.200.0"}}
+
+                async def request(
+                    self, method: str, _params: dict[str, Any], **_kwargs: Any
+                ) -> dict[str, Any]:
+                    if method == "thread/start":
+                        return {"thread": {"id": "thread-1"}}
+                    if method == "review/start":
+                        raise CodexRpcError(
+                            code, "invalid params for method review/start"
+                        )
+                    raise AssertionError(method)
+
+            class _ClientCtx:
+                async def __aenter__(self) -> Any:
+                    return _ClientStub()
+
+                async def __aexit__(self, *_exc: object) -> None:
+                    return None
+
+            provider = CodexProvider()
+            context = _FakeProviderContext()
+            with patch(
+                "miniclaw2.providers.codex._CodexJsonRpcClient",
+                return_value=_ClientCtx(),
+            ):
+                return [
+                    event async for event in provider.run_review(
+                        context,  # type: ignore[arg-type]
+                        ReviewSpec(target=ReviewTarget()),
+                    )
+                ]
+
+        missing_method = await collect_for(-32601)
+        invalid_params = await collect_for(-32602)
+
+        self.assertIn("0.144.1 or newer", missing_method[-1].error or "")
+        self.assertIn("invalid params", invalid_params[-1].error or "")
+        self.assertNotIn("0.144.1 or newer", invalid_params[-1].error or "")
+
     def test_command_activity_keeps_full_command(self) -> None:
         command = "printf '%s' " + "x" * 300
 
@@ -363,6 +409,28 @@ class CodexProviderTest(unittest.IsolatedAsyncioTestCase):
                         {"threadId": "thread-1"},
                         timeout=0.01,
                     )
+
+    async def test_stdout_reader_preserves_json_rpc_error_code(self) -> None:
+        def on_request(payload: dict[str, Any]) -> None:
+            fake_proc.feed_stdout({
+                "id": payload["id"],
+                "error": {
+                    "code": -32602,
+                    "message": "invalid params for method review/start",
+                },
+            })
+
+        fake_proc = _FakeProcess(on_request=on_request)
+        with patch(
+            "miniclaw2.providers.codex.asyncio.create_subprocess_exec",
+            return_value=fake_proc,
+        ):
+            async with _CodexJsonRpcClient() as client:
+                with self.assertRaises(CodexRpcError) as raised:
+                    await client.request("review/start", {})
+
+        self.assertEqual(raised.exception.code, -32602)
+        self.assertIn("invalid params", str(raised.exception))
 
     async def test_stdout_reader_accepts_large_json_rpc_lines(self) -> None:
         fake_proc = _FakeProcess()

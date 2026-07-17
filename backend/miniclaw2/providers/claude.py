@@ -237,7 +237,9 @@ class ClaudeProvider:
 
 
 def _unknown_code_review_command(text: str) -> bool:
-    lowered = text.lower()
-    return "unknown slash command" in lowered or (
-        "unknown command" in lowered and "/code-review" in lowered
+    stripped = text.strip().lower()
+    if len(stripped) >= 200:
+        return False
+    return stripped.startswith("unknown slash command") or (
+        stripped.startswith("unknown command") and "/code-review" in stripped
     )

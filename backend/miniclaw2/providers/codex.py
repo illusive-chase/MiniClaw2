@@ -32,6 +32,14 @@ _CODEX_STDIO_BUFFER_LIMIT_BYTES = 16 * 1024 * 1024
 _MIN_REVIEW_VERSION = (0, 144, 1)
 
 
+class CodexRpcError(RuntimeError):
+    """A structured JSON-RPC error returned by Codex app-server."""
+
+    def __init__(self, code: int | None, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
 class CodexProvider:
     name = "codex"
 
@@ -166,8 +174,8 @@ class CodexProvider:
                             "delivery": "inline",
                         },
                     )
-                except RuntimeError as exc:
-                    if "method" in str(exc).lower() or "review/start" in str(exc):
+                except CodexRpcError as exc:
+                    if exc.code == -32601:
                         yield AgentProviderEvent(
                             kind="error",
                             error="native code review requires codex-cli 0.144.1 or newer",
@@ -593,9 +601,14 @@ class _CodexJsonRpcClient:
                     fut = self._pending.get(msg_id)
                     if fut is not None and not fut.done():
                         if "error" in payload:
+                            error = payload["error"]
+                            if not isinstance(error, dict):
+                                error = {}
+                            code = error.get("code")
                             fut.set_exception(
-                                RuntimeError(
-                                    payload["error"].get("message", "Codex error")
+                                CodexRpcError(
+                                    code if isinstance(code, int) else None,
+                                    str(error.get("message") or "Codex error"),
                                 )
                             )
                         else:

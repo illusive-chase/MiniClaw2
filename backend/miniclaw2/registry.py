@@ -24,7 +24,7 @@ from .contextspace import (
     set_planspace_mode,
 )
 from .events import NodeRemoved, GitStatus
-from .git_state import ensure_miniclaw_git_excluded, git_status
+from .git_state import ensure_miniclaw_git_excluded, git_status, is_git_repo
 from .domain import (
     TERMINAL_NODE_STATES,
     Category,
@@ -56,6 +56,10 @@ logger = logging.getLogger(__name__)
 
 
 _UNSET: object = object()
+
+
+def _virtual_requires_prompt(subtype: ReviewSubtype | None) -> bool:
+    return subtype is not ReviewSubtype.CODE_REVIEW
 
 
 class NonNativeProjectError(PermissionError):
@@ -942,14 +946,27 @@ class ProjectRegistry:
         self._schedule_queued(rt)
         return self.store.load_node(pid, node.id) or node
 
-    def spawn_code_review(self, pid: str) -> Node | None:
+    async def spawn_code_review(self, pid: str) -> Node | None:
         rt = self._runtimes.get(pid)
         if rt is None:
             return None
         self.require_native(pid)
-        status = git_status(rt.project.root_path)
-        if not status.is_repo:
+        for existing in self.store.list_nodes(pid):
+            if (
+                existing.subtype is ReviewSubtype.CODE_REVIEW
+                and existing.state in {NodeState.QUEUED, NodeState.RUNNING}
+            ):
+                return existing
+        if not await asyncio.to_thread(is_git_repo, rt.project.root_path):
             raise ValueError("code review requires a Git repository")
+        # The Git probe yields to the event loop, so re-check before the
+        # atomic create step to deduplicate concurrent POST requests.
+        for existing in self.store.list_nodes(pid):
+            if (
+                existing.subtype is ReviewSubtype.CODE_REVIEW
+                and existing.state in {NodeState.QUEUED, NodeState.RUNNING}
+            ):
+                return existing
         node = Node(
             project_id=pid,
             kind=NodeKind.AGENT,
@@ -1153,7 +1170,9 @@ class ProjectRegistry:
                 continue
             if n.obsolete_reason:
                 continue
-            if not (n.prompt_draft or "").strip():
+            if _virtual_requires_prompt(n.subtype) and not (
+                n.prompt_draft or ""
+            ).strip():
                 continue
             if not all(is_dep_auto_ready(dep) for dep in n.scheduled_deps):
                 continue
@@ -1179,7 +1198,7 @@ class ProjectRegistry:
         if node.state is not NodeState.VIRTUAL or node.obsolete_reason:
             return None
         if (
-            node.subtype is not ReviewSubtype.CODE_REVIEW
+            _virtual_requires_prompt(node.subtype)
             and not (node.prompt_draft or "").strip()
         ):
             return None
@@ -1353,6 +1372,10 @@ class ProjectRegistry:
                 raise ValueError(f"invalid review_target: {exc}") from exc
 
         if next_category is not Category.REVIEW:
+            if next_review_target is not None:
+                raise ValueError(
+                    "review_target is only valid on code_review virtuals"
+                )
             next_subtype = None
             next_brief = None
             next_review_target = None
@@ -1534,6 +1557,13 @@ class ProjectRegistry:
             update["review_target"] = next_review_target
 
         if next_category is not Category.REVIEW:
+            if review_target is not _UNSET and next_review_target is not None:
+                raise ValueError(
+                    "review_target is only valid on code_review virtuals"
+                )
+            next_subtype = None
+            next_brief = None
+            next_review_target = None
             update["subtype"] = None
             update["brief"] = None
             update["review_target"] = None
@@ -1550,10 +1580,17 @@ class ProjectRegistry:
             if next_subtype is ReviewSubtype.CODE_REVIEW:
                 update["review_target"] = next_review_target or ReviewTarget()
             elif next_review_target is not None:
-                raise ValueError("review_target is only valid on code_review virtuals")
+                if review_target is _UNSET:
+                    next_review_target = None
+                    update["review_target"] = None
+                else:
+                    raise ValueError(
+                        "review_target is only valid on code_review virtuals"
+                    )
         next_prompt_draft = update.get("prompt_draft", existing.prompt_draft or "")
         if (
-            next_subtype is not ReviewSubtype.CODE_REVIEW
+            any(value is not _UNSET for value in (prompt_draft, category, subtype))
+            and _virtual_requires_prompt(next_subtype)
             and not str(next_prompt_draft).strip()
         ):
             raise ValueError("prompt_draft must be non-empty")
@@ -1703,7 +1740,7 @@ class ProjectRegistry:
         if original.state not in {NodeState.ERROR, NodeState.CANCELLED}:
             raise ValueError("only error/cancelled nodes support rerun")
         prompt = (original.prompt or original.prompt_draft or "").strip()
-        if not prompt:
+        if _virtual_requires_prompt(original.subtype) and not prompt:
             raise ValueError("original node has no prompt to rerun")
 
         virtual = self.create_virtual(
@@ -1712,6 +1749,7 @@ class ProjectRegistry:
             category=original.category or Category.REGULAR,
             subtype=original.subtype,
             brief=original.brief,
+            review_target=original.review_target,
             motivation=f"rerun of {original.id[:8]}",
             scheduled_deps=list(original.scheduled_deps or []),
             model_preset_id=original.model_preset_id,

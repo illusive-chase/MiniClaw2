@@ -203,10 +203,12 @@ class TranscriptTranslator:
             for block in content
             if isinstance(block, dict) and block.get("type") == "text"
         ]
-        if any(text_blocks):
-            self._last_assistant_text = "\n".join(
+        if any(text_blocks) and not record.get("isSidechain"):
+            assistant_text = "\n".join(
                 block for block in text_blocks if block
             ).strip()
+            if len(assistant_text) > len(self._last_assistant_text):
+                self._last_assistant_text = assistant_text
         for block in content:
             if not isinstance(block, dict):
                 continue

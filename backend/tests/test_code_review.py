@@ -4,6 +4,7 @@ import asyncio
 import json
 import subprocess
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -15,6 +16,7 @@ from miniclaw2.domain import (
     Node,
     NodeState,
     Project,
+    ReviewBrief,
     ReviewSubtype,
 )
 from miniclaw2.providers import (
@@ -80,6 +82,15 @@ class _ReviewProvider:
         return None
 
 
+class _ReviewThenErrorProvider(_ReviewProvider):
+    async def run_review(self, context, spec):
+        async for event in super().run_review(context, spec):
+            if event.kind == "done":
+                yield AgentProviderEvent(kind="error", error="turn failed after report")
+            else:
+                yield event
+
+
 class CodeReviewRunnerTests(unittest.IsolatedAsyncioTestCase):
     def _setup(self, root: Path) -> tuple[Path, Store, Project, Node]:
         repo = root / "repo"
@@ -110,8 +121,35 @@ class CodeReviewRunnerTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(node.state, NodeState.DONE)
             self.assertEqual(provider.calls, 0)
             self.assertIn("working tree clean", node.summary or "")
-            self.assertFalse((store.node_dir(project.id, node.id) / "reviewed-diff.patch").exists())
+            snapshot = store.node_dir(project.id, node.id) / "reviewed-diff.patch"
+            self.assertIn("nothing to review", snapshot.read_text(encoding="utf-8"))
             self.assertTrue(repo.exists())
+
+    async def test_published_report_survives_failed_turn_end(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            repo, store, project, node = self._setup(Path(raw))
+            (repo / "change.py").write_text("print('new')\n", encoding="utf-8")
+            provider = _ReviewThenErrorProvider()
+            runner = NodeRunner(node, project, store, lambda _event: asyncio.sleep(0))
+
+            with patch("miniclaw2.runner._make_provider", return_value=provider):
+                await runner.run()
+
+            self.assertEqual(node.state, NodeState.ERROR)
+            report = stored_artifact_path(
+                store, project.id, node.id, "code-review-report.md"
+            )
+            self.assertIn("One actionable issue", report.read_text(encoding="utf-8"))
+            self.assertEqual(
+                [artifact.name for artifact in node.artifacts if artifact.status == "published"],
+                ["code-review-report.md", "code-review-findings.json"],
+            )
+            preview = json.loads(store.read_node_preview(project.id, node.id) or "{}")
+            self.assertIn("turn ended error", preview["summary"])
+            self.assertEqual(
+                preview["artifacts"],
+                ["code-review-report.md", "code-review-findings.json"],
+            )
 
     async def test_report_snapshot_artifacts_and_preview_are_published(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -155,6 +193,35 @@ class CodeReviewRunnerTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("snapshot is stale", preview["summary"])
             report = stored_artifact_path(store, project.id, node.id, "code-review-report.md")
             self.assertIn("snapshot is stale", report.read_text(encoding="utf-8"))
+
+    async def test_codex_focus_limitation_is_recorded_in_report_and_preview(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            repo, store, project, node = self._setup(Path(raw))
+            (repo / "change.py").write_text("print('new')\n", encoding="utf-8")
+            node.brief = ReviewBrief(
+                check_what="focus on parsing",
+                expected="",
+                abnormal="",
+            )
+            store.update_node(node)
+            runner = NodeRunner(
+                node, project, store, lambda _event: asyncio.sleep(0)
+            )
+
+            with patch(
+                "miniclaw2.runner._make_provider", return_value=_ReviewProvider()
+            ):
+                await runner.run()
+
+            report = stored_artifact_path(
+                store, project.id, node.id, "code-review-report.md"
+            ).read_text(encoding="utf-8")
+            preview = json.loads(
+                store.read_node_preview(project.id, node.id) or "{}"
+            )
+            self.assertIn("focus text was not applied", report)
+            self.assertIn("focus text was not applied", preview["summary"])
+            self.assertNotEqual(preview["motivation"], "focus on parsing")
 
 
 class CodeReviewVirtualTests(unittest.TestCase):
@@ -213,6 +280,46 @@ class _ControlledRunner:
 
 
 class CodeReviewSchedulerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_spawn_is_idempotent_while_review_is_in_flight(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            repo = root / "repo"
+            repo.mkdir()
+            _init_repo(repo)
+            store = Store(root=root / "store")
+            project = Project(root_path=str(repo))
+            store.create_project(project)
+            registry = ProjectRegistry(store=store)
+            runtime = registry._runtimes[project.id]
+            _ControlledRunner.instances.clear()
+            probe_barrier = threading.Barrier(2)
+
+            def concurrent_probe(_cwd: str) -> bool:
+                probe_barrier.wait(timeout=2)
+                return True
+
+            with (
+                patch("miniclaw2.registry.NodeRunner", _ControlledRunner),
+                patch("miniclaw2.registry.is_git_repo", side_effect=concurrent_probe),
+            ):
+                first, second = await asyncio.gather(
+                    registry.spawn_code_review(project.id),
+                    registry.spawn_code_review(project.id),
+                )
+
+                assert first is not None and second is not None
+                self.assertEqual(first.id, second.id)
+                reviews = [
+                    node for node in store.list_nodes(project.id)
+                    if node.subtype is ReviewSubtype.CODE_REVIEW
+                ]
+                self.assertEqual(len(reviews), 1)
+                await asyncio.sleep(0)
+                _ControlledRunner.instances[first.id].release.set()
+                task = runtime.runner_tasks.get(first.id)
+                if task is not None:
+                    await task
+
     async def test_review_drains_then_excludes_later_nodes(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
@@ -235,7 +342,7 @@ class CodeReviewSchedulerTests(unittest.IsolatedAsyncioTestCase):
             with patch("miniclaw2.registry.NodeRunner", _ControlledRunner):
                 registry._schedule_queued(runtime)
                 await asyncio.sleep(0)
-                review = registry.spawn_code_review(project.id)
+                review = await registry.spawn_code_review(project.id)
                 assert review is not None
                 await asyncio.sleep(0)
                 self.assertEqual(set(runtime.runners), {first.id, later.id})

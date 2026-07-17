@@ -16,6 +16,7 @@ from miniclaw2.domain import (
     NodeKind,
     NodeState,
     Project,
+    ReviewBrief,
     ReviewSubtype,
 )
 from miniclaw2.registry import ProjectRegistry
@@ -213,6 +214,83 @@ class VirtualEditRegistryTests(unittest.TestCase):
         self.assertEqual(updated.category, Category.REVIEW)
         self.assertEqual(updated.subtype, ReviewSubtype.HUMAN_INTERACT_REVIEW)
         self.assertIsNotNone(updated.brief)
+
+    def test_metadata_only_edit_allows_blank_regular_virtual(self) -> None:
+        node = self.registry.create_virtual(
+            self.project.id,
+            prompt_draft="",
+            planspace_id=self.lane,
+        )
+        assert node is not None
+
+        updated = self.registry.update_virtual(
+            self.project.id,
+            node.id,
+            obsolete_reason="not needed",
+        )
+
+        assert updated is not None
+        self.assertEqual(updated.obsolete_reason, "not needed")
+
+    def test_code_review_to_regular_rejects_empty_prompt_immediately(self) -> None:
+        node = self.registry.create_virtual(
+            self.project.id,
+            prompt_draft="",
+            category=Category.REVIEW,
+            subtype=ReviewSubtype.CODE_REVIEW,
+            planspace_id=self.lane,
+        )
+        assert node is not None
+
+        with self.assertRaisesRegex(ValueError, "prompt_draft"):
+            self.registry.update_virtual(
+                self.project.id,
+                node.id,
+                category=Category.REGULAR,
+            )
+
+    def test_switching_away_from_code_review_discards_default_target(self) -> None:
+        node = self.registry.create_virtual(
+            self.project.id,
+            prompt_draft="review this",
+            category=Category.REVIEW,
+            subtype=ReviewSubtype.CODE_REVIEW,
+            planspace_id=self.lane,
+        )
+        assert node is not None and node.review_target is not None
+
+        updated = self.registry.update_virtual(
+            self.project.id,
+            node.id,
+            subtype=ReviewSubtype.AGENTIC_REVIEW,
+            brief=ReviewBrief(
+                check_what="behavior",
+                expected="works",
+                abnormal="fails",
+            ),
+        )
+
+        assert updated is not None
+        self.assertEqual(updated.subtype, ReviewSubtype.AGENTIC_REVIEW)
+        self.assertIsNone(updated.review_target)
+
+    def test_non_code_review_rejects_explicit_non_null_target(self) -> None:
+        node = self.registry.create_virtual(
+            self.project.id,
+            prompt_draft="review this",
+            category=Category.REVIEW,
+            subtype=ReviewSubtype.CODE_REVIEW,
+            planspace_id=self.lane,
+        )
+        assert node is not None
+
+        with self.assertRaisesRegex(ValueError, "review_target"):
+            self.registry.update_virtual(
+                self.project.id,
+                node.id,
+                category=Category.REGULAR,
+                review_target={"type": "uncommitted"},
+            )
 
     def test_update_virtual_returns_none_for_executed_node(self) -> None:
         node = Node(

@@ -110,6 +110,29 @@ class PromotionCandidateTests(unittest.TestCase):
         self.assertEqual(candidate.id, early.id)
         self.assertNotEqual(candidate.id, late.id)
 
+    def test_promptless_code_review_is_eligible(self) -> None:
+        review = Node(
+            id="v-review",
+            project_id=self.project.id,
+            kind=NodeKind.AGENT,
+            model_preset_id="gpt-5.5",
+            category=Category.REVIEW,
+            subtype=ReviewSubtype.CODE_REVIEW,
+            state=NodeState.VIRTUAL,
+            planspace_id=self.lane,
+            prompt_draft="",
+            proposed_by="planner",
+            created_at=1.0,
+        )
+        self.store.create_node(review)
+
+        candidate = self.registry._next_promotion_candidate(
+            self.project.id, self.lane
+        )
+
+        assert candidate is not None
+        self.assertEqual(candidate.id, review.id)
+
     def test_skips_obsoleted_virtuals(self) -> None:
         self._virtual(nid="v-obsolete", created_at=1.0, obsolete="not needed")
         candidate = self.registry._next_promotion_candidate(

@@ -11,6 +11,7 @@ from pathlib import Path
 
 MINICLAW_GENERATED_DIR = ".miniclaw2"
 MINICLAW_GENERATED_EXCLUDE = f"{MINICLAW_GENERATED_DIR}/"
+GIT_EMPTY_TREE_SHA = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 
 logger = logging.getLogger(__name__)
 
@@ -156,26 +157,55 @@ def git_status(cwd: str) -> GitStatus:
     return status
 
 
+def is_git_repo(cwd: str) -> bool:
+    """Return whether ``cwd`` belongs to a Git worktree without scanning it."""
+    return _git(cwd, ["rev-parse", "--git-dir"]).returncode == 0
+
+
 def git_review_snapshot(cwd: str) -> GitReviewSnapshot:
     """Capture the uncommitted tree as an auditable patch and fingerprint."""
     status = git_status(cwd)
+    if not status.is_repo:
+        raise RuntimeError("code review requires a Git repository")
     dirty_paths = tuple(sorted(item.path for item in status.files))
-    tracked = _git(cwd, ["diff", "HEAD", "--binary", "--no-ext-diff"])
-    parts = [tracked.stdout] if tracked.returncode == 0 else []
+    base = status.head or GIT_EMPTY_TREE_SHA
+    tracked = _git_bytes(
+        cwd,
+        ["diff", base, "--binary", "--no-ext-diff"],
+        timeout=60,
+    )
+    if tracked.returncode != 0:
+        raise RuntimeError(_git_failure_message("git diff", tracked))
+    tracked_text = tracked.stdout.decode("utf-8", errors="replace")
+    parts = [tracked_text] if tracked_text else []
     untracked = sorted(
         item.path
         for item in status.files
         if item.index_status == "?" and item.worktree_status == "?"
     )
     if untracked:
-        parts.append("\n# Untracked files\n" + "".join(f"# {path}\n" for path in untracked))
-    for path in untracked:
-        result = _git(
-            cwd,
-            ["diff", "--no-index", "--binary", "--no-ext-diff", "--", "/dev/null", path],
+        parts.append(
+            "\n# Untracked files\n" + "".join(f"# {path}\n" for path in untracked)
         )
-        if result.returncode in {0, 1} and result.stdout:
-            parts.append(result.stdout)
+    for path in untracked:
+        result = _git_bytes(
+            cwd,
+            [
+                "diff",
+                "--no-index",
+                "--binary",
+                "--no-ext-diff",
+                "--",
+                "/dev/null",
+                path,
+            ],
+            timeout=60,
+        )
+        if result.returncode not in {0, 1}:
+            raise RuntimeError(_git_failure_message(f"git diff for {path}", result))
+        text = result.stdout.decode("utf-8", errors="replace")
+        if text:
+            parts.append(text)
     patch = "\n".join(part.rstrip("\n") for part in parts if part).rstrip() + "\n"
     return GitReviewSnapshot(
         head_sha=status.head,
@@ -539,6 +569,35 @@ def _git(cwd: str, args: list[str], *, timeout: float = 10) -> subprocess.Comple
             stdout="",
             stderr=str(exc),
         )
+
+
+def _git_bytes(
+    cwd: str, args: list[str], *, timeout: float = 10
+) -> subprocess.CompletedProcess[bytes]:
+    try:
+        return subprocess.run(
+            ["git", *args],
+            cwd=cwd,
+            check=False,
+            capture_output=True,
+            timeout=timeout,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return subprocess.CompletedProcess(
+            args=["git", *args],
+            returncode=1,
+            stdout=b"",
+            stderr=str(exc).encode("utf-8", errors="replace"),
+        )
+
+
+def _git_failure_message(
+    operation: str, result: subprocess.CompletedProcess[bytes]
+) -> str:
+    detail = (result.stderr or result.stdout).decode(
+        "utf-8", errors="replace"
+    ).strip()
+    return f"{operation} failed: {detail or f'exit code {result.returncode}'}"
 
 
 def _unstage_miniclaw_generated(cwd: str) -> str | None:

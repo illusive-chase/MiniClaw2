@@ -649,7 +649,7 @@ def create_app(registry: ProjectRegistry | None = None) -> FastAPI:
         if project is None:
             raise HTTPException(404, "session not found")
         try:
-            node = registry.spawn_code_review(sid)
+            node = await registry.spawn_code_review(sid)
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
         if node is None:

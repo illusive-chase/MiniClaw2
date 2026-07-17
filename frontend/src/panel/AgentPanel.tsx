@@ -708,7 +708,15 @@ function EditableVirtualNodeBody({
                     </button>
                   ))}
                 </div>
-                <FieldLabel label={draft.subtype === "code_review" ? "Focus (optional)" : "Check"}>
+                <FieldLabel
+                  label={
+                    draft.subtype === "code_review"
+                      ? currentPreset?.provider === "codex"
+                        ? "Focus (optional; unsupported by Codex)"
+                        : "Focus (optional)"
+                      : "Check"
+                  }
+                >
                   <textarea
                     value={draft.brief.check_what}
                     onChange={(e) =>
@@ -855,7 +863,7 @@ function EditableVirtualNodeBody({
                 disabled={
                   saving ||
                   !dirty ||
-                  !draft.promptDraft.trim() ||
+                  (draft.subtype !== "code_review" && !draft.promptDraft.trim()) ||
                   (!node.resume_from_node_id && !draft.modelPresetId)
                 }
                 className="rounded-md bg-brand px-3 py-1.5 text-[12px] font-medium text-white shadow-card transition hover:brightness-[0.95] disabled:cursor-not-allowed disabled:opacity-40"

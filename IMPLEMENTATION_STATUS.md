@@ -321,7 +321,28 @@ Trunk: `backend/miniclaw2/runner.py`, `backend/miniclaw2/registry.py`.
   structured findings when available, and synthesizes the executed preview.
   The ghost composer exposes this path through `POST /git/review` and its
   Review button. A changed worktree after launch leaves the node done but
-  prefixes the report and preview with a stale-snapshot warning.
+  prefixes the report and preview with a stale-snapshot warning. Claude Code
+  accepts optional focus text; Codex's `uncommittedChanges` review target has
+  no focus channel, so MiniClaw2 labels that limitation in the editor and
+  records it in the report and executed preview when focus text was supplied.
+- Code-review invariants from the post-landing review pass:
+  `git_review_snapshot` never degrades silently — a failed or timed-out diff
+  raises (→ node error) instead of hashing a partial patch, an unborn HEAD
+  diffs against Git's empty tree, and non-UTF-8 bytes are decoded with
+  replacement so one bad file cannot zero the audit trail. A published report
+  is never clawed back: if the turn ends error/cancelled after publishing,
+  the preview records the failure alongside the kept artifacts.
+  `reviewed-diff.patch` is written before the RUNNING transition (clean trees
+  get a one-line placeholder). `POST /git/review` is idempotent while a
+  review is queued/running and the UI derives the button state from nodes,
+  not the POST lifetime. code_review virtuals are exempt from the non-empty
+  prompt rule everywhere (`_virtual_requires_prompt`: auto-promotion, promote,
+  rerun, `update_virtual`, editor Save), and switching a virtual away from
+  `code_review` auto-discards the server-populated `review_target` default.
+  Provider failures classify precisely: Claude's unknown-command probe only
+  matches short anchored replies (a report quoting the phrase publishes), and
+  Codex JSON-RPC errors keep their code — only `-32601` maps to the
+  upgrade-codex-cli message, everything else surfaces verbatim.
 
 ### Verifier — landed
 

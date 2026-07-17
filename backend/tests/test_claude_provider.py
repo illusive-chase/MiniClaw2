@@ -49,6 +49,11 @@ class ClaudeCodeReviewDetectionTest(unittest.TestCase):
             _unknown_code_review_command("Unknown slash command: /code-review")
         )
         self.assertFalse(_unknown_code_review_command("# Review\n\nNo findings."))
+        self.assertFalse(_unknown_code_review_command(
+            "# Review\n\nThe implementation correctly handles the literal message "
+            "'Unknown slash command: /code-review' without treating this report "
+            "as a command response. Additional analysis confirms no findings."
+        ))
 
 
 class _FakePty:
@@ -291,6 +296,26 @@ class AskPayloadRoundtripTest(unittest.TestCase):
 
 
 class JsonlDrainTest(unittest.TestCase):
+    def test_report_capture_prefers_longest_non_sidechain_assistant_text(self) -> None:
+        from miniclaw2.providers.claude_native.transcript import TranscriptTranslator
+
+        translator = TranscriptTranslator()
+        translator.translate({
+            "type": "assistant",
+            "message": {"content": [{"type": "text", "text": "Detailed review report."}]},
+        })
+        translator.translate({
+            "type": "assistant",
+            "isSidechain": True,
+            "message": {"content": [{"type": "text", "text": "x" * 200}]},
+        })
+        translator.translate({
+            "type": "assistant",
+            "message": {"content": [{"type": "text", "text": "Review complete."}]},
+        })
+
+        self.assertEqual(translator.last_assistant_text, "Detailed review report.")
+
     def test_bash_activity_keeps_full_command(self) -> None:
         from miniclaw2.providers.claude_native.transcript import TranscriptTranslator
 

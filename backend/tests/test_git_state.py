@@ -4,12 +4,14 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from miniclaw2.git_state import (
     commit_all,
     commit_graph,
     ensure_miniclaw_git_excluded,
     git_pull_rebase,
+    git_review_snapshot,
     git_status,
 )
 
@@ -37,6 +39,48 @@ def _head(path: Path) -> str:
 
 
 class GitStateTest(unittest.TestCase):
+    def test_review_snapshot_handles_unborn_head(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            repo = Path(raw)
+            subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+            (repo / "first.txt").write_text("first\n", encoding="utf-8")
+            subprocess.run(["git", "add", "first.txt"], cwd=repo, check=True)
+
+            snapshot = git_review_snapshot(str(repo))
+
+            self.assertIsNone(snapshot.head_sha)
+            self.assertEqual(snapshot.dirty_paths, ("first.txt",))
+            self.assertIn("diff --git a/first.txt b/first.txt", snapshot.patch)
+            self.assertIn("+first", snapshot.patch)
+
+    def test_review_snapshot_replaces_non_utf8_diff_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            repo = Path(raw)
+            _init_repo(repo)
+            (repo / "seed.txt").write_bytes(b"changed\xff\n")
+
+            snapshot = git_review_snapshot(str(repo))
+
+            self.assertEqual(snapshot.dirty_paths, ("seed.txt",))
+            self.assertIn("changed\ufffd", snapshot.patch)
+            self.assertTrue(snapshot.diff_sha256)
+
+    def test_review_snapshot_raises_when_tracked_diff_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            repo = Path(raw)
+            _init_repo(repo)
+            (repo / "seed.txt").write_text("changed\n", encoding="utf-8")
+            failed = subprocess.CompletedProcess(
+                args=["git", "diff"],
+                returncode=128,
+                stdout=b"",
+                stderr=b"fatal: audit diff failed",
+            )
+
+            with patch("miniclaw2.git_state._git_bytes", return_value=failed):
+                with self.assertRaisesRegex(RuntimeError, "audit diff failed"):
+                    git_review_snapshot(str(repo))
+
     def test_status_degrades_outside_repo(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             status = git_status(raw)

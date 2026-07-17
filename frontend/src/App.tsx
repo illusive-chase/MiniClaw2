@@ -1144,12 +1144,35 @@ export function App() {
       return;
     }
     let cancelled = false;
+    let retryTimer: number | null = null;
+    let resolveRetry: (() => void) | null = null;
     setSelectedDiffLoading(true);
     const loadDiff =
       selectedNode?.subtype === "code_review" ? getReviewedDiff : getNodeDiff;
-    loadDiff(session.id, inspectedNodeId)
+    const loadWithRunningRetry = async () => {
+      try {
+        return await loadDiff(session.id, inspectedNodeId);
+      } catch (err) {
+        const shouldRetry =
+          selectedNode?.subtype === "code_review" &&
+          selectedNode.state === "running" &&
+          String(err).includes(": 404");
+        if (!shouldRetry) throw err;
+        await new Promise<void>((resolve) => {
+          resolveRetry = resolve;
+          retryTimer = window.setTimeout(() => {
+            retryTimer = null;
+            resolveRetry = null;
+            resolve();
+          }, 500);
+        });
+        if (cancelled) return null;
+        return loadDiff(session.id, inspectedNodeId);
+      }
+    };
+    loadWithRunningRetry()
       .then((diff) => {
-        if (!cancelled) setSelectedDiff(diff);
+        if (!cancelled && diff) setSelectedDiff(diff);
       })
       .catch((err) => {
         if (!cancelled) {
@@ -1162,6 +1185,8 @@ export function App() {
       });
     return () => {
       cancelled = true;
+      if (retryTimer !== null) window.clearTimeout(retryTimer);
+      resolveRetry?.();
     };
   }, [
     session?.id,
@@ -1695,8 +1720,19 @@ export function App() {
       node.op_kind === "pull" &&
       (node.state === "running" || node.state === "queued"),
   );
+  const reviewInFlight = nodes.some(
+    (node) =>
+      node.subtype === "code_review" &&
+      (node.state === "running" || node.state === "queued"),
+  );
   const runGitAction = async (action: "commit" | "review" | "pull" | "push", message = "") => {
-    if (!session?.id || readOnly || !gitStatus?.is_repo || gitAction) return;
+    if (
+      !session?.id ||
+      readOnly ||
+      !gitStatus?.is_repo ||
+      gitAction ||
+      (action === "review" && reviewInFlight)
+    ) return;
     setGitAction(action);
     setGitError(null);
     try {
@@ -1887,7 +1923,7 @@ export function App() {
                 gitHead={gitStatus?.head ?? null}
                 gitDirtyCount={gitStatus?.dirty_count ?? 0}
                 gitActionPending={gitAction === "commit"}
-                gitReviewPending={gitAction === "review"}
+                gitReviewPending={gitAction === "review" || reviewInFlight}
                 onGitCommit={commitGitMessage}
                 onGitReview={reviewGitChanges}
                 nodes={nodes}

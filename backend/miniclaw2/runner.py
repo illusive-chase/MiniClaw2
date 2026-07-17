@@ -60,7 +60,6 @@ from .git_state import (
     git_head,
     git_pull_rebase,
     git_review_snapshot,
-    git_status,
     local_only_shas,
 )
 from .language import language_launch_instruction, project_preferred_language
@@ -106,6 +105,11 @@ _STALE_REVIEW_WARNING = (
     "⚠️ Review snapshot is stale: the working tree changed while the native "
     "review was running. See reviewed-diff.patch for the audited input."
 )
+_CODEX_FOCUS_WARNING = (
+    "Note: the focus text was not applied because Codex native review does not "
+    "support focus for uncommitted changes."
+)
+_CLEAN_REVIEW_PATCH = "# Working tree clean - nothing to review.\n"
 
 
 class NodeRunner:
@@ -390,22 +394,27 @@ class NodeRunner:
         artifacts: list[str] = []
         snapshot = None
         stale = False
+        focus_warning: str | None = None
+        review_summary: str | None = None
         try:
             self._snapshot_launch_settings()
+            snapshot = await asyncio.to_thread(
+                git_review_snapshot, self.project.root_path
+            )
+            snapshot_path = self.store.node_dir(
+                self.project.id, self.node.id
+            ) / "reviewed-diff.patch"
+            snapshot_path.write_text(
+                snapshot.patch if snapshot.dirty_paths else _CLEAN_REVIEW_PATCH,
+                encoding="utf-8",
+            )
             self._transition(NodeState.RUNNING, started=True)
             await self._emit_node_started()
             await self._emit_node_updated()
 
-            if git_status(self.project.root_path).dirty_count == 0:
+            if not snapshot.dirty_paths:
                 self.node.summary = "working tree clean — nothing to review"
             else:
-                snapshot = await asyncio.to_thread(
-                    git_review_snapshot, self.project.root_path
-                )
-                snapshot_path = self.store.node_dir(
-                    self.project.id, self.node.id
-                ) / "reviewed-diff.patch"
-                snapshot_path.write_text(snapshot.patch, encoding="utf-8")
                 final_state, error_msg, report = await self._run_native_review(
                     system_context=""
                 )
@@ -415,6 +424,12 @@ class NodeRunner:
                         "native code review completed without a recognizable report"
                     )
                 if report is not None:
+                    focus_warning = self._code_review_focus_warning()
+                    review_summary = _review_summary(report)
+                    if focus_warning:
+                        report.raw_markdown = (
+                            focus_warning + "\n\n" + report.raw_markdown.lstrip()
+                        )
                     current = await asyncio.to_thread(
                         git_review_snapshot, self.project.root_path
                     )
@@ -443,24 +458,45 @@ class NodeRunner:
                 motivation = "code review of uncommitted changes"
                 implications = "no uncommitted changes require review"
             else:
-                summary = _review_summary(report)
+                summary = review_summary or _review_summary(report)
                 implications = _review_implications(report)
                 head = (
                     snapshot.head_sha if snapshot is not None else None
                 ) or "unknown"
                 motivation = (
                     self.node.brief.check_what
-                    if self.node.brief is not None
+                    if self.node.brief is not None and not focus_warning
                     else f"code review of uncommitted changes since {head[:7]}"
                 )
                 if stale:
                     summary = _STALE_REVIEW_WARNING + "\n\n" + summary
+                if focus_warning:
+                    summary = focus_warning + "\n\n" + summary
             self.node.summary = summary
             self._persist_executed_preview(
                 final_state,
                 motivation=motivation,
                 summary=summary,
                 next_implications=implications,
+                artifacts=artifacts,
+            )
+        elif artifacts:
+            reason = error_msg or f"code review turn ended {final_state.value}"
+            summary = (
+                f"review completed but the turn ended {final_state.value}: {reason}"
+            )
+            if focus_warning:
+                summary = focus_warning + "\n\n" + summary
+            self.node.summary = summary
+            self._persist_executed_preview(
+                final_state,
+                motivation="code review of uncommitted changes",
+                summary=summary,
+                next_implications=(
+                    _review_implications(report)
+                    if report is not None
+                    else "review report is available in the published artifacts"
+                ),
                 artifacts=artifacts,
             )
         else:
@@ -557,6 +593,19 @@ class NodeRunner:
             for ref in self.node.artifacts
             if ref.status == "published"
         ]
+
+    def _code_review_focus_warning(self) -> str | None:
+        focus = (
+            self.node.brief.check_what.strip()
+            if self.node.brief is not None
+            else self.node.prompt.strip()
+        )
+        if not focus:
+            return None
+        preset = get_model_preset(
+            self.node.model_preset_id, store_root=self.store.root
+        )
+        return _CODEX_FOCUS_WARNING if preset.provider == "codex" else None
 
     async def _run_verifier(self) -> None:
         """Run a deterministic verifier script and write an executed preview."""

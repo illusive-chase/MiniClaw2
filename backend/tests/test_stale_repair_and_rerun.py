@@ -12,6 +12,7 @@ from miniclaw2.domain import (
     NodeKind,
     NodeState,
     Project,
+    ReviewSubtype,
 )
 from miniclaw2.registry import ProjectRegistry
 from miniclaw2.store import Store
@@ -169,6 +170,31 @@ class RerunNodeTests(unittest.TestCase):
         result = self.registry.rerun_node(self.project.id, failed.id)
         assert result is not None
         self.assertEqual(result.state, NodeState.VIRTUAL)
+
+    def test_rerun_promptless_code_review_preserves_target(self) -> None:
+        failed = Node(
+            id="review-failed",
+            project_id=self.project.id,
+            kind=NodeKind.AGENT,
+            model_preset_id="gpt-5.5",
+            category=Category.REVIEW,
+            subtype=ReviewSubtype.CODE_REVIEW,
+            state=NodeState.ERROR,
+            planspace_id=self.lane,
+            prompt="",
+            started_at=1.0,
+            finished_at=2.0,
+            error="review failed",
+        )
+        self.store.create_node(failed)
+
+        result = self.registry.rerun_node(self.project.id, failed.id)
+
+        assert result is not None
+        self.assertEqual(result.state, NodeState.VIRTUAL)
+        self.assertEqual(result.prompt_draft, "")
+        self.assertEqual(result.subtype, ReviewSubtype.CODE_REVIEW)
+        self.assertEqual(result.review_target, failed.review_target)
 
     def test_rerun_rejects_terminal_done_nodes(self) -> None:
         done = self._failed("done-1", NodeState.DONE)
