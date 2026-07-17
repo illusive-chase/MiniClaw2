@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -203,6 +204,21 @@ class LibraryEditRunnerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("broken", node.error or "")
         self.assertIn("frontmatter", node.error or "")
         self.assertEqual(node.settings_snapshot["library_audit"][0]["verdict"], "error")
+        preview = self.store.read_node_preview(self.project.id, node.id)
+        self.assertIsNotNone(preview)
+        assert preview is not None
+        self.assertIn("frontmatter", preview)
+
+    async def test_deleting_an_entry_errors(self) -> None:
+        _write_skill(self.context_root, "release")
+
+        def delete(_context: AgentProviderContext) -> None:
+            shutil.rmtree(self.context_root / "skills" / "release")
+
+        node = await self._run(delete)
+        self.assertEqual(node.state, NodeState.ERROR)
+        self.assertIn("release", node.error or "")
+        self.assertIn("was removed", node.error or "")
 
     async def test_nested_symlink_errors(self) -> None:
         def write_symlink(_context: AgentProviderContext) -> None:

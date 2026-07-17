@@ -324,20 +324,21 @@ class NodeRunner:
                             reason="preview repair cancelled",
                         )
                 else:
-                    final_state = await self._reap_and_finalize(final_state)
-                if library_authoring_validated:
+                    final_state = await self._reap_and_finalize(
+                        final_state, reason=error_msg or ""
+                    )
+                if library_authoring_validated and final_state is NodeState.DONE:
                     try:
                         self._validate_library_authoring(library_snapshot)
                     except Exception as exc:  # noqa: BLE001
-                        if final_state is NodeState.DONE:
-                            error_msg = str(exc)
-                            self.node.error = error_msg
-                            final_state = NodeState.ERROR
-                            self._write_stub_preview(
-                                NodeState.ERROR,
-                                reason=error_msg,
-                            )
-                            await self._emit(ErrorEvent(message=error_msg))
+                        error_msg = str(exc)
+                        self.node.error = error_msg
+                        final_state = NodeState.ERROR
+                        self._write_stub_preview(
+                            NodeState.ERROR,
+                            reason=error_msg,
+                        )
+                        await self._emit(ErrorEvent(message=error_msg))
                 self._transition(final_state, finished=True)
                 await self._emit_node_updated()
                 await self._emit(TurnDone())
@@ -1048,7 +1049,7 @@ class NodeRunner:
         return True, ""
 
     async def _reap_and_finalize(
-        self, provider_final_state: NodeState
+        self, provider_final_state: NodeState, *, reason: str = ""
     ) -> NodeState:
         """Run reap (when applicable) and persist the node's own preview.
 
@@ -1057,7 +1058,7 @@ class NodeRunner:
         discarded.
         """
         if provider_final_state is not NodeState.DONE:
-            self._write_stub_preview(provider_final_state)
+            self._write_stub_preview(provider_final_state, reason=reason)
             return provider_final_state
         if self._lane_root is None:
             ok, _reason = self._try_persist_unlaned_preview()
@@ -1323,9 +1324,18 @@ class NodeRunner:
                     f"invalid {kind} slug `{slug}`: expected kebab-case"
                 )
             target = libraries[kind] / slug
-            if target.is_symlink() or not target.is_dir():
+            if target.is_symlink():
                 raise LibraryAuthoringError(
-                    f"invalid {kind} `{slug}`: entry must be a directory, not a symlink"
+                    f"invalid {kind} `{slug}`: entry must not be a symlink"
+                )
+            if not target.exists():
+                raise LibraryAuthoringError(
+                    f"invalid {kind} `{slug}`: entry was removed; librarian "
+                    "runs may not delete library entries"
+                )
+            if not target.is_dir():
+                raise LibraryAuthoringError(
+                    f"invalid {kind} `{slug}`: entry must be a directory"
                 )
             if kind == "skill":
                 _validate_tree(target)
@@ -1638,11 +1648,6 @@ def _authoring_init_block(node: Node, store_root: Path) -> str:
             str(root / "skills"),
         )
     return ""
-
-
-def _principle_init_block(node: Node, store_root: Path) -> str:
-    """Backward-compatible wrapper for the former single-kind dispatcher."""
-    return _authoring_init_block(node, store_root)
 
 
 def _library_tree_snapshot(library: Path) -> dict[str, str]:
