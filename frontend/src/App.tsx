@@ -470,7 +470,7 @@ export function App() {
     sessionSettingsSaving ||
     !!sessionContextSpace?.context_refresh?.running;
 
-  const handleNewPrinciple = useCallback(
+  const handleNewLibraryEntry = useCallback(
     async (userSeed: string) => {
       if (!session?.id || virtualCreateDisabled) return;
       const active = sessionContextSpace?.active_planspace_id ?? null;
@@ -480,7 +480,7 @@ export function App() {
         const result = await createVirtual(session.id, {
           prompt_draft: userSeed,
           category: "regular",
-          agent_op_kind: "principle_edit",
+          agent_op_kind: "library_edit",
           model_preset_id: defaultModelPresetId(modelPresets, session.model_preset_id),
           planspace_id: active,
         });
@@ -666,8 +666,8 @@ export function App() {
     return () => window.clearInterval(timer);
   }, [sessionContextSpace?.context_refresh?.running, refreshContextSpace]);
 
-  /* Refresh the principle shelf whenever a principle-edit node reaches a terminal
-   * state — creation and refinement both land through this path. */
+  /* Historical principle-edit nodes refresh only principles. Librarian nodes may
+   * write either entry type, so their terminal transition refreshes both shelves. */
   const terminalPrincipleEditCount = useMemo(() => {
     let count = 0;
     for (const n of nodes) {
@@ -684,6 +684,24 @@ export function App() {
     }
     prevTerminalPrincipleEditCountRef.current = terminalPrincipleEditCount;
   }, [terminalPrincipleEditCount, refreshPrinciples]);
+
+  const terminalLibraryEditCount = useMemo(() => {
+    let count = 0;
+    for (const n of nodes) {
+      if (n.agent_op_kind === "library_edit" && TERMINAL_STATES.has(n.state)) {
+        count += 1;
+      }
+    }
+    return count;
+  }, [nodes]);
+  const prevTerminalLibraryEditCountRef = useRef(0);
+  useEffect(() => {
+    if (terminalLibraryEditCount > prevTerminalLibraryEditCountRef.current) {
+      refreshPrinciples();
+      refreshSkills();
+    }
+    prevTerminalLibraryEditCountRef.current = terminalLibraryEditCount;
+  }, [terminalLibraryEditCount, refreshPrinciples, refreshSkills]);
 
   /* Bump the reload version each time the context task finishes, so the
      CONTEXT.md viewer re-reads from disk. */
@@ -2017,7 +2035,7 @@ export function App() {
                 onSelectContextBinding={selectContextBinding}
                 onNewDirection={startNewDirection}
                 onStartBlankDirection={startBlankDirection}
-                onNewPrinciple={handleNewPrinciple}
+                onNewLibraryEntry={handleNewLibraryEntry}
                 onImportSkill={handleImportSkill}
                 onCreateContinuationVirtual={createContinuationVirtual}
                 onPromoteVirtual={promoteVirtualNode}

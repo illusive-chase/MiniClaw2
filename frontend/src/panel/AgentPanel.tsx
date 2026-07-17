@@ -154,6 +154,11 @@ export function AgentPanel({
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-1.5">
               <StatePill state={node.state} />
+              {node.agent_op_kind === "library_edit" && (
+                <span className="rounded border border-line bg-surface px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-[0.12em] text-ink-muted">
+                  librarian
+                </span>
+              )}
             </div>
             <h2 className="mt-1.5 line-clamp-2 font-display text-[15px] font-semibold leading-snug text-ink-strong">
               {headline}
@@ -1107,7 +1112,7 @@ function PrinciplesAttachSection({
           )}
           {available.length === 0 && (
             <div className="rounded-md border border-dashed border-line bg-surface px-3 py-2 text-[11px] text-ink-muted">
-              No principles yet. Author one with the "New principle" button on the
+              No principles yet. Author one with the "New principle / skill" button on the
               project panel.
             </div>
           )}

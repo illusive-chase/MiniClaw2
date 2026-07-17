@@ -593,7 +593,9 @@ function StateChip({ state }: { state: NodeState }) {
 
 function CategoryChip({ node }: { node: NodeInfo }) {
   const label =
-    node.kind === "verifier"
+    node.agent_op_kind === "library_edit"
+      ? "librarian"
+      : node.kind === "verifier"
       ? "verify"
       : node.category === "planning"
       ? "plan"
@@ -613,7 +615,7 @@ function CategoryChip({ node }: { node: NodeInfo }) {
   return (
     <span
       className={"inline-flex items-center rounded border px-1 py-0.5 text-[9px] font-medium uppercase tracking-[0.12em] " + tone}
-      title={node.subtype ?? node.category ?? "regular"}
+      title={node.agent_op_kind === "library_edit" ? "librarian" : node.subtype ?? node.category ?? "regular"}
     >
       {label}
     </span>

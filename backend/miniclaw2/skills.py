@@ -220,6 +220,24 @@ def import_agent_skill(
     return imported
 
 
+def record_authored_agent_skill(
+    slug: str,
+    *,
+    node_id: str,
+    store_root: Path | None = None,
+) -> None:
+    """Record provenance for a newly librarian-authored skill."""
+    normalized = _selection_slug(slug)
+    root = contextspace_root(store_root)
+    metadata = _read_import_metadata(root)
+    metadata[normalized] = {
+        "import_source": f"node:{node_id}",
+        "import_kind": "authored",
+        "imported_at": time.time(),
+    }
+    _write_import_metadata(root, metadata)
+
+
 def delete_agent_skill(slug: str, *, store_root: Path | None = None) -> bool:
     normalized = _selection_slug(slug)
     root = contextspace_root(store_root)

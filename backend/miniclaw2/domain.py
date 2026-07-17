@@ -91,7 +91,10 @@ TERMINAL_NODE_STATES: frozenset[NodeState] = frozenset({
 
 # Whitelist of ``agent_op_kind`` values. Kept here as a plain set rather
 # than a StrEnum so a new variant can be added without a schema migration.
-KNOWN_AGENT_OP_KINDS: frozenset[str] = frozenset({"principle_edit"})
+KNOWN_AGENT_OP_KINDS: frozenset[str] = frozenset({
+    "principle_edit",
+    "library_edit",
+})
 
 
 def normalize_planspace_mode(value: str | None) -> PlanspaceMode:

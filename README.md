@@ -53,11 +53,14 @@ WebSocket, paired with a React + Vite + React Flow frontend.
   their materialized graph lane instead. The node records
   `context_bundle_id`, `context_bundle_path`, and launch settings for audit.
 - **Principles and Agent Skills** - principles are user-wide behavior guidance
-  injected eagerly through context bundles. Native Agent Skills live under
-  `contextspace/skills`, are imported without format conversion, and are made
-  available per node through Claude's plugin directory or Codex app-server's
-  per-process extra skill roots. Launch settings record content hashes, paths,
-  materialization outcomes, and conservative used/not-used observations.
+  injected eagerly through context bundles. The librarian authors or refines
+  principles and native Agent Skills from a user seed, validating exactly one
+  changed entry and recording its content hash. Native Agent Skills live under
+  `contextspace/skills`, can also be imported without format conversion, and
+  are made available per node through Claude's plugin directory or Codex
+  app-server's per-process extra skill roots. Launch settings record content
+  hashes, paths, materialization outcomes, and conservative used/not-used
+  observations.
 
 ## Scope
 

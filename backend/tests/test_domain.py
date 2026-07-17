@@ -113,6 +113,33 @@ class NodeInvariantTests(unittest.TestCase):
                 subtype=ReviewSubtype.AGENTIC_REVIEW,
             )
 
+    def test_library_edit_is_a_known_agent_operation(self) -> None:
+        node = Node(
+            project_id="p1",
+            kind=NodeKind.AGENT,
+            model_preset_id="gpt-5.5",
+            agent_op_kind="library_edit",
+        )
+        self.assertEqual(node.agent_op_kind, "library_edit")
+
+    def test_unknown_agent_operation_is_rejected(self) -> None:
+        with self.assertRaises(ValidationError):
+            Node(
+                project_id="p1",
+                kind=NodeKind.AGENT,
+                model_preset_id="gpt-5.5",
+                agent_op_kind="not-real",
+            )
+
+    def test_library_edit_is_agent_only(self) -> None:
+        with self.assertRaises(ValidationError):
+            Node(
+                project_id="p1",
+                kind=NodeKind.OP,
+                op_kind="commit",
+                agent_op_kind="library_edit",
+            )
+
     def test_virtual_state_rejects_timestamps(self) -> None:
         with self.assertRaises(ValidationError):
             Node(

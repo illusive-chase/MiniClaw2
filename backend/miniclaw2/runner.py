@@ -10,9 +10,11 @@ and write their own ``preview.json`` directly.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
+import re
 import shutil
 import time
 from collections.abc import Awaitable, Callable
@@ -21,6 +23,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+import yaml
 from pydantic import BaseModel
 
 from .artifacts import (
@@ -67,6 +70,7 @@ from .launch_prompt import (
     anti_self_poisoning_block,
     build_category_launch_block,
     build_dependency_launch_block,
+    build_library_init_block,
     build_principle_init_block,
 )
 from .materialize import (
@@ -97,7 +101,14 @@ from .providers.claude import ClaudeProvider
 from .providers.codex import CodexProvider
 from .reap import reap_lane
 from .store import Store
-from .skills import SkillMaterialization, materialize_agent_skills
+from .skills import (
+    SkillMaterialization,
+    _validate_tree,
+    inspect_agent_skill,
+    materialize_agent_skills,
+    record_authored_agent_skill,
+    skill_content_hash,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -111,6 +122,11 @@ _CODEX_FOCUS_WARNING = (
     "support focus for uncommitted changes."
 )
 _CLEAN_REVIEW_PATCH = "# Working tree clean - nothing to review.\n"
+_LIBRARY_SLUG_RE = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
+
+
+class LibraryAuthoringError(ValueError):
+    """A librarian turn produced no single valid library entry."""
 
 
 class NodeRunner:
@@ -236,8 +252,9 @@ class NodeRunner:
                         if is_human_review:
                             self._transition(NodeState.RUNNING)
                             await self._emit_node_updated()
+                        library_snapshot = self._snapshot_library_entries()
                         launch_instructions = _compose_launch_instructions(
-                            _principle_init_block(self.node, self.store.root),
+                            _authoring_init_block(self.node, self.store.root),
                             build_category_launch_block(
                                 self.node,
                                 lane_path=self._lane_prompt_path(),
@@ -263,6 +280,16 @@ class NodeRunner:
                             launch_instructions=launch_instructions,
                             system_context=context_bundle.system_text,
                         )
+                        if (
+                            final_state is NodeState.DONE
+                            and self.node.agent_op_kind == "library_edit"
+                        ):
+                            try:
+                                self._validate_library_authoring(library_snapshot)
+                            except Exception as exc:  # noqa: BLE001
+                                error_msg = str(exc)
+                                final_state = NodeState.ERROR
+                                await self._emit(ErrorEvent(message=error_msg))
                 except asyncio.CancelledError:
                     final_state = NodeState.CANCELLED
                     await self.interrupt()
@@ -1204,6 +1231,106 @@ class NodeRunner:
         )
         self.store.update_node(self.node)
 
+    def _snapshot_library_entries(self) -> dict[str, dict[str, str]]:
+        """Capture per-entry hashes immediately before a librarian provider turn."""
+        if self.node.agent_op_kind != "library_edit":
+            return {}
+        root = contextspace_root(self.store.root)
+        return {
+            "principle": _library_tree_snapshot(root / "plugs" / "principles"),
+            "skill": _library_tree_snapshot(root / "skills"),
+        }
+
+    def _validate_library_authoring(
+        self,
+        before: dict[str, dict[str, str]],
+    ) -> None:
+        """Validate and audit the single entry changed by a librarian turn."""
+        root = contextspace_root(self.store.root)
+        libraries = {
+            "principle": root / "plugs" / "principles",
+            "skill": root / "skills",
+        }
+        after = {
+            kind: _library_tree_snapshot(path)
+            for kind, path in libraries.items()
+        }
+        touched = [
+            (kind, slug)
+            for kind in ("principle", "skill")
+            for slug in sorted(set(before.get(kind, {})) | set(after[kind]))
+            if before.get(kind, {}).get(slug) != after[kind].get(slug)
+        ]
+        audit: list[dict[str, Any]] = [
+            {
+                "kind": kind,
+                "slug": slug,
+                "action": (
+                    "created" if slug not in before.get(kind, {}) else "refined"
+                ),
+                "content_hash": after[kind].get(slug),
+                "verdict": "pending",
+            }
+            for kind, slug in touched
+        ]
+
+        if not touched:
+            reason = "librarian node finished without authoring anything"
+            self.node.settings_snapshot["library_audit"] = [
+                {"verdict": "error", "error": reason}
+            ]
+            self.store.update_node(self.node)
+            raise LibraryAuthoringError(reason)
+        if len(touched) != 1:
+            entries = ", ".join(f"{kind} `{slug}`" for kind, slug in touched)
+            reason = f"librarian node touched multiple library entries: {entries}"
+            for item in audit:
+                item["verdict"] = "error"
+                item["error"] = reason
+            self.node.settings_snapshot["library_audit"] = audit
+            self.store.update_node(self.node)
+            raise LibraryAuthoringError(reason)
+
+        kind, slug = touched[0]
+        item = audit[0]
+        try:
+            if not _LIBRARY_SLUG_RE.fullmatch(slug):
+                raise LibraryAuthoringError(
+                    f"invalid {kind} slug `{slug}`: expected kebab-case"
+                )
+            target = libraries[kind] / slug
+            if target.is_symlink() or not target.is_dir():
+                raise LibraryAuthoringError(
+                    f"invalid {kind} `{slug}`: entry must be a directory, not a symlink"
+                )
+            if kind == "skill":
+                _validate_tree(target)
+                inspected = inspect_agent_skill(target, context_root=root)
+                item["content_hash"] = inspected["content_hash"]
+            else:
+                item["content_hash"] = _validate_authored_principle(target, slug)
+            if kind == "skill" and item["action"] == "created":
+                record_authored_agent_skill(
+                    slug,
+                    node_id=self.node.id,
+                    store_root=self.store.root,
+                )
+        except Exception as exc:  # noqa: BLE001
+            reason = str(exc)
+            item["verdict"] = "error"
+            item["error"] = reason
+            self.node.settings_snapshot["library_audit"] = audit
+            self.store.update_node(self.node)
+            if isinstance(exc, LibraryAuthoringError):
+                raise
+            raise LibraryAuthoringError(
+                f"invalid {kind} `{slug}`: {reason}"
+            ) from exc
+
+        item["verdict"] = "valid"
+        self.node.settings_snapshot["library_audit"] = audit
+        self.store.update_node(self.node)
+
     def _validate_launch_settings(self) -> None:
         launch_project = self.project.model_copy(
             update={"active_planspace_id": self.node.planspace_id}
@@ -1471,12 +1598,98 @@ def _skill_suggestion_block(
     return "\n".join(materialization.suggestions)
 
 
+def _authoring_init_block(node: Node, store_root: Path) -> str:
+    """Return the authoring preset selected by an agent operation kind."""
+    root = contextspace_root(store_root)
+    principles_dir = root / "plugs" / "principles"
+    if node.agent_op_kind == "principle_edit":
+        return build_principle_init_block(str(principles_dir))
+    if node.agent_op_kind == "library_edit":
+        return build_library_init_block(
+            str(principles_dir),
+            str(root / "skills"),
+        )
+    return ""
+
+
 def _principle_init_block(node: Node, store_root: Path) -> str:
-    """Return the principle-author preset for principle-edit agents."""
-    if node.agent_op_kind != "principle_edit":
-        return ""
-    principles_dir = contextspace_root(store_root) / "plugs" / "principles"
-    return build_principle_init_block(str(principles_dir))
+    """Backward-compatible wrapper for the former single-kind dispatcher."""
+    return _authoring_init_block(node, store_root)
+
+
+def _library_tree_snapshot(library: Path) -> dict[str, str]:
+    if not library.exists():
+        return {}
+    try:
+        entries = sorted(library.iterdir(), key=lambda path: path.name)
+    except OSError as exc:
+        raise LibraryAuthoringError(f"cannot inspect library {library}: {exc}") from exc
+    return {entry.name: _library_entry_hash(entry) for entry in entries}
+
+
+def _library_entry_hash(entry: Path) -> str:
+    if entry.is_symlink():
+        try:
+            target = os.readlink(entry)
+        except OSError as exc:
+            target = f"unreadable:{exc}"
+        return hashlib.sha256(f"symlink:{target}".encode("utf-8")).hexdigest()
+    if entry.is_dir():
+        try:
+            return skill_content_hash(entry)
+        except Exception as exc:  # noqa: BLE001
+            return hashlib.sha256(f"invalid:{exc}".encode("utf-8")).hexdigest()
+    digest = hashlib.sha256()
+    digest.update(b"file\0")
+    try:
+        digest.update(entry.read_bytes())
+    except OSError as exc:
+        digest.update(f"unreadable:{exc}".encode("utf-8"))
+    return digest.hexdigest()
+
+
+def _validate_authored_principle(principle_dir: Path, slug: str) -> str:
+    manifest_path = principle_dir / "manifest.yaml"
+    try:
+        manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise LibraryAuthoringError(
+            f"invalid principle `{slug}`: cannot read manifest.yaml: {exc}"
+        ) from exc
+    except yaml.YAMLError as exc:
+        raise LibraryAuthoringError(
+            f"invalid principle `{slug}`: malformed manifest.yaml: {exc}"
+        ) from exc
+    if not isinstance(manifest, dict):
+        raise LibraryAuthoringError(
+            f"invalid principle `{slug}`: manifest.yaml must be a mapping"
+        )
+    if manifest.get("kind") != "principle":
+        raise LibraryAuthoringError(
+            f"invalid principle `{slug}`: manifest kind must be `principle`"
+        )
+    expected_id = f"principles.{slug}"
+    if manifest.get("id") != expected_id:
+        raise LibraryAuthoringError(
+            f"invalid principle `{slug}`: manifest id must be `{expected_id}`"
+        )
+    context_path = principle_dir / "CONTEXT.md"
+    try:
+        context = context_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise LibraryAuthoringError(
+            f"invalid principle `{slug}`: cannot read CONTEXT.md: {exc}"
+        ) from exc
+    if not context.strip():
+        raise LibraryAuthoringError(
+            f"invalid principle `{slug}`: CONTEXT.md must be non-empty"
+        )
+    try:
+        return skill_content_hash(principle_dir)
+    except Exception as exc:  # noqa: BLE001
+        raise LibraryAuthoringError(
+            f"invalid principle `{slug}`: {exc}"
+        ) from exc
 
 
 def _preview_repair_prompt(node: Node, reason: str, attempt: int) -> str:

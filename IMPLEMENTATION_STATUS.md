@@ -143,9 +143,10 @@ Trunk: `backend/miniclaw2/domain.py`.
 - `Project.provider` and `Node.provider` are computed from
   `model_preset_id` for wire/display use and are excluded from persisted JSON.
 - `PlanspaceMode ∈ {auto, manual}`. `agent_op_kind` is an extensible
-  string discriminator with a current whitelist of `principle_edit`; it is valid
-  only on agent nodes. Pending principle and skill selections are virtual-agent
-  intent and are promoted into their corresponding launch settings.
+  string discriminator with a current whitelist of `principle_edit` and
+  `library_edit`; it is valid only on agent nodes. Pending principle and skill
+  selections are virtual-agent intent and are promoted into their corresponding
+  launch settings.
 - `HumanGate` model is inline-only:
   `GateSubtype ∈ {permission, ask_user}`. `permission` is emitted by
   the Codex adapter only; the native-CLI Claude provider runs with
@@ -295,10 +296,28 @@ Trunk: `backend/miniclaw2/runner.py`, `backend/miniclaw2/registry.py`.
 - `agent_op_kind="principle_edit"` marks an ordinary agent node that receives
   `prompts/principle_init.md`. The prompt resolves the ContextSpace principle
   directory and permits only `manifest.yaml` plus `CONTEXT.md`.
-- Project → `+ New principle` creates a regular virtual principle-edit node in the
-  active direction. Promotion uses the normal runner, preview contract,
-  provider events, cancellation, and terminal states; the principle shelf is
-  refreshed after the node finishes.
+- Existing principle-edit nodes retain the normal runner, preview contract,
+  provider events, cancellation, replay, and terminal behavior. They remain in
+  the whitelist for historical reruns; new authoring starts through the
+  librarian below.
+
+### Librarian agents (`library_edit`) - landed
+
+- The librarian is the unified creation entry point for user-wide principles
+  and native Agent Skills. It receives `prompts/library_init.md`, classifies the
+  user's seed using the eager behavior-guidance versus lazy tool/workflow
+  boundary, and authors or refines exactly one entry. Historical
+  `principle_edit` nodes remain valid and replay unchanged.
+- The runner hashes both libraries before the provider turn and validates the
+  single changed entry immediately after DONE, before preview repair. Skills
+  must have readable `SKILL.md` frontmatter and a symlink-free tree;
+  principles must have a matching manifest and non-empty `CONTEXT.md`. Zero,
+  multiple, cross-library, or malformed changes error the node and record the
+  result in `settings_snapshot.library_audit`.
+- Newly authored skills receive `authored` provenance with the creating node
+  id; refinement preserves existing provenance. Project → `+ New principle /
+  skill` creates a regular librarian virtual in the active direction, and a
+  terminal librarian refreshes both library shelves.
 
 ### Review agents — landed
 
@@ -544,9 +563,8 @@ Trunk: `backend/miniclaw2/contextspace.py`.
   creation is currently agent-assisted rather than a structured form.
 - Deliberate v1 skill deferrals: import-time safety scanning (the library
   only holds what the user explicitly imported; panel inspectability before
-  first attach is the interim control), a skill-authoring concierge
-  (import-first — revisit if hand-rolled skills become common),
-  binding-level "always available in this project" skills (v1 is per-node
+  first attach is the interim control), binding-level "always available in
+  this project" skills (v1 is per-node
   opt-in only), marketplace/registry browsing (import takes a path/URL), and
   skill versioning/update tracking (re-import overwrites; the per-launch
   content hash is the audit trail). Skills the native binaries already load
