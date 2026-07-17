@@ -161,7 +161,7 @@ function ResumeEdgeImpl(props: EdgeProps<EdgeData>) {
 
 export const ResumeEdge = memo(ResumeEdgeImpl);
 
-/** Dashed — acausal carryover; auto-hidden unless endpoint hovered/selected. */
+/** Principle loads are solid; available-but-unused skill loads are dashed. */
 function LoadsEdgeImpl(props: EdgeProps<EdgeData>) {
   const { sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, selected, style, data } =
     props;

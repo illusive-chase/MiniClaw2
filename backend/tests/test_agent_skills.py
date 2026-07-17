@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import tempfile
 import unittest
 import zipfile
 from pathlib import Path
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
@@ -94,6 +96,55 @@ class AgentSkillLibraryTests(unittest.TestCase):
         with self.assertRaises(SkillError):
             import_agent_skill(str(malicious), store_root=self.store_root)
 
+    def test_root_level_zip_uses_frontmatter_slug(self) -> None:
+        archive = self.root / "root-skill.zip"
+        with zipfile.ZipFile(archive, "w") as zipped:
+            zipped.writestr(
+                "SKILL.md",
+                "---\nname: Root Archive Skill\ndescription: From zip root\n---\n\nBody\n",
+            )
+
+        imported = import_agent_skill(str(archive), store_root=self.store_root)
+
+        self.assertEqual(imported["slug"], "root-archive-skill")
+        self.assertFalse(
+            (contextspace_root(self.store_root) / "skills" / "archive").exists()
+        )
+
+    def test_root_level_git_uses_frontmatter_slug_without_git_metadata(self) -> None:
+        repository = self.root / "source-repository"
+        repository.mkdir()
+        subprocess.run(["git", "init"], cwd=repository, check=True, capture_output=True)
+        (repository / "SKILL.md").write_text(
+            "---\nname: Root Git Skill\ndescription: From git root\n---\n\nBody\n",
+            encoding="utf-8",
+        )
+        subprocess.run(["git", "add", "SKILL.md"], cwd=repository, check=True)
+        subprocess.run(
+            [
+                "git",
+                "-c",
+                "user.name=MiniClaw Test",
+                "-c",
+                "user.email=test@miniclaw.invalid",
+                "commit",
+                "-m",
+                "add skill",
+            ],
+            cwd=repository,
+            check=True,
+            capture_output=True,
+        )
+
+        imported = import_agent_skill(
+            repository.as_uri(), store_root=self.store_root
+        )
+        imported_root = contextspace_root(self.store_root) / "skills" / "root-git-skill"
+
+        self.assertEqual(imported["slug"], "root-git-skill")
+        self.assertTrue((imported_root / "SKILL.md").is_file())
+        self.assertEqual(list(imported_root.rglob(".git")), [])
+
     def test_materializes_claude_plugin_and_codex_extra_roots(self) -> None:
         source = _write_skill(self.root / "source", "alpha", name="Alpha")
         import_agent_skill(str(source), store_root=self.store_root)
@@ -178,6 +229,36 @@ class SkillAuditTests(unittest.TestCase):
             )))
             self.assertTrue(node.settings_snapshot["skill_audit"][0]["used"])
 
+    def test_claude_namespaced_skill_command_marks_skill_used(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = Store(root=root / "home")
+            project = store.create_project(Project(root_path=str(root / "repo")))
+            node = store.create_node(Node(
+                project_id=project.id,
+                model_preset_id="gpt-5.5",
+                settings_snapshot={
+                    "skill_audit": [{
+                        "id": "skills.alpha",
+                        "slug": "alpha",
+                        "name": "Alpha",
+                        "used": False,
+                    }],
+                },
+            ))
+
+            async def _ignore(_event: dict[str, object]) -> None:
+                return None
+
+            runner = NodeRunner(node, project, store, _ignore)
+            self.assertTrue(runner._record_skill_use(Activity(
+                kind="tool",
+                status="start",
+                id="skill-1",
+                name="Skill",
+                summary=json.dumps({"command": "skill-plugin:alpha"}),
+            )))
+
 
 class PrinciplesSkillsMigrationTests(unittest.TestCase):
     def test_schema_v5_migrates_old_skill_records_without_touching_snapshots(self) -> None:
@@ -235,6 +316,67 @@ class PrinciplesSkillsMigrationTests(unittest.TestCase):
                 json.loads(snapshot.read_text(encoding="utf-8"))["kind"],
                 "skill",
             )
+
+    def test_schema_v5_migrates_configured_external_contextspace(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "home"
+            context_root = Path(temp) / "external-context"
+            root.mkdir()
+            (root / "schema.json").write_text(
+                json.dumps({"schema": "canonical-schema-v5", "schema_version": 5}),
+                encoding="utf-8",
+            )
+            old = context_root / "plugs" / "skills" / "review"
+            old.mkdir(parents=True)
+            (old / "manifest.yaml").write_text(
+                "kind: skill\nid: skills.review\ntitle: Review\n",
+                encoding="utf-8",
+            )
+            (old / "CONTEXT.md").write_text("review\n", encoding="utf-8")
+
+            with patch.dict(
+                os.environ,
+                {"MINICLAW_CONTEXT_HOME": str(context_root)},
+            ):
+                Store(root=root)
+
+            self.assertFalse(old.exists())
+            migrated = context_root / "plugs" / "principles" / "review"
+            self.assertTrue(migrated.is_dir())
+            self.assertIn("kind: principle", (migrated / "manifest.yaml").read_text())
+            backups = list(
+                (root / "migration-backups").glob(
+                    "*/contextspace/plugs/skills/review/CONTEXT.md"
+                )
+            )
+            self.assertEqual(len(backups), 1)
+            schema = json.loads((root / "schema.json").read_text(encoding="utf-8"))
+            self.assertEqual(schema["schema_version"], SCHEMA_VERSION)
+
+    def test_migration_preserves_unrelated_yaml_text_and_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "schema.json").write_text(
+                json.dumps({"schema": "canonical-schema-v5", "schema_version": 5}),
+                encoding="utf-8",
+            )
+            unchanged = root / "templates" / "unchanged.yaml"
+            unchanged.parent.mkdir(parents=True)
+            original = "# keep this comment\nid: ordinary\ndescription: skills.write prose\n"
+            unchanged.write_text(original, encoding="utf-8")
+            changed = root / "templates" / "changed.yaml"
+            changed.write_text(
+                "id: review\ndescription: skills.keep this prose\nsettings:\n  extra_skills:\n    - skills.review\n",
+                encoding="utf-8",
+            )
+
+            Store(root=root)
+
+            self.assertEqual(unchanged.read_text(encoding="utf-8"), original)
+            migrated = changed.read_text(encoding="utf-8")
+            self.assertIn("description: skills.keep this prose", migrated)
+            self.assertIn("extra_principles:", migrated)
+            self.assertIn("principles.review", migrated)
 
 
 if __name__ == "__main__":

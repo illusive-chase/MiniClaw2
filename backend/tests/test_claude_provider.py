@@ -9,11 +9,12 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
-from miniclaw2.domain import Node, Project
+from miniclaw2.domain import Node, Project, ReviewTarget
 from miniclaw2.providers.base import (
     AgentProviderContext,
     AgentProviderEvent,
     GateRequest,
+    ReviewSpec,
 )
 from miniclaw2.providers.claude import ClaudeProvider, _unknown_code_review_command
 from miniclaw2.providers.claude_native import ClaudeNativeSession
@@ -1030,6 +1031,62 @@ class ClaudeNativeStreamTerminalTest(unittest.IsolatedAsyncioTestCase):
             RecordingSession.seen_confirmation_text,
             "Implement the concrete node prompt",
         )
+
+    async def test_claude_review_appends_skill_suggestions_to_system_prompt(
+        self,
+    ) -> None:
+        class RecordingSession:
+            session_id = "claude-review-session"
+            last_assistant_text = "# Review\n\nNo findings."
+            seen_system_prompt: str | None = None
+
+            def __init__(self, **kwargs: Any) -> None:
+                RecordingSession.seen_system_prompt = kwargs.get(
+                    "system_prompt_append"
+                )
+
+            async def start(self) -> None:
+                return None
+
+            async def send(
+                self,
+                _prompt: str,
+                *,
+                confirmation_text: str | None = None,
+            ) -> SubmitResult:
+                return SubmitResult(submitted=True)
+
+            async def stream_events(self):
+                yield AgentProviderEvent(kind="done", final_state="done")
+
+            async def close(self) -> None:
+                return None
+
+        node = Node(project_id="p", prompt="review", model_preset_id="opus-4-7")
+        project = Project(root_path="/tmp/workspace", model_preset_id="opus-4-7")
+        context = AgentProviderContext(
+            node=node,
+            project=project,
+            request_gate_handler=_request_gate,
+            system_context="Suggested skill context",
+        )
+
+        with patch(
+            "miniclaw2.providers.claude.ClaudeNativeSession",
+            RecordingSession,
+        ):
+            events = await _collect(
+                ClaudeProvider().run_review(
+                    context,
+                    ReviewSpec(target=ReviewTarget()),
+                )
+            )
+
+        self.assertEqual(
+            RecordingSession.seen_system_prompt,
+            "Suggested skill context",
+        )
+        self.assertTrue(any(event.kind == "review" for event in events))
 
 
 if __name__ == "__main__":

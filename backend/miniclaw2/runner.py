@@ -421,7 +421,9 @@ class NodeRunner:
                 self.node.summary = "working tree clean — nothing to review"
             else:
                 final_state, error_msg, report = await self._run_native_review(
-                    system_context=""
+                    system_context=_skill_suggestion_block(
+                        self._skill_materialization
+                    )
                 )
                 if final_state is NodeState.DONE and report is None:
                     final_state = NodeState.ERROR
@@ -1289,7 +1291,11 @@ class NodeRunner:
             except (TypeError, ValueError):
                 payload = None
             if isinstance(payload, dict):
-                candidate = payload.get("skill") or payload.get("name")
+                candidate = (
+                    payload.get("skill")
+                    or payload.get("name")
+                    or payload.get("command")
+                )
                 if isinstance(candidate, str):
                     named_skill = candidate.strip().lower()
         changed = False
@@ -1305,7 +1311,13 @@ class NodeRunner:
                 else ""
             )
             confident = bool(
-                (named_skill and named_skill in {slug, name, f"skills.{slug}"})
+                (
+                    named_skill
+                    and (
+                        named_skill in {slug, name, f"skills.{slug}"}
+                        or named_skill.endswith(f":{slug}")
+                    )
+                )
                 or (materialized_skill_md and materialized_skill_md in lowered)
                 or (slug and f"/skills/{slug}/skill.md" in lowered)
             )

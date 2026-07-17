@@ -50,7 +50,7 @@ export type ContextNodeData = {
   /** true when a principle exists on the shelf but no live node has loaded it */
   dimmed?: boolean;
   /** number of virtuals/phantoms currently pre-attaching this principle.
-   *  Rendered as a small badge on the shelf tile (§6.1 of PROPOSAL_SKILLS). */
+   *  Rendered as a small badge on the shelf tile. */
   attachedCount?: number;
   usedByNodeIds?: string[];
 };
@@ -833,7 +833,7 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
 
   /* Attached-count map: principle plug_id → number of visible virtuals whose
    * pending_extra_principles list references that principle. Rendered as a small
-   * badge on the shelf tile (PROPOSAL_SKILLS §6.1). Only virtuals in a
+   * badge on the shelf tile. Only virtuals in a
    * non-hidden lane contribute; hiding a lane hides its pre-attachments. */
   const attachedByPrincipleId = new Map<string, number>();
   const attachedBySkillId = new Map<string, number>();

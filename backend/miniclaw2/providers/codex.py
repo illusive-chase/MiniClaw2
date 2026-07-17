@@ -158,9 +158,14 @@ class CodexProvider:
                 await _configure_skill_roots(client, context)
                 thread_id = context.node.provider_session_id
                 if not thread_id:
+                    thread_base: dict[str, Any] = {
+                        "cwd": context.project.root_path,
+                    }
+                    if context.system_context:
+                        thread_base["developerInstructions"] = context.system_context
                     started = await client.request(
                         "thread/start",
-                        _thread_params(context, {"cwd": context.project.root_path}),
+                        _thread_params(context, thread_base),
                     )
                     thread_id = started.get("thread", {}).get("id")
                     if not thread_id:
@@ -971,6 +976,23 @@ async def _configure_skill_roots(
                 continue
             audit["failed"] = True
             audit["error"] = f"Codex skills/extraRoots/set failed: {exc}"
+        _strip_failed_skill_suggestions(context)
+
+
+def _strip_failed_skill_suggestions(context: AgentProviderContext) -> None:
+    materialization = getattr(context, "skill_materialization", None)
+    failed = set(getattr(materialization, "failed_suggestions", []) or [])
+    if not failed:
+        return
+    for attribute in ("launch_instructions", "system_context"):
+        value = getattr(context, attribute, "")
+        if not value:
+            continue
+        setattr(
+            context,
+            attribute,
+            "\n".join(line for line in value.splitlines() if line not in failed).strip(),
+        )
 
 
 def _review_report_from_codex(value: Any) -> ReviewReport:

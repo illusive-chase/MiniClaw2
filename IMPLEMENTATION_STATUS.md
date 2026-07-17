@@ -441,6 +441,14 @@ Trunk: `backend/miniclaw2/contextspace.py`.
   `settings_snapshot.extra_principles`; bundle composition deduplicates them
   against binding principles, records node-opt-in provenance, and records missing
   plugs explicitly instead of collapsing their context tiles.
+- Principles are markdown-only (`manifest.yaml` + `CONTEXT.md`, no assets) and
+  default to `turn` injection because the providers are only symmetric on the
+  turn channel: Claude re-applies `system` text on every spawn via
+  `--append-system-prompt`, while the Codex adapter can fake a system channel
+  only on the first turn of a fresh thread — on resumed threads,
+  `system`-injected text silently drops. `turn` re-asserts principles on every
+  node, which is what behavior shaping wants anyway; the per-plug `injection`
+  override remains for power users, with this caveat.
 - `ProjectBinding`, `PlugRef`, `ComposedContextBundle` carry binding
   resolution; `Project.project_context_binding_id` references the
   current binding; `Project.active_planspace_id` owns the current
@@ -488,18 +496,33 @@ Trunk: `backend/miniclaw2/contextspace.py`.
 - `GET /principles` enumerates principle plugs and `DELETE /principles/{slug}`
   removes one with strict slug/path validation. The frontend exposes them as
   behavior-guidance tiles with virtual-node selection and drag attach.
-- Native Agent Skills are stored verbatim under `contextspace/skills`.
+- Native Agent Skills (the `SKILL.md` standard) are stored verbatim under
+  `contextspace/skills` so community skills import unmodified. Skills are
+  deliberately **not plugs**: they never enter bundle composition or (v1)
+  bindings, and MiniClaw2 never parses or injects a skill body — attaching one
+  makes it *available*; lazy loading from the frontmatter description is the
+  provider's job. The library lives under the sync root and rides ordinary
+  metadata-sync commits (skills are expected to be markdown plus small
+  scripts; large binary payloads bloat the sync repo).
   `GET /skills`, `POST /skills/import`, and `DELETE /skills/{slug}` provide
   inspection, local/zip/git import, overwrite, and removal. Imports reject zip
   traversal and symlinks; provenance is stored separately in
   `contextspace/skill-imports.json`.
 - The runner records per-skill source path, directory hash, mechanism,
-  missing/failed state, and used state in `settings_snapshot.skill_audit`.
-  Claude receives a node-private `--plugin-dir`; each node-private Codex
-  app-server receives the selected directories through
-  `skills/extraRoots/set` before thread start/resume. Suggest mode adds one
-  provider-neutral launch line. Unsupported/failed Codex protocol calls launch
-  without skills and mark those audit entries failed.
+  missing/failed state, and used state in `settings_snapshot.skill_audit`
+  (the directory hash exists because skills mutate between runs — it is the
+  graph's answer to "what exactly did this node have access to").
+  Claude materialization copies (not symlinks, until the plugin loader is
+  verified to follow them) the selected skills into an ephemeral
+  `skill-plugin/` dir under the node's run workspace, passes it via a
+  node-private `--plugin-dir` on every spawn (so resume works and concurrent
+  nodes cannot interfere), and reaps it with the workspace. Each node-private
+  Codex app-server receives the exact selected library directories through
+  `skills/extraRoots/set` (protocol verified against codex-cli 0.144.1)
+  after `initialize`, before thread start/resume — no shared `~/.codex` or
+  worktree mutation. Suggest mode adds one provider-neutral launch line.
+  Unsupported/failed Codex protocol calls launch without skills and mark
+  those audit entries failed.
 - The canvas renders native skill tiles separately from principles. Dashed
   edges mean available; a confident Claude Skill invocation or Codex read of
   the materialized `SKILL.md` upgrades the persisted edge to solid used.
@@ -519,6 +542,18 @@ Trunk: `backend/miniclaw2/contextspace.py`.
 - Global-plug/binding authoring UI and a direct manifest/markdown editor for
   injection mode, `max_chars`, and existing principle contents. Principle
   creation is currently agent-assisted rather than a structured form.
+- Deliberate v1 skill deferrals: import-time safety scanning (the library
+  only holds what the user explicitly imported; panel inspectability before
+  first attach is the interim control), a skill-authoring concierge
+  (import-first — revisit if hand-rolled skills become common),
+  binding-level "always available in this project" skills (v1 is per-node
+  opt-in only), marketplace/registry browsing (import takes a path/URL), and
+  skill versioning/update tracking (re-import overwrites; the per-launch
+  content hash is the audit trail). Skills the native binaries already load
+  from vendor config (`.claude/skills`, `~/.codex/skills`) stay invisible to
+  the canvas, like the rest of vendor config.
+- Principle ordering UI — composition order stays binding order then opt-in
+  order.
 - Cross-provider reviewer nodes (the ontology supports review agents;
   no UI to configure provider override yet).
 - Fork merge semantics.
@@ -924,7 +959,10 @@ Trunk: `backend/miniclaw2/store.py`, `backend/miniclaw2/replay.py`.
   shape; v5 added the defaulted node artifact manifest. The v6 migration moves
   injected skill plugs to principles, rewrites live settings/bindings/templates
   and `principle_edit`, leaves immutable bundle snapshots untouched, and adds
-  the native skill namespace. Startup backs up affected records first.
+  the native skill namespace. Startup backs up affected records first. A
+  rewrite miss is visible, not silent: a stale `skills.<slug>` id resolves
+  against the new native-skill library, fails, and surfaces as a missing-skill
+  flag on the next launch instead of misinjecting.
 - `$MINICLAW_HOME` can be initialized as a Git repository and exchanged with
   a user-provided remote only through `miniclaw2 sync init <git-url>` or the
   Global settings **Sync now** action. Local durable writes are committed on a

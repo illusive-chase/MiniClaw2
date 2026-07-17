@@ -140,7 +140,7 @@ class ClaudeProvider:
                 model=self._resolve_model(context),
                 effort=self._resolve_effort(context),
                 session_id=self._resume_session_id(context),
-                system_prompt_append="",
+                system_prompt_append=context.system_context,
                 plugin_dir=getattr(
                     getattr(context, "skill_materialization", None),
                     "plugin_dir",

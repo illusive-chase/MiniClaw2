@@ -150,9 +150,10 @@ def ensure_store_metadata(root: Path, identity: MachineIdentity) -> None:
     if existing_version > SCHEMA_VERSION:
         return
 
-    legacy_skill_plugs = root / "contextspace" / "plugs" / "skills"
+    context_root = _configured_contextspace_root(root)
+    legacy_skill_plugs = context_root / "plugs" / "skills"
     if existing_version < 6 and (existing_version > 0 or legacy_skill_plugs.exists()):
-        _migrate_principles_and_skills(root)
+        _migrate_principles_and_skills(root, context_root=context_root)
 
     project_files = sorted((root / "projects").glob("*/project.json"))
     legacy_files: list[tuple[Path, dict[str, Any]]] = []
@@ -187,19 +188,33 @@ def ensure_store_metadata(root: Path, identity: MachineIdentity) -> None:
     ensure_store_gitignore(root)
 
 
-def _migrate_principles_and_skills(root: Path) -> None:
+def _configured_contextspace_root(root: Path) -> Path:
+    override = os.environ.get("MINICLAW_CONTEXT_HOME")
+    if override:
+        return Path(override).expanduser().resolve()
+    return (root / "contextspace").resolve()
+
+
+def _migrate_principles_and_skills(
+    root: Path, *, context_root: Path
+) -> None:
     """Migrate the former injected-skill mechanism to principles."""
     backup_root = (
         root
         / "migration-backups"
         / f"principles-and-agent-skills-v6-{int(time.time())}"
     )
-    for name in ("projects", "contextspace", "templates"):
+    for name in ("projects", "templates"):
         source = root / name
         if source.exists():
             shutil.copytree(source, backup_root / name, dirs_exist_ok=True)
+    if context_root.exists():
+        shutil.copytree(
+            context_root,
+            backup_root / "contextspace",
+            dirs_exist_ok=True,
+        )
 
-    context_root = root / "contextspace"
     old_plugs = context_root / "plugs" / "skills"
     principle_plugs = context_root / "plugs" / "principles"
     if old_plugs.is_dir():
@@ -220,12 +235,16 @@ def _migrate_principles_and_skills(root: Path) -> None:
         payload = _read_yaml_mapping(manifest)
         if payload is None:
             continue
+        changed = False
         if payload.get("kind") == "skill":
             payload["kind"] = "principle"
+            changed = True
         identifier = payload.get("id")
         if isinstance(identifier, str) and identifier.startswith("skills."):
             payload["id"] = "principles." + identifier[len("skills."):]
-        _write_yaml_mapping(manifest, payload)
+            changed = True
+        if changed:
+            _write_yaml_mapping(manifest, payload)
 
     yaml_roots = [
         context_root / "bindings",
@@ -240,7 +259,8 @@ def _migrate_principles_and_skills(root: Path) -> None:
             if payload is None:
                 continue
             rewritten = _rewrite_principle_values(payload)
-            _write_yaml_mapping(path, rewritten)
+            if rewritten != payload:
+                _write_yaml_mapping(path, rewritten)
 
     for node_path in (root / "projects").glob("*/nodes/*/node.json"):
         try:
@@ -249,34 +269,61 @@ def _migrate_principles_and_skills(root: Path) -> None:
             raise SyncError(f"invalid node record {node_path}: {exc}") from exc
         if not isinstance(payload, dict):
             raise SyncError(f"invalid node record {node_path}: expected object")
+        changed = False
         settings = payload.get("settings_snapshot")
         if isinstance(settings, dict) and "extra_skills" in settings:
             settings["extra_principles"] = _rewrite_principle_values(
-                settings.pop("extra_skills")
+                settings.pop("extra_skills"), rewrite_strings=True
             )
+            changed = True
         if "pending_extra_skills" in payload:
             payload["pending_extra_principles"] = _rewrite_principle_values(
-                payload.pop("pending_extra_skills")
+                payload.pop("pending_extra_skills"), rewrite_strings=True
             )
-        payload.setdefault("pending_extra_skills", [])
+            changed = True
+        if "pending_extra_skills" not in payload:
+            payload["pending_extra_skills"] = []
+            changed = True
         if payload.get("agent_op_kind") == "skill_edit":
             payload["agent_op_kind"] = "principle_edit"
-        _write_json(node_path, payload)
+            changed = True
+        if changed:
+            _write_json(node_path, payload)
 
 
-def _rewrite_principle_values(value: Any) -> Any:
+_PRINCIPLE_IDENTIFIER_KEYS = {
+    "id",
+    "plug_id",
+    "plugs",
+    "extra_skills",
+    "extra_principles",
+    "pending_extra_skills",
+    "pending_extra_principles",
+    "agent_op_kind",
+}
+
+
+def _rewrite_principle_values(
+    value: Any, *, rewrite_strings: bool = False
+) -> Any:
     if isinstance(value, str):
-        if value.startswith("skills."):
+        if rewrite_strings and value.startswith("skills."):
             return "principles." + value[len("skills."):]
-        if value == "skill_edit":
+        if rewrite_strings and value == "skill_edit":
             return "principle_edit"
         return value
     if isinstance(value, list):
-        return [_rewrite_principle_values(item) for item in value]
+        return [
+            _rewrite_principle_values(item, rewrite_strings=rewrite_strings)
+            for item in value
+        ]
     if isinstance(value, dict):
         return {
             ("extra_principles" if key == "extra_skills" else key):
-            _rewrite_principle_values(item)
+            _rewrite_principle_values(
+                item,
+                rewrite_strings=(rewrite_strings or key in _PRINCIPLE_IDENTIFIER_KEYS),
+            )
             for key, item in value.items()
         }
     return value

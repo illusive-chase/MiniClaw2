@@ -21,6 +21,7 @@ from .contextspace import contextspace_root
 
 _SLUG_RE = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
 _IMPORT_METADATA = "skill-imports.json"
+_VCS_METADATA_NAMES = {".git", ".hg", ".svn", ".bzr"}
 
 
 class SkillError(ValueError):
@@ -42,6 +43,14 @@ class SkillMaterialization:
             f'The skill "{item["name"]}" is available and likely relevant to this task.'
             for item in self.audit
             if item.get("suggest") and not item.get("missing") and not item.get("failed")
+        ]
+
+    @property
+    def failed_suggestions(self) -> list[str]:
+        return [
+            f'The skill "{item["name"]}" is available and likely relevant to this task.'
+            for item in self.audit
+            if item.get("suggest") and item.get("failed")
         ]
 
 
@@ -174,12 +183,15 @@ def import_agent_skill(
         candidate = _find_skill_directory(unpacked, slug)
         _validate_tree(candidate)
         summary = inspect_agent_skill(candidate)
-        target_slug = _normalize_import_slug(slug or candidate.name, summary["name"])
+        inferred_slug = candidate.name
+        if source_kind in {"zip", "git"} and candidate == unpacked:
+            inferred_slug = ""
+        target_slug = _normalize_import_slug(slug or inferred_slug, summary["name"])
         target = library / target_slug
         staging = library / f".{target_slug}.importing"
         if staging.exists():
             shutil.rmtree(staging)
-        shutil.copytree(candidate, staging)
+        shutil.copytree(candidate, staging, ignore=_ignore_vcs_metadata)
         backup = library / f".{target_slug}.previous"
         if backup.exists():
             shutil.rmtree(backup)
@@ -390,6 +402,10 @@ def _validate_tree(root: Path) -> None:
     for path in root.rglob("*"):
         if path.is_symlink():
             raise SkillError(f"skill imports may not contain symlinks: {path}")
+
+
+def _ignore_vcs_metadata(_directory: str, names: list[str]) -> set[str]:
+    return _VCS_METADATA_NAMES.intersection(names)
 
 
 def _normalize_import_slug(value: str, fallback_name: str) -> str:

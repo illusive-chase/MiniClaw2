@@ -174,14 +174,20 @@ class _FakeProviderContext:
 
 class CodexProviderTest(unittest.IsolatedAsyncioTestCase):
     async def test_skill_root_failure_marks_audit_without_raising(self) -> None:
+        suggestion = (
+            'The skill "Alpha" is available and likely relevant to this task.'
+        )
         audit = {
             "materialized_path": "/tmp/alpha",
             "failed": False,
         }
         context = _FakeProviderContext()
+        context.launch_instructions = f"Keep this instruction.\n{suggestion}"
+        context.system_context = suggestion
         context.skill_materialization = SimpleNamespace(
             extra_roots=["/tmp/alpha"],
             audit=[audit],
+            failed_suggestions=[suggestion],
         )
 
         class _ClientStub:
@@ -199,6 +205,61 @@ class CodexProviderTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(audit["failed"])
         self.assertIn("skills/extraRoots/set failed", audit["error"])
+        self.assertEqual(context.launch_instructions, "Keep this instruction.")
+        self.assertEqual(context.system_context, "")
+
+    async def test_review_thread_receives_system_context_as_instructions(self) -> None:
+        captured: list[tuple[str, dict[str, Any]]] = []
+
+        class _ClientStub:
+            async def initialize(self) -> dict[str, Any]:
+                return {"serverInfo": {"version": "0.200.0"}}
+
+            async def request(
+                self, method: str, params: dict[str, Any], **_kwargs: Any
+            ) -> dict[str, Any]:
+                captured.append((method, params))
+                if method == "thread/start":
+                    return {"thread": {"id": "thread-1"}}
+                if method == "review/start":
+                    return {"turn": {"id": "turn-1"}}
+                raise AssertionError(method)
+
+            async def receive(self) -> dict[str, Any]:
+                return {
+                    "method": "turn/completed",
+                    "params": {"turn": {"status": "completed"}},
+                }
+
+            async def respond(self, *_args: Any, **_kwargs: Any) -> None:
+                return None
+
+        class _ClientCtx:
+            async def __aenter__(self) -> Any:
+                return _ClientStub()
+
+            async def __aexit__(self, *_exc: object) -> None:
+                return None
+
+        context = _FakeProviderContext()
+        context.system_context = "Suggested skill context"
+        with patch(
+            "miniclaw2.providers.codex._CodexJsonRpcClient",
+            return_value=_ClientCtx(),
+        ):
+            events = [
+                event
+                async for event in CodexProvider().run_review(
+                    context,  # type: ignore[arg-type]
+                    ReviewSpec(target=ReviewTarget()),
+                )
+            ]
+
+        thread_params = next(params for method, params in captured if method == "thread/start")
+        self.assertEqual(
+            thread_params["developerInstructions"], "Suggested skill context"
+        )
+        self.assertEqual(events[-1].kind, "done")
 
     async def test_review_error_classification_uses_json_rpc_code(self) -> None:
         async def collect_for(code: int) -> list[Any]:

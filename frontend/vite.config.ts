@@ -13,6 +13,7 @@ export default defineConfig({
     proxy: {
       "/global-state": backendUrl,
       "/model-presets": backendUrl,
+      "/principles": backendUrl,
       "/sessions": backendUrl,
       "/skills": backendUrl,
       "/templates": backendUrl,
