@@ -128,7 +128,8 @@ Trunk: `backend/miniclaw2/domain.py`.
   `model_preset_id`, `provider_session_id`, `provider_turn_id`, `op_kind`,
   `agent_op_kind`,
   `commit_before`, `commit_after`, `prompt`, `category`, `subtype`,
-  `brief`, `review_target`, `prompt_draft`, `scheduled_deps`, `pending_extra_skills`,
+  `brief`, `review_target`, `prompt_draft`, `scheduled_deps`,
+  `pending_extra_principles`, `pending_extra_skills`,
   `resume_from_node_id`,
   `verify_script_ref`, `proposed_by`, `obsolete_reason`, `summary`,
   `error`, `usage`, `artifacts`, `system_context_snapshot`, `settings_snapshot`,
@@ -142,9 +143,9 @@ Trunk: `backend/miniclaw2/domain.py`.
 - `Project.provider` and `Node.provider` are computed from
   `model_preset_id` for wire/display use and are excluded from persisted JSON.
 - `PlanspaceMode ∈ {auto, manual}`. `agent_op_kind` is an extensible
-  string discriminator with a current whitelist of `skill_edit`; it is valid
-  only on agent nodes. `pending_extra_skills` is virtual-agent intent and is
-  cleared into `settings_snapshot.extra_skills` at promotion.
+  string discriminator with a current whitelist of `principle_edit`; it is valid
+  only on agent nodes. Pending principle and skill selections are virtual-agent
+  intent and are promoted into their corresponding launch settings.
 - `HumanGate` model is inline-only:
   `GateSubtype ∈ {permission, ask_user}`. `permission` is emitted by
   the Codex adapter only; the native-CLI Claude provider runs with
@@ -251,13 +252,11 @@ Trunk: `backend/miniclaw2/runner.py`, `backend/miniclaw2/registry.py`.
 - Inline gates (permission for Codex, ask-user for both providers)
   normalize to `waiting` substate; resolution returns the node to
   `running`.
-- Launch instructions are composed from (in order): the optional skill-author
-  block, the category-aware block (planning / regular / agentic review /
-  human-interact review), a scheduled-dependency preview index, the
-  ContextSpace turn-text, the language preference hint, and the
-  anti-self-poisoning guidance appended last. Templates live under
-  `backend/miniclaw2/prompts/`; covered by `test_launch_prompt.py` and
-  `test_skill_edit_prompt.py`.
+- Launch instructions are composed from (in order): the optional principle-author
+  block, the category-aware block, native-skill suggest lines, then the
+  planning / regular / review dependency and context blocks. Templates live
+  under `backend/miniclaw2/prompts/`; covered by `test_launch_prompt.py` and
+  `test_principle_edit_prompt.py`.
 - Agent nodes carry their own `model_preset_id`. Project creation, direction
   creation, ordinary virtual creation, and virtual editing select active
   presets. Agent-authored virtual previews cannot select a model: newly
@@ -291,15 +290,14 @@ Trunk: `backend/miniclaw2/runner.py`, `backend/miniclaw2/registry.py`.
   rerun creates a fresh editable virtual with the original prompt, model,
   lane, dependencies, review fields, and continuation linkage.
 
-### Skill-edit agents — landed
+### Principle-edit agents - landed
 
-- `agent_op_kind="skill_edit"` marks an ordinary agent node that also receives
-  the framework-owned `prompts/skill_init.md` contract. The prompt resolves
-  the actual ContextSpace skills directory and instructs the agent to create
-  or update `plugs/skills/<slug>/{manifest.yaml,CONTEXT.md,assets/}`.
-- Project → `+ New skill` creates a regular virtual skill-edit node in the
+- `agent_op_kind="principle_edit"` marks an ordinary agent node that receives
+  `prompts/principle_init.md`. The prompt resolves the ContextSpace principle
+  directory and permits only `manifest.yaml` plus `CONTEXT.md`.
+- Project → `+ New principle` creates a regular virtual principle-edit node in the
   active direction. Promotion uses the normal runner, preview contract,
-  provider events, cancellation, and terminal states; the skill shelf is
+  provider events, cancellation, and terminal states; the principle shelf is
   refreshed after the node finishes.
 
 ### Review agents — landed
@@ -429,18 +427,19 @@ Trunk: `backend/miniclaw2/contextspace.py`.
     contextspace.yaml
     bindings/projects/<binding-id>.yaml
     plugs/global/{manifest.yaml, CONTEXT.md}
-    plugs/skills/<id>/{manifest.yaml, CONTEXT.md, assets/}
+    plugs/principles/<id>/{manifest.yaml, CONTEXT.md}
+    skills/<id>/{SKILL.md, scripts/, references/, ...}
     plugs/planspaces/<id>/{manifest.yaml, events.jsonl}
     snapshots/<bundle-id>.json
   ```
 - Plug loaders for project-root `CONTEXT.md`, global `CONTEXT.md`, and
-  skill `CONTEXT.md`. Planspace plugs are manifest-only; lane state is
+  principle `CONTEXT.md`. Planspace plugs are manifest-only; lane state is
   read through the node-private
   `.miniclaw2/graph/runs/<node-id>/lanes/<lane>/` projection.
-- Skills can also be opted into per node without changing the project binding.
-  Virtuals hold canonical `pending_extra_skills`; promotion snapshots them as
-  `settings_snapshot.extra_skills`; bundle composition deduplicates them
-  against binding skills, records node-opt-in provenance, and records missing
+- Principles can also be opted into per node without changing the project binding.
+  Virtuals hold canonical `pending_extra_principles`; promotion snapshots them as
+  `settings_snapshot.extra_principles`; bundle composition deduplicates them
+  against binding principles, records node-opt-in provenance, and records missing
   plugs explicitly instead of collapsing their context tiles.
 - `ProjectBinding`, `PlugRef`, `ComposedContextBundle` carry binding
   resolution; `Project.project_context_binding_id` references the
@@ -486,10 +485,24 @@ Trunk: `backend/miniclaw2/contextspace.py`.
   the whitelist to `claude --allowed-tools` on the native Claude
   provider, and forces `approvalPolicy: "never"` on Codex. Used by the
   out-of-band `context_refresh` agent; unused by `NodeRunner`.
-- `GET /skills` enumerates user-wide skill plugs and `DELETE /skills/{slug}`
-  removes one with strict slug/path validation. The frontend exposes known
-  skills as reusable context tiles, supports delete, selection from a virtual's
-  editor, and drag-to-attach onto a virtual node.
+- `GET /principles` enumerates principle plugs and `DELETE /principles/{slug}`
+  removes one with strict slug/path validation. The frontend exposes them as
+  behavior-guidance tiles with virtual-node selection and drag attach.
+- Native Agent Skills are stored verbatim under `contextspace/skills`.
+  `GET /skills`, `POST /skills/import`, and `DELETE /skills/{slug}` provide
+  inspection, local/zip/git import, overwrite, and removal. Imports reject zip
+  traversal and symlinks; provenance is stored separately in
+  `contextspace/skill-imports.json`.
+- The runner records per-skill source path, directory hash, mechanism,
+  missing/failed state, and used state in `settings_snapshot.skill_audit`.
+  Claude receives a node-private `--plugin-dir`; each node-private Codex
+  app-server receives the selected directories through
+  `skills/extraRoots/set` before thread start/resume. Suggest mode adds one
+  provider-neutral launch line. Unsupported/failed Codex protocol calls launch
+  without skills and mark those audit entries failed.
+- The canvas renders native skill tiles separately from principles. Dashed
+  edges mean available; a confident Claude Skill invocation or Codex read of
+  the materialized `SKILL.md` upgrades the persisted edge to solid used.
 - ContextSpace changes are versioned by the store repo's metadata-sync
   commits (§10). The nested `git: {expected: true}` expectation in
   `contextspace.yaml` is dropped by the v4 migration, and sync requires
@@ -504,8 +517,8 @@ Trunk: `backend/miniclaw2/contextspace.py`.
   re-marshal any of it. What is still missing is a UI surface for
   editing those files.
 - Global-plug/binding authoring UI and a direct manifest/markdown editor for
-  injection mode, `max_chars`, and existing skill contents. Skill creation is
-  currently agent-assisted rather than a structured form.
+  injection mode, `max_chars`, and existing principle contents. Principle
+  creation is currently agent-assisted rather than a structured form.
 - Cross-provider reviewer nodes (the ontology supports review agents;
   no UI to configure provider override yet).
 - Fork merge semantics.
@@ -542,7 +555,7 @@ Trunk: `frontend/src/canvas/Canvas.tsx`, `frontend/src/canvas/layout.ts`,
   dependency virtual, and remove.
 - Virtual agent nodes can be edited from the side panel
   (`prompt_draft`, category/subtype/brief, motivation, dependencies,
-  model preset, attached skills, and obsoletion); continuation virtuals lock
+  model preset, attached principles/native skills, and obsoletion); continuation virtuals lock
   their inherited model preset. Verifier virtuals render as read-only
   programmatic-review steps.
 - Agent tiles show category badges for planning / regular / review /
@@ -904,13 +917,14 @@ Trunk: `backend/miniclaw2/store.py`, `backend/miniclaw2/replay.py`.
   process to cancelled terminal records, including framework stub previews,
   without blocking other projects on a malformed entry; queued nodes remain
   pending and resume scheduling after startup.
-- Store schema v5 writes one canonical shape: only `model_preset_id`
+- Store schema v6 writes one canonical shape: only `model_preset_id`
   persists provider selection, only `provider_session_id` persists
   provider conversation identity, and ContextSpace/language selections
   live in typed Project fields. Runtime loading accepts only this canonical
-  shape; v5 adds the defaulted node artifact manifest. Startup performs the
-  compatibility migration atomically, backing up and stamping pre-sync project
-  records with the local machine identity.
+  shape; v5 added the defaulted node artifact manifest. The v6 migration moves
+  injected skill plugs to principles, rewrites live settings/bindings/templates
+  and `principle_edit`, leaves immutable bundle snapshots untouched, and adds
+  the native skill namespace. Startup backs up affected records first.
 - `$MINICLAW_HOME` can be initialized as a Git repository and exchanged with
   a user-provided remote only through `miniclaw2 sync init <git-url>` or the
   Global settings **Sync now** action. Local durable writes are committed on a
@@ -990,7 +1004,8 @@ Quick reference; the on-disk shape is authoritative.
   {is_repo, head, branch, detached, upstream, ahead, behind, dirty_count}`
   (ephemeral, `seq: 0`; must never carry a `node_id` — see §3a).
 - Client → server: user prompt with optional `resume_from_node_id`,
-  `extra_skills`, `agent_op_kind`, and `model_preset_id`; `interrupt`;
+  `extra_principles`, structured/string-compatible `extra_skills`,
+  `agent_op_kind`, and `model_preset_id`; `interrupt`;
   interaction response;
   `replay_request {node_id, since_seq}`. Interrupt is
   `interrupt {node_id}`; interaction responses may include their owner
@@ -1028,7 +1043,8 @@ Quick reference; the on-disk shape is authoritative.
   `{title?, seed, mode?, model_preset_id?}`
   (creates a new planspace + activates it + creates one empty virtual),
   `POST /sessions/{sid}/virtuals` (creates an editable virtual in a planspace,
-  with optional model preset, attached skills, and `agent_op_kind`),
+  with optional model preset, attached principles, native skills, and
+  `agent_op_kind`),
   `PATCH /sessions/{sid}/virtuals/{vid}` (edits or obsoletes a
   virtual),
   `DELETE /sessions/{sid}/virtuals/{vid}` (hard-deletes an unrun
@@ -1041,7 +1057,8 @@ Quick reference; the on-disk shape is authoritative.
   `GET /sessions/{sid}/files`,
   `GET /sessions/{sid}/nodes/{nid}/preview` (durable preview text),
   `POST /sessions {auto_commit, ...}`,
-  `GET /skills`, `DELETE /skills/{slug}`,
+  `GET /principles`, `DELETE /principles/{slug}`,
+  `GET /skills`, `POST /skills/import`, `DELETE /skills/{slug}`,
   `GET /user-templates`, `GET /user-templates/{slug}`,
   `DELETE /user-templates/{slug}`,
   `POST /sessions/{sid}/user-templates {name, brief, node_ids}` (saves

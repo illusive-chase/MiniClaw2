@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { SkillSummary } from "../api";
+import type { PrincipleSummary, SkillSummary } from "../api";
 import type { ContextBundle, NodeInfo } from "../types";
 
 export type ContextNodePanelProps = {
@@ -11,9 +11,11 @@ export type ContextNodePanelProps = {
   /** the bundle from the most-recent loader, used to read file content */
   sampleBundle: ContextBundle | null;
   onSelectConsumer: (nodeId: string) => void;
-  /** Populated when the selected context tile is a user-wide skill. */
+  /** Populated when the selected context tile is a user-wide principle. */
+  principle?: PrincipleSummary | null;
+  /** Delete the current principle. Present only when ``principle`` is passed. */
+  onDeletePrinciple?: (slug: string) => Promise<void> | void;
   skill?: SkillSummary | null;
-  /** Delete the current skill. Present only when ``skill`` is passed. */
   onDeleteSkill?: (slug: string) => Promise<void> | void;
 };
 
@@ -29,19 +31,21 @@ export function ContextNodePanel({
   nodesById,
   sampleBundle,
   onSelectConsumer,
+  principle,
+  onDeletePrinciple,
   skill,
   onDeleteSkill,
 }: ContextNodePanelProps) {
   const source = sampleBundle?.sources.find((s) => s.path === path) ?? null;
-  const kindHint = skill ? "skill" : source?.kind;
+  const kindHint = principle ? "principle" : skill ? "skill" : source?.kind;
   const description = plainLanguageDescription(source?.scope, kindHint);
-  const heading = skill?.title || filenameOf(path);
+  const heading = principle?.title || skill?.title || filenameOf(path);
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
       <div className="border-b border-line bg-surface-raised px-4 py-3">
         <div className="text-[10px] font-medium uppercase tracking-[0.14em] text-ink-subtle">
-          {skill ? "Skill" : "Context file"}
+          {principle ? "Principle" : skill ? "Skill" : "Context file"}
         </div>
         <h2 className="mt-1 truncate font-display text-[15px] font-semibold leading-snug text-ink-strong">
           {heading}
@@ -61,9 +65,10 @@ export function ContextNodePanel({
           </div>
         </section>
 
-        {skill && (
-          <SkillDetails skill={skill} onDelete={onDeleteSkill} />
+        {principle && (
+          <PrincipleDetails principle={principle} onDelete={onDeletePrinciple} />
         )}
+        {skill && <SkillDetails skill={skill} onDelete={onDeleteSkill} />}
 
         <section className="mb-4">
           <div className="mb-1 flex items-baseline justify-between text-[10px] font-medium uppercase tracking-[0.14em] text-ink-subtle">
@@ -74,7 +79,13 @@ export function ContextNodePanel({
               </span>
             )}
           </div>
-          <ContextFileContent path={path} bundle={sampleBundle} />
+          {skill ? (
+            <pre className="max-h-[60vh] overflow-auto whitespace-pre-wrap rounded-md border border-line bg-surface-sunken px-3 py-2 font-mono text-[11px] leading-relaxed text-ink">
+              {skill.body}
+            </pre>
+          ) : (
+            <ContextFileContent path={path} bundle={sampleBundle} />
+          )}
         </section>
 
         <section className="mb-4">
@@ -168,7 +179,10 @@ function extractFromBundleText(systemText: string, turnText: string, path: strin
 
 function plainLanguageDescription(scope?: string, kind?: string): string {
   if (kind === "skill") {
-    return "A reusable skill — tool or workflow knowledge you can attach to any node in any project.";
+    return "A native Agent Skill made available to selected runs and loaded on demand.";
+  }
+  if (kind === "principle") {
+    return "Reusable behavior guidance injected into every selected run.";
   }
   if (kind === "planspace") {
     return "Project memory — a notebook of plans and decisions the agent reads at the start of every run.";
@@ -197,9 +211,6 @@ function SkillDetails({
 }) {
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
-  const injection =
-    typeof skill.injection === "string" ? skill.injection : "system";
-
   const runDelete = async () => {
     if (!onDelete) return;
     setBusy(true);
@@ -210,28 +221,80 @@ function SkillDetails({
       setConfirming(false);
     }
   };
+  return (
+    <section className="mb-4 space-y-2 rounded-md border border-state-review/40 bg-state-review/10 px-3 py-2 text-[12px]">
+      <div className="text-ink">{skill.description}</div>
+      <div className="font-mono text-[10.5px] text-ink-muted">{skill.id}</div>
+      <div className="text-[10.5px] text-ink-muted">
+        {skill.files.length} files
+        {skill.import_source ? ` · ${skill.import_source}` : ""}
+        {skill.imported_at
+          ? ` · ${new Date(skill.imported_at * 1000).toLocaleString()}`
+          : ""}
+      </div>
+      <ul className="max-h-28 overflow-auto font-mono text-[10px] text-ink-muted">
+        {skill.files.map((file) => <li key={file}>{file}</li>)}
+      </ul>
+      {onDelete && (
+        confirming ? (
+          <div className="flex items-center gap-2">
+            <button type="button" disabled={busy} onClick={runDelete} className="rounded border border-red-400 px-2 py-0.5 text-[11px] text-red-700">
+              {busy ? "Deleting…" : "Confirm delete"}
+            </button>
+            <button type="button" disabled={busy} onClick={() => setConfirming(false)} className="text-[11px] text-ink-muted">Cancel</button>
+          </div>
+        ) : (
+          <button type="button" onClick={() => setConfirming(true)} className="rounded border border-line px-2 py-0.5 text-[11px] text-ink-muted">Delete skill…</button>
+        )
+      )}
+    </section>
+  );
+}
+
+function PrincipleDetails({
+  principle,
+  onDelete,
+}: {
+  principle: PrincipleSummary;
+  onDelete?: (slug: string) => Promise<void> | void;
+}) {
+  const [confirming, setConfirming] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const injection =
+    typeof principle.injection === "string" ? principle.injection : "system";
+
+  const runDelete = async () => {
+    if (!onDelete) return;
+    setBusy(true);
+    try {
+      await onDelete(principle.slug);
+    } finally {
+      setBusy(false);
+      setConfirming(false);
+    }
+  };
 
   return (
     <section className="mb-4">
       <div className="mb-1 text-[10px] font-medium uppercase tracking-[0.14em] text-ink-subtle">
-        Skill details
+        Principle details
       </div>
       <div className="space-y-2 rounded-md border border-line bg-surface-sunken px-3 py-2 text-[12px] text-ink-strong">
-        {skill.description && (
-          <div className="text-[12px] text-ink">{skill.description}</div>
+        {principle.description && (
+          <div className="text-[12px] text-ink">{principle.description}</div>
         )}
         <div className="flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-ink-muted">
           <span>
             <span className="text-ink-subtle">injection:</span> {injection}
           </span>
-          <span className="font-mono">{skill.id}</span>
+          <span className="font-mono">{principle.id}</span>
         </div>
         {onDelete && (
           <div className="pt-1">
             {confirming ? (
               <div className="flex items-center gap-2">
                 <span className="text-[11px] text-ink-muted">
-                  Delete this skill?
+                  Delete this principle?
                 </span>
                 <button
                   type="button"
@@ -256,7 +319,7 @@ function SkillDetails({
                 onClick={() => setConfirming(true)}
                 className="rounded-md border border-line px-2 py-0.5 text-[11px] text-ink-muted hover:border-line-strong hover:text-ink"
               >
-                Delete skill…
+                Delete principle…
               </button>
             )}
           </div>

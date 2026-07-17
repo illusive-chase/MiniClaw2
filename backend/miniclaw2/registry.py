@@ -17,7 +17,7 @@ from .contextspace import (
     contextspace_root,
     create_planspace,
     delete_project_contextspace,
-    normalize_skill_ids,
+    normalize_principle_ids,
     read_planspace_mode,
     resolve_project_binding,
     resolve_active_planspace,
@@ -25,6 +25,7 @@ from .contextspace import (
 )
 from .events import NodeRemoved, GitStatus
 from .git_state import ensure_miniclaw_git_excluded, git_status, is_git_repo
+from .skills import normalize_skill_selections
 from .domain import (
     TERMINAL_NODE_STATES,
     Category,
@@ -624,7 +625,8 @@ class ProjectRegistry:
         prompt: str,
         *,
         resume_from_node_id: str | None = None,
-        extra_skills: list[str] | None = None,
+        extra_principles: list[str] | None = None,
+        extra_skills: list[str | dict[str, Any]] | None = None,
         agent_op_kind: str | None = None,
         model_preset_id: str | None = None,
         category: Category = Category.REGULAR,
@@ -672,10 +674,13 @@ class ProjectRegistry:
                     next_model_preset_id = normalize_active_model_preset_id(
                         next_model_preset_id, store_root=self.store.root
                     )
-        extra_skill_ids = normalize_skill_ids(extra_skills)
+        extra_principle_ids = normalize_principle_ids(extra_principles)
+        skill_selections = normalize_skill_selections(extra_skills)
         settings_snapshot: dict[str, Any] = {}
-        if extra_skill_ids:
-            settings_snapshot["extra_skills"] = extra_skill_ids
+        if extra_principle_ids:
+            settings_snapshot["extra_principles"] = extra_principle_ids
+        if skill_selections:
+            settings_snapshot["extra_skills"] = skill_selections
 
         active = resolve_active_planspace(
             rt.project, contextspace_root(self.store.root)
@@ -1238,9 +1243,14 @@ class ProjectRegistry:
         if node.kind is NodeKind.AGENT:
             node.prompt = node.prompt_draft or node.prompt
         node.prompt_draft = None
-        # Promote pending_extra_skills → settings_snapshot["extra_skills"]
+        # Promote pending_extra_principles → settings_snapshot["extra_principles"]
         # so compose_context_bundle at launch sees them (see contextspace
-        # ``_extra_skill_ids``).
+        # ``_extra_principle_ids``).
+        if node.pending_extra_principles:
+            snapshot = dict(node.settings_snapshot)
+            snapshot["extra_principles"] = list(node.pending_extra_principles)
+            node.settings_snapshot = snapshot
+            node.pending_extra_principles = []
         if node.pending_extra_skills:
             snapshot = dict(node.settings_snapshot)
             snapshot["extra_skills"] = list(node.pending_extra_skills)
@@ -1271,7 +1281,8 @@ class ProjectRegistry:
         review_target: dict[str, Any] | ReviewTarget | None = None,
         motivation: str | None = None,
         scheduled_deps: list[str] | None = None,
-        pending_extra_skills: list[str] | None = None,
+        pending_extra_principles: list[str] | None = None,
+        pending_extra_skills: list[str | dict[str, Any]] | None = None,
         agent_op_kind: str | None = None,
         provider: str | None = None,
         model_preset_id: str | None = None,
@@ -1411,7 +1422,8 @@ class ProjectRegistry:
             prompt="",
             prompt_draft=str(prompt_draft),
             scheduled_deps=[],
-            pending_extra_skills=normalize_skill_ids(pending_extra_skills),
+            pending_extra_principles=normalize_principle_ids(pending_extra_principles),
+            pending_extra_skills=normalize_skill_selections(pending_extra_skills),
             resume_from_node_id=normalized_resume_id,
             proposed_by="user",
             summary="" if motivation is None else str(motivation),
@@ -1469,7 +1481,8 @@ class ProjectRegistry:
         review_target: dict[str, Any] | ReviewTarget | None | object = _UNSET,
         motivation: str | None | object = _UNSET,
         scheduled_deps: list[str] | None | object = _UNSET,
-        pending_extra_skills: list[str] | None | object = _UNSET,
+        pending_extra_principles: list[str] | None | object = _UNSET,
+        pending_extra_skills: list[str | dict[str, Any]] | None | object = _UNSET,
         provider: str | None | object = _UNSET,
         model_preset_id: str | None | object = _UNSET,
         obsolete_reason: str | None | object = _UNSET,
@@ -1604,8 +1617,13 @@ class ProjectRegistry:
             )
             update["scheduled_deps"] = deps
 
+        if pending_extra_principles is not _UNSET:
+            update["pending_extra_principles"] = normalize_principle_ids(
+                pending_extra_principles
+            )
+
         if pending_extra_skills is not _UNSET:
-            update["pending_extra_skills"] = normalize_skill_ids(
+            update["pending_extra_skills"] = normalize_skill_selections(
                 pending_extra_skills
             )
 
@@ -1752,6 +1770,13 @@ class ProjectRegistry:
             review_target=original.review_target,
             motivation=f"rerun of {original.id[:8]}",
             scheduled_deps=list(original.scheduled_deps or []),
+            pending_extra_principles=normalize_principle_ids(
+                original.settings_snapshot.get("extra_principles")
+            ),
+            pending_extra_skills=normalize_skill_selections(
+                original.settings_snapshot.get("extra_skills")
+            ),
+            agent_op_kind=original.agent_op_kind,
             model_preset_id=original.model_preset_id,
             _allow_compatibility_model_preset=True,
             planspace_id=original.planspace_id,

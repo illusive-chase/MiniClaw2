@@ -61,6 +61,7 @@ class ClaudeNativeSession:
         session_id: str | None = None,
         system_prompt_append: str = "",
         tool_allowlist: list[str] | None = None,
+        plugin_dir: Path | None = None,
         data_dir: Path | None = None,
     ) -> None:
         self._cwd = cwd
@@ -72,6 +73,7 @@ class ClaudeNativeSession:
         self._resume_session_id = session_id
         self._system_prompt_append = system_prompt_append
         self._tool_allowlist = tool_allowlist
+        self._plugin_dir = plugin_dir
         self._data_dir = data_dir or default_data_dir()
 
         self._session_id: str = session_id or str(uuid4())
@@ -112,6 +114,7 @@ class ClaudeNativeSession:
             effort=self._effort,
             system_prompt_append=self._system_prompt_append,
             tool_allowlist=self._tool_allowlist,
+            plugin_dir=str(self._plugin_dir) if self._plugin_dir else None,
         )
         env = build_env(
             hook_url=hook_runtime.ask_url(),

@@ -11,6 +11,8 @@ type EdgeData = {
   childState?: NodeState;
   root?: boolean;
   overlapsContinue?: boolean;
+  dashed?: boolean;
+  relation?: "available" | "used";
 };
 
 const ACTIVE: NodeState[] = [
@@ -160,8 +162,8 @@ function ResumeEdgeImpl(props: EdgeProps<EdgeData>) {
 export const ResumeEdge = memo(ResumeEdgeImpl);
 
 /** Dashed — acausal carryover; auto-hidden unless endpoint hovered/selected. */
-function LoadsEdgeImpl(props: EdgeProps) {
-  const { sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, selected, style } =
+function LoadsEdgeImpl(props: EdgeProps<EdgeData>) {
+  const { sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, selected, style, data } =
     props;
   const [path] = getBezierPath({
     sourceX,
@@ -179,7 +181,7 @@ function LoadsEdgeImpl(props: EdgeProps) {
       style={{
         stroke: selected ? "rgb(var(--brand))" : "rgb(var(--ink-subtle))",
         strokeWidth: 1.1,
-        strokeDasharray: "4 4",
+        strokeDasharray: data?.dashed ? "4 4" : undefined,
         opacity: visible,
         transition: "opacity 180ms ease",
       }}

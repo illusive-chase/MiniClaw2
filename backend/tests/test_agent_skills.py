@@ -1,0 +1,241 @@
+from __future__ import annotations
+
+import json
+import os
+import tempfile
+import unittest
+import zipfile
+from pathlib import Path
+
+from fastapi.testclient import TestClient
+
+from miniclaw2.app import create_app
+
+from miniclaw2.contextspace import contextspace_root
+from miniclaw2.domain import Node, Project
+from miniclaw2.events import Activity
+from miniclaw2.runner import NodeRunner
+from miniclaw2.skills import (
+    SkillError,
+    delete_agent_skill,
+    import_agent_skill,
+    list_agent_skills,
+    materialize_agent_skills,
+    normalize_skill_selections,
+    skill_content_hash,
+)
+from miniclaw2.store import Store
+from miniclaw2.sync import SCHEMA_VERSION
+
+
+def _write_skill(root: Path, slug: str, *, name: str = "Test Skill") -> Path:
+    skill = root / slug
+    skill.mkdir(parents=True, exist_ok=True)
+    (skill / "SKILL.md").write_text(
+        f"---\nname: {name}\ndescription: A useful test skill\n---\n\n# Instructions\n\nDo it.\n",
+        encoding="utf-8",
+    )
+    (skill / "references").mkdir(exist_ok=True)
+    (skill / "references" / "notes.md").write_text("notes\n", encoding="utf-8")
+    return skill
+
+
+class AgentSkillLibraryTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        self.store_root = self.root / "home"
+
+    def tearDown(self) -> None:
+        self.temp.cleanup()
+
+    def test_normalizes_string_and_structured_selections(self) -> None:
+        self.assertEqual(
+            normalize_skill_selections([
+                "alpha",
+                {"id": "skills.alpha", "suggest": True},
+                {"id": "beta", "suggest": False},
+                "principles.nope",
+            ]),
+            [
+                {"id": "skills.alpha", "suggest": True},
+                {"id": "skills.beta", "suggest": False},
+            ],
+        )
+
+    def test_import_list_hash_and_delete_local_skill(self) -> None:
+        source = _write_skill(self.root / "source", "alpha", name="Alpha")
+        imported = import_agent_skill(str(source), store_root=self.store_root)
+        self.assertEqual(imported["id"], "skills.alpha")
+        self.assertEqual(imported["name"], "Alpha")
+        self.assertIn("references/notes.md", imported["files"])
+        listed = list_agent_skills(self.store_root)
+        self.assertEqual([item["id"] for item in listed], ["skills.alpha"])
+        destination = contextspace_root(self.store_root) / "skills" / "alpha"
+        before = skill_content_hash(destination)
+        (destination / "references" / "notes.md").write_text("changed\n", encoding="utf-8")
+        self.assertNotEqual(skill_content_hash(destination), before)
+        self.assertTrue(delete_agent_skill("skills.alpha", store_root=self.store_root))
+        self.assertEqual(list_agent_skills(self.store_root), [])
+
+    def test_imports_zip_and_rejects_path_traversal(self) -> None:
+        archive = self.root / "skill.zip"
+        with zipfile.ZipFile(archive, "w") as zipped:
+            zipped.writestr(
+                "alpha/SKILL.md",
+                "---\nname: Alpha\ndescription: From zip\n---\n\nBody\n",
+            )
+        imported = import_agent_skill(str(archive), store_root=self.store_root)
+        self.assertEqual(imported["slug"], "alpha")
+
+        malicious = self.root / "malicious.zip"
+        with zipfile.ZipFile(malicious, "w") as zipped:
+            zipped.writestr("../SKILL.md", "bad")
+        with self.assertRaises(SkillError):
+            import_agent_skill(str(malicious), store_root=self.store_root)
+
+    def test_materializes_claude_plugin_and_codex_extra_roots(self) -> None:
+        source = _write_skill(self.root / "source", "alpha", name="Alpha")
+        import_agent_skill(str(source), store_root=self.store_root)
+        claude = materialize_agent_skills(
+            [{"id": "alpha", "suggest": True}],
+            provider="claude",
+            store_root=self.store_root,
+            workspace_root=self.root / "claude-run",
+        )
+        self.assertTrue((claude.plugin_dir / "skills" / "alpha" / "SKILL.md").is_file())
+        self.assertEqual(claude.audit[0]["mechanism"], "claude-plugin-dir")
+        self.assertEqual(len(claude.suggestions), 1)
+
+        codex = materialize_agent_skills(
+            ["skills.alpha", "skills.missing"],
+            provider="codex",
+            store_root=self.store_root,
+            workspace_root=self.root / "codex-run",
+        )
+        self.assertEqual(len(codex.extra_roots), 1)
+        self.assertTrue((Path(codex.extra_roots[0]) / "SKILL.md").is_file())
+        self.assertEqual(codex.audit[0]["mechanism"], "codex-extra-roots")
+        self.assertEqual(codex.env_overrides, {})
+        self.assertTrue(codex.audit[1]["missing"])
+
+
+class AgentSkillApiTests(unittest.TestCase):
+    def test_import_list_and_delete(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = _write_skill(root / "source", "alpha", name="Alpha")
+            previous = os.environ.get("MINICLAW_HOME")
+            os.environ["MINICLAW_HOME"] = str(root / "home")
+            try:
+                with TestClient(create_app()) as client:
+                    response = client.post("/skills/import", json={"source": str(source)})
+                    self.assertEqual(response.status_code, 200)
+                    self.assertEqual(response.json()["id"], "skills.alpha")
+                    self.assertEqual(client.get("/skills").json()[0]["name"], "Alpha")
+                    self.assertEqual(client.delete("/skills/alpha").status_code, 204)
+                    self.assertEqual(client.get("/skills").json(), [])
+            finally:
+                if previous is None:
+                    os.environ.pop("MINICLAW_HOME", None)
+                else:
+                    os.environ["MINICLAW_HOME"] = previous
+
+
+class SkillAuditTests(unittest.TestCase):
+    def test_activity_marks_only_confident_skill_match_used(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = Store(root=root / "home")
+            project = store.create_project(Project(root_path=str(root / "repo")))
+            node = store.create_node(Node(
+                project_id=project.id,
+                model_preset_id="gpt-5.5",
+                settings_snapshot={
+                    "skill_audit": [{
+                        "id": "skills.alpha",
+                        "slug": "alpha",
+                        "name": "Alpha",
+                        "materialized_path": "/tmp/run/skills/alpha",
+                        "used": False,
+                    }],
+                },
+            ))
+
+            async def _ignore(_event: dict[str, object]) -> None:
+                return None
+
+            runner = NodeRunner(node, project, store, _ignore)
+            self.assertFalse(runner._record_skill_use(Activity(
+                kind="tool", status="start", id="1", name="command", summary="ls"
+            )))
+            self.assertTrue(runner._record_skill_use(Activity(
+                kind="tool",
+                status="start",
+                id="2",
+                name="command",
+                summary="cat /tmp/run/skills/alpha/SKILL.md",
+            )))
+            self.assertTrue(node.settings_snapshot["skill_audit"][0]["used"])
+
+
+class PrinciplesSkillsMigrationTests(unittest.TestCase):
+    def test_schema_v5_migrates_old_skill_records_without_touching_snapshots(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "schema.json").write_text(
+                json.dumps({"schema": "canonical-schema-v5", "schema_version": 5}),
+                encoding="utf-8",
+            )
+            old = root / "contextspace" / "plugs" / "skills" / "review"
+            old.mkdir(parents=True)
+            (old / "manifest.yaml").write_text(
+                "kind: skill\nid: skills.review\ntitle: Review\n",
+                encoding="utf-8",
+            )
+            (old / "CONTEXT.md").write_text("review\n", encoding="utf-8")
+            binding = root / "contextspace" / "bindings" / "projects" / "one.yaml"
+            binding.parent.mkdir(parents=True)
+            binding.write_text("id: one\nplugs:\n  - id: skills.review\n", encoding="utf-8")
+            template = root / "contextspace" / "templates" / "review.yaml"
+            template.parent.mkdir(parents=True)
+            template.write_text(
+                "id: review\nsettings:\n  extra_skills:\n    - skills.review\n",
+                encoding="utf-8",
+            )
+            node_file = root / "projects" / "p" / "nodes" / "n" / "node.json"
+            node_file.parent.mkdir(parents=True)
+            node_file.write_text(json.dumps({
+                "settings_snapshot": {"extra_skills": ["skills.review"]},
+                "pending_extra_skills": ["skills.review"],
+                "agent_op_kind": "skill_edit",
+            }), encoding="utf-8")
+            snapshot = root / "contextspace" / "snapshots" / "old.json"
+            snapshot.parent.mkdir(parents=True)
+            snapshot.write_text(json.dumps({"kind": "skill", "plug_id": "skills.review"}), encoding="utf-8")
+
+            Store(root=root)
+
+            schema = json.loads((root / "schema.json").read_text(encoding="utf-8"))
+            self.assertEqual(schema["schema_version"], SCHEMA_VERSION)
+            self.assertTrue((root / "contextspace" / "plugs" / "principles" / "review").is_dir())
+            migrated = json.loads(node_file.read_text(encoding="utf-8"))
+            self.assertEqual(
+                migrated["settings_snapshot"]["extra_principles"],
+                ["principles.review"],
+            )
+            self.assertEqual(migrated["pending_extra_principles"], ["principles.review"])
+            self.assertEqual(migrated["pending_extra_skills"], [])
+            self.assertEqual(migrated["agent_op_kind"], "principle_edit")
+            self.assertIn(
+                "principles.review",
+                template.read_text(encoding="utf-8"),
+            )
+            self.assertEqual(
+                json.loads(snapshot.read_text(encoding="utf-8"))["kind"],
+                "skill",
+            )
+
+
+if __name__ == "__main__":
+    unittest.main()

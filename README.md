@@ -48,10 +48,16 @@ WebSocket, paired with a React + Vite + React Flow frontend.
   project is bound to a ContextSpace, the launch also snapshots the
   active ContextSpace sources according to their manifests into
   `$MINICLAW_HOME/contextspace/snapshots/<bundle-id>.json`. Project
-  `CONTEXT.md`, global plugs, and skill plugs are injected according to
+  `CONTEXT.md`, global plugs, and principle plugs are injected according to
   their declared mode. Planspace plugs are manifest-only; the agent reads
   their materialized graph lane instead. The node records
   `context_bundle_id`, `context_bundle_path`, and launch settings for audit.
+- **Principles and Agent Skills** - principles are user-wide behavior guidance
+  injected eagerly through context bundles. Native Agent Skills live under
+  `contextspace/skills`, are imported without format conversion, and are made
+  available per node through Claude's plugin directory or Codex app-server's
+  per-process extra skill roots. Launch settings record content hashes, paths,
+  materialization outcomes, and conservative used/not-used observations.
 
 ## Scope
 
@@ -103,7 +109,7 @@ build` in `frontend/`) whenever you change UI code.
 
 **Dev** — same command spawns `npm run dev` alongside the backend so
 Vite's proxy routes the frontend API paths (including `/global-state`,
-`/model-presets`, `/sessions`, `/skills`, `/templates`, and
+`/model-presets`, `/sessions`, `/principles`, `/skills`, `/templates`, and
 `/user-templates`) plus `/ws` back to the backend port. Add `--reload` to
 enable both backend auto-reload and frontend HMR; without it, neither side
 reloads on source changes:
@@ -270,7 +276,7 @@ On-disk layout (under `$MINICLAW_HOME`, default `~/.miniclaw2`):
 
 ```
 config.json             # global defaults and complete model preset catalog
-schema.json             # canonical store schema version (currently v4)
+schema.json             # canonical store schema version (currently v6)
 machine.json            # local UUID + label + sync checkpoint (gitignored)
 .gitignore              # excludes machine identity, backups, and temp writes
 projects/<pid>/
@@ -286,7 +292,8 @@ contextspace/
   plugs/planspaces/<slug>/
     manifest.yaml
   plugs/global/<slug>/{manifest.yaml, CONTEXT.md}
-  plugs/skills/<slug>/{manifest.yaml, CONTEXT.md, assets/}
+  plugs/principles/<slug>/{manifest.yaml, CONTEXT.md}
+  skills/<slug>/{SKILL.md, ...}
   snapshots/<bundle-id>.json
   templates/<slug>/{template.yaml,lane.yaml,prompts/}
 ```
@@ -342,9 +349,11 @@ is a project id, and each `user_message` spawns a fresh agent node.
   `GET /templates`, `GET /templates/{name}`, and
   `POST /templates/{name}/run`; user templates use `/user-templates` and
   `/sessions/{sid}/user-templates` endpoints.
-- Skill REST APIs: `GET /skills`, `DELETE /skills/{slug}`.
+- Principle REST APIs: `GET /principles`, `DELETE /principles/{slug}`.
+- Agent Skill REST APIs: `GET /skills`, `POST /skills/import`, and
+  `DELETE /skills/{slug}`.
 - Client -> server:
-  `user_message {text, resume_from_node_id?, extra_skills?,
+  `user_message {text, resume_from_node_id?, extra_principles?, extra_skills?,
   agent_op_kind?, model_preset_id?}`,
   `interaction_response`, `interrupt`, and
   `replay_request {node_id, since_seq}`.

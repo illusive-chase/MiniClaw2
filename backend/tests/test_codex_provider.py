@@ -5,6 +5,7 @@ import json
 import unittest
 from collections.abc import Callable
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
 
@@ -15,6 +16,7 @@ from miniclaw2.providers.codex import (
     CodexProvider,
     _CodexJsonRpcClient,
     _CODEX_STDIO_BUFFER_LIMIT_BYTES,
+    _configure_skill_roots,
     _codex_user_input_response,
     _activity_from_item,
     _thread_params,
@@ -171,6 +173,33 @@ class _FakeProviderContext:
 
 
 class CodexProviderTest(unittest.IsolatedAsyncioTestCase):
+    async def test_skill_root_failure_marks_audit_without_raising(self) -> None:
+        audit = {
+            "materialized_path": "/tmp/alpha",
+            "failed": False,
+        }
+        context = _FakeProviderContext()
+        context.skill_materialization = SimpleNamespace(
+            extra_roots=["/tmp/alpha"],
+            audit=[audit],
+        )
+
+        class _ClientStub:
+            async def request(
+                self, method: str, params: dict[str, Any]
+            ) -> dict[str, Any]:
+                self.method = method
+                self.params = params
+                raise CodexRpcError(-32601, "method not found")
+
+        await _configure_skill_roots(
+            _ClientStub(),  # type: ignore[arg-type]
+            context,  # type: ignore[arg-type]
+        )
+
+        self.assertTrue(audit["failed"])
+        self.assertIn("skills/extraRoots/set failed", audit["error"])
+
     async def test_review_error_classification_uses_json_rpc_code(self) -> None:
         async def collect_for(code: int) -> list[Any]:
             class _ClientStub:
@@ -617,6 +646,11 @@ class CodexProviderTest(unittest.IsolatedAsyncioTestCase):
                 "sandbox": "workspace-write",
             }
         )
+        ctx.skill_materialization = SimpleNamespace(
+            extra_roots=["/tmp/alpha"],
+            audit=[],
+            env_overrides={},
+        )
 
         captured_requests: list[dict[str, Any]] = []
 
@@ -626,6 +660,8 @@ class CodexProviderTest(unittest.IsolatedAsyncioTestCase):
 
             async def request(self, method: str, params: dict[str, Any], **_kwargs: Any) -> dict[str, Any]:
                 captured_requests.append({"method": method, "params": params})
+                if method == "skills/extraRoots/set":
+                    return {}
                 if method == "thread/start":
                     return {"thread": {"id": "thread-1"}}
                 if method == "turn/start":
@@ -660,11 +696,13 @@ class CodexProviderTest(unittest.IsolatedAsyncioTestCase):
                 provider._client = original_client
 
         requests = await _run_once()
-        self.assertGreaterEqual(len(requests), 2)
-        self.assertEqual(requests[0]["method"], "thread/start")
-        self.assertEqual(requests[0]["params"]["sandbox"], "workspace-write")
-        self.assertEqual(requests[0]["params"]["approvalPolicy"], "never")
-        self.assertEqual(requests[0]["params"]["cwd"], "/tmp/workspace")
+        self.assertGreaterEqual(len(requests), 3)
+        self.assertEqual(requests[0]["method"], "skills/extraRoots/set")
+        self.assertEqual(requests[0]["params"], {"extraRoots": ["/tmp/alpha"]})
+        self.assertEqual(requests[1]["method"], "thread/start")
+        self.assertEqual(requests[1]["params"]["sandbox"], "workspace-write")
+        self.assertEqual(requests[1]["params"]["approvalPolicy"], "never")
+        self.assertEqual(requests[1]["params"]["cwd"], "/tmp/workspace")
 
 
 if __name__ == "__main__":

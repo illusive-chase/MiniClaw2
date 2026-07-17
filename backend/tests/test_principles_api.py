@@ -1,4 +1,4 @@
-"""HTTP tests for /skills endpoints (PR 3)."""
+"""HTTP tests for /principles endpoints (PR 3)."""
 
 from __future__ import annotations
 
@@ -13,13 +13,13 @@ from fastapi.testclient import TestClient
 from miniclaw2.app import create_app
 
 
-def _write_skill(ctx_root: Path, slug: str, *, title: str, body: str = "body") -> None:
-    plug_dir = ctx_root / "plugs" / "skills" / slug
+def _write_principle(ctx_root: Path, slug: str, *, title: str, body: str = "body") -> None:
+    plug_dir = ctx_root / "plugs" / "principles" / slug
     plug_dir.mkdir(parents=True, exist_ok=True)
     manifest = {
         "version": 1,
-        "kind": "skill",
-        "id": f"skills.{slug}",
+        "kind": "principle",
+        "id": f"principles.{slug}",
         "title": title,
     }
     (plug_dir / "manifest.yaml").write_text(
@@ -28,7 +28,7 @@ def _write_skill(ctx_root: Path, slug: str, *, title: str, body: str = "body") -
     (plug_dir / "CONTEXT.md").write_text(body, encoding="utf-8")
 
 
-class SkillsApiTest(unittest.TestCase):
+class PrinciplesApiTest(unittest.TestCase):
     def setUp(self) -> None:
         self._home = tempfile.TemporaryDirectory()
         os.environ["MINICLAW_HOME"] = self._home.name
@@ -41,40 +41,40 @@ class SkillsApiTest(unittest.TestCase):
         self._home.cleanup()
 
     def test_list_empty(self) -> None:
-        res = self.client.get("/skills")
+        res = self.client.get("/principles")
         self.assertEqual(res.status_code, 200)
         self.assertEqual(res.json(), [])
 
-    def test_list_returns_hand_created_skills(self) -> None:
-        _write_skill(self.ctx_root, "vim", title="Vim motions")
-        _write_skill(self.ctx_root, "git", title="Git etiquette")
-        res = self.client.get("/skills")
+    def test_list_returns_hand_created_principles(self) -> None:
+        _write_principle(self.ctx_root, "vim", title="Vim motions")
+        _write_principle(self.ctx_root, "git", title="Git etiquette")
+        res = self.client.get("/principles")
         self.assertEqual(res.status_code, 200)
         items = {item["id"]: item for item in res.json()}
-        self.assertEqual(set(items), {"skills.vim", "skills.git"})
-        self.assertEqual(items["skills.vim"]["title"], "Vim motions")
-        self.assertEqual(items["skills.vim"]["kind"], "skill")
+        self.assertEqual(set(items), {"principles.vim", "principles.git"})
+        self.assertEqual(items["principles.vim"]["title"], "Vim motions")
+        self.assertEqual(items["principles.vim"]["kind"], "principle")
 
     def test_delete_removes_plug_dir(self) -> None:
-        _write_skill(self.ctx_root, "vim", title="Vim")
-        res = self.client.delete("/skills/vim")
+        _write_principle(self.ctx_root, "vim", title="Vim")
+        res = self.client.delete("/principles/vim")
         self.assertEqual(res.status_code, 204)
-        self.assertFalse((self.ctx_root / "plugs" / "skills" / "vim").exists())
-        self.assertEqual(self.client.get("/skills").json(), [])
+        self.assertFalse((self.ctx_root / "plugs" / "principles" / "vim").exists())
+        self.assertEqual(self.client.get("/principles").json(), [])
 
     def test_delete_missing_returns_404(self) -> None:
-        res = self.client.delete("/skills/nope")
+        res = self.client.delete("/principles/nope")
         self.assertEqual(res.status_code, 404)
 
     def test_delete_rejects_traversal(self) -> None:
-        # A slug containing "/" cannot escape the skills root — the helper
+        # A slug containing "/" cannot escape the principles root — the helper
         # rejects it before touching the filesystem.
-        _write_skill(self.ctx_root, "vim", title="Vim")
-        res = self.client.delete("/skills/..%2Fvim")
+        _write_principle(self.ctx_root, "vim", title="Vim")
+        res = self.client.delete("/principles/..%2Fvim")
         # FastAPI normalizes %2F path segments; the safest assertion is that
         # the vim plug is still there afterwards.
-        self.assertTrue((self.ctx_root / "plugs" / "skills" / "vim").exists())
-        # And that path traversal-y slugs never resolve to a real skill.
+        self.assertTrue((self.ctx_root / "plugs" / "principles" / "vim").exists())
+        # And that path traversal-y slugs never resolve to a real principle.
         self.assertIn(res.status_code, (400, 404))
 
 

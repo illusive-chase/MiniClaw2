@@ -23,9 +23,9 @@ from pydantic import BaseModel, ConfigDict, Field, StrictInt, ValidationError
 
 from .artifacts import INLINE_TEXT_CAP, stored_artifact_path
 from .contextspace import (
-    delete_skill,
+    delete_principle,
     describe_project_contextspace,
-    list_skills,
+    list_principles,
     load_context_bundle_for_node,
     read_project_context,
 )
@@ -52,6 +52,12 @@ from .providers.claude_native import hook_runtime
 from .providers.claude_native.hook_installer import install_hooks
 from .registry import NonNativeProjectError, ProjectRegistry
 from .replay import LiveReplayBuffer
+from .skills import (
+    SkillError,
+    delete_agent_skill,
+    import_agent_skill,
+    list_agent_skills,
+)
 from .store import StoreReadOnlyError
 from .sync import SyncError
 from .templates import (
@@ -187,7 +193,8 @@ class UpdateVirtualRequest(BaseModel):
     review_target: dict[str, Any] | None = None
     motivation: str | None = None
     scheduled_deps: list[str] | None = None
-    pending_extra_skills: list[str] | None = None
+    pending_extra_principles: list[str] | None = None
+    pending_extra_skills: list[str | dict[str, Any]] | None = None
     model_preset_id: str | None = None
     obsolete_reason: str | None = None
 
@@ -202,12 +209,20 @@ class CreateVirtualRequest(BaseModel):
     review_target: dict[str, Any] | None = None
     motivation: str | None = None
     scheduled_deps: list[str] | None = None
-    pending_extra_skills: list[str] | None = None
+    pending_extra_principles: list[str] | None = None
+    pending_extra_skills: list[str | dict[str, Any]] | None = None
     agent_op_kind: str | None = None
     model_preset_id: str | None = None
     planspace_id: str | None = None
     parent_node_id: str | None = None
     resume_from_node_id: str | None = None
+
+
+class ImportSkillRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source: str
+    slug: str | None = None
 
 
 class EventRecord(BaseModel):
@@ -922,6 +937,7 @@ def create_app(registry: ProjectRegistry | None = None) -> FastAPI:
                 review_target=req.review_target,
                 motivation=req.motivation,
                 scheduled_deps=req.scheduled_deps,
+                pending_extra_principles=req.pending_extra_principles,
                 pending_extra_skills=req.pending_extra_skills,
                 agent_op_kind=req.agent_op_kind,
                 model_preset_id=req.model_preset_id,
@@ -1211,16 +1227,46 @@ def create_app(registry: ProjectRegistry | None = None) -> FastAPI:
         registry.store.sync.schedule_commit(f"delete template {slug}")
         return Response(status_code=204)
 
-    @app.get("/skills", response_model=list[dict[str, Any]])
-    def list_skills_endpoint() -> list[dict[str, Any]]:
-        return list_skills(store_root=registry.store.root)
+    @app.get("/principles", response_model=list[dict[str, Any]])
+    def list_principles_endpoint() -> list[dict[str, Any]]:
+        return list_principles(store_root=registry.store.root)
 
-    @app.delete("/skills/{slug}", status_code=204)
-    def delete_skill_endpoint(slug: str) -> Response:
+    @app.delete("/principles/{slug}", status_code=204)
+    def delete_principle_endpoint(slug: str) -> Response:
         registry.store.assert_writable()
         try:
-            removed = delete_skill(slug, store_root=registry.store.root)
+            removed = delete_principle(slug, store_root=registry.store.root)
         except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        if not removed:
+            raise HTTPException(404, f"principle not found: {slug}")
+        registry.store.sync.schedule_commit(f"delete principle {slug}")
+        return Response(status_code=204)
+
+    @app.get("/skills", response_model=list[dict[str, Any]])
+    def list_agent_skills_endpoint() -> list[dict[str, Any]]:
+        return list_agent_skills(store_root=registry.store.root)
+
+    @app.post("/skills/import", response_model=dict[str, Any])
+    def import_agent_skill_endpoint(req: ImportSkillRequest) -> dict[str, Any]:
+        registry.store.assert_writable()
+        try:
+            imported = import_agent_skill(
+                req.source,
+                slug=req.slug,
+                store_root=registry.store.root,
+            )
+        except SkillError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        registry.store.sync.schedule_commit(f'import skill {imported["slug"]}')
+        return imported
+
+    @app.delete("/skills/{slug}", status_code=204)
+    def delete_agent_skill_endpoint(slug: str) -> Response:
+        registry.store.assert_writable()
+        try:
+            removed = delete_agent_skill(slug, store_root=registry.store.root)
+        except SkillError as exc:
             raise HTTPException(400, str(exc)) from exc
         if not removed:
             raise HTTPException(404, f"skill not found: {slug}")
@@ -1366,6 +1412,7 @@ def create_app(registry: ProjectRegistry | None = None) -> FastAPI:
                             sid,
                             msg.text,
                             resume_from_node_id=msg.resume_from_node_id,
+                            extra_principles=msg.extra_principles,
                             extra_skills=msg.extra_skills,
                             agent_op_kind=msg.agent_op_kind,
                             model_preset_id=msg.model_preset_id,

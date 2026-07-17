@@ -129,7 +129,8 @@ class UserMessage(BaseModel):
     type: Literal["user_message"]
     text: str
     resume_from_node_id: str | None = None
-    extra_skills: list[str] | None = None
+    extra_principles: list[str] | None = None
+    extra_skills: list[str | dict[str, Any]] | None = None
     agent_op_kind: str | None = None
     model_preset_id: str | None = None
 

@@ -14,7 +14,7 @@ from miniclaw2.domain import Node, NodeState, Project
 from miniclaw2.global_config import load_global_config, save_global_config
 from miniclaw2.registry import ProjectRegistry
 from miniclaw2.store import Store, StoreReadOnlyError
-from miniclaw2.sync import SchemaConflictError, SyncError, bootstrap_store
+from miniclaw2.sync import SCHEMA_VERSION, SchemaConflictError, SyncError, bootstrap_store
 
 
 def _git(*args: str, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
@@ -47,7 +47,7 @@ class StoreIdentityMigrationTests(unittest.TestCase):
             self.assertTrue((root / "machine.json").is_file())
             self.assertEqual(
                 json.loads((root / "schema.json").read_text())["schema_version"],
-                5,
+                SCHEMA_VERSION,
             )
             self.assertTrue(list((root / "migration-backups").glob("*/projects/*/project.json")))
             ignore = (root / ".gitignore").read_text()

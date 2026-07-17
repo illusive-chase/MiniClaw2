@@ -6,7 +6,7 @@ materialized filesystem projection under ``.miniclaw2/graph/lanes/``
 
   - Resolves the contextspace root and the project's binding.
   - Composes the per-launch ``ComposedContextBundle``: project-root
-    ``CONTEXT.md`` plus injection-mode markdown from global and skill
+    ``CONTEXT.md`` plus injection-mode markdown from global and principle
     plugs. The active planspace id is propagated so the runner knows
     which lane to materialize.
   - Persists an audit snapshot of every bundle under
@@ -89,7 +89,7 @@ def compose_context_bundle(
     """Compose and persist the context bundle seen at node launch.
 
     Loads project-root ``CONTEXT.md`` and any markdown from bound
-    ``global`` / ``skill`` plugs. The active planspace id is carried in
+    ``global`` / ``principle`` plugs. The active planspace id is carried in
     the returned bundle so the runner can materialize the lane;
     planspace plug content itself is no longer injected into the LLM
     projection (the materialized filesystem subtree replaces that).
@@ -117,7 +117,7 @@ def compose_context_bundle(
             system_parts.append(text)
 
     active_planspace_id: str | None = None
-    binding_skill_ids: set[str] = set()
+    binding_principle_ids: set[str] = set()
     if binding is not None:
         plug_refs = _expand_required_plugs(root, binding.plugs)
         launch_project = project.model_copy(
@@ -135,9 +135,9 @@ def compose_context_bundle(
                 # Planspace plugs are manifest-only — the agent reads
                 # node previews via the materialized filesystem.
                 continue
-            if kind in {"skill", "global"}:
-                if kind == "skill":
-                    binding_skill_ids.add(ref.id)
+            if kind in {"principle", "global"}:
+                if kind == "principle":
+                    binding_principle_ids.add(ref.id)
                 loaded = _load_context_markdown_source(root, ref, kind)
                 if loaded is None:
                     continue
@@ -149,39 +149,39 @@ def compose_context_bundle(
                 elif source.get("injection") == "turn":
                     turn_sections.append(_section_text(source, text))
 
-    # Per-node opt-in skills (settings_snapshot["extra_skills"]). Loaded
-    # after bindings so a binding-provided skill wins the dedupe.
-    for skill_id in _extra_skill_ids(node):
-        if skill_id in binding_skill_ids:
+    # Per-node opt-in principles are loaded after bindings so a
+    # binding-provided principle wins the dedupe.
+    for principle_id in _extra_principle_ids(node):
+        if principle_id in binding_principle_ids:
             continue
-        binding_skill_ids.add(skill_id)  # also dedupes within extra_skills
-        ref = PlugRef(id=skill_id, source="node-opt-in")
-        plug_dir = _plug_dir(root, skill_id)
+        binding_principle_ids.add(principle_id)
+        ref = PlugRef(id=principle_id, source="node-opt-in")
+        plug_dir = _plug_dir(root, principle_id)
         # The expected CONTEXT.md path (may not exist on disk) — recorded so
-        # the canvas' (scope, kind, path) aggregation keys missing skills by
+        # the canvas' aggregation keys missing principles by
         # plug_id instead of collapsing them all under an ``undefined`` tile.
         expected_path = (
             _display_path(plug_dir / "CONTEXT.md", root)
             if plug_dir is not None
-            else f"skills/{skill_id}/CONTEXT.md"
+            else f"principles/{principle_id}/CONTEXT.md"
         )
         if plug_dir is None or not plug_dir.exists():
             sources.append({
                 "scope": "contextspace",
-                "kind": "skill",
-                "plug_id": skill_id,
+                "kind": "principle",
+                "plug_id": principle_id,
                 "source": "node-opt-in",
                 "path": expected_path,
                 "chars": 0,
                 "missing": True,
             })
             continue
-        loaded = _load_context_markdown_source(root, ref, "skill")
+        loaded = _load_context_markdown_source(root, ref, "principle")
         if loaded is None:
             sources.append({
                 "scope": "contextspace",
-                "kind": "skill",
-                "plug_id": skill_id,
+                "kind": "principle",
+                "plug_id": principle_id,
                 "source": "node-opt-in",
                 "path": expected_path,
                 "chars": 0,
@@ -281,7 +281,7 @@ def ensure_contextspace_root(
     _write_text_if_missing(
         root / "README.md",
         "# MiniClaw2 ContextSpace\n\n"
-        "This repository stores MiniClaw2 planspaces, bindings, skills, "
+        "This repository stores MiniClaw2 planspaces, bindings, principles, "
         "and context snapshots inside the MiniClaw2 metadata store.\n",
         root,
         created_items,
@@ -681,23 +681,23 @@ def require_resolvable_active_planspace(
     )
 
 
-def list_skills(store_root: Path | None = None) -> list[dict[str, Any]]:
-    """Enumerate user-wide skill plugs for the shelf.
+def list_principles(store_root: Path | None = None) -> list[dict[str, Any]]:
+    """Enumerate user-wide principle plugs for the shelf.
 
     Returns a list of dicts shaped like ``_plug_summary`` output but
-    scoped to skills (no binding/planspace fields). Missing manifests
+    scoped to principles (no binding/planspace fields). Missing manifests
     are skipped; the ``exists`` field always reflects the plug dir.
     """
     root = contextspace_root(store_root)
-    skills_root = root / "plugs" / "skills"
-    if not skills_root.exists():
+    principles_root = root / "plugs" / "principles"
+    if not principles_root.exists():
         return []
     out: list[dict[str, Any]] = []
-    for plug_dir in sorted(skills_root.iterdir()):
+    for plug_dir in sorted(principles_root.iterdir()):
         if not plug_dir.is_dir():
             continue
         slug = plug_dir.name
-        plug_id = f"skills.{slug}"
+        plug_id = f"principles.{slug}"
         manifest = _plug_manifest(root, plug_id)
         if not manifest:
             continue
@@ -710,7 +710,7 @@ def list_skills(store_root: Path | None = None) -> list[dict[str, Any]]:
         max_chars = manifest.get("max_chars")
         out.append({
             "id": plug_id,
-            "kind": "skill",
+            "kind": "principle",
             "slug": slug,
             "title": title,
             "description": _string_value(manifest.get("description")),
@@ -722,28 +722,28 @@ def list_skills(store_root: Path | None = None) -> list[dict[str, Any]]:
     return out
 
 
-def delete_skill(slug: str, *, store_root: Path | None = None) -> bool:
-    """Delete a user-wide skill plug directory. Return True if removed.
+def delete_principle(slug: str, *, store_root: Path | None = None) -> bool:
+    """Delete a user-wide principle plug directory. Return True if removed.
 
-    Binding refs to the deleted skill become dangling; ``compose_context_bundle``
+    Binding refs to the deleted principle become dangling; ``compose_context_bundle``
     already silently skips missing binding plugs and marks missing opt-in
     plugs with ``missing: true``.
     """
     if not isinstance(slug, str) or not slug.strip() or "/" in slug:
-        raise ValueError(f"invalid skill slug: {slug!r}")
+        raise ValueError(f"invalid principle slug: {slug!r}")
     root = contextspace_root(store_root)
-    plug_id = f"skills.{slug}" if "." not in slug else slug
-    if not plug_id.startswith("skills."):
-        raise ValueError(f"not a skill id: {plug_id!r}")
+    plug_id = f"principles.{slug}" if "." not in slug else slug
+    if not plug_id.startswith("principles."):
+        raise ValueError(f"not a principle id: {plug_id!r}")
     plug_dir = _plug_dir(root, plug_id)
     if plug_dir is None:
         return False
     try:
         resolved = plug_dir.resolve()
-        skills_root = (root / "plugs" / "skills").resolve()
+        principles_root = (root / "plugs" / "principles").resolve()
     except OSError:
         return False
-    if resolved.parent != skills_root:
+    if resolved.parent != principles_root:
         return False
     if not plug_dir.exists():
         return False
@@ -751,20 +751,20 @@ def delete_skill(slug: str, *, store_root: Path | None = None) -> bool:
     return True
 
 
-_SKILL_SLUG_RE = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
+_PRINCIPLE_SLUG_RE = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
 
 
-def normalize_skill_ids(raw: Any) -> list[str]:
-    """Normalize a list of skill ids/slugs into canonical ``skills.<slug>`` ids.
+def normalize_principle_ids(raw: Any) -> list[str]:
+    """Normalize principle ids/slugs into canonical ids.
 
-    Accepts bare slugs (``"foo"``) or full ids (``"skills.foo"``). Non-list
+    Accepts bare slugs (``"foo"``) or full ids (``"principles.foo"``). Non-list
     input, non-string entries, empty strings, and other-kind prefixes are
     dropped silently. Duplicates collapse preserving first-seen order.
 
     The slug portion is validated as strict kebab-case (lowercase letters,
     digits, hyphens; no path separators, no ``..`` traversal, no absolute
     paths) so downstream ``_plug_dir()`` cannot be steered outside
-    ``plugs/skills/`` via a crafted id.
+    ``plugs/principles/`` via a crafted id.
 
     Single source of truth for both wire-in normalization (``registry``
     accepting client payloads) and settings-snapshot read-back
@@ -781,14 +781,14 @@ def normalize_skill_ids(raw: Any) -> list[str]:
         if not cleaned:
             continue
         if "." in cleaned:
-            if not cleaned.startswith("skills."):
+            if not cleaned.startswith("principles."):
                 continue
-            slug = cleaned[len("skills."):]
+            slug = cleaned[len("principles."):]
         else:
             slug = cleaned
-        if not _SKILL_SLUG_RE.fullmatch(slug):
+        if not _PRINCIPLE_SLUG_RE.fullmatch(slug):
             continue
-        plug_id = f"skills.{slug}"
+        plug_id = f"principles.{slug}"
         if plug_id in seen:
             continue
         seen.add(plug_id)
@@ -796,8 +796,8 @@ def normalize_skill_ids(raw: Any) -> list[str]:
     return out
 
 
-def _extra_skill_ids(node: Node) -> list[str]:
-    return normalize_skill_ids(node.settings_snapshot.get("extra_skills"))
+def _extra_principle_ids(node: Node) -> list[str]:
+    return normalize_principle_ids(node.settings_snapshot.get("extra_principles"))
 
 
 # ----------------- internal helpers -----------------
@@ -1189,8 +1189,8 @@ def _plug_dir(root: Path, plug_id: str) -> Path | None:
     slug = _plug_slug(plug_id)
     if kind == "planspace":
         return root / "plugs" / "planspaces" / slug
-    if kind == "skill":
-        return root / "plugs" / "skills" / slug
+    if kind == "principle":
+        return root / "plugs" / "principles" / slug
     if kind == "global":
         if slug == "default":
             return root / "plugs" / "global"
@@ -1201,8 +1201,8 @@ def _plug_dir(root: Path, plug_id: str) -> Path | None:
 def _plug_kind(plug_id: str) -> str:
     if plug_id.startswith("planspaces."):
         return "planspace"
-    if plug_id.startswith("skills."):
-        return "skill"
+    if plug_id.startswith("principles."):
+        return "principle"
     if plug_id.startswith("global."):
         return "global"
     return "unknown"

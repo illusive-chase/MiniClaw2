@@ -23,6 +23,7 @@ import {
   buildGraph,
   type RFNode,
   type RFEdge,
+  type PrincipleEnumeration,
   type SkillEnumeration,
 } from "./layout";
 import { AgentNode } from "./nodes/AgentNode";
@@ -94,8 +95,9 @@ export type CanvasProps = {
   hiddenPlanspaceIds: string[];
   activePlanspaceId: string | null;
   canCreateVirtual: boolean;
-  /** User-wide skills enumerated from GET /skills. Dimmed on the shelf when
+  /** User-wide principles enumerated from GET /principles. Dimmed on the shelf when
    * no live node has loaded them. */
+  principles?: PrincipleEnumeration[];
   skills?: SkillEnumeration[];
   /** Persisted positions hydrated from the session. */
   initialLayoutHints?: Record<string, { x: number; y: number }>;
@@ -122,10 +124,11 @@ export type CanvasProps = {
    */
   onTemplateDrop?: (slug: string, anchorNodeId: string | null) => void;
   /**
-   * Fires when a skill chip is dragged from a shelf tile and dropped onto
+   * Fires when a principle chip is dragged from a shelf tile and dropped onto
    * a virtual agent tile. The callback receives the virtual node id and
-   * the skill plug id (``skills.<slug>``) to attach.
+   * the principle plug id (``principles.<slug>``) to attach.
    */
+  onAttachPrincipleToVirtual?: (virtualNodeId: string, principleId: string) => void;
   onAttachSkillToVirtual?: (virtualNodeId: string, skillId: string) => void;
   /** Called after drag-end / pan / zoom with layout state that changed. */
   onLayoutHintsChange?: (
@@ -156,6 +159,7 @@ function CanvasInner({
   hiddenPlanspaceIds,
   activePlanspaceId,
   canCreateVirtual,
+  principles,
   skills,
   initialLayoutHints,
   initialLayoutViewport,
@@ -163,6 +167,7 @@ function CanvasInner({
   onMultiSelectionChange,
   onAgentNodeContextMenu,
   onTemplateDrop,
+  onAttachPrincipleToVirtual,
   onAttachSkillToVirtual,
   onLayoutHintsChange,
   gitCommits,
@@ -246,6 +251,7 @@ function CanvasInner({
         hiddenPlanspaceIds,
         activePlanspaceId,
         canCreateVirtual,
+        principles,
         skills,
         gitCommits,
         gitHead,
@@ -260,6 +266,7 @@ function CanvasInner({
       hiddenPlanspaceIds,
       activePlanspaceId,
       canCreateVirtual,
+      principles,
       skills,
       gitCommits,
       gitHead,
@@ -610,6 +617,7 @@ function CanvasInner({
     const types = event.dataTransfer.types;
     if (
       types.includes("application/x-miniclaw-template") ||
+      types.includes("application/x-miniclaw-principle") ||
       types.includes("application/x-miniclaw-skill")
     ) {
       event.preventDefault();
@@ -622,10 +630,11 @@ function CanvasInner({
       const templateSlug = event.dataTransfer.getData(
         "application/x-miniclaw-template",
       );
-      const skillId = event.dataTransfer.getData(
-        "application/x-miniclaw-skill",
+      const principleId = event.dataTransfer.getData(
+        "application/x-miniclaw-principle",
       );
-      if (!templateSlug && !skillId) return;
+      const skillId = event.dataTransfer.getData("application/x-miniclaw-skill");
+      if (!templateSlug && !principleId && !skillId) return;
       event.preventDefault();
       // Walk up the DOM from the drop target to find the nearest React Flow
       // node element and read its data-id. If none, the drop hit the pane.
@@ -647,10 +656,19 @@ function CanvasInner({
         }
         cursor = cursor.parentElement;
       }
-      if (skillId) {
-        /* Skills are attach-to-virtual only. Dropping on the pane, a
+      if (principleId) {
+        /* Principles are attach-to-virtual only. Dropping on the pane, a
          * running agent, an op node, or a context tile is a no-op — the
          * cursor gives no feedback, but the drop is simply ignored. */
+        if (anchorNode?.type === "agent") {
+          const data = anchorNode.data as import("./layout").AgentNodeData;
+          if (data.node.state === "virtual" && !data.node.obsolete_reason) {
+            onAttachPrincipleToVirtual?.(data.node.id, principleId);
+          }
+        }
+        return;
+      }
+      if (skillId) {
         if (anchorNode?.type === "agent") {
           const data = anchorNode.data as import("./layout").AgentNodeData;
           if (data.node.state === "virtual" && !data.node.obsolete_reason) {
@@ -661,7 +679,7 @@ function CanvasInner({
       }
       onTemplateDrop?.(templateSlug, anchorAgentId);
     },
-    [built.rfNodes, onTemplateDrop, onAttachSkillToVirtual],
+    [built.rfNodes, onTemplateDrop, onAttachPrincipleToVirtual, onAttachSkillToVirtual],
   );
 
   return (

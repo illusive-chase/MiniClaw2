@@ -43,24 +43,33 @@ export type ContextNodeData = {
   chars: number;
   /** ids of agent nodes that loaded this file */
   loadedByNodeIds: string[];
-  /** source plug id when this context file comes from a planspace/skill plug */
+  /** source plug id when this context file comes from a planspace/principle plug */
   plugId?: string | null;
-  /** manifest title, populated for known skills so tooltips read as a name */
+  /** manifest title, populated for known principles so tooltips read as a name */
   title?: string | null;
-  /** true when a skill exists on the shelf but no live node has loaded it */
+  /** true when a principle exists on the shelf but no live node has loaded it */
   dimmed?: boolean;
-  /** number of virtuals/phantoms currently pre-attaching this skill.
+  /** number of virtuals/phantoms currently pre-attaching this principle.
    *  Rendered as a small badge on the shelf tile (§6.1 of PROPOSAL_SKILLS). */
   attachedCount?: number;
+  usedByNodeIds?: string[];
 };
 
-/** Minimal projection of a user-wide skill for buildGraph enumeration.
+/** Minimal projection of a user-wide principle for buildGraph enumeration.
  *  Kept local to avoid a layout → api dependency. */
-export type SkillEnumeration = {
+export type PrincipleEnumeration = {
   id: string;
   slug: string;
   title: string;
   description: string | null;
+  path: string;
+};
+
+export type SkillEnumeration = {
+  id: string;
+  slug: string;
+  title: string;
+  description: string;
   path: string;
 };
 
@@ -200,8 +209,10 @@ export type BuildGraphArgs = {
   activePlanspaceId: string | null;
   /** true when the active lane's virtual create button should be enabled */
   canCreateVirtual: boolean;
-  /** user-wide skills enumerated from GET /skills; dimmed on the shelf when
+  /** user-wide principles enumerated from GET /principles; dimmed on the shelf when
    *  no live node has loaded them */
+  principles?: PrincipleEnumeration[];
+  /** Native Agent Skills enumerated from GET /skills. */
   skills?: SkillEnumeration[];
   gitCommits?: CommitDescriptor[];
   gitHead?: string | null;
@@ -231,6 +242,7 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
     hiddenPlanspaceIds,
     activePlanspaceId,
     canCreateVirtual,
+    principles = [],
     skills = [],
     gitCommits = [],
     gitHead = null,
@@ -720,6 +732,7 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
     path: string;
     chars: number;
     loadedBy: Set<string>;
+    usedBy: Set<string>;
     plugId?: string | null;
     title?: string | null;
   };
@@ -746,26 +759,43 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
           path: src.path,
           chars: src.chars,
           loadedBy: new Set([ownerId]),
+          usedBy: new Set([ownerId]),
           plugId: src.plug_id ?? null,
         });
       }
     }
   }
 
-  /* User-wide skills that no live node has loaded still appear on the shelf,
+  /* User-wide principles that no live node has loaded still appear on the shelf,
    * dimmed. Their identity matches what compose_context_bundle would emit if
-   * a node opted-in to them (scope="contextspace", kind="skill", path=plug
-   * CONTEXT.md path), so the tile survives once a live node loads the skill.
+   * a node opted-in to them (scope="contextspace", kind="principle", path=plug
+   * CONTEXT.md path), so the tile survives once a live node loads the principle.
    */
-  for (const skill of skills) {
-    const skillPath = `${skill.path}/CONTEXT.md`;
-    const key = contextIdentityKey("contextspace", "skill", skillPath);
+  for (const principle of principles) {
+    const principlePath = `${principle.path}/CONTEXT.md`;
+    const key = contextIdentityKey("contextspace", "principle", principlePath);
     const existing = ctxAgg.get(key);
     if (existing) {
-      // Live node already loaded this skill; enrich with manifest title.
-      if (!existing.title) existing.title = skill.title;
+      // Live node already loaded this principle; enrich with manifest title.
+      if (!existing.title) existing.title = principle.title;
       continue;
     }
+    ctxAgg.set(key, {
+      identityKey: key,
+      scope: "contextspace",
+      kind: "principle",
+      path: principlePath,
+      chars: 0,
+      loadedBy: new Set(),
+      usedBy: new Set(),
+      plugId: principle.id,
+      title: principle.title,
+    });
+  }
+
+  for (const skill of skills) {
+    const skillPath = `${skill.path}/SKILL.md`;
+    const key = contextIdentityKey("contextspace", "skill", skillPath);
     ctxAgg.set(key, {
       identityKey: key,
       scope: "contextspace",
@@ -773,27 +803,64 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
       path: skillPath,
       chars: 0,
       loadedBy: new Set(),
+      usedBy: new Set(),
       plugId: skill.id,
       title: skill.title,
     });
   }
 
-  /* Attached-count map: skill plug_id → number of visible virtuals whose
-   * pending_extra_skills list references that skill. Rendered as a small
+  for (const node of visibleNodes) {
+    const audit = node.settings_snapshot?.skill_audit;
+    if (!Array.isArray(audit)) continue;
+    for (const raw of audit) {
+      if (!raw || typeof raw !== "object") continue;
+      const item = raw as Record<string, unknown>;
+      if (item.missing === true || item.failed === true) continue;
+      const id = typeof item.id === "string" ? item.id : "";
+      const skill = skills.find((candidate) => candidate.id === id);
+      if (!skill) continue;
+      const key = contextIdentityKey(
+        "contextspace",
+        "skill",
+        `${skill.path}/SKILL.md`,
+      );
+      const aggregate = ctxAgg.get(key);
+      if (!aggregate) continue;
+      aggregate.loadedBy.add(node.id);
+      if (item.used === true) aggregate.usedBy.add(node.id);
+    }
+  }
+
+  /* Attached-count map: principle plug_id → number of visible virtuals whose
+   * pending_extra_principles list references that principle. Rendered as a small
    * badge on the shelf tile (PROPOSAL_SKILLS §6.1). Only virtuals in a
    * non-hidden lane contribute; hiding a lane hides its pre-attachments. */
+  const attachedByPrincipleId = new Map<string, number>();
   const attachedBySkillId = new Map<string, number>();
   for (const n of nodes) {
-    const ids = n.pending_extra_skills;
+    const ids = n.pending_extra_principles;
     if (!ids || ids.length === 0) continue;
     const planspaceId = resolvePlanspaceId(n, allNodeById);
     if (planspaceId && hiddenPlanspaces.has(planspaceId)) continue;
     for (const raw of ids) {
       const id = typeof raw === "string" ? raw.trim() : "";
       if (!id) continue;
-      const plugId = id.includes(".") ? id : `skills.${id}`;
-      if (!plugId.startsWith("skills.")) continue;
-      attachedBySkillId.set(plugId, (attachedBySkillId.get(plugId) ?? 0) + 1);
+      const plugId = id.includes(".") ? id : `principles.${id}`;
+      if (!plugId.startsWith("principles.")) continue;
+      attachedByPrincipleId.set(plugId, (attachedByPrincipleId.get(plugId) ?? 0) + 1);
+    }
+  }
+  for (const n of nodes) {
+    const selections = n.pending_extra_skills;
+    if (!selections || selections.length === 0) continue;
+    const planspaceId = resolvePlanspaceId(n, allNodeById);
+    if (planspaceId && hiddenPlanspaces.has(planspaceId)) continue;
+    for (const selection of selections) {
+      if (!selection?.id?.startsWith("skills.")) continue;
+      attachedBySkillId.set(
+        selection.id,
+        (attachedBySkillId.get(selection.id) ?? 0) + 1,
+      );
     }
   }
 
@@ -801,7 +868,7 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
    *   - Project-root scope → neutral top stripe (project-wide reference).
    *   - plugId names a known planspace → joins that lane as a child, so
    *     STATUS/PLAN/CONTEXT live visually inside the planspace they belong to.
-   *   - Everything else (skill CONTEXT not bound to a planspace, …) lives in
+   *   - Everything else (principle CONTEXT not bound to a planspace, …) lives in
    *     the floating "loaded context" stripe below the top one.
    * The split keeps project-wide references separate from planspace-owned
    * memory while still showing free-form loads. */
@@ -836,9 +903,11 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
       laneCtxCursorX += 180;
     }
     const attachedCount =
-      agg.kind === "skill" && agg.plugId
-        ? attachedBySkillId.get(agg.plugId) ?? 0
-        : 0;
+      agg.kind === "principle" && agg.plugId
+        ? attachedByPrincipleId.get(agg.plugId) ?? 0
+        : agg.kind === "skill" && agg.plugId
+          ? attachedBySkillId.get(agg.plugId) ?? 0
+          : 0;
     rfNodes.push({
       id: ctxId,
       type: "context",
@@ -857,16 +926,19 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
         title: agg.title ?? null,
         dimmed: agg.loadedBy.size === 0,
         attachedCount,
+        usedByNodeIds: Array.from(agg.usedBy),
       },
       draggable: true,
       ...(parentNode ? { parentNode, extent } : {}),
     });
     for (const ownerId of agg.loadedBy) {
+      const used = agg.kind !== "skill" || agg.usedBy.has(ownerId);
       rfEdges.push({
         id: `ld:${ctxId}->${ownerId}`,
         source: ctxId,
         target: ownerId,
         type: "loads",
+        data: { dashed: !used, relation: used ? "used" : "available" },
       });
     }
   }

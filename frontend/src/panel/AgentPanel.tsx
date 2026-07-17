@@ -16,8 +16,9 @@ import type {
   NodeInfo,
   ReviewBrief,
   ReviewSubtype,
+  SkillSelection,
 } from "../types";
-import type { SkillSummary, UpdateVirtualPayload } from "../api";
+import type { PrincipleSummary, SkillSummary, UpdateVirtualPayload } from "../api";
 import {
   appendRecordsToTurns,
   buildTurnsFromEvents,
@@ -51,6 +52,7 @@ export type AgentPanelProps = {
   contextBundleLoading: boolean;
   pendingGate: InteractionRequest | null;
   pendingReview: InteractionRequest | null;
+  principles?: PrincipleSummary[];
   skills?: SkillSummary[];
   onResolveGate?: (id: string, payload: ResolveGatePayload) => void;
   onResolveReview: (payload: { id: string; judgment: string }) => void;
@@ -83,6 +85,7 @@ export function AgentPanel({
   contextBundleLoading,
   pendingGate,
   pendingReview,
+  principles,
   skills,
   onResolveGate,
   onResolveReview,
@@ -221,6 +224,7 @@ export function AgentPanel({
               node={node}
               nodesById={nodesById}
               modelPresets={modelPresets}
+              principles={principles}
               skills={skills}
               onUpdateVirtual={onUpdateVirtual}
               focusRequestVersion={canMutate ? focusRequestVersion : 0}
@@ -420,7 +424,8 @@ type VirtualDraft = {
   subtype: ReviewSubtype;
   brief: ReviewBrief;
   scheduledDeps: string[];
-  pendingExtraSkills: string[];
+  pendingExtraPrinciples: string[];
+  pendingExtraSkills: SkillSelection[];
   obsoleteReason: string;
 };
 
@@ -428,6 +433,7 @@ function VirtualNodeBody({
   node,
   nodesById,
   modelPresets,
+  principles,
   skills,
   onUpdateVirtual,
   focusRequestVersion,
@@ -435,6 +441,7 @@ function VirtualNodeBody({
   node: NodeInfo;
   nodesById: Map<string, NodeInfo>;
   modelPresets: ModelPreset[];
+  principles?: PrincipleSummary[];
   skills?: SkillSummary[];
   onUpdateVirtual: (nodeId: string, payload: UpdateVirtualPayload) => Promise<void>;
   focusRequestVersion: number;
@@ -447,6 +454,7 @@ function VirtualNodeBody({
       node={node}
       nodesById={nodesById}
       modelPresets={modelPresets}
+      principles={principles}
       skills={skills}
       onUpdateVirtual={onUpdateVirtual}
       focusRequestVersion={focusRequestVersion}
@@ -458,6 +466,7 @@ function EditableVirtualNodeBody({
   node,
   nodesById,
   modelPresets,
+  principles,
   skills,
   onUpdateVirtual,
   focusRequestVersion,
@@ -465,6 +474,7 @@ function EditableVirtualNodeBody({
   node: NodeInfo;
   nodesById: Map<string, NodeInfo>;
   modelPresets: ModelPreset[];
+  principles?: PrincipleSummary[];
   skills?: SkillSummary[];
   onUpdateVirtual: (nodeId: string, payload: UpdateVirtualPayload) => Promise<void>;
   focusRequestVersion: number;
@@ -502,6 +512,7 @@ function EditableVirtualNodeBody({
     node.brief,
     node.model_preset_id,
     node.scheduled_deps,
+    node.pending_extra_principles,
     node.pending_extra_skills,
     node.obsolete_reason,
   ]);
@@ -775,6 +786,14 @@ function EditableVirtualNodeBody({
         </div>
       </section>
 
+      <PrinciplesAttachSection
+        principles={principles}
+        attached={draft.pendingExtraPrinciples}
+        onChange={(next) =>
+          setDraft((current) => ({ ...current, pendingExtraPrinciples: next }))
+        }
+      />
+
       <SkillsAttachSection
         skills={skills}
         attached={draft.pendingExtraSkills}
@@ -1001,18 +1020,18 @@ function FieldLabel({
   );
 }
 
-function SkillsAttachSection({
-  skills,
+function PrinciplesAttachSection({
+  principles,
   attached,
   onChange,
 }: {
-  skills?: SkillSummary[];
+  principles?: PrincipleSummary[];
   attached: string[];
   onChange: (next: string[]) => void;
 }) {
-  const available = skills ?? [];
+  const available = principles ?? [];
   const attachedIds = new Set(attached);
-  const attachedSkills = attached.map((id) => ({
+  const attachedPrinciples = attached.map((id) => ({
     id,
     title: available.find((s) => s.id === id)?.title ?? id,
   }));
@@ -1039,18 +1058,17 @@ function SkillsAttachSection({
               ) : null
             }
           >
-            Skills
+            Principles
           </SectionHeading>
         </div>
         <div className="space-y-2 px-3 py-3">
           {attached.length === 0 ? (
             <div className="rounded-md border border-line bg-surface px-3 py-2 text-[11.5px] text-ink-muted">
-              No skills attached. Skills teach durable tool/workflow knowledge
-              that any node can pull in.
+              No principles attached.
             </div>
           ) : (
             <div className="flex flex-wrap gap-1.5">
-              {attachedSkills.map((s) => (
+              {attachedPrinciples.map((s) => (
                 <span
                   key={s.id}
                   className="inline-flex items-center gap-1 rounded-md border border-line bg-surface px-2 py-0.5 text-[11px] text-ink"
@@ -1078,7 +1096,7 @@ function SkillsAttachSection({
                 }}
                 className={inputClassName + " text-[11.5px]"}
               >
-                <option value="">Attach a skill…</option>
+                <option value="">Attach a principle…</option>
                 {remaining.map((s) => (
                   <option key={s.id} value={s.id}>
                     {s.title} ({s.slug})
@@ -1089,11 +1107,89 @@ function SkillsAttachSection({
           )}
           {available.length === 0 && (
             <div className="rounded-md border border-dashed border-line bg-surface px-3 py-2 text-[11px] text-ink-muted">
-              No skills yet. Author one with the "New skill" button on the
+              No principles yet. Author one with the "New principle" button on the
               project panel.
             </div>
           )}
         </div>
+      </div>
+    </section>
+  );
+}
+
+function SkillsAttachSection({
+  skills,
+  attached,
+  onChange,
+}: {
+  skills?: SkillSummary[];
+  attached: SkillSelection[];
+  onChange: (next: SkillSelection[]) => void;
+}) {
+  const available = skills ?? [];
+  const attachedIds = new Set(attached.map((selection) => selection.id));
+  const remaining = available.filter((skill) => !attachedIds.has(skill.id));
+  return (
+    <section className="mb-5 overflow-hidden rounded-md border border-state-review/35 bg-state-review/5">
+      <div className="border-b border-state-review/25 px-3 py-2">
+        <SectionHeading
+          right={attached.length ? <span className="font-mono">{attached.length}</span> : null}
+        >
+          Skills
+        </SectionHeading>
+      </div>
+      <div className="space-y-2 px-3 py-3">
+        {attached.map((selection) => {
+          const skill = available.find((candidate) => candidate.id === selection.id);
+          return (
+            <div key={selection.id} className="flex items-center gap-2 rounded border border-line bg-surface px-2 py-1">
+              <span className="min-w-0 flex-1 truncate text-[11px] text-ink" title={selection.id}>
+                {skill?.title ?? selection.id}
+              </span>
+              <label className="flex items-center gap-1 text-[10px] text-ink-muted">
+                <input
+                  type="checkbox"
+                  checked={selection.suggest}
+                  onChange={(event) =>
+                    onChange(attached.map((item) =>
+                      item.id === selection.id
+                        ? { ...item, suggest: event.target.checked }
+                        : item,
+                    ))
+                  }
+                />
+                Suggest
+              </label>
+              <button
+                type="button"
+                onClick={() => onChange(attached.filter((item) => item.id !== selection.id))}
+                className="text-[13px] text-ink-muted hover:text-state-error"
+                title="Remove skill"
+                aria-label={`Remove ${skill?.title ?? selection.id}`}
+              >
+                ×
+              </button>
+            </div>
+          );
+        })}
+        {remaining.length > 0 && (
+          <select
+            value=""
+            onChange={(event) => {
+              if (!event.target.value) return;
+              onChange([...attached, { id: event.target.value, suggest: false }]);
+            }}
+            className="w-full rounded-md border border-line bg-surface px-2 py-1.5 text-[11px] text-ink"
+          >
+            <option value="">Attach skill…</option>
+            {remaining.map((skill) => (
+              <option key={skill.id} value={skill.id}>{skill.title}</option>
+            ))}
+          </select>
+        )}
+        {attached.length === 0 && remaining.length === 0 && (
+          <div className="text-[11px] text-ink-muted">No skills available.</div>
+        )}
       </div>
     </section>
   );
@@ -1112,6 +1208,7 @@ function virtualDraftFromNode(node: NodeInfo): VirtualDraft {
       abnormal: "",
     },
     scheduledDeps: [...(node.scheduled_deps ?? [])],
+    pendingExtraPrinciples: [...(node.pending_extra_principles ?? [])],
     pendingExtraSkills: [...(node.pending_extra_skills ?? [])],
     obsoleteReason: node.obsolete_reason || "",
   };
@@ -1126,6 +1223,7 @@ function virtualPayloadFromDraft(
     motivation: draft.motivation,
     category: draft.category,
     scheduled_deps: draft.scheduledDeps,
+    pending_extra_principles: draft.pendingExtraPrinciples,
     pending_extra_skills: draft.pendingExtraSkills,
     obsolete_reason: draft.obsoleteReason.trim() || null,
   };

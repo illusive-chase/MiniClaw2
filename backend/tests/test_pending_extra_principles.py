@@ -1,4 +1,4 @@
-"""Tests for pending_extra_skills virtual-edit + promotion (PR 4)."""
+"""Tests for pending_extra_principles virtual-edit + promotion (PR 4)."""
 
 from __future__ import annotations
 
@@ -20,14 +20,14 @@ from miniclaw2.registry import ProjectRegistry
 from miniclaw2.store import Store
 
 
-def _write_skill(ctx_root: Path, slug: str, *, body: str = "body") -> None:
-    plug_dir = ctx_root / "plugs" / "skills" / slug
+def _write_principle(ctx_root: Path, slug: str, *, body: str = "body") -> None:
+    plug_dir = ctx_root / "plugs" / "principles" / slug
     plug_dir.mkdir(parents=True, exist_ok=True)
     (plug_dir / "manifest.yaml").write_text(
         yaml.safe_dump({
             "version": 1,
-            "kind": "skill",
-            "id": f"skills.{slug}",
+            "kind": "principle",
+            "id": f"principles.{slug}",
             "title": slug,
         }, sort_keys=False),
         encoding="utf-8",
@@ -50,7 +50,7 @@ def _init_repo(root: Path) -> None:
     )
 
 
-class UpdateVirtualPendingSkillsTests(unittest.TestCase):
+class UpdateVirtualPendingPrinciplesTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         os.environ["MINICLAW_CONTEXT_HOME"] = str(Path(self.tmp.name) / "ctx")
@@ -78,7 +78,7 @@ class UpdateVirtualPendingSkillsTests(unittest.TestCase):
         os.environ.pop("MINICLAW_CONTEXT_HOME", None)
         self.tmp.cleanup()
 
-    def test_update_virtual_accepts_pending_extra_skills(self) -> None:
+    def test_update_virtual_accepts_pending_extra_principles(self) -> None:
         virtual = self.registry.create_virtual(
             self.project.id, prompt_draft="draft"
         )
@@ -86,14 +86,14 @@ class UpdateVirtualPendingSkillsTests(unittest.TestCase):
         updated = self.registry.update_virtual(
             self.project.id,
             virtual.id,
-            pending_extra_skills=["vim", "skills.git"],
+            pending_extra_principles=["vim", "principles.git"],
         )
         assert updated is not None
         self.assertEqual(
-            updated.pending_extra_skills, ["skills.vim", "skills.git"]
+            updated.pending_extra_principles, ["principles.vim", "principles.git"]
         )
 
-    def test_update_virtual_drops_bad_skill_ids(self) -> None:
+    def test_update_virtual_drops_bad_principle_ids(self) -> None:
         virtual = self.registry.create_virtual(
             self.project.id, prompt_draft="draft"
         )
@@ -101,13 +101,13 @@ class UpdateVirtualPendingSkillsTests(unittest.TestCase):
         updated = self.registry.update_virtual(
             self.project.id,
             virtual.id,
-            pending_extra_skills=["vim", "", "  ", "global.foo", "planspaces.x", 42],
+            pending_extra_principles=["vim", "", "  ", "global.foo", "planspaces.x", 42],
         )
         assert updated is not None
-        self.assertEqual(updated.pending_extra_skills, ["skills.vim"])
+        self.assertEqual(updated.pending_extra_principles, ["principles.vim"])
 
 
-class PromotePendingSkillsTests(unittest.IsolatedAsyncioTestCase):
+class PromotePendingPrinciplesTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         os.environ["MINICLAW_CONTEXT_HOME"] = str(Path(self.tmp.name) / "ctx")
@@ -136,7 +136,7 @@ class PromotePendingSkillsTests(unittest.IsolatedAsyncioTestCase):
         self.tmp.cleanup()
 
     async def test_promotion_moves_pending_to_settings_snapshot(self) -> None:
-        _write_skill(self.ctx_root, "vim")
+        _write_principle(self.ctx_root, "vim")
         virtual = self.registry.create_virtual(
             self.project.id, prompt_draft="do the thing"
         )
@@ -144,7 +144,7 @@ class PromotePendingSkillsTests(unittest.IsolatedAsyncioTestCase):
         self.registry.update_virtual(
             self.project.id,
             virtual.id,
-            pending_extra_skills=["vim"],
+            pending_extra_principles=["vim"],
         )
         runner = self.registry.promote_virtual(self.project.id, virtual.id)
         assert runner is not None
@@ -160,9 +160,9 @@ class PromotePendingSkillsTests(unittest.IsolatedAsyncioTestCase):
                 pass
         promoted = self.store.load_node(self.project.id, virtual.id)
         assert promoted is not None
-        self.assertEqual(promoted.pending_extra_skills, [])
+        self.assertEqual(promoted.pending_extra_principles, [])
         self.assertEqual(
-            promoted.settings_snapshot.get("extra_skills"), ["skills.vim"]
+            promoted.settings_snapshot.get("extra_principles"), ["principles.vim"]
         )
         # Promotion also flipped the state away from VIRTUAL.
         self.assertNotEqual(promoted.state, NodeState.VIRTUAL)

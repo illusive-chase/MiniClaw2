@@ -19,8 +19,8 @@ import yaml
 
 MACHINE_FILENAME = "machine.json"
 SCHEMA_FILENAME = "schema.json"
-SCHEMA_VERSION = 5
-SCHEMA_NAME = "canonical-schema-v5"
+SCHEMA_VERSION = 6
+SCHEMA_NAME = "principles-and-agent-skills-v6"
 DEFAULT_COMMIT_DEBOUNCE_SECONDS = 30.0
 
 
@@ -150,6 +150,10 @@ def ensure_store_metadata(root: Path, identity: MachineIdentity) -> None:
     if existing_version > SCHEMA_VERSION:
         return
 
+    legacy_skill_plugs = root / "contextspace" / "plugs" / "skills"
+    if existing_version < 6 and (existing_version > 0 or legacy_skill_plugs.exists()):
+        _migrate_principles_and_skills(root)
+
     project_files = sorted((root / "projects").glob("*/project.json"))
     legacy_files: list[tuple[Path, dict[str, Any]]] = []
     for project_file in project_files:
@@ -164,7 +168,7 @@ def ensure_store_metadata(root: Path, identity: MachineIdentity) -> None:
         backup_root = (
             root
             / "migration-backups"
-            / f"canonical-schema-v5-{int(time.time())}"
+            / f"{SCHEMA_NAME}-{int(time.time())}"
         )
         for project_file, project_payload in legacy_files:
             relative = project_file.relative_to(root)
@@ -181,6 +185,118 @@ def ensure_store_metadata(root: Path, identity: MachineIdentity) -> None:
     )
     _drop_nested_git_expectation(root)
     ensure_store_gitignore(root)
+
+
+def _migrate_principles_and_skills(root: Path) -> None:
+    """Migrate the former injected-skill mechanism to principles."""
+    backup_root = (
+        root
+        / "migration-backups"
+        / f"principles-and-agent-skills-v6-{int(time.time())}"
+    )
+    for name in ("projects", "contextspace", "templates"):
+        source = root / name
+        if source.exists():
+            shutil.copytree(source, backup_root / name, dirs_exist_ok=True)
+
+    context_root = root / "contextspace"
+    old_plugs = context_root / "plugs" / "skills"
+    principle_plugs = context_root / "plugs" / "principles"
+    if old_plugs.is_dir():
+        principle_plugs.parent.mkdir(parents=True, exist_ok=True)
+        if principle_plugs.exists():
+            for child in old_plugs.iterdir():
+                destination = principle_plugs / child.name
+                if destination.exists():
+                    raise SyncError(
+                        f"cannot migrate principle {child.name!r}: destination exists"
+                    )
+                child.replace(destination)
+            old_plugs.rmdir()
+        else:
+            old_plugs.replace(principle_plugs)
+
+    for manifest in principle_plugs.glob("*/manifest.yaml"):
+        payload = _read_yaml_mapping(manifest)
+        if payload is None:
+            continue
+        if payload.get("kind") == "skill":
+            payload["kind"] = "principle"
+        identifier = payload.get("id")
+        if isinstance(identifier, str) and identifier.startswith("skills."):
+            payload["id"] = "principles." + identifier[len("skills."):]
+        _write_yaml_mapping(manifest, payload)
+
+    yaml_roots = [
+        context_root / "bindings",
+        context_root / "templates",
+        root / "templates",
+    ]
+    for yaml_root in yaml_roots:
+        if not yaml_root.exists():
+            continue
+        for path in [*yaml_root.rglob("*.yaml"), *yaml_root.rglob("*.yml")]:
+            payload = _read_yaml_mapping(path)
+            if payload is None:
+                continue
+            rewritten = _rewrite_principle_values(payload)
+            _write_yaml_mapping(path, rewritten)
+
+    for node_path in (root / "projects").glob("*/nodes/*/node.json"):
+        try:
+            payload = json.loads(node_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise SyncError(f"invalid node record {node_path}: {exc}") from exc
+        if not isinstance(payload, dict):
+            raise SyncError(f"invalid node record {node_path}: expected object")
+        settings = payload.get("settings_snapshot")
+        if isinstance(settings, dict) and "extra_skills" in settings:
+            settings["extra_principles"] = _rewrite_principle_values(
+                settings.pop("extra_skills")
+            )
+        if "pending_extra_skills" in payload:
+            payload["pending_extra_principles"] = _rewrite_principle_values(
+                payload.pop("pending_extra_skills")
+            )
+        payload.setdefault("pending_extra_skills", [])
+        if payload.get("agent_op_kind") == "skill_edit":
+            payload["agent_op_kind"] = "principle_edit"
+        _write_json(node_path, payload)
+
+
+def _rewrite_principle_values(value: Any) -> Any:
+    if isinstance(value, str):
+        if value.startswith("skills."):
+            return "principles." + value[len("skills."):]
+        if value == "skill_edit":
+            return "principle_edit"
+        return value
+    if isinstance(value, list):
+        return [_rewrite_principle_values(item) for item in value]
+    if isinstance(value, dict):
+        return {
+            ("extra_principles" if key == "extra_skills" else key):
+            _rewrite_principle_values(item)
+            for key, item in value.items()
+        }
+    return value
+
+
+def _read_yaml_mapping(path: Path) -> dict[str, Any] | None:
+    try:
+        payload = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError) as exc:
+        raise SyncError(f"invalid YAML {path}: {exc}") from exc
+    return payload if isinstance(payload, dict) else None
+
+
+def _write_yaml_mapping(path: Path, payload: dict[str, Any]) -> None:
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(
+        yaml.safe_dump(payload, sort_keys=False, allow_unicode=True),
+        encoding="utf-8",
+    )
+    temporary.replace(path)
 
 
 def schema_is_newer(root: Path) -> bool:

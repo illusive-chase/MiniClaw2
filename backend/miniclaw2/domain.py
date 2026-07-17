@@ -91,7 +91,7 @@ TERMINAL_NODE_STATES: frozenset[NodeState] = frozenset({
 
 # Whitelist of ``agent_op_kind`` values. Kept here as a plain set rather
 # than a StrEnum so a new variant can be added without a schema migration.
-KNOWN_AGENT_OP_KINDS: frozenset[str] = frozenset({"skill_edit"})
+KNOWN_AGENT_OP_KINDS: frozenset[str] = frozenset({"principle_edit"})
 
 
 def normalize_planspace_mode(value: str | None) -> PlanspaceMode:
@@ -202,7 +202,7 @@ class Node(BaseModel):
     kind: NodeKind = NodeKind.AGENT
     op_kind: str | None = None
     # Marks agent-node variants that need special launch handling (e.g.
-    # ``"skill_edit"`` for the concierge that authors skill plugs). Kept
+    # ``"principle_edit"`` for the concierge that authors principles). Kept
     # as ``str | None`` — see ``KNOWN_AGENT_OP_KINDS`` for the whitelist.
     agent_op_kind: str | None = None
     state: NodeState = NodeState.QUEUED
@@ -227,9 +227,9 @@ class Node(BaseModel):
     # terminal state before this virtual is eligible to promote.
     prompt_draft: str | None = None
     scheduled_deps: list[str] = Field(default_factory=list)
-    # Virtual-only intent: skills to attach at promotion, copied into
-    # ``settings_snapshot["extra_skills"]`` when the virtual → queued.
-    pending_extra_skills: list[str] = Field(default_factory=list)
+    # Virtual-only intent promoted into the corresponding launch settings.
+    pending_extra_principles: list[str] = Field(default_factory=list)
+    pending_extra_skills: list[dict[str, Any]] = Field(default_factory=list)
     resume_from_node_id: str | None = None
     verify_script_ref: str | None = None
     proposed_by: str | None = None
@@ -253,6 +253,10 @@ class Node(BaseModel):
             if self.agent_op_kind is not None:
                 raise ValueError(
                     "agent_op_kind is only valid on agent nodes"
+                )
+            if self.pending_extra_principles:
+                raise ValueError(
+                    "pending_extra_principles is only valid on agent nodes"
                 )
             if self.pending_extra_skills:
                 raise ValueError(

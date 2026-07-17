@@ -99,6 +99,7 @@ class AgentProviderContext:
     minimal_mode: bool = False
     tool_allowlist: list[str] | None = None
     store_root: Path | None = None
+    skill_materialization: Any | None = None
 
     async def request_gate(self, gate: GateRequest) -> dict[str, Any]:
         return await self.request_gate_handler(gate)

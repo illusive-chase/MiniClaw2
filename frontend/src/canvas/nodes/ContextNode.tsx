@@ -18,22 +18,27 @@ function ContextNodeImpl({ data, selected }: NodeProps<ContextNodeData>) {
     dimmed,
     attachedCount,
     plugId,
+    usedByNodeIds,
   } = data;
   const isProject = scope === "project-root";
+  const isPrinciple = kind === "principle";
   const isSkill = kind === "skill";
-  const displayName = isSkill && title ? title : filename;
+  const displayName = (isPrinciple || isSkill) && title ? title : filename;
   const loadedCount = loadedByNodeIds.length;
   const preAttached = attachedCount ?? 0;
-  const canDragToAttach = isSkill && !!plugId;
+  const canDragToAttach = (isPrinciple || isSkill) && !!plugId;
   const tooltipLines = [
     kindLabel(scope, kind),
-    isSkill && title ? title : null,
+    (isPrinciple || isSkill) && title ? title : null,
     path,
     dimmed
       ? "on the shelf — not loaded by any live node"
       : `${chars} chars · loaded by ${loadedCount} run${loadedCount === 1 ? "" : "s"}`,
     preAttached > 0
       ? `pre-attached on ${preAttached} pending node${preAttached === 1 ? "" : "s"}`
+      : null,
+    isSkill && loadedCount > 0
+      ? `used by ${usedByNodeIds?.length ?? 0} run${usedByNodeIds?.length === 1 ? "" : "s"}`
       : null,
     canDragToAttach ? "drag the ⋮⋮ handle onto a virtual to attach" : null,
   ].filter(Boolean);
@@ -64,10 +69,10 @@ function ContextNodeImpl({ data, selected }: NodeProps<ContextNodeData>) {
           />
         </>
       )}
-      {/* Pre-attached count badge — only rendered for skill tiles with at
-       * least one virtual/phantom holding this in pending_extra_skills.
+      {/* Pre-attached count badge — only rendered for principle tiles with at
+       * least one virtual/phantom holding this in pending_extra_principles.
        * Positioned outside the card so it doesn't shift the header text. */}
-      {isSkill && preAttached > 0 && (
+      {(isPrinciple || isSkill) && preAttached > 0 && (
         <span
           aria-label={`attached to ${preAttached} pending node${preAttached === 1 ? "" : "s"}`}
           className="pointer-events-none absolute -top-1.5 -right-1.5 z-10 inline-flex min-w-[16px] items-center justify-center rounded-full border border-line bg-brand px-1 text-[9.5px] font-semibold leading-none text-white shadow-card"
@@ -75,7 +80,7 @@ function ContextNodeImpl({ data, selected }: NodeProps<ContextNodeData>) {
           {preAttached}
         </span>
       )}
-      {/* Skill-attach drag handle — an HTML5-DnD source. ``nodrag`` keeps
+      {/* Principle-attach drag handle — an HTML5-DnD source. ``nodrag`` keeps
        * React Flow from starting a node move when the user grabs the
        * handle. The rest of the tile still moves via RF, so users can
        * still reposition the shelf if they want. */}
@@ -83,11 +88,16 @@ function ContextNodeImpl({ data, selected }: NodeProps<ContextNodeData>) {
         <div
           draggable
           className="nodrag absolute -top-1.5 -left-1.5 z-10 inline-flex h-4 w-4 cursor-grab items-center justify-center rounded-full border border-line bg-surface text-[10px] leading-none text-ink-muted shadow-card hover:text-ink active:cursor-grabbing"
-          title="Drag onto a virtual node to attach this skill"
-          aria-label="Attach skill by dragging onto a virtual node"
+          title={`Drag onto a virtual node to attach this ${kind}`}
+          aria-label={`Attach ${kind} by dragging onto a virtual node`}
           onDragStart={(event) => {
             event.stopPropagation();
-            event.dataTransfer.setData("application/x-miniclaw-skill", plugId!);
+            event.dataTransfer.setData(
+              isSkill
+                ? "application/x-miniclaw-skill"
+                : "application/x-miniclaw-principle",
+              plugId!,
+            );
             event.dataTransfer.effectAllowed = "copy";
           }}
           onMouseDown={(event) => {
@@ -104,7 +114,9 @@ function ContextNodeImpl({ data, selected }: NodeProps<ContextNodeData>) {
           "relative flex h-[70px] flex-col border pl-2.5 pr-2 py-1.5 " +
           (isProject
             ? "rounded-md border-dashed bg-surface-sunken/60 "
-            : "rounded-md bg-surface-raised shadow-card ") +
+            : isSkill
+              ? "rounded-md border-state-review/50 bg-state-review/10 shadow-card "
+              : "rounded-md bg-surface-raised shadow-card ") +
           (dimmed ? "border-dashed " : "") +
           (selected ? "border-brand" : "border-line hover:border-line-strong")
         }
@@ -119,7 +131,7 @@ function ContextNodeImpl({ data, selected }: NodeProps<ContextNodeData>) {
           className="line-clamp-2 pt-0.5 text-[11px] leading-tight text-ink-strong"
           title={path}
         >
-          <span className={isSkill && title ? "font-medium" : "font-mono"}>
+          <span className={(isPrinciple || isSkill) && title ? "font-medium" : "font-mono"}>
             {displayName}
           </span>
         </div>
@@ -148,6 +160,7 @@ export const ContextNode = memo(ContextNodeImpl);
 function kindLabel(scope: string, kind: string): string {
   /* Read scope/kind as a single plain-language descriptor so users
    * don't need to know the ontology. */
+  if (kind === "principle") return "principle";
   if (kind === "skill") return "skill";
   if (kind === "planspace") return "project memory";
   if (kind === "memory") return "memory";

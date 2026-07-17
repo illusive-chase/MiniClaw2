@@ -1,6 +1,6 @@
 # Proposal: Principles & Agent Skills
 
-Status: proposal (not yet implemented). Draft. Supersedes
+Status: implemented (2026-07-17). Supersedes
 `PROPOSAL_SKILLS.md` (whose mechanism landed and is renamed here).
 
 Companion to `PHILOSOPHY.md` §7 (ContextSpace) and
@@ -211,30 +211,19 @@ follow symlinks; skills are small.
 
 Codex reads skills natively (`.agents/skills` scanned from cwd to
 repo root; `~/.codex/skills`; progressive disclosure with an 8k-char
-metadata budget) but exposes **no per-invocation flag**. Each node
-run already owns a private `codex app-server` process with a copied
-environment (`providers/codex.py`), so per-node scoping is possible.
-Spike in this order before implementation:
+metadata budget) but exposes no per-invocation CLI flag. The completed
+spike found a better process-scoped protocol path in codex-cli 0.144.1:
+after `initialize`, app-server accepts `skills/extraRoots/set` with a
+list of absolute skill directories. MiniClaw2 gives that call the exact
+selected library directories before `thread/start` or `thread/resume`.
 
-1. **Protocol-level config override.** The CLI accepts `-c key=value`
-   overrides and `[[skills.config]]` in `config.toml`; check whether
-   the app-server `thread/start` params accept an equivalent (skill
-   roots or per-skill enable). If yes, this is the clean path.
-2. **Per-node `CODEX_HOME`.** Synthesize `<workspace>/codex-home/`
-   with `skills/<slug>/` plus links to the real `config.toml` and
-   auth files; set `CODEX_HOME` in the child env. Per-node scoping,
-   no shared mutation — but fragile across Codex versions (we are
-   guessing which files matter). Verify auth + model-provider config
-   survive relocation.
-3. **Fallback: project `.agents/skills/`.** Materialize the union of
-   selected skills before launch, exclude via `.git/info/exclude`,
-   clean on reap. Costs: concurrent nodes see each other's skills
-   (scoping becomes advisory) and worktree hygiene interacts with
-   `commit_before`/`commit_after` and per-node diffs. Acceptable only
-   as a stopgap, and the launch record must say which mechanism ran.
-
-Degradation is honest in all cases: if materialization fails, the
-node launches without the skills and the launch settings record it.
+Each node already owns a private `codex app-server` process
+(`providers/codex.py`), so the roots remain node-scoped across concurrent
+runs without copying auth/config, touching the project worktree, or mutating
+shared `~/.codex`. A live protocol probe confirmed the configured skill in
+the subsequent `skills/list` response. If the RPC is unavailable or fails,
+the node still launches without the selected skills and its audit entries are
+marked failed.
 
 ### 4.5 Suggest mode
 
@@ -368,7 +357,11 @@ in v1; a dedicated `skill_used` event only if matching proves
 unreliable).
 
 
-## 8. Migration (store schema v4 → v5)
+## 8. Migration (implemented as store schema v5 → v6)
+
+The repository had already assigned v5 to the canonical model/artifact schema
+before this proposal landed, so implementation uses v6. The migration content
+below is otherwise unchanged.
 
 One migration, one PR, applied on first startup of the upgraded
 process (sync once before and after upgrading, per README):
@@ -471,18 +464,17 @@ Four PRs, each independently shippable:
   opt-in order, as today. An explicit reorder control is deferred.
 
 
-## 12. Open questions
+## 12. Implementation decisions
 
-- **Final name for principles.** "principle" vs "personality" vs
-  "persona"/"trait". This document assumes `principle`
-  (`principles.<slug>`, `Principles` shelf label). Decide before
-  PR 1; it is a find/replace until then.
-- **Codex mechanism.** Which of §4.4's three options survives the
-  spike; whether `thread/start` accepts config overrides at all.
-- **`--plugin-dir` symlink behavior.** Copy vs symlink into the
-  ephemeral plugin dir.
-- **Suggest encoding.** Plain string list + parallel suggest set vs
-  structured entries in `extra_skills` (§4.5).
-- **Used-edge detection fidelity.** Whether transcript/activity
-  matching is reliable enough on both providers, or a dedicated
-  event is needed.
+- **Name:** `principle` / `principles.*`.
+- **Codex mechanism:** per-node app-server `skills/extraRoots/set`, passing the
+  exact selected skill directories before thread start/resume. This protocol
+  was verified against codex-cli 0.144.1 and avoids shared config or auth
+  mutation. Older/failed app-server calls degrade to a launch without skills
+  and mark the audit entries failed.
+- **Claude materialization:** copy into the ephemeral plugin directory.
+- **Suggest encoding:** structured `{id, suggest}` entries; string input remains
+  accepted and normalized for wire compatibility.
+- **Used-edge detection:** conservative backend activity matching persisted in
+  the launch audit. Claude requires a matching `Skill` invocation; Codex
+  requires a read/command containing the selected materialized `SKILL.md` path.

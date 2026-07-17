@@ -19,6 +19,7 @@ import type {
   ArtifactFile,
   GitState,
   GitStatus,
+  SkillSelection,
 } from "./types";
 
 export class ApiError extends Error {
@@ -331,7 +332,8 @@ export type UpdateVirtualPayload = {
   review_target?: { type: "uncommitted" } | null;
   motivation?: string | null;
   scheduled_deps?: string[];
-  pending_extra_skills?: string[];
+  pending_extra_principles?: string[];
+  pending_extra_skills?: SkillSelection[];
   model_preset_id?: string;
   obsolete_reason?: string | null;
 };
@@ -344,7 +346,8 @@ export type CreateVirtualPayload = {
   review_target?: { type: "uncommitted" } | null;
   motivation?: string | null;
   scheduled_deps?: string[];
-  pending_extra_skills?: string[];
+  pending_extra_principles?: string[];
+  pending_extra_skills?: SkillSelection[];
   agent_op_kind?: string | null;
   model_preset_id?: string;
   planspace_id?: string | null;
@@ -711,9 +714,9 @@ export async function deleteUserTemplate(slug: string): Promise<void> {
   }
 }
 
-export type SkillSummary = {
+export type PrincipleSummary = {
   id: string;
-  kind: "skill";
+  kind: "principle";
   slug: string;
   title: string;
   description: string | null;
@@ -723,9 +726,56 @@ export type SkillSummary = {
   exists: boolean;
 };
 
+export async function listPrinciples(): Promise<PrincipleSummary[]> {
+  const res = await fetch("/principles");
+  if (!res.ok) throw new Error(`listPrinciples failed: ${res.status}`);
+  return res.json();
+}
+
+export async function deletePrinciple(slug: string): Promise<void> {
+  const res = await fetch(`/principles/${encodeURIComponent(slug)}`, {
+    method: "DELETE",
+  });
+  if (!res.ok && res.status !== 204) {
+    throw new Error(`deletePrinciple failed: ${res.status}`);
+  }
+}
+
+export type SkillSummary = {
+  id: string;
+  kind: "skill";
+  slug: string;
+  name: string;
+  title: string;
+  description: string;
+  path: string;
+  files: string[];
+  body: string;
+  content_hash: string;
+  import_source?: string;
+  import_kind?: string;
+  imported_at?: number;
+};
+
 export async function listSkills(): Promise<SkillSummary[]> {
   const res = await fetch("/skills");
   if (!res.ok) throw new Error(`listSkills failed: ${res.status}`);
+  return res.json();
+}
+
+export async function importSkill(
+  source: string,
+  slug?: string,
+): Promise<SkillSummary> {
+  const res = await fetch("/skills/import", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ source, slug: slug || null }),
+  });
+  if (!res.ok) {
+    const payload = await res.json().catch(() => null);
+    throw new Error(payload?.detail || `importSkill failed: ${res.status}`);
+  }
   return res.json();
 }
 

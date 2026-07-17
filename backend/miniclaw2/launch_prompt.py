@@ -26,7 +26,7 @@ _CATEGORY_PLANNING = "category_planning.md"
 _CATEGORY_AGENTIC_REVIEW = "category_agentic_review.md"
 _CATEGORY_HUMAN_INTERACT_REVIEW = "category_human_interact_review.md"
 _ANTI_SELF_POISONING = "anti_self_poisoning.md"
-_SKILL_INIT = "skill_init.md"
+_PRINCIPLE_INIT = "principle_init.md"
 
 
 @lru_cache(maxsize=16)
@@ -129,13 +129,13 @@ def build_dependency_launch_block(
     return "\n".join(lines)
 
 
-def build_skill_init_block(skills_dir: str) -> str:
-    """Return the skill-author preset with ``<<skills_dir>>`` substituted.
+def build_principle_init_block(principles_dir: str) -> str:
+    """Return the principle-author preset with its directory substituted.
 
-    Used only for agent nodes with ``agent_op_kind == "skill_edit"``.
+    Used only for agent nodes with ``agent_op_kind == "principle_edit"``.
     """
-    template = _load_template(_SKILL_INIT)
-    return template.replace("<<skills_dir>>", skills_dir).strip()
+    template = _load_template(_PRINCIPLE_INIT)
+    return template.replace("<<principles_dir>>", principles_dir).strip()
 
 
 def anti_self_poisoning_block() -> str:

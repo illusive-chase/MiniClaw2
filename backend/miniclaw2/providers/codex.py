@@ -51,10 +51,18 @@ class CodexProvider:
 
     async def run(self, context: AgentProviderContext) -> AsyncIterator[AgentProviderEvent]:
         self._stop = False
-        async with _CodexJsonRpcClient(cwd=context.project.root_path) as client:
+        async with _CodexJsonRpcClient(
+            cwd=context.project.root_path,
+            env_overrides=getattr(
+                getattr(context, "skill_materialization", None),
+                "env_overrides",
+                None,
+            ),
+        ) as client:
             self._client = client
             try:
                 await client.initialize()
+                await _configure_skill_roots(client, context)
                 thread_id = context.node.provider_session_id
                 fresh_thread = not thread_id
                 if not thread_id:
@@ -130,7 +138,14 @@ class CodexProvider:
                 kind="error", error=f"unsupported Codex review target: {spec.target.type}"
             )
             return
-        async with _CodexJsonRpcClient(cwd=context.project.root_path) as client:
+        async with _CodexJsonRpcClient(
+            cwd=context.project.root_path,
+            env_overrides=getattr(
+                getattr(context, "skill_materialization", None),
+                "env_overrides",
+                None,
+            ),
+        ) as client:
             self._client = client
             try:
                 initialized = await client.initialize()
@@ -140,6 +155,7 @@ class CodexProvider:
                         error="native code review requires codex-cli 0.144.1 or newer",
                     )
                     return
+                await _configure_skill_roots(client, context)
                 thread_id = context.node.provider_session_id
                 if not thread_id:
                     started = await client.request(
@@ -467,9 +483,15 @@ class CodexProvider:
 
 
 class _CodexJsonRpcClient:
-    def __init__(self, *, cwd: str | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        cwd: str | None = None,
+        env_overrides: dict[str, str] | None = None,
+    ) -> None:
         self._proc: asyncio.subprocess.Process | None = None
         self._cwd = str(Path(cwd).resolve(strict=False)) if cwd else None
+        self._env_overrides = dict(env_overrides or {})
         self._next_id = 1
         self._pending: dict[int, asyncio.Future[dict[str, Any]]] = {}
         self._queue: asyncio.Queue[dict[str, Any] | BaseException] = asyncio.Queue()
@@ -481,6 +503,7 @@ class _CodexJsonRpcClient:
 
     async def __aenter__(self) -> "_CodexJsonRpcClient":
         env = os.environ.copy()
+        env.update(self._env_overrides)
         self._proc = await asyncio.create_subprocess_exec(
             "codex",
             "app-server",
@@ -925,6 +948,29 @@ def _codex_review_capable(initialized: dict[str, Any]) -> bool:
     while len(numbers) < 3:
         numbers.append(0)
     return tuple(numbers) >= _MIN_REVIEW_VERSION
+
+
+async def _configure_skill_roots(
+    client: _CodexJsonRpcClient, context: AgentProviderContext
+) -> None:
+    materialization = getattr(context, "skill_materialization", None)
+    extra_roots = list(getattr(materialization, "extra_roots", []) or [])
+    if not extra_roots:
+        return
+    try:
+        await client.request(
+            "skills/extraRoots/set",
+            {"extraRoots": extra_roots},
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "Codex skill roots unavailable; launching without skills: %s", exc
+        )
+        for audit in getattr(materialization, "audit", []):
+            if audit.get("materialized_path") not in extra_roots:
+                continue
+            audit["failed"] = True
+            audit["error"] = f"Codex skills/extraRoots/set failed: {exc}"
 
 
 def _review_report_from_codex(value: Any) -> ReviewReport:

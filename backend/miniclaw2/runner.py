@@ -67,7 +67,7 @@ from .launch_prompt import (
     anti_self_poisoning_block,
     build_category_launch_block,
     build_dependency_launch_block,
-    build_skill_init_block,
+    build_principle_init_block,
 )
 from .materialize import (
     GRAPH_RUNS_DIRNAME,
@@ -97,6 +97,7 @@ from .providers.claude import ClaudeProvider
 from .providers.codex import CodexProvider
 from .reap import reap_lane
 from .store import Store
+from .skills import SkillMaterialization, materialize_agent_skills
 
 logger = logging.getLogger(__name__)
 
@@ -137,6 +138,7 @@ class NodeRunner:
         self._process: asyncio.subprocess.Process | None = None
         self._lane_root: Path | None = None
         self._pre_snapshot: dict[str, str] = {}
+        self._skill_materialization: SkillMaterialization | None = None
 
     # ---- public surface (used by the WS layer via ProjectRuntime) ----
 
@@ -202,6 +204,7 @@ class NodeRunner:
         try:
             context_bundle = self._snapshot_context_bundle()
             self._snapshot_launch_settings(context_bundle)
+            self._materialize_skills()
             self._validate_launch_settings()
             self._materialize_lane()
 
@@ -234,7 +237,7 @@ class NodeRunner:
                             self._transition(NodeState.RUNNING)
                             await self._emit_node_updated()
                         launch_instructions = _compose_launch_instructions(
-                            _skill_init_block(self.node, self.store.root),
+                            _principle_init_block(self.node, self.store.root),
                             build_category_launch_block(
                                 self.node,
                                 lane_path=self._lane_prompt_path(),
@@ -245,6 +248,7 @@ class NodeRunner:
                                     )
                                 ),
                             ),
+                            _skill_suggestion_block(self._skill_materialization),
                             build_dependency_launch_block(
                                 self.node, lane_path=self._lane_prompt_path()
                             ),
@@ -398,6 +402,7 @@ class NodeRunner:
         review_summary: str | None = None
         try:
             self._snapshot_launch_settings()
+            self._materialize_skills()
             snapshot = await asyncio.to_thread(
                 git_review_snapshot, self.project.root_path
             )
@@ -528,6 +533,7 @@ class NodeRunner:
             request_gate_handler=self._request_gate,
             system_context=system_context,
             store_root=self.store.root,
+            skill_materialization=self._skill_materialization,
         )
         focus = (
             self.node.brief.check_what
@@ -772,6 +778,7 @@ class NodeRunner:
             system_context=system_context,
             launch_instructions=launch_instructions,
             store_root=self.store.root,
+            skill_materialization=self._skill_materialization,
         )
         final_state: NodeState | None = None
         error_msg: str | None = None
@@ -1139,6 +1146,11 @@ class NodeRunner:
         return bundle
 
     def _snapshot_launch_settings(self, context_bundle: Any | None = None) -> None:
+        attached = {
+            key: value
+            for key, value in self.node.settings_snapshot.items()
+            if key in {"extra_principles", "extra_skills"}
+        }
         snapshot: dict[str, Any] = {
             key: value
             for key, value in self.project.settings_override.items()
@@ -1150,6 +1162,7 @@ class NodeRunner:
                 "reasoning_effort",
             }
         }
+        snapshot.update(attached)
         snapshot["cwd"] = self.project.root_path
         project_binding_id = (
             getattr(context_bundle, "project_binding_id", None)
@@ -1169,6 +1182,25 @@ class NodeRunner:
         if self.node.category is not None:
             snapshot["category"] = self.node.category.value
         self.node.settings_snapshot = snapshot
+
+    def _materialize_skills(self) -> None:
+        preset = get_model_preset(
+            self.node.model_preset_id, store_root=self.store.root
+        )
+        workspace_root = (
+            Path(self.project.root_path) / GRAPH_RUNS_DIRNAME / self.node.id
+        )
+        workspace_root.mkdir(parents=True, exist_ok=True)
+        self._skill_materialization = materialize_agent_skills(
+            self.node.settings_snapshot.get("extra_skills"),
+            provider=preset.provider,
+            store_root=self.store.root,
+            workspace_root=workspace_root,
+        )
+        self.node.settings_snapshot["skill_audit"] = list(
+            self._skill_materialization.audit
+        )
+        self.store.update_node(self.node)
 
     def _validate_launch_settings(self) -> None:
         launch_project = self.project.model_copy(
@@ -1202,8 +1234,13 @@ class NodeRunner:
         if ev.kind == "event" and ev.event is not None:
             if isinstance(ev.event, Usage):
                 self._record_usage(ev.event)
+            skill_used = (
+                self._record_skill_use(ev.event)
+                if isinstance(ev.event, Activity)
+                else False
+            )
             await self._emit(ev.event)
-            if isinstance(ev.event, Usage):
+            if isinstance(ev.event, Usage) or skill_used:
                 await self._emit_node_updated()
             return
         if ev.kind == "session" and ev.session_id:
@@ -1230,6 +1267,55 @@ class NodeRunner:
             cumulative_cache_creation_tokens=usage.cumulative_cache_creation_tokens,
         )
         self.store.update_node(self.node)
+
+    def _record_skill_use(self, activity: Activity) -> bool:
+        audit = self.node.settings_snapshot.get("skill_audit")
+        if not isinstance(audit, list):
+            return False
+        combined = "\n".join(
+            str(value)
+            for value in (
+                activity.summary,
+                activity.command,
+                activity.result,
+            )
+            if value
+        )
+        lowered = combined.lower().replace("\\", "/")
+        named_skill = ""
+        if activity.name.lower() == "skill":
+            try:
+                payload = json.loads(activity.summary)
+            except (TypeError, ValueError):
+                payload = None
+            if isinstance(payload, dict):
+                candidate = payload.get("skill") or payload.get("name")
+                if isinstance(candidate, str):
+                    named_skill = candidate.strip().lower()
+        changed = False
+        for item in audit:
+            if not isinstance(item, dict) or item.get("used"):
+                continue
+            slug = str(item.get("slug") or "").lower()
+            name = str(item.get("name") or "").lower()
+            materialized = str(item.get("materialized_path") or "")
+            materialized_skill_md = (
+                f"{materialized}/SKILL.md".lower().replace("\\", "/")
+                if materialized
+                else ""
+            )
+            confident = bool(
+                (named_skill and named_skill in {slug, name, f"skills.{slug}"})
+                or (materialized_skill_md and materialized_skill_md in lowered)
+                or (slug and f"/skills/{slug}/skill.md" in lowered)
+            )
+            if confident:
+                item["used"] = True
+                item["used_at"] = time.time()
+                changed = True
+        if changed:
+            self.store.update_node(self.node)
+        return changed
 
     # ---- emit (persist + push) ----
 
@@ -1365,12 +1451,20 @@ def _compose_launch_instructions(*parts: str) -> str:
     return "\n\n---\n\n".join(cleaned)
 
 
-def _skill_init_block(node: Node, store_root: Path) -> str:
-    """Return the skill-author preset for skill-edit agents; else empty."""
-    if node.agent_op_kind != "skill_edit":
+def _skill_suggestion_block(
+    materialization: SkillMaterialization | None,
+) -> str:
+    if materialization is None:
         return ""
-    skills_dir = contextspace_root(store_root) / "plugs" / "skills"
-    return build_skill_init_block(str(skills_dir))
+    return "\n".join(materialization.suggestions)
+
+
+def _principle_init_block(node: Node, store_root: Path) -> str:
+    """Return the principle-author preset for principle-edit agents."""
+    if node.agent_op_kind != "principle_edit":
+        return ""
+    principles_dir = contextspace_root(store_root) / "plugs" / "principles"
+    return build_principle_init_block(str(principles_dir))
 
 
 def _preview_repair_prompt(node: Node, reason: str, attempt: int) -> str:

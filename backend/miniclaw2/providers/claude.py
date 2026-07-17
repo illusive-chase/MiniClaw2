@@ -64,6 +64,11 @@ class ClaudeProvider:
                     if context.minimal_mode
                     else None
                 ),
+                plugin_dir=getattr(
+                    getattr(context, "skill_materialization", None),
+                    "plugin_dir",
+                    None,
+                ),
             )
             await self._session.start()
             yield AgentProviderEvent(
@@ -136,6 +141,11 @@ class ClaudeProvider:
                 effort=self._resolve_effort(context),
                 session_id=self._resume_session_id(context),
                 system_prompt_append="",
+                plugin_dir=getattr(
+                    getattr(context, "skill_materialization", None),
+                    "plugin_dir",
+                    None,
+                ),
             )
             await self._session.start()
             yield AgentProviderEvent(kind="session", session_id=self._session.session_id)

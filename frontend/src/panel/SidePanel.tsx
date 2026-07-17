@@ -13,7 +13,7 @@ import type {
   SessionInfo,
   CommitDescriptor,
 } from "../types";
-import type { SkillSummary, UpdateVirtualPayload } from "../api";
+import type { PrincipleSummary, SkillSummary, UpdateVirtualPayload } from "../api";
 import { AgentPanel } from "./AgentPanel";
 import { ContextNodePanel } from "./ContextNodePanel";
 import { OpPanel } from "./OpPanel";
@@ -81,7 +81,8 @@ export type SidePanelProps = {
     mode: PlanspaceMode,
     modelPresetId: string,
   ) => void;
-  onNewSkill?: (userSeed: string) => Promise<void> | void;
+  onNewPrinciple?: (userSeed: string) => Promise<void> | void;
+  onImportSkill?: (source: string) => Promise<void> | void;
   onCreateContinuationVirtual: (nodeId: string) => void;
   onPromoteVirtual: (nodeId: string) => void;
   onUpdateVirtual: (nodeId: string, payload: UpdateVirtualPayload) => Promise<void>;
@@ -102,8 +103,10 @@ export type SidePanelProps = {
   newDirectionRequestVersion: number;
   onNewDirectionRequestHandled: () => void;
 
-  /* User-wide skills; used to enrich the context panel when a skill tile is
+  /* User-wide principles; used to enrich the context panel when a principle tile is
    * selected. */
+  principles?: PrincipleSummary[];
+  onDeletePrinciple?: (slug: string) => Promise<void> | void;
   skills?: SkillSummary[];
   onDeleteSkill?: (slug: string) => Promise<void> | void;
 
@@ -179,7 +182,8 @@ function Inner(props: SidePanelProps & { nodesById: Map<string, NodeInfo> }) {
     onSelectContextBinding,
     onNewDirection,
     onStartBlankDirection,
-    onNewSkill,
+    onNewPrinciple,
+    onImportSkill,
     onCreateContinuationVirtual,
     onPromoteVirtual,
     onUpdateVirtual,
@@ -196,6 +200,8 @@ function Inner(props: SidePanelProps & { nodesById: Map<string, NodeInfo> }) {
     focusRequestVersion,
     newDirectionRequestVersion,
     onNewDirectionRequestHandled,
+    principles,
+    onDeletePrinciple,
     skills,
     onDeleteSkill,
     nodesById,
@@ -227,7 +233,8 @@ function Inner(props: SidePanelProps & { nodesById: Map<string, NodeInfo> }) {
         onConcurrencyChange={onConcurrencyChange}
         onNewDirection={onNewDirection}
         onStartBlankDirection={onStartBlankDirection}
-        onNewSkill={onNewSkill}
+        onNewPrinciple={onNewPrinciple}
+        onImportSkill={onImportSkill}
         onContextInit={onContextInit}
         onContextRefresh={onContextRefresh}
         onContextCancel={onContextCancel}
@@ -336,6 +343,7 @@ function Inner(props: SidePanelProps & { nodesById: Map<string, NodeInfo> }) {
         contextBundleLoading={contextBundleLoading}
         pendingGate={session.read_only ? null : pendingGate}
         pendingReview={session.read_only ? null : pendingReview}
+        principles={principles}
         skills={skills}
         onResolveGate={onResolveGate}
         onResolveReview={onResolveReview}
@@ -398,6 +406,19 @@ function Inner(props: SidePanelProps & { nodesById: Map<string, NodeInfo> }) {
         if (!sample) sample = bundle;
       }
     }
+    if (selection.plugId?.startsWith("skills.")) {
+      for (const node of nodesById.values()) {
+        const audit = node.settings_snapshot?.skill_audit;
+        if (!Array.isArray(audit)) continue;
+        if (audit.some((raw) => {
+          if (!raw || typeof raw !== "object") return false;
+          const item = raw as Record<string, unknown>;
+          return item.id === selection.plugId && item.missing !== true && item.failed !== true;
+        })) {
+          loadedByNodeIds.push(node.id);
+        }
+      }
+    }
     if (session && isPlanspaceFileSelection(selection)) {
       return (
         <PlanspaceFilePanel
@@ -409,9 +430,13 @@ function Inner(props: SidePanelProps & { nodesById: Map<string, NodeInfo> }) {
         />
       );
     }
+    const principle =
+      selection.plugId && selection.plugId.startsWith("principles.") && principles
+        ? principles.find((s) => s.id === selection.plugId) ?? null
+        : null;
     const skill =
       selection.plugId && selection.plugId.startsWith("skills.") && skills
-        ? skills.find((s) => s.id === selection.plugId) ?? null
+        ? skills.find((item) => item.id === selection.plugId) ?? null
         : null;
     return (
       <ContextNodePanel
@@ -421,6 +446,8 @@ function Inner(props: SidePanelProps & { nodesById: Map<string, NodeInfo> }) {
         nodesById={nodesById}
         sampleBundle={sample}
         onSelectConsumer={onSelectNode}
+        principle={principle}
+        onDeletePrinciple={principle ? onDeletePrinciple : undefined}
         skill={skill}
         onDeleteSkill={skill ? onDeleteSkill : undefined}
       />

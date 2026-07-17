@@ -55,6 +55,7 @@ def build_argv(
     system_prompt_append: str,
     effort: str | None = None,
     tool_allowlist: list[str] | None = None,
+    plugin_dir: str | None = None,
 ) -> list[str]:
     args: list[str] = [binary]
     if resume:
@@ -79,6 +80,8 @@ def build_argv(
     args += ["--disallowed-tools", ",".join(DISALLOWED_TOOLS)]
     if tool_allowlist:
         args += ["--allowed-tools", ",".join(tool_allowlist)]
+    if plugin_dir:
+        args += ["--plugin-dir", plugin_dir]
     if system_prompt_append:
         args += ["--append-system-prompt", system_prompt_append]
     return args

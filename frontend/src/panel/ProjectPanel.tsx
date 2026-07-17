@@ -40,7 +40,8 @@ export type ProjectPanelProps = {
     mode: PlanspaceMode,
     modelPresetId: string,
   ) => void;
-  onNewSkill?: (userSeed: string) => Promise<void> | void;
+  onNewPrinciple?: (userSeed: string) => Promise<void> | void;
+  onImportSkill?: (source: string) => Promise<void> | void;
   onContextInit: () => void;
   onContextRefresh: () => void;
   onContextCancel: () => void;
@@ -70,7 +71,8 @@ export function ProjectPanel({
   onConcurrencyChange,
   onNewDirection,
   onStartBlankDirection,
-  onNewSkill,
+  onNewPrinciple,
+  onImportSkill,
   onContextInit,
   onContextRefresh,
   onContextCancel,
@@ -84,11 +86,14 @@ export function ProjectPanel({
   const [newDirectionModelPresetId, setNewDirectionModelPresetId] = useState("");
   const seedRef = useRef<HTMLTextAreaElement | null>(null);
   const lastRequestVersionRef = useRef(0);
-  const [skillOpen, setSkillOpen] = useState(false);
-  const [skillSeed, setSkillSeed] = useState("");
+  const [principleOpen, setPrincipleOpen] = useState(false);
+  const [principleSeed, setPrincipleSeed] = useState("");
+  const [principleBusy, setPrincipleBusy] = useState(false);
+  const [principleError, setPrincipleError] = useState<string | null>(null);
+  const principleSeedRef = useRef<HTMLTextAreaElement | null>(null);
+  const [skillSource, setSkillSource] = useState("");
   const [skillBusy, setSkillBusy] = useState(false);
   const [skillError, setSkillError] = useState<string | null>(null);
-  const skillSeedRef = useRef<HTMLTextAreaElement | null>(null);
 
   const activeBinding = contextSpace?.bindings.find(
     (b) => b.id === (contextSpace?.resolved_binding_id ?? session?.project_context_binding_id),
@@ -269,46 +274,86 @@ export function ProjectPanel({
             >
               {notesExist ? "Refresh project notes" : "Initialize project notes"}
             </button>
-            {onNewSkill && (
+            {onNewPrinciple && (
               <button
                 type="button"
                 onClick={() => {
-                  setSkillOpen((v) => !v);
-                  window.setTimeout(() => skillSeedRef.current?.focus(), 30);
+                  setPrincipleOpen((v) => !v);
+                  window.setTimeout(() => principleSeedRef.current?.focus(), 30);
                 }}
                 disabled={busy}
                 className="rounded-md border border-line bg-surface-raised px-3 py-2 text-left text-[12px] text-ink transition hover:border-line-strong disabled:opacity-40"
               >
-                + New skill
+                + New principle
               </button>
+            )}
+            {onImportSkill && (
+              <form
+                className="flex gap-2"
+                onSubmit={async (event) => {
+                  event.preventDefault();
+                  const source = skillSource.trim();
+                  if (!source) return;
+                  setSkillBusy(true);
+                  setSkillError(null);
+                  try {
+                    await onImportSkill(source);
+                    setSkillSource("");
+                  } catch (error) {
+                    setSkillError(String(error));
+                  } finally {
+                    setSkillBusy(false);
+                  }
+                }}
+              >
+                <input
+                  value={skillSource}
+                  onChange={(event) => setSkillSource(event.target.value)}
+                  placeholder="Skill path, zip, or git URL"
+                  className="min-w-0 flex-1 rounded-md border border-line bg-surface px-2 py-1.5 text-[11px] text-ink"
+                />
+                <button
+                  type="submit"
+                  disabled={busy || skillBusy || !skillSource.trim()}
+                  className="rounded-md border border-state-review/50 bg-state-review/10 px-2 py-1.5 text-[11px] text-ink disabled:opacity-40"
+                >
+                  {skillBusy ? "Importing…" : "Import skill"}
+                </button>
+              </form>
             )}
           </div>
 
-          {skillOpen && onNewSkill && (
+          {skillError && (
+            <div className="mt-2 rounded-md border border-state-error/30 bg-state-error-soft p-2 text-[11px] text-state-error">
+              {skillError}
+            </div>
+          )}
+
+          {principleOpen && onNewPrinciple && (
             <div className="mt-3 rounded-md border border-line bg-surface-sunken p-3">
               <label className="block text-[10px] font-medium uppercase tracking-[0.14em] text-ink-subtle">
-                What does this skill teach?
+                What behavior should this principle shape?
               </label>
               <textarea
-                ref={skillSeedRef}
-                value={skillSeed}
-                onChange={(e) => setSkillSeed(e.target.value)}
+                ref={principleSeedRef}
+                value={principleSeed}
+                onChange={(e) => setPrincipleSeed(e.target.value)}
                 rows={4}
-                placeholder="e.g. how to run our migrations, or the vim keymap for review mode…"
+                placeholder="e.g. review discipline, testing standards, or house style…"
                 className="mt-1 w-full resize-none rounded-md border border-line bg-surface px-3 py-2 text-[13px] leading-relaxed text-ink-strong placeholder:text-ink-subtle focus:border-brand focus:outline-none"
               />
-              {skillError && (
+              {principleError && (
                 <div className="mt-2 rounded-md border border-state-error/30 bg-state-error-soft p-2 text-[11px] text-state-error">
-                  {skillError}
+                  {principleError}
                 </div>
               )}
               <div className="mt-2 flex justify-end gap-2">
                 <button
                   type="button"
                   onClick={() => {
-                    setSkillOpen(false);
-                    setSkillSeed("");
-                    setSkillError(null);
+                    setPrincipleOpen(false);
+                    setPrincipleSeed("");
+                    setPrincipleError(null);
                   }}
                   className="rounded border border-line bg-surface px-2.5 py-1 text-[11px] text-ink-muted hover:text-ink"
                 >
@@ -316,31 +361,27 @@ export function ProjectPanel({
                 </button>
                 <button
                   type="button"
-                  disabled={skillBusy || !skillSeed.trim()}
+                  disabled={principleBusy || !principleSeed.trim()}
                   onClick={async () => {
-                    const trimmed = skillSeed.trim();
+                    const trimmed = principleSeed.trim();
                     if (!trimmed) return;
-                    setSkillBusy(true);
-                    setSkillError(null);
+                    setPrincipleBusy(true);
+                    setPrincipleError(null);
                     try {
-                      await onNewSkill(trimmed);
-                      setSkillOpen(false);
-                      setSkillSeed("");
+                      await onNewPrinciple(trimmed);
+                      setPrincipleOpen(false);
+                      setPrincipleSeed("");
                     } catch (err) {
-                      setSkillError(String(err));
+                      setPrincipleError(String(err));
                     } finally {
-                      setSkillBusy(false);
+                      setPrincipleBusy(false);
                     }
                   }}
                   className="rounded-md bg-brand px-2.5 py-1 text-[11.5px] font-medium text-white disabled:opacity-40"
                 >
-                  {skillBusy ? "Creating…" : "Create skill draft"}
+                  {principleBusy ? "Creating…" : "Create principle draft"}
                 </button>
               </div>
-              <p className="mt-2 text-[10.5px] text-ink-muted">
-                Creates a virtual skill-edit node on the active lane. Promote
-                it to launch the concierge and author the skill.
-              </p>
             </div>
           )}
 

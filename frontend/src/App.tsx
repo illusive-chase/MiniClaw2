@@ -22,8 +22,11 @@ import {
   updateSessionContextSpace,
   updateSessionPreferences,
   updateVirtual,
+  listPrinciples,
+  deletePrinciple,
   listSkills,
   deleteSkill,
+  importSkill,
   getGlobalState,
   getGitState,
   gitCommit,
@@ -31,6 +34,7 @@ import {
   gitPull,
   gitPush,
   artifactRawUrl,
+  type PrincipleSummary,
   type SkillSummary,
   type UpdateVirtualPayload,
 } from "./api";
@@ -126,16 +130,30 @@ export function App() {
     Record<string, ContextBundle | null>
   >({});
 
-  /* User-wide skill shelf. Fetched on session mount and refreshed after
-   * a skill-edit turn completes. See canvas layout.ts for the dimmed-tile
+  /* User-wide principle shelf. Fetched on session mount and refreshed after
+   * a principle-edit turn completes. See canvas layout.ts for the dimmed-tile
    * merge into the context aggregate. */
-  const [skills, setSkills] = useState<SkillSummary[]>([]);
-  const refreshSkills = useCallback(() => {
-    listSkills()
-      .then(setSkills)
+  const [principles, setPrinciples] = useState<PrincipleSummary[]>([]);
+  const refreshPrinciples = useCallback(() => {
+    listPrinciples()
+      .then(setPrinciples)
       .catch(() => {
         /* non-fatal — the shelf just stays stale until the next refresh */
       });
+  }, []);
+  const handleDeletePrinciple = useCallback(
+    async (slug: string) => {
+      try {
+        await deletePrinciple(slug);
+      } finally {
+        refreshPrinciples();
+      }
+    },
+    [refreshPrinciples],
+  );
+  const [skills, setSkills] = useState<SkillSummary[]>([]);
+  const refreshSkills = useCallback(() => {
+    listSkills().then(setSkills).catch(() => {});
   }, []);
   const handleDeleteSkill = useCallback(
     async (slug: string) => {
@@ -144,6 +162,13 @@ export function App() {
       } finally {
         refreshSkills();
       }
+    },
+    [refreshSkills],
+  );
+  const handleImportSkill = useCallback(
+    async (source: string) => {
+      await importSkill(source);
+      refreshSkills();
     },
     [refreshSkills],
   );
@@ -445,7 +470,7 @@ export function App() {
     sessionSettingsSaving ||
     !!sessionContextSpace?.context_refresh?.running;
 
-  const handleNewSkill = useCallback(
+  const handleNewPrinciple = useCallback(
     async (userSeed: string) => {
       if (!session?.id || virtualCreateDisabled) return;
       const active = sessionContextSpace?.active_planspace_id ?? null;
@@ -455,7 +480,7 @@ export function App() {
         const result = await createVirtual(session.id, {
           prompt_draft: userSeed,
           category: "regular",
-          agent_op_kind: "skill_edit",
+          agent_op_kind: "principle_edit",
           model_preset_id: defaultModelPresetId(modelPresets, session.model_preset_id),
           planspace_id: active,
         });
@@ -600,6 +625,7 @@ export function App() {
   useEffect(() => {
     if (!session?.id) {
       setInitialLoadComplete(false);
+      setPrinciples([]);
       setSkills([]);
       return;
     }
@@ -608,14 +634,22 @@ export function App() {
     void Promise.allSettled([refreshNodes(), refreshContextSpace(), refreshGit()]).then(() => {
       if (!cancelled) setInitialLoadComplete(true);
     });
-    /* Skills are user-wide — fetched independently of nodes/contextspace and
-     * don't gate the canvas render. Stale is acceptable; refreshSkills() is
-     * called after skill-edit turns finish. */
+    /* Principles are user-wide — fetched independently of nodes/contextspace and
+     * don't gate the canvas render. Stale is acceptable; refreshPrinciples() is
+     * called after principle-edit turns finish. */
+    refreshPrinciples();
     refreshSkills();
     return () => {
       cancelled = true;
     };
-  }, [session?.id, refreshNodes, refreshContextSpace, refreshGit, refreshSkills]);
+  }, [
+    session?.id,
+    refreshNodes,
+    refreshContextSpace,
+    refreshGit,
+    refreshPrinciples,
+    refreshSkills,
+  ]);
 
   useEffect(() => {
     if (!session?.id) return;
@@ -632,24 +666,24 @@ export function App() {
     return () => window.clearInterval(timer);
   }, [sessionContextSpace?.context_refresh?.running, refreshContextSpace]);
 
-  /* Refresh the skill shelf whenever a skill-edit node reaches a terminal
+  /* Refresh the principle shelf whenever a principle-edit node reaches a terminal
    * state — creation and refinement both land through this path. */
-  const terminalSkillEditCount = useMemo(() => {
+  const terminalPrincipleEditCount = useMemo(() => {
     let count = 0;
     for (const n of nodes) {
-      if (n.agent_op_kind === "skill_edit" && TERMINAL_STATES.has(n.state)) {
+      if (n.agent_op_kind === "principle_edit" && TERMINAL_STATES.has(n.state)) {
         count += 1;
       }
     }
     return count;
   }, [nodes]);
-  const prevTerminalSkillEditCountRef = useRef(0);
+  const prevTerminalPrincipleEditCountRef = useRef(0);
   useEffect(() => {
-    if (terminalSkillEditCount > prevTerminalSkillEditCountRef.current) {
-      refreshSkills();
+    if (terminalPrincipleEditCount > prevTerminalPrincipleEditCountRef.current) {
+      refreshPrinciples();
     }
-    prevTerminalSkillEditCountRef.current = terminalSkillEditCount;
-  }, [terminalSkillEditCount, refreshSkills]);
+    prevTerminalPrincipleEditCountRef.current = terminalPrincipleEditCount;
+  }, [terminalPrincipleEditCount, refreshPrinciples]);
 
   /* Bump the reload version each time the context task finishes, so the
      CONTEXT.md viewer re-reads from disk. */
@@ -834,20 +868,33 @@ export function App() {
     [session?.id],
   );
 
-  /* Drag-onto-virtual attach path: Canvas hands us (virtualNodeId, skillId)
-   * when a skill chip is dropped on a virtual tile. We read the target's
-   * current pending_extra_skills, append, and PATCH via updateVirtualNode.
+  /* Drag-onto-virtual attach path: Canvas hands us (virtualNodeId, principleId)
+   * when a principle chip is dropped on a virtual tile. We read the target's
+   * current pending_extra_principles, append, and PATCH via updateVirtualNode.
    * Fire-and-forget: errors surface through sessionContextSpaceError. */
-  const handleAttachSkillToVirtual = useCallback(
-    (virtualNodeId: string, skillId: string) => {
+  const handleAttachPrincipleToVirtual = useCallback(
+    (virtualNodeId: string, principleId: string) => {
       const target = nodesRef.current.find((n) => n.id === virtualNodeId);
       if (!target || target.state !== "virtual" || target.obsolete_reason) {
         return;
       }
-      const current = target.pending_extra_skills ?? [];
-      if (current.includes(skillId)) return;
+      const current = target.pending_extra_principles ?? [];
+      if (current.includes(principleId)) return;
       void updateVirtualNode(virtualNodeId, {
-        pending_extra_skills: [...current, skillId],
+        pending_extra_principles: [...current, principleId],
+      });
+    },
+    [updateVirtualNode],
+  );
+
+  const handleAttachSkillToVirtual = useCallback(
+    (virtualNodeId: string, skillId: string) => {
+      const target = nodesRef.current.find((n) => n.id === virtualNodeId);
+      if (!target || target.state !== "virtual" || target.obsolete_reason) return;
+      const current = target.pending_extra_skills ?? [];
+      if (current.some((selection) => selection.id === skillId)) return;
+      void updateVirtualNode(virtualNodeId, {
+        pending_extra_skills: [...current, { id: skillId, suggest: false }],
       });
     },
     [updateVirtualNode],
@@ -1864,6 +1911,7 @@ export function App() {
               hiddenPlanspaceIds={hiddenPlanspaceIds}
               activePlanspaceId={sessionContextSpace?.active_planspace_id ?? null}
               canCreateVirtual={!virtualCreateDisabled}
+              principles={principles}
               skills={skills}
               gitCommits={gitCommits}
               gitHead={gitStatus?.head ?? null}
@@ -1874,6 +1922,7 @@ export function App() {
               onMultiSelectionChange={onMultiSelectionChange}
               onAgentNodeContextMenu={onAgentNodeContextMenu}
               onTemplateDrop={onTemplateDrop}
+              onAttachPrincipleToVirtual={handleAttachPrincipleToVirtual}
               onAttachSkillToVirtual={handleAttachSkillToVirtual}
               onLayoutHintsChange={onLayoutHintsChange}
             />
@@ -1968,7 +2017,8 @@ export function App() {
                 onSelectContextBinding={selectContextBinding}
                 onNewDirection={startNewDirection}
                 onStartBlankDirection={startBlankDirection}
-                onNewSkill={handleNewSkill}
+                onNewPrinciple={handleNewPrinciple}
+                onImportSkill={handleImportSkill}
                 onCreateContinuationVirtual={createContinuationVirtual}
                 onPromoteVirtual={promoteVirtualNode}
                 onUpdateVirtual={updateVirtualNode}
@@ -1985,6 +2035,8 @@ export function App() {
                 focusRequestVersion={focusRequestVersion}
                 newDirectionRequestVersion={newDirectionRequestVersion}
                 onNewDirectionRequestHandled={acknowledgeNewDirectionRequest}
+                principles={principles}
+                onDeletePrinciple={handleDeletePrinciple}
                 skills={skills}
                 onDeleteSkill={handleDeleteSkill}
               />

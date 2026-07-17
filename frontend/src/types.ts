@@ -139,7 +139,8 @@ export type ClientMessage =
       type: "user_message";
       text: string;
       resume_from_node_id?: string | null;
-      extra_skills?: string[] | null;
+      extra_principles?: string[] | null;
+      extra_skills?: SkillSelection[] | null;
       agent_op_kind?: string | null;
       model_preset_id?: string | null;
     }
@@ -163,6 +164,11 @@ export type CanvasViewport = {
   x: number;
   y: number;
   zoom: number;
+};
+
+export type SkillSelection = {
+  id: string;
+  suggest: boolean;
 };
 
 export type SessionInfo = {
@@ -302,7 +308,8 @@ export type NodeInfo = {
   review_target?: ReviewTarget | null;
   prompt_draft?: string | null;
   scheduled_deps?: string[];
-  pending_extra_skills?: string[];
+  pending_extra_principles?: string[];
+  pending_extra_skills?: SkillSelection[];
   resume_from_node_id?: string | null;
   verify_script_ref?: string | null;
   proposed_by?: string | null;
