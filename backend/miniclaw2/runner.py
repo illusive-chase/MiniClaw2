@@ -236,6 +236,8 @@ class NodeRunner:
 
             final_state: NodeState = NodeState.DONE
             error_msg: str | None = None
+            library_snapshot: dict[str, dict[str, str]] = {}
+            library_authoring_validated = False
 
             try:
                 try:
@@ -285,7 +287,11 @@ class NodeRunner:
                             and self.node.agent_op_kind == "library_edit"
                         ):
                             try:
-                                self._validate_library_authoring(library_snapshot)
+                                self._validate_library_authoring(
+                                    library_snapshot,
+                                    record_provenance=False,
+                                )
+                                library_authoring_validated = True
                             except Exception as exc:  # noqa: BLE001
                                 error_msg = str(exc)
                                 final_state = NodeState.ERROR
@@ -319,6 +325,19 @@ class NodeRunner:
                         )
                 else:
                     final_state = await self._reap_and_finalize(final_state)
+                if library_authoring_validated:
+                    try:
+                        self._validate_library_authoring(library_snapshot)
+                    except Exception as exc:  # noqa: BLE001
+                        if final_state is NodeState.DONE:
+                            error_msg = str(exc)
+                            self.node.error = error_msg
+                            final_state = NodeState.ERROR
+                            self._write_stub_preview(
+                                NodeState.ERROR,
+                                reason=error_msg,
+                            )
+                            await self._emit(ErrorEvent(message=error_msg))
                 self._transition(final_state, finished=True)
                 await self._emit_node_updated()
                 await self._emit(TurnDone())
@@ -1244,8 +1263,13 @@ class NodeRunner:
     def _validate_library_authoring(
         self,
         before: dict[str, dict[str, str]],
+        *,
+        record_provenance: bool = True,
     ) -> None:
-        """Validate and audit the single entry changed by a librarian turn."""
+        """Validate and audit the single entry changed by a librarian turn.
+
+        Provenance can be deferred until the final validation after preview repairs.
+        """
         root = contextspace_root(self.store.root)
         libraries = {
             "principle": root / "plugs" / "principles",
@@ -1309,7 +1333,11 @@ class NodeRunner:
                 item["content_hash"] = inspected["content_hash"]
             else:
                 item["content_hash"] = _validate_authored_principle(target, slug)
-            if kind == "skill" and item["action"] == "created":
+            if (
+                record_provenance
+                and kind == "skill"
+                and item["action"] == "created"
+            ):
                 record_authored_agent_skill(
                     slug,
                     node_id=self.node.id,

@@ -107,6 +107,26 @@ class _AuthoringProvider:
         return None
 
 
+class _RepairMutatingProvider:
+    name = "stub"
+
+    def __init__(self, root: Path) -> None:
+        self.root = root
+        self.turns = 0
+
+    async def run(self, context: AgentProviderContext):
+        self.turns += 1
+        if self.turns == 1:
+            _write_skill(self.root, "release")
+        else:
+            _write_skill(self.root, "extra")
+            _write_preview(context)
+        yield AgentProviderEvent(kind="done", final_state="done")
+
+    async def interrupt(self) -> None:
+        return None
+
+
 class LibraryEditRunnerTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
@@ -224,6 +244,30 @@ class LibraryEditRunnerTests(unittest.IsolatedAsyncioTestCase):
                 "verdict": "valid",
             },
         )
+
+    async def test_preview_repair_revalidates_final_library_state(self) -> None:
+        node = self._node()
+        provider = _RepairMutatingProvider(self.context_root)
+
+        async def on_event(_payload: dict) -> None:
+            return None
+
+        runner = NodeRunner(node, self.project, self.store, on_event)
+        with patch.object(runner_module, "_make_provider", return_value=provider):
+            await asyncio.wait_for(runner.run(), timeout=5.0)
+
+        self.assertEqual(provider.turns, 2)
+        self.assertEqual(node.state, NodeState.ERROR)
+        self.assertIn("extra", node.error or "")
+        self.assertIn("release", node.error or "")
+        audit = node.settings_snapshot["library_audit"]
+        self.assertEqual({item["slug"] for item in audit}, {"extra", "release"})
+        self.assertTrue(all(item["verdict"] == "error" for item in audit))
+        self.assertFalse((self.context_root / "skill-imports.json").exists())
+        preview = self.store.read_node_preview(self.project.id, node.id)
+        self.assertIsNotNone(preview)
+        assert preview is not None
+        self.assertIn('"state": "error"', preview)
 
     async def test_refinement_preserves_existing_provenance(self) -> None:
         skill = _write_skill(self.context_root, "release", body="Old body.\n")
