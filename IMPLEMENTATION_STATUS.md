@@ -315,16 +315,28 @@ Trunk: `backend/miniclaw2/runner.py`, `backend/miniclaw2/registry.py`.
 - The reviewer's verdict is represented by its preview and any virtual
   graph mutations reaped from `.miniclaw2/graph/`.
 - `code_review` invokes the preset provider's native reviewer against
-  uncommitted Git state (`review/start` for Codex, bare `/code-review` for
-  Claude Code). It skips lane materialization and reap: the framework writes
-  `reviewed-diff.patch`, publishes `code-review-report.md` plus Codex's
-  structured findings when available, and synthesizes the executed preview.
-  The ghost composer exposes this path through `POST /git/review` and its
-  Review button. A changed worktree after launch leaves the node done but
-  prefixes the report and preview with a stale-snapshot warning. Claude Code
-  accepts optional focus text; Codex's `uncommittedChanges` review target has
-  no focus channel, so MiniClaw2 labels that limitation in the editor and
-  records it in the report and executed preview when focus text was supplied.
+  uncommitted Git state (`review/start` for Codex — requires codex-cli
+  ≥ 0.144.1, whose findings shape the mapping is pinned against; re-confirm
+  on upgrade — and bare `/code-review` for Claude Code). It skips lane
+  materialization and reap: the framework writes `reviewed-diff.patch`,
+  publishes `code-review-report.md` plus Codex's structured findings when
+  available, and synthesizes the executed preview. Report-only by design:
+  the node never proposes virtual mutations; downstream planning/review
+  nodes (or the user) read the report artifact. The ghost composer exposes
+  this path through `POST /git/review` and its Review button; creation is
+  rejected for non-repo projects, and a clean tree short-circuits to done
+  ("working tree clean — nothing to review") without a provider call —
+  which makes manual-commit projects the feature's natural home, since
+  auto-commit keeps the tree clean between nodes. A changed worktree after
+  launch leaves the node done but prefixes the report and preview with a
+  stale-snapshot warning. Claude Code accepts optional focus text as the
+  slash-command argument, but `/code-review`'s "current diff" scope may
+  include committed-but-unpushed work — the argument-string narrowing is
+  best-effort guidance, and `reviewed-diff.patch` is the ground truth for
+  what should have been reviewed. Codex's `uncommittedChanges` review
+  target has no focus channel, so MiniClaw2 labels that limitation in the
+  editor and records it in the report and executed preview when focus text
+  was supplied.
 - Code-review invariants from the post-landing review pass:
   `git_review_snapshot` never degrades silently — a failed or timed-out diff
   raises (→ node error) instead of hashing a partial patch, an unborn HEAD
@@ -343,6 +355,24 @@ Trunk: `backend/miniclaw2/runner.py`, `backend/miniclaw2/registry.py`.
   matches short anchored replies (a report quoting the phrase publishes), and
   Codex JSON-RPC errors keep their code — only `-32601` maps to the
   upgrade-codex-cli message, everything else surfaces verbatim.
+
+### Review agents — pending
+
+- `code_review` v2 targets: `base_branch` / `commit` / `custom` (the
+  `review_target` shape anticipates them; Codex maps directly, Claude Code
+  needs per-target prompt design). Also the answer for reviewing committed
+  ranges in auto-commit projects, where uncommitted-only reviews
+  short-circuit clean.
+- Detached Codex review delivery and `reviewThreadId` persistence; v1 runs
+  inline on the node's own thread, keeping `provider_session_id` semantics
+  untouched.
+- Auto-converting findings into virtual fix nodes — revisit once real
+  reports show whether Codex's structured findings are reliable enough to
+  script against.
+- Review-blocking commit enforcement — the review→commit gate stays a
+  workflow pattern (scheduled deps + the composer's Review button), not a
+  hard constraint on commit ops. `/code-review`'s `--fix` / `--comment`
+  modes stay outside the report-only contract.
 
 ### Verifier — landed
 
@@ -982,6 +1012,9 @@ Quick reference; the on-disk shape is authoritative.
   published artifact JSON/raw reads,
   `GET /sessions/{sid}/git` (status + derived commit descriptors),
   `POST /sessions/{sid}/git/commit {message}` (spawns the commit op),
+  `POST /sessions/{sid}/git/review` (spawns the queued code_review node, or
+  idempotently returns the in-flight one; 400 for non-repo projects — the
+  scheduler guard, not the endpoint, owns serialization),
   `POST /sessions/{sid}/git/pull` (409 unless quiescent; spawns the pull op),
   `POST /sessions/{sid}/git/push` (direct action; 409 with git stderr or
   while a pull is in flight),
