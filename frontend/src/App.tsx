@@ -211,6 +211,7 @@ export function App() {
    * current session. The canvas is held off-screen until then so hidden-planspace
    * nodes never briefly flash visible during the load-order race. */
   const [initialLoadComplete, setInitialLoadComplete] = useState(false);
+  const [nodesHydratedSessionId, setNodesHydratedSessionId] = useState<string | null>(null);
 
   const [focusRequestVersion, setFocusRequestVersion] = useState(0);
   const [newDirectionRequestVersion, setNewDirectionRequestVersion] = useState(0);
@@ -230,6 +231,8 @@ export function App() {
   const [libraryRefreshToken, setLibraryRefreshToken] = useState(0);
   const [librarySurfaceToken, setLibrarySurfaceToken] = useState(0);
   const [librarySurfaceBaselineIds, setLibrarySurfaceBaselineIds] = useState<string[]>([]);
+  const prevTerminalLibraryEditCountRef = useRef(0);
+  const terminalLibraryBaselineSessionIdRef = useRef<string | null>(null);
 
   /* Single floating side panel: `panelOpen` controls the slide-in animation
    * and `panelMode` decides whether details or the library renders.
@@ -355,6 +358,9 @@ export function App() {
     nodeCountRef.current = 0;
     nodesRef.current = [];
     setNodes([]);
+    setNodesHydratedSessionId(null);
+    prevTerminalLibraryEditCountRef.current = 0;
+    terminalLibraryBaselineSessionIdRef.current = null;
     setSelection({ kind: "none" });
     inspectedNodeIdRef.current = null;
     setInspectedNodeId(null);
@@ -588,6 +594,7 @@ export function App() {
         nodesRef.current = merged;
         return merged;
       });
+      setNodesHydratedSessionId(sessionId);
       setPendingGates((current) => removePendingNodes(current, wasRemovedByRefresh));
       setPendingReviews((current) => removePendingNodes(current, wasRemovedByRefresh));
       setSelection((current) =>
@@ -717,10 +724,15 @@ export function App() {
     }
     return count;
   }, [nodes]);
-  const prevTerminalLibraryEditCountRef = useRef<number | null>(null);
   useEffect(() => {
-    const previous = prevTerminalLibraryEditCountRef.current;
-    if (previous !== null && terminalLibraryEditCount > previous) {
+    const sessionId = session?.id ?? null;
+    if (!sessionId || nodesHydratedSessionId !== sessionId) return;
+    if (terminalLibraryBaselineSessionIdRef.current !== sessionId) {
+      terminalLibraryBaselineSessionIdRef.current = sessionId;
+      prevTerminalLibraryEditCountRef.current = terminalLibraryEditCount;
+      return;
+    }
+    if (terminalLibraryEditCount > prevTerminalLibraryEditCountRef.current) {
       setLibrarySurfaceBaselineIds([
         ...principles.map((item) => item.id),
         ...skills.map((item) => item.id),
@@ -733,6 +745,8 @@ export function App() {
     }
     prevTerminalLibraryEditCountRef.current = terminalLibraryEditCount;
   }, [
+    session?.id,
+    nodesHydratedSessionId,
     terminalLibraryEditCount,
     refreshPrinciples,
     refreshSkills,
@@ -1922,10 +1936,12 @@ export function App() {
             onClick={() => {
               setSelection({ kind: "projectRoot" });
               inspectNode(null);
-              setNewDirectionRequestVersion((version) => version + 1);
+              if (!readOnly) {
+                setNewDirectionRequestVersion((version) => version + 1);
+              }
               openDetails();
             }}
-            disabled={sessionSettingsSaving || projectMutationPending || readOnly}
+            disabled={sessionSettingsSaving || projectMutationPending}
             className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-line bg-surface text-ink-muted transition hover:border-line-strong hover:bg-surface-sunken hover:text-ink disabled:cursor-not-allowed disabled:opacity-40"
             title="Project and new direction"
             aria-label="Open project panel and new direction composer"

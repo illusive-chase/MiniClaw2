@@ -191,6 +191,83 @@ function testBindingDrivenContextTiles(): void {
   assert.equal(contextNodes(hidden).length, 0);
 }
 
+function testFloatingContextDoesNotOverlapFirstLane(): void {
+  const run = node("run", { planspace_id: "planspaces.alpha" });
+  const principlePath = `${principle.path}/CONTEXT.md`;
+  const graph = buildGraph(args({
+    nodes: [run],
+    knownPlanspaceIds: ["planspaces.alpha"],
+    contextBundlesByNodeId: {
+      run: {
+        bundle_id: "bundle-run",
+        created_at: 1,
+        node_id: "run",
+        sources: [
+          {
+            scope: "contextspace",
+            kind: "context",
+            path: "/planspaces/alpha/CONTEXT.md",
+            sha256: "planspace-hash",
+            chars: 42,
+            injection: "system",
+            plug_id: "planspaces.alpha",
+          },
+          {
+            scope: "contextspace",
+            kind: "principle",
+            path: principlePath,
+            sha256: "principle-hash",
+            chars: 42,
+            injection: "system",
+            plug_id: principle.id,
+          },
+        ],
+      },
+    },
+  }));
+  const lane = graph.rfNodes.find((item) => item.id === "planspace:planspaces.alpha");
+  const owned = contextNodes(graph).find((item) => item.parentNode === lane?.id);
+  const floating = contextNodes(graph).find((item) => !item.parentNode);
+  assert.ok(lane);
+  assert.ok(owned);
+  assert.ok(floating);
+  const ownedLeft = lane.position.x + owned.position.x;
+  const ownedRight = ownedLeft + (owned.width ?? 160);
+  const floatingLeft = floating.position.x;
+  const floatingRight = floatingLeft + (floating.width ?? 160);
+  assert.equal(floatingRight <= ownedLeft || floatingLeft >= ownedRight, true);
+}
+
+function testObservedSkillMetadataEnrichment(): void {
+  const skillPath = `${skill.path}/SKILL.md`;
+  const graph = buildGraph(args({
+    nodes: [node("run", {
+      settings_snapshot: { skill_audit: [{ id: skill.id, used: true }] },
+    })],
+    contextBundlesByNodeId: {
+      run: {
+        bundle_id: "bundle-run",
+        created_at: 1,
+        node_id: "run",
+        sources: [{
+          scope: "contextspace",
+          kind: "skill",
+          path: skillPath,
+          sha256: "skill-hash",
+          chars: 42,
+          injection: "system",
+        }],
+      },
+    },
+  }));
+  const observedSkill = contextNodes(graph).find(
+    (item) => item.id === `ctx:${contextIdentityKey("contextspace", "skill", skillPath)}`,
+  );
+  assert.ok(observedSkill);
+  assert.equal((observedSkill.data as { title?: string }).title, skill.title);
+  assert.equal((observedSkill.data as { plugId?: string }).plugId, skill.id);
+}
+
 function testEdgeWeights(): void {
   const graph = buildGraph(args({ nodes: [node("stable")] }));
   const originalNodes = graph.rfNodes;
@@ -222,5 +299,7 @@ testNoRootOrFabricatedDependencies();
 testVerticalCommitTrunkAndStableLaneX();
 testEpochLinksAndHoverGroups();
 testBindingDrivenContextTiles();
+testFloatingContextDoesNotOverlapFirstLane();
+testObservedSkillMetadataEnrichment();
 testEdgeWeights();
 console.log("canvas layout tests passed");

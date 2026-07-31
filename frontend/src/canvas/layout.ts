@@ -791,6 +791,8 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
         };
         ctxAgg.set(key, aggregate);
       }
+      if (!aggregate.title) aggregate.title = skill.title;
+      if (!aggregate.plugId) aggregate.plugId = skill.id;
       aggregate.loadedBy.add(node.id);
       if (item.used === true) aggregate.usedBy.add(node.id);
     }
@@ -863,7 +865,26 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
    * The split keeps project-wide references separate from planspace-owned
    * memory while still showing free-form loads. */
   let projectCtxCursorX = LANE.rootX + LANE.trunkGutter;
-  let laneCtxCursorX = LANE.rootX + LANE.trunkGutter;
+  const firstLaneId = planspaceOrder[0];
+  const firstLanePosition = firstLaneId ? laneAbsPos.get(firstLaneId) : undefined;
+  let firstLaneContextCursorX = LANE.planspaceLanePaddingX;
+  let firstLaneContextRight = 0;
+  if (firstLaneId) {
+    for (const agg of ctxAgg.values()) {
+      if (agg.scope === "project-root" || agg.plugId !== firstLaneId) continue;
+      const stored = layoutHints[`ctx:${agg.identityKey}`];
+      const positionX = stored?.x ?? firstLaneContextCursorX;
+      firstLaneContextRight = Math.max(firstLaneContextRight, positionX + 160);
+      firstLaneContextCursorX += LANE.planspaceCtxStep;
+    }
+  }
+  const firstLaneContentRight = Math.max(
+    firstLaneContextRight,
+    firstLaneId ? (laneChildMaxX.get(firstLaneId) ?? 0) : 0,
+  );
+  let laneCtxCursorX = firstLanePosition
+    ? firstLanePosition.x + firstLaneContentRight + LANE.planspaceLanePaddingX
+    : LANE.rootX + LANE.trunkGutter;
   const inLaneCtxCursor = new Map<string, number>();
   for (const agg of ctxAgg.values()) {
     const ctxId = `ctx:${agg.identityKey}`;
