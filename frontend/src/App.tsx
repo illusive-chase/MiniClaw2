@@ -45,7 +45,10 @@ import { setPlanspaceLaneContext } from "./canvas/nodes/PlanspaceLaneNode";
 import { SidePanel } from "./panel/SidePanel";
 import { NewProjectModal } from "./components/NewProjectModal";
 import { SaveAsTemplateModal } from "./components/SaveAsTemplateModal";
-import { TemplateLibraryDock } from "./components/TemplateLibraryDock";
+import {
+  LibraryDock,
+  type LibraryEntrySelection,
+} from "./components/LibraryDock";
 import { ContextMenu, type ContextMenuItem } from "./canvas/ContextMenu";
 import { applyUserTemplate } from "./api";
 import { ProjectsLanding } from "./components/ProjectsLanding";
@@ -130,15 +133,14 @@ export function App() {
     Record<string, ContextBundle | null>
   >({});
 
-  /* User-wide principle shelf. Fetched on session mount and refreshed after
-   * a principle-edit turn completes. See canvas layout.ts for the dimmed-tile
-   * merge into the context aggregate. */
+  /* User-wide library entries. The canvas uses these only to resolve bound
+   * entries; the complete collection lives in LibraryDock. */
   const [principles, setPrinciples] = useState<PrincipleSummary[]>([]);
   const refreshPrinciples = useCallback(() => {
-    listPrinciples()
+    return listPrinciples()
       .then(setPrinciples)
       .catch(() => {
-        /* non-fatal — the shelf just stays stale until the next refresh */
+        /* non-fatal — the library just stays stale until the next refresh */
       });
   }, []);
   const handleDeletePrinciple = useCallback(
@@ -153,7 +155,7 @@ export function App() {
   );
   const [skills, setSkills] = useState<SkillSummary[]>([]);
   const refreshSkills = useCallback(() => {
-    listSkills().then(setSkills).catch(() => {});
+    return listSkills().then(setSkills).catch(() => {});
   }, []);
   const handleDeleteSkill = useCallback(
     async (slug: string) => {
@@ -226,15 +228,17 @@ export function App() {
   const [saveTemplateOpen, setSaveTemplateOpen] = useState(false);
   const [saveTemplateNodeIds, setSaveTemplateNodeIds] = useState<string[]>([]);
   const [libraryRefreshToken, setLibraryRefreshToken] = useState(0);
+  const [librarySurfaceToken, setLibrarySurfaceToken] = useState(0);
+  const [librarySurfaceBaselineIds, setLibrarySurfaceBaselineIds] = useState<string[]>([]);
 
   /* Single floating side panel: `panelOpen` controls the slide-in animation
-   * and `panelMode` decides whether details or the template library renders.
+   * and `panelMode` decides whether details or the library renders.
    * Node clicks set mode='details' (but never force-open per UX spec);
-   * the templates top-bar button toggles open+templates; empty-canvas click
+   * the Library top-bar button toggles open+library; empty-canvas click
    * or the panel's close button closes. */
   const [panelState, setPanelState] = useState<{
     open: boolean;
-    mode: "details" | "templates";
+    mode: "details" | "library";
   }>(() => readPanelState());
   useEffect(() => {
     try {
@@ -249,11 +253,11 @@ export function App() {
   const openDetails = useCallback(() => {
     setPanelState({ open: true, mode: "details" });
   }, []);
-  const toggleTemplates = useCallback(() => {
+  const toggleLibrary = useCallback(() => {
     setPanelState((prev) =>
-      prev.open && prev.mode === "templates"
+      prev.open && prev.mode === "library"
         ? { ...prev, open: false }
-        : { open: true, mode: "templates" },
+        : { open: true, mode: "library" },
     );
   }, []);
   const inspectNode = useCallback((nodeId: string | null) => {
@@ -271,6 +275,25 @@ export function App() {
       }
     }
   }, []);
+  const refreshLibraryEntries = useCallback(
+    () => Promise.all([refreshPrinciples(), refreshSkills()]),
+    [refreshPrinciples, refreshSkills],
+  );
+  const openLibraryEntry = useCallback(
+    (entry: LibraryEntrySelection) => {
+      setSelection({
+        kind: "context",
+        identityKey: entry.identityKey,
+        path: entry.path,
+        scope: "contextspace",
+        sourceKind: entry.sourceKind,
+        plugId: entry.plugId,
+      });
+      inspectNode(null);
+      openDetails();
+    },
+    [inspectNode, openDetails],
+  );
   /* Programmatic-selection helper. Whenever code (not a user canvas click)
    * changes what's inspected, we must also open the details panel — otherwise
    * the freshly-inspected node's controls (gate/review form, virtual draft
@@ -694,14 +717,28 @@ export function App() {
     }
     return count;
   }, [nodes]);
-  const prevTerminalLibraryEditCountRef = useRef(0);
+  const prevTerminalLibraryEditCountRef = useRef<number | null>(null);
   useEffect(() => {
-    if (terminalLibraryEditCount > prevTerminalLibraryEditCountRef.current) {
+    const previous = prevTerminalLibraryEditCountRef.current;
+    if (previous !== null && terminalLibraryEditCount > previous) {
+      setLibrarySurfaceBaselineIds([
+        ...principles.map((item) => item.id),
+        ...skills.map((item) => item.id),
+      ]);
       refreshPrinciples();
       refreshSkills();
+      setLibraryRefreshToken((token) => token + 1);
+      setLibrarySurfaceToken((token) => token + 1);
+      setPanelState({ open: true, mode: "library" });
     }
     prevTerminalLibraryEditCountRef.current = terminalLibraryEditCount;
-  }, [terminalLibraryEditCount, refreshPrinciples, refreshSkills]);
+  }, [
+    terminalLibraryEditCount,
+    refreshPrinciples,
+    refreshSkills,
+    principles,
+    skills,
+  ]);
 
   /* Bump the reload version each time the context task finishes, so the
      CONTEXT.md viewer re-reads from disk. */
@@ -1581,7 +1618,7 @@ export function App() {
     } else if (sel.kind === "none") {
       inspectNode(null);
     }
-    /* Node clicks open the panel in details mode (overriding templates
+    /* Node clicks open the panel in details mode (overriding the library
      * if that was showing). Empty-canvas click closes it. */
     if (sel.kind === "none") {
       setPanelState((prev) => (prev.open ? { ...prev, open: false } : prev));
@@ -1889,25 +1926,30 @@ export function App() {
               openDetails();
             }}
             disabled={sessionSettingsSaving || projectMutationPending || readOnly}
-            className="inline-flex h-8 items-center rounded-md border border-line bg-surface px-2.5 text-xs font-medium text-ink-muted transition hover:border-line-strong hover:bg-surface-sunken hover:text-ink disabled:cursor-not-allowed disabled:opacity-40"
-            title="Open new direction composer"
+            className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-line bg-surface text-ink-muted transition hover:border-line-strong hover:bg-surface-sunken hover:text-ink disabled:cursor-not-allowed disabled:opacity-40"
+            title="Project and new direction"
+            aria-label="Open project panel and new direction composer"
           >
-            + New direction
+            <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M3 12 12 4l9 8" />
+              <path d="M5 10v9a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-9" />
+              <path d="M10 20v-6h4v6" />
+            </svg>
           </button>
 
           <button
             type="button"
-            onClick={toggleTemplates}
-            aria-pressed={panelState.open && panelState.mode === "templates"}
+            onClick={toggleLibrary}
+            aria-pressed={panelState.open && panelState.mode === "library"}
             className={
               "inline-flex h-8 items-center rounded-md border px-2.5 text-xs font-medium transition " +
-              (panelState.open && panelState.mode === "templates"
+              (panelState.open && panelState.mode === "library"
                 ? "border-brand bg-brand/10 text-ink-strong"
                 : "border-line bg-surface text-ink-muted hover:border-line-strong hover:bg-surface-sunken hover:text-ink")
             }
-            title="Toggle template library"
+            title="Toggle library"
           >
-            Templates
+            Library
           </button>
 
           <ThemeToggle />
@@ -1923,7 +1965,6 @@ export function App() {
               nodes={nodes}
               selectedNodeId={selectedCanvasNodeId}
               activeNodeIds={activeCanvasNodeIds}
-              projectTitle={projectTitle}
               contextBundlesByNodeId={contextBundlesByNodeId}
               knownPlanspaceIds={knownPlanspaceIds}
               hiddenPlanspaceIds={hiddenPlanspaceIds}
@@ -1966,8 +2007,8 @@ export function App() {
             />
           )}
 
-          {/* Floating side panel — slides in from the right, swaps between
-              details (node inspector) and the template library. */}
+          {/* Floating side panel — slides in from the right, swapping between
+              the node inspector and the project library. */}
           <aside
             ref={panelRef}
             aria-hidden={!panelState.open}
@@ -1976,10 +2017,20 @@ export function App() {
               (panelState.open ? "translate-x-0" : "pointer-events-none translate-x-full")
             }
           >
-            {panelState.mode === "templates" ? (
-              <TemplateLibraryDock
+            {panelState.mode === "library" ? (
+              <LibraryDock
                 refreshToken={libraryRefreshToken}
+                surfaceNewToken={librarySurfaceToken}
+                surfaceBaselineIds={librarySurfaceBaselineIds}
                 modelPresets={modelPresets}
+                principles={principles}
+                skills={skills}
+                nodes={nodes}
+                contextBundlesByNodeId={contextBundlesByNodeId}
+                onRefreshEntries={refreshLibraryEntries}
+                onDeletePrinciple={handleDeletePrinciple}
+                onDeleteSkill={handleDeleteSkill}
+                onOpenFull={openLibraryEntry}
                 onClose={closePanel}
               />
             ) : (
@@ -2234,12 +2285,14 @@ function pendingBanner(
   };
 }
 
-function readPanelState(): { open: boolean; mode: "details" | "templates" } {
+function readPanelState(): { open: boolean; mode: "details" | "library" } {
   try {
     const raw = window.localStorage.getItem("miniclaw.panelState");
     if (raw) {
       const parsed = JSON.parse(raw) as { open?: unknown; mode?: unknown };
-      const mode = parsed.mode === "templates" ? "templates" : "details";
+      const mode = parsed.mode === "library" || parsed.mode === "templates"
+        ? "library"
+        : "details";
       return { open: parsed.open === true, mode };
     }
   } catch {
@@ -2259,7 +2312,7 @@ function graphNodeIdForSelection(selection: CanvasSelection): string | null {
     return artifactNodeId(selection.nodeId, selection.name);
   }
   if (selection.kind === "projectRoot") {
-    return "root";
+    return null;
   }
   if (selection.kind === "planspace") {
     return `planspace:${selection.planspaceId}`;

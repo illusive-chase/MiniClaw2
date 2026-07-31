@@ -562,28 +562,32 @@ this is presentation only, not part of the schema.
 
 ## 10. Visual grammar
 
-### 10.1 Three orthogonal axes
+### 10.1 Four orthogonal axes
 
-To make a populated graph scan-readable, three signals are kept
+To make a populated graph scan-readable, four signals are kept
 separate:
 
 - **Shape encodes kind.** Stable across state changes. Tile (agent),
-  chevron-on-edge (op), layered card (context), home glyph (project
-  root), circle-on-baseline (commit), dashed outline (virtual — not yet
-  real). A commit ring marks HEAD, dashed amber marks a rebased-away
-  commit, and dashed grey marks the uncommitted ghost. The hexagon for
-  the retired `gate` kind is gone.
+  chevron-on-edge (op), layered card (context), circle-on-trunk
+  (commit), dashed outline (virtual — not yet real). A commit ring marks
+  HEAD, dashed amber marks a rebased-away commit, and dashed grey marks
+  the uncommitted ghost. The project is the graph's container and is not
+  itself a node. The hexagon for the retired `gate` kind is gone.
 - **Color encodes state.** Distinct colors for running, paused,
   awaiting_human_input, done, error.
 - **Badge encodes category + subtype.** 📋 planning, ⚙ regular (a
   subtle dot or no badge), 🔍 review. Review subtype refines the
   badge: 🔍🤖 agentic, 🔍👤 human-interact. A small ✓ or ⚙ post-run
   badge on review tiles indicates "no mutations" vs "plan shifted."
+- **Weight encodes at-rest relevance.** At rest the canvas is the plan
+  plus filesystem state: dependency, commit-trunk, resume, and failure
+  edges remain visible. Derived relations — loads, produces, and epoch
+  membership — appear on endpoint hover or selection.
 
-A user scans the canvas and reads all three axes at once: "a 🔍👤
+A user scans the canvas and reads all four axes at once: "a 🔍👤
 tile in the awaiting color" decodes as "a human review waiting on
-me." A fourth axis — tile left-edge accent — encodes which planspace
-direction the tile belongs to. Lane background and tile accent share
+me." Tile left-edge accent additionally encodes which planspace
+direction the tile belongs to; lane background and tile accent share
 the planspace's hue.
 
 Hovering any node yields a one-line plain-language explanation. The

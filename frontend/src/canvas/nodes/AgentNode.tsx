@@ -9,6 +9,7 @@ import type { AgentNodeData } from "../layout";
 import { stateMeta } from "./stateMeta";
 import { canResumeNode } from "../../nodeUtil";
 import { modelPresetDetail, modelPresetLabel, providerLabel } from "../../modelPresets";
+import { useNodeInHoverGroup } from "../hoverStore";
 
 /**
  * Agent tile: rounded rectangle, ~224x130. The primary work unit.
@@ -27,6 +28,7 @@ function AgentNodeImpl({ data, selected }: NodeProps<AgentNodeData>) {
     readyToPromote,
     canCreateVirtual,
   } = data;
+  const hoveredByGroup = useNodeInHoverGroup(node.id);
   const meta = stateMeta(node.state);
   const pendingGate = agentNodeContext.pendingGateForNode(node.id);
   const headline = oneLine(
@@ -213,6 +215,10 @@ function AgentNodeImpl({ data, selected }: NodeProps<AgentNodeData>) {
           "relative select-none overflow-hidden rounded-lg border text-left shadow-card transition " +
           (selected
             ? "border-brand ring-2 ring-brand ring-offset-2 ring-offset-surface-sunken"
+            : hoveredByGroup
+              ? isVirtual
+                ? "border-brand ring-2 ring-brand/20 ring-offset-2 ring-offset-surface-sunken shadow-raised"
+                : "border-line-strong ring-2 ring-line-strong/45 ring-offset-2 ring-offset-surface-sunken shadow-raised"
             : isVirtual
               ? "border-dashed border-line-strong hover:border-brand hover:ring-2 hover:ring-brand/20 hover:ring-offset-2 hover:ring-offset-surface-sunken hover:shadow-raised"
               : "border-line hover:border-line-strong hover:ring-2 hover:ring-line-strong/45 hover:ring-offset-2 hover:ring-offset-surface-sunken hover:shadow-raised") +

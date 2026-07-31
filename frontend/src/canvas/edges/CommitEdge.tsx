@@ -25,6 +25,7 @@ function CommitEdgeImpl(props: EdgeProps<CommitEdgeData>) {
   const stroke = props.selected
     ? "rgb(var(--brand))"
     : "rgb(var(--border-strong))";
+  const gatedOpacity = (props.style as React.CSSProperties | undefined)?.opacity;
 
   return (
     <>
@@ -33,8 +34,9 @@ function CommitEdgeImpl(props: EdgeProps<CommitEdgeData>) {
         style={{
           stroke,
           strokeWidth: props.selected ? 2 : 1.2,
-          opacity: props.selected ? 1 : 0.65,
+          opacity: props.selected ? 1 : gatedOpacity ?? 0.65,
           strokeDasharray: props.data?.dashed ? "4 4" : undefined,
+          transition: gatedOpacity === undefined ? undefined : "opacity 180ms ease",
         }}
       />
       {externalCount > 0 && (

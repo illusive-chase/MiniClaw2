@@ -74,26 +74,29 @@ itself rebases.
   `commit_before`/`commit_after` plus HEAD, resolved transitively through
   the alias map. Stale epochs interleave into trunk order by their member
   nodes' timestamps; `external_count_before` counts unreferenced commits
-  between consecutive referenced ones, rendered as a `+N` badge on the
-  trunk edge rather than as N hubs.
+  between consecutive referenced ones. Interior gaps render as a `+N`
+  badge on the trunk edge; the oldest hub carries its own pre-history
+  count because it has no inbound edge.
 - Alias capture: the pull op records `git rev-list --reverse
   @{upstream}..HEAD` before and after the rebase; equal lengths give a
   positional old→new map (atomic store write). On length mismatch the map
   is not written and affected epochs render stale — the honest fallback.
   External rebases also render stale. Node records never rewrite.
-- Canvas: trunk `root → C₀ → … → ghost` on the project baseline; hubs are
-  64px circles (sha7, live solid / stale dashed-amber / HEAD ring / ghost
-  dashed showing the dirty count), draggable via `layoutHints`
-  key `commit:<sha>`. Epoch source/sink edges touch only the sources and
-  sinks of each epoch's dep-sub-DAG (transitive reduction within the
-  epoch); a sink targets the earliest rendered **live** commit at-or-after
-  its `commit_after`, else the ghost when rendered, else no edge.
+- Canvas: an oldest-first vertical trunk `C₀ → … → ghost`; hubs are 64px
+  circles (sha7, live solid / stale dashed-amber / HEAD ring / ghost dashed
+  showing the dirty count), draggable via `layoutHints` key `commit:<sha>`.
+  The trunk grows downward without changing lane `x`. Epoch source/sink
+  links touch only the sources and sinks of each epoch's dep-sub-DAG
+  (transitive reduction within the epoch), render dashed, and stay hidden
+  until an endpoint is hovered or selected. A sink targets the earliest
+  rendered **live** commit at-or-after its `commit_after`, else the ghost
+  when rendered, else no edge.
 - Selection kind `{kind: "commit", sha | null}` routes to `GitCommitPanel`:
   HEAD/live/stale badges, message, timestamp, clickable epoch member list,
   associated op metadata (auto vs manual, parent agent). The ghost variant
   is the commit composer, prefilled from the current epoch's node summaries;
   it re-checks the dirty count and degrades to "working tree clean".
-- Edge cases: empty repo renders `root → ghost` only; detached HEAD keeps
+- Edge cases: a dirty empty repo renders a parentless ghost only; detached HEAD keeps
   the pill and ring with `branch=None`; no upstream omits ahead/behind and
   fails pull/push with git's own message; `.miniclaw2/`-only changes mean
   dirty count 0 and no ghost.
@@ -610,8 +613,9 @@ Trunk: `frontend/src/canvas/Canvas.tsx`, `frontend/src/canvas/layout.ts`,
 - React Flow canvas; one canvas per project; pan/zoom per-project.
 - Node kinds rendered: `AgentNode`, `OpNode`, `ContextNode`,
   `ArtifactNode`, `ErrorTerminalNode`, `PlanspaceLaneNode`,
-  `ProjectRootNode`. Passive `GateNode` and the old phantom composer
-  node have been removed.
+  and `CommitNode`. `ProjectRootNode`, passive `GateNode`, and the old
+  phantom composer node have been removed; the project home glyph lives
+  in the header and opens `ProjectPanel` plus its direction composer.
 - Polymorphic side panel: `AgentPanel`, `ContextNodePanel`,
   `ArtifactPanel`, `OpPanel`, `GitCommitPanel`, lane panel, `ProjectPanel`
   switched by selection (`SidePanel.tsx`).
@@ -631,10 +635,14 @@ Trunk: `frontend/src/canvas/Canvas.tsx`, `frontend/src/canvas/layout.ts`,
 - Agent tiles show category badges for planning / regular / review /
   human-interact review nodes; verifier tiles use the review tone and
   a programmatic label.
-- Edges: dependency arrows, derived commit edges (trunk plus epoch
-  source/sink, with `+N` external-commit badges), resume (`↻` mid-glyph),
-  loads (dashed, auto-hidden unless endpoint hovered/selected), and produces
-  (agent to published artifact).
+- Edge weight is explicit: dependency arrows, the vertical commit trunk,
+  resume (`↻` mid-glyph), and error-terminal edges render at rest. Loads,
+  produces, and dashed commit epoch links are hidden until an endpoint is
+  hovered or selected. Hovering a commit hub also rings its epoch members;
+  hovering a member rings its hub through a store that does not rewrite the
+  React Flow node array.
+- Dependency edges come only from `scheduled_deps`; nodes with no declared
+  dependency have no fabricated `root → node` relation.
 - Published artifact tiles fan beneath their producing agent in the
   `ContextNode` visual language, capped at 4 (more collapses to 3 plus
   a `+k more` overflow tile that opens the agent panel). Dropped
@@ -677,11 +685,17 @@ Trunk: `frontend/src/canvas/Canvas.tsx`, `frontend/src/canvas/layout.ts`,
 - `ProjectPanel.tsx` has Project actions (`+ New direction`, `+ New skill`,
   initialize/refresh project notes) and a Directions section with active
   badges, mode labels, and hide/show controls.
-- A user-wide skill shelf is merged into the context-node lane even before a
-  live node loads a skill. Skills can be inspected/deleted, attached in the
-  virtual editor, or dragged directly onto a virtual tile. Skill details show
-  package size and declared sibling dependencies; auto-attached entries are
-  visibly labeled in the agent editor.
+- Principle and skill context tiles are binding-driven: a tile exists only
+  when an observed bundle/skill audit or a visible virtual's pending binding
+  references it. Pending declarations draw dashed loads; observed principle
+  use and used skills draw solid loads; available-but-unused skills remain
+  dashed. Unbound user-wide entries do not appear on the canvas.
+- `LibraryDock` is the single side-panel collection for Templates,
+  Principles, and Skills. All three sections retain their drag MIME types;
+  principle/skill cards expand inline for metadata, attached count, full
+  inspection, and deletion. Completed librarian turns refresh and surface
+  newly authored entries. Persisted panel mode `templates` migrates to
+  `library` on read.
 - Persisted node `layout_hints` and the user-owned pan/zoom
   `layout_viewport` round-trip through `project.json` via
   `PATCH /sessions/{sid}/layout-hints`; programmatic fit-to-view does not
@@ -861,8 +875,8 @@ time behaviour:
   the user through the Tests modal, and create a fresh temporary project
   each run.
 - **User** templates are authored via the UI from a canvas selection,
-  live under `$MINICLAW_CONTEXT_HOME/templates/<slug>/`, are surfaced by
-  a left-side library dock, and stamp their subgraph into the *current*
+  live under `$MINICLAW_CONTEXT_HOME/templates/<slug>/`, are surfaced in
+  the side-panel Library dock, and stamp their subgraph into the *current*
   project's active planspace when dropped onto the canvas.
 
 Templates apply verbatim — no parameter substitution, no concierge
@@ -937,12 +951,11 @@ virtual into their subgraph.
   websocket bumps. Right-click on an agent tile opens a `ContextMenu`
   with "Save as template…"; the resulting `SaveAsTemplateModal` takes a
   name + one-line brief and POSTs to the save endpoint.
-- Frontend: `TemplateLibraryDock` mounts on the left of the canvas,
-  lists user templates only (bundled ones stay in the Tests modal),
-  supports drag via the `application/x-miniclaw-template` MIME type,
-  and offers a hover-revealed delete affordance. Dropping a card onto
-  an agent tile anchors the root virtuals to that tile; dropping onto
-  empty canvas leaves root virtuals unparented.
+- Frontend: the Templates section of `LibraryDock` lists user templates
+  (bundled ones stay in the Tests modal), supports drag via the
+  `application/x-miniclaw-template` MIME type, and offers deletion.
+  Dropping a card onto an agent tile anchors the root virtuals to that
+  tile; dropping onto empty canvas leaves root virtuals unparented.
 
 ### Pending
 

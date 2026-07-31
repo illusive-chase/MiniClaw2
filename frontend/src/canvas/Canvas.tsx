@@ -6,7 +6,6 @@ import ReactFlow, {
   MarkerType,
   ReactFlowProvider,
   useOnSelectionChange,
-  type Edge,
   type Node,
   type NodeChange,
   type NodeMouseHandler,
@@ -22,14 +21,12 @@ import { artifactRawUrl } from "../api";
 import {
   buildGraph,
   type RFNode,
-  type RFEdge,
   type PrincipleEnumeration,
   type SkillEnumeration,
 } from "./layout";
 import { AgentNode } from "./nodes/AgentNode";
 import { OpNode } from "./nodes/OpNode";
 import { ContextNode } from "./nodes/ContextNode";
-import { ProjectRootNode } from "./nodes/ProjectRootNode";
 import { PlanspaceLaneNode } from "./nodes/PlanspaceLaneNode";
 import {
   DependencyEdge,
@@ -42,12 +39,13 @@ import { CommitEdge } from "./edges/CommitEdge";
 import { ErrorTerminalNode } from "./nodes/ErrorTerminalNode";
 import { ArtifactNode } from "./nodes/ArtifactNode";
 import { CommitNode } from "./nodes/CommitNode";
+import { setHoverGroup } from "./hoverStore";
+import { decorateEdges, resolveHoverGroup } from "./edgeVisibility";
 
 const NODE_TYPES = {
   agent: AgentNode,
   op: OpNode,
   context: ContextNode,
-  projectRoot: ProjectRootNode,
   planspaceLane: PlanspaceLaneNode,
   errorTerminal: ErrorTerminalNode,
   artifact: ArtifactNode,
@@ -60,7 +58,8 @@ const EDGE_TYPES = {
   resume: ResumeEdge,
   loads: LoadsEdge,
   produces: ProducesEdge,
-  commit: CommitEdge,
+  commitTrunk: CommitEdge,
+  commitLink: CommitEdge,
 };
 
 const DEFAULT_VIEWPORT: Viewport = { x: 0, y: 0, zoom: 0.9 };
@@ -89,14 +88,12 @@ export type CanvasProps = {
   sessionId: string;
   selectedNodeId: string | null;
   activeNodeIds: string[];
-  projectTitle: string;
   contextBundlesByNodeId: Record<string, ContextBundle | null | undefined>;
   knownPlanspaceIds: string[];
   hiddenPlanspaceIds: string[];
   activePlanspaceId: string | null;
   canCreateVirtual: boolean;
-  /** User-wide principles enumerated from GET /principles. Dimmed on the shelf when
-   * no live node has loaded them. */
+  /** Library entries used only to resolve visible observed/declared bindings. */
   principles?: PrincipleEnumeration[];
   skills?: SkillEnumeration[];
   /** Persisted positions hydrated from the session. */
@@ -124,7 +121,7 @@ export type CanvasProps = {
    */
   onTemplateDrop?: (slug: string, anchorNodeId: string | null) => void;
   /**
-   * Fires when a principle chip is dragged from a shelf tile and dropped onto
+   * Fires when a principle card is dragged from Library and dropped onto
    * a virtual agent tile. The callback receives the virtual node id and
    * the principle plug id (``principles.<slug>``) to attach.
    */
@@ -153,7 +150,6 @@ function CanvasInner({
   sessionId,
   selectedNodeId,
   activeNodeIds,
-  projectTitle,
   contextBundlesByNodeId,
   knownPlanspaceIds,
   hiddenPlanspaceIds,
@@ -186,7 +182,7 @@ function CanvasInner({
   const pendingViewportRef = useRef<Viewport | null>(null);
   const flushTimerRef = useRef<number | null>(null);
   const wrapperRef = useRef<HTMLDivElement | null>(null);
-  const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
+  const [hoverGroup, setHoverGroupState] = useState<string[]>([]);
   const { getViewport, setViewport } = useReactFlow();
   const [layoutHydrationVersion, setLayoutHydrationVersion] = useState(0);
   const appliedLayoutHydrationVersionRef = useRef(layoutHydrationVersion);
@@ -244,7 +240,6 @@ function CanvasInner({
       buildGraph({
         nodes,
         activeNodeIds,
-        projectTitle,
         layoutHints: layoutHintsRef.current,
         contextBundlesByNodeId,
         knownPlanspaceIds,
@@ -260,7 +255,6 @@ function CanvasInner({
     [
       nodes,
       activeNodeIds,
-      projectTitle,
       contextBundlesByNodeId,
       knownPlanspaceIds,
       hiddenPlanspaceIds,
@@ -282,7 +276,7 @@ function CanvasInner({
     decorateSelection(built.rfNodes, selectedNodeId),
   );
   const [rfEdges, setRfEdges] = useEdgesState(
-    decorateEdges(built.rfEdges, selectedNodeId, hoveredNodeId),
+    decorateEdges(built.rfEdges, selectedNodeId, hoverGroup),
   );
 
   /* Sync upstream node changes into local state without trampling drag
@@ -363,8 +357,8 @@ function CanvasInner({
   /* Edges depend on hover (the `loads` lane fades in only for the hovered or
    * selected node), so they get a separate effect. */
   useEffect(() => {
-    setRfEdges(decorateEdges(built.rfEdges, selectedNodeId, hoveredNodeId));
-  }, [built.rfEdges, selectedNodeId, hoveredNodeId, setRfEdges]);
+    setRfEdges(decorateEdges(built.rfEdges, selectedNodeId, hoverGroup));
+  }, [built.rfEdges, selectedNodeId, hoverGroup, setRfEdges]);
 
   /* Persist drag positions client-side so they survive node updates, and
    * debounce a push to the backend so refreshes survive too. */
@@ -496,12 +490,6 @@ function CanvasInner({
           sourceKind: data.kind,
           plugId: data.plugId ?? null,
         });
-      } else if (n.type === "projectRoot") {
-        pendingUserSelectionRef.current = {
-          nodeId: n.id,
-          preserveExisting: event.shiftKey,
-        };
-        onSelectionChange({ kind: "projectRoot" });
       } else if (n.type === "commit") {
         const data = n.data as import("./layout").CommitNodeData;
         pendingUserSelectionRef.current = {
@@ -574,16 +562,25 @@ function CanvasInner({
   );
 
   const onNodeMouseEnter = useCallback<NodeMouseHandler>((_, node) => {
-    setHoveredNodeId(node.id);
-  }, []);
+    const group = resolveHoverGroup(
+      node.id,
+      built.epochMembersByCommitSha,
+      built.commitHubIdByNodeId,
+    );
+    setHoverGroupState(group);
+    setHoverGroup(group);
+  }, [built.commitHubIdByNodeId, built.epochMembersByCommitSha]);
   const onNodeMouseLeave = useCallback<NodeMouseHandler>(() => {
-    setHoveredNodeId(null);
+    setHoverGroupState([]);
+    setHoverGroup([]);
   }, []);
+
+  useEffect(() => () => setHoverGroup([]), []);
 
   /* Multi-selection observer. React Flow owns its own selection state; we
    * only translate agent-node ids out so callers can drive right-click and
-   * library-dock actions. Non-agent selections (context, planspace, op,
-   * projectRoot) don't participate in save-as-template. */
+   * library-dock actions. Non-agent selections don't participate in
+   * save-as-template. */
   useOnSelectionChange({
     onChange: ({ nodes: selNodes }) => {
       if (!onMultiSelectionChange) return;
@@ -842,23 +839,5 @@ function decorateSelection(
     const desired =
       n.id === selectedNodeId || (preserveExisting && n.selected === true);
     return n.selected === desired ? n : { ...n, selected: desired };
-  });
-}
-
-function decorateEdges(
-  edges: RFEdge[],
-  selectedNodeId: string | null,
-  hoveredNodeId: string | null,
-): Edge[] {
-  return edges.map((e) => {
-    if (e.type === "loads" || e.type === "produces") {
-      const endpoint = e.source === selectedNodeId || e.target === selectedNodeId
-        || e.source === hoveredNodeId || e.target === hoveredNodeId;
-      return { ...e, style: { ...(e.style ?? {}), opacity: endpoint ? 0.75 : 0 } };
-    }
-    if (selectedNodeId && (e.source === selectedNodeId || e.target === selectedNodeId)) {
-      return { ...e, selected: true };
-    }
-    return e;
   });
 }

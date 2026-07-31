@@ -47,11 +47,6 @@ export type ContextNodeData = {
   plugId?: string | null;
   /** manifest title, populated for known principles so tooltips read as a name */
   title?: string | null;
-  /** true when a principle exists on the shelf but no live node has loaded it */
-  dimmed?: boolean;
-  /** number of virtuals/phantoms currently pre-attaching this principle.
-   *  Rendered as a small badge on the shelf tile. */
-  attachedCount?: number;
   usedByNodeIds?: string[];
 };
 
@@ -73,15 +68,12 @@ export type SkillEnumeration = {
   path: string;
 };
 
-export type ProjectRootNodeData = {
-  title: string;
-};
-
 export type CommitNodeData = {
   commit: CommitDescriptor;
   head: boolean;
   ghost?: boolean;
   dirtyCount?: number;
+  externalCountBefore?: number;
 };
 
 export type PlanspaceColor = {
@@ -107,7 +99,6 @@ export type RFNodeData =
   | AgentNodeData
   | OpNodeData
   | ContextNodeData
-  | ProjectRootNodeData
   | CommitNodeData
   | PlanspaceLaneData
   | ErrorTerminalData
@@ -121,6 +112,10 @@ export type RFEdge = Edge;
 export const LANE = {
   rootX: 40,
   timelineY: 220,
+  trunkX: 40,
+  trunkStartY: 80,
+  trunkStep: 112,
+  trunkGutter: 220,
   projectContextLaneY: 8,
   contextLaneY: 110,
   errorTerminalOffsetY: 140,
@@ -195,8 +190,6 @@ export type BuildGraphArgs = {
   nodes: NodeInfo[];
   /** ids of project runners that currently occupy execution slots */
   activeNodeIds: string[];
-  /** project-level title to anchor as the root node */
-  projectTitle: string;
   /** per-node manual position overrides (drag persistence — client-side for now) */
   layoutHints: Record<string, { x: number; y: number }>;
   /** per-node context bundles, keyed by node id, used to materialize context + loads edges */
@@ -209,8 +202,7 @@ export type BuildGraphArgs = {
   activePlanspaceId: string | null;
   /** true when the active lane's virtual create button should be enabled */
   canCreateVirtual: boolean;
-  /** user-wide principles enumerated from GET /principles; dimmed on the shelf when
-   *  no live node has loaded them */
+  /** User-wide principles, used to resolve bound ids to paths and titles. */
   principles?: PrincipleEnumeration[];
   /** Native Agent Skills enumerated from GET /skills. */
   skills?: SkillEnumeration[];
@@ -222,6 +214,8 @@ export type BuildGraphArgs = {
 export type BuildGraphResult = {
   rfNodes: RFNode[];
   rfEdges: RFEdge[];
+  epochMembersByCommitSha: Record<string, string[]>;
+  commitHubIdByNodeId: Record<string, string>;
 };
 
 /**
@@ -235,7 +229,6 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
   const {
     nodes,
     activeNodeIds,
-    projectTitle,
     layoutHints,
     contextBundlesByNodeId,
     knownPlanspaceIds,
@@ -266,7 +259,6 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
     planspaceOrder.push(id);
   }
   const planspaceIndex = new Map(planspaceOrder.map((id, index) => [id, index]));
-  const trunkExtent = (gitCommits.length + (gitDirtyCount > 0 ? 1 : 0)) * 112;
 
   /* Lane absolute positions: deterministic from index, overridable by a saved
    * hint keyed `planspace:<id>`. Children inside the lane get parent-relative
@@ -276,7 +268,7 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
   for (const id of planspaceOrder) {
     const idx = planspaceIndex.get(id) ?? 0;
     const defaultPos = {
-      x: LANE.rootX + 180 + trunkExtent - LANE.planspaceLanePaddingX,
+      x: LANE.rootX + LANE.trunkGutter,
       y: LANE.timelineY + idx * LANE.planspaceLaneSpacing - LANE.planspaceLaneAgentRowY,
     };
     laneAbsPos.set(id, layoutHints[`planspace:${id}`] ?? defaultPos);
@@ -289,49 +281,42 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
   const nodeRelativePositions = new Map<string, { x: number; y: number }>();
   const branchSiblingCounts = new Map<string, number>();
 
-  /* project root anchor */
-  rfNodes.push({
-    id: "root",
-    type: "projectRoot",
-    position: layoutHints["root"] ?? { x: LANE.rootX, y: LANE.timelineY },
-    width: 64,
-    height: 64,
-    data: { title: projectTitle },
-    draggable: true,
-    selectable: true,
-  });
-
-  const commitStartX = LANE.rootX + 104;
   gitCommits.forEach((commit, index) => {
     rfNodes.push({
       id: `commit:${commit.sha}`,
       type: "commit",
-      position: layoutHints[`commit:${commit.sha}`] ?? { x: commitStartX + index * 112, y: LANE.timelineY },
+      position: layoutHints[`commit:${commit.sha}`] ?? {
+        x: LANE.trunkX,
+        y: LANE.trunkStartY + index * LANE.trunkStep,
+      },
       width: 76,
       height: 76,
-      data: { commit, head: commit.sha === gitHead },
+      data: {
+        commit,
+        head: commit.sha === gitHead,
+        externalCountBefore: index === 0 ? commit.external_count_before : 0,
+      },
       draggable: true,
       selectable: true,
     });
-    const previous = index === 0 ? "root" : `commit:${gitCommits[index - 1].sha}`;
-    rfEdges.push({
-      id: `commit-trunk:${previous}:${commit.sha}`,
-      source: previous,
-      target: `commit:${commit.sha}`,
-      type: "commit",
-      data: {
-        externalCount: commit.external_count_before,
-        dashed: !commit.live,
-      },
-    });
+    if (index > 0) {
+      const previous = `commit:${gitCommits[index - 1].sha}`;
+      rfEdges.push({
+        id: `commit-trunk:${previous}:${commit.sha}`,
+        source: previous,
+        target: `commit:${commit.sha}`,
+        type: "commitTrunk",
+        data: { externalCount: commit.external_count_before },
+      });
+    }
   });
   if (gitDirtyCount > 0) {
     const ghostId = "commit:ghost";
-    const ghostX = commitStartX + gitCommits.length * 112;
-    rfNodes.push({ id: ghostId, type: "commit", position: layoutHints[ghostId] ?? { x: ghostX, y: LANE.timelineY }, width: 76, height: 76, data: { commit: { sha: "ghost", live: false, message: "Uncommitted changes", external_count_before: 0, aliases: [] }, head: false, ghost: true, dirtyCount: gitDirtyCount }, draggable: true, selectable: true });
-    const previousLive = [...gitCommits].reverse().find((commit) => commit.live);
-    const previous = previousLive ? `commit:${previousLive.sha}` : "root";
-    rfEdges.push({ id: `commit-trunk:${previous}:ghost`, source: previous, target: ghostId, type: "commit", data: { dashed: true } });
+    rfNodes.push({ id: ghostId, type: "commit", position: layoutHints[ghostId] ?? { x: LANE.trunkX, y: LANE.trunkStartY + gitCommits.length * LANE.trunkStep }, width: 76, height: 76, data: { commit: { sha: "ghost", live: false, message: "Uncommitted changes", external_count_before: 0, aliases: [] }, head: false, ghost: true, dirtyCount: gitDirtyCount }, draggable: true, selectable: true });
+    const previous = gitCommits.at(-1);
+    if (previous) {
+      rfEdges.push({ id: `commit-trunk:${previous.sha}:ghost`, source: `commit:${previous.sha}`, target: ghostId, type: "commitTrunk" });
+    }
   }
 
   const planspaceColorOverrides = collectPlanspaceColorOverrides(
@@ -361,7 +346,13 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
     if (!epoch) continue;
     epochMembers.set(epoch.sha, [...(epochMembers.get(epoch.sha) ?? []), node]);
   }
+  const epochMembersByCommitSha: Record<string, string[]> = {};
+  const commitHubIdByNodeId: Record<string, string> = {};
   for (const [epochSha, members] of epochMembers) {
+    epochMembersByCommitSha[epochSha] = members.map((member) => member.id);
+    for (const member of members) {
+      commitHubIdByNodeId[member.id] = `commit:${epochSha}`;
+    }
     const ids = new Set(members.map((member) => member.id));
     const incoming = new Set<string>();
     const outgoing = new Set<string>();
@@ -376,7 +367,7 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
     }
     for (const member of members) {
       if (!incoming.has(member.id)) {
-        rfEdges.push({ id: `commit-source:${epochSha}:${member.id}`, source: `commit:${epochSha}`, target: member.id, type: "commit" });
+        rfEdges.push({ id: `commit-source:${epochSha}:${member.id}`, source: `commit:${epochSha}`, target: member.id, type: "commitLink", data: { dashed: true } });
       }
       if (outgoing.has(member.id) || !member.commit_after) continue;
       const after = commitForSha(member.commit_after);
@@ -387,7 +378,7 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
         if (next) target = `commit:${next.sha}`;
       }
       if (!target && gitDirtyCount > 0) target = "commit:ghost";
-      if (target) rfEdges.push({ id: `commit-sink:${member.id}:${target}`, source: member.id, target, type: "commit", data: { dashed: target === "commit:ghost" } });
+      if (target) rfEdges.push({ id: `commit-sink:${member.id}:${target}`, source: member.id, target, type: "commitLink", data: { dashed: true } });
     }
   }
 
@@ -405,7 +396,6 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
     allNodeById,
     layoutHints,
   );
-  freeCursorX = Math.max(freeCursorX, LANE.rootX + 180 + trunkExtent);
   const laneCursors = new Map<string, number>();
   const advanceLane = (laneId: string, by: number): number => {
     const cur = laneCursors.get(laneId) ?? LANE.planspaceLanePaddingX;
@@ -550,8 +540,8 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
 
   });
 
-  /* Dependency arrows — scheduled_deps are the planning/template DAG. Home is
-   * only the root for work nodes with no declared dependencies. */
+  /* Dependency arrows are only the planning/template DAG declared by
+   * scheduled_deps. A node without deps has no fabricated incoming edge. */
   const continueSourceByNodeId = new Map<string, string>();
   for (const node of visibleNodes) {
     if (node.kind === "op") continue;
@@ -561,19 +551,7 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
 
   for (const node of visibleNodes) {
     if (node.kind === "op") continue;
-    const declaredDeps = node.scheduled_deps ?? [];
     const visibleDeps = visibleScheduledDepIds(node, nodeById);
-    if (declaredDeps.length === 0) {
-      if (continueSourceByNodeId.has(node.id)) continue;
-      rfEdges.push({
-        id: `dep:root->${node.id}`,
-        source: "root",
-        target: node.id,
-        type: "dependency",
-        data: { childState: node.state, root: true },
-      });
-      continue;
-    }
     const continueSourceId = continueSourceByNodeId.get(node.id);
     for (const depId of visibleDeps) {
       rfEdges.push({
@@ -732,6 +710,7 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
     path: string;
     chars: number;
     loadedBy: Set<string>;
+    declaredBy: Set<string>;
     usedBy: Set<string>;
     plugId?: string | null;
     title?: string | null;
@@ -750,6 +729,7 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
       const existing = ctxAgg.get(key);
       if (existing) {
         existing.loadedBy.add(ownerId);
+        if (src.kind !== "skill") existing.usedBy.add(ownerId);
         if (src.chars > existing.chars) existing.chars = src.chars;
       } else {
         ctxAgg.set(key, {
@@ -759,56 +739,27 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
           path: src.path,
           chars: src.chars,
           loadedBy: new Set([ownerId]),
-          usedBy: new Set([ownerId]),
+          declaredBy: new Set(),
+          usedBy: new Set(src.kind === "skill" ? [] : [ownerId]),
           plugId: src.plug_id ?? null,
         });
       }
     }
   }
 
-  /* User-wide principles that no live node has loaded still appear on the shelf,
-   * dimmed. Their identity matches what compose_context_bundle would emit if
-   * a node opted-in to them (scope="contextspace", kind="principle", path=plug
-   * CONTEXT.md path), so the tile survives once a live node loads the principle.
-   */
+  /* Library metadata enriches observed bindings but does not enumerate unbound
+   * entries onto the canvas. */
   for (const principle of principles) {
     const principlePath = `${principle.path}/CONTEXT.md`;
     const key = contextIdentityKey("contextspace", "principle", principlePath);
     const existing = ctxAgg.get(key);
     if (existing) {
-      // Live node already loaded this principle; enrich with manifest title.
       if (!existing.title) existing.title = principle.title;
-      continue;
+      if (!existing.plugId) existing.plugId = principle.id;
     }
-    ctxAgg.set(key, {
-      identityKey: key,
-      scope: "contextspace",
-      kind: "principle",
-      path: principlePath,
-      chars: 0,
-      loadedBy: new Set(),
-      usedBy: new Set(),
-      plugId: principle.id,
-      title: principle.title,
-    });
   }
 
-  for (const skill of skills) {
-    const skillPath = `${skill.path}/SKILL.md`;
-    const key = contextIdentityKey("contextspace", "skill", skillPath);
-    ctxAgg.set(key, {
-      identityKey: key,
-      scope: "contextspace",
-      kind: "skill",
-      path: skillPath,
-      chars: 0,
-      loadedBy: new Set(),
-      usedBy: new Set(),
-      plugId: skill.id,
-      title: skill.title,
-    });
-  }
-
+  /* skill_audit is the observed source of native skill availability/use. */
   for (const node of visibleNodes) {
     const audit = node.settings_snapshot?.skill_audit;
     if (!Array.isArray(audit)) continue;
@@ -824,43 +775,82 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
         "skill",
         `${skill.path}/SKILL.md`,
       );
-      const aggregate = ctxAgg.get(key);
-      if (!aggregate) continue;
+      let aggregate = ctxAgg.get(key);
+      if (!aggregate) {
+        aggregate = {
+          identityKey: key,
+          scope: "contextspace",
+          kind: "skill",
+          path: `${skill.path}/SKILL.md`,
+          chars: 0,
+          loadedBy: new Set(),
+          declaredBy: new Set(),
+          usedBy: new Set(),
+          plugId: skill.id,
+          title: skill.title,
+        };
+        ctxAgg.set(key, aggregate);
+      }
       aggregate.loadedBy.add(node.id);
       if (item.used === true) aggregate.usedBy.add(node.id);
     }
   }
 
-  /* Attached-count map: principle plug_id → number of visible virtuals whose
-   * pending_extra_principles list references that principle. Rendered as a small
-   * badge on the shelf tile. Only virtuals in a
-   * non-hidden lane contribute; hiding a lane hides its pre-attachments. */
-  const attachedByPrincipleId = new Map<string, number>();
-  const attachedBySkillId = new Map<string, number>();
-  for (const n of nodes) {
-    const ids = n.pending_extra_principles;
-    if (!ids || ids.length === 0) continue;
-    const planspaceId = resolvePlanspaceId(n, allNodeById);
-    if (planspaceId && hiddenPlanspaces.has(planspaceId)) continue;
-    for (const raw of ids) {
+  /* Declared bindings on visible virtuals are project state even before a run
+   * observes them. Resolve ids through the library solely to obtain tile
+   * metadata; missing library entries cannot materialize a tile. */
+  const principleById = new Map(principles.map((item) => [item.id, item]));
+  const skillById = new Map(skills.map((item) => [item.id, item]));
+  for (const node of visibleNodes) {
+    if (node.state !== "virtual") continue;
+    for (const raw of node.pending_extra_principles ?? []) {
       const id = typeof raw === "string" ? raw.trim() : "";
       if (!id) continue;
       const plugId = id.includes(".") ? id : `principles.${id}`;
-      if (!plugId.startsWith("principles.")) continue;
-      attachedByPrincipleId.set(plugId, (attachedByPrincipleId.get(plugId) ?? 0) + 1);
+      const principle = principleById.get(plugId);
+      if (!principle) continue;
+      const path = `${principle.path}/CONTEXT.md`;
+      const key = contextIdentityKey("contextspace", "principle", path);
+      let aggregate = ctxAgg.get(key);
+      if (!aggregate) {
+        aggregate = {
+          identityKey: key,
+          scope: "contextspace",
+          kind: "principle",
+          path,
+          chars: 0,
+          loadedBy: new Set(),
+          declaredBy: new Set(),
+          usedBy: new Set(),
+          plugId,
+          title: principle.title,
+        };
+        ctxAgg.set(key, aggregate);
+      }
+      aggregate.declaredBy.add(node.id);
     }
-  }
-  for (const n of nodes) {
-    const selections = n.pending_extra_skills;
-    if (!selections || selections.length === 0) continue;
-    const planspaceId = resolvePlanspaceId(n, allNodeById);
-    if (planspaceId && hiddenPlanspaces.has(planspaceId)) continue;
-    for (const selection of selections) {
-      if (!selection?.id?.startsWith("skills.")) continue;
-      attachedBySkillId.set(
-        selection.id,
-        (attachedBySkillId.get(selection.id) ?? 0) + 1,
-      );
+    for (const selection of node.pending_extra_skills ?? []) {
+      const skill = selection?.id ? skillById.get(selection.id) : undefined;
+      if (!skill) continue;
+      const path = `${skill.path}/SKILL.md`;
+      const key = contextIdentityKey("contextspace", "skill", path);
+      let aggregate = ctxAgg.get(key);
+      if (!aggregate) {
+        aggregate = {
+          identityKey: key,
+          scope: "contextspace",
+          kind: "skill",
+          path,
+          chars: 0,
+          loadedBy: new Set(),
+          declaredBy: new Set(),
+          usedBy: new Set(),
+          plugId: skill.id,
+          title: skill.title,
+        };
+        ctxAgg.set(key, aggregate);
+      }
+      aggregate.declaredBy.add(node.id);
     }
   }
 
@@ -872,8 +862,8 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
    *     the floating "loaded context" stripe below the top one.
    * The split keeps project-wide references separate from planspace-owned
    * memory while still showing free-form loads. */
-  let projectCtxCursorX = LANE.rootX + 180;
-  let laneCtxCursorX = LANE.rootX + 180;
+  let projectCtxCursorX = LANE.rootX + LANE.trunkGutter;
+  let laneCtxCursorX = LANE.rootX + LANE.trunkGutter;
   const inLaneCtxCursor = new Map<string, number>();
   for (const agg of ctxAgg.values()) {
     const ctxId = `ctx:${agg.identityKey}`;
@@ -902,12 +892,6 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
       position = stored ?? { x: laneCtxCursorX, y: LANE.contextLaneY };
       laneCtxCursorX += 180;
     }
-    const attachedCount =
-      agg.kind === "principle" && agg.plugId
-        ? attachedByPrincipleId.get(agg.plugId) ?? 0
-        : agg.kind === "skill" && agg.plugId
-          ? attachedBySkillId.get(agg.plugId) ?? 0
-          : 0;
     rfNodes.push({
       id: ctxId,
       type: "context",
@@ -924,8 +908,6 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
         loadedByNodeIds: Array.from(agg.loadedBy),
         plugId: agg.plugId ?? null,
         title: agg.title ?? null,
-        dimmed: agg.loadedBy.size === 0,
-        attachedCount,
         usedByNodeIds: Array.from(agg.usedBy),
       },
       draggable: true,
@@ -941,13 +923,22 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
         data: { dashed: !used, relation: used ? "used" : "available" },
       });
     }
+    for (const ownerId of agg.declaredBy) {
+      if (agg.loadedBy.has(ownerId)) continue;
+      rfEdges.push({
+        id: `ld:${ctxId}->${ownerId}`,
+        source: ctxId,
+        target: ownerId,
+        type: "loads",
+        data: { dashed: true, relation: "declared" },
+      });
+    }
   }
 
   /* Lane swimlanes. Constructed AFTER both the main child loop and the ctx
    * loop so the per-lane width includes the longest of (agent row, ctx row).
-   * Spliced at index 1 so lanes sit right after `root` and before all of
-   * their children in the rfNodes array — React Flow requires parents to come
-   * before their children. */
+   * Spliced at the front because React Flow requires parents to come before
+   * their children. */
   const laneNodes: RFNode[] = [];
   let nextAutoLaneY = LANE.timelineY - LANE.planspaceLaneAgentRowY;
   for (const planspaceId of planspaceOrder) {
@@ -1000,9 +991,14 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
       zIndex: -20,
     });
   }
-  rfNodes.splice(1, 0, ...laneNodes);
+  rfNodes.splice(0, 0, ...laneNodes);
 
-  return { rfNodes, rfEdges };
+  return {
+    rfNodes,
+    rfEdges,
+    epochMembersByCommitSha,
+    commitHubIdByNodeId,
+  };
 }
 
 /* ───────── helpers ───────── */
@@ -1114,7 +1110,7 @@ function initialFreeCursorX(
   byId: Map<string, NodeInfo>,
   layoutHints: Record<string, { x: number; y: number }>,
 ): number {
-  const base = LANE.rootX + 180;
+  const base = LANE.rootX + LANE.trunkGutter;
   const firstLaneId = planspaceOrder[0];
   if (!firstLaneId) return base;
   const firstLaneAbs = laneAbsPos.get(firstLaneId);
