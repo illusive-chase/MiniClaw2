@@ -527,16 +527,33 @@ Trunk: `backend/miniclaw2/contextspace.py`.
   inspection, local/zip/git import, overwrite, and removal. Imports reject zip
   traversal and symlinks; provenance is stored separately in
   `contextspace/skill-imports.json`.
+- Import auto-detects a source containing multiple `SKILL.md` directories when
+  no slug is supplied. Every member is validated before any member is replaced,
+  then the package is installed as one rollback-capable filesystem unit.
+  Per-member provenance records a source-derived `package_id`, the full
+  `package_members` list, and `auto_attach_package=true`. Re-importing a member
+  alone detaches it from stale package membership; deleting a member rewrites
+  the remaining membership lists.
+- Skill frontmatter parsing recognizes `version` and
+  `metadata.requires.siblings`. Virtual creation/edit, direct launch, rerun,
+  and the runner recursively expand sibling dependencies. Selecting any member
+  of an imported package also expands the full package. Generated selections
+  persist as `{auto_attached: true, required_by, attachment_reason}` with
+  `suggest=false`; they are not treated as roots on the next edit, so removing
+  the final explicit member collapses all generated attachments. The frontend
+  labels them `Pack` or `Dependency` and prevents independent removal or suggest
+  toggling.
 - The runner records per-skill source path, directory hash, mechanism,
   missing/failed state, and used state in `settings_snapshot.skill_audit`
   (the directory hash exists because skills mutate between runs — it is the
   graph's answer to "what exactly did this node have access to").
   Claude materialization copies (not symlinks, until the plugin loader is
-  verified to follow them) the selected skills into an ephemeral
+  verified to follow them) all expanded package/dependency members into one
+  ephemeral
   `skill-plugin/` dir under the node's run workspace, passes it via a
   node-private `--plugin-dir` on every spawn (so resume works and concurrent
   nodes cannot interfere), and reaps it with the workspace. Each node-private
-  Codex app-server receives the exact selected library directories through
+  Codex app-server receives the exact expanded library directories through
   `skills/extraRoots/set` (protocol verified against codex-cli 0.144.1)
   after `initialize`, before thread start/resume — no shared `~/.codex` or
   worktree mutation. Suggest mode adds one provider-neutral launch line.
@@ -662,7 +679,9 @@ Trunk: `frontend/src/canvas/Canvas.tsx`, `frontend/src/canvas/layout.ts`,
   badges, mode labels, and hide/show controls.
 - A user-wide skill shelf is merged into the context-node lane even before a
   live node loads a skill. Skills can be inspected/deleted, attached in the
-  virtual editor, or dragged directly onto a virtual tile.
+  virtual editor, or dragged directly onto a virtual tile. Skill details show
+  package size and declared sibling dependencies; auto-attached entries are
+  visibly labeled in the agent editor.
 - Persisted node `layout_hints` and the user-owned pan/zoom
   `layout_viewport` round-trip through `project.json` via
   `PATCH /sessions/{sid}/layout-hints`; programmatic fit-to-view does not

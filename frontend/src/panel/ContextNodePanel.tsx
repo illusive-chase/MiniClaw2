@@ -227,11 +227,22 @@ function SkillDetails({
       <div className="font-mono text-[10.5px] text-ink-muted">{skill.id}</div>
       <div className="text-[10.5px] text-ink-muted">
         {skill.files.length} files
+        {skill.package_members?.length
+          ? ` · package ${skill.package_members.length}`
+          : ""}
+        {skill.dependencies?.length
+          ? ` · ${skill.dependencies.length} dependencies`
+          : ""}
         {skill.import_source ? ` · ${skill.import_source}` : ""}
         {skill.imported_at
           ? ` · ${new Date(skill.imported_at * 1000).toLocaleString()}`
           : ""}
       </div>
+      {skill.dependencies && skill.dependencies.length > 0 && (
+        <div className="text-[10.5px] text-ink-muted">
+          Requires: <span className="font-mono">{skill.dependencies.join(", ")}</span>
+        </div>
+      )}
       <ul className="max-h-28 overflow-auto font-mono text-[10px] text-ink-muted">
         {skill.files.map((file) => <li key={file}>{file}</li>)}
       </ul>

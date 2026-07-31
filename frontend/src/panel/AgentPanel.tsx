@@ -1146,34 +1146,51 @@ function SkillsAttachSection({
       <div className="space-y-2 px-3 py-3">
         {attached.map((selection) => {
           const skill = available.find((candidate) => candidate.id === selection.id);
+          const autoLabel =
+            selection.attachment_reason === "package"
+              ? "Pack"
+              : selection.attachment_reason === "dependency"
+                ? "Dependency"
+                : null;
           return (
             <div key={selection.id} className="flex items-center gap-2 rounded border border-line bg-surface px-2 py-1">
               <span className="min-w-0 flex-1 truncate text-[11px] text-ink" title={selection.id}>
                 {skill?.title ?? selection.id}
               </span>
-              <label className="flex items-center gap-1 text-[10px] text-ink-muted">
-                <input
-                  type="checkbox"
-                  checked={selection.suggest}
-                  onChange={(event) =>
-                    onChange(attached.map((item) =>
-                      item.id === selection.id
-                        ? { ...item, suggest: event.target.checked }
-                        : item,
-                    ))
-                  }
-                />
-                Suggest
-              </label>
-              <button
-                type="button"
-                onClick={() => onChange(attached.filter((item) => item.id !== selection.id))}
-                className="text-[13px] text-ink-muted hover:text-state-error"
-                title="Remove skill"
-                aria-label={`Remove ${skill?.title ?? selection.id}`}
-              >
-                ×
-              </button>
+              {autoLabel ? (
+                <span
+                  className="rounded border border-line px-1 py-0.5 text-[9px] uppercase text-ink-subtle"
+                  title={selection.required_by ? `Required by ${selection.required_by}` : undefined}
+                >
+                  {autoLabel}
+                </span>
+              ) : (
+                <>
+                  <label className="flex items-center gap-1 text-[10px] text-ink-muted">
+                    <input
+                      type="checkbox"
+                      checked={selection.suggest}
+                      onChange={(event) =>
+                        onChange(attached.map((item) =>
+                          item.id === selection.id
+                            ? { ...item, suggest: event.target.checked }
+                            : item,
+                        ))
+                      }
+                    />
+                    Suggest
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => onChange(attached.filter((item) => item.id !== selection.id))}
+                    className="text-[13px] text-ink-muted hover:text-state-error"
+                    title="Remove skill"
+                    aria-label={`Remove ${skill?.title ?? selection.id}`}
+                  >
+                    ×
+                  </button>
+                </>
+              )}
             </div>
           );
         })}

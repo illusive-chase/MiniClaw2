@@ -1258,7 +1258,12 @@ def create_app(registry: ProjectRegistry | None = None) -> FastAPI:
             )
         except SkillError as exc:
             raise HTTPException(400, str(exc)) from exc
-        registry.store.sync.schedule_commit(f'import skill {imported["slug"]}')
+        if imported.get("kind") == "skill-pack":
+            registry.store.sync.schedule_commit(
+                f'import skill pack {imported["package_id"]} ({imported["count"]} skills)'
+            )
+        else:
+            registry.store.sync.schedule_commit(f'import skill {imported["slug"]}')
         return imported
 
     @app.delete("/skills/{slug}", status_code=204)

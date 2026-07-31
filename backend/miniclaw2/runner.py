@@ -104,6 +104,7 @@ from .store import Store
 from .skills import (
     SkillMaterialization,
     _validate_tree,
+    expand_skill_selections,
     inspect_agent_skill,
     materialize_agent_skills,
     record_authored_agent_skill,
@@ -1240,8 +1241,16 @@ class NodeRunner:
             Path(self.project.root_path) / GRAPH_RUNS_DIRNAME / self.node.id
         )
         workspace_root.mkdir(parents=True, exist_ok=True)
-        self._skill_materialization = materialize_agent_skills(
+        expanded = expand_skill_selections(
             self.node.settings_snapshot.get("extra_skills"),
+            store_root=self.store.root,
+        )
+        if expanded:
+            self.node.settings_snapshot["extra_skills"] = expanded
+        else:
+            self.node.settings_snapshot.pop("extra_skills", None)
+        self._skill_materialization = materialize_agent_skills(
+            expanded,
             provider=preset.provider,
             store_root=self.store.root,
             workspace_root=workspace_root,

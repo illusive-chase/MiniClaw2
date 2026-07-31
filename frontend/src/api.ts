@@ -752,9 +752,22 @@ export type SkillSummary = {
   files: string[];
   body: string;
   content_hash: string;
+  version?: string | null;
+  dependencies?: string[];
   import_source?: string;
   import_kind?: string;
   imported_at?: number;
+  package_id?: string;
+  package_members?: string[];
+  auto_attach_package?: boolean;
+};
+
+export type SkillPackImport = {
+  kind: "skill-pack";
+  package_id: string;
+  source: string;
+  count: number;
+  skills: SkillSummary[];
 };
 
 export async function listSkills(): Promise<SkillSummary[]> {
@@ -766,7 +779,7 @@ export async function listSkills(): Promise<SkillSummary[]> {
 export async function importSkill(
   source: string,
   slug?: string,
-): Promise<SkillSummary> {
+): Promise<SkillSummary | SkillPackImport> {
   const res = await fetch("/skills/import", {
     method: "POST",
     headers: { "Content-Type": "application/json" },

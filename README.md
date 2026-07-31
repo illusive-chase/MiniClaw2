@@ -56,11 +56,14 @@ WebSocket, paired with a React + Vite + React Flow frontend.
   injected eagerly through context bundles. The librarian authors or refines
   principles and native Agent Skills from a user seed, validating exactly one
   changed entry and recording its content hash. Native Agent Skills live under
-  `contextspace/skills`, can also be imported without format conversion, and
+  `contextspace/skills` and can also be imported without format conversion.
+  A source containing multiple `SKILL.md` files imports atomically as a package;
+  selecting one package member attaches the complete package, while
+  `metadata.requires.siblings` dependencies are resolved recursively. Skills
   are made available per node through Claude's plugin directory or Codex
   app-server's per-process extra skill roots. Launch settings record content
-  hashes, paths, materialization outcomes, and conservative used/not-used
-  observations.
+  hashes, paths, attachment provenance, materialization outcomes, and
+  conservative used/not-used observations.
 
 ## Scope
 
@@ -133,6 +136,12 @@ other machines can inspect the graph, transcripts, previews, and history but
 cannot run or edit it. Global settings and ContextSpace files use Git's
 local-hunk-wins merge policy, while a `schema.json` conflict stops sync for
 manual resolution.
+
+Principle files, native skill directories, `skill-imports.json` package and
+dependency provenance, and node attachment selections are all part of this
+metadata store and sync together. Provider/CLI credentials, macOS Keychain
+entries, and other machine-local authentication state are intentionally not
+included.
 
 For an existing store and an empty remote, open **Global settings**, enter the
 remote URL under **Metadata sync**, acknowledge that the private remote will
@@ -297,6 +306,7 @@ contextspace/
   plugs/global/<slug>/{manifest.yaml, CONTEXT.md}
   plugs/principles/<slug>/{manifest.yaml, CONTEXT.md}
   skills/<slug>/{SKILL.md, ...}
+  skill-imports.json    # import, package-membership, and auto-attach provenance
   snapshots/<bundle-id>.json
   templates/<slug>/{template.yaml,lane.yaml,prompts/}
 ```
@@ -354,7 +364,8 @@ is a project id, and each `user_message` spawns a fresh agent node.
   `/sessions/{sid}/user-templates` endpoints.
 - Principle REST APIs: `GET /principles`, `DELETE /principles/{slug}`.
 - Agent Skill REST APIs: `GET /skills`, `POST /skills/import`, and
-  `DELETE /skills/{slug}`.
+  `DELETE /skills/{slug}`. Import accepts a local path, zip, or Git URL; a
+  multi-skill source with no explicit slug is imported as one skill package.
 - Client -> server:
   `user_message {text, resume_from_node_id?, extra_principles?, extra_skills?,
   agent_op_kind?, model_preset_id?}`,

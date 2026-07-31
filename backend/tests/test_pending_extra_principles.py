@@ -17,6 +17,7 @@ from miniclaw2.contextspace import (
 )
 from miniclaw2.domain import NodeState, Project
 from miniclaw2.registry import ProjectRegistry
+from miniclaw2.skills import import_agent_skill
 from miniclaw2.store import Store
 
 
@@ -105,6 +106,38 @@ class UpdateVirtualPendingPrinciplesTests(unittest.TestCase):
         )
         assert updated is not None
         self.assertEqual(updated.pending_extra_principles, ["principles.vim"])
+
+    def test_update_virtual_expands_attached_skill_package(self) -> None:
+        source = Path(self.tmp.name) / "skill-pack"
+        for slug in ("alpha", "beta"):
+            target = source / slug
+            target.mkdir(parents=True)
+            (target / "SKILL.md").write_text(
+                f"---\nname: {slug.title()}\ndescription: Test {slug}\n---\n\nBody\n",
+                encoding="utf-8",
+            )
+        import_agent_skill(str(source), store_root=self.store.root)
+        virtual = self.registry.create_virtual(
+            self.project.id, prompt_draft="draft"
+        )
+        assert virtual is not None
+
+        updated = self.registry.update_virtual(
+            self.project.id,
+            virtual.id,
+            pending_extra_skills=[{"id": "skills.alpha", "suggest": True}],
+        )
+
+        assert updated is not None
+        self.assertEqual(
+            [item["id"] for item in updated.pending_extra_skills],
+            ["skills.alpha", "skills.beta"],
+        )
+        self.assertTrue(updated.pending_extra_skills[1]["auto_attached"])
+        self.assertEqual(
+            updated.pending_extra_skills[1]["attachment_reason"],
+            "package",
+        )
 
 
 class PromotePendingPrinciplesTests(unittest.IsolatedAsyncioTestCase):

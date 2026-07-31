@@ -309,7 +309,7 @@ export function ProjectPanel({
                 <input
                   value={skillSource}
                   onChange={(event) => setSkillSource(event.target.value)}
-                  placeholder="Skill path, zip, or git URL"
+                  placeholder="Skill or pack path, zip, or git URL"
                   className="min-w-0 flex-1 rounded-md border border-line bg-surface px-2 py-1.5 text-[11px] text-ink"
                 />
                 <button
@@ -317,7 +317,7 @@ export function ProjectPanel({
                   disabled={busy || skillBusy || !skillSource.trim()}
                   className="rounded-md border border-state-review/50 bg-state-review/10 px-2 py-1.5 text-[11px] text-ink disabled:opacity-40"
                 >
-                  {skillBusy ? "Importing…" : "Import skill"}
+                  {skillBusy ? "Importing…" : "Import skill / pack"}
                 </button>
               </form>
             )}

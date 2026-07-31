@@ -169,6 +169,9 @@ export type CanvasViewport = {
 export type SkillSelection = {
   id: string;
   suggest: boolean;
+  auto_attached?: boolean;
+  required_by?: string;
+  attachment_reason?: "dependency" | "package";
 };
 
 export type SessionInfo = {

@@ -25,7 +25,7 @@ from .contextspace import (
 )
 from .events import NodeRemoved, GitStatus
 from .git_state import ensure_miniclaw_git_excluded, git_status, is_git_repo
-from .skills import normalize_skill_selections
+from .skills import expand_skill_selections
 from .domain import (
     TERMINAL_NODE_STATES,
     Category,
@@ -675,7 +675,10 @@ class ProjectRegistry:
                         next_model_preset_id, store_root=self.store.root
                     )
         extra_principle_ids = normalize_principle_ids(extra_principles)
-        skill_selections = normalize_skill_selections(extra_skills)
+        skill_selections = expand_skill_selections(
+            extra_skills,
+            store_root=self.store.root,
+        )
         settings_snapshot: dict[str, Any] = {}
         if extra_principle_ids:
             settings_snapshot["extra_principles"] = extra_principle_ids
@@ -1423,7 +1426,10 @@ class ProjectRegistry:
             prompt_draft=str(prompt_draft),
             scheduled_deps=[],
             pending_extra_principles=normalize_principle_ids(pending_extra_principles),
-            pending_extra_skills=normalize_skill_selections(pending_extra_skills),
+            pending_extra_skills=expand_skill_selections(
+                pending_extra_skills,
+                store_root=self.store.root,
+            ),
             resume_from_node_id=normalized_resume_id,
             proposed_by="user",
             summary="" if motivation is None else str(motivation),
@@ -1623,8 +1629,9 @@ class ProjectRegistry:
             )
 
         if pending_extra_skills is not _UNSET:
-            update["pending_extra_skills"] = normalize_skill_selections(
-                pending_extra_skills
+            update["pending_extra_skills"] = expand_skill_selections(
+                pending_extra_skills,
+                store_root=self.store.root,
             )
 
         if provider is not _UNSET:
@@ -1773,8 +1780,9 @@ class ProjectRegistry:
             pending_extra_principles=normalize_principle_ids(
                 original.settings_snapshot.get("extra_principles")
             ),
-            pending_extra_skills=normalize_skill_selections(
-                original.settings_snapshot.get("extra_skills")
+            pending_extra_skills=expand_skill_selections(
+                original.settings_snapshot.get("extra_skills"),
+                store_root=self.store.root,
             ),
             agent_op_kind=original.agent_op_kind,
             model_preset_id=original.model_preset_id,
