@@ -24,10 +24,6 @@ ProviderWireEvent = (
 )
 
 
-class GateTimeoutError(RuntimeError):
-    """A supervised gate expired before a human response arrived."""
-
-
 @dataclass(slots=True)
 class GateRequest:
     subtype: GateSubtype
@@ -36,12 +32,6 @@ class GateRequest:
     suggestions: list[Any] = field(default_factory=list)
     provider_request_id: str | None = None
     response_hint: dict[str, Any] = field(default_factory=dict)
-    # When set, the runner supervises the gate: if no response arrives within
-    # this many seconds it interrupts the session and raises GateTimeoutError.
-    # Providers whose gate transport has its own hard deadline (the Claude
-    # PreToolUse hook bridge) must set this below that deadline; gates on
-    # deadline-free transports leave it None and wait indefinitely.
-    timeout_seconds: float | None = None
 
 
 @dataclass(slots=True)

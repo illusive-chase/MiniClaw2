@@ -32,6 +32,10 @@ class GlobalStateApiTest(unittest.TestCase):
         body = response.json()
         self.assertEqual(body["config_path"], str(self.root / "config.json"))
         self.assertEqual(body["defaults"]["default_model_preset_id"], "gpt-5.6")
+        self.assertEqual(
+            body["tool_requests"],
+            {"timeout_seconds": 120, "timeout_action": "accept"},
+        )
         self.assertTrue((self.root / "config.json").is_file())
         persisted = json.loads((self.root / "config.json").read_text())
         self.assertEqual(
@@ -199,6 +203,33 @@ class GlobalStateApiTest(unittest.TestCase):
         self.assertIsNotNone(project)
         assert project is not None
         self.assertTrue(project.settings_override["auto_commit"])
+
+    def test_tool_request_settings_are_global_and_patchable(self) -> None:
+        updated = self.client.patch(
+            "/global-state/tool-requests",
+            json={"timeout_seconds": 45, "timeout_action": "reject"},
+        )
+
+        self.assertEqual(updated.status_code, 200)
+        self.assertEqual(
+            updated.json()["tool_requests"],
+            {"timeout_seconds": 45, "timeout_action": "reject"},
+        )
+        persisted = json.loads((self.root / "config.json").read_text())
+        self.assertEqual(persisted["tool_requests"], updated.json()["tool_requests"])
+
+    def test_legacy_config_without_tool_request_settings_gets_defaults(self) -> None:
+        payload = json.loads((self.root / "config.json").read_text())
+        payload.pop("tool_requests", None)
+        (self.root / "config.json").write_text(json.dumps(payload), encoding="utf-8")
+
+        response = self.client.get("/global-state")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json()["tool_requests"],
+            {"timeout_seconds": 120, "timeout_action": "accept"},
+        )
 
     def test_duplicate_preset_id_is_rejected(self) -> None:
         existing = self.client.get("/global-state").json()["model_presets"][0]

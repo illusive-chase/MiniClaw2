@@ -23,7 +23,10 @@ from typing import Any
 _HOOK_MARKER = "miniclaw2.claude_hook_bridge"
 _SESSION_READY_MARKER = "--session-ready"
 _TURN_COMPLETE_MARKER = "--turn-complete"
-_ASK_HOOK_TIMEOUT_SECONDS = 700
+# Claude requires a numeric hook timeout. Use the largest duration that stays
+# within the common 32-bit millisecond timer ceiling (about 24.8 days), while
+# the MiniClaw2 request itself has no user-decision deadline.
+_ASK_HOOK_TIMEOUT_SECONDS = 2_147_000
 _SESSION_READY_HOOK_TIMEOUT_SECONDS = 15
 _TURN_COMPLETE_HOOK_TIMEOUT_SECONDS = 15
 

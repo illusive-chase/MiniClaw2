@@ -6,6 +6,10 @@
     "preferred_language": null,
     "concurrency": 1
   },
+  "tool_requests": {
+    "timeout_seconds": 120,
+    "timeout_action": "accept"
+  },
   "model_presets": [
     {
       "id": "opus-4-8",

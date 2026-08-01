@@ -80,12 +80,20 @@ class SyncSettings(BaseModel):
     remote_url: str | None = None
 
 
+class ToolRequestSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    timeout_seconds: StrictInt = Field(default=120, ge=1)
+    timeout_action: Literal["accept", "reject"] = "accept"
+
+
 class GlobalConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     version: Literal[1] = 1
     defaults: GlobalDefaults
     model_presets: list[ModelPreset]
+    tool_requests: ToolRequestSettings = Field(default_factory=ToolRequestSettings)
     sync: SyncSettings = Field(default_factory=SyncSettings)
 
     @model_validator(mode="after")

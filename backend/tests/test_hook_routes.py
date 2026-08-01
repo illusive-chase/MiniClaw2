@@ -7,7 +7,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from fastapi.testclient import TestClient
 
@@ -27,13 +27,46 @@ class HookInstallerTest(unittest.TestCase):
             pre_tool = data["hooks"]["PreToolUse"][0]["hooks"][0]
             session_start = data["hooks"]["SessionStart"][0]["hooks"][0]
             stop = data["hooks"]["Stop"][0]["hooks"][0]
-            self.assertGreater(pre_tool["timeout"], 600)
+            self.assertEqual(pre_tool["timeout"], 2_147_000)
             self.assertEqual(session_start["timeout"], 15)
             self.assertEqual(stop["timeout"], 15)
             self.assertIn("--turn-complete", stop["command"])
 
 
 class HookBridgeTest(unittest.TestCase):
+    def test_ask_http_request_has_no_socket_timeout(self) -> None:
+        from miniclaw2 import claude_hook_bridge
+
+        response = MagicMock()
+        response.__enter__.return_value.read.return_value = b"{}"
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "MINICLAW_HOOK_URL": "http://127.0.0.1:43123/hook/ask",
+                    "MINICLAW_HOOK_TOKEN": "token",
+                    "MINICLAW_NODE_ID": "node-1",
+                },
+            ),
+            patch.object(
+                claude_hook_bridge.sys,
+                "stdin",
+                io.StringIO(json.dumps({
+                    "hook_event_name": "PreToolUse",
+                    "tool_name": "AskUserQuestion",
+                })),
+            ),
+            patch.object(
+                claude_hook_bridge.urlrequest,
+                "urlopen",
+                return_value=response,
+            ) as urlopen,
+        ):
+            result = claude_hook_bridge.main([])
+
+        self.assertEqual(result, 0)
+        self.assertIsNone(urlopen.call_args.kwargs["timeout"])
+
     def test_turn_complete_posts_stop_signal(self) -> None:
         from miniclaw2 import claude_hook_bridge
 
@@ -64,28 +97,6 @@ class HookBridgeTest(unittest.TestCase):
         self.assertEqual(json.loads(request.data), {"node_id": "node-1"})
 
 
-class AskTimeoutChainTest(unittest.TestCase):
-    def test_ask_timeout_chain_is_strictly_ordered(self) -> None:
-        """Each layer must give up before the layer beneath it kills the
-        transport: runner gate < /hook/ask wait < bridge HTTP < hook entry."""
-        from miniclaw2 import claude_hook_bridge
-        from miniclaw2.providers import claude as claude_provider
-        from miniclaw2.providers.claude_native import hook_installer
-
-        self.assertLess(
-            claude_provider._ASK_GATE_TIMEOUT_SECONDS,
-            app_module._HOOK_ASK_TIMEOUT_SECONDS,
-        )
-        self.assertLess(
-            app_module._HOOK_ASK_TIMEOUT_SECONDS,
-            claude_hook_bridge._ASK_TIMEOUT_SECONDS,
-        )
-        self.assertLess(
-            claude_hook_bridge._ASK_TIMEOUT_SECONDS,
-            hook_installer._ASK_HOOK_TIMEOUT_SECONDS,
-        )
-
-
 class HookAskRouteTest(unittest.TestCase):
     def test_hook_turn_complete_signals_active_node(self) -> None:
         node_id = "node-complete"
@@ -111,9 +122,9 @@ class HookAskRouteTest(unittest.TestCase):
         self.assertEqual(res.status_code, 200)
         self.assertTrue(event.is_set())
 
-    def test_hook_ask_timeout_returns_passthrough_status(self) -> None:
+    def test_hook_ask_waits_for_dispatcher(self) -> None:
         async def slow_dispatcher(_payload: dict) -> dict:
-            await asyncio.sleep(1)
+            await asyncio.sleep(0.03)
             return {"ok": True}
 
         node_id = "node-timeout"
@@ -126,7 +137,6 @@ class HookAskRouteTest(unittest.TestCase):
                     {"MINICLAW_HOME": str(Path(raw) / "store")},
                 ),
                 patch.object(app_module, "install_hooks", return_value=Path(raw)),
-                patch.object(app_module, "_HOOK_ASK_TIMEOUT_SECONDS", 0.01),
                 TestClient(app_module.create_app()) as client,
             ):
                 res = client.post(
@@ -137,8 +147,8 @@ class HookAskRouteTest(unittest.TestCase):
         finally:
             hook_runtime.unregister_ask_dispatcher(node_id)
 
-        self.assertEqual(res.status_code, 504)
-        self.assertEqual(res.json()["error"], "ask dispatch timed out")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.json(), {"ok": True})
 
     def test_http_request_records_actual_hook_port(self) -> None:
         hook_runtime.set_port(0)

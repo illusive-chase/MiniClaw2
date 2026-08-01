@@ -218,18 +218,15 @@ Trunk: `backend/miniclaw2/providers/` (`base.py`, `claude.py`, `codex.py`).
   no-progress stall (when no tool is pending) surface as provider errors, or
   as `cancelled` after an interrupt. Set
   `MINICLAW_CLAUDE_STREAM_STALL_SECONDS` to override the stall deadline.
-- The ask-gate timeout chain is strictly ordered so each layer gives
-  up before the layer beneath it kills the transport: runner-side gate
-  supervision 570s (`GateRequest.timeout_seconds`; expiry emits an
-  honest error, interrupts the session, and raises `GateTimeoutError`)
-  < `/hook/ask` dispatcher wait 590s < hook bridge HTTP timeout 600s
-  < installed hook entry timeout 700s. `test_hook_routes.py` asserts
-  the ordering. Gates on deadline-free transports (Codex permission
-  gates, human review prose) remain unbounded.
+- Permission gates use the global tool-request timeout and resolve with the
+  configured automatic accept/reject response when it expires. The default is
+  120 seconds and automatic acceptance. Ask-user gates and human review prose
+  remain unbounded and do not consume the tool-request timeout.
 - Installed Claude hook entries carry explicit timeouts
-  (AskUserQuestion 700s, SessionStart 15s, Stop 15s). The hook callback port is
-  set from `MINICLAW2_HOOK_PORT` / `MINICLAW2_PORT` at app startup and
-  otherwise captured from the actual HTTP/WS request scope.
+  (AskUserQuestion uses the runtime's maximum practical timer duration;
+  SessionStart and Stop use 15s). The hook callback port is set from
+  `MINICLAW2_HOOK_PORT` / `MINICLAW2_PORT` at app startup and otherwise
+  captured from the actual HTTP/WS request scope.
 - Session-transcript retargeting seeds its JSONL offset from the
   confirmed user marker or matched rotation record and falls back to
   EOF — never offset 0 — so rotated-session history is not replayed as

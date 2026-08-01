@@ -6,6 +6,7 @@ import type {
   ModelPreset,
   GlobalDefaults,
   GlobalState,
+  ToolRequestSettings,
   ReviewBrief,
   NodeCategory,
   ReviewSubtype,
@@ -121,6 +122,24 @@ export async function updateGlobalDefaults(
   });
   if (!res.ok) {
     throw new ApiError("updateGlobalDefaults", res.status, await readErrorDetail(res));
+  }
+  return res.json();
+}
+
+export async function updateToolRequestSettings(
+  body: Partial<ToolRequestSettings>,
+): Promise<GlobalState> {
+  const res = await fetch("/global-state/tool-requests", {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    throw new ApiError(
+      "updateToolRequestSettings",
+      res.status,
+      await readErrorDetail(res),
+    );
   }
   return res.json();
 }

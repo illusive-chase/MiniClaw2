@@ -13,7 +13,7 @@ import os
 from collections.abc import Awaitable, Callable
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -41,13 +41,13 @@ from .git_state import commit_graph, node_diff
 from .global_config import (
     ModelPreset,
     SyncSettings,
+    ToolRequestSettings,
     global_config_path,
     load_global_config,
     save_global_config,
 )
 from .language import normalize_preferred_language, project_preferred_language
 from .model_catalog import list_model_presets
-from .providers import GateTimeoutError
 from .providers.claude_native import hook_runtime
 from .providers.claude_native.hook_installer import install_hooks
 from .registry import NonNativeProjectError, ProjectRegistry
@@ -75,14 +75,6 @@ from .templates import (
 
 logger = logging.getLogger(__name__)
 
-# Outer safety net for a hung ask dispatcher. Must respond before the hook
-# bridge's 600s HTTP timeout so the bridge sees a structured failure instead
-# of a dead socket. Slow humans are handled one layer down: the runner-side
-# ask-gate supervision (providers/claude._ASK_GATE_TIMEOUT_SECONDS, 570s)
-# fires first and interrupts the session with an honest error.
-_HOOK_ASK_TIMEOUT_SECONDS = 590.0
-
-
 class CreateSessionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -104,6 +96,13 @@ class UpdateGlobalDefaultsRequest(BaseModel):
     auto_commit: bool | None = None
     preferred_language: str | None = None
     concurrency: StrictInt | None = Field(default=None, ge=1)
+
+
+class UpdateToolRequestSettingsRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    timeout_seconds: StrictInt | None = Field(default=None, ge=1)
+    timeout_action: Literal["accept", "reject"] | None = None
 
 
 class SetupSyncRequest(BaseModel):
@@ -424,6 +423,28 @@ def create_app(registry: ProjectRegistry | None = None) -> FastAPI:
             raise HTTPException(400, str(exc)) from exc
         return _global_state_payload(registry.store.root)
 
+    @app.patch("/global-state/tool-requests", response_model=dict[str, Any])
+    def update_tool_request_settings(
+        req: UpdateToolRequestSettingsRequest,
+    ) -> dict[str, Any]:
+        registry.store.assert_writable()
+        config = load_global_config(registry.store.root)
+        updates = req.model_dump(exclude_unset=True)
+        if any(value is None for value in updates.values()):
+            raise HTTPException(422, "tool request settings cannot be null")
+        try:
+            tool_requests = ToolRequestSettings.model_validate(
+                {**config.tool_requests.model_dump(), **updates}
+            )
+            save_global_config(
+                config.model_copy(update={"tool_requests": tool_requests}),
+                registry.store.root,
+            )
+            registry.store.sync.schedule_commit("update tool request settings")
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        return _global_state_payload(registry.store.root)
+
     @app.post("/global-state/model-presets", response_model=dict[str, Any], status_code=201)
     def create_model_preset(preset: ModelPreset) -> dict[str, Any]:
         registry.store.assert_writable()
@@ -530,19 +551,7 @@ def create_app(registry: ProjectRegistry | None = None) -> FastAPI:
         if dispatcher is None:
             raise HTTPException(404, f"no active session for node {node_id!r}")
         try:
-            directive = await asyncio.wait_for(
-                dispatcher(payload),
-                timeout=_HOOK_ASK_TIMEOUT_SECONDS,
-            )
-        except asyncio.TimeoutError:
-            logger.warning("hook_ask dispatcher timed out for node %s", node_id)
-            return JSONResponse(
-                status_code=504,
-                content={"error": "ask dispatch timed out"},
-            )
-        except GateTimeoutError as exc:
-            logger.warning("hook_ask gate timed out for node %s: %s", node_id, exc)
-            return JSONResponse(status_code=504, content={"error": str(exc)})
+            directive = await dispatcher(payload)
         except Exception as exc:  # noqa: BLE001
             logger.exception("hook_ask dispatcher failed")
             raise HTTPException(500, f"ask dispatch failed: {exc}") from exc
@@ -1522,6 +1531,7 @@ def _global_state_payload(store_root: Path) -> dict[str, Any]:
     return {
         "config_path": str(global_config_path(store_root)),
         "defaults": config.defaults.model_dump(),
+        "tool_requests": config.tool_requests.model_dump(),
         "model_presets": [
             preset.model_copy(
                 update={"is_default": preset.id == default_id}

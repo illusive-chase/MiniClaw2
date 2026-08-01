@@ -239,9 +239,14 @@ export type GlobalDefaults = {
   preferred_language?: string | null;
   concurrency: number;
 };
+export type ToolRequestSettings = {
+  timeout_seconds: number;
+  timeout_action: "accept" | "reject";
+};
 export type GlobalState = {
   config_path: string;
   defaults: GlobalDefaults;
+  tool_requests: ToolRequestSettings;
   model_presets: ModelPreset[];
   sync: {
     configured: boolean;

@@ -41,6 +41,7 @@ from .domain import (
     Category,
     GateKind,
     GateState,
+    GateSubtype,
     HumanGate,
     Node,
     NodeKind,
@@ -65,6 +66,7 @@ from .git_state import (
     git_review_snapshot,
     local_only_shas,
 )
+from .global_config import load_global_config
 from .language import language_launch_instruction, project_preferred_language
 from .launch_prompt import (
     anti_self_poisoning_block,
@@ -93,7 +95,6 @@ from .providers import (
     AgentProviderContext,
     AgentProviderEvent,
     GateRequest,
-    GateTimeoutError,
     ReviewReport,
     ReviewSpec,
 )
@@ -1579,23 +1580,29 @@ class NodeRunner:
         )
 
         try:
-            if request.timeout_seconds is None:
+            if request.subtype is GateSubtype.ASK_USER:
                 response = await future
             else:
+                settings = load_global_config(self.store.root).tool_requests
+                timeout_seconds = settings.timeout_seconds
                 try:
                     response = await asyncio.wait_for(
-                        future, timeout=request.timeout_seconds
+                        future, timeout=timeout_seconds
                     )
                 except TimeoutError:
+                    allow = settings.timeout_action == "accept"
+                    action = "accepted" if allow else "rejected"
                     message = (
-                        f"{request.subtype.value} gate timed out after "
-                        f"{request.timeout_seconds:.0f}s without a human "
-                        "response; interrupting the session"
+                        f"Tool request timed out after {timeout_seconds:g}s and was "
+                        f"automatically {action}."
                     )
-                    self.node.error = message
-                    await self._emit(ErrorEvent(message=message))
-                    await self.interrupt()
-                    raise GateTimeoutError(message) from None
+                    logger.info(
+                        "%s node=%s tool=%s",
+                        message,
+                        self.node.id,
+                        request.tool_name,
+                    )
+                    response = {"allow": allow, "message": message}
         finally:
             self._gates.pop(gate.id, None)
             if gate.state is GateState.PENDING:

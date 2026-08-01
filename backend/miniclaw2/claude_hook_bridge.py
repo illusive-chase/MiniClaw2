@@ -29,7 +29,6 @@ from urllib import error as urlerror
 from urllib import request as urlrequest
 
 
-_ASK_TIMEOUT_SECONDS = 600
 _READY_TIMEOUT_SECONDS = 10
 _TURN_COMPLETE_TIMEOUT_SECONDS = 10
 
@@ -77,7 +76,7 @@ def _handle_ask() -> int:
         },
     )
     try:
-        with urlrequest.urlopen(req, timeout=_ASK_TIMEOUT_SECONDS) as resp:
+        with urlrequest.urlopen(req, timeout=None) as resp:
             resp_body = resp.read()
     except (urlerror.URLError, TimeoutError, OSError):
         return _passthrough()

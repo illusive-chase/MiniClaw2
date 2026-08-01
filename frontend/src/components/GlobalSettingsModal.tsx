@@ -7,9 +7,15 @@ import {
   setupSync,
   syncNow,
   updateGlobalDefaults,
+  updateToolRequestSettings,
 } from "../api";
 import { LANGUAGE_OPTIONS } from "../languages";
-import type { GlobalDefaults, GlobalState, ModelPreset } from "../types";
+import type {
+  GlobalDefaults,
+  GlobalState,
+  ModelPreset,
+  ToolRequestSettings,
+} from "../types";
 
 type Props = {
   open: boolean;
@@ -32,6 +38,7 @@ const EMPTY_PRESET: ModelPreset = {
 
 export function GlobalSettingsModal({ open, state, onClose, onChanged }: Props) {
   const [defaults, setDefaults] = useState<GlobalDefaults | null>(null);
+  const [toolRequests, setToolRequests] = useState<ToolRequestSettings | null>(null);
   const [draft, setDraft] = useState<ModelPreset | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -43,6 +50,7 @@ export function GlobalSettingsModal({ open, state, onClose, onChanged }: Props) 
   useEffect(() => {
     if (!open) return;
     setDefaults(state?.defaults ?? null);
+    setToolRequests(state?.tool_requests ?? null);
     setDraft(null);
     setEditingId(null);
     setRemoteUrl(state?.sync.remote_url ?? "");
@@ -90,6 +98,19 @@ export function GlobalSettingsModal({ open, state, onClose, onChanged }: Props) 
       onChanged(next);
       setDraft(null);
       setEditingId(null);
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const saveToolRequests = async () => {
+    if (!toolRequests) return;
+    setSaving(true);
+    setError(null);
+    try {
+      onChanged(await updateToolRequestSettings(toolRequests));
     } catch (err) {
       setError(String(err));
     } finally {
@@ -202,6 +223,43 @@ export function GlobalSettingsModal({ open, state, onClose, onChanged }: Props) 
                 </label>
               </div>
               <div className="mt-3 flex justify-end"><button type="button" disabled={saving} onClick={() => void saveDefaults()} className={primaryButton}>Save defaults</button></div>
+            </section>
+          )}
+
+          {toolRequests && (
+            <section className="rounded-lg border border-line bg-surface-raised p-4 shadow-card">
+              <div className="mb-3 font-display text-sm font-semibold text-ink-strong">Tool requests</div>
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <Field label="Timeout (seconds)">
+                  <input
+                    type="number"
+                    min={1}
+                    step={1}
+                    value={toolRequests.timeout_seconds}
+                    onChange={(event) => setToolRequests({
+                      ...toolRequests,
+                      timeout_seconds: Math.max(1, Number(event.target.value) || 1),
+                    })}
+                    className={inputClass}
+                  />
+                </Field>
+                <Field label="On timeout">
+                  <select
+                    value={toolRequests.timeout_action}
+                    onChange={(event) => setToolRequests({
+                      ...toolRequests,
+                      timeout_action: event.target.value as ToolRequestSettings["timeout_action"],
+                    })}
+                    className={inputClass}
+                  >
+                    <option value="accept">Automatically accept</option>
+                    <option value="reject">Automatically reject</option>
+                  </select>
+                </Field>
+              </div>
+              <div className="mt-3 flex justify-end">
+                <button type="button" disabled={saving} onClick={() => void saveToolRequests()} className={primaryButton}>Save tool requests</button>
+              </div>
             </section>
           )}
 

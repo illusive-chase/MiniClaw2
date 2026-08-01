@@ -1,4 +1,4 @@
-"""Tests for supervised gate timeouts in the runner."""
+"""Tests for globally configured tool-request timeouts in the runner."""
 
 from __future__ import annotations
 
@@ -20,11 +20,11 @@ from miniclaw2.domain import (
     NodeState,
     Project,
 )
+from miniclaw2.global_config import load_global_config, save_global_config
 from miniclaw2.providers import (
     AgentProviderContext,
     AgentProviderEvent,
     GateRequest,
-    GateTimeoutError,
 )
 from miniclaw2.runner import NodeRunner
 from miniclaw2.store import Store
@@ -40,32 +40,29 @@ def _init_repo(path: Path) -> None:
 
 
 class _SupervisedGateProvider:
-    """Requests a gate with a tiny supervision timeout and never answers it,
-    mimicking the Claude ask-gate path when the human walks away."""
+    """Requests a gate with a tiny timeout and records the runner response."""
 
     name = "stub"
 
-    def __init__(self) -> None:
+    def __init__(self, subtype: GateSubtype = GateSubtype.PERMISSION) -> None:
         self.interrupted = False
-        self.gate_error: Exception | None = None
+        self.subtype = subtype
+        self.response: dict | None = None
 
     async def run(self, context: AgentProviderContext):
         yield AgentProviderEvent(kind="session", session_id="stub-session")
-        try:
-            await context.request_gate(
-                GateRequest(
-                    subtype=GateSubtype.ASK_USER,
-                    tool_name="AskUserQuestion",
-                    tool_input={"questions": []},
-                    timeout_seconds=0.05,
-                )
+        self.response = await context.request_gate(
+            GateRequest(
+                subtype=self.subtype,
+                tool_name=(
+                    "AskUserQuestion"
+                    if self.subtype is GateSubtype.ASK_USER
+                    else "commandExecution"
+                ),
+                tool_input={"questions": []},
             )
-        except GateTimeoutError as exc:
-            self.gate_error = exc
-        yield AgentProviderEvent(
-            kind="done",
-            final_state="cancelled" if self.interrupted else "done",
         )
+        yield AgentProviderEvent(kind="done")
 
     async def interrupt(self) -> None:
         self.interrupted = True
@@ -80,6 +77,17 @@ class RunnerGateTimeoutTests(unittest.IsolatedAsyncioTestCase):
         self.repo.mkdir(parents=True, exist_ok=True)
         _init_repo(self.repo)
         self.store = Store(root=self.store_root)
+        config = load_global_config(self.store_root)
+        save_global_config(
+            config.model_copy(
+                update={
+                    "tool_requests": config.tool_requests.model_copy(
+                        update={"timeout_seconds": 1}
+                    )
+                }
+            ),
+            self.store_root,
+        )
         self.project = Project(root_path=str(self.repo))
         self.store.create_project(self.project)
         self.plug_id = create_planspace(
@@ -92,7 +100,12 @@ class RunnerGateTimeoutTests(unittest.IsolatedAsyncioTestCase):
         os.environ.pop("MINICLAW_CONTEXT_HOME", None)
         self.tmp.cleanup()
 
-    async def test_gate_timeout_interrupts_session_with_honest_error(self) -> None:
+    async def _run_provider(
+        self,
+        provider: _SupervisedGateProvider,
+        *,
+        delayed_response: tuple[float, bool] | None = None,
+    ) -> tuple[Node, list[dict]]:
         node = Node(
             project_id=self.project.id,
             kind=NodeKind.AGENT,
@@ -106,28 +119,72 @@ class RunnerGateTimeoutTests(unittest.IsolatedAsyncioTestCase):
 
         async def on_event(payload: dict) -> None:
             emitted.append(payload)
+            if payload.get("type") == "interaction_request" and delayed_response:
+                delay, allow = delayed_response
+                asyncio.get_running_loop().call_later(
+                    delay,
+                    lambda gate_id=payload["id"], allowed=allow: runner.resolve_gate(
+                        gate_id, allow=allowed
+                    ),
+                )
 
-        provider = _SupervisedGateProvider()
         runner = NodeRunner(node, self.project, self.store, on_event)
         with patch.object(runner_module, "_make_provider", return_value=provider):
             await asyncio.wait_for(runner.run(), timeout=5.0)
+        return node, emitted
 
-        self.assertIsInstance(provider.gate_error, GateTimeoutError)
-        self.assertTrue(provider.interrupted)
-        self.assertEqual(node.state, NodeState.CANCELLED)
-        self.assertIn("timed out", node.error or "")
-        self.assertIn("interrupting the session", node.error or "")
+    async def test_permission_timeout_automatically_accepts_by_default(self) -> None:
+        provider = _SupervisedGateProvider()
+
+        node, emitted = await self._run_provider(provider)
+
+        self.assertFalse(provider.interrupted)
+        self.assertEqual(provider.response["allow"], True)  # type: ignore[index]
+        self.assertIn(
+            "automatically accepted",
+            provider.response["message"],  # type: ignore[index]
+        )
+        self.assertEqual(node.state, NodeState.DONE)
+        self.assertIsNone(node.error)
         self.assertTrue(
             any(ev.get("type") == "interaction_request" for ev in emitted)
         )
-        self.assertTrue(
-            any(
-                ev.get("type") == "error"
-                and "timed out" in ev.get("message", "")
-                for ev in emitted
-            )
-        )
         self.assertEqual(emitted[-1].get("type"), "turn_done")
+
+    async def test_permission_timeout_can_automatically_reject(self) -> None:
+        config = load_global_config(self.store_root)
+        save_global_config(
+            config.model_copy(
+                update={
+                    "tool_requests": config.tool_requests.model_copy(
+                        update={"timeout_action": "reject"}
+                    )
+                }
+            ),
+            self.store_root,
+        )
+        provider = _SupervisedGateProvider()
+
+        node, _emitted = await self._run_provider(provider)
+
+        self.assertEqual(provider.response["allow"], False)  # type: ignore[index]
+        self.assertIn(
+            "automatically rejected",
+            provider.response["message"],  # type: ignore[index]
+        )
+        self.assertEqual(node.state, NodeState.DONE)
+
+    async def test_ask_user_waits_for_the_user_instead_of_tool_timeout(self) -> None:
+        provider = _SupervisedGateProvider(GateSubtype.ASK_USER)
+
+        node, _emitted = await self._run_provider(
+            provider,
+            delayed_response=(0.1, False),
+        )
+
+        self.assertEqual(provider.response["allow"], False)  # type: ignore[index]
+        self.assertNotIn("timed out", provider.response.get("message", ""))  # type: ignore[union-attr]
+        self.assertEqual(node.state, NodeState.DONE)
 
 
 if __name__ == "__main__":
