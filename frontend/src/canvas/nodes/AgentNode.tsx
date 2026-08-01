@@ -112,7 +112,12 @@ function AgentNodeImpl({ data, selected }: NodeProps<AgentNodeData>) {
         onClick: () => agentNodeContext.onRerunNode(node.id),
       });
     }
-    if (isVirtual && readyToPromote && !node.obsolete_reason) {
+    if (
+      isVirtual &&
+      readyToPromote &&
+      !node.obsolete_reason &&
+      node.planspace_id === agentNodeContext.manualPromotionPlanspaceId
+    ) {
       items.push({
         key: "promote",
         icon: <PromoteActionIcon />,
@@ -453,6 +458,7 @@ export type AgentNodeContext = {
   onRerunNode: (nodeId: string) => void;
   canCreateVirtual: boolean;
   canPromoteVirtual: boolean;
+  manualPromotionPlanspaceId: string | null;
   canInterrupt: boolean;
   canRerun: boolean;
   pendingGateForNode: (nodeId: string) => InteractionRequest | null;
@@ -470,6 +476,7 @@ let agentNodeContext: AgentNodeContext = {
   onRerunNode: () => {},
   canCreateVirtual: false,
   canPromoteVirtual: false,
+  manualPromotionPlanspaceId: null,
   canInterrupt: false,
   canRerun: false,
   pendingGateForNode: () => null,

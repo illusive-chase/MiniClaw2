@@ -888,13 +888,14 @@ export function App() {
       try {
         const next = await updatePlanspaceMode(session.id, planspaceId, mode);
         setSessionContextSpace(next);
+        await refreshNodes();
       } catch (err) {
         setSessionContextSpaceError(String(err));
       } finally {
         setSessionContextSpaceSaving(false);
       }
     },
-    [session?.id],
+    [refreshNodes, session?.id],
   );
 
   const promoteVirtualNode = useCallback(
@@ -913,6 +914,7 @@ export function App() {
         selectAndOpenNode(result.node.id);
         await refreshNodes();
       } catch (err) {
+        await refreshNodes().catch(() => {});
         setSessionContextSpaceError(String(err));
       } finally {
         setProjectMutationPending(false);
@@ -1545,6 +1547,18 @@ export function App() {
     [planspaceOptions],
   );
 
+  const manualPromotionPlanspaceId = useMemo(() => {
+    const activeId = sessionContextSpace?.active_planspace_id ?? null;
+    if (!activeId) return null;
+    for (const binding of sessionContextSpace?.bindings ?? []) {
+      const activePlug = binding.plugs.find(
+        (plug) => plug.kind === "planspace" && plug.id === activeId,
+      );
+      if (activePlug) return activePlug.mode === "auto" ? null : activeId;
+    }
+    return activeId;
+  }, [sessionContextSpace]);
+
   const hiddenPlanspaceIds = useMemo(() => {
     const hidden = new Set<string>();
     for (const [id, pref] of Object.entries(sessionContextSpace?.planspace_view ?? {})) {
@@ -1730,6 +1744,7 @@ export function App() {
       onRerunNode: rerunFailedNode,
       canCreateVirtual: !virtualCreateDisabled,
       canPromoteVirtual: !projectMutationPending && !readOnly,
+      manualPromotionPlanspaceId,
       canInterrupt: canInterruptRunner && !readOnly,
       canRerun: !projectMutationPending && !readOnly,
       pendingGateForNode: (nodeId) =>
@@ -1749,6 +1764,7 @@ export function App() {
     rerunFailedNode,
     virtualCreateDisabled,
     projectMutationPending,
+    manualPromotionPlanspaceId,
     readOnly,
     canInterruptRunner,
     composerLocked,
@@ -2116,6 +2132,7 @@ export function App() {
                 onRerunNode={rerunFailedNode}
                 canInterrupt={canInterruptRunner && !readOnly}
                 canRerun={!projectMutationPending && !readOnly}
+                manualPromotionPlanspaceId={manualPromotionPlanspaceId}
                 onPlanspaceModeChange={changePlanspaceMode}
                 onContextInit={runContextInit}
                 onContextRefresh={runContextRefresh}

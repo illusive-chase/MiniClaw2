@@ -90,6 +90,7 @@ export type SidePanelProps = {
   onRerunNode: (nodeId: string) => void;
   canInterrupt: boolean;
   canRerun: boolean;
+  manualPromotionPlanspaceId: string | null;
   onPlanspaceModeChange: (planspaceId: string, mode: PlanspaceMode) => void;
   onContextInit: () => void;
   onContextRefresh: () => void;
@@ -191,6 +192,7 @@ function Inner(props: SidePanelProps & { nodesById: Map<string, NodeInfo> }) {
     onRerunNode,
     canInterrupt,
     canRerun,
+    manualPromotionPlanspaceId,
     onPlanspaceModeChange,
     onContextInit,
     onContextRefresh,
@@ -355,6 +357,7 @@ function Inner(props: SidePanelProps & { nodesById: Map<string, NodeInfo> }) {
         canInterrupt={canInterrupt && !session.read_only}
         canRerun={canRerun && !session.read_only}
         canMutate={!session.read_only}
+        manualPromotionPlanspaceId={manualPromotionPlanspaceId}
         focusRequestVersion={focusRequestVersion}
         onSelectArtifact={onSelectArtifact}
       />

@@ -6,7 +6,7 @@ import asyncio
 import logging
 import math
 import time
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from collections.abc import Awaitable, Callable
 from functools import lru_cache
 from pathlib import Path
@@ -61,6 +61,14 @@ _UNSET: object = object()
 
 def _virtual_requires_prompt(subtype: ReviewSubtype | None) -> bool:
     return subtype is not ReviewSubtype.CODE_REVIEW
+
+
+@dataclass(frozen=True)
+class VirtualPromotionResult:
+    node: Node | None
+    code: str | None = None
+    message: str | None = None
+    blockers: tuple[str, ...] = ()
 
 
 class NonNativeProjectError(PermissionError):
@@ -1191,32 +1199,71 @@ class ProjectRegistry:
         return eligible[0]
 
     def promote_virtual(self, pid: str, vid: str) -> Node | None:
-        """Promote an eligible virtual node to the durable ``queued`` state.
+        """Promote an eligible virtual node to the durable ``queued`` state."""
+        result = self.promote_virtual_result(pid, vid)
+        return result.node if result.code is None else None
 
-        Starting a provider is a separate scheduler concern; a full project
-        therefore still accepts promotion and returns the queued node.
+    def promote_virtual_result(self, pid: str, vid: str) -> VirtualPromotionResult:
+        """Promote a virtual and preserve a machine-readable conflict reason.
+
+        The API uses this richer result to make retries idempotent and to avoid
+        collapsing unrelated validation failures into an opaque HTTP 409.
+        Internal scheduler callers retain the narrower ``promote_virtual`` API.
         """
         rt = self._runtimes.get(pid)
         if rt is None:
-            return None
+            return VirtualPromotionResult(
+                None,
+                "project_unavailable",
+                "Project runtime is unavailable.",
+            )
         self.require_native(pid)
         node = self.store.load_node(pid, vid)
         if node is None:
-            return None
-        if node.state is not NodeState.VIRTUAL or node.obsolete_reason:
-            return None
+            return VirtualPromotionResult(
+                None,
+                "virtual_not_found",
+                "Virtual node was not found.",
+            )
+        if node.state is not NodeState.VIRTUAL:
+            if node.proposed_by:
+                return VirtualPromotionResult(
+                    node,
+                    "already_promoted",
+                    "Virtual node has already been promoted.",
+                )
+            return VirtualPromotionResult(
+                None,
+                "node_not_virtual",
+                "Node is not a promotable virtual.",
+            )
+        if node.obsolete_reason:
+            return VirtualPromotionResult(
+                None,
+                "virtual_obsolete",
+                "Obsolete virtual nodes cannot be promoted.",
+            )
         if (
             _virtual_requires_prompt(node.subtype)
             and not (node.prompt_draft or "").strip()
         ):
-            return None
+            return VirtualPromotionResult(
+                None,
+                "prompt_required",
+                "Virtual node needs a prompt before it can be promoted.",
+            )
         active = resolve_active_planspace(
             rt.project, contextspace_root(self.store.root)
         )
         active_lane = active[1].id if active is not None else ""
         node_lane = node.planspace_id or ""
         if node_lane != active_lane:
-            return None
+            return VirtualPromotionResult(
+                None,
+                "outside_active_planspace",
+                "Virtual node is outside the active planspace.",
+            )
+        blockers: list[str] = []
         for dep in node.scheduled_deps:
             parent = self.store.load_node(pid, dep)
             if parent is None:
@@ -1225,15 +1272,35 @@ class ProjectRegistry:
                 continue
             if parent.state is NodeState.VIRTUAL and parent.obsolete_reason:
                 continue
-            return None
+            blockers.append(dep)
+        if blockers:
+            return VirtualPromotionResult(
+                None,
+                "dependencies_not_terminal",
+                "Virtual node has dependencies that are not terminal.",
+                tuple(blockers),
+            )
         if node.resume_from_node_id:
             resume_parent = self.store.load_node(pid, node.resume_from_node_id)
             if resume_parent is None:
-                return None
+                return VirtualPromotionResult(
+                    None,
+                    "resume_source_missing",
+                    "Continuation source node was not found.",
+                )
             if resume_parent.state not in TERMINAL_NODE_STATES:
-                return None
+                return VirtualPromotionResult(
+                    None,
+                    "resume_source_not_terminal",
+                    "Continuation source node is not terminal.",
+                    (resume_parent.id,),
+                )
             if not resume_parent.provider_session_id:
-                return None
+                return VirtualPromotionResult(
+                    None,
+                    "resume_session_unavailable",
+                    "Continuation source has no provider session to resume.",
+                )
             node.model_preset_id = resume_parent.model_preset_id
             node.provider_session_id = resume_parent.provider_session_id
             node.parent_node_id = resume_parent.id
@@ -1241,7 +1308,11 @@ class ProjectRegistry:
             self.store.write_node_preview(pid, node.id, render_virtual_preview(node))
         except Exception:  # noqa: BLE001
             logger.exception("failed to preserve virtual preview before promotion")
-            return None
+            return VirtualPromotionResult(
+                None,
+                "preview_write_failed",
+                "Virtual preview could not be preserved before promotion.",
+            )
         node.state = NodeState.QUEUED
         if node.kind is NodeKind.AGENT:
             node.prompt = node.prompt_draft or node.prompt
@@ -1271,7 +1342,7 @@ class ProjectRegistry:
         except RuntimeError:
             pass
         self._schedule_queued(rt)
-        return self.store.load_node(pid, node.id) or node
+        return VirtualPromotionResult(self.store.load_node(pid, node.id) or node)
 
     def create_virtual(
         self,

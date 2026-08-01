@@ -372,6 +372,45 @@ class AutoPromoteOnRunnerDoneTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotEqual(reloaded.state, NodeState.VIRTUAL)
         self.assertEqual(reloaded.prompt, "already ready")
 
+    async def test_promote_retry_after_manual_to_auto_switch_is_idempotent(self) -> None:
+        plug_id = create_planspace(
+            self.project, title="manual-first", mode="manual"
+        )
+        rt = self.registry._runtimes[self.project.id]
+        rt.project.active_planspace_id = plug_id
+        self.store.update_project(rt.project)
+        finished = self._make_finished_agent(plug_id)
+        virtual = self._make_virtual(
+            plug_id,
+            deps=[finished.id],
+            prompt_draft="already eligible",
+        )
+
+        self.registry.update_planspace_mode(self.project.id, plug_id, "auto")
+        retry = self.registry.promote_virtual_result(self.project.id, virtual.id)
+
+        self.assertIsNotNone(retry.node)
+        self.assertEqual(retry.code, "already_promoted")
+        assert retry.node is not None
+        self.assertNotEqual(retry.node.state, NodeState.VIRTUAL)
+        await self._drain_task(rt.runner_tasks.get(virtual.id))
+
+    async def test_promotion_result_identifies_non_terminal_dependencies(self) -> None:
+        plug_id = create_planspace(
+            self.project, title="manual", mode="manual"
+        )
+        rt = self.registry._runtimes[self.project.id]
+        rt.project.active_planspace_id = plug_id
+        self.store.update_project(rt.project)
+        running = self._make_finished_agent(plug_id, finished=False)
+        virtual = self._make_virtual(plug_id, deps=[running.id])
+
+        result = self.registry.promote_virtual_result(self.project.id, virtual.id)
+
+        self.assertIsNone(result.node)
+        self.assertEqual(result.code, "dependencies_not_terminal")
+        self.assertEqual(result.blockers, (running.id,))
+
     async def test_promote_virtual_rejects_non_active_lane(self) -> None:
         active_lane = create_planspace(
             self.project, title="active", mode="manual"

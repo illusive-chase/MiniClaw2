@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 
 import miniclaw2.app as app_module
 from miniclaw2.domain import Node, NodeState, Project
+from miniclaw2.registry import VirtualPromotionResult
 
 
 class PlanspaceApiTest(unittest.TestCase):
@@ -321,10 +322,14 @@ class PlanspaceApiTest(unittest.TestCase):
                 def is_running(self, sid: str) -> bool:
                     return False
 
-                def promote_virtual(self, sid: str, vid: str) -> object | None:
+                def promote_virtual_result(
+                    self, sid: str, vid: str
+                ) -> VirtualPromotionResult:
                     if sid != project.id or vid != node.id:
-                        return None
-                    return node
+                        return VirtualPromotionResult(
+                            None, "virtual_not_found", "Virtual node was not found."
+                        )
+                    return VirtualPromotionResult(node)
 
             with patch.object(app_module, "ProjectRegistry", return_value=_Registry()):
                 client = TestClient(app_module.create_app())
@@ -340,6 +345,91 @@ class PlanspaceApiTest(unittest.TestCase):
             self.assertTrue(body["ok"])
             self.assertEqual(body["node_id"], "virt-1")
             self.assertEqual(body["node"]["state"], "queued")
+            self.assertFalse(body["already_promoted"])
+
+    def test_promote_virtual_retry_is_idempotent(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            project = Project(root_path=raw, name="Project")
+            node = Node(
+                id="virt-1",
+                project_id=project.id,
+                model_preset_id="gpt-5.5",
+                state=NodeState.RUNNING,
+                planspace_id="planspaces.auth",
+                prompt="run this",
+                proposed_by="user",
+            )
+
+            class _Registry:
+                store = SimpleNamespace(root=Path(raw) / "store")
+
+                def get_project(self, sid: str) -> Project | None:
+                    return project if sid == project.id else None
+
+                def promote_virtual_result(
+                    self, sid: str, vid: str
+                ) -> VirtualPromotionResult:
+                    return VirtualPromotionResult(
+                        node,
+                        "already_promoted",
+                        "Virtual node has already been promoted.",
+                    )
+
+            with patch.object(app_module, "ProjectRegistry", return_value=_Registry()):
+                client = TestClient(app_module.create_app())
+                try:
+                    res = client.post(
+                        f"/sessions/{project.id}/virtuals/{node.id}/promote"
+                    )
+                finally:
+                    client.close()
+
+            self.assertEqual(res.status_code, 200, res.text)
+            body = res.json()
+            self.assertTrue(body["ok"])
+            self.assertTrue(body["already_promoted"])
+            self.assertEqual(body["node"]["state"], "running")
+
+    def test_promote_virtual_conflict_returns_code_and_blockers(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            project = Project(root_path=raw, name="Project")
+
+            class _Registry:
+                store = SimpleNamespace(root=Path(raw) / "store")
+
+                def get_project(self, sid: str) -> Project | None:
+                    return project if sid == project.id else None
+
+                def promote_virtual_result(
+                    self, sid: str, vid: str
+                ) -> VirtualPromotionResult:
+                    return VirtualPromotionResult(
+                        None,
+                        "dependencies_not_terminal",
+                        "Virtual node has dependencies that are not terminal.",
+                        ("parent-1",),
+                    )
+
+            with patch.object(app_module, "ProjectRegistry", return_value=_Registry()):
+                client = TestClient(app_module.create_app())
+                try:
+                    res = client.post(
+                        f"/sessions/{project.id}/virtuals/virt-1/promote"
+                    )
+                finally:
+                    client.close()
+
+            self.assertEqual(res.status_code, 409, res.text)
+            self.assertEqual(
+                res.json()["detail"],
+                {
+                    "code": "dependencies_not_terminal",
+                    "message": (
+                        "Virtual node has dependencies that are not terminal."
+                    ),
+                    "blockers": ["parent-1"],
+                },
+            )
 
 
 if __name__ == "__main__":

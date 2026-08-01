@@ -64,6 +64,7 @@ export type AgentPanelProps = {
   canInterrupt: boolean;
   canRerun: boolean;
   canMutate: boolean;
+  manualPromotionPlanspaceId: string | null;
   focusRequestVersion: number;
   onSelectArtifact: (
     nodeId: string,
@@ -97,6 +98,7 @@ export function AgentPanel({
   canInterrupt,
   canRerun,
   canMutate,
+  manualPromotionPlanspaceId,
   focusRequestVersion,
   onSelectArtifact,
 }: AgentPanelProps) {
@@ -190,7 +192,9 @@ export function AgentPanel({
                   ↻ Rerun
                 </button>
               )}
-            {node.state === "virtual" && canMutate ? (
+            {node.state === "virtual" &&
+            canMutate &&
+            node.planspace_id === manualPromotionPlanspaceId ? (
               <button
                 type="button"
                 onClick={() => onPromoteVirtual(node.id)}

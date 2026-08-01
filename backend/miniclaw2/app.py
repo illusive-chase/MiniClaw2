@@ -988,17 +988,21 @@ def create_app(registry: ProjectRegistry | None = None) -> FastAPI:
             raise HTTPException(404, "session not found")
         if _context_task_running(project.id):
             raise HTTPException(409, "context refresh in progress")
-        node = registry.promote_virtual(sid, vid)
+        result = registry.promote_virtual_result(sid, vid)
+        node = result.node
         if node is None:
-            raise HTTPException(
-                409,
-                "virtual cannot be promoted (missing, obsolete, deps not "
-                "terminal, or outside the active planspace)",
-            )
+            detail: dict[str, Any] = {
+                "code": result.code or "promotion_conflict",
+                "message": result.message or "Virtual node cannot be promoted.",
+            }
+            if result.blockers:
+                detail["blockers"] = list(result.blockers)
+            raise HTTPException(409, detail)
         return {
             "ok": True,
             "node_id": node.id,
             "node": node.model_dump(),
+            "already_promoted": result.code == "already_promoted",
         }
 
     @app.patch(

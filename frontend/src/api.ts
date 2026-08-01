@@ -42,7 +42,12 @@ async function readErrorDetail(res: Response): Promise<string | null> {
       const body: unknown = await res.json();
       if (body && typeof body === "object" && "detail" in body) {
         const detail = (body as { detail?: unknown }).detail;
-        return typeof detail === "string" ? detail : JSON.stringify(detail);
+        if (typeof detail === "string") return detail;
+        if (detail && typeof detail === "object" && "message" in detail) {
+          const message = (detail as { message?: unknown }).message;
+          if (typeof message === "string") return message;
+        }
+        return JSON.stringify(detail);
       }
     } catch {
       return null;
@@ -313,12 +318,19 @@ export async function updatePlanspaceMode(
 export async function promoteVirtual(
   sessionId: string,
   nodeId: string,
-): Promise<{ ok: boolean; node_id: string; node: NodeInfo }> {
+): Promise<{
+  ok: boolean;
+  node_id: string;
+  node: NodeInfo;
+  already_promoted?: boolean;
+}> {
   const res = await fetch(
     `/sessions/${sessionId}/virtuals/${encodeURIComponent(nodeId)}/promote`,
     { method: "POST" },
   );
-  if (!res.ok) throw new Error(`promoteVirtual failed: ${res.status}`);
+  if (!res.ok) {
+    throw new ApiError("promoteVirtual", res.status, await readErrorDetail(res));
+  }
   return res.json();
 }
 
