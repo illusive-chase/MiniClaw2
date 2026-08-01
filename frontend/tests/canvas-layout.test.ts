@@ -103,6 +103,34 @@ function testNoRootOrFabricatedDependencies(): void {
   assert.equal(withDep.rfEdges.some((edge) => edge.id === "dep:a->b"), true);
 }
 
+function testKnownLaneOrderSurvivesNodeCreationOrder(): void {
+  const knownPlanspaceIds = ["planspaces.alpha", "planspaces.beta"];
+  const empty = buildGraph(args({ knownPlanspaceIds }));
+  const populated = buildGraph(args({
+    nodes: [
+      node("beta-first", { planspace_id: "planspaces.beta", created_at: 1 }),
+      node("legacy-second", { planspace_id: "planspaces.legacy", created_at: 2 }),
+      node("alpha-last", { planspace_id: "planspaces.alpha", created_at: 3 }),
+    ],
+    knownPlanspaceIds,
+  }));
+  const lanes = (graph: ReturnType<typeof buildGraph>) =>
+    graph.rfNodes.filter((item) => item.type === "planspaceLane");
+
+  assert.deepEqual(
+    lanes(populated).map((item) => item.id),
+    [
+      "planspace:planspaces.alpha",
+      "planspace:planspaces.beta",
+      "planspace:planspaces.legacy",
+    ],
+  );
+  assert.deepEqual(
+    lanes(populated).slice(0, 2).map((item) => item.position),
+    lanes(empty).map((item) => item.position),
+  );
+}
+
 function testVerticalCommitTrunkAndStableLaneX(): void {
   const work = node("work", { planspace_id: "planspaces.alpha" });
   const one = buildGraph(args({
@@ -315,6 +343,7 @@ function testEdgeWeights(): void {
 }
 
 testNoRootOrFabricatedDependencies();
+testKnownLaneOrderSurvivesNodeCreationOrder();
 testVerticalCommitTrunkAndStableLaneX();
 testEpochLinksAndHoverGroups();
 testBindingDrivenContextTiles();

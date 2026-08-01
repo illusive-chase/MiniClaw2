@@ -253,9 +253,13 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
   });
   const nodeById = new Map<string, NodeInfo>();
   for (const n of visibleNodes) nodeById.set(n.id, n);
-  const planspaceOrder = collectPlanspaceOrder(visibleNodes, allNodeById);
+  const planspaceOrder: string[] = [];
   for (const id of knownPlanspaceIds) {
     if (!id || hiddenPlanspaces.has(id) || planspaceOrder.includes(id)) continue;
+    planspaceOrder.push(id);
+  }
+  for (const id of collectPlanspaceOrder(visibleNodes, allNodeById)) {
+    if (planspaceOrder.includes(id)) continue;
     planspaceOrder.push(id);
   }
   const planspaceIndex = new Map(planspaceOrder.map((id, index) => [id, index]));
