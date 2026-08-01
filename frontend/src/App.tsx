@@ -480,6 +480,10 @@ export function App() {
     () => keepPendingForStates(pendingGates, nodes, ["waiting"]),
     [nodes, pendingGates],
   );
+  const pendingGateNodeIds = useMemo(
+    () => (readOnly ? [] : Object.keys(validPendingGates)),
+    [readOnly, validPendingGates],
+  );
   const validPendingReviews = useMemo(
     () => keepPendingForStates(pendingReviews, nodes, ["awaiting_human_input"]),
     [nodes, pendingReviews],
@@ -1981,6 +1985,7 @@ export function App() {
               nodes={nodes}
               selectedNodeId={selectedCanvasNodeId}
               activeNodeIds={activeCanvasNodeIds}
+              pendingGateNodeIds={pendingGateNodeIds}
               contextBundlesByNodeId={contextBundlesByNodeId}
               knownPlanspaceIds={knownPlanspaceIds}
               hiddenPlanspaceIds={hiddenPlanspaceIds}

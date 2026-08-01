@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import { decorateEdges, resolveHoverGroup } from "../src/canvas/edgeVisibility";
 import {
+  decoratePendingGateLayers,
+  PENDING_GATE_NODE_Z_INDEX,
+} from "../src/canvas/nodeLayers";
+import {
   buildGraph,
   contextIdentityKey,
   LANE,
@@ -342,6 +346,23 @@ function testEdgeWeights(): void {
   assert.equal(graph.rfNodes, originalNodes);
 }
 
+function testPendingGateNodeLayer(): void {
+  const graph = buildGraph(args({
+    nodes: [
+      node("waiting", { state: "waiting", created_at: 1 }),
+      node("later-virtual", { state: "virtual", created_at: 2 }),
+    ],
+  }));
+  const layered = decoratePendingGateLayers(graph.rfNodes, ["waiting"]);
+  const waiting = layered.find((item) => item.id === "waiting");
+  const laterVirtual = layered.find((item) => item.id === "later-virtual");
+
+  assert.equal(waiting?.zIndex, PENDING_GATE_NODE_Z_INDEX);
+  assert.equal(laterVirtual?.zIndex, undefined);
+  assert.equal(graph.rfNodes.find((item) => item.id === "waiting")?.zIndex, undefined);
+  assert.equal(decoratePendingGateLayers(graph.rfNodes, []), graph.rfNodes);
+}
+
 testNoRootOrFabricatedDependencies();
 testKnownLaneOrderSurvivesNodeCreationOrder();
 testVerticalCommitTrunkAndStableLaneX();
@@ -350,4 +371,5 @@ testBindingDrivenContextTiles();
 testFloatingContextDoesNotOverlapFirstLane();
 testObservedSkillMetadataEnrichment();
 testEdgeWeights();
+testPendingGateNodeLayer();
 console.log("canvas layout tests passed");

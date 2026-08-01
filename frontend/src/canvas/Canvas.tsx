@@ -41,6 +41,7 @@ import { ArtifactNode } from "./nodes/ArtifactNode";
 import { CommitNode } from "./nodes/CommitNode";
 import { setHoverGroup } from "./hoverStore";
 import { decorateEdges, resolveHoverGroup } from "./edgeVisibility";
+import { decoratePendingGateLayers } from "./nodeLayers";
 
 const NODE_TYPES = {
   agent: AgentNode,
@@ -88,6 +89,8 @@ export type CanvasProps = {
   sessionId: string;
   selectedNodeId: string | null;
   activeNodeIds: string[];
+  /** Agent nodes whose inline request panel must stay above sibling nodes. */
+  pendingGateNodeIds?: string[];
   contextBundlesByNodeId: Record<string, ContextBundle | null | undefined>;
   knownPlanspaceIds: string[];
   hiddenPlanspaceIds: string[];
@@ -150,6 +153,7 @@ function CanvasInner({
   sessionId,
   selectedNodeId,
   activeNodeIds,
+  pendingGateNodeIds = [],
   contextBundlesByNodeId,
   knownPlanspaceIds,
   hiddenPlanspaceIds,
@@ -268,12 +272,16 @@ function CanvasInner({
       layoutHydrationVersion,
     ],
   );
-  const syncedBuiltNodesRef = useRef(built.rfNodes);
+  const layeredBuiltNodes = useMemo(
+    () => decoratePendingGateLayers(built.rfNodes, pendingGateNodeIds),
+    [built.rfNodes, pendingGateNodeIds],
+  );
+  const syncedBuiltNodesRef = useRef(layeredBuiltNodes);
 
   /* React Flow controlled state. We keep an internal copy so dragging is smooth
    * while still reflecting upstream prop changes (e.g. node_updated events). */
   const [rfNodes, setRfNodes, onNodesChange] = useNodesState(
-    decorateSelection(built.rfNodes, selectedNodeId),
+    decorateSelection(layeredBuiltNodes, selectedNodeId),
   );
   const [rfEdges, setRfEdges] = useEdgesState(
     decorateEdges(built.rfEdges, selectedNodeId, hoverGroup),
@@ -289,12 +297,12 @@ function CanvasInner({
     const hydrateFromLayout =
       appliedLayoutHydrationVersionRef.current !== layoutHydrationVersion;
     if (
-      syncedBuiltNodesRef.current === built.rfNodes &&
+      syncedBuiltNodesRef.current === layeredBuiltNodes &&
       !hydrateFromLayout
     ) {
       return;
     }
-    syncedBuiltNodesRef.current = built.rfNodes;
+    syncedBuiltNodesRef.current = layeredBuiltNodes;
     setRfNodes((current) => {
       const runtimeById = new Map(current.map((n) => [n.id, n]));
       // Carry over ``selected`` so React Flow's multi-selection (marquee /
@@ -302,9 +310,14 @@ function CanvasInner({
       // this, every ``node_updated`` websocket event would reset the
       // selection to just the scalar single-select target.
       const selectedById = new Map(current.map((n) => [n.id, n.selected]));
-      const next = built.rfNodes.map((n) => {
+      const next = layeredBuiltNodes.map((n) => {
         const runtime = runtimeById.get(n.id);
-        let out: RFNode = runtime ? { ...runtime, ...n } : n;
+        // zIndex needs an explicit assignment: spreading a fresh layout node
+        // without that property would otherwise retain a previously elevated
+        // pending-gate layer from `runtime` after the request is resolved.
+        let out: RFNode = runtime
+          ? { ...runtime, ...n, zIndex: n.zIndex }
+          : n;
         if (!hydrateFromLayout) {
           const existing = runtime?.position;
           if (
@@ -330,7 +343,7 @@ function CanvasInner({
       appliedLayoutHydrationVersionRef.current = layoutHydrationVersion;
     }
   }, [
-    built.rfNodes,
+    layeredBuiltNodes,
     setRfNodes,
     layoutHydrationVersion,
   ]);
