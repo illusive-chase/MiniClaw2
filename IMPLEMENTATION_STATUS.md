@@ -85,10 +85,13 @@ itself rebases.
 - Canvas: an oldest-first vertical trunk `C₀ → … → ghost`; hubs are 64px
   circles (sha7, live solid / stale dashed-amber / HEAD ring / ghost dashed
   showing the dirty count), draggable via `layoutHints` key `commit:<sha>`.
-  The trunk grows downward without changing lane `x`. Epoch source/sink
+  The trunk grows downward without changing lane `x`, and trunk edges carry
+  an arrowhead so the older → newer direction is readable. Epoch source/sink
   links touch only the sources and sinks of each epoch's dep-sub-DAG
-  (transitive reduction within the epoch), render dashed, and stay hidden
-  until an endpoint is hovered or selected. A sink targets the earliest
+  (transitive reduction within the epoch), render dashed and arrowed, enter
+  the agent tile's top (`epochIn`) and leave its bottom (`epochOut`) so they
+  read against the vertical trunk rather than the horizontal dep axis, and
+  stay hidden until an endpoint is hovered or selected. A sink targets the earliest
   rendered **live** commit at-or-after its `commit_after`, else the ghost
   when rendered, else no edge.
 - Selection kind `{kind: "commit", sha | null}` routes to `GitCommitPanel`:
@@ -637,10 +640,15 @@ Trunk: `frontend/src/canvas/Canvas.tsx`, `frontend/src/canvas/layout.ts`,
   a programmatic label.
 - Edge weight is explicit: dependency arrows, the vertical commit trunk,
   resume (`↻` mid-glyph), and error-terminal edges render at rest. Loads,
-  produces, and dashed commit epoch links are hidden until an endpoint is
-  hovered or selected. Hovering a commit hub also rings its epoch members;
-  hovering a member rings its hub through a store that does not rewrite the
-  React Flow node array.
+  produces, and commit epoch links are hidden until an endpoint is
+  hovered or selected, and all three render dashed — dashing marks the
+  derived, on-demand class, not a per-edge state. Within loads, the dash
+  *pattern* carries consumption: tight (`5 3`) for context a run actually
+  consumed, sparse (`2 4`) for declared-but-not-yet-run bindings and for
+  available-but-unused skills. Loads enter the agent tile's top `loads`
+  handle (op tiles keep the default left/right pair). Hovering a commit hub
+  also rings its epoch members; hovering a member rings its hub through a
+  store that does not rewrite the React Flow node array.
 - Dependency edges come only from `scheduled_deps`; nodes with no declared
   dependency have no fabricated `root → node` relation.
 - Published artifact tiles fan beneath their producing agent in the

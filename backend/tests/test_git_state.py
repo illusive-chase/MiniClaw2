@@ -267,6 +267,35 @@ class GitStateTest(unittest.TestCase):
             self.assertIn("real.txt", show)
             self.assertNotIn(".miniclaw2/graph/lanes/l1/preview.json", show)
 
+    def test_commit_all_handles_ignored_miniclaw_dir_on_unborn_branch(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            repo = Path(raw)
+            subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+            subprocess.run(
+                ["git", "config", "user.email", "t@t.t"], cwd=repo, check=True
+            )
+            subprocess.run(
+                ["git", "config", "user.name", "t"], cwd=repo, check=True
+            )
+            self.assertIsNone(ensure_miniclaw_git_excluded(str(repo)))
+            (repo / "real.txt").write_text("real\n", encoding="utf-8")
+            generated = repo / ".miniclaw2" / "graph"
+            generated.mkdir(parents=True)
+            (generated / "preview.json").write_text("{}", encoding="utf-8")
+
+            new_head, err = commit_all(str(repo), "first commit")
+
+            self.assertIsNone(err)
+            self.assertIsNotNone(new_head)
+            show = subprocess.run(
+                ["git", "show", "--name-only", "--format=", "HEAD"],
+                cwd=repo,
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.splitlines()
+            self.assertEqual(show, ["real.txt"])
+
     def test_commit_all_ignores_miniclaw_only_changes(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             repo = Path(raw)

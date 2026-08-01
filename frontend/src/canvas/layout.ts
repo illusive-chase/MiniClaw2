@@ -365,9 +365,12 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
       if (predecessors.length) incoming.add(member.id);
       for (const predecessor of predecessors) outgoing.add(predecessor);
     }
+    /* Epoch links cross the lane stack from the trunk column, so they use the
+     * agent tile's vertical handles (`epochIn` top / `epochOut` bottom) rather
+     * than the horizontal dep/resume axis. */
     for (const member of members) {
       if (!incoming.has(member.id)) {
-        rfEdges.push({ id: `commit-source:${epochSha}:${member.id}`, source: `commit:${epochSha}`, target: member.id, type: "commitLink", data: { dashed: true } });
+        rfEdges.push({ id: `commit-source:${epochSha}:${member.id}`, source: `commit:${epochSha}`, target: member.id, targetHandle: "epochIn", type: "commitLink", data: { dashed: true } });
       }
       if (outgoing.has(member.id) || !member.commit_after) continue;
       const after = commitForSha(member.commit_after);
@@ -378,7 +381,7 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
         if (next) target = `commit:${next.sha}`;
       }
       if (!target && gitDirtyCount > 0) target = "commit:ghost";
-      if (target) rfEdges.push({ id: `commit-sink:${member.id}:${target}`, source: member.id, target, type: "commitLink", data: { dashed: true } });
+      if (target) rfEdges.push({ id: `commit-sink:${member.id}:${target}`, source: member.id, sourceHandle: "epochOut", target, type: "commitLink", data: { dashed: true } });
     }
   }
 
@@ -934,14 +937,22 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
       draggable: true,
       ...(parentNode ? { parentNode, extent } : {}),
     });
+    /* Context tiles sit above the agent row, so a load enters the tile's top
+     * `loads` handle. Op tiles have only the left/right pair, so their loads
+     * edges keep the default anchors — naming a handle a node does not carry
+     * would make React Flow drop the edge. */
+    const loadsTargetHandle = (ownerId: string): string | undefined =>
+      allNodeById.get(ownerId)?.kind === "op" ? undefined : "loads";
     for (const ownerId of agg.loadedBy) {
       const used = agg.kind !== "skill" || agg.usedBy.has(ownerId);
       rfEdges.push({
         id: `ld:${ctxId}->${ownerId}`,
         source: ctxId,
+        sourceHandle: "loads",
         target: ownerId,
+        targetHandle: loadsTargetHandle(ownerId),
         type: "loads",
-        data: { dashed: !used, relation: used ? "used" : "available" },
+        data: { relation: used ? "used" : "available" },
       });
     }
     for (const ownerId of agg.declaredBy) {
@@ -949,9 +960,11 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
       rfEdges.push({
         id: `ld:${ctxId}->${ownerId}`,
         source: ctxId,
+        sourceHandle: "loads",
         target: ownerId,
+        targetHandle: loadsTargetHandle(ownerId),
         type: "loads",
-        data: { dashed: true, relation: "declared" },
+        data: { relation: "declared" },
       });
     }
   }

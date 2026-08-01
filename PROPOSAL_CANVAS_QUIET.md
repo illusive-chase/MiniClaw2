@@ -158,6 +158,15 @@ draw solid. `LoadsEdge` already dashes available-but-unused skills, so
 dashed reads uniformly as "will load or did not use," solid as
 "actually consumed."
 
+**Superseded in implementation.** This collided with §2.1, which claims
+dashing for the whole gated class. Two meanings on one channel is the
+worse outcome, so §2.1 wins the axis: *every* loads edge is dashed, and
+consumption moves to the dash **pattern** — tight (`5 3`) for consumed,
+sparse (`2 4`) for declared or available-but-unused. Solid is reserved
+for at-rest structure. The `ld:*` edge data drops `dashed` and keeps
+`relation: "used" | "available" | "declared"` as the single source for
+both the pattern and any future encoding.
+
 The library itself moves into one dock with three sections —
 Templates, Principles, Skills. "Library" is already the codebase's
 word for this collection (`PROPOSAL_LIBRARIAN.md` §2.2), the aside is
@@ -183,7 +192,15 @@ type rather than a data flag:
 - `commitTrunk` — hub to hub, and hub to ghost. Solid, always visible,
   carries the `+N` external-commit label.
 - `commitLink` — `commit-source:*` and `commit-sink:*`. Dashed,
-  gated.
+  gated. Enters an agent tile at its top (`epochIn`) and leaves at its
+  bottom (`epochOut`): the diagonals cross the lane stack from a
+  vertical trunk, so reusing the horizontal dep/resume anchors would
+  make them read as plan edges.
+
+Both carry the arrowhead from `defaultEdgeOptions`. A custom edge
+component does not inherit it — it has to forward `props.markerEnd` to
+`BaseEdge` — and direction is the content of both families: older →
+newer for the trunk, state-read → run → state-written for a link.
 
 `decorateEdges` (`Canvas.tsx:848`) gates on
 `type ∈ {loads, produces, commitLink}`, and its endpoint test widens
@@ -262,7 +279,10 @@ instead builds context aggregates from bindings:
 path/title resolution of bound entries. `ContextNodeData.dimmed` and
 `attachedCount` are deleted along with the shelf: no tile means not
 bound, and the count moves to the dock card. Declared bindings emit
-`ld:*` edges with `dashed: true`.
+`ld:*` edges with `relation: "declared"` (see §2.6's supersession).
+Loads target the agent tile's top `loads` handle; op tiles carry no
+such handle, so their loads keep the default left/right anchors —
+naming a handle the node does not have makes React Flow drop the edge.
 
 Placement is unchanged — bound principle/skill tiles continue to land
 in the floating loaded-context stripe (`LANE.contextLaneY`), which no
@@ -373,9 +393,10 @@ involved is already derived at render time, and
   of the nodes prop across a hover).
 - **Library binding:** an unbound principle produces no canvas tile; a
   principle in a virtual's `pending_extra_principles` produces a tile
-  with a dashed loads edge; a loaded principle produces one with a
-  solid edge; an available-but-unused skill stays dashed; hiding a
-  lane removes tiles bound only within it.
+  whose loads edge is `relation: "declared"`; a loaded principle
+  produces one that is `"used"`; an unused skill stays `"available"`;
+  every loads edge anchors source→`loads`, target→`loads` except on op
+  tiles; hiding a lane removes tiles bound only within it.
 - **Dock:** all three sections list and drag with their existing MIME
   types; a principle/skill card expands to details and deletes; a
   finished `library_edit` node surfaces its new entry; a persisted

@@ -318,6 +318,27 @@ function AgentNodeImpl({ data, selected }: NodeProps<AgentNodeData>) {
         position={Position.Top}
         className="!h-3 !w-3 !border-2 !border-line !bg-surface !opacity-0"
       />
+      {/* Epoch links run to the vertical trunk, so they enter the top and
+        * leave the bottom rather than sharing the horizontal dep/resume axis.
+        * Anchored left of centre to stay clear of loads (top) and produces
+        * (bottom), and because the trunk column sits to the left. These must
+        * stay AFTER the id-less handles: React Flow resolves an edge with no
+        * handle id to index 0 of the matching bounds array, which is how
+        * dep/resume/timeline keep their left/right anchors. */}
+      <Handle
+        type="target"
+        id="epochIn"
+        position={Position.Top}
+        style={{ left: "22%" }}
+        className="!h-3 !w-3 !border-2 !border-line !bg-surface !opacity-0"
+      />
+      <Handle
+        type="source"
+        id="epochOut"
+        position={Position.Bottom}
+        style={{ left: "22%" }}
+        className="!h-3 !w-3 !border-2 !border-line !bg-surface !opacity-0"
+      />
       </div>
 
       {pendingGate && (

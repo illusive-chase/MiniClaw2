@@ -470,16 +470,10 @@ def commit_all(cwd: str, message: str) -> tuple[str | None, str | None]:
     ``(None, None)`` means there was nothing to commit (clean tree after
     staging non-framework paths); a string ``error`` indicates a git failure.
     """
-    add = _git(
-        cwd,
-        [
-            "add",
-            "-A",
-            "--",
-            ".",
-            f":(exclude){MINICLAW_GENERATED_DIR}",
-        ],
-    )
+    # Do not pass the ignored framework directory as an exclusion pathspec.
+    # Older Git versions still reject that explicit path even though it is
+    # excluded, leaving valid files staged while reporting a failed add.
+    add = _git(cwd, ["add", "-A", "--", "."])
     if add.returncode != 0:
         return None, add.stderr.strip() or "git add failed"
 
@@ -503,7 +497,7 @@ def ensure_miniclaw_git_excluded(cwd: str) -> str | None:
     """Append MiniClaw2 generated paths to ``.git/info/exclude`` when possible.
 
     The project root may not be a git repository yet. In that case this is a
-    no-op; the commit pathspec in :func:`commit_all` remains the hard guard.
+    no-op; the explicit unstage in :func:`commit_all` remains the hard guard.
     Returns an error string only for unexpected IO/git failures.
     """
     git_dir = _git(cwd, ["rev-parse", "--git-dir"])

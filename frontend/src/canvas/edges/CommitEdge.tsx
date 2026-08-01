@@ -38,6 +38,12 @@ function CommitEdgeImpl(props: EdgeProps<CommitEdgeData>) {
           strokeDasharray: props.data?.dashed ? "4 4" : undefined,
           transition: gatedOpacity === undefined ? undefined : "opacity 180ms ease",
         }}
+        /* Direction is the whole point of the trunk (older → newer) and of an
+         * epoch link (state read → run → state written), so the arrowhead from
+         * `defaultEdgeOptions` has to be forwarded; a custom edge component
+         * does not inherit it. The marker rides the path's own opacity, so
+         * gated links stay invisible at rest. */
+        markerEnd={props.markerEnd}
       />
       {externalCount > 0 && (
         <EdgeLabelRenderer>

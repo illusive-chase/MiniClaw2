@@ -11,8 +11,7 @@ type EdgeData = {
   childState?: NodeState;
   root?: boolean;
   overlapsContinue?: boolean;
-  dashed?: boolean;
-  relation?: "available" | "used";
+  relation?: "available" | "used" | "declared";
 };
 
 const ACTIVE: NodeState[] = [
@@ -161,7 +160,10 @@ function ResumeEdgeImpl(props: EdgeProps<EdgeData>) {
 
 export const ResumeEdge = memo(ResumeEdgeImpl);
 
-/** Principle loads are solid; available-but-unused skill loads are dashed. */
+/** Loads are always dashed — a derived, hover-gated relation, never at-rest
+ *  structure. Consumption rides the dash *pattern*: a tight dash for context
+ *  the run actually consumed, a sparse one for merely declared or
+ *  available-but-unused entries. Opacity is left to the gate alone. */
 function LoadsEdgeImpl(props: EdgeProps<EdgeData>) {
   const { sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, selected, style, data } =
     props;
@@ -175,13 +177,14 @@ function LoadsEdgeImpl(props: EdgeProps<EdgeData>) {
     curvature: 0.4,
   });
   const visible = (style as React.CSSProperties | undefined)?.opacity ?? 0;
+  const consumed = data?.relation === "used";
   return (
     <BaseEdge
       path={path}
       style={{
         stroke: selected ? "rgb(var(--brand))" : "rgb(var(--ink-subtle))",
         strokeWidth: 1.1,
-        strokeDasharray: data?.dashed ? "4 4" : undefined,
+        strokeDasharray: consumed ? "5 3" : "2 4",
         opacity: visible,
         transition: "opacity 180ms ease",
       }}

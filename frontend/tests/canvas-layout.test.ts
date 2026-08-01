@@ -142,8 +142,14 @@ function testEpochLinksAndHoverGroups(): void {
   }));
   assert.deepEqual(graph.epochMembersByCommitSha, { a: ["worker"] });
   assert.deepEqual(graph.commitHubIdByNodeId, { worker: "commit:a" });
-  assert.equal(graph.rfEdges.find((edge) => edge.id.startsWith("commit-source"))?.type, "commitLink");
-  assert.equal(graph.rfEdges.find((edge) => edge.id.startsWith("commit-sink"))?.data?.dashed, true);
+  const source = graph.rfEdges.find((edge) => edge.id.startsWith("commit-source"));
+  const sink = graph.rfEdges.find((edge) => edge.id.startsWith("commit-sink"));
+  assert.equal(source?.type, "commitLink");
+  assert.equal(sink?.data?.dashed, true);
+  /* Epoch links enter the agent tile's top and leave its bottom, so they read
+   * against the vertical trunk instead of the horizontal dep axis. */
+  assert.equal(source?.targetHandle, "epochIn");
+  assert.equal(sink?.sourceHandle, "epochOut");
   assert.deepEqual(resolveHoverGroup("commit:a", graph.epochMembersByCommitSha, graph.commitHubIdByNodeId), ["commit:a", "worker"]);
   assert.deepEqual(resolveHoverGroup("worker", graph.epochMembersByCommitSha, graph.commitHubIdByNodeId), ["worker", "commit:a"]);
 }
@@ -159,7 +165,20 @@ function testBindingDrivenContextTiles(): void {
   });
   const declared = buildGraph(args({ nodes: [declaredNode] }));
   assert.equal(contextNodes(declared).length, 2);
-  assert.equal(declared.rfEdges.filter((edge) => edge.type === "loads").every((edge) => edge.data?.dashed === true), true);
+  const declaredLoads = declared.rfEdges.filter((edge) => edge.type === "loads");
+  assert.equal(declaredLoads.every((edge) => edge.data?.relation === "declared"), true);
+  /* Loads run tile-left → agent-top; ops keep the default anchors. */
+  assert.equal(
+    declaredLoads.every((edge) => edge.sourceHandle === "loads" && edge.targetHandle === "loads"),
+    true,
+  );
+  const opLoad = buildGraph(args({
+    nodes: [node("shell", { kind: "op", state: "running" })],
+    contextBundlesByNodeId: {
+      shell: bundle("shell", "principle", `${principle.path}/CONTEXT.md`, principle.id),
+    },
+  })).rfEdges.find((edge) => edge.type === "loads");
+  assert.equal(opLoad?.targetHandle, undefined);
 
   const principlePath = `${principle.path}/CONTEXT.md`;
   const observed = buildGraph(args({
@@ -168,17 +187,17 @@ function testBindingDrivenContextTiles(): void {
       run: bundle("run", "principle", principlePath, principle.id),
     },
   }));
-  assert.equal(observed.rfEdges.find((edge) => edge.type === "loads")?.data?.dashed, false);
+  assert.equal(observed.rfEdges.find((edge) => edge.type === "loads")?.data?.relation, "used");
   assert.equal(contextNodes(observed)[0].id, `ctx:${contextIdentityKey("contextspace", "principle", principlePath)}`);
 
   const availableSkill = buildGraph(args({
     nodes: [node("run", { settings_snapshot: { skill_audit: [{ id: skill.id, used: false }] } })],
   }));
-  assert.equal(availableSkill.rfEdges.find((edge) => edge.type === "loads")?.data?.dashed, true);
+  assert.equal(availableSkill.rfEdges.find((edge) => edge.type === "loads")?.data?.relation, "available");
   const usedSkill = buildGraph(args({
     nodes: [node("run", { settings_snapshot: { skill_audit: [{ id: skill.id, used: true }] } })],
   }));
-  assert.equal(usedSkill.rfEdges.find((edge) => edge.type === "loads")?.data?.dashed, false);
+  assert.equal(usedSkill.rfEdges.find((edge) => edge.type === "loads")?.data?.relation, "used");
 
   const hidden = buildGraph(args({
     nodes: [node("draft", {
