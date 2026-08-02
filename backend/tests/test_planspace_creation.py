@@ -45,10 +45,16 @@ class PlanspaceCreationTests(unittest.TestCase):
             mode="manual",
             seed_text="Build the auth flow",
         )
-        self.assertEqual(plug_id, "planspaces.auth-flow")
+        self.assertEqual(plug_id, "planspaces.auth-flow.auth-flow")
 
         root = Path(os.environ["MINICLAW_CONTEXT_HOME"])
-        manifest_path = root / "plugs" / "planspaces" / "auth-flow" / "manifest.yaml"
+        manifest_path = (
+            root
+            / "plugs"
+            / "planspaces"
+            / "auth-flow.auth-flow"
+            / "manifest.yaml"
+        )
         self.assertTrue(manifest_path.exists())
         manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
         self.assertEqual(manifest["kind"], "planspace")
@@ -66,8 +72,21 @@ class PlanspaceCreationTests(unittest.TestCase):
         first = create_planspace(self.project, title="Direction", mode="manual")
         second = create_planspace(self.project, title="Direction", mode="manual")
         self.assertNotEqual(first, second)
-        self.assertEqual(first, "planspaces.direction")
-        self.assertTrue(second.startswith("planspaces.direction-"))
+        self.assertEqual(first, "planspaces.auth-flow.direction")
+        self.assertEqual(second, "planspaces.auth-flow.direction-2")
+
+    def test_same_lane_slug_is_not_numbered_across_projects(self) -> None:
+        other = Project(
+            root_path=str(Path(self.tmp.name) / "other-repo"),
+            name="billing",
+        )
+        Path(other.root_path).mkdir(parents=True, exist_ok=True)
+
+        first = create_planspace(self.project, title="Direction", mode="manual")
+        other_first = create_planspace(other, title="Direction", mode="manual")
+
+        self.assertEqual(first, "planspaces.auth-flow.direction")
+        self.assertEqual(other_first, "planspaces.billing.direction")
 
     def test_create_planspace_rejects_unknown_mode(self) -> None:
         with self.assertRaises(ValueError):
@@ -140,6 +159,7 @@ class ReadPlanspaceModeTests(unittest.TestCase):
         self.assertEqual(binding["active_planspace_id"], plug_id)
         plugs = {plug["id"]: plug for plug in binding["plugs"]}
         self.assertIn(plug_id, plugs)
+        self.assertEqual(plugs[plug_id]["slug"], "auto-lane")
         self.assertEqual(plugs[plug_id]["mode"], "auto")
         self.assertTrue(plugs[plug_id]["active"])
 
@@ -203,18 +223,30 @@ class BlankPlanspaceRegistryTests(unittest.TestCase):
         self.assertEqual(node.summary, "")
         self.assertEqual(node.scheduled_deps, [])
         self.assertIsNone(node.parent_node_id)
-        self.assertEqual(node.planspace_id, "planspaces.auth-flow")
+        self.assertEqual(node.planspace_id, "planspaces.blank-project.auth-flow")
 
         project = self.registry.get_project(self.project.id)
         assert project is not None
-        self.assertEqual(project.active_planspace_id, "planspaces.auth-flow")
+        self.assertEqual(
+            project.active_planspace_id,
+            "planspaces.blank-project.auth-flow",
+        )
 
         root = Path(os.environ["MINICLAW_CONTEXT_HOME"])
-        manifest_path = root / "plugs" / "planspaces" / "auth-flow" / "manifest.yaml"
+        manifest_path = (
+            root
+            / "plugs"
+            / "planspaces"
+            / "blank-project.auth-flow"
+            / "manifest.yaml"
+        )
         manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
         self.assertEqual(manifest["mode"], "manual")
         self.assertEqual(manifest["seed"], "Sketch auth work")
-        self.assertEqual(read_planspace_mode(project, "planspaces.auth-flow"), "manual")
+        self.assertEqual(
+            read_planspace_mode(project, "planspaces.blank-project.auth-flow"),
+            "manual",
+        )
 
     def test_create_blank_planspace_propagates_auto_mode(self) -> None:
         node = self.registry.create_blank_planspace(
@@ -249,8 +281,8 @@ class BlankPlanspaceRegistryTests(unittest.TestCase):
 
         assert first is not None
         assert second is not None
-        self.assertEqual(first.planspace_id, "planspaces.direction")
-        self.assertTrue((second.planspace_id or "").startswith("planspaces.direction-"))
+        self.assertEqual(first.planspace_id, "planspaces.blank-project.direction")
+        self.assertEqual(second.planspace_id, "planspaces.blank-project.direction-2")
         self.assertNotEqual(first.planspace_id, second.planspace_id)
 
     def test_create_blank_planspace_rejects_empty_seed(self) -> None:

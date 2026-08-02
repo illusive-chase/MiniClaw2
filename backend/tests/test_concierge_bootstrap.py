@@ -78,18 +78,27 @@ class ConciergeBootstrapTests(unittest.IsolatedAsyncioTestCase):
 
         # Planspace plug exists.
         ctx_root = Path(os.environ["MINICLAW_CONTEXT_HOME"])
-        manifest = ctx_root / "plugs" / "planspaces" / "auth-flow" / "manifest.yaml"
+        manifest = (
+            ctx_root
+            / "plugs"
+            / "planspaces"
+            / "auth-flow.auth-flow"
+            / "manifest.yaml"
+        )
         self.assertTrue(manifest.exists())
 
         # Project's active planspace updated.
         refreshed = self.registry.get_project(self.pid)
         assert refreshed is not None
-        self.assertEqual(refreshed.active_planspace_id, "planspaces.auth-flow")
+        self.assertEqual(
+            refreshed.active_planspace_id,
+            "planspaces.auth-flow.auth-flow",
+        )
 
         # The launched node is a planning agent with the right lane.
         self.assertEqual(node.kind, NodeKind.AGENT)
         self.assertEqual(node.category, Category.PLANNING)
-        self.assertEqual(node.planspace_id, "planspaces.auth-flow")
+        self.assertEqual(node.planspace_id, "planspaces.auth-flow.auth-flow")
         # Prompt contains the seed and the bootstrap header.
         self.assertIn(
             "Build a signup screen wired to Stripe", node.prompt

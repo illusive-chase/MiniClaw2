@@ -520,8 +520,9 @@ def read_planspace_mode(
 ) -> PlanspaceMode:
     """Return the planspace plug's ``mode``.
 
-    ``lane_id`` is the plug id (e.g. ``planspaces.foo``). Defaults to
-    ``MANUAL`` when the manifest is missing or the field is unset.
+    ``lane_id`` is the project-scoped plug id (for example,
+    ``planspaces.my-project.foo``). Defaults to ``MANUAL`` when the manifest
+    is missing or the field is unset.
     """
     del project  # reserved for future per-project override
     if not lane_id:
@@ -572,18 +573,25 @@ def create_planspace(
 ) -> str:
     """Create a new planspace plug + add it to the project's binding.
 
-    Returns the new plug id (``planspaces.<slug>``). The binding is
-    created if it does not exist. Manifest carries ``mode`` for the
-    auto-promotion scheduler.
+    Returns the new project-scoped plug id
+    (``planspaces.<binding-slug>.<lane-slug>``). The binding is created if
+    it does not exist. Manifest carries ``mode`` for the auto-promotion
+    scheduler.
     """
     mode_value = (
         mode if isinstance(mode, PlanspaceMode) else normalize_planspace_mode(mode)
     )
     binding = ensure_project_binding(project, store_root=store_root)
     root = contextspace_root(store_root)
-    slug = _unique_planspace_slug(root, _slugify(title or "direction"))
-    plug_id = f"planspaces.{slug}"
-    plug_dir = root / "plugs" / "planspaces" / slug
+    scope = _planspace_scope(binding)
+    lane_slug = _unique_planspace_slug(
+        root,
+        scope,
+        _slugify(title or "direction"),
+    )
+    storage_slug = f"{scope}.{lane_slug}"
+    plug_id = f"planspaces.{storage_slug}"
+    plug_dir = root / "plugs" / "planspaces" / storage_slug
     plug_dir.mkdir(parents=True, exist_ok=True)
     manifest: dict[str, Any] = {
         "version": 1,
@@ -1030,7 +1038,12 @@ def _plug_summary(
     active: bool,
 ) -> dict[str, Any]:
     kind = _plug_kind(ref.id)
-    slug = _plug_slug(ref.id)
+    storage_slug = _plug_slug(ref.id)
+    slug = (
+        storage_slug.rsplit(".", 1)[-1]
+        if kind == "planspace"
+        else storage_slug
+    )
     plug_dir = _plug_dir(root, ref.id)
     manifest = _plug_manifest(root, ref.id)
     title = (
@@ -1227,11 +1240,20 @@ def _unique_binding_slug(root: Path, slug: str) -> str:
     return candidate
 
 
-def _unique_planspace_slug(root: Path, slug: str) -> str:
+def _planspace_scope(binding: ProjectBinding) -> str:
+    scope = _plug_slug(binding.id)
+    if not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", scope):
+        raise ValueError(
+            f"project binding id cannot scope planspaces: {binding.id!r}"
+        )
+    return scope
+
+
+def _unique_planspace_slug(root: Path, scope: str, slug: str) -> str:
     planspaces_dir = root / "plugs" / "planspaces"
     candidate = slug
     index = 2
-    while (planspaces_dir / candidate).exists():
+    while (planspaces_dir / f"{scope}.{candidate}").exists():
         candidate = f"{slug}-{index}"
         index += 1
     return candidate
