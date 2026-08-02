@@ -135,6 +135,20 @@ function testKnownLaneOrderSurvivesNodeCreationOrder(): void {
   );
 }
 
+function testProjectScopedLaneLabelShowsOnlyDirectionName(): void {
+  const graph = buildGraph(args({
+    knownPlanspaceIds: ["planspaces.miniclaw2-dev.naming-fix"],
+  }));
+  const lane = graph.rfNodes.find(
+    (item) => item.id === "planspace:planspaces.miniclaw2-dev.naming-fix",
+  );
+
+  assert.equal(
+    (lane?.data as { label?: string } | undefined)?.label,
+    "Naming Fix",
+  );
+}
+
 function testVerticalCommitTrunkAndStableLaneX(): void {
   const work = node("work", { planspace_id: "planspaces.alpha" });
   const one = buildGraph(args({
@@ -365,6 +379,7 @@ function testPendingGateNodeLayer(): void {
 
 testNoRootOrFabricatedDependencies();
 testKnownLaneOrderSurvivesNodeCreationOrder();
+testProjectScopedLaneLabelShowsOnlyDirectionName();
 testVerticalCommitTrunkAndStableLaneX();
 testEpochLinksAndHoverGroups();
 testBindingDrivenContextTiles();

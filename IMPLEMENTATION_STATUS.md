@@ -488,9 +488,7 @@ Trunk: `backend/miniclaw2/contextspace.py`.
 - Planspace IDs are project-scoped as
   `planspaces.<project-binding-slug>.<lane-slug>`. Lane-name collision
   numbering is therefore local to one project binding; different projects can
-  use the same unnumbered lane slug. Existing stores migrate explicitly with
-  `python -m miniclaw2.migrate_planspaces [--apply]`; runtime code does not
-  carry a legacy-ID fallback.
+  use the same unnumbered lane slug.
 - `POST /sessions/{sid}/planspaces` creates a new bound direction,
   activates it, and launches the concierge bootstrap agent node from a
   preset markdown prompt.

@@ -314,19 +314,7 @@ contextspace/
 Planspace IDs are project-scoped as
 `planspaces.<project-binding-slug>.<lane-slug>`. The lane slug is unique only
 inside its project binding, so two projects can both have an unnumbered
-`direction` lane. Stores created before this format must be migrated once:
-
-```bash
-# Inspect the proposed mapping without writing anything.
-python -m miniclaw2.migrate_planspaces
-
-# Stop MiniClaw2, then apply. A full metadata backup is created first.
-python -m miniclaw2.migrate_planspaces --apply
-```
-
-Use `--home` and `--context-home` when migrating non-default locations. The
-script rewrites current project, node, preview, binding, and planspace-manifest
-records; historical ContextSpace snapshots remain unchanged as audit records.
+`direction` lane.
 
 The active lane is materialized in the project workspace before a run:
 

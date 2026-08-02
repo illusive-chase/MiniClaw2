@@ -1246,7 +1246,7 @@ function collectPlanspaceColorOverrides(
 
 function labelForPlanspace(planspaceId: string): string {
   const raw = planspaceId.includes(".")
-    ? planspaceId.slice(planspaceId.indexOf(".") + 1)
+    ? planspaceId.slice(planspaceId.lastIndexOf(".") + 1)
     : planspaceId;
   return raw
     .split(/[-_]/g)
