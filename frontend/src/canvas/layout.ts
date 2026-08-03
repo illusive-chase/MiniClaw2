@@ -1052,6 +1052,7 @@ export function resizePlanspaceLanes(
   nodes: RFNode[],
   laneIds: ReadonlySet<string>,
   shrinkToFit: boolean,
+  layoutHints: Readonly<Record<string, { x: number; y: number }>> = {},
 ): RFNode[] {
   if (laneIds.size === 0) return nodes;
 
@@ -1077,6 +1078,7 @@ export function resizePlanspaceLanes(
   }
 
   let changed = false;
+  let heightChanged = false;
   const resized = nodes.map((node) => {
     if (node.type !== "planspaceLane" || !laneIds.has(node.id)) return node;
     const desired = desiredByLaneId.get(node.id);
@@ -1097,6 +1099,7 @@ export function resizePlanspaceLanes(
       return node;
     }
     changed = true;
+    heightChanged ||= height !== node.height || height !== data.height;
     return {
       ...node,
       width,
@@ -1104,7 +1107,23 @@ export function resizePlanspaceLanes(
       data: { ...data, width, height },
     };
   });
-  return changed ? resized : nodes;
+  if (!changed) return nodes;
+  if (!heightChanged) return resized;
+
+  let nextAutoLaneY = LANE.timelineY - LANE.planspaceLaneAgentRowY;
+  return resized.map((node) => {
+    if (node.type !== "planspaceLane") return node;
+    const height = node.height ?? (node.data as PlanspaceLaneData).height;
+    if (layoutHints[node.id]) {
+      nextAutoLaneY = Math.max(nextAutoLaneY, node.position.y + height + 40);
+      return node;
+    }
+    const position = node.position.y === nextAutoLaneY
+      ? node.position
+      : { ...node.position, y: nextAutoLaneY };
+    nextAutoLaneY += height + 40;
+    return position === node.position ? node : { ...node, position };
+  });
 }
 
 export function classifyPlanspaceLaneResizes(

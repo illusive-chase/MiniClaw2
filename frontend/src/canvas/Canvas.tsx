@@ -398,8 +398,18 @@ function CanvasInner({
           changes,
         );
         let next = applyNodeChanges(changes, current) as RFNode[];
-        next = resizePlanspaceLanes(next, growLaneIds, false);
-        return resizePlanspaceLanes(next, fitLaneIds, true);
+        next = resizePlanspaceLanes(
+          next,
+          growLaneIds,
+          false,
+          layoutHintsRef.current,
+        );
+        return resizePlanspaceLanes(
+          next,
+          fitLaneIds,
+          true,
+          layoutHintsRef.current,
+        );
       });
     },
     [scheduleFlushLayout, setRfNodes],

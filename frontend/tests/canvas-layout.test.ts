@@ -410,6 +410,76 @@ function testPlanspaceLaneLiveGrowthAndDropFit(): void {
   assert.equal(fitted.find((item) => item.id === laneId)?.height, grownLane?.height);
 }
 
+function testPlanspaceLaneResizeReflowsLaterAutomaticLanes(): void {
+  const firstLaneId = "planspace:planspaces.alpha";
+  const secondLaneId = "planspace:planspaces.beta";
+  const thirdLaneId = "planspace:planspaces.gamma";
+  const layoutHints = { [secondLaneId]: { x: 40, y: 900 } };
+  const graph = buildGraph(args({
+    nodes: [node("work", { planspace_id: "planspaces.alpha" })],
+    knownPlanspaceIds: [
+      "planspaces.alpha",
+      "planspaces.beta",
+      "planspaces.gamma",
+    ],
+    layoutHints,
+  }));
+  const originalFirst = graph.rfNodes.find((item) => item.id === firstLaneId);
+  const originalSecond = graph.rfNodes.find((item) => item.id === secondLaneId);
+  const originalThird = graph.rfNodes.find((item) => item.id === thirdLaneId);
+  assert.ok(originalFirst);
+  assert.ok(originalSecond);
+  assert.ok(originalThird);
+
+  const moved = graph.rfNodes.map((item) =>
+    item.id === "work"
+      ? { ...item, position: { ...item.position, y: 1_200 }, height: 100 }
+      : item,
+  );
+  const grown = resizePlanspaceLanes(
+    moved,
+    new Set([firstLaneId]),
+    false,
+    layoutHints,
+  );
+  const grownFirst = grown.find((item) => item.id === firstLaneId);
+  const grownSecond = grown.find((item) => item.id === secondLaneId);
+  const grownThird = grown.find((item) => item.id === thirdLaneId);
+  assert.ok(grownFirst);
+  assert.ok(grownSecond);
+  assert.ok(grownThird);
+  assert.equal(grownSecond.position.y, originalSecond.position.y);
+  assert.equal(grownThird.position.y, grownFirst.position.y + (grownFirst.height ?? 0) + 40);
+
+  const restoredChild = grown.map((item) =>
+    item.id === "work"
+      ? {
+          ...item,
+          position: { ...item.position, y: LANE.planspaceLaneAgentRowY },
+          height: LANE.agentHeight,
+        }
+      : item,
+  );
+  const fitted = resizePlanspaceLanes(
+    restoredChild,
+    new Set([firstLaneId]),
+    true,
+    layoutHints,
+  );
+  assert.equal(
+    fitted.find((item) => item.id === firstLaneId)?.height,
+    originalFirst.height,
+  );
+  assert.equal(
+    fitted.find((item) => item.id === secondLaneId)?.position.y,
+    originalSecond.position.y,
+  );
+  assert.equal(
+    fitted.find((item) => item.id === thirdLaneId)?.position.y,
+    originalThird.position.y,
+  );
+}
+
 function testObservedSkillMetadataEnrichment(): void {
   const skillPath = `${skill.path}/SKILL.md`;
   const graph = buildGraph(args({
@@ -493,6 +563,7 @@ testBindingDrivenContextTiles();
 testFloatingContextDoesNotOverlapFirstLane();
 testPlanspaceChildrenHaveOneSidedExtent();
 testPlanspaceLaneLiveGrowthAndDropFit();
+testPlanspaceLaneResizeReflowsLaterAutomaticLanes();
 testObservedSkillMetadataEnrichment();
 testEdgeWeights();
 testPendingGateNodeLayer();
