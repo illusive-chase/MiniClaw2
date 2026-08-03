@@ -6,8 +6,10 @@ import {
 } from "../src/canvas/nodeLayers";
 import {
   buildGraph,
+  classifyPlanspaceLaneResizes,
   contextIdentityKey,
   LANE,
+  resizePlanspaceLanes,
   type BuildGraphArgs,
 } from "../src/canvas/layout";
 import type {
@@ -303,6 +305,111 @@ function testFloatingContextDoesNotOverlapFirstLane(): void {
   assert.equal(floatingRight <= ownedLeft || floatingLeft >= ownedRight, true);
 }
 
+function testPlanspaceChildrenHaveOneSidedExtent(): void {
+  const failed = node("failed", {
+    planspace_id: "planspaces.alpha",
+    state: "error",
+    error: "boom",
+    artifacts: [{
+      name: "report.md",
+      bytes: 42,
+      mtime: 1,
+      sha256: "report-hash",
+      status: "published",
+    }],
+  });
+  const graph = buildGraph(args({
+    nodes: [
+      failed,
+      node("running-op", {
+        kind: "op",
+        state: "running",
+        planspace_id: "planspaces.alpha",
+      }),
+    ],
+    knownPlanspaceIds: ["planspaces.alpha"],
+    contextBundlesByNodeId: {
+      failed: bundle(
+        "failed",
+        "planspace",
+        "/planspaces/alpha/CONTEXT.md",
+        "planspaces.alpha",
+      ),
+    },
+  }));
+  const children = graph.rfNodes.filter(
+    (item) => item.parentNode === "planspace:planspaces.alpha",
+  );
+
+  assert.deepEqual(
+    new Set(children.map((item) => item.type)),
+    new Set(["agent", "op", "errorTerminal", "artifact", "context"]),
+  );
+  for (const child of children) {
+    assert.notEqual(child.extent, "parent");
+    assert.deepEqual(child.extent?.[0], [
+      LANE.planspaceLanePaddingX,
+      LANE.planspaceLanePaddingY,
+    ]);
+    assert.equal(child.extent?.[1][0], Number.POSITIVE_INFINITY);
+    assert.equal(child.extent?.[1][1], Number.POSITIVE_INFINITY);
+  }
+}
+
+function testPlanspaceLaneLiveGrowthAndDropFit(): void {
+  const laneId = "planspace:planspaces.alpha";
+  const graph = buildGraph(args({
+    nodes: [node("work", { planspace_id: "planspaces.alpha" })],
+    knownPlanspaceIds: ["planspaces.alpha"],
+  }));
+  const movingTargets = classifyPlanspaceLaneResizes(graph.rfNodes, [{
+    id: "work",
+    type: "position",
+    position: { x: 720, y: 480 },
+    dragging: true,
+  }]);
+  assert.deepEqual([...movingTargets.growLaneIds], [laneId]);
+  assert.equal(movingTargets.fitLaneIds.size, 0);
+
+  const stoppedTargets = classifyPlanspaceLaneResizes(graph.rfNodes, [{
+    id: "work",
+    type: "position",
+    dragging: false,
+  }]);
+  assert.equal(stoppedTargets.growLaneIds.size, 0);
+  assert.deepEqual([...stoppedTargets.fitLaneIds], [laneId]);
+
+  const moved = graph.rfNodes.map((item) =>
+    item.id === "work"
+      ? { ...item, position: { x: 720, y: 480 }, width: 224, height: 100 }
+      : item,
+  );
+  const grown = resizePlanspaceLanes(moved, new Set([laneId]), false);
+  const grownLane = grown.find((item) => item.id === laneId);
+  assert.equal(grownLane?.width, 720 + 224 + LANE.planspaceLanePaddingX);
+  assert.equal(grownLane?.height, 480 + 100 + LANE.planspaceLanePaddingY);
+  assert.equal((grownLane?.data as { width?: number }).width, grownLane?.width);
+  assert.equal((grownLane?.data as { height?: number }).height, grownLane?.height);
+
+  const oversized = grown.map((item) =>
+    item.id === laneId
+      ? {
+          ...item,
+          width: 1600,
+          height: 1200,
+          data: { ...item.data, width: 1600, height: 1200 },
+        }
+      : item,
+  );
+  const growthOnly = resizePlanspaceLanes(oversized, new Set([laneId]), false);
+  assert.equal(growthOnly.find((item) => item.id === laneId)?.width, 1600);
+  assert.equal(growthOnly.find((item) => item.id === laneId)?.height, 1200);
+
+  const fitted = resizePlanspaceLanes(oversized, new Set([laneId]), true);
+  assert.equal(fitted.find((item) => item.id === laneId)?.width, grownLane?.width);
+  assert.equal(fitted.find((item) => item.id === laneId)?.height, grownLane?.height);
+}
+
 function testObservedSkillMetadataEnrichment(): void {
   const skillPath = `${skill.path}/SKILL.md`;
   const graph = buildGraph(args({
@@ -384,6 +491,8 @@ testVerticalCommitTrunkAndStableLaneX();
 testEpochLinksAndHoverGroups();
 testBindingDrivenContextTiles();
 testFloatingContextDoesNotOverlapFirstLane();
+testPlanspaceChildrenHaveOneSidedExtent();
+testPlanspaceLaneLiveGrowthAndDropFit();
 testObservedSkillMetadataEnrichment();
 testEdgeWeights();
 testPendingGateNodeLayer();

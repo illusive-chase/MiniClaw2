@@ -5,6 +5,7 @@ import ReactFlow, {
   Controls,
   MarkerType,
   ReactFlowProvider,
+  applyNodeChanges,
   useOnSelectionChange,
   type Node,
   type NodeChange,
@@ -20,6 +21,8 @@ import type { CommitDescriptor, ContextBundle, NodeInfo } from "../types";
 import { artifactRawUrl } from "../api";
 import {
   buildGraph,
+  classifyPlanspaceLaneResizes,
+  resizePlanspaceLanes,
   type RFNode,
   type PrincipleEnumeration,
   type SkillEnumeration,
@@ -280,7 +283,7 @@ function CanvasInner({
 
   /* React Flow controlled state. We keep an internal copy so dragging is smooth
    * while still reflecting upstream prop changes (e.g. node_updated events). */
-  const [rfNodes, setRfNodes, onNodesChange] = useNodesState(
+  const [rfNodes, setRfNodes] = useNodesState(
     decorateSelection(layeredBuiltNodes, selectedNodeId),
   );
   const [rfEdges, setRfEdges] = useEdgesState(
@@ -373,23 +376,33 @@ function CanvasInner({
     setRfEdges(decorateEdges(built.rfEdges, selectedNodeId, hoverGroup));
   }, [built.rfEdges, selectedNodeId, hoverGroup, setRfEdges]);
 
-  /* Persist drag positions client-side so they survive node updates, and
-   * debounce a push to the backend so refreshes survive too. */
+  /* Persist drag positions client-side so they survive node updates. Lane
+   * chrome grows during a drag and shrink-fits on drop, but is derived local
+   * state rather than another persisted layout hint. */
   const handleNodesChange = useCallback(
     (changes: NodeChange[]) => {
       let shouldFlush = false;
-      for (const ch of changes) {
-        if (ch.type === "position" && ch.position && ch.dragging !== undefined) {
-          const position = { x: ch.position.x, y: ch.position.y };
-          layoutHintsRef.current[ch.id] = position;
-          pendingHintsRef.current[ch.id] = position;
-          if (ch.dragging === false) shouldFlush = true;
+      for (const change of changes) {
+        if (change.type !== "position") continue;
+        if (change.position && change.dragging !== undefined) {
+          const position = { x: change.position.x, y: change.position.y };
+          layoutHintsRef.current[change.id] = position;
+          pendingHintsRef.current[change.id] = position;
         }
+        if (change.dragging === false) shouldFlush = true;
       }
       if (shouldFlush) scheduleFlushLayout(0);
-      onNodesChange(changes);
+      setRfNodes((current) => {
+        const { growLaneIds, fitLaneIds } = classifyPlanspaceLaneResizes(
+          current as RFNode[],
+          changes,
+        );
+        let next = applyNodeChanges(changes, current) as RFNode[];
+        next = resizePlanspaceLanes(next, growLaneIds, false);
+        return resizePlanspaceLanes(next, fitLaneIds, true);
+      });
     },
-    [onNodesChange, scheduleFlushLayout],
+    [scheduleFlushLayout, setRfNodes],
   );
 
   const onMove = useCallback((_event: MouseEvent | TouchEvent | null, viewport: Viewport) => {

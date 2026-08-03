@@ -1,4 +1,4 @@
-import type { Edge, Node } from "reactflow";
+import type { CoordinateExtent, Edge, Node, NodeChange } from "reactflow";
 import type { ArtifactRef, CommitDescriptor, ContextBundle, NodeInfo } from "../types";
 
 /* ───────── canvas node payloads ───────── */
@@ -132,12 +132,18 @@ export const LANE = {
    * Y values below are RELATIVE positions inside the lane (origin = lane top-left). */
   planspaceLaneSpacing: 360,
   planspaceLanePaddingX: 40,
+  planspaceLanePaddingY: 40,
   planspaceLaneCtxRowY: 52,
   planspaceLaneAgentRowY: 156,
   planspaceLaneHeight: 320,
   /* Horizontal step between ctx tiles inside a lane (tile width ~160 + gap). */
   planspaceCtxStep: 180,
 };
+
+const PLANSPACE_CHILD_EXTENT: CoordinateExtent = [
+  [LANE.planspaceLanePaddingX, LANE.planspaceLanePaddingY],
+  [Number.POSITIVE_INFINITY, Number.POSITIVE_INFINITY],
+];
 
 export const PLANSPACE_PALETTE: PlanspaceColor[] = [
   {
@@ -394,8 +400,9 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
    *     position is relative to lane, advanced by a per-lane cursor.
    *   - Nodes WITHOUT a planspace stay top-level in absolute coords,
    *     advanced by `freeCursorX`.
-   * `extent: "parent"` keeps in-lane nodes inside their swimlane, giving the
-   * group container real semantics instead of mere visuals. */
+   * A one-sided extent protects the lane header and left padding without
+   * imposing a right/bottom wall. `parentNode` remains coordinate nesting;
+   * planspace membership continues to come from backend `planspace_id`. */
   let freeCursorX = initialFreeCursorX(
     planspaceOrder,
     laneAbsPos,
@@ -505,7 +512,7 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
         data: { node, parent, child: null },
         draggable: true,
         ...(planspaceId
-          ? { parentNode: `planspace:${planspaceId}`, extent: "parent" as const }
+          ? { parentNode: `planspace:${planspaceId}`, extent: PLANSPACE_CHILD_EXTENT }
           : {}),
       });
     } else {
@@ -540,7 +547,7 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
         },
         draggable: true,
         ...(planspaceId
-          ? { parentNode: `planspace:${planspaceId}`, extent: "parent" as const }
+          ? { parentNode: `planspace:${planspaceId}`, extent: PLANSPACE_CHILD_EXTENT }
           : {}),
       });
     }
@@ -634,7 +641,7 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
       },
       draggable: true,
       selectable: true,
-      ...(ownerParent ? { parentNode: ownerParent, extent: "parent" as const } : {}),
+      ...(ownerParent ? { parentNode: ownerParent, extent: PLANSPACE_CHILD_EXTENT } : {}),
     });
     rfEdges.push({
       id: `errtl:${node.id}->${terminalId}`,
@@ -696,7 +703,7 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
         },
         draggable: true,
         selectable: true,
-        ...(ownerParent ? { parentNode: ownerParent, extent: "parent" as const } : {}),
+        ...(ownerParent ? { parentNode: ownerParent, extent: PLANSPACE_CHILD_EXTENT } : {}),
       });
       rfEdges.push({
         id: `produces:${node.id}->${tileId}`,
@@ -903,14 +910,14 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
         : null;
     let position: { x: number; y: number };
     let parentNode: string | undefined;
-    let extent: "parent" | undefined;
+    let extent: CoordinateExtent | undefined;
     if (homeLaneId) {
       const cursor =
         inLaneCtxCursor.get(homeLaneId) ?? LANE.planspaceLanePaddingX;
       position = stored ?? { x: cursor, y: LANE.planspaceLaneCtxRowY };
       inLaneCtxCursor.set(homeLaneId, cursor + LANE.planspaceCtxStep);
       parentNode = `planspace:${homeLaneId}`;
-      extent = "parent";
+      extent = PLANSPACE_CHILD_EXTENT;
       /* Width here matches ContextNode (160 for non-project tiles). */
       recordChildExtent(homeLaneId, position.x, position.y, 160, LANE.contextHeight);
     } else if (isProject) {
@@ -990,7 +997,7 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
       laneChildMaxY.get(planspaceId) ?? (LANE.planspaceLaneAgentRowY + LANE.agentHeight);
     const height = Math.max(
       LANE.planspaceLaneHeight,
-      maxBottom + LANE.planspaceLanePaddingX,
+      maxBottom + LANE.planspaceLanePaddingY,
     );
     const hintedPos = layoutHints[`planspace:${planspaceId}`];
     const fallbackPos = laneAbsPos.get(planspaceId);
@@ -1040,6 +1047,86 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
 }
 
 /* ───────── helpers ───────── */
+
+export function resizePlanspaceLanes(
+  nodes: RFNode[],
+  laneIds: ReadonlySet<string>,
+  shrinkToFit: boolean,
+): RFNode[] {
+  if (laneIds.size === 0) return nodes;
+
+  const desiredByLaneId = new Map<string, { width: number; height: number }>();
+  for (const laneId of laneIds) {
+    desiredByLaneId.set(laneId, {
+      width: LANE.agentWidth + LANE.planspaceLanePaddingX * 2,
+      height: LANE.planspaceLaneHeight,
+    });
+  }
+  for (const node of nodes) {
+    if (!node.parentNode || !laneIds.has(node.parentNode)) continue;
+    const desired = desiredByLaneId.get(node.parentNode);
+    if (!desired) continue;
+    desired.width = Math.max(
+      desired.width,
+      node.position.x + (node.width ?? 0) + LANE.planspaceLanePaddingX,
+    );
+    desired.height = Math.max(
+      desired.height,
+      node.position.y + (node.height ?? 0) + LANE.planspaceLanePaddingY,
+    );
+  }
+
+  let changed = false;
+  const resized = nodes.map((node) => {
+    if (node.type !== "planspaceLane" || !laneIds.has(node.id)) return node;
+    const desired = desiredByLaneId.get(node.id);
+    if (!desired) return node;
+    const data = node.data as PlanspaceLaneData;
+    const width = shrinkToFit
+      ? desired.width
+      : Math.max(node.width ?? data.width, desired.width);
+    const height = shrinkToFit
+      ? desired.height
+      : Math.max(node.height ?? data.height, desired.height);
+    if (
+      width === node.width &&
+      height === node.height &&
+      width === data.width &&
+      height === data.height
+    ) {
+      return node;
+    }
+    changed = true;
+    return {
+      ...node,
+      width,
+      height,
+      data: { ...data, width, height },
+    };
+  });
+  return changed ? resized : nodes;
+}
+
+export function classifyPlanspaceLaneResizes(
+  nodes: RFNode[],
+  changes: NodeChange[],
+): { growLaneIds: Set<string>; fitLaneIds: Set<string> } {
+  const growLaneIds = new Set<string>();
+  const fitLaneIds = new Set<string>();
+  const currentById = new Map(nodes.map((node) => [node.id, node]));
+  for (const change of changes) {
+    if (change.type !== "position") continue;
+    const parentNode = currentById.get(change.id)?.parentNode;
+    if (!parentNode?.startsWith("planspace:")) continue;
+    if (change.dragging === false) {
+      fitLaneIds.add(parentNode);
+      growLaneIds.delete(parentNode);
+    } else if (change.position && !fitLaneIds.has(parentNode)) {
+      growLaneIds.add(parentNode);
+    }
+  }
+  return { growLaneIds, fitLaneIds };
+}
 
 export function contextIdentityKey(scope: string, kind: string, path: string): string {
   return `${scope}::${kind}::${path}`;
