@@ -109,6 +109,8 @@ export type RFEdge = Edge;
 
 /* ───────── geometry ───────── */
 
+const AGENT_NODE_HEIGHT = 86;
+
 export const LANE = {
   rootX: 40,
   timelineY: 220,
@@ -133,10 +135,10 @@ export const LANE = {
   planspaceLaneSpacing: 360,
   planspaceLanePaddingX: 40,
   planspaceLanePaddingY: 40,
-  planspaceLaneBottomPadding: 20,
-  planspaceLaneCtxRowY: 48,
-  planspaceLaneAgentRowY: 128,
-  planspaceLaneHeight: 280,
+  planspaceLaneCtxRowY: 52,
+  planspaceLaneAgentRowY: 156,
+  /* The child bounds add their own top position and bottom padding. */
+  planspaceLaneMinHeight: AGENT_NODE_HEIGHT,
   /* Horizontal step between ctx tiles inside a lane (tile width ~160 + gap). */
   planspaceCtxStep: 180,
 };
@@ -549,7 +551,7 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
         type: "agent",
         position,
         width: LANE.agentWidth,
-        height: 86,
+        height: AGENT_NODE_HEIGHT,
         data: {
           node,
           resumeParent,
@@ -1010,8 +1012,8 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
     const maxBottom =
       laneChildMaxY.get(planspaceId) ?? (LANE.planspaceLaneAgentRowY + LANE.agentHeight);
     const height = Math.max(
-      LANE.planspaceLaneHeight,
-      maxBottom + LANE.planspaceLaneBottomPadding,
+      LANE.planspaceLaneMinHeight,
+      maxBottom + LANE.planspaceLanePaddingY,
     );
     const hintedPos = layoutHints[`planspace:${planspaceId}`];
     const fallbackPos = laneAbsPos.get(planspaceId);
@@ -1086,7 +1088,7 @@ export function resizePlanspaceLanes(
   for (const laneId of laneIds) {
     desiredByLaneId.set(laneId, {
       width: LANE.agentWidth + LANE.planspaceLanePaddingX * 2,
-      height: LANE.planspaceLaneHeight,
+      height: LANE.planspaceLaneMinHeight,
     });
   }
   for (const node of nodes) {
@@ -1099,7 +1101,7 @@ export function resizePlanspaceLanes(
     );
     desired.height = Math.max(
       desired.height,
-      node.position.y + (node.height ?? 0) + LANE.planspaceLaneBottomPadding,
+      node.position.y + (node.height ?? 0) + LANE.planspaceLanePaddingY,
     );
   }
 

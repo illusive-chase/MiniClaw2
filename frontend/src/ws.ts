@@ -6,7 +6,7 @@ export type WSStatus = "connecting" | "open" | "closed";
 export function useSessionSocket(
   sessionId: string | null,
   onEvent: (ev: ServerEvent) => void,
-  activeNodeIds: string[] = [],
+  replayNodeIds: string[] = [],
 ) {
   const [status, setStatus] = useState<WSStatus>("closed");
   const wsRef = useRef<WebSocket | null>(null);
@@ -16,8 +16,8 @@ export function useSessionSocket(
   const activeNodeIdsRef = useRef<Set<string>>(new Set());
   const lastSeqByNodeRef = useRef<Map<string, number>>(new Map());
   const requestedReplayNodeIdsRef = useRef<Set<string>>(new Set());
-  const activeNodeIdsRefFromApp = useRef(activeNodeIds);
-  activeNodeIdsRefFromApp.current = activeNodeIds;
+  const replayNodeIdsRefFromApp = useRef(replayNodeIds);
+  replayNodeIdsRefFromApp.current = replayNodeIds;
 
   useEffect(() => {
     if (!sessionId) {
@@ -47,7 +47,7 @@ export function useSessionSocket(
         if (ws?.readyState !== WebSocket.OPEN) return;
         requestedReplayNodeIdsRef.current.clear();
         const replayNodeIds = Array.from(new Set([
-          ...activeNodeIdsRefFromApp.current,
+          ...replayNodeIdsRefFromApp.current,
           ...(isReconnect ? activeNodeIdsRef.current : []),
         ])).sort();
         if (replayNodeIds.length === 0) {
@@ -130,7 +130,7 @@ export function useSessionSocket(
   useEffect(() => {
     const ws = wsRef.current;
     if (!sessionId || !ws || ws.readyState !== WebSocket.OPEN) return;
-    for (const nodeId of [...activeNodeIds].sort()) {
+    for (const nodeId of [...replayNodeIds].sort()) {
       if (requestedReplayNodeIdsRef.current.has(nodeId)) continue;
       requestedReplayNodeIdsRef.current.add(nodeId);
       ws.send(JSON.stringify({
@@ -139,7 +139,7 @@ export function useSessionSocket(
         since_seq: lastSeqByNodeRef.current.get(nodeId) ?? 0,
       } satisfies ClientMessage));
     }
-  }, [activeNodeIds, sessionId]);
+  }, [replayNodeIds, sessionId]);
 
   const send = (msg: ClientMessage) => {
     const ws = wsRef.current;

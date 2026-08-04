@@ -72,7 +72,7 @@ import type {
   CommitDescriptor,
 } from "./types";
 import { useSessionSocket } from "./ws";
-import { canResumeNode } from "./nodeUtil";
+import { canResumeNode, nodeIdsNeedingEventReplay } from "./nodeUtil";
 import { defaultModelPresetId } from "./modelPresets";
 
 type Route = "landing" | "project";
@@ -474,6 +474,10 @@ export function App() {
   const activeCanvasNodeIds = useMemo(
     () => activeNodesFromList.map((node) => node.id),
     [activeNodesFromList],
+  );
+  const socketReplayNodeIds = useMemo(
+    () => nodeIdsNeedingEventReplay(nodes),
+    [nodes],
   );
 
   const validPendingGates = useMemo(
@@ -1526,7 +1530,7 @@ export function App() {
   const { status, send } = useSessionSocket(
     route === "project" ? (session?.id ?? null) : null,
     handleEvent,
-    activeCanvasNodeIds,
+    socketReplayNodeIds,
   );
   const canInterruptRunner = status === "open" && hasInterruptibleNode;
   /* Planspace ids available for cross-lane loads, sourced from the

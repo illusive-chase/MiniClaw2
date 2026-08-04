@@ -17,6 +17,7 @@ import type {
   ContextBundle,
   NodeInfo,
 } from "../src/types";
+import { nodeIdsNeedingEventReplay } from "../src/nodeUtil";
 
 const principle = {
   id: "principles.careful",
@@ -46,6 +47,19 @@ function node(id: string, overrides: Partial<NodeInfo> = {}): NodeInfo {
     ...overrides,
   };
 }
+
+assert.deepEqual(
+  nodeIdsNeedingEventReplay([
+    node("virtual", { state: "virtual" }),
+    node("queued", { state: "queued" }),
+    node("running", { state: "running" }),
+    node("waiting", { state: "waiting" }),
+    node("review", { state: "awaiting_human_input" }),
+    node("done", { state: "done" }),
+  ]),
+  ["queued", "running", "waiting", "review"],
+  "queued nodes must request replay before their buffered node_started event can be delivered",
+);
 
 function commit(sha: string, externalCount = 0): CommitDescriptor {
   return {
@@ -132,9 +146,10 @@ function testKnownLaneOrderSurvivesNodeCreationOrder(): void {
     ],
   );
   assert.deepEqual(
-    lanes(populated).slice(0, 2).map((item) => item.position),
-    lanes(empty).map((item) => item.position),
+    lanes(populated).slice(0, 2).map((item) => item.position.x),
+    lanes(empty).map((item) => item.position.x),
   );
+  assert.ok(lanes(populated)[1].position.y > lanes(populated)[0].position.y);
 }
 
 function testProjectScopedLaneLabelShowsOnlyDirectionName(): void {
@@ -368,10 +383,10 @@ function testNewLaneNodeFollowsActualLayout(): void {
     ],
     knownPlanspaceIds: [planspaceId],
     layoutHints: {
-      "old-1": { x: 40, y: 128 },
-      "old-2": { x: 320, y: 128 },
-      "old-3": { x: 40, y: 280 },
-      "old-4": { x: 320, y: 280 },
+      "old-1": { x: 40, y: LANE.planspaceLaneAgentRowY },
+      "old-2": { x: 320, y: LANE.planspaceLaneAgentRowY },
+      "old-3": { x: 40, y: LANE.planspaceLaneAgentRowY + LANE.siblingYStep },
+      "old-4": { x: 320, y: LANE.planspaceLaneAgentRowY + LANE.siblingYStep },
     },
   }));
 
@@ -381,7 +396,7 @@ function testNewLaneNodeFollowsActualLayout(): void {
   );
 }
 
-function testSingleRowPlanspaceLaneUsesCompactHeight(): void {
+function testPlanspaceLaneMinimumDoesNotExceedAgentHeight(): void {
   const laneId = "planspace:planspaces.alpha";
   const graph = buildGraph(args({
     nodes: [node("work", { planspace_id: "planspaces.alpha" })],
@@ -391,13 +406,28 @@ function testSingleRowPlanspaceLaneUsesCompactHeight(): void {
   const work = graph.rfNodes.find((item) => item.id === "work");
 
   assert.equal(work?.position.y, LANE.planspaceLaneAgentRowY);
-  assert.equal(lane?.height, LANE.planspaceLaneHeight);
-  assert.equal(
-    LANE.planspaceLaneAgentRowY +
-      LANE.agentHeight +
-      LANE.planspaceLaneBottomPadding,
-    LANE.planspaceLaneHeight,
+  assert.equal(LANE.planspaceLaneMinHeight, work?.height);
+
+  const measuredHeight = 100;
+  const compact = resizePlanspaceLanes(
+    graph.rfNodes.map((item) =>
+      item.id === "work"
+        ? {
+            ...item,
+            position: { ...item.position, y: LANE.planspaceLanePaddingY },
+            height: measuredHeight,
+          }
+        : item,
+    ),
+    new Set([laneId]),
+    true,
   );
+  const compactLane = compact.find((item) => item.id === laneId);
+  assert.equal(
+    compactLane?.height,
+    LANE.planspaceLanePaddingY + measuredHeight + LANE.planspaceLanePaddingY,
+  );
+  assert.ok((compactLane?.height ?? 0) < (lane?.height ?? 0));
 }
 
 function testPlanspaceLaneBuildAndDropShareBottomFit(): void {
@@ -414,7 +444,7 @@ function testPlanspaceLaneBuildAndDropShareBottomFit(): void {
   assert.ok(work);
   assert.equal(
     builtLane.height,
-    workY + (work.height ?? 0) + LANE.planspaceLaneBottomPadding,
+    workY + (work.height ?? 0) + LANE.planspaceLanePaddingY,
   );
 
   const oversized = graph.rfNodes.map((item) =>
@@ -472,7 +502,7 @@ function testPlanspaceLaneLiveGrowthAndDropFit(): void {
   const grown = resizePlanspaceLanes(moved, new Set([laneId]), false);
   const grownLane = grown.find((item) => item.id === laneId);
   assert.equal(grownLane?.width, 720 + 224 + LANE.planspaceLanePaddingX);
-  assert.equal(grownLane?.height, 480 + 100 + LANE.planspaceLaneBottomPadding);
+  assert.equal(grownLane?.height, 480 + 100 + LANE.planspaceLanePaddingY);
   assert.equal((grownLane?.data as { width?: number }).width, grownLane?.width);
   assert.equal((grownLane?.data as { height?: number }).height, grownLane?.height);
 
@@ -512,9 +542,11 @@ function testPlanspaceLaneResizeReflowsLaterAutomaticLanes(): void {
   const originalFirst = graph.rfNodes.find((item) => item.id === firstLaneId);
   const originalSecond = graph.rfNodes.find((item) => item.id === secondLaneId);
   const originalThird = graph.rfNodes.find((item) => item.id === thirdLaneId);
+  const originalWork = graph.rfNodes.find((item) => item.id === "work");
   assert.ok(originalFirst);
   assert.ok(originalSecond);
   assert.ok(originalThird);
+  assert.ok(originalWork);
 
   const moved = graph.rfNodes.map((item) =>
     item.id === "work"
@@ -541,7 +573,7 @@ function testPlanspaceLaneResizeReflowsLaterAutomaticLanes(): void {
       ? {
           ...item,
           position: { ...item.position, y: LANE.planspaceLaneAgentRowY },
-          height: LANE.agentHeight,
+          height: originalWork.height,
         }
       : item,
   );
@@ -648,7 +680,7 @@ testBindingDrivenContextTiles();
 testFloatingContextDoesNotOverlapFirstLane();
 testPlanspaceChildrenHaveOneSidedExtent();
 testNewLaneNodeFollowsActualLayout();
-testSingleRowPlanspaceLaneUsesCompactHeight();
+testPlanspaceLaneMinimumDoesNotExceedAgentHeight();
 testPlanspaceLaneBuildAndDropShareBottomFit();
 testPlanspaceLaneLiveGrowthAndDropFit();
 testPlanspaceLaneResizeReflowsLaterAutomaticLanes();
