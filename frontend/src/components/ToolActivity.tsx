@@ -1,4 +1,4 @@
-import { memo } from "react";
+import { memo, useState } from "react";
 import type { Activity, ResultKind } from "../types";
 
 export const ToolActivity = memo(function ToolActivity({ items }: { items: Activity[] }) {
@@ -6,62 +6,70 @@ export const ToolActivity = memo(function ToolActivity({ items }: { items: Activ
   return (
     <div className="space-y-1">
       {items.map((a) => (
-        <div
-          key={a.id}
-          className="rounded-md border border-line bg-surface-sunken px-3 py-2 text-xs"
-        >
-          <div className="flex items-start gap-2">
-            <StatusDot status={a.status} />
-            <div className="min-w-0 flex-1">
-              <div className="font-mono text-ink-strong">
-                <span className="text-ink-muted">{a.kind}:</span>{" "}
-                {a.name || "(unknown)"}
-              </div>
-              {a.summary && (
-                <div className="mt-0.5 truncate font-mono text-[11px] text-ink-muted">
-                  {a.summary}
-                </div>
-              )}
-              {a.command && (
-                <details className="mt-1.5">
-                  <summary className="cursor-pointer select-none text-[11px] text-ink-muted hover:text-ink">
-                    full command ({a.command.length} chars)
-                  </summary>
-                  <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-md border border-line bg-surface-raised p-2 font-mono text-[11px] leading-relaxed text-ink">
-                    {a.command}
-                  </pre>
-                </details>
-              )}
-            </div>
-          </div>
-          {a.result && (
-            <details
-              className="mt-2"
-              open={a.status === "failed" || a.status === "progress"}
-            >
-              <summary
-                className={
-                  "cursor-pointer select-none text-[11px] " +
-                  (a.status === "failed"
-                    ? "text-state-error"
-                    : "text-ink-muted hover:text-ink")
-                }
-              >
-                {a.status === "failed"
-                  ? "error output"
-                  : a.status === "progress"
-                    ? "live output"
-                    : "output"}{" "}
-                ({a.result.length} chars)
-              </summary>
-              <ResultBlock kind={a.result_kind ?? "text"} text={a.result} />
-            </details>
-          )}
-        </div>
+        <ActivityItem key={a.id} activity={a} />
       ))}
     </div>
   );
 }, areActivityListsEqual);
+
+function ActivityItem({ activity }: { activity: Activity }) {
+  const [parametersExpanded, setParametersExpanded] = useState(false);
+  const parameters = activity.parameters || activity.command || activity.summary;
+  return (
+    <div className="rounded-md border border-line bg-surface-sunken px-3 py-2 text-xs">
+      <div className="flex items-start gap-2">
+        <StatusDot status={activity.status} />
+        <div className="min-w-0 flex-1">
+          <div className="font-mono text-ink-strong">
+            <span className="text-ink-muted">{activity.kind}:</span>{" "}
+            {activity.name || "(unknown)"}
+          </div>
+          {parameters && (
+            <button
+              type="button"
+              aria-expanded={parametersExpanded}
+              onClick={() => setParametersExpanded((expanded) => !expanded)}
+              className={
+                "mt-0.5 block w-full cursor-text text-left font-mono text-[11px] leading-relaxed text-ink-muted hover:text-ink " +
+                (parametersExpanded
+                  ? "max-h-64 overflow-auto whitespace-pre-wrap break-all"
+                  : "truncate whitespace-nowrap")
+              }
+            >
+              {parameters}
+            </button>
+          )}
+        </div>
+      </div>
+      {activity.result && (
+        <details
+          className="mt-2"
+          open={activity.status === "failed" || activity.status === "progress"}
+        >
+          <summary
+            className={
+              "cursor-pointer select-none text-[11px] " +
+              (activity.status === "failed"
+                ? "text-state-error"
+                : "text-ink-muted hover:text-ink")
+            }
+          >
+            {activity.status === "failed"
+              ? "error output"
+              : activity.status === "progress"
+                ? "live output"
+                : "output"}{" "}
+            ({activity.result.length} chars)
+          </summary>
+          <ResultBlock
+            kind={activity.result_kind ?? "text"}
+            text={activity.result}
+          />
+        </details>
+      )}
+    </div>
+  );
+}
 
 function areActivityListsEqual(
   previous: { items: Activity[] },
@@ -77,6 +85,7 @@ function areActivityListsEqual(
       activity.status === candidate.status &&
       activity.name === candidate.name &&
       activity.summary === candidate.summary &&
+      activity.parameters === candidate.parameters &&
       activity.command === candidate.command &&
       activity.result === candidate.result &&
       activity.result_kind === candidate.result_kind

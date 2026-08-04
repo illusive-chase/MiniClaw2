@@ -1,4 +1,13 @@
-import { memo, useEffect, useMemo, useRef, useState } from "react";
+import {
+  forwardRef,
+  memo,
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
@@ -57,7 +66,8 @@ export type AgentPanelProps = {
   onResolveGate?: (id: string, payload: ResolveGatePayload) => void;
   onResolveReview: (payload: { id: string; judgment: string }) => void;
   onCreateContinuationVirtual: (nodeId: string) => void;
-  onPromoteVirtual: (nodeId: string) => void;
+  onPromoteVirtual: (nodeId: string) => Promise<void>;
+  onDequeueNode: (nodeId: string) => Promise<void>;
   onUpdateVirtual: (nodeId: string, payload: UpdateVirtualPayload) => Promise<void>;
   onInterruptNode: (nodeId: string) => void;
   onRerunNode: (nodeId: string) => void;
@@ -92,6 +102,7 @@ export function AgentPanel({
   onResolveReview,
   onCreateContinuationVirtual,
   onPromoteVirtual,
+  onDequeueNode,
   onUpdateVirtual,
   onInterruptNode,
   onRerunNode,
@@ -122,6 +133,45 @@ export function AgentPanel({
 
   const [preview, setPreview] = useState<string | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
+  const [promoting, setPromoting] = useState(false);
+  const [dequeueing, setDequeueing] = useState(false);
+  const [draftPromotability, setDraftPromotability] = useState<{
+    nodeId: string;
+    ready: boolean;
+  } | null>(null);
+  const virtualNodeBodyRef = useRef<VirtualNodeBodyHandle | null>(null);
+  const currentReadyToPromote =
+    draftPromotability?.nodeId === node.id
+      ? draftPromotability.ready
+      : readyToPromote;
+  const handleDraftPromotabilityChange = useCallback(
+    (nodeId: string, ready: boolean) => {
+      setDraftPromotability({ nodeId, ready });
+    },
+    [],
+  );
+
+  const promote = async () => {
+    if (promoting) return;
+    setPromoting(true);
+    try {
+      const saved = await virtualNodeBodyRef.current?.saveChanges();
+      if (saved === false) return;
+      await onPromoteVirtual(node.id);
+    } finally {
+      setPromoting(false);
+    }
+  };
+
+  const dequeue = async () => {
+    if (dequeueing) return;
+    setDequeueing(true);
+    try {
+      await onDequeueNode(node.id);
+    } finally {
+      setDequeueing(false);
+    }
+  };
 
   useEffect(() => {
     if (node.state === "virtual") {
@@ -192,17 +242,28 @@ export function AgentPanel({
                   ↻ Rerun
                 </button>
               )}
+            {node.state === "queued" && canMutate && (
+              <button
+                type="button"
+                onClick={() => void dequeue()}
+                disabled={dequeueing}
+                className="rounded-md border border-line-strong bg-surface px-2.5 py-1 text-[11px] font-medium text-ink-muted transition hover:border-brand/55 hover:bg-brand-soft hover:text-brand disabled:cursor-not-allowed disabled:opacity-40"
+                title="Dequeue - return this node to editable virtual state"
+              >
+                {dequeueing ? "Dequeuing..." : "Dequeue"}
+              </button>
+            )}
             {node.state === "virtual" &&
             canMutate &&
             node.planspace_id === manualPromotionPlanspaceId ? (
               <button
                 type="button"
-                onClick={() => onPromoteVirtual(node.id)}
-                disabled={!readyToPromote}
+                onClick={() => void promote()}
+                disabled={!currentReadyToPromote || promoting}
                 className="rounded-md bg-brand px-2.5 py-1 text-[11px] font-medium text-white shadow-card transition hover:brightness-[0.95] disabled:cursor-not-allowed disabled:opacity-40"
-                title={readyToPromote ? "Promote virtual node" : "Dependencies are not terminal"}
+                title={currentReadyToPromote ? "Promote virtual node" : "Virtual node is not ready"}
               >
-                Promote
+                {promoting ? "Promoting..." : "Promote"}
               </button>
             ) : canMutate && canResumeNode(node) ? (
               <button
@@ -230,12 +291,14 @@ export function AgentPanel({
         {node.state === "virtual" ? (
           <fieldset disabled={!canMutate} className={canMutate ? "contents" : "contents opacity-75"}>
             <VirtualNodeBody
+              ref={virtualNodeBodyRef}
               node={node}
               nodesById={nodesById}
               modelPresets={modelPresets}
               principles={principles}
               skills={skills}
               onUpdateVirtual={onUpdateVirtual}
+              onPromotabilityChange={handleDraftPromotabilityChange}
               focusRequestVersion={canMutate ? focusRequestVersion : 0}
             />
           </fieldset>
@@ -280,7 +343,6 @@ export function AgentPanel({
               <PreviewCard
                 preview={preview}
                 loading={previewLoading}
-                node={node}
               />
             </section>
 
@@ -444,56 +506,59 @@ type PendingLocalVirtualUpdate = {
   draftAfterAck: VirtualDraft;
 };
 
-function VirtualNodeBody({
-  node,
-  nodesById,
-  modelPresets,
-  principles,
-  skills,
-  onUpdateVirtual,
-  focusRequestVersion,
-}: {
+type VirtualNodeBodyHandle = {
+  saveChanges: () => Promise<boolean>;
+};
+
+type VirtualNodeBodyProps = {
   node: NodeInfo;
   nodesById: Map<string, NodeInfo>;
   modelPresets: ModelPreset[];
   principles?: PrincipleSummary[];
   skills?: SkillSummary[];
   onUpdateVirtual: (nodeId: string, payload: UpdateVirtualPayload) => Promise<void>;
+  onPromotabilityChange: (nodeId: string, ready: boolean) => void;
   focusRequestVersion: number;
-}) {
+};
+
+const VirtualNodeBody = forwardRef<VirtualNodeBodyHandle, VirtualNodeBodyProps>(function VirtualNodeBody({
+  node,
+  nodesById,
+  modelPresets,
+  principles,
+  skills,
+  onUpdateVirtual,
+  onPromotabilityChange,
+  focusRequestVersion,
+}, ref) {
   if (node.kind === "verifier") {
     return <VerifierVirtualBody node={node} nodesById={nodesById} />;
   }
   return (
     <EditableVirtualNodeBody
+      ref={ref}
       node={node}
       nodesById={nodesById}
       modelPresets={modelPresets}
       principles={principles}
       skills={skills}
       onUpdateVirtual={onUpdateVirtual}
+      onPromotabilityChange={onPromotabilityChange}
       focusRequestVersion={focusRequestVersion}
     />
   );
-}
+});
 
-function EditableVirtualNodeBody({
+const EditableVirtualNodeBody = forwardRef<VirtualNodeBodyHandle, VirtualNodeBodyProps>(function EditableVirtualNodeBody({
   node,
   nodesById,
   modelPresets,
   principles,
   skills,
   onUpdateVirtual,
+  onPromotabilityChange,
   focusRequestVersion,
-}: {
-  node: NodeInfo;
-  nodesById: Map<string, NodeInfo>;
-  modelPresets: ModelPreset[];
-  principles?: PrincipleSummary[];
-  skills?: SkillSummary[];
-  onUpdateVirtual: (nodeId: string, payload: UpdateVirtualPayload) => Promise<void>;
-  focusRequestVersion: number;
-}) {
+}, ref) {
 
   const persistedDraft = virtualDraftFromNode(node);
   const persistedDraftSignature = JSON.stringify(persistedDraft);
@@ -502,6 +567,7 @@ function EditableVirtualNodeBody({
     signature: persistedDraftSignature,
   });
   const pendingLocalUpdateRef = useRef<PendingLocalVirtualUpdate | null>(null);
+  const savePromiseRef = useRef<Promise<boolean> | null>(null);
   const [draft, setDraft] = useState<VirtualDraft>(() => persistedDraft);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -521,6 +587,13 @@ function EditableVirtualNodeBody({
     () => JSON.stringify(draft) !== persistedDraftSignature,
     [draft, persistedDraftSignature],
   );
+
+  useEffect(() => {
+    onPromotabilityChange(
+      node.id,
+      virtualDraftReadyToPromote(draft, node, nodesById),
+    );
+  }, [draft, node, nodesById, onPromotabilityChange]);
 
   useEffect(() => {
     const previous = persistedDraftRef.current;
@@ -566,7 +639,16 @@ function EditableVirtualNodeBody({
     return () => window.clearTimeout(timer);
   }, [node.id, focusRequestVersion]);
 
-  const save = async () => {
+  const save = (): Promise<boolean> => {
+    if (savePromiseRef.current) return savePromiseRef.current;
+    if (!dirty) return Promise.resolve(true);
+
+    const validationError = virtualDraftValidationError(draft, node);
+    if (validationError) {
+      setError(validationError);
+      return Promise.resolve(false);
+    }
+
     const draftAfterAck = virtualDraftAfterSave(draft);
     const pendingLocalUpdate: PendingLocalVirtualUpdate = {
       nodeId: node.id,
@@ -574,26 +656,35 @@ function EditableVirtualNodeBody({
       draftAfterAck,
     };
     pendingLocalUpdateRef.current = pendingLocalUpdate;
-    setSaving(true);
-    setError(null);
-    try {
-      await onUpdateVirtual(node.id, virtualPayloadFromDraft(draft, node));
-      if (
-        pendingLocalUpdateRef.current === pendingLocalUpdate &&
-        persistedDraftRef.current.signature === pendingLocalUpdate.persistedSignature
-      ) {
-        pendingLocalUpdateRef.current = null;
-        setDraft(draftAfterAck);
+    const operation = (async () => {
+      setSaving(true);
+      setError(null);
+      try {
+        await onUpdateVirtual(node.id, virtualPayloadFromDraft(draft, node));
+        if (
+          pendingLocalUpdateRef.current === pendingLocalUpdate &&
+          persistedDraftRef.current.signature === pendingLocalUpdate.persistedSignature
+        ) {
+          pendingLocalUpdateRef.current = null;
+          setDraft(draftAfterAck);
+        }
+        return true;
+      } catch (err) {
+        if (pendingLocalUpdateRef.current === pendingLocalUpdate) {
+          pendingLocalUpdateRef.current = null;
+        }
+        setError(errorMessage(err));
+        return false;
+      } finally {
+        setSaving(false);
+        savePromiseRef.current = null;
       }
-    } catch (err) {
-      if (pendingLocalUpdateRef.current === pendingLocalUpdate) {
-        pendingLocalUpdateRef.current = null;
-      }
-      setError(errorMessage(err));
-    } finally {
-      setSaving(false);
-    }
+    })();
+    savePromiseRef.current = operation;
+    return operation;
   };
+
+  useImperativeHandle(ref, () => ({ saveChanges: save }));
 
   const toggleObsolete = async () => {
     const nextReason = draft.obsoleteReason.trim()
@@ -955,12 +1046,11 @@ function EditableVirtualNodeBody({
             <div className="flex flex-wrap gap-2">
               <button
                 type="button"
-                onClick={save}
+                onClick={() => void save()}
                 disabled={
                   saving ||
                   !dirty ||
-                  (draft.subtype !== "code_review" && !draft.promptDraft.trim()) ||
-                  (!node.resume_from_node_id && !draft.modelPresetId)
+                  Boolean(virtualDraftValidationError(draft, node))
                 }
                 className="rounded-md bg-brand px-3 py-1.5 text-[12px] font-medium text-white shadow-card transition hover:brightness-[0.95] disabled:cursor-not-allowed disabled:opacity-40"
               >
@@ -993,7 +1083,7 @@ function EditableVirtualNodeBody({
       </section>
     </>
   );
-}
+});
 
 function VerifierVirtualBody({
   node,
@@ -1327,6 +1417,39 @@ function virtualDraftAfterSave(draft: VirtualDraft): VirtualDraft {
   };
 }
 
+function virtualDraftValidationError(
+  draft: VirtualDraft,
+  node: NodeInfo,
+): string | null {
+  const allowsEmptyPrompt =
+    draft.category === "review" && draft.subtype === "code_review";
+  if (!allowsEmptyPrompt && !draft.promptDraft.trim()) {
+    return "请先填写 Prompt draft。";
+  }
+  if (!node.resume_from_node_id && !draft.modelPresetId) {
+    return "请先选择模型档位。";
+  }
+  return null;
+}
+
+function virtualDraftReadyToPromote(
+  draft: VirtualDraft,
+  node: NodeInfo,
+  byId: Map<string, NodeInfo>,
+): boolean {
+  if (draft.obsoleteReason.trim() || virtualDraftValidationError(draft, node)) {
+    return false;
+  }
+  for (const depId of draft.scheduledDeps) {
+    const dep = byId.get(depId);
+    if (!dep) continue;
+    if (isTerminal(dep.state)) continue;
+    if (dep.state === "virtual" && dep.obsolete_reason) continue;
+    return false;
+  }
+  return true;
+}
+
 function virtualPayloadFromDraft(
   draft: VirtualDraft,
   node: NodeInfo,
@@ -1549,12 +1672,12 @@ function escapeRegExp(s: string): string {
 function PreviewCard({
   preview,
   loading,
-  node,
 }: {
   preview: string | null;
   loading: boolean;
-  node: NodeInfo;
 }) {
+  const fields = useMemo(() => parsePreviewFields(preview), [preview]);
+
   return (
     <div className="overflow-hidden rounded-md border border-line bg-surface-sunken">
       <div className="border-b border-line px-3 py-2">
@@ -1570,22 +1693,149 @@ function PreviewCard({
           Preview
         </SectionHeading>
       </div>
-      <div className="px-3 py-3">
-        {node.error ? (
-          <pre className="whitespace-pre-wrap rounded-md border border-state-error/30 bg-state-error-soft p-3 text-xs text-state-error">
-            {node.error}
-          </pre>
-        ) : preview ? (
-          <pre className="max-h-[42vh] overflow-auto whitespace-pre-wrap break-words rounded-md border border-line bg-surface px-3 py-2 font-mono text-[11px] leading-relaxed text-ink">
-            {preview}
-          </pre>
+      <div className="p-2.5">
+        {fields ? (
+          <dl className="grid gap-2">
+            <PreviewField
+              label="运行原因"
+              value={fields.motivation}
+              tone="motivation"
+            />
+            <PreviewField
+              label="结果摘要"
+              value={fields.summary}
+              tone="summary"
+            />
+            <PreviewField
+              label="后续影响"
+              value={fields.nextImplications}
+              tone="implications"
+            />
+          </dl>
         ) : (
           <div className="rounded-md border border-line bg-surface px-3 py-2 text-[11.5px] text-ink-muted">
-            No preview recorded.
+            {preview ? "Preview 格式不可用。" : "暂无 Preview。"}
           </div>
         )}
       </div>
     </div>
+  );
+}
+
+type PreviewFields = {
+  motivation: string;
+  summary: string;
+  nextImplications: string;
+};
+
+type PreviewFieldTone = "motivation" | "summary" | "implications";
+
+function parsePreviewFields(preview: string | null): PreviewFields | null {
+  if (!preview) return null;
+  try {
+    const parsed: unknown = JSON.parse(preview);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return null;
+    }
+    const record = parsed as Record<string, unknown>;
+    return {
+      motivation: previewFieldValue(record.motivation),
+      summary: previewFieldValue(record.summary),
+      nextImplications: previewFieldValue(record.next_implications),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function previewFieldValue(value: unknown): string {
+  return typeof value === "string" && value.trim() ? value.trim() : "未记录";
+}
+
+function PreviewField({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: string;
+  tone: PreviewFieldTone;
+}) {
+  const styles = {
+    motivation: {
+      panel: "border-brand/25 bg-brand-soft/45",
+      icon: "bg-brand/10 text-brand dark:text-brand",
+    },
+    summary: {
+      panel: "border-state-done/25 bg-state-done-soft/45",
+      icon: "bg-state-done/10 text-state-done",
+    },
+    implications: {
+      panel: "border-state-review/25 bg-state-review-soft/40",
+      icon: "bg-state-review/10 text-state-review",
+    },
+  }[tone];
+
+  return (
+    <div className={`rounded-md border px-2.5 py-2 ${styles.panel}`}>
+      <div className="flex items-start gap-2.5">
+        <span
+          className={`mt-px flex h-6 w-6 flex-none items-center justify-center rounded ${styles.icon}`}
+          aria-hidden="true"
+        >
+          <PreviewFieldIcon tone={tone} />
+        </span>
+        <div className="min-w-0 flex-1">
+          <dt className="text-[9.5px] font-semibold uppercase tracking-[0.12em] text-ink-muted">
+            {label}
+          </dt>
+          <dd className="mt-0.5 whitespace-pre-wrap break-words text-[11.5px] leading-[1.45] text-ink-strong">
+            {value}
+          </dd>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PreviewFieldIcon({ tone }: { tone: PreviewFieldTone }) {
+  if (tone === "motivation") {
+    return (
+      <svg
+        viewBox="0 0 16 16"
+        className="h-3.5 w-3.5"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.5"
+      >
+        <path d="M8 1.75a4.25 4.25 0 0 0-2.6 7.61c.55.43.85.94.85 1.49v.4h3.5v-.4c0-.55.3-1.06.85-1.49A4.25 4.25 0 0 0 8 1.75Z" />
+        <path d="M6.25 13.25h3.5M7 11.25V8.5h2v2.75" />
+      </svg>
+    );
+  }
+  if (tone === "summary") {
+    return (
+      <svg
+        viewBox="0 0 16 16"
+        className="h-3.5 w-3.5"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.5"
+      >
+        <path d="m3 8.25 3 3 7-7" />
+      </svg>
+    );
+  }
+  return (
+    <svg
+      viewBox="0 0 16 16"
+      className="h-3.5 w-3.5"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+    >
+      <path d="M2.5 4.5h4a2 2 0 0 1 2 2v5M8.5 8.5l3 3-3 3M2.5 11.5h2" />
+    </svg>
   );
 }
 
@@ -1755,6 +2005,8 @@ function areTranscriptItemsEqual(
       activity.status === candidate.status &&
       activity.name === candidate.name &&
       activity.summary === candidate.summary &&
+      activity.parameters === candidate.parameters &&
+      activity.command === candidate.command &&
       activity.result === candidate.result &&
       activity.result_kind === candidate.result_kind
     );

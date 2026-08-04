@@ -13,6 +13,7 @@ export type Activity = {
   id: string;
   name: string;
   summary: string;
+  parameters?: string | null;
   command?: string | null;
   result?: string | null;
   result_kind?: ResultKind | null;

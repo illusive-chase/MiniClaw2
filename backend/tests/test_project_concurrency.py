@@ -206,6 +206,43 @@ class ProjectConcurrencySchedulerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(promoted.state, NodeState.QUEUED)
         self.assertNotIn(third.id, self.registry._runtimes[self.project.id].runners)
 
+    async def test_dequeue_restores_queued_virtual_intent(self) -> None:
+        first = self._virtual("dequeue-first")
+        second = self._virtual("dequeue-second")
+        self.registry.promote_virtual(self.project.id, first.id)
+        self.registry.promote_virtual(self.project.id, second.id)
+        await self._settle()
+
+        queued = self._virtual("dequeue-target")
+        queued.pending_extra_principles = ["principles.focus"]
+        queued.pending_extra_skills = [{"id": "skills.review", "suggest": True}]
+        self.store.update_node(queued)
+        promoted = self.registry.promote_virtual(self.project.id, queued.id)
+        assert promoted is not None
+        self.assertEqual(promoted.state, NodeState.QUEUED)
+
+        dequeued = self.registry.dequeue_node(self.project.id, queued.id)
+        assert dequeued is not None
+        self.assertEqual(dequeued.state, NodeState.VIRTUAL)
+        self.assertEqual(dequeued.prompt, "")
+        self.assertEqual(dequeued.prompt_draft, "run dequeue-target")
+        self.assertEqual(dequeued.pending_extra_principles, ["principles.focus"])
+        self.assertEqual(dequeued.pending_extra_skills, [
+            {"id": "skills.review", "suggest": True}
+        ])
+        self.assertNotIn("extra_principles", dequeued.settings_snapshot)
+        self.assertNotIn("extra_skills", dequeued.settings_snapshot)
+        preview = json.loads(
+            self.store.read_node_preview(self.project.id, queued.id) or ""
+        )
+        self.assertEqual(preview["state"], "virtual")
+
+    async def test_dequeue_rejects_node_already_assigned_to_runner(self) -> None:
+        node = self._virtual("dequeue-running")
+        self.registry.promote_virtual(self.project.id, node.id)
+        self.assertIn(node.id, self.registry._runtimes[self.project.id].runner_tasks)
+        self.assertIsNone(self.registry.dequeue_node(self.project.id, node.id))
+
     async def test_auto_mode_queues_eligible_virtual_while_full(self) -> None:
         first = self._virtual("auto-first")
         second = self._virtual("auto-second")

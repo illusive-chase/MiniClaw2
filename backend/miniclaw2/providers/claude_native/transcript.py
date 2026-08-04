@@ -243,6 +243,7 @@ class TranscriptTranslator:
                     id=block_id,
                     name=name,
                     summary=summary,
+                    parameters=_stringify_input(tool_input),
                     command=_tool_command(name, tool_input),
                 )
                 if not is_task:

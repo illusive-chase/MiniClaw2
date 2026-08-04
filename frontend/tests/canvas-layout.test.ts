@@ -9,6 +9,7 @@ import {
   classifyPlanspaceLaneResizes,
   contextIdentityKey,
   LANE,
+  resolveCommitPositionTransfer,
   resizePlanspaceLanes,
   type BuildGraphArgs,
 } from "../src/canvas/layout";
@@ -198,6 +199,96 @@ function testVerticalCommitTrunkAndStableLaneX(): void {
   assert.equal(empty.rfEdges.length, 0);
 }
 
+function testCommittedGhostTransfersItsPositionToNewHead(): void {
+  const before = buildGraph(args({
+    gitCommits: [commit("old")],
+    gitHead: "old",
+    gitDirtyCount: 2,
+  })).rfNodes.map((item) =>
+    item.id === "commit:ghost"
+      ? { ...item, position: { x: 360, y: 520 } }
+      : item,
+  );
+  const after = buildGraph(args({
+    gitCommits: [commit("old"), commit("new")],
+    gitHead: "new",
+  })).rfNodes;
+
+  assert.deepEqual(resolveCommitPositionTransfer(before, after, "new"), {
+    fromId: "commit:ghost",
+    toId: "commit:new",
+    position: { x: 360, y: 520 },
+    resetGhostPosition: null,
+  });
+}
+
+function testRemainingChangesMoveToTheNextCommitSlot(): void {
+  const before = buildGraph(args({
+    gitCommits: [commit("old")],
+    gitHead: "old",
+    gitDirtyCount: 2,
+  })).rfNodes.map((item) =>
+    item.id === "commit:ghost"
+      ? { ...item, position: { x: 360, y: 520 } }
+      : item,
+  );
+  const after = buildGraph(args({
+    gitCommits: [commit("old"), commit("new")],
+    gitHead: "new",
+    gitDirtyCount: 1,
+    layoutHints: { "commit:ghost": { x: 360, y: 520 } },
+  })).rfNodes;
+
+  assert.deepEqual(resolveCommitPositionTransfer(before, after, "new"), {
+    fromId: "commit:ghost",
+    toId: "commit:new",
+    position: { x: 360, y: 520 },
+    resetGhostPosition: {
+      x: LANE.trunkX,
+      y: LANE.trunkStartY + LANE.trunkStep * 2,
+    },
+  });
+}
+
+function testCleaningWithoutACommitDoesNotMoveHead(): void {
+  const before = buildGraph(args({
+    gitCommits: [commit("head")],
+    gitHead: "head",
+    gitDirtyCount: 1,
+  })).rfNodes;
+  const after = buildGraph(args({
+    gitCommits: [commit("head")],
+    gitHead: "head",
+  })).rfNodes;
+
+  assert.equal(resolveCommitPositionTransfer(before, after, null), null);
+}
+
+function testUnrelatedHeadChangeDoesNotTransferGhost(): void {
+  const before = buildGraph(args({
+    gitCommits: [commit("old")],
+    gitHead: "old",
+    gitDirtyCount: 2,
+  })).rfNodes.map((item) =>
+    item.id === "commit:ghost"
+      ? { ...item, position: { x: 360, y: 520 } }
+      : item,
+  );
+  const after = buildGraph(args({
+    gitCommits: [commit("branch-head")],
+    gitHead: "branch-head",
+    gitDirtyCount: 2,
+  })).rfNodes;
+
+  assert.equal(resolveCommitPositionTransfer(before, after, null), null);
+  assert.equal(resolveCommitPositionTransfer(before, after, "different-commit"), null);
+  assert.equal(
+    (after.find((item) => item.id === "commit:branch-head")?.data as { head?: boolean }).head,
+    true,
+  );
+  assert.ok(after.some((item) => item.id === "commit:ghost"));
+}
+
 function testEpochLinksAndHoverGroups(): void {
   const graph = buildGraph(args({
     nodes: [node("worker", { commit_before: "a", commit_after: "b" })],
@@ -230,18 +321,20 @@ function testBindingDrivenContextTiles(): void {
   assert.equal(contextNodes(declared).length, 2);
   const declaredLoads = declared.rfEdges.filter((edge) => edge.type === "loads");
   assert.equal(declaredLoads.every((edge) => edge.data?.relation === "declared"), true);
-  /* Loads run tile-left → agent-top; ops keep the default anchors. */
+  /* Loads run tile-left → agent-top. */
   assert.equal(
     declaredLoads.every((edge) => edge.sourceHandle === "loads" && edge.targetHandle === "loads"),
     true,
   );
-  const opLoad = buildGraph(args({
+  const hiddenOp = buildGraph(args({
     nodes: [node("shell", { kind: "op", state: "running" })],
     contextBundlesByNodeId: {
       shell: bundle("shell", "principle", `${principle.path}/CONTEXT.md`, principle.id),
     },
-  })).rfEdges.find((edge) => edge.type === "loads");
-  assert.equal(opLoad?.targetHandle, undefined);
+  }));
+  assert.equal(hiddenOp.rfNodes.some((item) => item.id === "shell"), false);
+  assert.equal(contextNodes(hiddenOp).length, 0);
+  assert.equal(hiddenOp.rfEdges.some((edge) => edge.target === "shell"), false);
 
   const principlePath = `${principle.path}/CONTEXT.md`;
   const observed = buildGraph(args({
@@ -358,8 +451,9 @@ function testPlanspaceChildrenHaveOneSidedExtent(): void {
 
   assert.deepEqual(
     new Set(children.map((item) => item.type)),
-    new Set(["agent", "op", "errorTerminal", "artifact", "context"]),
+    new Set(["agent", "errorTerminal", "artifact", "context"]),
   );
+  assert.equal(graph.rfNodes.some((item) => item.id === "running-op"), false);
   for (const child of children) {
     assert.notEqual(child.extent, "parent");
     assert.deepEqual(child.extent?.[0], [
@@ -393,6 +487,49 @@ function testNewLaneNodeFollowsActualLayout(): void {
   assert.deepEqual(
     graph.rfNodes.find((item) => item.id === "new")?.position,
     { x: 600, y: LANE.planspaceLaneAgentRowY },
+  );
+}
+
+function testRerunNodeCascadesNearOriginal(): void {
+  const planspaceId = "planspaces.alpha";
+  const originalPosition = { x: 320, y: 480 };
+  const graph = buildGraph(args({
+    nodes: [
+      node("dependency", { planspace_id: planspaceId, created_at: 1 }),
+      node("failed", {
+        planspace_id: planspaceId,
+        state: "error",
+        scheduled_deps: ["dependency"],
+        created_at: 2,
+      }),
+      node("rerun", {
+        planspace_id: planspaceId,
+        state: "queued",
+        scheduled_deps: ["dependency"],
+        proposed_by: "rerun:failed",
+        created_at: 3,
+      }),
+    ],
+    knownPlanspaceIds: [planspaceId],
+    layoutHints: { failed: originalPosition },
+  }));
+
+  assert.deepEqual(
+    graph.rfNodes.find((item) => item.id === "rerun")?.position,
+    { x: originalPosition.x + 24, y: originalPosition.y + 24 },
+  );
+
+  const draggedPosition = { x: 960, y: 240 };
+  const dragged = buildGraph(args({
+    nodes: graph.rfNodes
+      .filter((item) => item.type === "agent")
+      .map((item) => (item.data as { node: NodeInfo }).node),
+    knownPlanspaceIds: [planspaceId],
+    layoutHints: { failed: originalPosition, rerun: draggedPosition },
+  }));
+  assert.deepEqual(
+    dragged.rfNodes.find((item) => item.id === "rerun")?.position,
+    draggedPosition,
   );
 }
 
@@ -675,11 +812,16 @@ testNoRootOrFabricatedDependencies();
 testKnownLaneOrderSurvivesNodeCreationOrder();
 testProjectScopedLaneLabelShowsOnlyDirectionName();
 testVerticalCommitTrunkAndStableLaneX();
+testCommittedGhostTransfersItsPositionToNewHead();
+testRemainingChangesMoveToTheNextCommitSlot();
+testCleaningWithoutACommitDoesNotMoveHead();
+testUnrelatedHeadChangeDoesNotTransferGhost();
 testEpochLinksAndHoverGroups();
 testBindingDrivenContextTiles();
 testFloatingContextDoesNotOverlapFirstLane();
 testPlanspaceChildrenHaveOneSidedExtent();
 testNewLaneNodeFollowsActualLayout();
+testRerunNodeCascadesNearOriginal();
 testPlanspaceLaneMinimumDoesNotExceedAgentHeight();
 testPlanspaceLaneBuildAndDropShareBottomFit();
 testPlanspaceLaneLiveGrowthAndDropFit();

@@ -316,7 +316,26 @@ class CodexProviderTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(activity)
         assert activity is not None
         self.assertEqual(activity.summary, command[:200] + "...")
+        self.assertEqual(activity.parameters, command)
         self.assertEqual(activity.command, command)
+
+    def test_dynamic_tool_activity_keeps_full_parameters(self) -> None:
+        arguments = {"file_path": "/tmp/" + "nested/" * 40 + "README.md"}
+
+        activity = _activity_from_item(
+            {
+                "type": "dynamicToolCall",
+                "id": "tool-1",
+                "tool": "read",
+                "arguments": arguments,
+            },
+            "start",
+        )
+
+        self.assertIsNotNone(activity)
+        assert activity is not None
+        self.assertEqual(activity.parameters, json.dumps(arguments, ensure_ascii=False))
+        self.assertTrue(activity.summary.endswith("..."))
 
     async def test_command_output_delta_preserves_untruncated_result(self) -> None:
         provider = CodexProvider()

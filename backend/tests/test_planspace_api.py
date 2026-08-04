@@ -431,6 +431,42 @@ class PlanspaceApiTest(unittest.TestCase):
                 },
             )
 
+    def test_dequeue_queued_node_returns_virtual_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            project = Project(root_path=raw, name="Project")
+            node = Node(
+                id="queued-1",
+                project_id=project.id,
+                model_preset_id="gpt-5.5",
+                state=NodeState.VIRTUAL,
+                planspace_id="planspaces.auth",
+                prompt_draft="run this",
+            )
+
+            class _Registry:
+                store = SimpleNamespace(root=Path(raw) / "store")
+
+                def get_project(self, sid: str) -> Project | None:
+                    return project if sid == project.id else None
+
+                def get_node(self, sid: str, nid: str) -> Node | None:
+                    return node if sid == project.id and nid == node.id else None
+
+                def dequeue_node(self, sid: str, nid: str) -> Node | None:
+                    return self.get_node(sid, nid)
+
+            with patch.object(app_module, "ProjectRegistry", return_value=_Registry()):
+                client = TestClient(app_module.create_app())
+                try:
+                    res = client.post(
+                        f"/sessions/{project.id}/nodes/{node.id}/dequeue"
+                    )
+                finally:
+                    client.close()
+
+            self.assertEqual(res.status_code, 200, res.text)
+            self.assertEqual(res.json()["node"]["state"], "virtual")
+
 
 if __name__ == "__main__":
     unittest.main()

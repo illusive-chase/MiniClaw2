@@ -22,6 +22,7 @@ import { artifactRawUrl } from "../api";
 import {
   buildGraph,
   classifyPlanspaceLaneResizes,
+  resolveCommitPositionTransfer,
   resizePlanspaceLanes,
   type RFNode,
   type PrincipleEnumeration,
@@ -137,10 +138,14 @@ export type CanvasProps = {
   onLayoutHintsChange?: (
     updates: Record<string, { x: number; y: number }>,
     viewport?: Viewport | null,
+    remove?: string[],
   ) => void;
   gitCommits?: CommitDescriptor[];
   gitHead?: string | null;
   gitDirtyCount?: number;
+  /** SHA produced by a commit explicitly started from this MiniClaw2 UI. */
+  commitPositionTarget?: string | null;
+  onCommitPositionTransferHandled?: (sha: string) => void;
 };
 
 export function Canvas(props: CanvasProps) {
@@ -176,6 +181,8 @@ function CanvasInner({
   gitCommits,
   gitHead,
   gitDirtyCount,
+  commitPositionTarget = null,
+  onCommitPositionTransferHandled,
 }: CanvasProps) {
   const layoutHintsRef = useRef<Record<string, { x: number; y: number }>>(
     sanitizeLayoutHints(initialLayoutHints),
@@ -186,6 +193,7 @@ function CanvasInner({
   const viewportRef = useRef<Viewport | null>(initialViewportRef.current);
   const liveViewportRef = useRef<Viewport>(initialViewportRef.current ?? DEFAULT_VIEWPORT);
   const pendingHintsRef = useRef<Record<string, { x: number; y: number }>>({});
+  const pendingHintRemovalsRef = useRef<Set<string>>(new Set());
   const pendingViewportRef = useRef<Viewport | null>(null);
   const flushTimerRef = useRef<number | null>(null);
   const wrapperRef = useRef<HTMLDivElement | null>(null);
@@ -217,11 +225,13 @@ function CanvasInner({
       flushTimerRef.current = null;
     }
     const pending = pendingHintsRef.current;
+    const removals = [...pendingHintRemovalsRef.current];
     const pendingViewport = pendingViewportRef.current;
-    if (Object.keys(pending).length === 0 && !pendingViewport) return;
+    if (Object.keys(pending).length === 0 && removals.length === 0 && !pendingViewport) return;
     pendingHintsRef.current = {};
+    pendingHintRemovalsRef.current = new Set();
     pendingViewportRef.current = null;
-    onLayoutHintsChange?.(pending, pendingViewport);
+    onLayoutHintsChange?.(pending, pendingViewport, removals);
   }, [onLayoutHintsChange]);
 
   const scheduleFlushLayout = useCallback(
@@ -289,6 +299,8 @@ function CanvasInner({
   const [rfEdges, setRfEdges] = useEdgesState(
     decorateEdges(built.rfEdges, selectedNodeId, hoverGroup),
   );
+  const rfNodesRef = useRef(rfNodes);
+  rfNodesRef.current = rfNodes;
 
   /* Sync upstream node changes into local state without trampling drag
    * positions. Critically, this effect must NOT depend on hover state — hover
@@ -299,13 +311,28 @@ function CanvasInner({
   useEffect(() => {
     const hydrateFromLayout =
       appliedLayoutHydrationVersionRef.current !== layoutHydrationVersion;
+    const commitPositionTransfer = resolveCommitPositionTransfer(
+      rfNodesRef.current as RFNode[],
+      layeredBuiltNodes,
+      commitPositionTarget,
+    );
     if (
       syncedBuiltNodesRef.current === layeredBuiltNodes &&
-      !hydrateFromLayout
+      !hydrateFromLayout &&
+      !commitPositionTransfer
     ) {
       return;
     }
     syncedBuiltNodesRef.current = layeredBuiltNodes;
+    if (commitPositionTransfer) {
+      layoutHintsRef.current[commitPositionTransfer.toId] = commitPositionTransfer.position;
+      delete layoutHintsRef.current[commitPositionTransfer.fromId];
+      pendingHintsRef.current[commitPositionTransfer.toId] = commitPositionTransfer.position;
+      delete pendingHintsRef.current[commitPositionTransfer.fromId];
+      pendingHintRemovalsRef.current.add(commitPositionTransfer.fromId);
+      pendingHintRemovalsRef.current.delete(commitPositionTransfer.toId);
+      scheduleFlushLayout(0);
+    }
     setRfNodes((current) => {
       const runtimeById = new Map(current.map((n) => [n.id, n]));
       // Carry over ``selected`` so React Flow's multi-selection (marquee /
@@ -336,10 +363,23 @@ function CanvasInner({
           const existing = runtime?.position;
           if (
             existing &&
+            !(
+              commitPositionTransfer?.resetGhostPosition &&
+              n.id === commitPositionTransfer.fromId
+            ) &&
             (existing.x !== n.position.x || existing.y !== n.position.y)
           ) {
             out = { ...out, position: existing };
           }
+        }
+        if (n.id === commitPositionTransfer?.toId) {
+          out = { ...out, position: commitPositionTransfer.position };
+        }
+        if (
+          n.id === commitPositionTransfer?.fromId &&
+          commitPositionTransfer.resetGhostPosition
+        ) {
+          out = { ...out, position: commitPositionTransfer.resetGhostPosition };
         }
         const carried = selectedById.get(n.id);
         if (carried !== undefined && carried !== out.selected) {
@@ -366,10 +406,16 @@ function CanvasInner({
     if (hydrateFromLayout) {
       appliedLayoutHydrationVersionRef.current = layoutHydrationVersion;
     }
+    if (commitPositionTransfer && commitPositionTarget) {
+      onCommitPositionTransferHandled?.(commitPositionTarget);
+    }
   }, [
     layeredBuiltNodes,
     setRfNodes,
     layoutHydrationVersion,
+    scheduleFlushLayout,
+    commitPositionTarget,
+    onCommitPositionTransferHandled,
   ]);
 
   useEffect(() => {
@@ -409,6 +455,7 @@ function CanvasInner({
           const position = { x: change.position.x, y: change.position.y };
           layoutHintsRef.current[change.id] = position;
           pendingHintsRef.current[change.id] = position;
+          pendingHintRemovalsRef.current.delete(change.id);
         }
         if (change.dragging === false) shouldFlush = true;
       }

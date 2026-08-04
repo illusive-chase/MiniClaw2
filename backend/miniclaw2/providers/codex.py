@@ -840,6 +840,7 @@ def _activity_from_item(item: dict[str, Any], status: str) -> Activity | None:
             id=item_id,
             name="command",
             summary=_truncate(str(summary)),
+            parameters=str(summary),
             command=str(summary),
             result=result_text,
             result_kind=result_kind,  # type: ignore[arg-type]
@@ -859,32 +860,39 @@ def _activity_from_item(item: dict[str, Any], status: str) -> Activity | None:
             id=item_id,
             name="fileChange",
             summary=_truncate(json.dumps(changes, ensure_ascii=False)),
+            parameters=json.dumps(changes, ensure_ascii=False),
             result=result_text,
             result_kind=result_kind,  # type: ignore[arg-type]
         )
     if item_type == "mcpToolCall":
+        parameters = json.dumps(item.get("arguments"), ensure_ascii=False)
         return Activity(
             kind="tool",
             status=status,  # type: ignore[arg-type]
             id=item_id,
             name=f"{item.get('server') or 'mcp'}:{item.get('tool') or ''}",
-            summary=_truncate(json.dumps(item.get("arguments"), ensure_ascii=False)),
+            summary=_truncate(parameters),
+            parameters=parameters,
         )
     if item_type == "dynamicToolCall":
+        parameters = json.dumps(item.get("arguments"), ensure_ascii=False)
         return Activity(
             kind="tool",
             status=status,  # type: ignore[arg-type]
             id=item_id,
             name=str(item.get("tool") or "tool"),
-            summary=_truncate(json.dumps(item.get("arguments"), ensure_ascii=False)),
+            summary=_truncate(parameters),
+            parameters=parameters,
         )
     if item_type in {"webSearch", "imageGeneration", "collabAgentToolCall"}:
+        parameters = json.dumps(item, ensure_ascii=False)
         return Activity(
             kind="agent",
             status=status,  # type: ignore[arg-type]
             id=item_id,
             name=str(item_type),
-            summary=_truncate(json.dumps(item, ensure_ascii=False)),
+            summary=_truncate(parameters),
+            parameters=parameters,
         )
     return None
 

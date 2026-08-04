@@ -110,6 +110,7 @@ export type RFEdge = Edge;
 /* ───────── geometry ───────── */
 
 const AGENT_NODE_HEIGHT = 86;
+const RERUN_CASCADE_OFFSET = 24;
 
 export const LANE = {
   rootX: 40,
@@ -227,6 +228,46 @@ export type BuildGraphResult = {
   commitHubIdByNodeId: Record<string, string>;
 };
 
+export type CommitPositionTransfer = {
+  fromId: "commit:ghost";
+  toId: string;
+  position: { x: number; y: number };
+  resetGhostPosition: { x: number; y: number } | null;
+};
+
+function defaultCommitPosition(index: number): { x: number; y: number } {
+  return {
+    x: LANE.trunkX,
+    y: LANE.trunkStartY + index * LANE.trunkStep,
+  };
+}
+
+export function resolveCommitPositionTransfer(
+  currentNodes: readonly RFNode[],
+  nextNodes: readonly RFNode[],
+  committedHead: string | null,
+): CommitPositionTransfer | null {
+  if (!committedHead) return null;
+  const ghost = currentNodes.find((node) => node.id === "commit:ghost");
+  if (!ghost) return null;
+  const currentIds = new Set(currentNodes.map((node) => node.id));
+  const committedNodeId = `commit:${committedHead}`;
+  if (currentIds.has(committedNodeId)) return null;
+  const committedNode = nextNodes.find(
+    (node) => node.type === "commit" && node.id === committedNodeId,
+  );
+  if (!committedNode) return null;
+  const nextCommitNodes = nextNodes.filter((node) => node.type === "commit");
+  const nextGhostIndex = nextCommitNodes.findIndex((node) => node.id === "commit:ghost");
+  return {
+    fromId: "commit:ghost",
+    toId: committedNode.id,
+    position: { x: ghost.position.x, y: ghost.position.y },
+    resetGhostPosition:
+      nextGhostIndex >= 0 ? defaultCommitPosition(nextGhostIndex) : null,
+  };
+}
+
 /**
  * Build the React Flow node + edge list from the backend NodeInfo[].
  *
@@ -257,9 +298,11 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
   const allNodeById = new Map<string, NodeInfo>();
   for (const n of nodes) allNodeById.set(n.id, n);
   const visibleNodes = nodes.filter((node) => {
+    if (node.kind === "op") return false;
     const planspaceId = resolvePlanspaceId(node, allNodeById);
     return !planspaceId || !hiddenPlanspaces.has(planspaceId);
   });
+  const visibleNodeIds = new Set(visibleNodes.map((node) => node.id));
   const nodeById = new Map<string, NodeInfo>();
   for (const n of visibleNodes) nodeById.set(n.id, n);
   const planspaceOrder: string[] = [];
@@ -293,15 +336,13 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
   const laneColors = new Map<string, PlanspaceColor>();
   const nodeRelativePositions = new Map<string, { x: number; y: number }>();
   const branchSiblingCounts = new Map<string, number>();
+  const rerunSiblingCounts = new Map<string, number>();
 
   gitCommits.forEach((commit, index) => {
     rfNodes.push({
       id: `commit:${commit.sha}`,
       type: "commit",
-      position: layoutHints[`commit:${commit.sha}`] ?? {
-        x: LANE.trunkX,
-        y: LANE.trunkStartY + index * LANE.trunkStep,
-      },
+      position: layoutHints[`commit:${commit.sha}`] ?? defaultCommitPosition(index),
       width: 76,
       height: 76,
       data: {
@@ -325,7 +366,7 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
   });
   if (gitDirtyCount > 0) {
     const ghostId = "commit:ghost";
-    rfNodes.push({ id: ghostId, type: "commit", position: layoutHints[ghostId] ?? { x: LANE.trunkX, y: LANE.trunkStartY + gitCommits.length * LANE.trunkStep }, width: 76, height: 76, data: { commit: { sha: "ghost", live: false, message: "Uncommitted changes", external_count_before: 0, aliases: [] }, head: false, ghost: true, dirtyCount: gitDirtyCount }, draggable: true, selectable: true });
+    rfNodes.push({ id: ghostId, type: "commit", position: layoutHints[ghostId] ?? defaultCommitPosition(gitCommits.length), width: 76, height: 76, data: { commit: { sha: "ghost", live: false, message: "Uncommitted changes", external_count_before: 0, aliases: [] }, head: false, ghost: true, dirtyCount: gitDirtyCount }, draggable: true, selectable: true });
     const previous = gitCommits.at(-1);
     if (previous) {
       rfEdges.push({ id: `commit-trunk:${previous.sha}:ghost`, source: `commit:${previous.sha}`, target: ghostId, type: "commitTrunk" });
@@ -507,6 +548,30 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
       nodeRelativePositions.set(node.id, position);
       return position;
     };
+    const placeRerunInLane = (
+      anchorId: string | null,
+    ): { x: number; y: number } | null => {
+      if (!planspaceId || !anchorId || stored) return null;
+      const anchorPosition = nodeRelativePositions.get(anchorId);
+      if (!anchorPosition) return null;
+      const key = `${planspaceId}:${anchorId}`;
+      const siblingIndex = rerunSiblingCounts.get(key) ?? 0;
+      rerunSiblingCounts.set(key, siblingIndex + 1);
+      const offset = RERUN_CASCADE_OFFSET * (siblingIndex + 1);
+      const position = {
+        x: anchorPosition.x + offset,
+        y: anchorPosition.y + offset,
+      };
+      recordChildExtent(
+        planspaceId,
+        position.x,
+        position.y,
+        LANE.agentWidth,
+        LANE.agentHeight,
+      );
+      nodeRelativePositions.set(node.id, position);
+      return position;
+    };
     const placeFree = (spacing: number) => {
       const position = stored ?? { x: freeCursorX, y: LANE.timelineY };
       freeCursorX += spacing;
@@ -533,10 +598,12 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
       });
     } else {
       const isLastInLane = !hasDescendantById.has(node.id);
+      const rerunAnchorId = rerunSourceId(node, nodeById);
       const branchAnchorId =
         node.state === "virtual" ? virtualBranchAnchorId(node, nodeById) : null;
       const position = planspaceId
         ? (
+            placeRerunInLane(rerunAnchorId) ??
             placeAnchoredVirtualInLane(branchAnchorId) ??
             placeInLane(
               LANE.agentSpacing,
@@ -748,10 +815,7 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
   const ctxAgg = new Map<string, CtxAggregate>();
   for (const [ownerId, bundle] of Object.entries(contextBundlesByNodeId)) {
     const owner = allNodeById.get(ownerId);
-    if (owner) {
-      const ownerPlanspaceId = resolvePlanspaceId(owner, allNodeById);
-      if (ownerPlanspaceId && hiddenPlanspaces.has(ownerPlanspaceId)) continue;
-    }
+    if (owner && !visibleNodeIds.has(ownerId)) continue;
     if (!bundle) continue;
     for (const src of bundle.sources) {
       if (src.plug_id && hiddenPlanspaces.has(src.plug_id)) continue;
@@ -1249,6 +1313,16 @@ function virtualBranchAnchorId(
     if (byId.has(depId)) return depId;
   }
   return null;
+}
+
+function rerunSourceId(
+  node: NodeInfo,
+  byId: Map<string, NodeInfo>,
+): string | null {
+  const prefix = "rerun:";
+  if (!node.proposed_by?.startsWith(prefix)) return null;
+  const sourceId = node.proposed_by.slice(prefix.length);
+  return byId.has(sourceId) ? sourceId : null;
 }
 
 function collectPlanspaceOrder(

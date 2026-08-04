@@ -4,6 +4,7 @@ import {
   createBlankPlanspace,
   createPlanspace,
   createVirtual,
+  dequeueNode,
   deleteVirtual,
   getSession,
   getNodeContextBundle,
@@ -101,6 +102,8 @@ export function App() {
   const [gitCommits, setGitCommits] = useState<CommitDescriptor[]>([]);
   const [gitAction, setGitAction] = useState<"commit" | "review" | "pull" | "push" | null>(null);
   const [gitError, setGitError] = useState<string | null>(null);
+  const pendingUiCommitNodeIdsRef = useRef<Set<string>>(new Set());
+  const [uiCommitPositionTargets, setUiCommitPositionTargets] = useState<string[]>([]);
 
   const [selection, setSelection] = useState<CanvasSelection>({ kind: "none" });
   /* For data-fetching purposes we track the "currently inspected nodeId" — the
@@ -385,6 +388,8 @@ export function App() {
     setGitCommits([]);
     setGitAction(null);
     setGitError(null);
+    pendingUiCommitNodeIdsRef.current.clear();
+    setUiCommitPositionTargets([]);
     setProjectMutationPending(false);
     setPendingGates({});
     setPendingReviews({});
@@ -633,6 +638,36 @@ export function App() {
       console.warn("get git state failed:", err);
     }
   }, [session?.id]);
+
+  useEffect(() => {
+    let committed = false;
+    for (const nodeId of [...pendingUiCommitNodeIdsRef.current]) {
+      const node = nodes.find((candidate) => candidate.id === nodeId);
+      if (!node || !TERMINAL_STATES.has(node.state)) continue;
+      pendingUiCommitNodeIdsRef.current.delete(nodeId);
+      if (
+        node.state === "done" &&
+        node.commit_after &&
+        node.commit_after !== node.commit_before
+      ) {
+        committed = true;
+        setUiCommitPositionTargets((current) =>
+          current.includes(node.commit_after!)
+            ? current
+            : [...current, node.commit_after!],
+        );
+      }
+    }
+    if (committed) void refreshGit();
+  }, [nodes, refreshGit]);
+
+  const consumeUiCommitPositionTarget = useCallback((sha: string) => {
+    setUiCommitPositionTargets((current) =>
+      current[0] === sha
+        ? current.slice(1)
+        : current.filter((candidate) => candidate !== sha),
+    );
+  }, []);
 
   /* context space */
   const refreshContextSpace = useCallback(async () => {
@@ -909,6 +944,31 @@ export function App() {
       setSessionContextSpaceError(null);
       try {
         const result = await promoteVirtual(session.id, nodeId);
+        setNodes((prev) => {
+          const updated = upsertNode(prev, result.node);
+          nodeCountRef.current = updated.length;
+          nodesRef.current = updated;
+          return updated;
+        });
+        selectAndOpenNode(result.node.id);
+        await refreshNodes();
+      } catch (err) {
+        await refreshNodes().catch(() => {});
+        setSessionContextSpaceError(String(err));
+      } finally {
+        setProjectMutationPending(false);
+      }
+    },
+    [session?.id, projectMutationPending, refreshNodes, selectAndOpenNode],
+  );
+
+  const dequeueQueuedNode = useCallback(
+    async (nodeId: string) => {
+      if (!session?.id || projectMutationPending) return;
+      setProjectMutationPending(true);
+      setSessionContextSpaceError(null);
+      try {
+        const result = await dequeueNode(session.id, nodeId);
         setNodes((prev) => {
           const updated = upsertNode(prev, result.node);
           nodeCountRef.current = updated.length;
@@ -1742,6 +1802,7 @@ export function App() {
   useEffect(() => {
     setAgentNodeContext({
       onPromoteVirtual: promoteVirtualNode,
+      onDequeueNode: dequeueQueuedNode,
       onCreateContinuationVirtual: createContinuationVirtual,
       onCreateDependencyVirtual: createDependencyVirtual,
       onMarkVirtualObsolete: (nodeId) =>
@@ -1751,6 +1812,7 @@ export function App() {
       onRerunNode: rerunFailedNode,
       canCreateVirtual: !virtualCreateDisabled,
       canPromoteVirtual: !projectMutationPending && !readOnly,
+      canDequeue: !projectMutationPending && !readOnly,
       manualPromotionPlanspaceId,
       canInterrupt: canInterruptRunner && !readOnly,
       canRerun: !projectMutationPending && !readOnly,
@@ -1763,6 +1825,7 @@ export function App() {
     validPendingGates,
     onResolveGate,
     promoteVirtualNode,
+    dequeueQueuedNode,
     createContinuationVirtual,
     createDependencyVirtual,
     updateVirtualNode,
@@ -1784,17 +1847,19 @@ export function App() {
     (
       updates: Record<string, { x: number; y: number }>,
       layoutViewport?: CanvasViewport | null,
+      remove: string[] = [],
     ) => {
       if (!session?.id || readOnly) return;
-      if (Object.keys(updates).length === 0 && !layoutViewport) return;
+      if (Object.keys(updates).length === 0 && remove.length === 0 && !layoutViewport) return;
       const sessionId = session.id;
       const updatesSnapshot = Object.fromEntries(
         Object.entries(updates).map(([id, pos]) => [id, { x: pos.x, y: pos.y }]),
       );
       const viewportSnapshot = layoutViewport ? { ...layoutViewport } : layoutViewport;
+      const removeSnapshot = [...remove];
       const save = layoutSaveChainRef.current
         .catch(() => undefined)
-        .then(() => updateLayoutHints(sessionId, updatesSnapshot, [], viewportSnapshot))
+        .then(() => updateLayoutHints(sessionId, updatesSnapshot, removeSnapshot, viewportSnapshot))
         .then((next) => {
           setSession((current) =>
             current && current.id === next.id ? { ...current, ...next } : current,
@@ -1880,7 +1945,8 @@ export function App() {
     setGitError(null);
     try {
       if (action === "commit") {
-        await gitCommit(session.id, message);
+        const result = await gitCommit(session.id, message);
+        pendingUiCommitNodeIdsRef.current.add(result.node.id);
       } else if (action === "review") {
         const result = await gitReview(session.id);
         selectAndOpenNode(result.node.id);
@@ -2019,6 +2085,8 @@ export function App() {
               gitCommits={gitCommits}
               gitHead={gitStatus?.head ?? null}
               gitDirtyCount={gitStatus?.dirty_count ?? 0}
+              commitPositionTarget={uiCommitPositionTargets[0] ?? null}
+              onCommitPositionTransferHandled={consumeUiCommitPositionTarget}
               initialLayoutHints={session?.layout_hints}
               initialLayoutViewport={session?.layout_viewport ?? null}
               onSelectionChange={onSelectionChange}
@@ -2134,6 +2202,7 @@ export function App() {
                 onImportSkill={handleImportSkill}
                 onCreateContinuationVirtual={createContinuationVirtual}
                 onPromoteVirtual={promoteVirtualNode}
+                onDequeueNode={dequeueQueuedNode}
                 onUpdateVirtual={updateVirtualNode}
                 onInterruptNode={interruptNode}
                 onRerunNode={rerunFailedNode}

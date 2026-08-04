@@ -84,7 +84,8 @@ export type SidePanelProps = {
   onNewLibraryEntry?: (userSeed: string) => Promise<void> | void;
   onImportSkill?: (source: string) => Promise<void> | void;
   onCreateContinuationVirtual: (nodeId: string) => void;
-  onPromoteVirtual: (nodeId: string) => void;
+  onPromoteVirtual: (nodeId: string) => Promise<void>;
+  onDequeueNode: (nodeId: string) => Promise<void>;
   onUpdateVirtual: (nodeId: string, payload: UpdateVirtualPayload) => Promise<void>;
   onInterruptNode: (nodeId: string) => void;
   onRerunNode: (nodeId: string) => void;
@@ -187,6 +188,7 @@ function Inner(props: SidePanelProps & { nodesById: Map<string, NodeInfo> }) {
     onImportSkill,
     onCreateContinuationVirtual,
     onPromoteVirtual,
+    onDequeueNode,
     onUpdateVirtual,
     onInterruptNode,
     onRerunNode,
@@ -351,6 +353,7 @@ function Inner(props: SidePanelProps & { nodesById: Map<string, NodeInfo> }) {
         onResolveReview={onResolveReview}
         onCreateContinuationVirtual={onCreateContinuationVirtual}
         onPromoteVirtual={onPromoteVirtual}
+        onDequeueNode={onDequeueNode}
         onUpdateVirtual={onUpdateVirtual}
         onInterruptNode={onInterruptNode}
         onRerunNode={onRerunNode}

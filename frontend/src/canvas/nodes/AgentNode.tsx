@@ -79,7 +79,7 @@ function AgentNodeImpl({ data, selected }: NodeProps<AgentNodeData>) {
 
   const actionItems = useMemo(() => {
     const items: Array<{
-      key: "promote" | "continuation" | "dependency" | "remove" | "interrupt" | "rerun";
+      key: "promote" | "dequeue" | "continuation" | "dependency" | "remove" | "interrupt" | "rerun";
       icon: ReactNode;
       title: string;
       disabled: boolean;
@@ -125,6 +125,17 @@ function AgentNodeImpl({ data, selected }: NodeProps<AgentNodeData>) {
         disabled: !agentNodeContext.canPromoteVirtual,
         tone: "brand",
         onClick: () => agentNodeContext.onPromoteVirtual(node.id),
+      });
+    }
+    if (node.state === "queued") {
+      items.push({
+        key: "dequeue",
+        icon: <DequeueActionIcon />,
+        title: "Dequeue - return to editable virtual",
+        disabled: !agentNodeContext.canDequeue,
+        tone: "neutral",
+        alwaysVisible: true,
+        onClick: () => agentNodeContext.onDequeueNode(node.id),
       });
     }
     if (!isVirtual && isTerminal(node.state) && canResumeNode(node)) {
@@ -450,6 +461,7 @@ export const AgentNode = memo(AgentNodeImpl);
  * memoized AgentNode always reads the latest handlers without stale closures. */
 export type AgentNodeContext = {
   onPromoteVirtual: (nodeId: string) => void;
+  onDequeueNode: (nodeId: string) => void;
   onCreateContinuationVirtual: (nodeId: string) => void;
   onCreateDependencyVirtual: (nodeId: string) => void;
   onMarkVirtualObsolete: (nodeId: string) => Promise<void>;
@@ -458,6 +470,7 @@ export type AgentNodeContext = {
   onRerunNode: (nodeId: string) => void;
   canCreateVirtual: boolean;
   canPromoteVirtual: boolean;
+  canDequeue: boolean;
   manualPromotionPlanspaceId: string | null;
   canInterrupt: boolean;
   canRerun: boolean;
@@ -468,6 +481,7 @@ export type AgentNodeContext = {
 
 let agentNodeContext: AgentNodeContext = {
   onPromoteVirtual: () => {},
+  onDequeueNode: () => {},
   onCreateContinuationVirtual: () => {},
   onCreateDependencyVirtual: () => {},
   onMarkVirtualObsolete: async () => {},
@@ -476,6 +490,7 @@ let agentNodeContext: AgentNodeContext = {
   onRerunNode: () => {},
   canCreateVirtual: false,
   canPromoteVirtual: false,
+  canDequeue: false,
   manualPromotionPlanspaceId: null,
   canInterrupt: false,
   canRerun: false,
@@ -550,6 +565,10 @@ function PromoteActionIcon() {
       <path d="M4.5 3 10.5 7 4.5 11Z" />
     </svg>
   );
+}
+
+function DequeueActionIcon() {
+  return <ActionGlyph>↩</ActionGlyph>;
 }
 
 function PopoverButton({

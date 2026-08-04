@@ -1453,6 +1453,7 @@ class NodeRunner:
             str(value)
             for value in (
                 activity.summary,
+                activity.parameters,
                 activity.command,
                 activity.result,
             )

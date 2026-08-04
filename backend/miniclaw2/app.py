@@ -1082,6 +1082,20 @@ def create_app(registry: ProjectRegistry | None = None) -> FastAPI:
             raise HTTPException(409, "cannot rerun this node")
         return {"ok": True, "node_id": node.id, "node": node.model_dump()}
 
+    @app.post("/sessions/{sid}/nodes/{nid}/dequeue", response_model=dict[str, Any])
+    async def dequeue_node(sid: str, nid: str) -> dict[str, Any]:
+        project = registry.get_project(sid)
+        if project is None:
+            raise HTTPException(404, "session not found")
+        if _context_task_running(project.id):
+            raise HTTPException(409, "context refresh in progress")
+        node = registry.dequeue_node(sid, nid)
+        if node is None:
+            if registry.get_node(sid, nid) is None:
+                raise HTTPException(404, "node not found")
+            raise HTTPException(409, "node is not an unscheduled queued node")
+        return {"ok": True, "node_id": node.id, "node": node.model_dump()}
+
     @app.get("/sessions/{sid}/nodes/{nid}/diff", response_model=NodeDiffResponse)
     def get_node_diff(sid: str, nid: str) -> NodeDiffResponse:
         project = registry.get_project(sid)

@@ -342,7 +342,34 @@ class JsonlDrainTest(unittest.TestCase):
         activity = events[0].event
         self.assertIsNotNone(activity)
         assert activity is not None
+        self.assertEqual(activity.parameters, json.dumps({"command": command}))
         self.assertEqual(activity.command, command)
+
+    def test_tool_activity_keeps_full_parameters(self) -> None:
+        from miniclaw2.providers.claude_native.transcript import TranscriptTranslator
+
+        file_path = "/tmp/" + "nested/" * 40 + "README.md"
+        events = TranscriptTranslator().translate(
+            {
+                "type": "assistant",
+                "message": {
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": "tool-read",
+                            "name": "Read",
+                            "input": {"file_path": file_path},
+                        }
+                    ],
+                },
+            }
+        )
+
+        activity = events[0].event
+        self.assertIsNotNone(activity)
+        assert activity is not None
+        self.assertEqual(activity.parameters, json.dumps({"file_path": file_path}))
+        self.assertTrue(activity.summary.endswith("..."))
 
     def test_non_conversation_records_do_not_emit_events_or_usage(self) -> None:
         from miniclaw2.providers.claude_native.transcript import TranscriptTranslator

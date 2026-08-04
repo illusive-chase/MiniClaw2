@@ -17,6 +17,9 @@ export function ArtifactPanel({ sessionId, nodeId, artifact, ext }: ArtifactPane
   const [file, setFile] = useState<ArtifactFile | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [copyState, setCopyState] = useState<"idle" | "copying" | "copied" | "error">(
+    "idle",
+  );
   const rawUrl = artifactRawUrl(sessionId, nodeId, artifact.name);
 
   useEffect(() => {
@@ -24,6 +27,7 @@ export function ArtifactPanel({ sessionId, nodeId, artifact, ext }: ArtifactPane
     setFile(null);
     setLoading(true);
     setError(null);
+    setCopyState("idle");
     getNodeArtifact(sessionId, nodeId, artifact.name)
       .then((next) => {
         if (!cancelled) setFile(next);
@@ -50,6 +54,31 @@ export function ArtifactPanel({ sessionId, nodeId, artifact, ext }: ArtifactPane
       return file.text;
     }
   }, [ext, file]);
+
+  useEffect(() => {
+    if (copyState !== "copied" && copyState !== "error") return;
+    const timeout = window.setTimeout(() => setCopyState("idle"), 2000);
+    return () => window.clearTimeout(timeout);
+  }, [copyState]);
+
+  const copyMarkdown = async () => {
+    if (ext !== "md" || !file || copyState === "copying") return;
+    setCopyState("copying");
+    try {
+      let markdown = file.text;
+      if (file.truncated) {
+        const response = await fetch(rawUrl);
+        if (!response.ok) {
+          throw new Error(`Raw artifact request failed: ${response.status}`);
+        }
+        markdown = await response.text();
+      }
+      await writeClipboard(markdown);
+      setCopyState("copied");
+    } catch {
+      setCopyState("error");
+    }
+  };
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
@@ -93,11 +122,40 @@ export function ArtifactPanel({ sessionId, nodeId, artifact, ext }: ArtifactPane
           </section>
         ) : (
           <section>
-            <div className="mb-1 flex items-baseline justify-between">
+            <div className="mb-1 flex min-h-7 items-center justify-between gap-3">
               <div className="text-[10px] font-medium uppercase tracking-[0.14em] text-ink-subtle">
                 Preview
               </div>
-              {loading && <span className="text-[10px] text-ink-subtle">loading...</span>}
+              <div className="flex items-center gap-2">
+                {loading && <span className="text-[10px] text-ink-subtle">loading...</span>}
+                {ext === "md" && (
+                  <button
+                    type="button"
+                    onClick={() => void copyMarkdown()}
+                    disabled={!file || copyState === "copying"}
+                    className={`inline-flex h-7 items-center gap-1.5 rounded-sm border px-2 text-[11px] font-medium transition disabled:cursor-not-allowed disabled:opacity-45 ${
+                      copyState === "error"
+                        ? "border-state-error/40 bg-state-error-soft text-state-error"
+                        : copyState === "copied"
+                          ? "border-state-done/40 bg-state-done-soft text-state-done"
+                          : "border-line bg-surface-raised text-ink-muted hover:border-line-strong hover:bg-surface-sunken hover:text-ink-strong"
+                    }`}
+                    title="Copy raw Markdown"
+                    aria-label="Copy raw Markdown"
+                  >
+                    {copyState === "copied" ? <CopyCheckIcon /> : <CopyIcon />}
+                    <span aria-live="polite">
+                      {copyState === "copying"
+                        ? "Copying..."
+                        : copyState === "copied"
+                          ? "Copied"
+                          : copyState === "error"
+                            ? "Copy failed"
+                            : "Copy raw"}
+                    </span>
+                  </button>
+                )}
+              </div>
             </div>
             {!file ? (
               <div className="rounded-md border border-line bg-surface-sunken px-3 py-3 text-[12px] text-ink-muted">
@@ -133,6 +191,68 @@ export function ArtifactPanel({ sessionId, nodeId, artifact, ext }: ArtifactPane
         )}
       </div>
     </div>
+  );
+}
+
+async function writeClipboard(text: string): Promise<void> {
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      return;
+    }
+  } catch {
+    // Fall through for browsers that expose Clipboard API without granting access.
+  }
+
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.setAttribute("readonly", "");
+  textarea.style.position = "fixed";
+  textarea.style.opacity = "0";
+  document.body.appendChild(textarea);
+  textarea.select();
+  let copied = false;
+  try {
+    copied = document.execCommand("copy");
+  } finally {
+    textarea.remove();
+  }
+  if (!copied) throw new Error("Clipboard copy was rejected");
+}
+
+function CopyIcon() {
+  return (
+    <svg
+      viewBox="0 0 16 16"
+      width="13"
+      height="13"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.4"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <rect x="5.25" y="5.25" width="7.5" height="7.5" rx="1" />
+      <path d="M10.75 5.25v-2a1 1 0 0 0-1-1h-6.5a1 1 0 0 0-1 1v6.5a1 1 0 0 0 1 1h2" />
+    </svg>
+  );
+}
+
+function CopyCheckIcon() {
+  return (
+    <svg
+      viewBox="0 0 16 16"
+      width="13"
+      height="13"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.6"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="m3 8.25 3.1 3.1L13 4.75" />
+    </svg>
   );
 }
 

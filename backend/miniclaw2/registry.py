@@ -1344,6 +1344,68 @@ class ProjectRegistry:
         self._schedule_queued(rt)
         return VirtualPromotionResult(self.store.load_node(pid, node.id) or node)
 
+    def dequeue_node(self, pid: str, nid: str) -> Node | None:
+        """Return an unscheduled queued agent/verifier to editable virtual state."""
+        rt = self._runtimes.get(pid)
+        if rt is None:
+            return None
+        self.require_native(pid)
+        node = self.store.load_node(pid, nid)
+        if (
+            node is None
+            or node.state is not NodeState.QUEUED
+            or node.kind is NodeKind.OP
+            or node.id in rt.runner_tasks
+        ):
+            return None
+
+        snapshot = dict(node.settings_snapshot)
+        pending_extra_principles = normalize_principle_ids(
+            snapshot.pop("extra_principles", [])
+        )
+        pending_extra_skills = expand_skill_selections(
+            snapshot.pop("extra_skills", []),
+            store_root=self.store.root,
+        )
+        resume_from_node_id = node.resume_from_node_id
+        if resume_from_node_id is None and node.provider_session_id:
+            resume_from_node_id = node.parent_node_id
+
+        virtual = node.model_copy(
+            update={
+                "state": NodeState.VIRTUAL,
+                "prompt": "",
+                "prompt_draft": node.prompt,
+                "pending_extra_principles": pending_extra_principles,
+                "pending_extra_skills": pending_extra_skills,
+                "resume_from_node_id": resume_from_node_id,
+                "provider_session_id": None,
+                "provider_turn_id": None,
+                "settings_snapshot": snapshot,
+                "proposed_by": node.proposed_by or "user",
+                "started_at": None,
+                "finished_at": None,
+            }
+        )
+        self.store.write_node_preview(
+            pid, virtual.id, render_virtual_preview(virtual)
+        )
+        self.store.update_node(virtual)
+        rt.priority_node_ids = [
+            node_id for node_id in rt.priority_node_ids if node_id != virtual.id
+        ]
+
+        try:
+            asyncio.get_running_loop().create_task(rt.broadcast({
+                "type": "node_updated",
+                "node_id": virtual.id,
+                "node": virtual.model_dump(),
+                "seq": 0,
+            }))
+        except RuntimeError:
+            pass
+        return self.store.load_node(pid, virtual.id) or virtual
+
     def create_virtual(
         self,
         pid: str,
