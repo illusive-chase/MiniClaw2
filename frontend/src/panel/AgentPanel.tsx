@@ -242,7 +242,9 @@ export function AgentPanel({
                   ↻ Rerun
                 </button>
               )}
-            {node.state === "queued" && canMutate && (
+            {node.state === "queued" &&
+              canMutate &&
+              node.planspace_id === manualPromotionPlanspaceId && (
               <button
                 type="button"
                 onClick={() => void dequeue()}
@@ -569,6 +571,8 @@ const EditableVirtualNodeBody = forwardRef<VirtualNodeBodyHandle, VirtualNodeBod
   const pendingLocalUpdateRef = useRef<PendingLocalVirtualUpdate | null>(null);
   const savePromiseRef = useRef<Promise<boolean> | null>(null);
   const [draft, setDraft] = useState<VirtualDraft>(() => persistedDraft);
+  const draftRef = useRef(draft);
+  draftRef.current = draft;
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const promptDraftRef = useRef<HTMLTextAreaElement | null>(null);
@@ -615,15 +619,22 @@ const EditableVirtualNodeBody = forwardRef<VirtualNodeBodyHandle, VirtualNodeBod
 
     if (previous.nodeId !== node.id) {
       pendingLocalUpdateRef.current = null;
-    } else if (acknowledgedLocalUpdate) {
-      pendingLocalUpdateRef.current = null;
+    } else if (pendingLocalUpdate?.nodeId === node.id) {
+      if (acknowledgedLocalUpdate) {
+        pendingLocalUpdateRef.current = null;
+        const latestSignature = JSON.stringify(
+          virtualDraftAfterSave(draftRef.current),
+        );
+        if (latestSignature === pendingLocalUpdate.persistedSignature) {
+          draftRef.current = pendingLocalUpdate.draftAfterAck;
+          setDraft(pendingLocalUpdate.draftAfterAck);
+        }
+      }
+      return;
     }
 
-    setDraft(
-      acknowledgedLocalUpdate
-        ? pendingLocalUpdate.draftAfterAck
-        : persistedDraft,
-    );
+    draftRef.current = persistedDraft;
+    setDraft(persistedDraft);
     setError(null);
     if (previous.nodeId === node.id && !acknowledgedLocalUpdate) {
       window.alert("此 virtual node 的持久化内容已更新，已重新加载。");
@@ -641,38 +652,51 @@ const EditableVirtualNodeBody = forwardRef<VirtualNodeBodyHandle, VirtualNodeBod
 
   const save = (): Promise<boolean> => {
     if (savePromiseRef.current) return savePromiseRef.current;
-    if (!dirty) return Promise.resolve(true);
-
-    const validationError = virtualDraftValidationError(draft, node);
-    if (validationError) {
-      setError(validationError);
-      return Promise.resolve(false);
+    if (JSON.stringify(draftRef.current) === persistedDraftSignature) {
+      return Promise.resolve(true);
     }
-
-    const draftAfterAck = virtualDraftAfterSave(draft);
-    const pendingLocalUpdate: PendingLocalVirtualUpdate = {
-      nodeId: node.id,
-      persistedSignature: JSON.stringify(draftAfterAck),
-      draftAfterAck,
-    };
-    pendingLocalUpdateRef.current = pendingLocalUpdate;
     const operation = (async () => {
       setSaving(true);
       setError(null);
       try {
-        await onUpdateVirtual(node.id, virtualPayloadFromDraft(draft, node));
-        if (
-          pendingLocalUpdateRef.current === pendingLocalUpdate &&
-          persistedDraftRef.current.signature === pendingLocalUpdate.persistedSignature
-        ) {
-          pendingLocalUpdateRef.current = null;
-          setDraft(draftAfterAck);
+        while (true) {
+          const draftToSave = draftRef.current;
+          const validationError = virtualDraftValidationError(draftToSave, node);
+          if (validationError) {
+            setError(validationError);
+            return false;
+          }
+
+          const draftAfterAck = virtualDraftAfterSave(draftToSave);
+          const pendingLocalUpdate: PendingLocalVirtualUpdate = {
+            nodeId: node.id,
+            persistedSignature: JSON.stringify(draftAfterAck),
+            draftAfterAck,
+          };
+          pendingLocalUpdateRef.current = pendingLocalUpdate;
+          await onUpdateVirtual(
+            node.id,
+            virtualPayloadFromDraft(draftToSave, node),
+          );
+
+          const latestSignature = JSON.stringify(
+            virtualDraftAfterSave(draftRef.current),
+          );
+          if (latestSignature !== pendingLocalUpdate.persistedSignature) {
+            continue;
+          }
+          if (
+            pendingLocalUpdateRef.current === pendingLocalUpdate &&
+            persistedDraftRef.current.signature === pendingLocalUpdate.persistedSignature
+          ) {
+            pendingLocalUpdateRef.current = null;
+            draftRef.current = draftAfterAck;
+            setDraft(draftAfterAck);
+          }
+          return true;
         }
-        return true;
       } catch (err) {
-        if (pendingLocalUpdateRef.current === pendingLocalUpdate) {
-          pendingLocalUpdateRef.current = null;
-        }
+        pendingLocalUpdateRef.current = null;
         setError(errorMessage(err));
         return false;
       } finally {

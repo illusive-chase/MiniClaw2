@@ -243,6 +243,31 @@ class ProjectConcurrencySchedulerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(node.id, self.registry._runtimes[self.project.id].runner_tasks)
         self.assertIsNone(self.registry.dequeue_node(self.project.id, node.id))
 
+    async def test_auto_mode_rejects_dequeue_without_repromoting_node(self) -> None:
+        first = self._virtual("auto-dequeue-first")
+        second = self._virtual("auto-dequeue-second")
+        self.registry.promote_virtual(self.project.id, first.id)
+        self.registry.promote_virtual(self.project.id, second.id)
+        await self._settle()
+        self.registry.update_planspace_mode(self.project.id, self.lane, "auto")
+
+        queued = self.registry.create_virtual(
+            self.project.id,
+            node_id="auto-dequeue-target",
+            prompt_draft="keep this queued",
+            model_preset_id="gpt-5.5",
+            _allow_compatibility_model_preset=True,
+        )
+        assert queued is not None
+        self.assertEqual(queued.state, NodeState.QUEUED)
+
+        self.assertIsNone(self.registry.dequeue_node(self.project.id, queued.id))
+        unchanged = self.store.load_node(self.project.id, queued.id)
+        assert unchanged is not None
+        self.assertEqual(unchanged.state, NodeState.QUEUED)
+        self.assertEqual(unchanged.prompt, "keep this queued")
+        self.assertIsNone(unchanged.prompt_draft)
+
     async def test_auto_mode_queues_eligible_virtual_while_full(self) -> None:
         first = self._virtual("auto-first")
         second = self._virtual("auto-second")

@@ -48,6 +48,16 @@ export type ContextNodeData = {
   /** manifest title, populated for known principles so tooltips read as a name */
   title?: string | null;
   usedByNodeIds?: string[];
+  /** skills auto-attached with this skill, folded into this tile (skill tiles only) */
+  attachedSkills?: AttachedSkillDisplay[];
+};
+
+export type AttachedSkillDisplay = {
+  id: string;
+  title: string;
+  reason: "dependency" | "package";
+  /** run ids where this folded skill was actually invoked */
+  usedByNodeIds: string[];
 };
 
 /** Minimal projection of a user-wide principle for buildGraph enumeration.
@@ -138,6 +148,7 @@ export const LANE = {
   planspaceLanePaddingY: 40,
   planspaceLaneCtxRowY: 52,
   planspaceLaneAgentRowY: 156,
+  planspaceLaneGap: 40,
   /* The child bounds add their own top position and bottom padding. */
   planspaceLaneMinHeight: AGENT_NODE_HEIGHT,
   /* Horizontal step between ctx tiles inside a lane (tile width ~160 + gap). */
@@ -194,6 +205,93 @@ export const PLANSPACE_PALETTE: PlanspaceColor[] = [
   },
 ];
 
+/* ───────── skill attachment folding ───────── */
+
+/** One skill entry from a node's `skill_audit` or `pending_extra_skills`. */
+export type SkillAttachmentEntry = {
+  id: string;
+  name?: string;
+  used?: boolean;
+  auto_attached?: boolean;
+  required_by?: string;
+  attachment_reason?: string;
+};
+
+export type SkillAttachmentSplit = {
+  /** Explicitly selected skills — the only ones that render as canvas tiles. */
+  roots: SkillAttachmentEntry[];
+  /** Auto-attached skills keyed by the explicit root that pulled them in. */
+  attachedByRoot: Map<string, SkillAttachmentEntry[]>;
+};
+
+/**
+ * Fold auto-attached skills (sibling dependencies and skill-pack members)
+ * under the explicitly selected skill that pulled them in. `required_by`
+ * names the immediate requirer, which may itself be auto-attached, so chains
+ * are walked to the explicit root. Unresolvable chains fail open as roots so
+ * a malformed record never hides a skill.
+ */
+export function splitSkillAttachments(
+  entries: SkillAttachmentEntry[],
+): SkillAttachmentSplit {
+  const byId = new Map(entries.map((entry) => [entry.id, entry]));
+  const roots: SkillAttachmentEntry[] = [];
+  const attachedByRoot = new Map<string, SkillAttachmentEntry[]>();
+  for (const entry of entries) {
+    if (entry.auto_attached !== true) {
+      roots.push(entry);
+      continue;
+    }
+    const seen = new Set([entry.id]);
+    let cursor: SkillAttachmentEntry | undefined = entry;
+    let rootId: string | null = null;
+    while (cursor) {
+      const parentId = cursor.required_by;
+      if (!parentId || seen.has(parentId)) break;
+      seen.add(parentId);
+      cursor = byId.get(parentId);
+      if (cursor && cursor.auto_attached !== true) {
+        rootId = cursor.id;
+        break;
+      }
+    }
+    if (rootId === null) {
+      roots.push(entry);
+      continue;
+    }
+    const list = attachedByRoot.get(rootId);
+    if (list) list.push(entry);
+    else attachedByRoot.set(rootId, [entry]);
+  }
+  return { roots, attachedByRoot };
+}
+
+/** Coerce a raw `skill_audit` array into attachment entries, dropping
+ * missing/failed materializations exactly like tile aggregation does. */
+export function coerceSkillAuditEntries(audit: unknown): SkillAttachmentEntry[] {
+  if (!Array.isArray(audit)) return [];
+  const entries: SkillAttachmentEntry[] = [];
+  for (const raw of audit) {
+    if (!raw || typeof raw !== "object") continue;
+    const item = raw as Record<string, unknown>;
+    if (item.missing === true || item.failed === true) continue;
+    if (typeof item.id !== "string") continue;
+    entries.push({
+      id: item.id,
+      name: typeof item.name === "string" ? item.name : undefined,
+      used: item.used === true,
+      auto_attached: item.auto_attached === true,
+      required_by:
+        typeof item.required_by === "string" ? item.required_by : undefined,
+      attachment_reason:
+        typeof item.attachment_reason === "string"
+          ? item.attachment_reason
+          : undefined,
+    });
+  }
+  return entries;
+}
+
 /* ───────── build graph ───────── */
 
 export type BuildGraphArgs = {
@@ -246,13 +344,18 @@ export function resolveCommitPositionTransfer(
   currentNodes: readonly RFNode[],
   nextNodes: readonly RFNode[],
   committedHead: string | null,
+  retainedGhostPosition: { x: number; y: number } | null = null,
 ): CommitPositionTransfer | null {
   if (!committedHead) return null;
   const ghost = currentNodes.find((node) => node.id === "commit:ghost");
-  if (!ghost) return null;
-  const currentIds = new Set(currentNodes.map((node) => node.id));
   const committedNodeId = `commit:${committedHead}`;
-  if (currentIds.has(committedNodeId)) return null;
+  const targetAlreadyRendered = currentNodes.some(
+    (node) => node.id === committedNodeId,
+  );
+  const ghostPosition = targetAlreadyRendered
+    ? retainedGhostPosition ?? ghost?.position
+    : ghost?.position ?? retainedGhostPosition;
+  if (!ghostPosition) return null;
   const committedNode = nextNodes.find(
     (node) => node.type === "commit" && node.id === committedNodeId,
   );
@@ -262,7 +365,7 @@ export function resolveCommitPositionTransfer(
   return {
     fromId: "commit:ghost",
     toId: committedNode.id,
-    position: { x: ghost.position.x, y: ghost.position.y },
+    position: { x: ghostPosition.x, y: ghostPosition.y },
     resetGhostPosition:
       nextGhostIndex >= 0 ? defaultCommitPosition(nextGhostIndex) : null,
   };
@@ -811,6 +914,11 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
     usedBy: Set<string>;
     plugId?: string | null;
     title?: string | null;
+    /** skills folded into this tile because they were auto-attached with it */
+    attachedSkills?: Map<
+      string,
+      { title: string; reason: "dependency" | "package"; usedBy: Set<string> }
+    >;
   };
   const ctxAgg = new Map<string, CtxAggregate>();
   for (const [ownerId, bundle] of Object.entries(contextBundlesByNodeId)) {
@@ -853,42 +961,81 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
     }
   }
 
+  /* Only explicitly selected skills materialize tiles; skills the backend
+   * auto-attached with them (sibling dependencies, skill-pack members) fold
+   * into the root skill's tile so one selection never fans out into a wall
+   * of dependency nodes. */
+  const skillById = new Map(skills.map((item) => [item.id, item]));
+  const ensureSkillAggregate = (skillId: string): CtxAggregate | null => {
+    const skill = skillById.get(skillId);
+    if (!skill) return null;
+    const path = `${skill.path}/SKILL.md`;
+    const key = contextIdentityKey("contextspace", "skill", path);
+    let aggregate = ctxAgg.get(key);
+    if (!aggregate) {
+      aggregate = {
+        identityKey: key,
+        scope: "contextspace",
+        kind: "skill",
+        path,
+        chars: 0,
+        loadedBy: new Set(),
+        declaredBy: new Set(),
+        usedBy: new Set(),
+        plugId: skill.id,
+        title: skill.title,
+      };
+      ctxAgg.set(key, aggregate);
+    }
+    if (!aggregate.title) aggregate.title = skill.title;
+    if (!aggregate.plugId) aggregate.plugId = skill.id;
+    return aggregate;
+  };
+  const recordAttachedSkill = (
+    aggregate: CtxAggregate,
+    entry: SkillAttachmentEntry,
+    usedByNodeId: string | null,
+  ): void => {
+    const attached = (aggregate.attachedSkills ??= new Map());
+    let info = attached.get(entry.id);
+    if (!info) {
+      info = {
+        title:
+          skillById.get(entry.id)?.title ??
+          entry.name ??
+          entry.id.replace(/^skills\./, ""),
+        reason: entry.attachment_reason === "package" ? "package" : "dependency",
+        usedBy: new Set<string>(),
+      };
+      attached.set(entry.id, info);
+    }
+    if (usedByNodeId) info.usedBy.add(usedByNodeId);
+  };
+
   /* skill_audit is the observed source of native skill availability/use. */
   for (const node of visibleNodes) {
-    const audit = node.settings_snapshot?.skill_audit;
-    if (!Array.isArray(audit)) continue;
-    for (const raw of audit) {
-      if (!raw || typeof raw !== "object") continue;
-      const item = raw as Record<string, unknown>;
-      if (item.missing === true || item.failed === true) continue;
-      const id = typeof item.id === "string" ? item.id : "";
-      const skill = skills.find((candidate) => candidate.id === id);
-      if (!skill) continue;
-      const key = contextIdentityKey(
-        "contextspace",
-        "skill",
-        `${skill.path}/SKILL.md`,
-      );
-      let aggregate = ctxAgg.get(key);
-      if (!aggregate) {
-        aggregate = {
-          identityKey: key,
-          scope: "contextspace",
-          kind: "skill",
-          path: `${skill.path}/SKILL.md`,
-          chars: 0,
-          loadedBy: new Set(),
-          declaredBy: new Set(),
-          usedBy: new Set(),
-          plugId: skill.id,
-          title: skill.title,
-        };
-        ctxAgg.set(key, aggregate);
-      }
-      if (!aggregate.title) aggregate.title = skill.title;
-      if (!aggregate.plugId) aggregate.plugId = skill.id;
+    const { roots, attachedByRoot } = splitSkillAttachments(
+      coerceSkillAuditEntries(node.settings_snapshot?.skill_audit),
+    );
+    for (const entry of roots) {
+      const aggregate = ensureSkillAggregate(entry.id);
+      if (!aggregate) continue;
       aggregate.loadedBy.add(node.id);
-      if (item.used === true) aggregate.usedBy.add(node.id);
+      if (entry.used === true) aggregate.usedBy.add(node.id);
+      for (const dep of attachedByRoot.get(entry.id) ?? []) {
+        recordAttachedSkill(aggregate, dep, dep.used === true ? node.id : null);
+      }
+    }
+    /* A root missing from the library cannot materialize a tile, so its
+     * attachments fail open onto their own tiles instead of vanishing. */
+    for (const [rootId, deps] of attachedByRoot) {
+      if (skillById.has(rootId)) continue;
+      for (const dep of deps) {
+        const aggregate = ensureSkillAggregate(dep.id);
+        if (!aggregate) continue;
+        aggregate.loadedBy.add(node.id);
+        if (dep.used === true) aggregate.usedBy.add(node.id);
+      }
     }
   }
 
@@ -896,7 +1043,6 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
    * observes them. Resolve ids through the library solely to obtain tile
    * metadata; missing library entries cannot materialize a tile. */
   const principleById = new Map(principles.map((item) => [item.id, item]));
-  const skillById = new Map(skills.map((item) => [item.id, item]));
   for (const node of visibleNodes) {
     if (node.state !== "virtual") continue;
     for (const raw of node.pending_extra_principles ?? []) {
@@ -925,28 +1071,29 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
       }
       aggregate.declaredBy.add(node.id);
     }
-    for (const selection of node.pending_extra_skills ?? []) {
-      const skill = selection?.id ? skillById.get(selection.id) : undefined;
-      if (!skill) continue;
-      const path = `${skill.path}/SKILL.md`;
-      const key = contextIdentityKey("contextspace", "skill", path);
-      let aggregate = ctxAgg.get(key);
-      if (!aggregate) {
-        aggregate = {
-          identityKey: key,
-          scope: "contextspace",
-          kind: "skill",
-          path,
-          chars: 0,
-          loadedBy: new Set(),
-          declaredBy: new Set(),
-          usedBy: new Set(),
-          plugId: skill.id,
-          title: skill.title,
-        };
-        ctxAgg.set(key, aggregate);
-      }
+    const selections: SkillAttachmentEntry[] = (node.pending_extra_skills ?? [])
+      .filter((selection) => typeof selection?.id === "string")
+      .map((selection) => ({
+        id: selection.id,
+        auto_attached: selection.auto_attached === true,
+        required_by: selection.required_by,
+        attachment_reason: selection.attachment_reason,
+      }));
+    const { roots, attachedByRoot } = splitSkillAttachments(selections);
+    for (const entry of roots) {
+      const aggregate = ensureSkillAggregate(entry.id);
+      if (!aggregate) continue;
       aggregate.declaredBy.add(node.id);
+      for (const dep of attachedByRoot.get(entry.id) ?? []) {
+        recordAttachedSkill(aggregate, dep, null);
+      }
+    }
+    for (const [rootId, deps] of attachedByRoot) {
+      if (skillById.has(rootId)) continue;
+      for (const dep of deps) {
+        const aggregate = ensureSkillAggregate(dep.id);
+        if (aggregate) aggregate.declaredBy.add(node.id);
+      }
     }
   }
 
@@ -1007,6 +1154,17 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
       position = stored ?? { x: laneCtxCursorX, y: LANE.contextLaneY };
       laneCtxCursorX += 180;
     }
+    const attachedSkills =
+      agg.attachedSkills && agg.attachedSkills.size > 0
+        ? Array.from(agg.attachedSkills.entries())
+            .map(([id, info]) => ({
+              id,
+              title: info.title,
+              reason: info.reason,
+              usedByNodeIds: Array.from(info.usedBy),
+            }))
+            .sort((a, b) => a.title.localeCompare(b.title))
+        : undefined;
     rfNodes.push({
       id: ctxId,
       type: "context",
@@ -1024,6 +1182,7 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
         plugId: agg.plugId ?? null,
         title: agg.title ?? null,
         usedByNodeIds: Array.from(agg.usedBy),
+        ...(attachedSkills ? { attachedSkills } : {}),
       },
       draggable: true,
       ...(parentNode ? { parentNode, extent } : {}),
@@ -1034,8 +1193,19 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
      * would make React Flow drop the edge. */
     const loadsTargetHandle = (ownerId: string): string | undefined =>
       allNodeById.get(ownerId)?.kind === "op" ? undefined : "loads";
+    /* A folded dependency being invoked counts as the root tile being used —
+     * the tile stands in for the whole attached group. */
+    const attachedUsedBy = (ownerId: string): boolean =>
+      agg.attachedSkills
+        ? Array.from(agg.attachedSkills.values()).some((info) =>
+            info.usedBy.has(ownerId),
+          )
+        : false;
     for (const ownerId of agg.loadedBy) {
-      const used = agg.kind !== "skill" || agg.usedBy.has(ownerId);
+      const used =
+        agg.kind !== "skill" ||
+        agg.usedBy.has(ownerId) ||
+        attachedUsedBy(ownerId);
       rfEdges.push({
         id: `ld:${ctxId}->${ownerId}`,
         source: ctxId,
@@ -1086,9 +1256,12 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
     );
     if (!pos) continue;
     if (!hintedPos) {
-      nextAutoLaneY += height + 40;
+      nextAutoLaneY += height + LANE.planspaceLaneGap;
     } else {
-      nextAutoLaneY = Math.max(nextAutoLaneY, hintedPos.y + height + 40);
+      nextAutoLaneY = Math.max(
+        nextAutoLaneY,
+        hintedPos.y + height + LANE.planspaceLaneGap,
+      );
     }
     const color =
       laneColors.get(planspaceId) ??
@@ -1169,8 +1342,7 @@ export function resizePlanspaceLanes(
     );
   }
 
-  let changed = false;
-  let heightChanged = false;
+  let dimensionsChanged = false;
   const resized = nodes.map((node) => {
     if (node.type !== "planspaceLane" || !laneIds.has(node.id)) return node;
     const desired = desiredByLaneId.get(node.id);
@@ -1190,8 +1362,7 @@ export function resizePlanspaceLanes(
     ) {
       return node;
     }
-    changed = true;
-    heightChanged ||= height !== node.height || height !== data.height;
+    dimensionsChanged = true;
     return {
       ...node,
       width,
@@ -1199,23 +1370,30 @@ export function resizePlanspaceLanes(
       data: { ...data, width, height },
     };
   });
-  if (!changed) return nodes;
-  if (!heightChanged) return resized;
 
+  /* A lane hint is user-owned absolute placement. Without a hint, Y is
+   * derived from the preceding lane geometry and must be normalized even when
+   * every lane already has the desired dimensions. */
   let nextAutoLaneY = LANE.timelineY - LANE.planspaceLaneAgentRowY;
-  return resized.map((node) => {
+  let positionsChanged = false;
+  const positioned = resized.map((node) => {
     if (node.type !== "planspaceLane") return node;
     const height = node.height ?? (node.data as PlanspaceLaneData).height;
     if (layoutHints[node.id]) {
-      nextAutoLaneY = Math.max(nextAutoLaneY, node.position.y + height + 40);
+      nextAutoLaneY = Math.max(
+        nextAutoLaneY,
+        node.position.y + height + LANE.planspaceLaneGap,
+      );
       return node;
     }
     const position = node.position.y === nextAutoLaneY
       ? node.position
       : { ...node.position, y: nextAutoLaneY };
-    nextAutoLaneY += height + 40;
+    nextAutoLaneY += height + LANE.planspaceLaneGap;
+    positionsChanged ||= position !== node.position;
     return position === node.position ? node : { ...node, position };
   });
+  return dimensionsChanged || positionsChanged ? positioned : nodes;
 }
 
 export function classifyPlanspaceLaneResizes(

@@ -1345,7 +1345,7 @@ class ProjectRegistry:
         return VirtualPromotionResult(self.store.load_node(pid, node.id) or node)
 
     def dequeue_node(self, pid: str, nid: str) -> Node | None:
-        """Return an unscheduled queued agent/verifier to editable virtual state."""
+        """Return a manually scheduled queued node to editable virtual state."""
         rt = self._runtimes.get(pid)
         if rt is None:
             return None
@@ -1357,6 +1357,18 @@ class ProjectRegistry:
             or node.kind is NodeKind.OP
             or node.id in rt.runner_tasks
         ):
+            return None
+        lane_id = node.planspace_id or ""
+        if not lane_id:
+            return None
+        try:
+            mode = read_planspace_mode(
+                rt.project, lane_id, store_root=self.store.root
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("planspace mode lookup failed during dequeue")
+            return None
+        if mode is PlanspaceMode.AUTO:
             return None
 
         snapshot = dict(node.settings_snapshot)

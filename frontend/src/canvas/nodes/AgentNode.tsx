@@ -127,7 +127,10 @@ function AgentNodeImpl({ data, selected }: NodeProps<AgentNodeData>) {
         onClick: () => agentNodeContext.onPromoteVirtual(node.id),
       });
     }
-    if (node.state === "queued") {
+    if (
+      node.state === "queued" &&
+      node.planspace_id === agentNodeContext.manualPromotionPlanspaceId
+    ) {
       items.push({
         key: "dequeue",
         icon: <DequeueActionIcon />,

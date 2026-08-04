@@ -1093,7 +1093,10 @@ def create_app(registry: ProjectRegistry | None = None) -> FastAPI:
         if node is None:
             if registry.get_node(sid, nid) is None:
                 raise HTTPException(404, "node not found")
-            raise HTTPException(409, "node is not an unscheduled queued node")
+            raise HTTPException(
+                409,
+                "node must be unscheduled, queued, and in a manual planspace",
+            )
         return {"ok": True, "node_id": node.id, "node": node.model_dump()}
 
     @app.get("/sessions/{sid}/nodes/{nid}/diff", response_model=NodeDiffResponse)

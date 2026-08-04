@@ -250,6 +250,58 @@ function testRemainingChangesMoveToTheNextCommitSlot(): void {
   });
 }
 
+function testAlreadyRenderedCommitUsesRetainedGhostPosition(): void {
+  const rendered = buildGraph(args({
+    gitCommits: [commit("old"), commit("new")],
+    gitHead: "new",
+  })).rfNodes;
+
+  assert.deepEqual(
+    resolveCommitPositionTransfer(
+      rendered,
+      rendered,
+      "new",
+      { x: 360, y: 520 },
+    ),
+    {
+      fromId: "commit:ghost",
+      toId: "commit:new",
+      position: { x: 360, y: 520 },
+      resetGhostPosition: null,
+    },
+  );
+}
+
+function testAlreadyRenderedCommitDoesNotUseRemainingChangesPosition(): void {
+  const rendered = buildGraph(args({
+    gitCommits: [commit("old"), commit("new")],
+    gitHead: "new",
+    gitDirtyCount: 1,
+  })).rfNodes.map((item) =>
+    item.id === "commit:ghost"
+      ? { ...item, position: { x: 480, y: 680 } }
+      : item,
+  );
+
+  assert.deepEqual(
+    resolveCommitPositionTransfer(
+      rendered,
+      rendered,
+      "new",
+      { x: 360, y: 520 },
+    ),
+    {
+      fromId: "commit:ghost",
+      toId: "commit:new",
+      position: { x: 360, y: 520 },
+      resetGhostPosition: {
+        x: LANE.trunkX,
+        y: LANE.trunkStartY + LANE.trunkStep * 2,
+      },
+    },
+  );
+}
+
 function testCleaningWithoutACommitDoesNotMoveHead(): void {
   const before = buildGraph(args({
     gitCommits: [commit("head")],
@@ -703,7 +755,10 @@ function testPlanspaceLaneResizeReflowsLaterAutomaticLanes(): void {
   assert.ok(grownSecond);
   assert.ok(grownThird);
   assert.equal(grownSecond.position.y, originalSecond.position.y);
-  assert.equal(grownThird.position.y, grownFirst.position.y + (grownFirst.height ?? 0) + 40);
+  assert.equal(
+    grownThird.position.y,
+    grownFirst.position.y + (grownFirst.height ?? 0) + LANE.planspaceLaneGap,
+  );
 
   const restoredChild = grown.map((item) =>
     item.id === "work"
@@ -731,6 +786,51 @@ function testPlanspaceLaneResizeReflowsLaterAutomaticLanes(): void {
   assert.equal(
     fitted.find((item) => item.id === thirdLaneId)?.position.y,
     originalThird.position.y,
+  );
+}
+
+function testPlanspaceLaneReflowsStaleAutomaticPositionWithoutResize(): void {
+  const firstLaneId = "planspace:planspaces.alpha";
+  const secondLaneId = "planspace:planspaces.beta";
+  const layoutHints = { [firstLaneId]: { x: 360, y: -128 } };
+  const graph = buildGraph(args({
+    nodes: [node("work", { planspace_id: "planspaces.alpha" })],
+    knownPlanspaceIds: ["planspaces.alpha", "planspaces.beta"],
+    layoutHints,
+  }));
+  const firstLane = graph.rfNodes.find((item) => item.id === firstLaneId);
+  const secondLane = graph.rfNodes.find((item) => item.id === secondLaneId);
+  assert.ok(firstLane);
+  assert.ok(secondLane);
+
+  const stale = graph.rfNodes.map((item) =>
+    item.id === secondLaneId
+      ? { ...item, position: { ...item.position, y: 64 } }
+      : item,
+  );
+  const normalized = resizePlanspaceLanes(
+    stale,
+    new Set([firstLaneId, secondLaneId]),
+    true,
+    layoutHints,
+  );
+  const normalizedFirst = normalized.find((item) => item.id === firstLaneId);
+  const normalizedSecond = normalized.find((item) => item.id === secondLaneId);
+
+  assert.equal(normalizedFirst, firstLane);
+  assert.deepEqual(normalizedFirst?.position, layoutHints[firstLaneId]);
+  assert.equal(
+    normalizedSecond?.position.y,
+    firstLane.position.y + (firstLane.height ?? 0) + LANE.planspaceLaneGap,
+  );
+  assert.equal(
+    resizePlanspaceLanes(
+      normalized,
+      new Set([firstLaneId, secondLaneId]),
+      true,
+      layoutHints,
+    ),
+    normalized,
   );
 }
 
@@ -762,6 +862,159 @@ function testObservedSkillMetadataEnrichment(): void {
   assert.ok(observedSkill);
   assert.equal((observedSkill.data as { title?: string }).title, skill.title);
   assert.equal((observedSkill.data as { plugId?: string }).plugId, skill.id);
+}
+
+function testAutoAttachedSkillsFoldIntoTheirRootTile(): void {
+  const workflow = {
+    id: "skills.workflow",
+    slug: "workflow",
+    title: "Workflow",
+    description: "Composite workflow",
+    path: "/library/skills/workflow",
+  };
+  const helper = {
+    id: "skills.helper",
+    slug: "helper",
+    title: "Helper",
+    description: "Sibling dependency",
+    path: "/library/skills/helper",
+  };
+  const nested = {
+    id: "skills.nested",
+    slug: "nested",
+    title: "Nested",
+    description: "Transitive dependency",
+    path: "/library/skills/nested",
+  };
+  const member = {
+    id: "skills.member",
+    slug: "member",
+    title: "Member",
+    description: "Skill-pack member",
+    path: "/library/skills/member",
+  };
+  const librarySkills = [skill, workflow, helper, nested, member];
+  const audit = [
+    { id: workflow.id, used: false },
+    {
+      id: helper.id,
+      used: true,
+      auto_attached: true,
+      required_by: workflow.id,
+      attachment_reason: "dependency",
+    },
+    {
+      id: nested.id,
+      used: false,
+      auto_attached: true,
+      required_by: helper.id,
+      attachment_reason: "dependency",
+    },
+    {
+      id: member.id,
+      used: false,
+      auto_attached: true,
+      required_by: workflow.id,
+      attachment_reason: "package",
+    },
+  ];
+
+  /* Dependencies and pack members fold into the explicit root's single tile,
+   * including transitive chains (nested ← helper ← workflow). */
+  const folded = buildGraph(args({
+    nodes: [node("run", { settings_snapshot: { skill_audit: audit } })],
+    skills: librarySkills,
+  }));
+  const tiles = contextNodes(folded);
+  assert.equal(tiles.length, 1);
+  const tileData = tiles[0].data as {
+    plugId?: string;
+    attachedSkills?: Array<{ id: string; reason: string; usedByNodeIds: string[] }>;
+  };
+  assert.equal(tileData.plugId, workflow.id);
+  assert.deepEqual(
+    (tileData.attachedSkills ?? []).map((item) => item.id).sort(),
+    [helper.id, member.id, nested.id].sort(),
+  );
+  assert.equal(
+    tileData.attachedSkills?.find((item) => item.id === member.id)?.reason,
+    "package",
+  );
+  /* A folded dependency being invoked marks the root tile's edge as used. */
+  assert.equal(
+    folded.rfEdges.find((edge) => edge.type === "loads")?.data?.relation,
+    "used",
+  );
+
+  /* A skill explicitly loaded elsewhere keeps its own tile, and its direct
+   * loads exclude runs where it only rode along as a dependency. */
+  const shared = buildGraph(args({
+    nodes: [
+      node("first", { settings_snapshot: { skill_audit: audit } }),
+      node("second", {
+        settings_snapshot: { skill_audit: [{ id: helper.id, used: false }] },
+      }),
+    ],
+    skills: librarySkills,
+  }));
+  const sharedTiles = contextNodes(shared);
+  assert.equal(sharedTiles.length, 2);
+  const helperTile = sharedTiles.find(
+    (item) => (item.data as { plugId?: string }).plugId === helper.id,
+  );
+  assert.deepEqual(
+    (helperTile?.data as { loadedByNodeIds: string[] }).loadedByNodeIds,
+    ["second"],
+  );
+
+  /* An unresolvable required_by chain fails open onto its own tile. */
+  const orphan = buildGraph(args({
+    nodes: [node("run", {
+      settings_snapshot: {
+        skill_audit: [{
+          id: helper.id,
+          used: false,
+          auto_attached: true,
+          required_by: "skills.gone",
+          attachment_reason: "dependency",
+        }],
+      },
+    })],
+    skills: librarySkills,
+  }));
+  const orphanTiles = contextNodes(orphan);
+  assert.equal(orphanTiles.length, 1);
+  assert.equal((orphanTiles[0].data as { plugId?: string }).plugId, helper.id);
+
+  /* Declared virtual selections fold identically. */
+  const declared = buildGraph(args({
+    nodes: [node("draft", {
+      state: "virtual",
+      pending_extra_skills: [
+        { id: workflow.id, suggest: false },
+        {
+          id: helper.id,
+          suggest: false,
+          auto_attached: true,
+          required_by: workflow.id,
+          attachment_reason: "dependency",
+        },
+      ],
+    })],
+    skills: librarySkills,
+  }));
+  const declaredTiles = contextNodes(declared);
+  assert.equal(declaredTiles.length, 1);
+  assert.deepEqual(
+    (declaredTiles[0].data as {
+      attachedSkills?: Array<{ id: string }>;
+    }).attachedSkills?.map((item) => item.id),
+    [helper.id],
+  );
+  assert.equal(
+    declared.rfEdges.find((edge) => edge.type === "loads")?.data?.relation,
+    "declared",
+  );
 }
 
 function testEdgeWeights(): void {
@@ -814,6 +1067,8 @@ testProjectScopedLaneLabelShowsOnlyDirectionName();
 testVerticalCommitTrunkAndStableLaneX();
 testCommittedGhostTransfersItsPositionToNewHead();
 testRemainingChangesMoveToTheNextCommitSlot();
+testAlreadyRenderedCommitUsesRetainedGhostPosition();
+testAlreadyRenderedCommitDoesNotUseRemainingChangesPosition();
 testCleaningWithoutACommitDoesNotMoveHead();
 testUnrelatedHeadChangeDoesNotTransferGhost();
 testEpochLinksAndHoverGroups();
@@ -826,7 +1081,9 @@ testPlanspaceLaneMinimumDoesNotExceedAgentHeight();
 testPlanspaceLaneBuildAndDropShareBottomFit();
 testPlanspaceLaneLiveGrowthAndDropFit();
 testPlanspaceLaneResizeReflowsLaterAutomaticLanes();
+testPlanspaceLaneReflowsStaleAutomaticPositionWithoutResize();
 testObservedSkillMetadataEnrichment();
+testAutoAttachedSkillsFoldIntoTheirRootTile();
 testEdgeWeights();
 testPendingGateNodeLayer();
 console.log("canvas layout tests passed");

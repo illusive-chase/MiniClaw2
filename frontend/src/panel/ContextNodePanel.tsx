@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { PrincipleSummary, SkillSummary } from "../api";
+import type { AttachedSkillDisplay } from "../canvas/layout";
 import type { ContextBundle, NodeInfo } from "../types";
 
 export type ContextNodePanelProps = {
@@ -17,6 +18,8 @@ export type ContextNodePanelProps = {
   onDeletePrinciple?: (slug: string) => Promise<void> | void;
   skill?: SkillSummary | null;
   onDeleteSkill?: (slug: string) => Promise<void> | void;
+  /** Skills auto-attached with this skill, folded into its canvas tile. */
+  attachedSkills?: AttachedSkillDisplay[];
 };
 
 /**
@@ -35,6 +38,7 @@ export function ContextNodePanel({
   onDeletePrinciple,
   skill,
   onDeleteSkill,
+  attachedSkills,
 }: ContextNodePanelProps) {
   const source = sampleBundle?.sources.find((s) => s.path === path) ?? null;
   const kindHint = principle ? "principle" : skill ? "skill" : source?.kind;
@@ -69,6 +73,9 @@ export function ContextNodePanel({
           <PrincipleDetails principle={principle} onDelete={onDeletePrinciple} />
         )}
         {skill && <SkillDetails skill={skill} onDelete={onDeleteSkill} />}
+        {skill && attachedSkills && attachedSkills.length > 0 && (
+          <AttachedSkillList attachedSkills={attachedSkills} />
+        )}
 
         <section className="mb-4">
           <div className="mb-1 flex items-baseline justify-between text-[10px] font-medium uppercase tracking-[0.14em] text-ink-subtle">
@@ -258,6 +265,50 @@ function SkillDetails({
           <button type="button" onClick={() => setConfirming(true)} className="rounded border border-line px-2 py-0.5 text-[11px] text-ink-muted">Delete skill…</button>
         )
       )}
+    </section>
+  );
+}
+
+function AttachedSkillList({
+  attachedSkills,
+}: {
+  attachedSkills: AttachedSkillDisplay[];
+}) {
+  return (
+    <section className="mb-4">
+      <div className="mb-1 text-[10px] font-medium uppercase tracking-[0.14em] text-ink-subtle">
+        Attached skills ({attachedSkills.length})
+      </div>
+      <ul className="space-y-1">
+        {attachedSkills.map((item) => (
+          <li
+            key={item.id}
+            className="flex items-center gap-2 rounded-md border border-line bg-surface-raised px-3 py-1.5 text-[12px]"
+          >
+            <span className="min-w-0 flex-1 truncate text-ink-strong" title={item.id}>
+              {item.title}
+            </span>
+            <span
+              className={
+                "shrink-0 rounded-full px-1.5 py-px text-[9px] font-medium " +
+                (item.reason === "package"
+                  ? "bg-surface-sunken text-ink-muted"
+                  : "bg-state-review/10 text-state-review")
+              }
+            >
+              {item.reason}
+            </span>
+            <span className="shrink-0 text-[10px] text-ink-muted">
+              {item.usedByNodeIds.length > 0
+                ? `used by ${item.usedByNodeIds.length}`
+                : "unused"}
+            </span>
+          </li>
+        ))}
+      </ul>
+      <p className="mt-1 text-[10.5px] text-ink-muted">
+        Loaded automatically with this skill; folded into its tile on the canvas.
+      </p>
     </section>
   );
 }

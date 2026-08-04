@@ -1958,7 +1958,14 @@ export function App() {
     } catch (err) {
       setGitError(err instanceof Error ? err.message : String(err));
     } finally {
-      await Promise.all([refreshGit(), refreshNodes()]);
+      if (action === "commit") {
+        // The terminal-node effect queues the ghost-position target before it
+        // refreshes Git. Refreshing here can render the commit first and race
+        // that transfer signal.
+        await refreshNodes();
+      } else {
+        await Promise.all([refreshGit(), refreshNodes()]);
+      }
       setGitAction(null);
     }
   };

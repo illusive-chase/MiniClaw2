@@ -14,6 +14,12 @@ import type {
   CommitDescriptor,
 } from "../types";
 import type { PrincipleSummary, SkillSummary, UpdateVirtualPayload } from "../api";
+import {
+  coerceSkillAuditEntries,
+  splitSkillAttachments,
+  type AttachedSkillDisplay,
+  type SkillAttachmentEntry,
+} from "../canvas/layout";
 import { AgentPanel } from "./AgentPanel";
 import { ContextNodePanel } from "./ContextNodePanel";
 import { OpPanel } from "./OpPanel";
@@ -413,13 +419,20 @@ function Inner(props: SidePanelProps & { nodesById: Map<string, NodeInfo> }) {
       }
     }
     if (selection.plugId?.startsWith("skills.")) {
+      /* Auto-attached materializations don't count as direct loads — the
+       * canvas folds those under the explicitly selected skill. */
       for (const node of nodesById.values()) {
         const audit = node.settings_snapshot?.skill_audit;
         if (!Array.isArray(audit)) continue;
         if (audit.some((raw) => {
           if (!raw || typeof raw !== "object") return false;
           const item = raw as Record<string, unknown>;
-          return item.id === selection.plugId && item.missing !== true && item.failed !== true;
+          return (
+            item.id === selection.plugId &&
+            item.missing !== true &&
+            item.failed !== true &&
+            item.auto_attached !== true
+          );
         })) {
           loadedByNodeIds.push(node.id);
         }
@@ -444,6 +457,9 @@ function Inner(props: SidePanelProps & { nodesById: Map<string, NodeInfo> }) {
       selection.plugId && selection.plugId.startsWith("skills.") && skills
         ? skills.find((item) => item.id === selection.plugId) ?? null
         : null;
+    const attachedSkills = skill
+      ? collectAttachedSkills(skill.id, nodesById, skills)
+      : undefined;
     return (
       <ContextNodePanel
         identityKey={selection.identityKey}
@@ -456,6 +472,7 @@ function Inner(props: SidePanelProps & { nodesById: Map<string, NodeInfo> }) {
         onDeletePrinciple={principle ? onDeletePrinciple : undefined}
         skill={skill}
         onDeleteSkill={skill ? onDeleteSkill : undefined}
+        attachedSkills={attachedSkills}
       />
     );
   }
@@ -560,4 +577,69 @@ function isPlanspaceFileSelection(
   selection: Extract<CanvasSelection, { kind: "context" }>,
 ): boolean {
   return selection.scope === "project-root";
+}
+
+/**
+ * Aggregate the skills that were auto-attached under `rootSkillId` across
+ * every node's observed audit and pending declaration, mirroring the folding
+ * the canvas applies when it collapses dependencies into the root's tile.
+ */
+function collectAttachedSkills(
+  rootSkillId: string,
+  nodesById: Map<string, NodeInfo>,
+  skills: SkillSummary[] | undefined,
+): AttachedSkillDisplay[] {
+  const skillById = new Map((skills ?? []).map((item) => [item.id, item]));
+  const merged = new Map<
+    string,
+    { title: string; reason: "dependency" | "package"; usedBy: Set<string> }
+  >();
+  const record = (
+    entry: SkillAttachmentEntry,
+    usedByNodeId: string | null,
+  ): void => {
+    let info = merged.get(entry.id);
+    if (!info) {
+      info = {
+        title:
+          skillById.get(entry.id)?.title ??
+          entry.name ??
+          entry.id.replace(/^skills\./, ""),
+        reason: entry.attachment_reason === "package" ? "package" : "dependency",
+        usedBy: new Set<string>(),
+      };
+      merged.set(entry.id, info);
+    }
+    if (usedByNodeId) info.usedBy.add(usedByNodeId);
+  };
+  for (const node of nodesById.values()) {
+    const audited = splitSkillAttachments(
+      coerceSkillAuditEntries(node.settings_snapshot?.skill_audit),
+    );
+    for (const dep of audited.attachedByRoot.get(rootSkillId) ?? []) {
+      record(dep, dep.used === true ? node.id : null);
+    }
+    if (node.state !== "virtual") continue;
+    const declared = splitSkillAttachments(
+      (node.pending_extra_skills ?? [])
+        .filter((selection) => typeof selection?.id === "string")
+        .map((selection) => ({
+          id: selection.id,
+          auto_attached: selection.auto_attached === true,
+          required_by: selection.required_by,
+          attachment_reason: selection.attachment_reason,
+        })),
+    );
+    for (const dep of declared.attachedByRoot.get(rootSkillId) ?? []) {
+      record(dep, null);
+    }
+  }
+  return Array.from(merged.entries())
+    .map(([id, info]) => ({
+      id,
+      title: info.title,
+      reason: info.reason,
+      usedByNodeIds: Array.from(info.usedBy),
+    }))
+    .sort((a, b) => a.title.localeCompare(b.title));
 }

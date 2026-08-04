@@ -301,6 +301,16 @@ function CanvasInner({
   );
   const rfNodesRef = useRef(rfNodes);
   rfNodesRef.current = rfNodes;
+  const commitGhostPositionRef = useRef<{ x: number; y: number } | null>(
+    layoutHintsRef.current["commit:ghost"] ?? null,
+  );
+  const currentCommitGhost = rfNodes.find((node) => node.id === "commit:ghost");
+  if (currentCommitGhost) {
+    commitGhostPositionRef.current = {
+      x: currentCommitGhost.position.x,
+      y: currentCommitGhost.position.y,
+    };
+  }
 
   /* Sync upstream node changes into local state without trampling drag
    * positions. Critically, this effect must NOT depend on hover state — hover
@@ -315,6 +325,7 @@ function CanvasInner({
       rfNodesRef.current as RFNode[],
       layeredBuiltNodes,
       commitPositionTarget,
+      commitGhostPositionRef.current,
     );
     if (
       syncedBuiltNodesRef.current === layeredBuiltNodes &&
