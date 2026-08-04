@@ -321,6 +321,17 @@ function CanvasInner({
         let out: RFNode = runtime
           ? { ...runtime, ...n, zIndex: n.zIndex }
           : n;
+        /* Fresh graph nodes carry bootstrap dimensions, while React Flow's
+         * runtime copy contains the measured DOM size. Preserve the measured
+         * child geometry across status-driven graph rebuilds so lane fitting
+         * uses the same bounds as drag-stop fitting. */
+        if (runtime && n.type !== "planspaceLane") {
+          out = {
+            ...out,
+            width: runtime.width ?? n.width,
+            height: runtime.height ?? n.height,
+          };
+        }
         if (!hydrateFromLayout) {
           const existing = runtime?.position;
           if (
@@ -336,8 +347,18 @@ function CanvasInner({
         }
         return out;
       });
+      const laneIds = new Set(
+        next
+          .filter((node) => node.type === "planspaceLane")
+          .map((node) => node.id),
+      );
       return decorateSelection(
-        next,
+        resizePlanspaceLanes(
+          next,
+          laneIds,
+          true,
+          layoutHintsRef.current,
+        ),
         primarySelectionRef.current,
         true,
       );

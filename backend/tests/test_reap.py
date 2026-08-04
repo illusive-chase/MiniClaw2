@@ -448,6 +448,43 @@ class ReapDeletionTests(ReapTestBase):
         result = reap_lane(self.project, node, lane_root, pre, self.store)
         self.assertTrue(result.fatal)
 
+    def test_user_deleted_virtual_is_not_resurrected_by_stale_rewrite(self) -> None:
+        node = self._make_running_node(category=Category.PLANNING)
+        prior = Node(
+            id="v-existing",
+            project_id="p1",
+            kind=NodeKind.AGENT,
+            category=Category.REGULAR,
+            state=NodeState.VIRTUAL,
+            planspace_id="lane-A",
+            model_preset_id="gpt-5.5",
+            prompt_draft="initial",
+            proposed_by="user",
+            summary="initial motivation",
+        )
+        self.store.create_node(prior)
+        lane_root, pre = self._setup_lane(node)
+
+        self.store.delete_node("p1", prior.id)
+        stale_path = lane_root / "nodes" / prior.id / "preview.json"
+        stale_payload = json.loads(stale_path.read_text(encoding="utf-8"))
+        stale_payload["prompt_draft"] = "stale planner rewrite"
+        _write_preview(
+            stale_path,
+            stale_payload,
+        )
+        _write_preview(
+            lane_root / "nodes" / node.id / "preview.json",
+            _executed_payload(node.id, "lane-A", category="planning"),
+        )
+
+        result = reap_lane(self.project, node, lane_root, pre, self.store)
+
+        self.assertTrue(result.ok())
+        self.assertEqual(result.new_virtuals, [])
+        self.assertEqual(result.modified_virtuals, [])
+        self.assertIsNone(self.store.load_node("p1", prior.id))
+
 
 class ReapAtomicityTests(ReapTestBase):
     def test_fatal_batch_persists_nothing(self) -> None:

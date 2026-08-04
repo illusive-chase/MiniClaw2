@@ -1775,8 +1775,6 @@ class ProjectRegistry:
         if rt is None:
             return False, []
         self.require_native(pid)
-        if rt.is_running():
-            raise RuntimeError("turn in progress")
         node = self.store.load_node(pid, vid)
         if node is None:
             return False, []

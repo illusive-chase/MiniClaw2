@@ -356,6 +356,83 @@ function testPlanspaceChildrenHaveOneSidedExtent(): void {
   }
 }
 
+function testNewLaneNodeFollowsActualLayout(): void {
+  const planspaceId = "planspaces.alpha";
+  const graph = buildGraph(args({
+    nodes: [
+      node("old-1", { planspace_id: planspaceId, created_at: 1 }),
+      node("old-2", { planspace_id: planspaceId, created_at: 2 }),
+      node("old-3", { planspace_id: planspaceId, created_at: 3 }),
+      node("old-4", { planspace_id: planspaceId, created_at: 4 }),
+      node("new", { planspace_id: planspaceId, created_at: 5 }),
+    ],
+    knownPlanspaceIds: [planspaceId],
+    layoutHints: {
+      "old-1": { x: 40, y: 128 },
+      "old-2": { x: 320, y: 128 },
+      "old-3": { x: 40, y: 280 },
+      "old-4": { x: 320, y: 280 },
+    },
+  }));
+
+  assert.deepEqual(
+    graph.rfNodes.find((item) => item.id === "new")?.position,
+    { x: 600, y: LANE.planspaceLaneAgentRowY },
+  );
+}
+
+function testSingleRowPlanspaceLaneUsesCompactHeight(): void {
+  const laneId = "planspace:planspaces.alpha";
+  const graph = buildGraph(args({
+    nodes: [node("work", { planspace_id: "planspaces.alpha" })],
+    knownPlanspaceIds: ["planspaces.alpha"],
+  }));
+  const lane = graph.rfNodes.find((item) => item.id === laneId);
+  const work = graph.rfNodes.find((item) => item.id === "work");
+
+  assert.equal(work?.position.y, LANE.planspaceLaneAgentRowY);
+  assert.equal(lane?.height, LANE.planspaceLaneHeight);
+  assert.equal(
+    LANE.planspaceLaneAgentRowY +
+      LANE.agentHeight +
+      LANE.planspaceLaneBottomPadding,
+    LANE.planspaceLaneHeight,
+  );
+}
+
+function testPlanspaceLaneBuildAndDropShareBottomFit(): void {
+  const laneId = "planspace:planspaces.alpha";
+  const workY = 480;
+  const graph = buildGraph(args({
+    nodes: [node("work", { planspace_id: "planspaces.alpha" })],
+    knownPlanspaceIds: ["planspaces.alpha"],
+    layoutHints: { work: { x: 720, y: workY } },
+  }));
+  const builtLane = graph.rfNodes.find((item) => item.id === laneId);
+  const work = graph.rfNodes.find((item) => item.id === "work");
+  assert.ok(builtLane);
+  assert.ok(work);
+  assert.equal(
+    builtLane.height,
+    workY + (work.height ?? 0) + LANE.planspaceLaneBottomPadding,
+  );
+
+  const oversized = graph.rfNodes.map((item) =>
+    item.id === laneId
+      ? {
+          ...item,
+          height: 1200,
+          data: { ...item.data, height: 1200 },
+        }
+      : item,
+  );
+  const dropped = resizePlanspaceLanes(oversized, new Set([laneId]), true);
+  assert.equal(
+    dropped.find((item) => item.id === laneId)?.height,
+    builtLane.height,
+  );
+}
+
 function testPlanspaceLaneLiveGrowthAndDropFit(): void {
   const laneId = "planspace:planspaces.alpha";
   const graph = buildGraph(args({
@@ -379,6 +456,14 @@ function testPlanspaceLaneLiveGrowthAndDropFit(): void {
   assert.equal(stoppedTargets.growLaneIds.size, 0);
   assert.deepEqual([...stoppedTargets.fitLaneIds], [laneId]);
 
+  const measuredTargets = classifyPlanspaceLaneResizes(graph.rfNodes, [{
+    id: "work",
+    type: "dimensions",
+    dimensions: { width: 224, height: 110 },
+  }]);
+  assert.equal(measuredTargets.growLaneIds.size, 0);
+  assert.deepEqual([...measuredTargets.fitLaneIds], [laneId]);
+
   const moved = graph.rfNodes.map((item) =>
     item.id === "work"
       ? { ...item, position: { x: 720, y: 480 }, width: 224, height: 100 }
@@ -387,7 +472,7 @@ function testPlanspaceLaneLiveGrowthAndDropFit(): void {
   const grown = resizePlanspaceLanes(moved, new Set([laneId]), false);
   const grownLane = grown.find((item) => item.id === laneId);
   assert.equal(grownLane?.width, 720 + 224 + LANE.planspaceLanePaddingX);
-  assert.equal(grownLane?.height, 480 + 100 + LANE.planspaceLanePaddingY);
+  assert.equal(grownLane?.height, 480 + 100 + LANE.planspaceLaneBottomPadding);
   assert.equal((grownLane?.data as { width?: number }).width, grownLane?.width);
   assert.equal((grownLane?.data as { height?: number }).height, grownLane?.height);
 
@@ -562,6 +647,9 @@ testEpochLinksAndHoverGroups();
 testBindingDrivenContextTiles();
 testFloatingContextDoesNotOverlapFirstLane();
 testPlanspaceChildrenHaveOneSidedExtent();
+testNewLaneNodeFollowsActualLayout();
+testSingleRowPlanspaceLaneUsesCompactHeight();
+testPlanspaceLaneBuildAndDropShareBottomFit();
 testPlanspaceLaneLiveGrowthAndDropFit();
 testPlanspaceLaneResizeReflowsLaterAutomaticLanes();
 testObservedSkillMetadataEnrichment();

@@ -438,6 +438,12 @@ type VirtualDraft = {
   obsoleteReason: string;
 };
 
+type PendingLocalVirtualUpdate = {
+  nodeId: string;
+  persistedSignature: string;
+  draftAfterAck: VirtualDraft;
+};
+
 function VirtualNodeBody({
   node,
   nodesById,
@@ -489,7 +495,14 @@ function EditableVirtualNodeBody({
   focusRequestVersion: number;
 }) {
 
-  const [draft, setDraft] = useState<VirtualDraft>(() => virtualDraftFromNode(node));
+  const persistedDraft = virtualDraftFromNode(node);
+  const persistedDraftSignature = JSON.stringify(persistedDraft);
+  const persistedDraftRef = useRef({
+    nodeId: node.id,
+    signature: persistedDraftSignature,
+  });
+  const pendingLocalUpdateRef = useRef<PendingLocalVirtualUpdate | null>(null);
+  const [draft, setDraft] = useState<VirtualDraft>(() => persistedDraft);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const promptDraftRef = useRef<HTMLTextAreaElement | null>(null);
@@ -505,26 +518,44 @@ function EditableVirtualNodeBody({
     [nodesById, node.id, node.planspace_id],
   );
   const dirty = useMemo(
-    () => JSON.stringify(draft) !== JSON.stringify(virtualDraftFromNode(node)),
-    [draft, node],
+    () => JSON.stringify(draft) !== persistedDraftSignature,
+    [draft, persistedDraftSignature],
   );
 
   useEffect(() => {
-    setDraft(virtualDraftFromNode(node));
+    const previous = persistedDraftRef.current;
+    const pendingLocalUpdate = pendingLocalUpdateRef.current;
+    const acknowledgedLocalUpdate =
+      pendingLocalUpdate?.nodeId === node.id &&
+      pendingLocalUpdate.persistedSignature === persistedDraftSignature;
+    persistedDraftRef.current = {
+      nodeId: node.id,
+      signature: persistedDraftSignature,
+    };
+
+    if (
+      previous.nodeId === node.id &&
+      previous.signature === persistedDraftSignature
+    ) {
+      return;
+    }
+
+    if (previous.nodeId !== node.id) {
+      pendingLocalUpdateRef.current = null;
+    } else if (acknowledgedLocalUpdate) {
+      pendingLocalUpdateRef.current = null;
+    }
+
+    setDraft(
+      acknowledgedLocalUpdate
+        ? pendingLocalUpdate.draftAfterAck
+        : persistedDraft,
+    );
     setError(null);
-  }, [
-    node.id,
-    node.prompt_draft,
-    node.summary,
-    node.category,
-    node.subtype,
-    node.brief,
-    node.model_preset_id,
-    node.scheduled_deps,
-    node.pending_extra_principles,
-    node.pending_extra_skills,
-    node.obsolete_reason,
-  ]);
+    if (previous.nodeId === node.id && !acknowledgedLocalUpdate) {
+      window.alert("此 virtual node 的持久化内容已更新，已重新加载。");
+    }
+  }, [node.id, persistedDraftSignature]);
 
   useEffect(() => {
     if (focusRequestVersion <= 0) return;
@@ -536,11 +567,28 @@ function EditableVirtualNodeBody({
   }, [node.id, focusRequestVersion]);
 
   const save = async () => {
+    const draftAfterAck = virtualDraftAfterSave(draft);
+    const pendingLocalUpdate: PendingLocalVirtualUpdate = {
+      nodeId: node.id,
+      persistedSignature: JSON.stringify(draftAfterAck),
+      draftAfterAck,
+    };
+    pendingLocalUpdateRef.current = pendingLocalUpdate;
     setSaving(true);
     setError(null);
     try {
       await onUpdateVirtual(node.id, virtualPayloadFromDraft(draft, node));
+      if (
+        pendingLocalUpdateRef.current === pendingLocalUpdate &&
+        persistedDraftRef.current.signature === pendingLocalUpdate.persistedSignature
+      ) {
+        pendingLocalUpdateRef.current = null;
+        setDraft(draftAfterAck);
+      }
     } catch (err) {
+      if (pendingLocalUpdateRef.current === pendingLocalUpdate) {
+        pendingLocalUpdateRef.current = null;
+      }
       setError(errorMessage(err));
     } finally {
       setSaving(false);
@@ -552,6 +600,16 @@ function EditableVirtualNodeBody({
       ? ""
       : "Obsoleted by user";
     const nextDraft = { ...draft, obsoleteReason: nextReason };
+    const expectedPersistedDraft = {
+      ...persistedDraft,
+      obsoleteReason: nextReason,
+    };
+    const pendingLocalUpdate: PendingLocalVirtualUpdate = {
+      nodeId: node.id,
+      persistedSignature: JSON.stringify(expectedPersistedDraft),
+      draftAfterAck: nextDraft,
+    };
+    pendingLocalUpdateRef.current = pendingLocalUpdate;
     setDraft(nextDraft);
     setSaving(true);
     setError(null);
@@ -559,7 +617,17 @@ function EditableVirtualNodeBody({
       await onUpdateVirtual(node.id, {
         obsolete_reason: nextReason || null,
       });
+      if (
+        pendingLocalUpdateRef.current === pendingLocalUpdate &&
+        persistedDraftRef.current.signature === pendingLocalUpdate.persistedSignature
+      ) {
+        pendingLocalUpdateRef.current = null;
+        setDraft(nextDraft);
+      }
     } catch (err) {
+      if (pendingLocalUpdateRef.current === pendingLocalUpdate) {
+        pendingLocalUpdateRef.current = null;
+      }
       setError(errorMessage(err));
     } finally {
       setSaving(false);
@@ -1237,6 +1305,25 @@ function virtualDraftFromNode(node: NodeInfo): VirtualDraft {
     pendingExtraPrinciples: [...(node.pending_extra_principles ?? [])],
     pendingExtraSkills: [...(node.pending_extra_skills ?? [])],
     obsoleteReason: node.obsolete_reason || "",
+  };
+}
+
+function virtualDraftAfterSave(draft: VirtualDraft): VirtualDraft {
+  if (draft.category === "review") {
+    return {
+      ...draft,
+      obsoleteReason: draft.obsoleteReason.trim(),
+    };
+  }
+  return {
+    ...draft,
+    subtype: "agentic_review",
+    brief: {
+      check_what: "",
+      expected: "",
+      abnormal: "",
+    },
+    obsoleteReason: draft.obsoleteReason.trim(),
   };
 }
 

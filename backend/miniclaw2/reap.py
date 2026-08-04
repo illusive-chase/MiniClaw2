@@ -164,6 +164,13 @@ def reap_lane(
     for ident, (preview, rel) in parsed.items():
         if ident == node.id:
             continue
+        existing = store.load_node(project.id, ident)
+        if existing is None and rel in pre_snapshot:
+            # The materialized preview existed at launch, so this is a stale
+            # rewrite of a node the user deleted while the run was active.
+            # The user deletion wins, even if the stale payload no longer
+            # satisfies current agent-authoring rules.
+            continue
         if (
             isinstance(preview, VirtualPreview)
             and "model_preset_id" in preview.model_fields_set
@@ -174,7 +181,6 @@ def reap_lane(
             )
             result.fatal = True
             return result
-        existing = store.load_node(project.id, ident)
         if existing is None:
             # Treat ident as a new slug. Must be a virtual preview.
             if not isinstance(preview, VirtualPreview):

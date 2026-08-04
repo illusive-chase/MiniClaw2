@@ -543,15 +543,30 @@ class VirtualEditRegistryTests(unittest.TestCase):
         self.assertEqual(blockers, [child.id])
         self.assertIsNotNone(self.store.load_node(self.project.id, parent.id))
 
-    def test_delete_virtual_rejects_when_project_running(self) -> None:
-        node = self._virtual("busy")
+    def test_delete_unrelated_virtual_while_project_running(self) -> None:
+        running = Node(
+            id="running",
+            project_id=self.project.id,
+            kind=NodeKind.AGENT,
+            category=Category.REGULAR,
+            state=NodeState.RUNNING,
+            planspace_id=self.lane,
+            model_preset_id="gpt-5.5",
+            prompt="work",
+        )
+        self.store.create_node(running)
+        node = self._virtual("unrelated")
         runtime = self.registry._runtimes[self.project.id]
-        runtime.runner_tasks["busy"] = _PendingTask()  # type: ignore[assignment]
+        runtime.runner_tasks[running.id] = _PendingTask()  # type: ignore[assignment]
         try:
-            with self.assertRaisesRegex(RuntimeError, "turn in progress"):
-                self.registry.delete_virtual(self.project.id, node.id)
+            deleted, blockers = self.registry.delete_virtual(self.project.id, node.id)
         finally:
-            runtime.runner_tasks["busy"].cancel()
+            runtime.runner_tasks[running.id].cancel()
+
+        self.assertTrue(deleted)
+        self.assertEqual(blockers, [])
+        self.assertIsNone(self.store.load_node(self.project.id, node.id))
+        self.assertIsNotNone(self.store.load_node(self.project.id, running.id))
 
 
 class VirtualEditApiTests(unittest.TestCase):

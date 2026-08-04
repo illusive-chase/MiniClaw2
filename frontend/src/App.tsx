@@ -1072,7 +1072,10 @@ export function App() {
 
   const deleteVirtualNode = useCallback(
     async (nodeId: string) => {
-      if (!session?.id || projectRunnerBusy || composerLocked) return;
+      if (!session?.id) throw new Error("No active project.");
+      if (virtualCreateDisabled) {
+        throw new Error("Virtual deletion is temporarily unavailable.");
+      }
       setSessionContextSpaceError(null);
       await deleteVirtual(session.id, nodeId);
       setNodes((prev) => {
@@ -1088,7 +1091,7 @@ export function App() {
         setSelection({ kind: "none" });
       }
     },
-    [session?.id, projectRunnerBusy, composerLocked, inspectNode],
+    [session?.id, virtualCreateDisabled, inspectNode],
   );
 
   const rerunFailedNode = useCallback(

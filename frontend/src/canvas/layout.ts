@@ -133,9 +133,10 @@ export const LANE = {
   planspaceLaneSpacing: 360,
   planspaceLanePaddingX: 40,
   planspaceLanePaddingY: 40,
-  planspaceLaneCtxRowY: 52,
-  planspaceLaneAgentRowY: 156,
-  planspaceLaneHeight: 320,
+  planspaceLaneBottomPadding: 20,
+  planspaceLaneCtxRowY: 48,
+  planspaceLaneAgentRowY: 128,
+  planspaceLaneHeight: 280,
   /* Horizontal step between ctx tiles inside a lane (tile width ~160 + gap). */
   planspaceCtxStep: 180,
 };
@@ -411,10 +412,19 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
     layoutHints,
   );
   const laneCursors = new Map<string, number>();
-  const advanceLane = (laneId: string, by: number): number => {
-    const cur = laneCursors.get(laneId) ?? LANE.planspaceLanePaddingX;
-    laneCursors.set(laneId, cur + by);
-    return cur;
+  const nextLanePosition = (
+    laneId: string,
+    spacing: number,
+    stored: { x: number; y: number } | undefined,
+    defaultY: number,
+  ): { x: number; y: number } => {
+    const cursor = laneCursors.get(laneId) ?? LANE.planspaceLanePaddingX;
+    const position = stored ?? { x: cursor, y: defaultY };
+    /* Advance from the position that is actually on the canvas. When older
+     * nodes have been rearranged into rows, counting their historical slots
+     * would send the next unanchored node far beyond the visible layout. */
+    laneCursors.set(laneId, Math.max(cursor, position.x + spacing));
+    return position;
   };
   const recordChildExtent = (
     laneId: string,
@@ -449,8 +459,12 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
       height: number,
       defaultY: number,
     ) => {
-      const cursor = advanceLane(planspaceId!, spacing);
-      const position = stored ?? { x: cursor, y: defaultY };
+      const position = nextLanePosition(
+        planspaceId!,
+        spacing,
+        stored,
+        defaultY,
+      );
       recordChildExtent(planspaceId!, position.x, position.y, width, height);
       nodeRelativePositions.set(node.id, position);
       return position;
@@ -997,7 +1011,7 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
       laneChildMaxY.get(planspaceId) ?? (LANE.planspaceLaneAgentRowY + LANE.agentHeight);
     const height = Math.max(
       LANE.planspaceLaneHeight,
-      maxBottom + LANE.planspaceLanePaddingY,
+      maxBottom + LANE.planspaceLaneBottomPadding,
     );
     const hintedPos = layoutHints[`planspace:${planspaceId}`];
     const fallbackPos = laneAbsPos.get(planspaceId);
@@ -1038,8 +1052,20 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
   }
   rfNodes.splice(0, 0, ...laneNodes);
 
-  return {
+  /* Use the same child-bounds calculation as interactive drag-stop fitting.
+   * The incremental extents above are useful while materializing the lane,
+   * but React Flow node dimensions are the canonical geometry exposed to the
+   * resize path. Keeping the final fit shared prevents upstream node updates
+   * from restoring a different bottom gutter than a manual drag. */
+  const fittedRfNodes = resizePlanspaceLanes(
     rfNodes,
+    new Set(laneNodes.map((node) => node.id)),
+    true,
+    layoutHints,
+  );
+
+  return {
+    rfNodes: fittedRfNodes,
     rfEdges,
     epochMembersByCommitSha,
     commitHubIdByNodeId,
@@ -1073,7 +1099,7 @@ export function resizePlanspaceLanes(
     );
     desired.height = Math.max(
       desired.height,
-      node.position.y + (node.height ?? 0) + LANE.planspaceLanePaddingY,
+      node.position.y + (node.height ?? 0) + LANE.planspaceLaneBottomPadding,
     );
   }
 
@@ -1134,6 +1160,11 @@ export function classifyPlanspaceLaneResizes(
   const fitLaneIds = new Set<string>();
   const currentById = new Map(nodes.map((node) => [node.id, node]));
   for (const change of changes) {
+    if (change.type === "dimensions") {
+      const parentNode = currentById.get(change.id)?.parentNode;
+      if (parentNode?.startsWith("planspace:")) fitLaneIds.add(parentNode);
+      continue;
+    }
     if (change.type !== "position") continue;
     const parentNode = currentById.get(change.id)?.parentNode;
     if (!parentNode?.startsWith("planspace:")) continue;
