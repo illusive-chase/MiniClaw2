@@ -988,8 +988,8 @@ export function App() {
   );
 
   const updateVirtualNode = useCallback(
-    async (nodeId: string, payload: UpdateVirtualPayload) => {
-      if (!session?.id) return;
+    async (nodeId: string, payload: UpdateVirtualPayload): Promise<NodeInfo | undefined> => {
+      if (!session?.id) return undefined;
       setSessionContextSpaceError(null);
       try {
         const result = await updateVirtual(session.id, nodeId, payload);
@@ -999,6 +999,7 @@ export function App() {
           nodesRef.current = updated;
           return updated;
         });
+        return result.node;
       } catch (err) {
         setSessionContextSpaceError(String(err));
         throw err;
@@ -1626,6 +1627,25 @@ export function App() {
     return activeId;
   }, [sessionContextSpace]);
 
+  /* Dequeue is decided by the queued node's own lane mode (matching the
+   * backend), not by which lane is active, so track auto lanes as a set.
+   * Lanes without a planspace plug default to manual, like the backend. */
+  const autoPlanspaceIds = useMemo(() => {
+    const out = new Set<string>();
+    for (const binding of sessionContextSpace?.bindings ?? []) {
+      for (const plug of binding.plugs) {
+        if (plug.kind === "planspace" && plug.mode === "auto") out.add(plug.id);
+      }
+    }
+    return out;
+  }, [sessionContextSpace]);
+
+  const isManualPlanspace = useCallback(
+    (planspaceId: string | null | undefined): boolean =>
+      Boolean(planspaceId) && !autoPlanspaceIds.has(planspaceId ?? ""),
+    [autoPlanspaceIds],
+  );
+
   const hiddenPlanspaceIds = useMemo(() => {
     const hidden = new Set<string>();
     for (const [id, pref] of Object.entries(sessionContextSpace?.planspace_view ?? {})) {
@@ -1805,8 +1825,9 @@ export function App() {
       onDequeueNode: dequeueQueuedNode,
       onCreateContinuationVirtual: createContinuationVirtual,
       onCreateDependencyVirtual: createDependencyVirtual,
-      onMarkVirtualObsolete: (nodeId) =>
-        updateVirtualNode(nodeId, { obsolete_reason: "Obsoleted by user" }),
+      onMarkVirtualObsolete: async (nodeId) => {
+        await updateVirtualNode(nodeId, { obsolete_reason: "Obsoleted by user" });
+      },
       onDeleteVirtual: deleteVirtualNode,
       onInterruptNode: interruptNode,
       onRerunNode: rerunFailedNode,
@@ -1814,6 +1835,7 @@ export function App() {
       canPromoteVirtual: !projectMutationPending && !readOnly,
       canDequeue: !projectMutationPending && !readOnly,
       manualPromotionPlanspaceId,
+      isManualPlanspace,
       canInterrupt: canInterruptRunner && !readOnly,
       canRerun: !projectMutationPending && !readOnly,
       pendingGateForNode: (nodeId) =>
@@ -1835,6 +1857,7 @@ export function App() {
     virtualCreateDisabled,
     projectMutationPending,
     manualPromotionPlanspaceId,
+    isManualPlanspace,
     readOnly,
     canInterruptRunner,
     composerLocked,
@@ -2216,6 +2239,7 @@ export function App() {
                 canInterrupt={canInterruptRunner && !readOnly}
                 canRerun={!projectMutationPending && !readOnly}
                 manualPromotionPlanspaceId={manualPromotionPlanspaceId}
+                isManualPlanspace={isManualPlanspace}
                 onPlanspaceModeChange={changePlanspaceMode}
                 onContextInit={runContextInit}
                 onContextRefresh={runContextRefresh}

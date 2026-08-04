@@ -127,9 +127,12 @@ function AgentNodeImpl({ data, selected }: NodeProps<AgentNodeData>) {
         onClick: () => agentNodeContext.onPromoteVirtual(node.id),
       });
     }
+    /* Dequeue follows the node's own lane mode, mirroring the backend: a
+     * queued node in any manual lane stays dequeueable even when another
+     * lane is active. */
     if (
       node.state === "queued" &&
-      node.planspace_id === agentNodeContext.manualPromotionPlanspaceId
+      agentNodeContext.isManualPlanspace(node.planspace_id)
     ) {
       items.push({
         key: "dequeue",
@@ -475,6 +478,7 @@ export type AgentNodeContext = {
   canPromoteVirtual: boolean;
   canDequeue: boolean;
   manualPromotionPlanspaceId: string | null;
+  isManualPlanspace: (planspaceId: string | null | undefined) => boolean;
   canInterrupt: boolean;
   canRerun: boolean;
   pendingGateForNode: (nodeId: string) => InteractionRequest | null;
@@ -495,6 +499,7 @@ let agentNodeContext: AgentNodeContext = {
   canPromoteVirtual: false,
   canDequeue: false,
   manualPromotionPlanspaceId: null,
+  isManualPlanspace: () => false,
   canInterrupt: false,
   canRerun: false,
   pendingGateForNode: () => null,

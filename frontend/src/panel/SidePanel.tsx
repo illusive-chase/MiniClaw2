@@ -92,12 +92,16 @@ export type SidePanelProps = {
   onCreateContinuationVirtual: (nodeId: string) => void;
   onPromoteVirtual: (nodeId: string) => Promise<void>;
   onDequeueNode: (nodeId: string) => Promise<void>;
-  onUpdateVirtual: (nodeId: string, payload: UpdateVirtualPayload) => Promise<void>;
+  onUpdateVirtual: (
+    nodeId: string,
+    payload: UpdateVirtualPayload,
+  ) => Promise<NodeInfo | undefined>;
   onInterruptNode: (nodeId: string) => void;
   onRerunNode: (nodeId: string) => void;
   canInterrupt: boolean;
   canRerun: boolean;
   manualPromotionPlanspaceId: string | null;
+  isManualPlanspace: (planspaceId: string | null | undefined) => boolean;
   onPlanspaceModeChange: (planspaceId: string, mode: PlanspaceMode) => void;
   onContextInit: () => void;
   onContextRefresh: () => void;
@@ -201,6 +205,7 @@ function Inner(props: SidePanelProps & { nodesById: Map<string, NodeInfo> }) {
     canInterrupt,
     canRerun,
     manualPromotionPlanspaceId,
+    isManualPlanspace,
     onPlanspaceModeChange,
     onContextInit,
     onContextRefresh,
@@ -367,6 +372,7 @@ function Inner(props: SidePanelProps & { nodesById: Map<string, NodeInfo> }) {
         canRerun={canRerun && !session.read_only}
         canMutate={!session.read_only}
         manualPromotionPlanspaceId={manualPromotionPlanspaceId}
+        isManualPlanspace={isManualPlanspace}
         focusRequestVersion={focusRequestVersion}
         onSelectArtifact={onSelectArtifact}
       />

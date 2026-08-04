@@ -68,13 +68,17 @@ export type AgentPanelProps = {
   onCreateContinuationVirtual: (nodeId: string) => void;
   onPromoteVirtual: (nodeId: string) => Promise<void>;
   onDequeueNode: (nodeId: string) => Promise<void>;
-  onUpdateVirtual: (nodeId: string, payload: UpdateVirtualPayload) => Promise<void>;
+  onUpdateVirtual: (
+    nodeId: string,
+    payload: UpdateVirtualPayload,
+  ) => Promise<NodeInfo | undefined>;
   onInterruptNode: (nodeId: string) => void;
   onRerunNode: (nodeId: string) => void;
   canInterrupt: boolean;
   canRerun: boolean;
   canMutate: boolean;
   manualPromotionPlanspaceId: string | null;
+  isManualPlanspace: (planspaceId: string | null | undefined) => boolean;
   focusRequestVersion: number;
   onSelectArtifact: (
     nodeId: string,
@@ -110,6 +114,7 @@ export function AgentPanel({
   canRerun,
   canMutate,
   manualPromotionPlanspaceId,
+  isManualPlanspace,
   focusRequestVersion,
   onSelectArtifact,
 }: AgentPanelProps) {
@@ -242,9 +247,12 @@ export function AgentPanel({
                   ↻ Rerun
                 </button>
               )}
+            {/* Dequeue follows the node's own lane mode (like the backend),
+                not the active lane, so queued nodes in inactive manual lanes
+                stay dequeueable. */}
             {node.state === "queued" &&
               canMutate &&
-              node.planspace_id === manualPromotionPlanspaceId && (
+              isManualPlanspace(node.planspace_id) && (
               <button
                 type="button"
                 onClick={() => void dequeue()}
@@ -502,9 +510,17 @@ type VirtualDraft = {
   obsoleteReason: string;
 };
 
+/* Tracks one in-flight local write. The backend normalizes saved drafts
+ * (trims, category resets, auto-attached skill expansion) instead of echoing
+ * them byte-for-byte, so `persistedSignature`/`draftAfterAck` start as a
+ * client-side prediction and are replaced with the server's actual response
+ * once it arrives. `sentSignature` stays the prediction of the draft that was
+ * sent, and is only used to detect user edits made while the write was in
+ * flight (those must not be clobbered by the acknowledgement). */
 type PendingLocalVirtualUpdate = {
   nodeId: string;
   persistedSignature: string;
+  sentSignature: string;
   draftAfterAck: VirtualDraft;
 };
 
@@ -518,7 +534,10 @@ type VirtualNodeBodyProps = {
   modelPresets: ModelPreset[];
   principles?: PrincipleSummary[];
   skills?: SkillSummary[];
-  onUpdateVirtual: (nodeId: string, payload: UpdateVirtualPayload) => Promise<void>;
+  onUpdateVirtual: (
+    nodeId: string,
+    payload: UpdateVirtualPayload,
+  ) => Promise<NodeInfo | undefined>;
   onPromotabilityChange: (nodeId: string, ready: boolean) => void;
   focusRequestVersion: number;
 };
@@ -625,7 +644,7 @@ const EditableVirtualNodeBody = forwardRef<VirtualNodeBodyHandle, VirtualNodeBod
         const latestSignature = JSON.stringify(
           virtualDraftAfterSave(draftRef.current),
         );
-        if (latestSignature === pendingLocalUpdate.persistedSignature) {
+        if (latestSignature === pendingLocalUpdate.sentSignature) {
           draftRef.current = pendingLocalUpdate.draftAfterAck;
           setDraft(pendingLocalUpdate.draftAfterAck);
         }
@@ -667,22 +686,29 @@ const EditableVirtualNodeBody = forwardRef<VirtualNodeBodyHandle, VirtualNodeBod
             return false;
           }
 
-          const draftAfterAck = virtualDraftAfterSave(draftToSave);
+          const predictedDraft = virtualDraftAfterSave(draftToSave);
+          const sentSignature = JSON.stringify(predictedDraft);
           const pendingLocalUpdate: PendingLocalVirtualUpdate = {
             nodeId: node.id,
-            persistedSignature: JSON.stringify(draftAfterAck),
-            draftAfterAck,
+            persistedSignature: sentSignature,
+            sentSignature,
+            draftAfterAck: predictedDraft,
           };
           pendingLocalUpdateRef.current = pendingLocalUpdate;
-          await onUpdateVirtual(
+          const updatedNode = await onUpdateVirtual(
             node.id,
             virtualPayloadFromDraft(draftToSave, node),
           );
+          if (updatedNode) {
+            const serverDraft = virtualDraftFromNode(updatedNode);
+            pendingLocalUpdate.persistedSignature = JSON.stringify(serverDraft);
+            pendingLocalUpdate.draftAfterAck = serverDraft;
+          }
 
           const latestSignature = JSON.stringify(
             virtualDraftAfterSave(draftRef.current),
           );
-          if (latestSignature !== pendingLocalUpdate.persistedSignature) {
+          if (latestSignature !== pendingLocalUpdate.sentSignature) {
             continue;
           }
           if (
@@ -690,8 +716,8 @@ const EditableVirtualNodeBody = forwardRef<VirtualNodeBodyHandle, VirtualNodeBod
             persistedDraftRef.current.signature === pendingLocalUpdate.persistedSignature
           ) {
             pendingLocalUpdateRef.current = null;
-            draftRef.current = draftAfterAck;
-            setDraft(draftAfterAck);
+            draftRef.current = pendingLocalUpdate.draftAfterAck;
+            setDraft(pendingLocalUpdate.draftAfterAck);
           }
           return true;
         }
@@ -722,6 +748,7 @@ const EditableVirtualNodeBody = forwardRef<VirtualNodeBodyHandle, VirtualNodeBod
     const pendingLocalUpdate: PendingLocalVirtualUpdate = {
       nodeId: node.id,
       persistedSignature: JSON.stringify(expectedPersistedDraft),
+      sentSignature: JSON.stringify(virtualDraftAfterSave(nextDraft)),
       draftAfterAck: nextDraft,
     };
     pendingLocalUpdateRef.current = pendingLocalUpdate;
@@ -729,15 +756,25 @@ const EditableVirtualNodeBody = forwardRef<VirtualNodeBodyHandle, VirtualNodeBod
     setSaving(true);
     setError(null);
     try {
-      await onUpdateVirtual(node.id, {
+      const updatedNode = await onUpdateVirtual(node.id, {
         obsolete_reason: nextReason || null,
       });
+      if (updatedNode) {
+        // Only obsolete_reason was written; keep any other unsaved local
+        // edits and adopt just the server-normalized reason.
+        const serverDraft = virtualDraftFromNode(updatedNode);
+        pendingLocalUpdate.persistedSignature = JSON.stringify(serverDraft);
+        pendingLocalUpdate.draftAfterAck = {
+          ...nextDraft,
+          obsoleteReason: serverDraft.obsoleteReason,
+        };
+      }
       if (
         pendingLocalUpdateRef.current === pendingLocalUpdate &&
         persistedDraftRef.current.signature === pendingLocalUpdate.persistedSignature
       ) {
         pendingLocalUpdateRef.current = null;
-        setDraft(nextDraft);
+        setDraft(pendingLocalUpdate.draftAfterAck);
       }
     } catch (err) {
       if (pendingLocalUpdateRef.current === pendingLocalUpdate) {
