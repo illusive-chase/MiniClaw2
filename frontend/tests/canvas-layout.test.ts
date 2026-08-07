@@ -199,6 +199,52 @@ function testVerticalCommitTrunkAndStableLaneX(): void {
   assert.equal(empty.rfEdges.length, 0);
 }
 
+function testCommitLayoutResolvesShaAliases(): void {
+  const aliasedCommit = {
+    ...commit("rebased"),
+    aliases: ["oldest", "old"],
+  };
+  const aliasPosition = { x: 360, y: 520 };
+  const fallback = buildGraph(args({
+    gitCommits: [aliasedCommit],
+    layoutHints: { "commit:old": aliasPosition },
+  }));
+
+  assert.deepEqual(
+    fallback.rfNodes.find((item) => item.id === "commit:rebased")?.position,
+    aliasPosition,
+  );
+
+  const firstAliasPosition = { x: 240, y: 400 };
+  const ordered = buildGraph(args({
+    gitCommits: [aliasedCommit],
+    layoutHints: {
+      "commit:oldest": firstAliasPosition,
+      "commit:old": aliasPosition,
+    },
+  }));
+  assert.deepEqual(
+    ordered.rfNodes.find((item) => item.id === "commit:rebased")?.position,
+    firstAliasPosition,
+  );
+}
+
+function testCurrentCommitLayoutWinsOverShaAliases(): void {
+  const currentPosition = { x: 480, y: 640 };
+  const graph = buildGraph(args({
+    gitCommits: [{ ...commit("rebased"), aliases: ["old"] }],
+    layoutHints: {
+      "commit:rebased": currentPosition,
+      "commit:old": { x: 360, y: 520 },
+    },
+  }));
+
+  assert.deepEqual(
+    graph.rfNodes.find((item) => item.id === "commit:rebased")?.position,
+    currentPosition,
+  );
+}
+
 function testCommittedGhostTransfersItsPositionToNewHead(): void {
   const before = buildGraph(args({
     gitCommits: [commit("old")],
@@ -1065,6 +1111,8 @@ testNoRootOrFabricatedDependencies();
 testKnownLaneOrderSurvivesNodeCreationOrder();
 testProjectScopedLaneLabelShowsOnlyDirectionName();
 testVerticalCommitTrunkAndStableLaneX();
+testCommitLayoutResolvesShaAliases();
+testCurrentCommitLayoutWinsOverShaAliases();
 testCommittedGhostTransfersItsPositionToNewHead();
 testRemainingChangesMoveToTheNextCommitSlot();
 testAlreadyRenderedCommitUsesRetainedGhostPosition();

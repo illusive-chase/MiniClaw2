@@ -76,7 +76,10 @@ itself rebases.
   nodes' timestamps; `external_count_before` counts unreferenced commits
   between consecutive referenced ones. Interior gaps render as a `+N`
   badge on the trunk edge; the oldest hub carries its own pre-history
-  count because it has no inbound edge.
+  count because it has no inbound edge. When the source repository is not
+  available, referenced hubs use their earliest node-observation timestamp
+  (after alias resolution) as a deterministic trunk order; unobserved refs
+  sort last by SHA instead of forcing the whole trunk into SHA order.
 - Alias capture: the pull op records `git rev-list --reverse
   @{upstream}..HEAD` before and after the rebase; equal lengths give a
   positional old→new map (atomic store write). On length mismatch the map

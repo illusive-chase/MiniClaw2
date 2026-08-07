@@ -195,6 +195,35 @@ class GitStateTest(unittest.TestCase):
             self.assertEqual([item.sha for item in graph], ["b"])
             self.assertEqual(graph[0].aliases, ["a"])
 
+    def test_non_repo_commit_graph_orders_by_observation_time(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            graph = commit_graph(
+                raw,
+                {"latest", "earliest", "middle", "unobserved"},
+                ref_timestamps={
+                    "latest": 300,
+                    "earliest": 100,
+                    "middle": 200,
+                },
+            )
+
+            self.assertEqual(
+                [item.sha for item in graph],
+                ["earliest", "middle", "latest", "unobserved"],
+            )
+
+    def test_non_repo_commit_graph_orders_resolved_alias_by_oldest_observation(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            graph = commit_graph(
+                raw,
+                {"old-a", "new-a", "commit-b"},
+                {"old-a": "new-a"},
+                {"old-a": 100, "new-a": 300, "commit-b": 200},
+            )
+
+            self.assertEqual([item.sha for item in graph], ["new-a", "commit-b"])
+            self.assertEqual(graph[0].aliases, ["old-a"])
+
     def test_pull_conflict_aborts_own_rebase_and_restores_tree(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)

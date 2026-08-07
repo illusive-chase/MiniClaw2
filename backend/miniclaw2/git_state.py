@@ -352,6 +352,7 @@ def commit_graph(
 ) -> list[CommitDescriptor]:
     """Derive referenced commit hubs from Git history without storing mirrors."""
     aliases = alias_map or {}
+
     def resolve(sha: str) -> str:
         seen: set[str] = set()
         while sha in aliases and sha not in seen:
@@ -359,6 +360,12 @@ def commit_graph(
             sha = aliases[sha]
         return sha
     refs = {resolve(sha) for sha in referenced_shas if sha}
+    resolved_timestamps: dict[str, float] = {}
+    for sha, ts in (ref_timestamps or {}).items():
+        resolved = resolve(sha)
+        current_ts = resolved_timestamps.get(resolved)
+        if current_ts is None or ts < current_ts:
+            resolved_timestamps[resolved] = ts
     current = status or git_status(cwd)
     if current.head:
         refs.add(resolve(current.head))
@@ -374,7 +381,14 @@ def commit_graph(
                     if resolve(old) == sha and old != sha
                 ),
             )
-            for sha in sorted(refs)
+            for sha in sorted(
+                refs,
+                key=lambda candidate: (
+                    candidate not in resolved_timestamps,
+                    resolved_timestamps.get(candidate, 0.0),
+                    candidate,
+                ),
+            )
         ]
     rev = _git(
         cwd,
@@ -415,12 +429,6 @@ def commit_graph(
     live_set = set(live_order)
     ordered_refs = [sha for sha in live_order if sha in refs]
     stale = [sha for sha in refs if sha not in live_set]
-    resolved_timestamps: dict[str, float] = {}
-    for sha, ts in (ref_timestamps or {}).items():
-        resolved = resolve(sha)
-        current_ts = resolved_timestamps.get(resolved)
-        if current_ts is None or ts < current_ts:
-            resolved_timestamps[resolved] = ts
     stale_buckets: list[list[str]] = [[] for _ in range(len(ordered_refs) + 1)]
     for sha in stale:
         stale_ts = resolved_timestamps.get(sha)

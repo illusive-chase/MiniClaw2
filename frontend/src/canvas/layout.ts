@@ -340,6 +340,18 @@ function defaultCommitPosition(index: number): { x: number; y: number } {
   };
 }
 
+function commitLayoutPosition(
+  commit: CommitDescriptor,
+  layoutHints: Readonly<Record<string, { x: number; y: number }>>,
+  index: number,
+): { x: number; y: number } {
+  for (const sha of [commit.sha, ...commit.aliases]) {
+    const position = layoutHints[`commit:${sha}`];
+    if (position) return position;
+  }
+  return defaultCommitPosition(index);
+}
+
 export function resolveCommitPositionTransfer(
   currentNodes: readonly RFNode[],
   nextNodes: readonly RFNode[],
@@ -445,7 +457,7 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
     rfNodes.push({
       id: `commit:${commit.sha}`,
       type: "commit",
-      position: layoutHints[`commit:${commit.sha}`] ?? defaultCommitPosition(index),
+      position: commitLayoutPosition(commit, layoutHints, index),
       width: 76,
       height: 76,
       data: {
