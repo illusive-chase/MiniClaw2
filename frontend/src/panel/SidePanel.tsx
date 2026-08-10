@@ -344,6 +344,10 @@ function Inner(props: SidePanelProps & { nodesById: Map<string, NodeInfo> }) {
     const node = nodesById.get(selection.nodeId);
     if (!node) return <Missing />;
     if (!session) return <Missing />;
+    const canMutateNode =
+      !session.read_only &&
+      (session.sharing !== "shared" ||
+        node.owner_host_id === session.local_machine_id);
     return (
       <AgentPanel
         sessionId={session.id}
@@ -356,8 +360,8 @@ function Inner(props: SidePanelProps & { nodesById: Map<string, NodeInfo> }) {
         diffLoading={diffLoading}
         contextBundle={contextBundle}
         contextBundleLoading={contextBundleLoading}
-        pendingGate={session.read_only ? null : pendingGate}
-        pendingReview={session.read_only ? null : pendingReview}
+        pendingGate={canMutateNode ? pendingGate : null}
+        pendingReview={canMutateNode ? pendingReview : null}
         principles={principles}
         skills={skills}
         onResolveGate={onResolveGate}
@@ -368,9 +372,9 @@ function Inner(props: SidePanelProps & { nodesById: Map<string, NodeInfo> }) {
         onUpdateVirtual={onUpdateVirtual}
         onInterruptNode={onInterruptNode}
         onRerunNode={onRerunNode}
-        canInterrupt={canInterrupt && !session.read_only}
-        canRerun={canRerun && !session.read_only}
-        canMutate={!session.read_only}
+        canInterrupt={canInterrupt && canMutateNode}
+        canRerun={canRerun && canMutateNode}
+        canMutate={canMutateNode}
         manualPromotionPlanspaceId={manualPromotionPlanspaceId}
         isManualPlanspace={isManualPlanspace}
         focusRequestVersion={focusRequestVersion}

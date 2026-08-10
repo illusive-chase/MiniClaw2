@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import hashlib
+import re
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -160,6 +161,38 @@ def git_status(cwd: str) -> GitStatus:
 def is_git_repo(cwd: str) -> bool:
     """Return whether ``cwd`` belongs to a Git worktree without scanning it."""
     return _git(cwd, ["rev-parse", "--git-dir"]).returncode == 0
+
+
+def root_commits(cwd: str) -> list[str]:
+    """Return stable, sorted root commits for a repository."""
+    result = _git(cwd, ["rev-list", "--max-parents=0", "HEAD"])
+    if result.returncode != 0:
+        return []
+    return sorted({line.strip() for line in result.stdout.splitlines() if line.strip()})
+
+
+def root_commit(cwd: str) -> str | None:
+    roots = root_commits(cwd)
+    return roots[0] if roots else None
+
+
+def normalized_origin_url(cwd: str) -> str | None:
+    """Return a display/comparison form of origin without transport details."""
+    result = _git(cwd, ["remote", "get-url", "origin"])
+    if result.returncode != 0:
+        return None
+    value = result.stdout.strip()
+    if not value:
+        return None
+    scp = re.fullmatch(r"(?:[^@/]+@)?([^:/]+):(.+)", value)
+    if scp and "://" not in value:
+        value = f"https://{scp.group(1)}/{scp.group(2)}"
+    elif value.startswith("ssh://"):
+        value = "https://" + re.sub(r"^[^@/]+@", "", value[6:])
+    value = value.rstrip("/")
+    if value.endswith(".git"):
+        value = value[:-4]
+    return value or None
 
 
 def git_review_snapshot(cwd: str) -> GitReviewSnapshot:

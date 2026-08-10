@@ -317,7 +317,9 @@ def ensure_project_binding(
             "root_fingerprint": {
                 "root_name": Path(project.root_path).name,
             },
-            "local_paths": [project.root_path],
+            "local_paths": (
+                [] if project.sharing == "shared" else [project.root_path]
+            ),
         },
         "plugs": [],
     }
@@ -339,6 +341,27 @@ def list_project_bindings(root: Path) -> list[ProjectBinding]:
         if binding is not None:
             out.append(binding)
     return out
+
+
+def clear_owned_binding_local_paths(
+    project: Project,
+    *,
+    store_root: Path | None = None,
+) -> bool:
+    """Remove checkout-local paths from bindings owned by a shared project."""
+    root = contextspace_root(store_root)
+    changed = False
+    for binding in list_project_bindings(root):
+        if _binding_project_owner_id(binding) != project.id:
+            continue
+        project_raw = binding.raw.get("project")
+        if not isinstance(project_raw, dict) or not project_raw.get("local_paths"):
+            continue
+        raw = dict(binding.raw)
+        raw["project"] = {**project_raw, "local_paths": []}
+        _write_yaml(binding.path, raw)
+        changed = True
+    return changed
 
 
 def delete_project_contextspace(
@@ -628,6 +651,8 @@ def resolve_project_binding(project: Project, root: Path) -> ProjectBinding | No
     explicit = project.project_context_binding_id
     if explicit:
         return _load_binding_by_id(root, explicit)
+    if project.sharing == "shared":
+        return None
     return _find_binding_for_project_path(root, project.root_path)
 
 
@@ -863,7 +888,8 @@ def _bindings_for_project_contextspace_delete(
     return [
         binding
         for binding in bindings
-        if _binding_project_owner_id(binding) is None
+        if project.sharing != "shared"
+        and _binding_project_owner_id(binding) is None
         and _binding_matches_project_path(binding, project.root_path)
     ]
 
@@ -1014,8 +1040,9 @@ def _binding_summary(
         ),
         "project_name": _string_value(project_raw.get("name")),
         "local_paths": local_paths,
-        "matches_project_path": _binding_matches_project_path(
-            binding, project.root_path
+        "matches_project_path": (
+            project.sharing != "shared"
+            and _binding_matches_project_path(binding, project.root_path)
         ),
         "active_planspace_id": active_for_binding,
         "plugs": [

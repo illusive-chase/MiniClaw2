@@ -189,9 +189,14 @@ export type SessionInfo = {
   template_id?: string | null;
   name?: string;
   machine_id: string;
+  local_machine_id: string;
   native_machine_label: string;
   is_native: boolean;
   read_only: boolean;
+  can_delete: boolean;
+  sharing: "device-native" | "shared";
+  can_join_here: boolean;
+  hosts: Array<{ mid: string; label?: string; bound_at?: number }>;
   last_sync_at?: number | null;
   project_context_binding_id?: string | null;
   /** Persisted canvas positions keyed by node id or synthetic graph id. */
@@ -312,6 +317,8 @@ export type NodeInfo = {
   provider: AgentProvider | null;
   provider_session_id?: string | null;
   provider_turn_id?: string | null;
+  origin_machine_id?: string;
+  owner_host_id?: string;
   commit_before?: string | null;
   commit_after?: string | null;
   prompt: string;

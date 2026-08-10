@@ -58,7 +58,12 @@ function AgentNodeImpl({ data, selected }: NodeProps<AgentNodeData>) {
   }, [removeOpen]);
 
   useEffect(() => {
-    if (!selected || !isVirtual || !agentNodeContext.canCreateVirtual) return;
+    if (
+      !selected ||
+      !isVirtual ||
+      !agentNodeContext.canCreateVirtual ||
+      !agentNodeContext.canMutateNode(node.id)
+    ) return;
     const handler = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null;
       if (
@@ -75,7 +80,7 @@ function AgentNodeImpl({ data, selected }: NodeProps<AgentNodeData>) {
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [selected, isVirtual]);
+  }, [selected, isVirtual, node.id]);
 
   const actionItems = useMemo(() => {
     const items: Array<{
@@ -92,7 +97,9 @@ function AgentNodeImpl({ data, selected }: NodeProps<AgentNodeData>) {
         key: "interrupt",
         icon: <StopActionIcon />,
         title: "Interrupt this running node",
-        disabled: !agentNodeContext.canInterrupt,
+        disabled:
+          !agentNodeContext.canInterrupt ||
+          !agentNodeContext.canMutateNode(node.id),
         tone: "danger",
         alwaysVisible: true,
         onClick: () => agentNodeContext.onInterruptNode(node.id),
@@ -107,7 +114,9 @@ function AgentNodeImpl({ data, selected }: NodeProps<AgentNodeData>) {
         key: "rerun",
         icon: <ActionGlyph>↻</ActionGlyph>,
         title: "Rerun - fresh virtual with the same prompt",
-        disabled: !agentNodeContext.canRerun,
+        disabled:
+          !agentNodeContext.canRerun ||
+          !agentNodeContext.canMutateNode(node.id),
         tone: "brand",
         onClick: () => agentNodeContext.onRerunNode(node.id),
       });
@@ -122,7 +131,9 @@ function AgentNodeImpl({ data, selected }: NodeProps<AgentNodeData>) {
         key: "promote",
         icon: <PromoteActionIcon />,
         title: "Promote - run this virtual",
-        disabled: !agentNodeContext.canPromoteVirtual,
+        disabled:
+          !agentNodeContext.canPromoteVirtual ||
+          !agentNodeContext.canMutateNode(node.id),
         tone: "brand",
         onClick: () => agentNodeContext.onPromoteVirtual(node.id),
       });
@@ -138,7 +149,9 @@ function AgentNodeImpl({ data, selected }: NodeProps<AgentNodeData>) {
         key: "dequeue",
         icon: <DequeueActionIcon />,
         title: "Dequeue - return to editable virtual",
-        disabled: !agentNodeContext.canDequeue,
+        disabled:
+          !agentNodeContext.canDequeue ||
+          !agentNodeContext.canMutateNode(node.id),
         tone: "neutral",
         alwaysVisible: true,
         onClick: () => agentNodeContext.onDequeueNode(node.id),
@@ -169,7 +182,10 @@ function AgentNodeImpl({ data, selected }: NodeProps<AgentNodeData>) {
         key: "remove",
         icon: <ActionGlyph>×</ActionGlyph>,
         title: "Remove",
-        disabled: removeSaving || !agentNodeContext.canCreateVirtual,
+        disabled:
+          removeSaving ||
+          !agentNodeContext.canCreateVirtual ||
+          !agentNodeContext.canMutateNode(node.id),
         tone: "danger",
         onClick: () => {
           setRemoveOpen((open) => !open);
@@ -475,6 +491,7 @@ export type AgentNodeContext = {
   onInterruptNode: (nodeId: string) => void;
   onRerunNode: (nodeId: string) => void;
   canCreateVirtual: boolean;
+  canMutateNode: (nodeId: string) => boolean;
   canPromoteVirtual: boolean;
   canDequeue: boolean;
   manualPromotionPlanspaceId: string | null;
@@ -496,6 +513,7 @@ let agentNodeContext: AgentNodeContext = {
   onInterruptNode: () => {},
   onRerunNode: () => {},
   canCreateVirtual: false,
+  canMutateNode: () => false,
   canPromoteVirtual: false,
   canDequeue: false,
   manualPromotionPlanspaceId: null,

@@ -49,6 +49,7 @@ export function InspectDrawer({
             ["provider", node.provider ?? "-"],
             ["provider session", node.provider_session_id ?? "-"],
             ["provider turn", node.provider_turn_id ?? "-"],
+            ["origin machine", node.origin_machine_id || "-"],
             ["context bundle", contextBundle?.bundle_id ?? node.context_bundle_id ?? "-"],
             ["project binding", contextBundle?.project_binding_id ?? "-"],
             ["active planspace", contextBundle?.active_planspace_id ?? "-"],

@@ -365,7 +365,7 @@ function ProjectCard({
               <PencilIcon />
             </button>
           )}
-          {!session.read_only && <button
+          {session.can_delete && <button
             type="button"
             onClick={handleDelete}
             title={

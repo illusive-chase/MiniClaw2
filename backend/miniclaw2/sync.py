@@ -11,7 +11,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from uuid import uuid4
 
 import yaml
@@ -19,8 +19,8 @@ import yaml
 
 MACHINE_FILENAME = "machine.json"
 SCHEMA_FILENAME = "schema.json"
-SCHEMA_VERSION = 6
-SCHEMA_NAME = "principles-and-agent-skills-v6"
+SCHEMA_VERSION = 7
+SCHEMA_NAME = "host-partition-v7"
 DEFAULT_COMMIT_DEBOUNCE_SECONDS = 30.0
 
 
@@ -359,7 +359,12 @@ def schema_is_newer(root: Path) -> bool:
 
 def ensure_store_gitignore(root: Path) -> None:
     path = root / ".gitignore"
-    required = ["machine.json", "migration-backups/", "*.tmp"]
+    required = [
+        "machine.json",
+        "migration-backups/",
+        "*.tmp",
+        "projects/*/hosts/*/local.json",
+    ]
     existing = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
     missing = [entry for entry in required if entry not in existing]
     if not missing:
@@ -445,6 +450,11 @@ class SyncManager:
         self._lock = threading.RLock()
         self._timer: threading.Timer | None = None
         self._pending_messages: list[str] = []
+        self._success_callbacks: list[Callable[[], None]] = []
+
+    def add_success_callback(self, callback: Callable[[], None]) -> None:
+        if callback not in self._success_callbacks:
+            self._success_callbacks.append(callback)
 
     @property
     def configured(self) -> bool:
@@ -638,6 +648,8 @@ class SyncManager:
             sync_pending=False,
         )
         _write_json(machine_path(self.root), self.identity.payload())
+        for callback in tuple(self._success_callbacks):
+            callback()
 
     def _record_failure(self) -> None:
         self.identity = MachineIdentity(

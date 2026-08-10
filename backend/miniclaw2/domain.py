@@ -89,6 +89,9 @@ TERMINAL_NODE_STATES: frozenset[NodeState] = frozenset({
 })
 
 
+UNBOUND_ROOT_PATH = "/nonexistent/miniclaw2-unbound"
+
+
 # Whitelist of ``agent_op_kind`` values. Kept here as a plain set rather
 # than a StrEnum so a new variant can be added without a schema migration.
 KNOWN_AGENT_OP_KINDS: frozenset[str] = frozenset({
@@ -157,6 +160,7 @@ class Project(BaseModel):
     root_path: str
     machine_id: str = ""
     machine_label: str = ""
+    sharing: str = "device-native"
     name: str = ""
     model_preset_id: str = Field(default_factory=default_model_preset_id)
     concurrency: StrictInt = Field(default=1, ge=1)
@@ -177,6 +181,8 @@ class Project(BaseModel):
         if not preset_id:
             raise ValueError("model_preset_id is required")
         object.__setattr__(self, "model_preset_id", preset_id)
+        if self.sharing not in {"device-native", "shared"}:
+            raise ValueError(f"unknown project sharing mode: {self.sharing!r}")
         return self
 
     def bind_model_catalog(self, store_root: Path) -> "Project":
@@ -187,6 +193,10 @@ class Project(BaseModel):
     @property
     def model_catalog_root(self) -> Path | None:
         return self._model_catalog_root
+
+    @property
+    def is_bound(self) -> bool:
+        return self.root_path != UNBOUND_ROOT_PATH
 
     @computed_field
     @property
@@ -199,6 +209,7 @@ class Project(BaseModel):
 class Node(BaseModel):
     model_config = ConfigDict(extra="forbid")
     _model_catalog_root: Path | None = PrivateAttr(default=None)
+    _owner_host_id: str = PrivateAttr(default="")
 
     id: str = Field(default_factory=_new_id)
     project_id: str
@@ -216,6 +227,7 @@ class Node(BaseModel):
     model_preset_id: str | None = None
     provider_session_id: str | None = None
     provider_turn_id: str | None = None
+    origin_machine_id: str = ""
     commit_before: str | None = None
     commit_after: str | None = None
     prompt: str = ""
@@ -342,6 +354,15 @@ class Node(BaseModel):
             if self.started_at is not None or self.finished_at is not None:
                 raise ValueError("virtual nodes must not carry started_at/finished_at")
         return self
+
+    def bind_owner_host(self, machine_id: str) -> "Node":
+        self._owner_host_id = machine_id
+        return self
+
+    @computed_field
+    @property
+    def owner_host_id(self) -> str:
+        return self._owner_host_id
 
     def bind_model_catalog(self, store_root: Path) -> "Node":
         self._model_catalog_root = store_root

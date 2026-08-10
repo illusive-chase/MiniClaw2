@@ -553,6 +553,35 @@ export async function renameSession(id: string, name: string): Promise<SessionIn
   return res.json();
 }
 
+export async function enableSessionSharing(id: string): Promise<SessionInfo> {
+  const res = await fetch(`/sessions/${id}/sharing`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ sharing: "shared" }),
+  });
+  if (!res.ok) {
+    const detail = await res.json().catch(() => null) as { detail?: string } | null;
+    throw new Error(detail?.detail || `enableSessionSharing failed: ${res.status}`);
+  }
+  return res.json();
+}
+
+export async function joinSessionHost(
+  id: string,
+  rootPath: string,
+): Promise<SessionInfo> {
+  const res = await fetch(`/sessions/${id}/hosts`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ root_path: rootPath }),
+  });
+  if (!res.ok) {
+    const detail = await res.json().catch(() => null) as { detail?: string } | null;
+    throw new Error(detail?.detail || `joinSessionHost failed: ${res.status}`);
+  }
+  return res.json();
+}
+
 export async function updateSessionPreferences(
   id: string,
   body: {

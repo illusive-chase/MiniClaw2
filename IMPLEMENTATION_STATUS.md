@@ -1017,7 +1017,7 @@ Trunk: `backend/miniclaw2/store.py`, `backend/miniclaw2/replay.py`.
   process to cancelled terminal records, including framework stub previews,
   without blocking other projects on a malformed entry; queued nodes remain
   pending and resume scheduling after startup.
-- Store schema v6 writes one canonical shape: only `model_preset_id`
+- Store schema v7 writes one canonical shape: only `model_preset_id`
   persists provider selection, only `provider_session_id` persists
   provider conversation identity, and ContextSpace/language selections
   live in typed Project fields. Runtime loading accepts only this canonical
@@ -1028,6 +1028,18 @@ Trunk: `backend/miniclaw2/store.py`, `backend/miniclaw2/replay.py`.
   rewrite miss is visible, not silent: a stale `skills.<slug>` id resolves
   against the new native-skill library, fails, and surfaces as a missing-skill
   flag on the next launch instead of misinjecting.
+- Explicitly shared projects partition durable host-owned state under
+  `projects/<pid>/hosts/<mid>/`. Nodes, layout, and git aliases are written only
+  by their owning host, while shared `project.json` retains cross-device
+  identity and planspace visibility. `hosts/<mid>/local.json` is gitignored and
+  is the only place a shared project stores that device's absolute root path.
+  `planspace_view` intentionally remains shared; canvas layout is host-local.
+- Enabling sharing is a one-way migration and is unavailable for temporary
+  projects. A second device must explicitly bind a Git checkout whose root
+  commit matches the recorded repository fingerprint. Removing a host binding
+  and disabling sharing remain deferred because ownership of that host's node
+  subtree needs an explicit archival or transfer policy. All devices using the
+  same synced store must upgrade together for schema v7.
 - `$MINICLAW_HOME` can be initialized as a Git repository and exchanged with
   a user-provided remote only through `miniclaw2 sync init <git-url>` or the
   Global settings **Sync now** action. Local durable writes are committed on a
@@ -1041,7 +1053,10 @@ Trunk: `backend/miniclaw2/store.py`, `backend/miniclaw2/replay.py`.
 - Sync uses fetch, merge, and push. Normal conflicts retry with Git's
   local-hunk-wins strategy; `schema.json` conflicts abort. New project
   subtrees remain single-writer, failed pushes roll the local merge back, and
-  both-non-empty bootstrap is refused.
+  both-non-empty bootstrap is refused. Shared projects permit multi-host
+  writes only through disjoint `hosts/<mid>/` subtrees; global singleton files
+  such as `config.json` and ContextSpace manifests retain the existing merge
+  behavior.
 - A hostname mismatch between `machine.json` and the actual host is the
   copied-store detector: startup asks once whether the machine was
   renamed (keep uuid, refresh hostname/label) or the store was copied
@@ -1074,9 +1089,9 @@ Trunk: `backend/miniclaw2/store.py`, `backend/miniclaw2/replay.py`.
 - SQLite migration. Deferred until cross-project queries (e.g. "list
   all nodes in `awaiting_human_input` across the workspace") actually
   become hot.
-- Adopt-project ownership transfer (rewrite `machine_id` + `root_path`,
-  invalidate stale provider sessions). Until built, a retired or dead
-  machine's projects remain read-only everywhere.
+- Removing or replacing a shared host binding, including archival or transfer
+  of its `hosts/<mid>/nodes/` ownership. Device-native projects still have no
+  adopt-project ownership transfer.
 - Sync retention/compaction — `events.jsonl` transcripts grow the store
   repo monotonically; archiving, compaction, or LFS is deferred until
   repo size hurts.
@@ -1086,9 +1101,12 @@ Trunk: `backend/miniclaw2/store.py`, `backend/miniclaw2/replay.py`.
   metadata and syncs with the project subtree.
 - Cross-machine live streaming (backend-to-backend event relay); viewer
   freshness beyond pull-on-sync is a different feature.
-- Merging two non-empty stores at bootstrap. Multi-master writing is an
-  explicit non-goal — the native-machine convention is the concurrency
-  model.
+- Merging two non-empty stores at bootstrap remains unsupported. Multi-host
+  writing is available only to explicitly shared projects, where each host
+  writes its own `hosts/<mid>/` subtree. Device-native projects retain the
+  single-native-machine convention. This partitioning does not prevent two
+  hosts from independently claiming equivalent virtual work; claim detection
+  is deferred.
 
 
 ## 11. Wire envelopes (current set)

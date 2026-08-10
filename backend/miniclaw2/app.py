@@ -51,7 +51,7 @@ from .language import normalize_preferred_language, project_preferred_language
 from .model_catalog import list_model_presets
 from .providers.claude_native import hook_runtime
 from .providers.claude_native.hook_installer import install_hooks
-from .registry import NonNativeProjectError, ProjectRegistry
+from .registry import NonNativeNodeError, NonNativeProjectError, ProjectRegistry
 from .replay import LiveReplayBuffer
 from .skills import (
     SkillError,
@@ -147,9 +147,14 @@ class SessionInfo(BaseModel):
     template_id: str | None = None
     name: str = ""
     machine_id: str = ""
+    local_machine_id: str = ""
     native_machine_label: str = ""
     is_native: bool = True
     read_only: bool = False
+    can_delete: bool = True
+    sharing: str = "device-native"
+    can_join_here: bool = False
+    hosts: list[dict[str, Any]] = Field(default_factory=list)
     last_sync_at: float | None = None
     project_context_binding_id: str | None = None
     layout_hints: dict[str, dict[str, float]] = Field(default_factory=dict)
@@ -160,6 +165,18 @@ class UpdateLayoutHintsRequest(BaseModel):
     updates: dict[str, dict[str, float]] = Field(default_factory=dict)
     remove: list[str] = Field(default_factory=list)
     layout_viewport: dict[str, float] | None = None
+
+
+class EnableSharingRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    sharing: Literal["shared"]
+
+
+class JoinHostRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    root_path: str
 
 
 class UpdatePlanspaceViewRequest(BaseModel):
@@ -339,6 +356,12 @@ def create_app(registry: ProjectRegistry | None = None) -> FastAPI:
     @app.exception_handler(NonNativeProjectError)
     async def non_native_project_error(
         _request: Request, exc: NonNativeProjectError
+    ) -> JSONResponse:
+        return JSONResponse(status_code=403, content={"detail": str(exc)})
+
+    @app.exception_handler(NonNativeNodeError)
+    async def non_native_node_error(
+        _request: Request, exc: NonNativeNodeError
     ) -> JSONResponse:
         return JSONResponse(status_code=403, content={"detail": str(exc)})
 
@@ -654,6 +677,41 @@ def create_app(registry: ProjectRegistry | None = None) -> FastAPI:
     @app.get("/sessions/{sid}", response_model=SessionInfo)
     def get_session(sid: str) -> SessionInfo:
         project = registry.get_project(sid)
+        if project is None:
+            raise HTTPException(404, "session not found")
+        return _session_info(registry, project)
+
+    @app.post("/sessions/{sid}/sharing", response_model=SessionInfo)
+    def enable_session_sharing(
+        sid: str, req: EnableSharingRequest
+    ) -> SessionInfo:
+        project = registry.get_project(sid)
+        if project is None:
+            raise HTTPException(404, "session not found")
+        require_native_project(sid)
+        if registry.is_running(sid):
+            raise HTTPException(409, "project must be idle before enabling sharing")
+        try:
+            project = registry.enable_sharing(sid)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        if project is None:
+            raise HTTPException(404, "session not found")
+        return _session_info(registry, project)
+
+    @app.post("/sessions/{sid}/hosts", response_model=SessionInfo)
+    def join_session_host(sid: str, req: JoinHostRequest) -> SessionInfo:
+        project = registry.get_project(sid)
+        if project is None:
+            raise HTTPException(404, "session not found")
+        # This is the sole mutation allowed before the local host owns a binding.
+        # Registry constrains every write to hosts/<local-machine-id>/.
+        try:
+            project = registry.join_shared_project(sid, req.root_path)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
         if project is None:
             raise HTTPException(404, "session not found")
         return _session_info(registry, project)
@@ -1621,9 +1679,21 @@ def _session_info(registry: ProjectRegistry, project: Any) -> SessionInfo:
         template_id=project.template_id,
         name=project.name,
         machine_id=project.machine_id,
+        local_machine_id=registry.store.machine.id,
         native_machine_label=project.machine_label or project.machine_id,
         is_native=is_native,
         read_only=not is_native or registry.store.read_only_reason is not None,
+        can_delete=(
+            registry.store.read_only_reason is None
+            and is_native
+            and (
+                project.sharing != "shared"
+                or project.machine_id == registry.store.machine.id
+            )
+        ),
+        sharing=project.sharing,
+        can_join_here=project.sharing == "shared" and not is_native,
+        hosts=registry.store.list_hosts(project.id),
         last_sync_at=registry.store.sync.identity.last_sync_at,
         project_context_binding_id=project.project_context_binding_id,
         layout_hints=project.layout_hints,

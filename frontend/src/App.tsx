@@ -34,6 +34,8 @@ import {
   gitReview,
   gitPull,
   gitPush,
+  enableSessionSharing,
+  joinSessionHost,
   artifactRawUrl,
   type PrincipleSummary,
   type SkillSummary,
@@ -95,6 +97,7 @@ const INTERRUPTIBLE_STATES = new Set<NodeInfo["state"]>([
 export function App() {
   const [route, setRoute] = useState<Route>("landing");
   const [session, setSession] = useState<SessionInfo | null>(null);
+  const [joiningHost, setJoiningHost] = useState(false);
   const [nodes, setNodes] = useState<NodeInfo[]>([]);
   const [modelPresets, setModelPresets] = useState<ModelPreset[]>([]);
   const [globalState, setGlobalState] = useState<GlobalState | null>(null);
@@ -453,25 +456,35 @@ export function App() {
     () => nodes.find((n) => n.id === inspectedNodeId) ?? null,
     [nodes, inspectedNodeId],
   );
+  const isNodeNative = useCallback(
+    (node: NodeInfo) =>
+      session?.sharing !== "shared" ||
+      node.owner_host_id === session.local_machine_id,
+    [session?.local_machine_id, session?.sharing],
+  );
   const sessionWithRuntimeCounts = useMemo(
     () =>
       session
         ? {
             ...session,
-            active_count: nodes.filter((node) => INTERRUPTIBLE_STATES.has(node.state)).length,
-            queued_count: nodes.filter((node) => node.state === "queued").length,
+            active_count: nodes.filter(
+              (node) => isNodeNative(node) && INTERRUPTIBLE_STATES.has(node.state),
+            ).length,
+            queued_count: nodes.filter(
+              (node) => isNodeNative(node) && node.state === "queued",
+            ).length,
           }
         : null,
-    [nodes, session],
+    [isNodeNative, nodes, session],
   );
   const selectedCanvasNodeId = useMemo(() => graphNodeIdForSelection(selection), [selection]);
   const activeNodesFromList = useMemo(
-    () => nodes.filter((n) => INTERRUPTIBLE_STATES.has(n.state)),
-    [nodes],
+    () => nodes.filter((n) => isNodeNative(n) && INTERRUPTIBLE_STATES.has(n.state)),
+    [isNodeNative, nodes],
   );
   const hasInterruptibleNode = useMemo(
-    () => nodes.some((n) => INTERRUPTIBLE_STATES.has(n.state)),
-    [nodes],
+    () => nodes.some((n) => isNodeNative(n) && INTERRUPTIBLE_STATES.has(n.state)),
+    [isNodeNative, nodes],
   );
   const projectRunnerActive = activeNodesFromList.length > 0;
   const projectRunnerBusy = projectMutationPending || projectRunnerActive;
@@ -1832,14 +1845,23 @@ export function App() {
       onInterruptNode: interruptNode,
       onRerunNode: rerunFailedNode,
       canCreateVirtual: !virtualCreateDisabled,
+      canMutateNode: (nodeId) => {
+        const node = nodes.find((item) => item.id === nodeId);
+        return !!node && isNodeNative(node);
+      },
       canPromoteVirtual: !projectMutationPending && !readOnly,
       canDequeue: !projectMutationPending && !readOnly,
       manualPromotionPlanspaceId,
       isManualPlanspace,
       canInterrupt: canInterruptRunner && !readOnly,
       canRerun: !projectMutationPending && !readOnly,
-      pendingGateForNode: (nodeId) =>
-        readOnly ? null : validPendingGates[nodeId]?.request ?? null,
+      pendingGateForNode: (nodeId) => {
+        if (readOnly) return null;
+        const node = nodes.find((item) => item.id === nodeId);
+        return node && isNodeNative(node)
+          ? validPendingGates[nodeId]?.request ?? null
+          : null;
+      },
       onResolveGate,
       modelPresets,
     });
@@ -1862,6 +1884,8 @@ export function App() {
     canInterruptRunner,
     composerLocked,
     modelPresets,
+    nodes,
+    isNodeNative,
   ]);
 
   /* Canvas layout changes -> serialized backend PATCHes. Best-effort: log on
@@ -2038,8 +2062,53 @@ export function App() {
               {gitError && <span className="max-w-[18rem] truncate text-state-error" title={gitError}>{gitError}</span>}
               {session?.read_only && (
                 <span className="rounded border border-state-waiting/40 bg-state-waiting-soft px-1.5 py-0.5 font-sans text-state-waiting">
-                  read-only · native to {session.native_machine_label} · as of {session.last_sync_at ? new Date(session.last_sync_at * 1000).toLocaleString() : "never synced"}
+                  {session.sharing === "shared"
+                    ? "只读 · 此设备尚未启用"
+                    : `read-only · native to ${session.native_machine_label} · as of ${session.last_sync_at ? new Date(session.last_sync_at * 1000).toLocaleString() : "never synced"}`}
                 </span>
+              )}
+              {session?.can_join_here && (
+                <button
+                  type="button"
+                  disabled={joiningHost}
+                  onClick={() => {
+                    const rootPath = window.prompt("请输入此设备上的 Git 仓库绝对路径");
+                    if (!rootPath?.trim()) return;
+                    setJoiningHost(true);
+                    void joinSessionHost(session.id, rootPath.trim())
+                      .then(setSession)
+                      .catch((error: unknown) => window.alert(error instanceof Error ? error.message : String(error)))
+                      .finally(() => setJoiningHost(false));
+                  }}
+                  className="rounded border border-brand/50 bg-brand-soft px-1.5 py-0.5 font-sans text-brand-ink transition hover:border-brand disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {joiningHost ? "正在启用..." : "在本设备启用"}
+                </button>
+              )}
+              {session?.sharing === "shared" && session.is_native && session.hosts.length > 0 && (
+                <span
+                  className="max-w-[16rem] truncate font-sans text-ink-muted"
+                  title={session.hosts.map((host) => host.label || host.mid).join("、")}
+                >
+                  设备 {session.hosts.map((host) => host.label || host.mid).join("、")}
+                </span>
+              )}
+              {session?.sharing === "device-native" && session.is_native && !session.temporary && (
+                <button
+                  type="button"
+                  disabled={projectMutationPending || session.active_count > 0}
+                  onClick={() => {
+                    if (!window.confirm("开启后项目可由多台设备共同写入，且目前不支持关闭共享。继续吗？")) return;
+                    setProjectMutationPending(true);
+                    void enableSessionSharing(session.id)
+                      .then(setSession)
+                      .catch((error: unknown) => window.alert(error instanceof Error ? error.message : String(error)))
+                      .finally(() => setProjectMutationPending(false));
+                  }}
+                  className="rounded border border-line bg-surface px-1.5 py-0.5 font-sans text-ink-muted transition hover:border-line-strong hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  开启共享
+                </button>
               )}
             </div>
           </div>
@@ -2236,8 +2305,18 @@ export function App() {
                 onUpdateVirtual={updateVirtualNode}
                 onInterruptNode={interruptNode}
                 onRerunNode={rerunFailedNode}
-                canInterrupt={canInterruptRunner && !readOnly}
-                canRerun={!projectMutationPending && !readOnly}
+                canInterrupt={
+                  canInterruptRunner &&
+                  !readOnly &&
+                  !!selectedNode &&
+                  isNodeNative(selectedNode)
+                }
+                canRerun={
+                  !projectMutationPending &&
+                  !readOnly &&
+                  !!selectedNode &&
+                  isNodeNative(selectedNode)
+                }
                 manualPromotionPlanspaceId={manualPromotionPlanspaceId}
                 isManualPlanspace={isManualPlanspace}
                 onPlanspaceModeChange={changePlanspaceMode}

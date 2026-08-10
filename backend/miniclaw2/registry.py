@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import math
+import shutil
 import time
 from dataclasses import asdict, dataclass
 from collections.abc import Awaitable, Callable
@@ -14,6 +16,7 @@ from typing import Any
 from uuid import uuid4
 
 from .contextspace import (
+    clear_owned_binding_local_paths,
     contextspace_root,
     create_planspace,
     delete_project_contextspace,
@@ -24,7 +27,13 @@ from .contextspace import (
     set_planspace_mode,
 )
 from .events import NodeRemoved, GitStatus
-from .git_state import ensure_miniclaw_git_excluded, git_status, is_git_repo
+from .git_state import (
+    ensure_miniclaw_git_excluded,
+    git_status,
+    is_git_repo,
+    normalized_origin_url,
+    root_commits,
+)
 from .skills import expand_skill_selections
 from .domain import (
     TERMINAL_NODE_STATES,
@@ -77,6 +86,13 @@ class NonNativeProjectError(PermissionError):
         label = project.machine_label or project.machine_id or "another machine"
         super().__init__(f'project is read-only here; it is native to "{label}"')
         self.project = project
+
+
+class NonNativeNodeError(PermissionError):
+    def __init__(self, node: Node) -> None:
+        owner = node.owner_host_id or "another device"
+        super().__init__(f'node is read-only here; it belongs to host "{owner}"')
+        self.node = node
 
 _PROMPTS_DIR = Path(__file__).with_name("prompts")
 _CONCIERGE_TEMPLATE = "concierge_bootstrap.md"
@@ -229,7 +245,21 @@ class ProjectRegistry:
                 self._runtimes.pop(project_id, None)
 
     def is_native_project(self, project: Project) -> bool:
+        if project.sharing == "shared":
+            return self.store.has_host_binding(project.id, self.store.machine.id)
         return bool(project.machine_id) and project.machine_id == self.store.machine.id
+
+    def is_native_node(self, project: Project, node: Node) -> bool:
+        if project.sharing != "shared":
+            return self.is_native_project(project)
+        return node.owner_host_id == self.store.machine.id
+
+    def _can_resume_provider_session(self, node: Node) -> bool:
+        if node.origin_machine_id:
+            return node.origin_machine_id == self.store.machine.id
+        if node.owner_host_id:
+            return node.owner_host_id == self.store.machine.id
+        return True
 
     def is_native(self, pid: str) -> bool:
         project = self.get_project(pid)
@@ -241,6 +271,20 @@ class ProjectRegistry:
         if project is None:
             raise KeyError(pid)
         if not self.is_native_project(project):
+            raise NonNativeProjectError(project)
+        return project
+
+    def require_native_node(self, project: Project, node: Node) -> Node:
+        if not self.is_native_node(project, node):
+            raise NonNativeNodeError(node)
+        return node
+
+    def require_project_owner(self, pid: str) -> Project:
+        project = self.require_native(pid)
+        if (
+            project.sharing == "shared"
+            and project.machine_id != self.store.machine.id
+        ):
             raise NonNativeProjectError(project)
         return project
 
@@ -256,7 +300,12 @@ class ProjectRegistry:
         the whole registry from starting.
         """
         now = time.time()
+        project = self.get_project(pid)
+        if project is None:
+            return
         for node in self.store.list_nodes(pid):
+            if not self.is_native_node(project, node):
+                continue
             if node.state in TERMINAL_NODE_STATES:
                 continue
             if node.state in {NodeState.VIRTUAL, NodeState.QUEUED}:
@@ -370,6 +419,146 @@ class ProjectRegistry:
 
     def list_projects(self) -> list[Project]:
         return [rt.project for rt in self._runtimes.values()]
+
+    def enable_sharing(self, pid: str) -> Project | None:
+        rt = self._runtimes.get(pid)
+        if rt is None:
+            return None
+        project = self.require_native(pid)
+        if project.sharing == "shared":
+            return project
+        if project.temporary:
+            raise ValueError("temporary projects cannot be shared")
+        if self.is_running(pid):
+            raise RuntimeError("project must be idle before enabling sharing")
+        roots = root_commits(project.root_path)
+        if not roots:
+            raise ValueError("project must be a Git repository with at least one commit")
+
+        project_dir = self.store.root / "projects" / pid
+        backup = (
+            self.store.root
+            / "migration-backups"
+            / f"host-partition-v7-{int(time.time())}-{pid}-{uuid4().hex[:8]}"
+            / "projects"
+            / pid
+        )
+        shutil.copytree(project_dir, backup)
+
+        host_dir = project_dir / "hosts" / self.store.machine.id
+        host_dir.mkdir(parents=True, exist_ok=True)
+        nodes_dir = project_dir / "nodes"
+        if nodes_dir.exists():
+            shutil.move(str(nodes_dir), str(host_dir / "nodes"))
+        else:
+            (host_dir / "nodes").mkdir(parents=True, exist_ok=True)
+        aliases = project_dir / "git_aliases.json"
+        if aliases.exists():
+            shutil.move(str(aliases), str(host_dir / "git_aliases.json"))
+        self.store._write_json(
+            host_dir / "host.json",
+            {
+                "label": self.store.machine.label,
+                "bound_at": time.time(),
+                "repo": {
+                    "root_commit": roots[0],
+                    "root_commits": roots,
+                    "origin_url": normalized_origin_url(project.root_path),
+                },
+            },
+        )
+        project.sharing = "shared"
+        clear_owned_binding_local_paths(project, store_root=self.store.root)
+        self.store.invalidate_owner_index()
+        self.store.update_project(project)
+        self.store.sync.schedule_commit(f'enable sharing for project "{project.name or pid}"')
+        return project
+
+    def join_shared_project(self, pid: str, root_path: str) -> Project | None:
+        self.store.assert_writable()
+        rt = self._runtimes.get(pid)
+        if rt is None:
+            return None
+        project = rt.project
+        if project.sharing != "shared":
+            raise ValueError("project is not shared")
+        if self.is_native_project(project):
+            raise ValueError("project is already enabled on this device")
+        root = Path(root_path).expanduser()
+        if not root.exists():
+            raise ValueError(f"path does not exist: {root}")
+        if not root.is_dir():
+            raise ValueError(f"path is not a directory: {root}")
+        resolved = str(root.resolve())
+        if not is_git_repo(resolved):
+            raise ValueError("path is not a Git repository")
+        roots = root_commits(resolved)
+        if not roots:
+            raise ValueError("repository has no root commit")
+        hosts = self.store.list_hosts(pid)
+        expected = next(
+            (
+                host.get("repo", {}).get("root_commit")
+                for host in hosts
+                if isinstance(host.get("repo"), dict)
+                and host.get("repo", {}).get("root_commit")
+            ),
+            None,
+        )
+        if expected is None:
+            raise ValueError("shared project has no repository fingerprint")
+        if roots[0] != expected:
+            raise ValueError("repository fingerprint does not match the shared project")
+
+        exclude_error = ensure_miniclaw_git_excluded(resolved)
+        if exclude_error:
+            logger.warning(
+                "failed to exclude MiniClaw2 generated paths in %s: %s",
+                resolved,
+                exclude_error,
+            )
+
+        host_dir = self.store.root / "projects" / pid / "hosts" / self.store.machine.id
+        source_layout = self._shared_layout_seed(pid, project.machine_id)
+        self.store._write_json(
+            host_dir / "host.json",
+            {
+                "label": self.store.machine.label,
+                "bound_at": time.time(),
+                "repo": {
+                    "root_commit": roots[0],
+                    "root_commits": roots,
+                    "origin_url": normalized_origin_url(resolved),
+                },
+            },
+        )
+        self.store._write_json(host_dir / "local.json", {"root_path": resolved})
+        self.store._write_json(host_dir / "layout.json", source_layout)
+        (host_dir / "nodes").mkdir(parents=True, exist_ok=True)
+        project.root_path = resolved
+        project.layout_hints = dict(source_layout.get("layout_hints", {}))
+        project.layout_viewport = source_layout.get("layout_viewport")
+        self.store.invalidate_owner_index()
+        self.store.sync.schedule_commit(f'join shared project "{project.name or pid}"')
+        return project
+
+    def _shared_layout_seed(self, pid: str, preferred_mid: str) -> dict[str, Any]:
+        hosts_dir = self.store.root / "projects" / pid / "hosts"
+        candidates = [hosts_dir / preferred_mid / "layout.json"]
+        candidates.extend(sorted(hosts_dir.glob("*/layout.json")))
+        for path in candidates:
+            if not path.is_file():
+                continue
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if isinstance(payload, dict):
+                return {
+                    "layout_hints": payload.get("layout_hints", {}),
+                    "layout_viewport": payload.get("layout_viewport"),
+                }
+        return {"layout_hints": {}, "layout_viewport": None}
 
     def rename_project(self, pid: str, name: str) -> Project | None:
         rt = self._runtimes.get(pid)
@@ -538,7 +727,7 @@ class ProjectRegistry:
         rt = self._runtimes.get(pid)
         if rt is None:
             return False
-        self.require_native(pid)
+        self.require_project_owner(pid)
         rt.closed = True
         for runner in list(rt.runners.values()):
             try:
@@ -593,10 +782,14 @@ class ProjectRegistry:
         return rt.active_count if rt is not None else 0
 
     def queued_count(self, pid: str) -> int:
-        if pid not in self._runtimes:
+        rt = self._runtimes.get(pid)
+        if rt is None:
             return 0
         return sum(
-            1 for node in self.store.list_nodes(pid) if node.state is NodeState.QUEUED
+            1
+            for node in self.store.list_nodes(pid)
+            if node.state is NodeState.QUEUED
+            and self.is_native_node(rt.project, node)
         )
 
     def list_nodes(self, pid: str) -> list[Node] | None:
@@ -657,7 +850,10 @@ class ProjectRegistry:
                 return None
             if resume_source.state not in TERMINAL_NODE_STATES:
                 return None
-            if not resume_source.provider_session_id:
+            if (
+                not resume_source.provider_session_id
+                and self._can_resume_provider_session(resume_source)
+            ):
                 return None
 
         if resume_source is not None:
@@ -698,6 +894,10 @@ class ProjectRegistry:
             rt.project, contextspace_root(self.store.root)
         )
         active_lane = active[1].id if active is not None else None
+        resume_locally = bool(
+            resume_source is not None
+            and self._can_resume_provider_session(resume_source)
+        )
         actual_parent_id = resume_source.id if resume_source else parent_node_id
         node = Node(
             project_id=pid,
@@ -710,7 +910,9 @@ class ProjectRegistry:
             parent_node_id=actual_parent_id,
             planspace_id=active_lane,
             model_preset_id=next_model_preset_id,
-            provider_session_id=resume_source.provider_session_id if resume_source else None,
+            provider_session_id=(
+                resume_source.provider_session_id if resume_locally else None
+            ),
             prompt=prompt,
             scheduled_deps=list(scheduled_deps or []),
             settings_snapshot=settings_snapshot,
@@ -783,6 +985,7 @@ class ProjectRegistry:
                     (node := self.store.load_node(rt.project.id, node_id))
                     is not None
                     and node.state is NodeState.QUEUED
+                    and self.is_native_node(rt.project, node)
                 )
             ]
             rt.priority_node_ids = priority
@@ -806,6 +1009,7 @@ class ProjectRegistry:
                     for node in self.store.list_nodes(rt.project.id)
                     if node.state is NodeState.QUEUED
                     and node.id not in rt.runner_tasks
+                    and self.is_native_node(rt.project, node)
                 ),
                 key=lambda node: (node.created_at, node.id),
             )
@@ -843,6 +1047,7 @@ class ProjectRegistry:
             node.kind is NodeKind.OP
             and node.op_kind == "pull"
             and node.state is NodeState.QUEUED
+            and self.is_native_node(rt.project, node)
             for node in self.store.list_nodes(rt.project.id)
         )
 
@@ -1167,6 +1372,9 @@ class ProjectRegistry:
         Manual promotion is allowed to inspect failed/cancelled upstream
         nodes, but auto mode must not advance past a failed verifier/review.
         """
+        project = self.get_project(pid)
+        if project is None:
+            return None
         nodes = self.store.list_nodes(pid)
         lane_nodes = [n for n in nodes if (n.planspace_id or "") == lane_id]
         by_id: dict[str, Node] = {n.id: n for n in lane_nodes}
@@ -1185,6 +1393,8 @@ class ProjectRegistry:
 
         eligible: list[Node] = []
         for n in lane_nodes:
+            if not self.is_native_node(project, n):
+                continue
             if n.state is not NodeState.VIRTUAL:
                 continue
             if n.obsolete_reason:
@@ -1228,6 +1438,7 @@ class ProjectRegistry:
                 "virtual_not_found",
                 "Virtual node was not found.",
             )
+        self.require_native_node(rt.project, node)
         if node.state is not NodeState.VIRTUAL:
             if node.proposed_by:
                 return VirtualPromotionResult(
@@ -1298,14 +1509,21 @@ class ProjectRegistry:
                     "Continuation source node is not terminal.",
                     (resume_parent.id,),
                 )
-            if not resume_parent.provider_session_id:
+            if (
+                not resume_parent.provider_session_id
+                and self._can_resume_provider_session(resume_parent)
+            ):
                 return VirtualPromotionResult(
                     None,
                     "resume_session_unavailable",
                     "Continuation source has no provider session to resume.",
                 )
             node.model_preset_id = resume_parent.model_preset_id
-            node.provider_session_id = resume_parent.provider_session_id
+            node.provider_session_id = (
+                resume_parent.provider_session_id
+                if self._can_resume_provider_session(resume_parent)
+                else None
+            )
             node.parent_node_id = resume_parent.id
         try:
             self.store.write_node_preview(pid, node.id, render_virtual_preview(node))
@@ -1354,6 +1572,8 @@ class ProjectRegistry:
             return None
         self.require_native(pid)
         node = self.store.load_node(pid, nid)
+        if node is not None:
+            self.require_native_node(rt.project, node)
         if (
             node is None
             or node.state is not NodeState.QUEUED
@@ -1654,6 +1874,7 @@ class ProjectRegistry:
         existing = self.store.load_node(pid, vid)
         if existing is None:
             return None
+        self.require_native_node(rt.project, existing)
         if existing.kind is not NodeKind.AGENT or existing.state is not NodeState.VIRTUAL:
             return None
 
@@ -1808,7 +2029,9 @@ class ProjectRegistry:
                 )
             update["model_preset_id"] = next_model_preset_id
         updated = existing.model_copy(update=update)
-        updated = Node.model_validate(updated.model_dump(exclude={"provider"}))
+        updated = Node.model_validate(
+            updated.model_dump(exclude={"provider", "owner_host_id"})
+        )
         lane_id = updated.planspace_id or ""
         if has_cycle(self._lane_nodes_with(pid, lane_id, updated)):
             raise ValueError("scheduled_deps would introduce a cycle in the lane DAG")
@@ -1855,6 +2078,7 @@ class ProjectRegistry:
         node = self.store.load_node(pid, vid)
         if node is None:
             return False, []
+        self.require_native_node(rt.project, node)
         if node.state is not NodeState.VIRTUAL:
             raise ValueError("only virtual nodes can be deleted")
 
@@ -1871,6 +2095,8 @@ class ProjectRegistry:
 
         for other in nodes:
             if other.id == vid or vid not in (other.scheduled_deps or []):
+                continue
+            if not self.is_native_node(rt.project, other):
                 continue
             cleaned = [dep for dep in other.scheduled_deps if dep != vid]
             if cleaned == other.scheduled_deps:
@@ -2049,7 +2275,10 @@ class ProjectRegistry:
             raise ValueError(f"resume_from_node_id {source_id!r} is outside this lane")
         if source.state not in TERMINAL_NODE_STATES:
             raise ValueError("resume_from_node_id must reference a terminal node")
-        if not source.provider_session_id:
+        if (
+            not source.provider_session_id
+            and self._can_resume_provider_session(source)
+        ):
             raise ValueError("resume_from_node_id is not resumable")
         return source_id
 
@@ -2086,6 +2315,9 @@ class ProjectRegistry:
         if rt is None:
             return False
         self.require_native(pid)
+        node = self.store.load_node(pid, node_id)
+        if node is not None:
+            self.require_native_node(rt.project, node)
         runner = rt.get_runner(node_id)
         task = rt.runner_tasks.get(node_id)
         if runner is None or task is None or task.done():

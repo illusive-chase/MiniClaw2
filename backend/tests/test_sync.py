@@ -118,6 +118,13 @@ class GitMetadataSyncTests(unittest.TestCase):
         self.base = Path(self.temp.name)
         self.remote = self.base / "remote.git"
         _git("init", "--bare", str(self.remote))
+        _git(
+            "--git-dir",
+            str(self.remote),
+            "config",
+            "core.hooksPath",
+            str(self.remote / "hooks"),
+        )
         self.root_a = self.base / "machine-a"
         self.store_a = Store(self.root_a)
         self.project_a = self.store_a.create_project(
