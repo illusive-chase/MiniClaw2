@@ -392,7 +392,8 @@ class UserTemplateHttpApiTest(unittest.TestCase):
         os.environ["MINICLAW_HOME"] = self._home.name
         from miniclaw2.app import create_app
 
-        self.client = TestClient(create_app())
+        self.registry, self.store = _seeded_registry(Path(self._home.name))
+        self.client = TestClient(create_app(self.registry))
 
     def tearDown(self) -> None:
         self.client.close()
@@ -460,6 +461,44 @@ class UserTemplateHttpApiTest(unittest.TestCase):
             json={"name": "Bad", "brief": "", "node_ids": []},
         )
         self.assertEqual(res.status_code, 400)
+
+    def test_apply_rejects_non_native_project_without_creating_nodes(self) -> None:
+        launched = self.client.post(
+            "/templates/hello-text/run", json={"model_preset_id": "opus-4-8"}
+        )
+        self.assertEqual(launched.status_code, 200, launched.text)
+        sid = launched.json()["id"]
+
+        nodes = self.store.list_nodes(sid)
+        agent_node = next(node for node in nodes if node.kind is NodeKind.AGENT)
+        saved = self.client.post(
+            f"/sessions/{sid}/user-templates",
+            json={
+                "name": "Foreign guard",
+                "brief": "Must not be stamped into a foreign project.",
+                "node_ids": [agent_node.id],
+            },
+        )
+        self.assertEqual(saved.status_code, 200, saved.text)
+
+        project = self.registry.get_project(sid)
+        assert project is not None
+        project.machine_id = "remote-machine-id"
+        project.machine_label = "remote-host"
+        self.store.update_project(project)
+        node_ids_before = [node.id for node in self.store.list_nodes(sid)]
+
+        response = self.client.post(
+            f"/sessions/{sid}/user-templates/foreign-guard/apply",
+            json={"anchor_node_id": None},
+        )
+
+        self.assertEqual(response.status_code, 403, response.text)
+        self.assertIn("remote-host", response.json()["detail"])
+        self.assertEqual(
+            [node.id for node in self.store.list_nodes(sid)],
+            node_ids_before,
+        )
 
 
 if __name__ == "__main__":
