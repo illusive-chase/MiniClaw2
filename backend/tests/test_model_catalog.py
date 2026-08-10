@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 
 from miniclaw2.model_catalog import (
+    default_code_review_model_preset_id,
     default_model_preset_id,
     get_model_preset,
     list_model_presets,
@@ -37,6 +38,7 @@ class ModelCatalogTest(unittest.TestCase):
             {"gpt-5.5"},
         )
         self.assertEqual(default_model_preset_id(), "gpt-5.6")
+        self.assertEqual(default_code_review_model_preset_id(), "gpt-5.6")
 
     def test_active_preset_settings(self) -> None:
         opus = get_model_preset("opus-4-8")

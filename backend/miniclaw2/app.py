@@ -39,6 +39,7 @@ from .events import (
 )
 from .git_state import commit_graph, node_diff
 from .global_config import (
+    CodeReviewSettings,
     ModelPreset,
     SyncSettings,
     ToolRequestSettings,
@@ -96,6 +97,12 @@ class UpdateGlobalDefaultsRequest(BaseModel):
     auto_commit: bool | None = None
     preferred_language: str | None = None
     concurrency: StrictInt | None = Field(default=None, ge=1)
+
+
+class UpdateCodeReviewSettingsRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    model_preset_id: str | None = None
 
 
 class UpdateToolRequestSettingsRequest(BaseModel):
@@ -423,6 +430,30 @@ def create_app(registry: ProjectRegistry | None = None) -> FastAPI:
             raise HTTPException(400, str(exc)) from exc
         return _global_state_payload(registry.store.root)
 
+    @app.patch("/global-state/code-review", response_model=dict[str, Any])
+    def update_code_review_settings(
+        req: UpdateCodeReviewSettingsRequest,
+    ) -> dict[str, Any]:
+        registry.store.assert_writable()
+        if req.model_preset_id is None:
+            raise HTTPException(422, "model_preset_id cannot be null")
+        config = load_global_config(registry.store.root)
+        try:
+            save_global_config(
+                config.model_copy(
+                    update={
+                        "code_review": CodeReviewSettings(
+                            model_preset_id=req.model_preset_id.strip()
+                        )
+                    }
+                ),
+                registry.store.root,
+            )
+            registry.store.sync.schedule_commit("update code review settings")
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        return _global_state_payload(registry.store.root)
+
     @app.patch("/global-state/tool-requests", response_model=dict[str, Any])
     def update_tool_request_settings(
         req: UpdateToolRequestSettingsRequest,
@@ -499,6 +530,8 @@ def create_app(registry: ProjectRegistry | None = None) -> FastAPI:
             raise HTTPException(404, f"model preset not found: {preset_id}")
         if config.defaults.default_model_preset_id == preset_id:
             raise HTTPException(409, "cannot delete the default model preset")
+        if config.code_review.model_preset_id == preset_id:
+            raise HTTPException(409, "cannot delete the code review model preset")
         for project in registry.list_projects():
             nodes = registry.list_nodes(project.id) or []
             if project.model_preset_id == preset_id or any(
@@ -1553,6 +1586,7 @@ def _global_state_payload(store_root: Path) -> dict[str, Any]:
     return {
         "config_path": str(global_config_path(store_root)),
         "defaults": config.defaults.model_dump(),
+        "code_review": config.code_review.model_dump(),
         "tool_requests": config.tool_requests.model_dump(),
         "model_presets": [
             preset.model_copy(

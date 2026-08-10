@@ -4,6 +4,10 @@ import asyncio
 import io
 import json
 import os
+import shlex
+import shutil
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -31,6 +35,61 @@ class HookInstallerTest(unittest.TestCase):
             self.assertEqual(session_start["timeout"], 15)
             self.assertEqual(stop["timeout"], 15)
             self.assertIn("--turn-complete", stop["command"])
+
+    def test_installed_hook_survives_transient_python_without_path(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            settings = Path(raw) / "settings.json"
+            durable_python = Path(sys.executable).resolve(strict=True)
+            overlay = Path(raw) / "uv-overlay"
+            transient_python = overlay / "bin" / "python"
+            transient_python.parent.mkdir(parents=True)
+            transient_python.symlink_to(durable_python)
+
+            with patch(
+                "miniclaw2.providers.claude_native.hook_installer.sys.executable",
+                str(transient_python),
+            ):
+                install_hooks(settings)
+
+            data = json.loads(settings.read_text(encoding="utf-8"))
+            command = data["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+            argv = shlex.split(command)
+            self.assertEqual(Path(argv[0]), durable_python)
+            self.assertEqual(Path(argv[1]).name, "claude_hook_bridge.py")
+            self.assertTrue(Path(argv[1]).is_file())
+            self.assertEqual(Path(argv[1]).parent, settings.parent / "miniclaw2")
+
+            shutil.rmtree(overlay)
+
+            result = subprocess.run(
+                argv,
+                input=json.dumps({
+                    "hook_event_name": "PreToolUse",
+                    "tool_name": "AskUserQuestion",
+                }),
+                text=True,
+                capture_output=True,
+                check=False,
+                env={"PATH": ""},
+            )
+            self.assertEqual(result.returncode, 0)
+
+    def test_install_is_idempotent_with_materialized_bridge(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            settings = Path(raw) / "settings.json"
+
+            install_hooks(settings)
+            install_hooks(settings)
+
+            data = json.loads(settings.read_text(encoding="utf-8"))
+            for event_name in ("PreToolUse", "SessionStart", "Stop"):
+                entries = [
+                    entry
+                    for group in data["hooks"][event_name]
+                    for entry in group["hooks"]
+                    if "claude_hook_bridge.py" in entry.get("command", "")
+                ]
+                self.assertEqual(len(entries), 1, event_name)
 
 
 class HookBridgeTest(unittest.TestCase):

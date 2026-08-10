@@ -11,6 +11,10 @@ def default_model_preset_id(*, store_root: Path | None = None) -> str:
     return load_global_config(store_root).defaults.default_model_preset_id
 
 
+def default_code_review_model_preset_id(*, store_root: Path | None = None) -> str:
+    return load_global_config(store_root).code_review.model_preset_id
+
+
 def list_model_presets(*, store_root: Path | None = None) -> list[ModelPreset]:
     config = load_global_config(store_root)
     default_id = config.defaults.default_model_preset_id

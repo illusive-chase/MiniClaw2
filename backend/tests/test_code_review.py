@@ -19,6 +19,11 @@ from miniclaw2.domain import (
     ReviewBrief,
     ReviewSubtype,
 )
+from miniclaw2.global_config import (
+    CodeReviewSettings,
+    load_global_config,
+    save_global_config,
+)
 from miniclaw2.providers import (
     AgentProviderEvent,
     ReviewFinding,
@@ -287,7 +292,7 @@ class CodeReviewSchedulerTests(unittest.IsolatedAsyncioTestCase):
             repo.mkdir()
             _init_repo(repo)
             store = Store(root=root / "store")
-            project = Project(root_path=str(repo))
+            project = Project(root_path=str(repo), model_preset_id="opus-4-8")
             store.create_project(project)
             registry = ProjectRegistry(store=store)
             runtime = registry._runtimes[project.id]
@@ -309,6 +314,7 @@ class CodeReviewSchedulerTests(unittest.IsolatedAsyncioTestCase):
 
                 assert first is not None and second is not None
                 self.assertEqual(first.id, second.id)
+                self.assertEqual(first.model_preset_id, "gpt-5.6")
                 reviews = [
                     node for node in store.list_nodes(project.id)
                     if node.subtype is ReviewSubtype.CODE_REVIEW
@@ -317,6 +323,40 @@ class CodeReviewSchedulerTests(unittest.IsolatedAsyncioTestCase):
                 await asyncio.sleep(0)
                 _ControlledRunner.instances[first.id].release.set()
                 task = runtime.runner_tasks.get(first.id)
+                if task is not None:
+                    await task
+
+    async def test_spawn_uses_configured_code_review_preset(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            repo = root / "repo"
+            repo.mkdir()
+            _init_repo(repo)
+            store = Store(root=root / "store")
+            config = load_global_config(store.root)
+            save_global_config(
+                config.model_copy(
+                    update={
+                        "code_review": CodeReviewSettings(
+                            model_preset_id="opus-4-8"
+                        )
+                    }
+                ),
+                store.root,
+            )
+            project = Project(root_path=str(repo), model_preset_id="gpt-5.6")
+            store.create_project(project)
+            registry = ProjectRegistry(store=store)
+            runtime = registry._runtimes[project.id]
+            _ControlledRunner.instances.clear()
+
+            with patch("miniclaw2.registry.NodeRunner", _ControlledRunner):
+                review = await registry.spawn_code_review(project.id)
+                assert review is not None
+                self.assertEqual(review.model_preset_id, "opus-4-8")
+                await asyncio.sleep(0)
+                _ControlledRunner.instances[review.id].release.set()
+                task = runtime.runner_tasks.get(review.id)
                 if task is not None:
                     await task
 

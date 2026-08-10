@@ -345,7 +345,10 @@ Trunk: `backend/miniclaw2/runner.py`, `backend/miniclaw2/registry.py`.
   publishes `code-review-report.md` plus Codex's structured findings when
   available, and synthesizes the executed preview. Report-only by design:
   the node never proposes virtual mutations; downstream planning/review
-  nodes (or the user) read the report artifact. The ghost composer exposes
+  nodes (or the user) read the report artifact. Git Review nodes resolve their
+  preset from the independent global `code_review.model_preset_id` setting,
+  not from the project; the bundled default is `gpt-5.6` (Codex
+  `gpt-5.6-sol`, high reasoning). The ghost composer exposes
   this path through `POST /git/review` and its Review button; creation is
   rejected for non-repo projects, and a clean tree short-circuits to done
   ("working tree clean — nothing to review") without a provider call —
@@ -1122,6 +1125,7 @@ Quick reference; the on-disk shape is authoritative.
   `model_preset_id`; it is not persisted and is retained only for HTTP response
   compatibility.
 - REST: `GET /model-presets`; `GET /global-state`,
+  `PATCH /global-state/code-review`,
   `POST /global-state/sync/setup`, `POST /global-state/sync`; project CRUD, preferences, node/event
   introspection, failed-node rerun, per-node diff/preview/context-bundle reads,
   published artifact JSON/raw reads,

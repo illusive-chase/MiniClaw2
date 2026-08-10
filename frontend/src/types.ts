@@ -244,9 +244,13 @@ export type ToolRequestSettings = {
   timeout_seconds: number;
   timeout_action: "accept" | "reject";
 };
+export type CodeReviewSettings = {
+  model_preset_id: string;
+};
 export type GlobalState = {
   config_path: string;
   defaults: GlobalDefaults;
+  code_review: CodeReviewSettings;
   tool_requests: ToolRequestSettings;
   model_presets: ModelPreset[];
   sync: {

@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-import httpx
+import httpx2 as httpx
 
 from miniclaw2.app import create_app
 from miniclaw2.domain import Node, NodeState, Project

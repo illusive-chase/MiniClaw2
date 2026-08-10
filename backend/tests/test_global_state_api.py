@@ -8,7 +8,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from miniclaw2.app import create_app
-from miniclaw2.global_config import load_global_config, save_global_config
+from miniclaw2.global_config import GlobalConfig, load_global_config, save_global_config
 from miniclaw2.registry import ProjectRegistry
 from miniclaw2.store import Store
 
@@ -32,6 +32,7 @@ class GlobalStateApiTest(unittest.TestCase):
         body = response.json()
         self.assertEqual(body["config_path"], str(self.root / "config.json"))
         self.assertEqual(body["defaults"]["default_model_preset_id"], "gpt-5.6")
+        self.assertEqual(body["code_review"]["model_preset_id"], "gpt-5.6")
         self.assertEqual(
             body["tool_requests"],
             {"timeout_seconds": 120, "timeout_action": "accept"},
@@ -218,6 +219,24 @@ class GlobalStateApiTest(unittest.TestCase):
         persisted = json.loads((self.root / "config.json").read_text())
         self.assertEqual(persisted["tool_requests"], updated.json()["tool_requests"])
 
+    def test_code_review_settings_are_global_and_patchable(self) -> None:
+        updated = self.client.patch(
+            "/global-state/code-review",
+            json={"model_preset_id": "opus-4-8"},
+        )
+
+        self.assertEqual(updated.status_code, 200)
+        self.assertEqual(
+            updated.json()["code_review"],
+            {"model_preset_id": "opus-4-8"},
+        )
+        persisted = json.loads((self.root / "config.json").read_text())
+        self.assertEqual(persisted["code_review"], updated.json()["code_review"])
+
+        deleted = self.client.delete("/global-state/model-presets/opus-4-8")
+        self.assertEqual(deleted.status_code, 409)
+        self.assertIn("code review", deleted.json()["detail"])
+
     def test_legacy_config_without_tool_request_settings_gets_defaults(self) -> None:
         payload = json.loads((self.root / "config.json").read_text())
         payload.pop("tool_requests", None)
@@ -229,6 +248,48 @@ class GlobalStateApiTest(unittest.TestCase):
         self.assertEqual(
             response.json()["tool_requests"],
             {"timeout_seconds": 120, "timeout_action": "accept"},
+        )
+
+    def test_legacy_config_without_code_review_settings_gets_default(self) -> None:
+        payload = json.loads((self.root / "config.json").read_text())
+        payload.pop("code_review", None)
+        (self.root / "config.json").write_text(json.dumps(payload), encoding="utf-8")
+
+        response = self.client.get("/global-state")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json()["code_review"],
+            {"model_preset_id": "gpt-5.6"},
+        )
+
+    def test_model_constructed_legacy_config_gets_code_review_default(self) -> None:
+        current = load_global_config(self.root)
+
+        migrated = GlobalConfig(
+            defaults=current.defaults,
+            model_presets=current.model_presets,
+        )
+
+        self.assertEqual(migrated.code_review.model_preset_id, "gpt-5.6")
+
+    def test_legacy_code_review_default_falls_back_to_project_default(self) -> None:
+        payload = json.loads((self.root / "config.json").read_text())
+        payload.pop("code_review", None)
+        payload["defaults"]["default_model_preset_id"] = "opus-4-8"
+        payload["model_presets"] = [
+            preset
+            for preset in payload["model_presets"]
+            if preset["id"] != "gpt-5.6"
+        ]
+        (self.root / "config.json").write_text(json.dumps(payload), encoding="utf-8")
+
+        response = self.client.get("/global-state")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json()["code_review"],
+            {"model_preset_id": "opus-4-8"},
         )
 
     def test_duplicate_preset_id_is_rejected(self) -> None:

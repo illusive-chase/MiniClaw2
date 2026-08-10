@@ -87,14 +87,51 @@ class ToolRequestSettings(BaseModel):
     timeout_action: Literal["accept", "reject"] = "accept"
 
 
+class CodeReviewSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    model_preset_id: str
+
+
 class GlobalConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     version: Literal[1] = 1
     defaults: GlobalDefaults
     model_presets: list[ModelPreset]
+    code_review: CodeReviewSettings
     tool_requests: ToolRequestSettings = Field(default_factory=ToolRequestSettings)
     sync: SyncSettings = Field(default_factory=SyncSettings)
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_code_review_settings(cls, value: Any) -> Any:
+        if not isinstance(value, dict) or "code_review" in value:
+            return value
+        presets = value.get("model_presets")
+        defaults = value.get("defaults")
+        active_ids: set[str] = set()
+        if isinstance(presets, list):
+            for preset in presets:
+                if isinstance(preset, ModelPreset) and preset.status == "active":
+                    active_ids.add(preset.id)
+                elif (
+                    isinstance(preset, dict)
+                    and preset.get("status", "active") == "active"
+                    and isinstance(preset.get("id"), str)
+                ):
+                    active_ids.add(preset["id"])
+        if isinstance(defaults, GlobalDefaults):
+            default_id = defaults.default_model_preset_id
+        elif isinstance(defaults, dict):
+            default_id = defaults.get("default_model_preset_id")
+        else:
+            default_id = None
+        model_preset_id = "gpt-5.6" if "gpt-5.6" in active_ids else default_id
+        return {
+            **value,
+            "code_review": {"model_preset_id": model_preset_id},
+        }
 
     @model_validator(mode="after")
     def validate_catalog(self) -> "GlobalConfig":
@@ -110,6 +147,15 @@ class GlobalConfig(BaseModel):
         )
         if default.status != "active":
             raise ValueError("default_model_preset_id must reference an active preset")
+        if self.code_review.model_preset_id not in ids:
+            raise ValueError("code review model_preset_id must reference a configured preset")
+        code_review_preset = next(
+            preset
+            for preset in self.model_presets
+            if preset.id == self.code_review.model_preset_id
+        )
+        if code_review_preset.status != "active":
+            raise ValueError("code review model_preset_id must reference an active preset")
         return self
 
 

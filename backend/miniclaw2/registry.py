@@ -41,6 +41,7 @@ from .domain import (
 )
 from .language import normalize_preferred_language
 from .model_catalog import (
+    default_code_review_model_preset_id,
     default_model_preset_id,
     normalize_active_model_preset_id,
     normalize_model_preset_id,
@@ -990,7 +991,9 @@ class ProjectRegistry:
             subtype=ReviewSubtype.CODE_REVIEW,
             review_target=ReviewTarget(),
             state=NodeState.QUEUED,
-            model_preset_id=rt.project.model_preset_id,
+            model_preset_id=default_code_review_model_preset_id(
+                store_root=self.store.root
+            ),
         )
         self.store.create_node(node)
         rt.priority_node_ids.append(node.id)

@@ -1,8 +1,8 @@
 """Idempotently install our ``PreToolUse``/``SessionStart``/``Stop`` hooks into
 ``~/.claude/settings.json``.
 
-Matching is by substring — a dev install (``python -m ...`` in a
-virtualenv) and a wheel install don't leave duplicate hooks. Same
+Matching is by substring, including the legacy ``python -m ...`` command,
+so daemon restarts and package upgrades don't leave duplicate hooks. Same
 principle as botmux's ``.includes('cli.js') && endsWith('hook <cliId>')``
 check.
 
@@ -15,12 +15,14 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import sys
 from pathlib import Path
 from typing import Any
 
 
 _HOOK_MARKER = "miniclaw2.claude_hook_bridge"
+_HOOK_SCRIPT_NAME = "claude_hook_bridge.py"
 _SESSION_READY_MARKER = "--session-ready"
 _TURN_COMPLETE_MARKER = "--turn-complete"
 # Claude requires a numeric hook timeout. Use the largest duration that stays
@@ -43,7 +45,7 @@ def install_hooks(settings_path: Path | None = None) -> Path:
     settings = _read_json(target) or {}
     hooks = settings.setdefault("hooks", {})
 
-    ask_command = _quoted_python() + f" -m {_HOOK_MARKER}"
+    ask_command = _bridge_command(target.parent)
     ready_command = ask_command + f" {_SESSION_READY_MARKER}"
     turn_complete_command = ask_command + f" {_TURN_COMPLETE_MARKER}"
 
@@ -69,7 +71,7 @@ def install_hooks(settings_path: Path | None = None) -> Path:
         matcher="AskUserQuestion",
         entry=ask_entry,
         is_ours=lambda e: (
-            _HOOK_MARKER in _entry_command(e)
+            _is_bridge_command(_entry_command(e))
             and _SESSION_READY_MARKER not in _entry_command(e)
             and _TURN_COMPLETE_MARKER not in _entry_command(e)
         ),
@@ -80,7 +82,7 @@ def install_hooks(settings_path: Path | None = None) -> Path:
         matcher=None,
         entry=ready_entry,
         is_ours=lambda e: (
-            _HOOK_MARKER in _entry_command(e)
+            _is_bridge_command(_entry_command(e))
             and _SESSION_READY_MARKER in _entry_command(e)
         ),
     )
@@ -90,7 +92,7 @@ def install_hooks(settings_path: Path | None = None) -> Path:
         matcher=None,
         entry=turn_complete_entry,
         is_ours=lambda e: (
-            _HOOK_MARKER in _entry_command(e)
+            _is_bridge_command(_entry_command(e))
             and _TURN_COMPLETE_MARKER in _entry_command(e)
         ),
     )
@@ -107,11 +109,21 @@ def _entry_command(entry: Any) -> str:
     return ""
 
 
-def _quoted_python() -> str:
-    exe = sys.executable or "python3"
-    if " " in exe or "\t" in exe:
-        return f'"{exe}"'
-    return exe
+def _bridge_command(settings_dir: Path) -> str:
+    # ``sys.executable`` can point into uv's transient build cache. The daemon
+    # outlives that directory, but resolving its virtualenv symlink gives us the
+    # stable base interpreter without depending on Claude's PATH.
+    python = Path(sys.executable).resolve(strict=True)
+    source = Path(__file__).resolve().parents[2] / _HOOK_SCRIPT_NAME
+    bridge_dir = settings_dir / "miniclaw2"
+    bridge_dir.mkdir(parents=True, exist_ok=True)
+    bridge = bridge_dir / _HOOK_SCRIPT_NAME
+    _atomic_write(bridge, source.read_text(encoding="utf-8"))
+    return f"{shlex.quote(str(python))} {shlex.quote(str(bridge))}"
+
+
+def _is_bridge_command(command: str) -> bool:
+    return _HOOK_MARKER in command or _HOOK_SCRIPT_NAME in command
 
 
 def _read_json(path: Path) -> dict[str, Any] | None:
