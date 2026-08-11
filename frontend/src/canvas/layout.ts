@@ -477,11 +477,20 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
   const shaSet = new Set(gitCommits.map((commit) => commit.sha));
   const columnIndexes = new Map<string, number>();
   const columnCounts = new Map<number, number>();
+  const commitRows = new Map<string, number>();
+  const nextRowByColumn = new Map<number, number>();
   for (const commit of gitCommits) {
     const column = commit.column ?? 0;
     const columnIndex = columnCounts.get(column) ?? 0;
     columnIndexes.set(commit.sha, columnIndex);
     columnCounts.set(column, columnIndex + 1);
+    const parentRow = Math.max(
+      -1,
+      ...(commit.parent_shas ?? []).map((sha) => commitRows.get(sha) ?? -1),
+    );
+    const row = Math.max(nextRowByColumn.get(column) ?? 0, parentRow + 1);
+    commitRows.set(commit.sha, row);
+    nextRowByColumn.set(column, row + 1);
   }
   const previousByColumn = new Map<number, CommitDescriptor>();
   gitCommits.forEach((commit) => {
@@ -492,7 +501,7 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
       position: commitLayoutPosition(
         commit,
         layoutHints,
-        columnIndexes.get(commit.sha) ?? 0,
+        commitRows.get(commit.sha) ?? 0,
         column,
       ),
       width: 76,
@@ -557,8 +566,8 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
   }
   if (gitDirtyCount > 0) {
     const ghostId = "commit:ghost";
-    const trunkCount = columnCounts.get(0) ?? 0;
-    rfNodes.push({ id: ghostId, type: "commit", position: layoutHints[ghostId] ?? defaultCommitPosition(trunkCount), width: 76, height: 76, data: { commit: { sha: "ghost", live: false, message: "Uncommitted changes", external_count_before: 0, aliases: [], column: 0 }, head: false, ghost: true, dirtyCount: gitDirtyCount }, draggable: true, selectable: true });
+    const nextTrunkRow = nextRowByColumn.get(0) ?? 0;
+    rfNodes.push({ id: ghostId, type: "commit", position: layoutHints[ghostId] ?? defaultCommitPosition(nextTrunkRow), width: 76, height: 76, data: { commit: { sha: "ghost", live: false, message: "Uncommitted changes", external_count_before: 0, aliases: [], column: 0 }, head: false, ghost: true, dirtyCount: gitDirtyCount }, draggable: true, selectable: true });
     const previous = [...gitCommits].reverse().find((commit) => (commit.column ?? 0) === 0);
     if (previous) {
       rfEdges.push({ id: `commit-trunk:${previous.sha}:ghost`, source: `commit:${previous.sha}`, target: ghostId, type: "commitTrunk" });

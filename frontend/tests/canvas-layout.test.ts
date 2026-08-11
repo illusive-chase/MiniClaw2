@@ -114,10 +114,31 @@ function testCommitBranchesUseParentsAndColumns(): void {
   );
   assert.equal(
     graph.rfNodes.find((item) => item.id === "commit:peer-a")?.position.y,
-    LANE.trunkStartY,
+    LANE.trunkStartY + LANE.trunkStep,
   );
   assert.equal(graph.rfNodes.some((item) => item.id === "commit-column:1"), true);
   assert.equal(graph.rfNodes.some((item) => item.id === "commit:ghost"), false);
+}
+
+function testPeerCommitRowsFollowVisibleParents(): void {
+  const graph = buildGraph(args({
+    gitCommits: [
+      commit("base", 0, { column: 0, parent_shas: [] }),
+      commit("local-a", 0, { column: 0, parent_shas: ["base"] }),
+      commit("local-b", 0, { column: 0, parent_shas: ["local-a"] }),
+      commit("peer", 0, {
+        column: 1,
+        parent_shas: ["local-b"],
+        availability: "peer",
+        host_ids: ["host-b"],
+      }),
+    ],
+  }));
+  const parent = graph.rfNodes.find((item) => item.id === "commit:local-b");
+  const child = graph.rfNodes.find((item) => item.id === "commit:peer");
+
+  assert.equal(parent?.position.y, LANE.trunkStartY + 2 * LANE.trunkStep);
+  assert.equal(child?.position.y, LANE.trunkStartY + 3 * LANE.trunkStep);
 }
 
 function testCommitFallbackDoesNotCrossColumnsAndHintsWin(): void {
@@ -1179,6 +1200,7 @@ testKnownLaneOrderSurvivesNodeCreationOrder();
 testProjectScopedLaneLabelShowsOnlyDirectionName();
 testVerticalCommitTrunkAndStableLaneX();
 testCommitBranchesUseParentsAndColumns();
+testPeerCommitRowsFollowVisibleParents();
 testCommitFallbackDoesNotCrossColumnsAndHintsWin();
 testCommitLayoutResolvesShaAliases();
 testCurrentCommitLayoutWinsOverShaAliases();

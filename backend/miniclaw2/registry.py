@@ -1452,6 +1452,32 @@ class ProjectRegistry:
         if source.obsolete_reason:
             raise ValueError("obsolete virtual nodes cannot be claimed")
 
+        local_claim = next(
+            (
+                claim
+                for claim in self.store.list_claims(pid).get(source.id, [])
+                if claim.get("claimed_by") == self.store.machine.id
+            ),
+            None,
+        )
+        if local_claim is not None:
+            existing = self.store.load_node(pid, str(local_claim["as_node"]))
+            if (
+                existing is not None
+                and self.is_native_node(project, existing)
+                and existing.promoted_from == source.id
+            ):
+                return existing
+
+        settings_snapshot: dict[str, Any] = {}
+        if source.pending_extra_principles:
+            settings_snapshot["extra_principles"] = list(
+                source.pending_extra_principles
+            )
+        if source.pending_extra_skills:
+            settings_snapshot["extra_skills"] = [
+                dict(item) for item in source.pending_extra_skills
+            ]
         claimed = Node(
             project_id=pid,
             kind=source.kind,
@@ -1466,8 +1492,7 @@ class ProjectRegistry:
             brief=source.brief,
             review_target=source.review_target,
             scheduled_deps=list(source.scheduled_deps),
-            pending_extra_principles=list(source.pending_extra_principles),
-            pending_extra_skills=[dict(item) for item in source.pending_extra_skills],
+            settings_snapshot=settings_snapshot,
             verify_script_ref=source.verify_script_ref,
             promoted_from=source.id,
         )

@@ -279,6 +279,9 @@ class HostPartitionStoreTests(unittest.TestCase):
                 prompt_draft="implement the task",
                 scheduled_deps=["upstream"],
                 pending_extra_principles=["principles.careful"],
+                pending_extra_skills=[
+                    {"id": "skills.review", "suggest": True}
+                ],
                 settings_snapshot={"cwd": "/remote/repo"},
                 provider_session_id="remote-session",
                 origin_machine_id="remote-host",
@@ -312,7 +315,17 @@ class HostPartitionStoreTests(unittest.TestCase):
             self.assertEqual(claimed.promoted_from, source.id)
             self.assertEqual(claimed.prompt, source.prompt_draft)
             self.assertEqual(claimed.scheduled_deps, source.scheduled_deps)
-            self.assertEqual(claimed.settings_snapshot, {})
+            self.assertEqual(claimed.pending_extra_principles, [])
+            self.assertEqual(claimed.pending_extra_skills, [])
+            self.assertEqual(
+                claimed.settings_snapshot,
+                {
+                    "extra_principles": ["principles.careful"],
+                    "extra_skills": [
+                        {"id": "skills.review", "suggest": True}
+                    ],
+                },
+            )
             self.assertNotEqual(claimed.origin_machine_id, source.origin_machine_id)
             self.assertIsNone(claimed.provider_session_id)
             self.assertIsNone(claimed.commit_before)
@@ -320,6 +333,19 @@ class HostPartitionStoreTests(unittest.TestCase):
             claims = store.list_claims(project.id)[source.id]
             self.assertEqual(claims[0]["claimed_by"], store.machine.id)
             self.assertEqual(claims[0]["as_node"], claimed.id)
+
+            with patch.object(registry, "_schedule_queued") as schedule:
+                retried = registry.claim_foreign_virtual(project.id, source.id)
+
+            self.assertEqual(retried.id, claimed.id)
+            schedule.assert_not_called()
+            local_claimed = [
+                node
+                for node in store.list_nodes(project.id)
+                if node.promoted_from == source.id
+                and node.owner_host_id == store.machine.id
+            ]
+            self.assertEqual([node.id for node in local_claimed], [claimed.id])
 
     def test_list_claims_reports_independent_host_claims(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

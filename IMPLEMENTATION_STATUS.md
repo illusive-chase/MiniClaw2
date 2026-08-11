@@ -1040,15 +1040,19 @@ Trunk: `backend/miniclaw2/store.py`, `backend/miniclaw2/replay.py`.
   presenting it as live state. The Git surface classifies referenced commits as
   `live`, `peer`, `unfetched`, `stale`, or `unverified`, returns stable host
   columns and nearest referenced parent SHAs, and the canvas renders those
-  columns without fabricating peer worktree ghosts. Merge commits can expose
-  multiple edges, but overlapping merge-edge routing remains a known limit.
+  columns without fabricating peer worktree ghosts. Default peer rows are
+  placed after their visible parents. Merge commits can expose multiple edges,
+  but overlapping merge-edge routing remains a known limit.
 - Foreign virtual work is claimed by copying its task intent into a new local
   queued node with `promoted_from`, then writing
   `hosts/<local-mid>/claims/<vid>.json`. The source node is never modified.
-  Concurrent claims are detected and shown with their resulting node ids; they
-  are not prevented because synchronized metadata cannot provide a truthful
-  cross-host lock. Dependency launch guidance marks foreign-host previews and
-  warns that their absolute paths and environment details belong to that host.
+  Pending principle and skill selections move into the claimed node's launch
+  snapshot, and retrying a claim on the same host returns the existing local
+  node. Concurrent claims on different hosts are detected and shown with their
+  resulting node ids; they are not prevented because synchronized metadata
+  cannot provide a truthful cross-host lock. Dependency launch guidance marks
+  foreign-host previews and warns that their absolute paths and environment
+  details belong to that host.
 - Enabling sharing is a one-way migration and is unavailable for temporary
   projects. A second device must explicitly bind a Git checkout whose root
   commit matches the recorded repository fingerprint. Removing a host binding
