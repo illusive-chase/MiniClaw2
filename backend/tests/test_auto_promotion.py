@@ -241,6 +241,16 @@ class AutoPromoteOnRunnerDoneTests(unittest.IsolatedAsyncioTestCase):
 
     async def asyncTearDown(self) -> None:
         os.environ.pop("MINICLAW_CONTEXT_HOME", None)
+        runtime = self.registry._runtimes.get(self.project.id)
+        if runtime is not None:
+            runtime.closed = True
+            runner_tasks = list(runtime.runner_tasks.values())
+            for task in runner_tasks:
+                task.cancel()
+            await asyncio.gather(*runner_tasks, return_exceptions=True)
+            await asyncio.gather(
+                *list(runtime.background_tasks), return_exceptions=True
+            )
         self.tmp.cleanup()
 
     def _make_finished_agent(

@@ -113,6 +113,10 @@ export type CommitDescriptor = {
   ts?: number | null;
   external_count_before: number;
   aliases: string[];
+  availability?: "live" | "peer" | "unfetched" | "stale" | "unverified";
+  column?: number;
+  host_ids?: string[];
+  parent_shas?: string[] | null;
 };
 
 export type GitState = { status: GitStatus; commits: CommitDescriptor[] };
@@ -196,13 +200,23 @@ export type SessionInfo = {
   can_delete: boolean;
   sharing: "device-native" | "shared";
   can_join_here: boolean;
-  hosts: Array<{ mid: string; label?: string; bound_at?: number }>;
+  hosts: SessionHost[];
   last_sync_at?: number | null;
   project_context_binding_id?: string | null;
   /** Persisted canvas positions keyed by node id or synthetic graph id. */
   layout_hints?: Record<string, { x: number; y: number }>;
   /** Persisted React Flow viewport so pan/zoom survives project reopen. */
   layout_viewport?: CanvasViewport | null;
+};
+
+export type SessionHost = {
+  mid: string;
+  label?: string;
+  bound_at?: number;
+  head?: string;
+  branch?: string;
+  recorded_at?: number;
+  dirty?: boolean;
 };
 
 export type TemplateSummary = {
@@ -319,6 +333,8 @@ export type NodeInfo = {
   provider_turn_id?: string | null;
   origin_machine_id?: string;
   owner_host_id?: string;
+  promoted_from?: string | null;
+  claims?: Array<{ claimed_by: string; as_node: string; claimed_at: number }>;
   commit_before?: string | null;
   commit_after?: string | null;
   prompt: string;

@@ -742,6 +742,11 @@ def create_app(registry: ProjectRegistry | None = None) -> FastAPI:
             registry.store.read_git_aliases(sid),
             ref_timestamps,
             status,
+            {
+                mid: payload["head"]
+                for mid, payload in registry.store.read_host_heads(sid).items()
+                if mid != registry.store.machine.id
+            },
         )
         return {"status": asdict(status), "commits": [asdict(item) for item in commits]}
 
@@ -1096,6 +1101,22 @@ def create_app(registry: ProjectRegistry | None = None) -> FastAPI:
             "already_promoted": result.code == "already_promoted",
         }
 
+    @app.post(
+        "/sessions/{sid}/nodes/{nid}/claim", response_model=dict[str, Any]
+    )
+    async def claim_foreign_virtual(sid: str, nid: str) -> dict[str, Any]:
+        if registry.get_project(sid) is None:
+            raise HTTPException(404, "session not found")
+        # Unlike ordinary node mutations, claiming intentionally targets a
+        # foreign node while constraining every write to the local host tree.
+        try:
+            node = registry.claim_foreign_virtual(sid, nid)
+        except KeyError as exc:
+            raise HTTPException(404, "virtual not found") from exc
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        return {"ok": True, "node_id": node.id, "node": node.model_dump()}
+
     @app.patch(
         "/sessions/{sid}/virtuals/{vid}", response_model=dict[str, Any]
     )
@@ -1131,21 +1152,31 @@ def create_app(registry: ProjectRegistry | None = None) -> FastAPI:
         await cancel_context_task(project.id)
         return describe_project_contextspace(project, store_root=registry.store.root)
 
-    @app.get("/sessions/{sid}/nodes", response_model=list[Node])
-    def list_nodes(sid: str) -> list[Node]:
+    @app.get("/sessions/{sid}/nodes", response_model=list[dict[str, Any]])
+    def list_nodes(sid: str) -> list[dict[str, Any]]:
         nodes = registry.list_nodes(sid)
         if nodes is None:
             raise HTTPException(404, "session not found")
-        return nodes
+        claims = registry.store.list_claims(sid)
+        return [
+            {
+                **node.model_dump(),
+                **({"claims": claims.get(node.id, [])} if node.state.value == "virtual" else {}),
+            }
+            for node in nodes
+        ]
 
-    @app.get("/sessions/{sid}/nodes/{nid}", response_model=Node)
-    def get_node(sid: str, nid: str) -> Node:
+    @app.get("/sessions/{sid}/nodes/{nid}", response_model=dict[str, Any])
+    def get_node(sid: str, nid: str) -> dict[str, Any]:
         if registry.get_project(sid) is None:
             raise HTTPException(404, "session not found")
         node = registry.get_node(sid, nid)
         if node is None:
             raise HTTPException(404, "node not found")
-        return node
+        payload = node.model_dump()
+        if node.state.value == "virtual":
+            payload["claims"] = registry.store.list_claims(sid).get(node.id, [])
+        return payload
 
     @app.get("/sessions/{sid}/nodes/{nid}/events", response_model=list[EventRecord])
     def get_node_events(sid: str, nid: str, since_seq: int = 0) -> list[EventRecord]:

@@ -106,6 +106,18 @@ class DependencyBlockTests(unittest.TestCase):
             block,
         )
 
+    def test_foreign_dependency_adds_device_and_path_disclaimer(self) -> None:
+        node = _agent_node(scheduled_deps=["local", "remote"])
+
+        block = build_dependency_launch_block(
+            node,
+            foreign_hosts={"remote": "workstation"},
+        )
+
+        self.assertIn('another device, "workstation"', block)
+        self.assertIn("absolute paths", block)
+        self.assertEqual(block.count("another device"), 1)
+
 
 class AgenticReviewBlockTests(unittest.TestCase):
     def test_brief_inlined(self) -> None:

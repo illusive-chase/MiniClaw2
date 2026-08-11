@@ -450,7 +450,12 @@ class SyncManager:
         self._lock = threading.RLock()
         self._timer: threading.Timer | None = None
         self._pending_messages: list[str] = []
+        self._pre_commit_callbacks: list[Callable[[], None]] = []
         self._success_callbacks: list[Callable[[], None]] = []
+
+    def add_pre_commit_callback(self, callback: Callable[[], None]) -> None:
+        if callback not in self._pre_commit_callbacks:
+            self._pre_commit_callbacks.append(callback)
 
     def add_success_callback(self, callback: Callable[[], None]) -> None:
         if callback not in self._success_callbacks:
@@ -578,6 +583,11 @@ class SyncManager:
             )
         self._ensure_contextspace_inside_store()
         with self._lock:
+            for callback in tuple(self._pre_commit_callbacks):
+                try:
+                    callback()
+                except Exception:  # noqa: BLE001
+                    logger.exception("pre-commit sync callback failed")
             self.commit_now()
             starting_head = self._head()
             branch = self._branch()

@@ -353,6 +353,20 @@ export async function promoteVirtual(
   return res.json();
 }
 
+export async function claimVirtual(
+  sessionId: string,
+  nodeId: string,
+): Promise<{ ok: boolean; node_id: string; node: NodeInfo }> {
+  const res = await fetch(
+    `/sessions/${sessionId}/nodes/${encodeURIComponent(nodeId)}/claim`,
+    { method: "POST" },
+  );
+  if (!res.ok) {
+    throw new ApiError("claimVirtual", res.status, await readErrorDetail(res));
+  }
+  return res.json();
+}
+
 export async function dequeueNode(
   sessionId: string,
   nodeId: string,

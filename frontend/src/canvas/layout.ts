@@ -1,5 +1,5 @@
 import type { CoordinateExtent, Edge, Node, NodeChange } from "reactflow";
-import type { ArtifactRef, CommitDescriptor, ContextBundle, NodeInfo } from "../types";
+import type { ArtifactRef, CommitDescriptor, ContextBundle, NodeInfo, SessionHost } from "../types";
 
 /* ───────── canvas node payloads ───────── */
 
@@ -86,6 +86,11 @@ export type CommitNodeData = {
   externalCountBefore?: number;
 };
 
+export type CommitColumnHeaderData = {
+  host: SessionHost | null;
+  head: string;
+};
+
 export type PlanspaceColor = {
   name: string;
   bg: string;
@@ -110,6 +115,7 @@ export type RFNodeData =
   | OpNodeData
   | ContextNodeData
   | CommitNodeData
+  | CommitColumnHeaderData
   | PlanspaceLaneData
   | ErrorTerminalData
   | ArtifactNodeData;
@@ -128,6 +134,7 @@ export const LANE = {
   trunkX: 40,
   trunkStartY: 80,
   trunkStep: 112,
+  trunkColumnStep: 196,
   trunkGutter: 220,
   projectContextLaneY: 8,
   contextLaneY: 110,
@@ -317,6 +324,7 @@ export type BuildGraphArgs = {
   gitCommits?: CommitDescriptor[];
   gitHead?: string | null;
   gitDirtyCount?: number;
+  gitHosts?: SessionHost[];
 };
 
 export type BuildGraphResult = {
@@ -333,9 +341,9 @@ export type CommitPositionTransfer = {
   resetGhostPosition: { x: number; y: number } | null;
 };
 
-function defaultCommitPosition(index: number): { x: number; y: number } {
+function defaultCommitPosition(index: number, column = 0): { x: number; y: number } {
   return {
-    x: LANE.trunkX,
+    x: LANE.trunkX + column * LANE.trunkColumnStep,
     y: LANE.trunkStartY + index * LANE.trunkStep,
   };
 }
@@ -344,12 +352,13 @@ function commitLayoutPosition(
   commit: CommitDescriptor,
   layoutHints: Readonly<Record<string, { x: number; y: number }>>,
   index: number,
+  column: number,
 ): { x: number; y: number } {
   for (const sha of [commit.sha, ...commit.aliases]) {
     const position = layoutHints[`commit:${sha}`];
     if (position) return position;
   }
-  return defaultCommitPosition(index);
+  return defaultCommitPosition(index, column);
 }
 
 export function resolveCommitPositionTransfer(
@@ -379,7 +388,14 @@ export function resolveCommitPositionTransfer(
     toId: committedNode.id,
     position: { x: ghostPosition.x, y: ghostPosition.y },
     resetGhostPosition:
-      nextGhostIndex >= 0 ? defaultCommitPosition(nextGhostIndex) : null,
+      nextGhostIndex >= 0
+        ? defaultCommitPosition(
+            nextCommitNodes
+              .slice(0, nextGhostIndex)
+              .filter((node) => ((node.data as CommitNodeData).commit.column ?? 0) === 0)
+              .length,
+          )
+        : null,
   };
 }
 
@@ -405,6 +421,7 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
     gitCommits = [],
     gitHead = null,
     gitDirtyCount = 0,
+    gitHosts = [],
   } = args;
 
   const rfNodes: RFNode[] = [];
@@ -430,6 +447,10 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
     planspaceOrder.push(id);
   }
   const planspaceIndex = new Map(planspaceOrder.map((id, index) => [id, index]));
+  const commitColumnOffset = Math.max(
+    0,
+    ...gitCommits.map((commit) => commit.column ?? 0),
+  ) * LANE.trunkColumnStep;
 
   /* Lane absolute positions: deterministic from index, overridable by a saved
    * hint keyed `planspace:<id>`. Children inside the lane get parent-relative
@@ -439,7 +460,7 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
   for (const id of planspaceOrder) {
     const idx = planspaceIndex.get(id) ?? 0;
     const defaultPos = {
-      x: LANE.rootX + LANE.trunkGutter,
+      x: LANE.rootX + LANE.trunkGutter + commitColumnOffset,
       y: LANE.timelineY + idx * LANE.planspaceLaneSpacing - LANE.planspaceLaneAgentRowY,
     };
     laneAbsPos.set(id, layoutHints[`planspace:${id}`] ?? defaultPos);
@@ -453,36 +474,92 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
   const branchSiblingCounts = new Map<string, number>();
   const rerunSiblingCounts = new Map<string, number>();
 
-  gitCommits.forEach((commit, index) => {
+  const shaSet = new Set(gitCommits.map((commit) => commit.sha));
+  const columnIndexes = new Map<string, number>();
+  const columnCounts = new Map<number, number>();
+  for (const commit of gitCommits) {
+    const column = commit.column ?? 0;
+    const columnIndex = columnCounts.get(column) ?? 0;
+    columnIndexes.set(commit.sha, columnIndex);
+    columnCounts.set(column, columnIndex + 1);
+  }
+  const previousByColumn = new Map<number, CommitDescriptor>();
+  gitCommits.forEach((commit) => {
+    const column = commit.column ?? 0;
     rfNodes.push({
       id: `commit:${commit.sha}`,
       type: "commit",
-      position: commitLayoutPosition(commit, layoutHints, index),
+      position: commitLayoutPosition(
+        commit,
+        layoutHints,
+        columnIndexes.get(commit.sha) ?? 0,
+        column,
+      ),
       width: 76,
       height: 76,
       data: {
         commit,
         head: commit.sha === gitHead,
-        externalCountBefore: index === 0 ? commit.external_count_before : 0,
+        externalCountBefore:
+          (columnIndexes.get(commit.sha) ?? 0) === 0
+            ? commit.external_count_before
+            : 0,
       },
       draggable: true,
       selectable: true,
     });
-    if (index > 0) {
-      const previous = `commit:${gitCommits[index - 1].sha}`;
-      rfEdges.push({
-        id: `commit-trunk:${previous}:${commit.sha}`,
-        source: previous,
-        target: `commit:${commit.sha}`,
-        type: "commitTrunk",
-        data: { externalCount: commit.external_count_before },
-      });
+    const parents = commit.parent_shas?.filter((sha) => shaSet.has(sha));
+    if (parents && parents.length > 0) {
+      for (const parent of parents) {
+        rfEdges.push({
+          id: `commit-trunk:${parent}:${commit.sha}`,
+          source: `commit:${parent}`,
+          target: `commit:${commit.sha}`,
+          type: "commitTrunk",
+          data: { externalCount: commit.external_count_before },
+        });
+      }
+    } else if (commit.parent_shas == null) {
+      const previous = previousByColumn.get(column);
+      if (previous) {
+        rfEdges.push({
+          id: `commit-trunk:${previous.sha}:${commit.sha}`,
+          source: `commit:${previous.sha}`,
+          target: `commit:${commit.sha}`,
+          type: "commitTrunk",
+          data: { externalCount: commit.external_count_before },
+        });
+      }
     }
+    previousByColumn.set(column, commit);
   });
+  const hostsById = new Map(gitHosts.map((host) => [host.mid, host]));
+  const renderedColumns = new Set<number>();
+  for (const commit of gitCommits) {
+    const column = commit.column ?? 0;
+    if (column <= 0 || renderedColumns.has(column)) continue;
+    renderedColumns.add(column);
+    const hostId = commit.host_ids?.[0];
+    const host = hostId ? hostsById.get(hostId) ?? null : null;
+    rfNodes.push({
+      id: `commit-column:${column}`,
+      type: "commitColumnHeader",
+      position: {
+        x: LANE.trunkX + column * LANE.trunkColumnStep - 44,
+        y: LANE.trunkStartY - 64,
+      },
+      width: 164,
+      height: 48,
+      data: { host, head: host?.head ?? commit.sha },
+      draggable: false,
+      selectable: false,
+    });
+  }
   if (gitDirtyCount > 0) {
     const ghostId = "commit:ghost";
-    rfNodes.push({ id: ghostId, type: "commit", position: layoutHints[ghostId] ?? defaultCommitPosition(gitCommits.length), width: 76, height: 76, data: { commit: { sha: "ghost", live: false, message: "Uncommitted changes", external_count_before: 0, aliases: [] }, head: false, ghost: true, dirtyCount: gitDirtyCount }, draggable: true, selectable: true });
-    const previous = gitCommits.at(-1);
+    const trunkCount = columnCounts.get(0) ?? 0;
+    rfNodes.push({ id: ghostId, type: "commit", position: layoutHints[ghostId] ?? defaultCommitPosition(trunkCount), width: 76, height: 76, data: { commit: { sha: "ghost", live: false, message: "Uncommitted changes", external_count_before: 0, aliases: [], column: 0 }, head: false, ghost: true, dirtyCount: gitDirtyCount }, draggable: true, selectable: true });
+    const previous = [...gitCommits].reverse().find((commit) => (commit.column ?? 0) === 0);
     if (previous) {
       rfEdges.push({ id: `commit-trunk:${previous.sha}:ghost`, source: `commit:${previous.sha}`, target: ghostId, type: "commitTrunk" });
     }

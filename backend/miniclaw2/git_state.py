@@ -6,6 +6,7 @@ import logging
 import hashlib
 import re
 import subprocess
+from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -64,6 +65,51 @@ class CommitDescriptor:
     ts: float | None = None
     external_count_before: int = 0
     aliases: list[str] | None = None
+    availability: str = "live"
+    column: int = 0
+    host_ids: list[str] | None = None
+    parent_shas: list[str] | None = None
+
+
+@dataclass(slots=True)
+class _CommitRecord:
+    message: str
+    ts: float | None
+    parents: list[str]
+
+
+def _reachable(root: str, history: dict[str, _CommitRecord]) -> set[str]:
+    if root not in history:
+        return set()
+    reached: set[str] = set()
+    pending = [root]
+    while pending:
+        sha = pending.pop()
+        if sha in reached or sha not in history:
+            continue
+        reached.add(sha)
+        pending.extend(history[sha].parents)
+    return reached
+
+
+def _nearest_referenced_ancestor(
+    root: str,
+    history: dict[str, _CommitRecord],
+    referenced: set[str],
+) -> str | None:
+    pending = deque([root])
+    seen: set[str] = set()
+    while pending:
+        sha = pending.popleft()
+        if sha in seen:
+            continue
+        seen.add(sha)
+        if sha in referenced:
+            return sha
+        record = history.get(sha)
+        if record is not None:
+            pending.extend(record.parents)
+    return None
 
 
 def git_status(cwd: str) -> GitStatus:
@@ -382,6 +428,7 @@ def commit_graph(
     alias_map: dict[str, str] | None = None,
     ref_timestamps: dict[str, float] | None = None,
     status: GitStatus | None = None,
+    peer_heads: dict[str, str] | None = None,
 ) -> list[CommitDescriptor]:
     """Derive referenced commit hubs from Git history without storing mirrors."""
     aliases = alias_map or {}
@@ -402,12 +449,24 @@ def commit_graph(
     current = status or git_status(cwd)
     if current.head:
         refs.add(resolve(current.head))
+    valid_peer_heads = {
+        mid: sha.lower()
+        for mid, sha in (peer_heads or {}).items()
+        if isinstance(mid, str)
+        and mid
+        and isinstance(sha, str)
+        and re.fullmatch(r"[0-9a-fA-F]{40}", sha) is not None
+        and (not current.head or sha.lower() != current.head.lower())
+    }
+    refs.update(valid_peer_heads.values())
     if not current.is_repo or not current.head:
         return [
             CommitDescriptor(
                 sha=sha,
                 live=False,
                 message="",
+                availability="unverified",
+                host_ids=[],
                 aliases=sorted(
                     old
                     for old in referenced_shas
@@ -427,48 +486,74 @@ def commit_graph(
         cwd,
         [
             "rev-list",
+            "--ignore-missing",
             "--topo-order",
             "--no-commit-header",
-            "--format=%H%x00%s%x00%ct",
+            "--format=%H%x00%s%x00%ct%x00%P",
             current.head,
+            *sorted(set(valid_peer_heads.values())),
         ],
         timeout=30,
     )
-    history: dict[str, tuple[int, str, float | None]] = {}
+    history: dict[str, _CommitRecord] = {}
     newest_first: list[str] = []
     if rev.returncode == 0:
         for line in rev.stdout.splitlines():
             fields = line.split("\x00")
-            if len(fields) != 3:
+            if len(fields) != 4:
                 continue
-            sha, message, raw_ts = fields
+            sha, message, raw_ts, raw_parents = fields
             try:
                 ts = float(raw_ts)
             except ValueError:
                 ts = None
             newest_first.append(sha)
-            history[sha] = (0, message, ts)
+            history[sha] = _CommitRecord(
+                message=message,
+                ts=ts,
+                parents=raw_parents.split() if raw_parents else [],
+            )
     else:
         logger.warning(
             "failed to load git commit graph for %s: %s",
             cwd,
             rev.stderr.strip() or rev.stdout.strip() or "git rev-list failed",
         )
-    live_order = list(reversed(newest_first))
-    history = {
-        sha: (index, history[sha][1], history[sha][2])
-        for index, sha in enumerate(live_order)
+    union_order = list(reversed(newest_first))
+    live_set = _reachable(current.head, history)
+    live_order = [sha for sha in union_order if sha in live_set]
+    live_indexes = {sha: index for index, sha in enumerate(live_order)}
+    peer_sets = {
+        mid: _reachable(head, history)
+        for mid, head in valid_peer_heads.items()
+        if head in history
     }
-    live_set = set(live_order)
+    sorted_peer_ids = sorted(valid_peer_heads)
+    peer_columns = {mid: index + 1 for index, mid in enumerate(sorted_peer_ids)}
     ordered_refs = [sha for sha in live_order if sha in refs]
-    stale = [sha for sha in refs if sha not in live_set]
+    peer_ref_set = {
+        sha
+        for reachable in peer_sets.values()
+        for sha in reachable
+        if sha in refs and sha not in live_set
+    }
+    unfetched = {
+        sha
+        for sha in valid_peer_heads.values()
+        if sha not in history
+    }
+    stale = [
+        sha
+        for sha in refs
+        if sha not in live_set and sha not in peer_ref_set and sha not in unfetched
+    ]
     stale_buckets: list[list[str]] = [[] for _ in range(len(ordered_refs) + 1)]
     for sha in stale:
         stale_ts = resolved_timestamps.get(sha)
         insertion = len(ordered_refs)
         if stale_ts is not None:
             for index, live_sha in enumerate(ordered_refs):
-                live_ts = history[live_sha][2]
+                live_ts = history[live_sha].ts
                 if live_ts is not None and live_ts > stale_ts:
                     insertion = index
                     break
@@ -478,21 +563,68 @@ def commit_graph(
         ordered.extend(sorted(stale_buckets[index]))
         ordered.append(live_sha)
     ordered.extend(sorted(stale_buckets[-1]))
+    trunk_order = ordered
+    peer_order: list[str] = []
+    for mid in sorted_peer_ids:
+        reachable = peer_sets.get(mid, set())
+        for sha in union_order:
+            if sha in reachable and sha in peer_ref_set and sha not in peer_order:
+                peer_order.append(sha)
+        head = valid_peer_heads[mid]
+        if head in unfetched and head not in peer_order:
+            peer_order.append(head)
+    ordered = trunk_order + peer_order
+    descriptor_shas = set(ordered)
     descriptors: list[CommitDescriptor] = []
     previous_index = -1
     for sha in ordered:
+        availability = "stale"
         message = "stale commit"
         ts: float | None = None
         if sha in live_set:
-            index, message, ts = history[sha]
+            availability = "live"
+            index = live_indexes[sha]
+            message = history[sha].message
+            ts = history[sha].ts
             external = max(0, index - previous_index - 1) if previous_index >= 0 else 0
             previous_index = index
+        elif sha in peer_ref_set:
+            availability = "peer"
+            message = history[sha].message
+            ts = history[sha].ts
+            external = 0
+        elif sha in unfetched:
+            availability = "unfetched"
+            message = ""
+            external = 0
         else:
             external = 0
+        host_ids = [
+            mid for mid in sorted_peer_ids
+            if sha in peer_sets.get(mid, set()) or valid_peer_heads[mid] == sha
+        ]
+        columns = [peer_columns[mid] for mid in host_ids]
+        column = 0 if availability in {"live", "stale"} else min(columns, default=0)
+        parent_shas: list[str] | None = None
+        if sha in history:
+            parent_shas = []
+            for parent in history[sha].parents:
+                resolved_parent = _nearest_referenced_ancestor(
+                    parent, history, descriptor_shas
+                )
+                if resolved_parent and resolved_parent not in parent_shas:
+                    parent_shas.append(resolved_parent)
         descriptors.append(CommitDescriptor(
-            sha=sha, live=sha in live_set, message=message, ts=ts,
+            sha=sha,
+            live=availability == "live",
+            message=message,
+            ts=ts,
             external_count_before=external,
             aliases=sorted(old for old in referenced_shas if resolve(old) == sha and old != sha) or [],
+            availability=availability,
+            column=column,
+            host_ids=host_ids,
+            parent_shas=parent_shas,
         ))
     return descriptors
 

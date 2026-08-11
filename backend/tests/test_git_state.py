@@ -224,6 +224,98 @@ class GitStateTest(unittest.TestCase):
             self.assertEqual([item.sha for item in graph], ["new-a", "commit-b"])
             self.assertEqual(graph[0].aliases, ["old-a"])
 
+    def test_commit_graph_classifies_peer_branch_and_visible_parents(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            repo = Path(raw)
+            base = _init_repo(repo)
+            branch = subprocess.run(
+                ["git", "branch", "--show-current"],
+                cwd=repo,
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+
+            (repo / "middle.txt").write_text("middle\n", encoding="utf-8")
+            subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-qm", "middle"], cwd=repo, check=True)
+            (repo / "local.txt").write_text("local\n", encoding="utf-8")
+            subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-qm", "local"], cwd=repo, check=True)
+            local = _head(repo)
+
+            subprocess.run(["git", "checkout", "-qb", "peer", base], cwd=repo, check=True)
+            (repo / "peer.txt").write_text("peer\n", encoding="utf-8")
+            subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-qm", "peer"], cwd=repo, check=True)
+            peer = _head(repo)
+            subprocess.run(["git", "checkout", "-q", branch], cwd=repo, check=True)
+
+            graph = commit_graph(
+                str(repo),
+                {base, local, peer},
+                peer_heads={"host-b": peer},
+            )
+            by_sha = {item.sha: item for item in graph}
+
+            self.assertEqual(by_sha[base].availability, "live")
+            self.assertEqual(by_sha[base].column, 0)
+            self.assertEqual(by_sha[local].availability, "live")
+            self.assertEqual(by_sha[local].parent_shas, [base])
+            self.assertEqual(by_sha[local].external_count_before, 1)
+            self.assertEqual(by_sha[peer].availability, "peer")
+            self.assertFalse(by_sha[peer].live)
+            self.assertEqual(by_sha[peer].column, 1)
+            self.assertEqual(by_sha[peer].host_ids, ["host-b"])
+            self.assertEqual(by_sha[peer].parent_shas, [base])
+            self.assertEqual(by_sha[peer].external_count_before, 0)
+
+    def test_commit_graph_tolerates_unfetched_peer_head(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            repo = Path(raw)
+            local = _init_repo(repo)
+            missing = "f" * 40
+
+            graph = commit_graph(
+                str(repo),
+                {local},
+                peer_heads={"host-z": missing},
+            )
+            by_sha = {item.sha: item for item in graph}
+
+            self.assertEqual(by_sha[missing].availability, "unfetched")
+            self.assertEqual(by_sha[missing].message, "")
+            self.assertIsNone(by_sha[missing].ts)
+            self.assertIsNone(by_sha[missing].parent_shas)
+            self.assertEqual(by_sha[missing].column, 1)
+
+    def test_commit_graph_peer_columns_are_stable_by_host_id(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            repo = Path(raw)
+            local = _init_repo(repo)
+            first = "a" * 40
+            second = "b" * 40
+
+            forward = commit_graph(
+                str(repo),
+                {local},
+                peer_heads={"z-host": second, "a-host": first},
+            )
+            reverse = commit_graph(
+                str(repo),
+                {local},
+                peer_heads={"a-host": first, "z-host": second},
+            )
+
+            self.assertEqual(
+                {item.sha: item.column for item in forward},
+                {item.sha: item.column for item in reverse},
+            )
+            self.assertEqual(
+                {item.sha: item.column for item in forward}[first],
+                1,
+            )
+
     def test_pull_conflict_aborts_own_rebase_and_restores_tree(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)

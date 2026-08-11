@@ -97,6 +97,7 @@ def build_dependency_launch_block(
     node: Node,
     *,
     lane_path: str | None = None,
+    foreign_hosts: dict[str, str] | None = None,
 ) -> str:
     """Return a launch block that names declared dependency previews.
 
@@ -122,6 +123,14 @@ def build_dependency_launch_block(
     ]
     for dep in deps:
         lines.append(f"- `{dep}` -> `{lane}/nodes/{dep}/preview.json`")
+        label = (foreign_hosts or {}).get(dep)
+        if label:
+            lines.append(
+                f'  (This dependency ran on another device, "{label}". Its preview '
+                "and artifacts are synced here, but any absolute paths and "
+                "environment details it mentions belong to that device and do not "
+                "apply here.)"
+            )
     lines.extend([
         "",
         "If a dependency preview points to transcript details or artifacts, "

@@ -62,14 +62,81 @@ assert.deepEqual(
   "queued nodes must request replay before their buffered node_started event can be delivered",
 );
 
-function commit(sha: string, externalCount = 0): CommitDescriptor {
+function commit(
+  sha: string,
+  externalCount = 0,
+  overrides: Partial<CommitDescriptor> = {},
+): CommitDescriptor {
   return {
     sha,
     live: true,
     message: sha,
     external_count_before: externalCount,
     aliases: [],
+    ...overrides,
   };
+}
+
+function testCommitBranchesUseParentsAndColumns(): void {
+  const graph = buildGraph(args({
+    gitCommits: [
+      commit("base", 0, { column: 0, parent_shas: [] }),
+      commit("local", 0, { column: 0, parent_shas: ["base"] }),
+      commit("peer-a", 0, {
+        column: 1,
+        parent_shas: ["base"],
+        availability: "peer",
+        host_ids: ["host-b"],
+      }),
+      commit("peer-b", 0, {
+        column: 1,
+        parent_shas: ["peer-a"],
+        availability: "peer",
+        host_ids: ["host-b"],
+      }),
+    ],
+    gitHosts: [{
+      mid: "host-b",
+      label: "workstation",
+      head: "peer-b",
+      recorded_at: 1,
+      dirty: true,
+    }],
+  }));
+
+  assert.equal(graph.rfEdges.some((edge) => edge.id === "commit-trunk:base:local"), true);
+  assert.equal(graph.rfEdges.some((edge) => edge.id === "commit-trunk:base:peer-a"), true);
+  assert.equal(graph.rfEdges.some((edge) => edge.id === "commit-trunk:peer-a:peer-b"), true);
+  assert.equal(graph.rfEdges.some((edge) => edge.id === "commit-trunk:local:peer-a"), false);
+  assert.equal(
+    graph.rfNodes.find((item) => item.id === "commit:peer-a")?.position.x,
+    LANE.trunkX + LANE.trunkColumnStep,
+  );
+  assert.equal(
+    graph.rfNodes.find((item) => item.id === "commit:peer-a")?.position.y,
+    LANE.trunkStartY,
+  );
+  assert.equal(graph.rfNodes.some((item) => item.id === "commit-column:1"), true);
+  assert.equal(graph.rfNodes.some((item) => item.id === "commit:ghost"), false);
+}
+
+function testCommitFallbackDoesNotCrossColumnsAndHintsWin(): void {
+  const hinted = { x: 700, y: 320 };
+  const graph = buildGraph(args({
+    gitCommits: [
+      commit("local", 0, { column: 0 }),
+      commit("peer-a", 0, { column: 1, availability: "peer" }),
+      commit("peer-b", 0, { column: 1, availability: "peer" }),
+    ],
+    layoutHints: { "commit:peer-a": hinted },
+  }));
+
+  assert.deepEqual(
+    graph.rfNodes.find((item) => item.id === "commit:peer-a")?.position,
+    hinted,
+  );
+  assert.equal(graph.rfEdges.some((edge) => edge.id === "commit-trunk:local:peer-a"), false);
+  assert.equal(graph.rfEdges.some((edge) => edge.id === "commit-trunk:peer-a:peer-b"), true);
 }
 
 function args(overrides: Partial<BuildGraphArgs> = {}): BuildGraphArgs {
@@ -1111,6 +1178,8 @@ testNoRootOrFabricatedDependencies();
 testKnownLaneOrderSurvivesNodeCreationOrder();
 testProjectScopedLaneLabelShowsOnlyDirectionName();
 testVerticalCommitTrunkAndStableLaneX();
+testCommitBranchesUseParentsAndColumns();
+testCommitFallbackDoesNotCrossColumnsAndHintsWin();
 testCommitLayoutResolvesShaAliases();
 testCurrentCommitLayoutWinsOverShaAliases();
 testCommittedGhostTransfersItsPositionToNewHead();

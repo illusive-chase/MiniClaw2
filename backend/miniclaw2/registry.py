@@ -217,10 +217,30 @@ class ProjectRegistry:
         store = self._store or Store()
         self._store = store
         self._initialized = True
+        store.sync.add_pre_commit_callback(self._record_host_heads)
         for project in store.list_projects():
             self._runtimes[project.id] = ProjectRuntime(project)
             if self.is_native_project(project) and store.read_only_reason is None:
                 self._repair_stale_nodes(project.id)
+
+    def _record_host_heads(self) -> None:
+        """Stamp each shared project's local repository state before sync."""
+        for runtime in list(self._runtimes.values()):
+            project = runtime.project
+            if project.sharing != "shared" or not self.is_native_project(project):
+                continue
+            status = git_status(project.root_path)
+            if not status.is_repo or not status.head:
+                continue
+            self.store.write_host_head(
+                project.id,
+                {
+                    "head": status.head,
+                    "branch": status.branch or "",
+                    "recorded_at": time.time(),
+                    "dirty": status.dirty_count > 0,
+                },
+            )
 
     def schedule_all(self) -> None:
         """Fill execution slots for durable queued work after startup."""
@@ -1416,6 +1436,53 @@ class ProjectRegistry:
         result = self.promote_virtual_result(pid, vid)
         return result.node if result.code is None else None
 
+    def claim_foreign_virtual(self, pid: str, vid: str) -> Node:
+        """Copy a foreign virtual into this host without mutating its source."""
+        rt = self._runtimes.get(pid)
+        if rt is None:
+            raise KeyError(pid)
+        project = self.require_native(pid)
+        source = self.store.load_node(pid, vid)
+        if source is None:
+            raise KeyError(vid)
+        if source.state is not NodeState.VIRTUAL:
+            raise ValueError("only virtual nodes can be claimed")
+        if self.is_native_node(project, source):
+            raise ValueError("local virtual nodes must use promote")
+        if source.obsolete_reason:
+            raise ValueError("obsolete virtual nodes cannot be claimed")
+
+        claimed = Node(
+            project_id=pid,
+            kind=source.kind,
+            agent_op_kind=source.agent_op_kind,
+            state=NodeState.QUEUED,
+            planspace_id=source.planspace_id,
+            model_preset_id=source.model_preset_id,
+            prompt=source.prompt_draft or source.prompt,
+            prompt_draft=source.prompt_draft,
+            category=source.category,
+            subtype=source.subtype,
+            brief=source.brief,
+            review_target=source.review_target,
+            scheduled_deps=list(source.scheduled_deps),
+            pending_extra_principles=list(source.pending_extra_principles),
+            pending_extra_skills=[dict(item) for item in source.pending_extra_skills],
+            verify_script_ref=source.verify_script_ref,
+            promoted_from=source.id,
+        )
+        self.store.create_node(claimed)
+        self.store.write_claim(
+            pid,
+            source.id,
+            {
+                "as_node": claimed.id,
+                "claimed_at": time.time(),
+            },
+        )
+        self._schedule_queued(rt)
+        return self.store.load_node(pid, claimed.id) or claimed
+
     def promote_virtual_result(self, pid: str, vid: str) -> VirtualPromotionResult:
         """Promote a virtual and preserve a machine-readable conflict reason.
 
@@ -1618,6 +1685,7 @@ class ProjectRegistry:
                 "provider_turn_id": None,
                 "settings_snapshot": snapshot,
                 "proposed_by": node.proposed_by or "user",
+                "promoted_from": None,
                 "started_at": None,
                 "finished_at": None,
             }

@@ -67,6 +67,7 @@ export type AgentPanelProps = {
   onResolveReview: (payload: { id: string; judgment: string }) => void;
   onCreateContinuationVirtual: (nodeId: string) => void;
   onPromoteVirtual: (nodeId: string) => Promise<void>;
+  onClaimVirtual: (nodeId: string) => Promise<void>;
   onDequeueNode: (nodeId: string) => Promise<void>;
   onUpdateVirtual: (
     nodeId: string,
@@ -77,6 +78,7 @@ export type AgentPanelProps = {
   canInterrupt: boolean;
   canRerun: boolean;
   canMutate: boolean;
+  canClaim: boolean;
   manualPromotionPlanspaceId: string | null;
   isManualPlanspace: (planspaceId: string | null | undefined) => boolean;
   focusRequestVersion: number;
@@ -106,6 +108,7 @@ export function AgentPanel({
   onResolveReview,
   onCreateContinuationVirtual,
   onPromoteVirtual,
+  onClaimVirtual,
   onDequeueNode,
   onUpdateVirtual,
   onInterruptNode,
@@ -113,6 +116,7 @@ export function AgentPanel({
   canInterrupt,
   canRerun,
   canMutate,
+  canClaim,
   manualPromotionPlanspaceId,
   isManualPlanspace,
   focusRequestVersion,
@@ -163,6 +167,16 @@ export function AgentPanel({
       const saved = await virtualNodeBodyRef.current?.saveChanges();
       if (saved === false) return;
       await onPromoteVirtual(node.id);
+    } finally {
+      setPromoting(false);
+    }
+  };
+
+  const claim = async () => {
+    if (promoting) return;
+    setPromoting(true);
+    try {
+      await onClaimVirtual(node.id);
     } finally {
       setPromoting(false);
     }
@@ -275,6 +289,18 @@ export function AgentPanel({
               >
                 {promoting ? "Promoting..." : "Promote"}
               </button>
+            ) : node.state === "virtual" &&
+              !canMutate &&
+              node.planspace_id === manualPromotionPlanspaceId ? (
+              <button
+                type="button"
+                onClick={() => void claim()}
+                disabled={!canClaim || !currentReadyToPromote || promoting}
+                className="rounded-md bg-brand px-2.5 py-1 text-[11px] font-medium text-white shadow-card transition hover:brightness-[0.95] disabled:cursor-not-allowed disabled:opacity-40"
+                title="在本设备认领"
+              >
+                {promoting ? "认领中..." : "在本设备认领"}
+              </button>
             ) : canMutate && canResumeNode(node) ? (
               <button
                 type="button"
@@ -292,7 +318,19 @@ export function AgentPanel({
       <div className="flex-1 overflow-y-auto bg-surface px-4 py-3 text-sm">
         {!canMutate && (
           <div className="mb-3 rounded-md border border-state-waiting/30 bg-state-waiting-soft px-3 py-2 text-[11px] text-state-waiting">
-            This project is read-only on this machine.
+            此节点属于另一台设备，本机可查看或复制认领，但不会修改原节点。
+          </div>
+        )}
+        {(node.claims?.length ?? 0) > 0 && (
+          <div className="mb-3 rounded-md border border-line bg-surface-raised px-3 py-2 text-[11px] text-ink-muted">
+            <div className="font-medium text-ink">已被 {node.claims?.length} 台设备认领</div>
+            <div className="mt-1 space-y-0.5 font-mono text-[10px]">
+              {node.claims?.map((claim) => (
+                <div key={`${claim.claimed_by}:${claim.as_node}`}>
+                  {claim.claimed_by.slice(0, 8)} → {claim.as_node.slice(0, 8)}
+                </div>
+              ))}
+            </div>
           </div>
         )}
         <section className="mb-5">

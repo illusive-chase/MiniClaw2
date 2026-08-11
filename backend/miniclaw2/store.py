@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import shutil
 from pathlib import Path
 from typing import Any
@@ -122,6 +123,14 @@ class Store:
             return self._host_dir(pid, self.machine.id) / "git_aliases.json"
         return self._project_dir(pid) / "git_aliases.json"
 
+    def _head_file(self, pid: str, machine_id: str) -> Path:
+        return self._host_dir(pid, machine_id) / "head.json"
+
+    def _claim_file(self, pid: str, machine_id: str, vid: str) -> Path:
+        if not vid or Path(vid).name != vid:
+            raise ValueError("invalid virtual node id")
+        return self._host_dir(pid, machine_id) / "claims" / f"{vid}.json"
+
     def invalidate_owner_index(self) -> None:
         """Drop path ownership cached before a sync or layout migration."""
         self._owner_index.clear()
@@ -134,6 +143,7 @@ class Store:
         if not hosts_dir.is_dir():
             return []
         hosts: list[dict[str, Any]] = []
+        heads = self.read_host_heads(pid)
         for host_dir in sorted(hosts_dir.iterdir()):
             path = host_dir / "host.json"
             if not path.is_file():
@@ -143,8 +153,65 @@ class Store:
             except (OSError, ValueError):
                 continue
             payload["mid"] = host_dir.name
+            head = heads.get(host_dir.name)
+            if head is not None:
+                payload.update(head)
             hosts.append(payload)
         return hosts
+
+    def write_host_head(self, pid: str, payload: dict[str, Any]) -> None:
+        if self.read_only_reason is not None or not self._is_shared(pid):
+            return
+        self._write_json(self._head_file(pid, self.machine.id), payload)
+
+    def read_host_heads(self, pid: str) -> dict[str, dict[str, Any]]:
+        hosts_dir = self._hosts_dir(pid)
+        if not hosts_dir.is_dir():
+            return {}
+        heads: dict[str, dict[str, Any]] = {}
+        for path in sorted(hosts_dir.glob("*/head.json")):
+            try:
+                payload = self._read_json(path)
+            except (OSError, ValueError):
+                continue
+            head = payload.get("head")
+            if not isinstance(head, str) or re.fullmatch(r"[0-9a-fA-F]{40}", head) is None:
+                continue
+            heads[path.parent.name] = payload
+        return heads
+
+    def write_claim(self, pid: str, vid: str, payload: dict[str, Any]) -> None:
+        self.assert_writable()
+        if not self._is_shared(pid):
+            raise ValueError("claims require a shared project")
+        claim = dict(payload)
+        claim["claimed_by"] = self.machine.id
+        self._write_json(self._claim_file(pid, self.machine.id, vid), claim)
+        self.sync.schedule_commit(f"claim virtual node {vid}")
+
+    def list_claims(self, pid: str) -> dict[str, list[dict[str, Any]]]:
+        hosts_dir = self._hosts_dir(pid)
+        if not hosts_dir.is_dir():
+            return {}
+        claims: dict[str, list[dict[str, Any]]] = {}
+        for path in sorted(hosts_dir.glob("*/claims/*.json")):
+            try:
+                payload = self._read_json(path)
+            except (OSError, ValueError):
+                continue
+            claimed_by = payload.get("claimed_by")
+            as_node = payload.get("as_node")
+            claimed_at = payload.get("claimed_at")
+            if (
+                not isinstance(claimed_by, str)
+                or claimed_by != path.parents[1].name
+                or not isinstance(as_node, str)
+                or not as_node
+                or not isinstance(claimed_at, (int, float))
+            ):
+                continue
+            claims.setdefault(path.stem, []).append(payload)
+        return claims
 
     def read_git_aliases(self, pid: str) -> dict[str, str]:
         path = self._git_aliases_file(pid)

@@ -15,6 +15,7 @@ import {
   listNodeEvents,
   listNodes,
   promoteVirtual,
+  claimVirtual,
   refreshProjectContext,
   rerunNode,
   updateLayoutHints,
@@ -975,6 +976,31 @@ export function App() {
     [session?.id, projectMutationPending, refreshNodes, selectAndOpenNode],
   );
 
+  const claimForeignVirtualNode = useCallback(
+    async (nodeId: string) => {
+      if (!session?.id || projectMutationPending) return;
+      setProjectMutationPending(true);
+      setSessionContextSpaceError(null);
+      try {
+        const result = await claimVirtual(session.id, nodeId);
+        setNodes((prev) => {
+          const updated = upsertNode(prev, result.node);
+          nodeCountRef.current = updated.length;
+          nodesRef.current = updated;
+          return updated;
+        });
+        selectAndOpenNode(result.node.id);
+        await refreshNodes();
+      } catch (err) {
+        await refreshNodes().catch(() => {});
+        setSessionContextSpaceError(String(err));
+      } finally {
+        setProjectMutationPending(false);
+      }
+    },
+    [session?.id, projectMutationPending, refreshNodes, selectAndOpenNode],
+  );
+
   const dequeueQueuedNode = useCallback(
     async (nodeId: string) => {
       if (!session?.id || projectMutationPending) return;
@@ -1835,6 +1861,7 @@ export function App() {
   useEffect(() => {
     setAgentNodeContext({
       onPromoteVirtual: promoteVirtualNode,
+      onClaimVirtual: claimForeignVirtualNode,
       onDequeueNode: dequeueQueuedNode,
       onCreateContinuationVirtual: createContinuationVirtual,
       onCreateDependencyVirtual: createDependencyVirtual,
@@ -1850,6 +1877,8 @@ export function App() {
         return !!node && isNodeNative(node);
       },
       canPromoteVirtual: !projectMutationPending && !readOnly,
+      canClaimVirtual:
+        !projectMutationPending && !readOnly && !!session?.is_native,
       canDequeue: !projectMutationPending && !readOnly,
       manualPromotionPlanspaceId,
       isManualPlanspace,
@@ -1869,6 +1898,7 @@ export function App() {
     validPendingGates,
     onResolveGate,
     promoteVirtualNode,
+    claimForeignVirtualNode,
     dequeueQueuedNode,
     createContinuationVirtual,
     createDependencyVirtual,
@@ -2183,6 +2213,7 @@ export function App() {
               skills={skills}
               gitCommits={gitCommits}
               gitHead={gitStatus?.head ?? null}
+              gitHosts={session?.hosts ?? []}
               gitDirtyCount={gitStatus?.dirty_count ?? 0}
               commitPositionTarget={uiCommitPositionTargets[0] ?? null}
               onCommitPositionTransferHandled={consumeUiCommitPositionTarget}
@@ -2301,6 +2332,7 @@ export function App() {
                 onImportSkill={handleImportSkill}
                 onCreateContinuationVirtual={createContinuationVirtual}
                 onPromoteVirtual={promoteVirtualNode}
+                onClaimVirtual={claimForeignVirtualNode}
                 onDequeueNode={dequeueQueuedNode}
                 onUpdateVirtual={updateVirtualNode}
                 onInterruptNode={interruptNode}

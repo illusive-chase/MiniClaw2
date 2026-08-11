@@ -91,6 +91,7 @@ export type SidePanelProps = {
   onImportSkill?: (source: string) => Promise<void> | void;
   onCreateContinuationVirtual: (nodeId: string) => void;
   onPromoteVirtual: (nodeId: string) => Promise<void>;
+  onClaimVirtual: (nodeId: string) => Promise<void>;
   onDequeueNode: (nodeId: string) => Promise<void>;
   onUpdateVirtual: (
     nodeId: string,
@@ -198,6 +199,7 @@ function Inner(props: SidePanelProps & { nodesById: Map<string, NodeInfo> }) {
     onImportSkill,
     onCreateContinuationVirtual,
     onPromoteVirtual,
+    onClaimVirtual,
     onDequeueNode,
     onUpdateVirtual,
     onInterruptNode,
@@ -368,6 +370,7 @@ function Inner(props: SidePanelProps & { nodesById: Map<string, NodeInfo> }) {
         onResolveReview={onResolveReview}
         onCreateContinuationVirtual={onCreateContinuationVirtual}
         onPromoteVirtual={onPromoteVirtual}
+        onClaimVirtual={onClaimVirtual}
         onDequeueNode={onDequeueNode}
         onUpdateVirtual={onUpdateVirtual}
         onInterruptNode={onInterruptNode}
@@ -375,6 +378,12 @@ function Inner(props: SidePanelProps & { nodesById: Map<string, NodeInfo> }) {
         canInterrupt={canInterrupt && canMutateNode}
         canRerun={canRerun && canMutateNode}
         canMutate={canMutateNode}
+        canClaim={
+          !session.read_only &&
+          session.is_native &&
+          session.sharing === "shared" &&
+          !canMutateNode
+        }
         manualPromotionPlanspaceId={manualPromotionPlanspaceId}
         isManualPlanspace={isManualPlanspace}
         focusRequestVersion={focusRequestVersion}

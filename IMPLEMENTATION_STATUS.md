@@ -1034,6 +1034,21 @@ Trunk: `backend/miniclaw2/store.py`, `backend/miniclaw2/replay.py`.
   identity and planspace visibility. `hosts/<mid>/local.json` is gitignored and
   is the only place a shared project stores that device's absolute root path.
   `planspace_view` intentionally remains shared; canvas layout is host-local.
+- A shared host records `hosts/<mid>/head.json` immediately before an explicit
+  sync commit. The synchronized snapshot contains HEAD, branch, capture time,
+  and a dirty boolean; peer displays always retain the capture time rather than
+  presenting it as live state. The Git surface classifies referenced commits as
+  `live`, `peer`, `unfetched`, `stale`, or `unverified`, returns stable host
+  columns and nearest referenced parent SHAs, and the canvas renders those
+  columns without fabricating peer worktree ghosts. Merge commits can expose
+  multiple edges, but overlapping merge-edge routing remains a known limit.
+- Foreign virtual work is claimed by copying its task intent into a new local
+  queued node with `promoted_from`, then writing
+  `hosts/<local-mid>/claims/<vid>.json`. The source node is never modified.
+  Concurrent claims are detected and shown with their resulting node ids; they
+  are not prevented because synchronized metadata cannot provide a truthful
+  cross-host lock. Dependency launch guidance marks foreign-host previews and
+  warns that their absolute paths and environment details belong to that host.
 - Enabling sharing is a one-way migration and is unavailable for temporary
   projects. A second device must explicitly bind a Git checkout whose root
   commit matches the recorded repository fingerprint. Removing a host binding
@@ -1105,8 +1120,8 @@ Trunk: `backend/miniclaw2/store.py`, `backend/miniclaw2/replay.py`.
   writing is available only to explicitly shared projects, where each host
   writes its own `hosts/<mid>/` subtree. Device-native projects retain the
   single-native-machine convention. This partitioning does not prevent two
-  hosts from independently claiming equivalent virtual work; claim detection
-  is deferred.
+  hosts from independently claiming equivalent virtual work; duplicate claims
+  are intentionally detected after synchronization rather than locked.
 
 
 ## 11. Wire envelopes (current set)

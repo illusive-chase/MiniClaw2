@@ -228,6 +228,7 @@ class Node(BaseModel):
     provider_session_id: str | None = None
     provider_turn_id: str | None = None
     origin_machine_id: str = ""
+    promoted_from: str | None = None
     commit_before: str | None = None
     commit_after: str | None = None
     prompt: str = ""
@@ -351,6 +352,8 @@ class Node(BaseModel):
             if self.verify_script_ref is not None:
                 raise ValueError("agent nodes must not carry verify_script_ref")
         if self.state is NodeState.VIRTUAL:
+            if self.promoted_from is not None:
+                raise ValueError("virtual nodes must not carry promoted_from")
             if self.started_at is not None or self.finished_at is not None:
                 raise ValueError("virtual nodes must not carry started_at/finished_at")
         return self

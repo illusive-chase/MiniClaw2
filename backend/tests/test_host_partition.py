@@ -55,6 +55,46 @@ def _repo(path: Path) -> Path:
 
 
 class HostPartitionStoreTests(unittest.TestCase):
+    def test_host_head_records_validate_sha_and_merge_into_host_list(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            base = Path(raw)
+            store = Store(base / "store")
+            project = store.create_project(Project(root_path=str(_repo(base / "repo"))))
+            registry = ProjectRegistry(store)
+            registry.enable_sharing(project.id)
+            payload = {
+                "head": "a" * 40,
+                "branch": "main",
+                "recorded_at": 123.0,
+                "dirty": True,
+            }
+
+            store.write_host_head(project.id, payload)
+
+            self.assertEqual(store.read_host_heads(project.id)[store.machine.id], payload)
+            local_host = next(
+                host for host in store.list_hosts(project.id)
+                if host["mid"] == store.machine.id
+            )
+            self.assertEqual(local_host["head"], "a" * 40)
+            invalid = (
+                store.root / "projects" / project.id / "hosts" / "invalid" / "head.json"
+            )
+            invalid.parent.mkdir(parents=True)
+            invalid.write_text(json.dumps({"head": "not-a-sha"}), encoding="utf-8")
+            self.assertNotIn("invalid", store.read_host_heads(project.id))
+
+    def test_device_native_sync_callback_does_not_create_hosts_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            base = Path(raw)
+            store = Store(base / "store")
+            project = store.create_project(Project(root_path=str(_repo(base / "repo"))))
+            registry = ProjectRegistry(store)
+
+            registry._record_host_heads()
+
+            self.assertFalse((store.root / "projects" / project.id / "hosts").exists())
+
     def test_enable_sharing_migrates_and_aggregates_nodes_by_host(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             base = Path(raw)
@@ -225,8 +265,129 @@ class HostPartitionStoreTests(unittest.TestCase):
             self.assertEqual(registry.queued_count(project.id), 0)
             self.assertTrue(registry.quiescent(project.id))
 
+    def test_claim_foreign_virtual_copies_intent_without_mutating_source(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            base = Path(raw)
+            store = Store(base / "store")
+            project = store.create_project(Project(root_path=str(_repo(base / "repo"))))
+            registry = ProjectRegistry(store)
+            registry.enable_sharing(project.id)
+            source = Node(
+                project_id=project.id,
+                id="foreign-virtual",
+                state=NodeState.VIRTUAL,
+                prompt_draft="implement the task",
+                scheduled_deps=["upstream"],
+                pending_extra_principles=["principles.careful"],
+                settings_snapshot={"cwd": "/remote/repo"},
+                provider_session_id="remote-session",
+                origin_machine_id="remote-host",
+                commit_before="a" * 40,
+                commit_after="b" * 40,
+                model_preset_id=project.model_preset_id,
+            )
+            source_path = (
+                store.root
+                / "projects"
+                / project.id
+                / "hosts"
+                / "remote-host"
+                / "nodes"
+                / source.id
+                / "node.json"
+            )
+            source_path.parent.mkdir(parents=True)
+            source_path.write_text(
+                json.dumps(source.model_dump(exclude={"provider", "owner_host_id"})),
+                encoding="utf-8",
+            )
+            before = source_path.read_bytes()
+            store.invalidate_owner_index()
+
+            with patch.object(registry, "_schedule_queued"):
+                claimed = registry.claim_foreign_virtual(project.id, source.id)
+
+            self.assertEqual(source_path.read_bytes(), before)
+            self.assertEqual(claimed.state, NodeState.QUEUED)
+            self.assertEqual(claimed.promoted_from, source.id)
+            self.assertEqual(claimed.prompt, source.prompt_draft)
+            self.assertEqual(claimed.scheduled_deps, source.scheduled_deps)
+            self.assertEqual(claimed.settings_snapshot, {})
+            self.assertNotEqual(claimed.origin_machine_id, source.origin_machine_id)
+            self.assertIsNone(claimed.provider_session_id)
+            self.assertIsNone(claimed.commit_before)
+            self.assertIsNone(claimed.commit_after)
+            claims = store.list_claims(project.id)[source.id]
+            self.assertEqual(claims[0]["claimed_by"], store.machine.id)
+            self.assertEqual(claims[0]["as_node"], claimed.id)
+
+    def test_list_claims_reports_independent_host_claims(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            base = Path(raw)
+            store = Store(base / "store")
+            project = store.create_project(Project(root_path=str(_repo(base / "repo"))))
+            ProjectRegistry(store).enable_sharing(project.id)
+            for mid, node_id in (("host-a", "node-a"), ("host-b", "node-b")):
+                path = (
+                    store.root
+                    / "projects"
+                    / project.id
+                    / "hosts"
+                    / mid
+                    / "claims"
+                    / "virtual-1.json"
+                )
+                store._write_json(
+                    path,
+                    {"claimed_by": mid, "as_node": node_id, "claimed_at": 1.0},
+                )
+
+            claims = store.list_claims(project.id)
+
+            self.assertEqual(
+                [claim["as_node"] for claim in claims["virtual-1"]],
+                ["node-a", "node-b"],
+            )
+
 
 class HostPartitionApiTests(unittest.TestCase):
+    def test_nodes_response_includes_claims_for_foreign_virtual(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            base = Path(raw)
+            store = Store(base / "store")
+            project = store.create_project(Project(root_path=str(_repo(base / "repo"))))
+            registry = ProjectRegistry(store)
+            registry.enable_sharing(project.id)
+            remote = Node(
+                project_id=project.id,
+                id="remote-virtual",
+                state=NodeState.VIRTUAL,
+                prompt_draft="claim me",
+                model_preset_id=project.model_preset_id,
+            )
+            remote_path = (
+                store.root / "projects" / project.id / "hosts" / "remote"
+                / "nodes" / remote.id / "node.json"
+            )
+            remote_path.parent.mkdir(parents=True)
+            remote_path.write_text(
+                json.dumps(remote.model_dump(exclude={"provider", "owner_host_id"})),
+                encoding="utf-8",
+            )
+            store._write_json(
+                store.root / "projects" / project.id / "hosts" / "other"
+                / "claims" / f"{remote.id}.json",
+                {"claimed_by": "other", "as_node": "claimed-node", "claimed_at": 1.0},
+            )
+            store.invalidate_owner_index()
+
+            with TestClient(create_app(registry)) as client:
+                response = client.get(f"/sessions/{project.id}/nodes")
+
+            self.assertEqual(response.status_code, 200, response.text)
+            payload = next(item for item in response.json() if item["id"] == remote.id)
+            self.assertEqual(payload["claims"][0]["as_node"], "claimed-node")
+
     def test_unbound_device_can_join_matching_repository(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             base = Path(raw)
@@ -344,6 +505,37 @@ class HostPartitionApiTests(unittest.TestCase):
 
 
 class HostPartitionSyncTests(unittest.TestCase):
+    def test_explicit_sync_commits_current_host_head(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            base = Path(raw)
+            remote = base / "metadata.git"
+            subprocess.run(["git", "init", "--bare", "-q", str(remote)], check=True)
+            repo = _repo(base / "repo")
+            store = Store(base / "store")
+            project = store.create_project(Project(root_path=str(repo)))
+            registry = ProjectRegistry(store)
+            registry.enable_sharing(project.id)
+            store.sync.setup_existing_store(str(remote))
+
+            (repo / "dirty.txt").write_text("dirty\n", encoding="utf-8")
+            expected_head = _git(repo, "rev-parse", "HEAD")
+            store.sync.sync_now()
+
+            payload = store.read_host_heads(project.id)[store.machine.id]
+            self.assertEqual(payload["head"], expected_head)
+            self.assertTrue(payload["dirty"])
+            changed = _git(
+                store.root,
+                "show",
+                "--pretty=format:",
+                "--name-only",
+                "HEAD",
+            ).splitlines()
+            self.assertIn(
+                f"projects/{project.id}/hosts/{store.machine.id}/head.json",
+                changed,
+            )
+
     def test_host_owned_state_syncs_without_conflict_fallback(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             base = Path(raw)

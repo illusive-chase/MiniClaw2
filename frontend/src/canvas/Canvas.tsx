@@ -17,7 +17,7 @@ import ReactFlow, {
 } from "reactflow";
 import "reactflow/dist/style.css";
 
-import type { CommitDescriptor, ContextBundle, NodeInfo } from "../types";
+import type { CommitDescriptor, ContextBundle, NodeInfo, SessionHost } from "../types";
 import { artifactRawUrl } from "../api";
 import {
   buildGraph,
@@ -43,6 +43,7 @@ import { CommitEdge } from "./edges/CommitEdge";
 import { ErrorTerminalNode } from "./nodes/ErrorTerminalNode";
 import { ArtifactNode } from "./nodes/ArtifactNode";
 import { CommitNode } from "./nodes/CommitNode";
+import { CommitColumnHeaderNode } from "./nodes/CommitColumnHeaderNode";
 import { setHoverGroup } from "./hoverStore";
 import { decorateEdges, resolveHoverGroup } from "./edgeVisibility";
 import { decoratePendingGateLayers } from "./nodeLayers";
@@ -55,6 +56,7 @@ const NODE_TYPES = {
   errorTerminal: ErrorTerminalNode,
   artifact: ArtifactNode,
   commit: CommitNode,
+  commitColumnHeader: CommitColumnHeaderNode,
 };
 
 const EDGE_TYPES = {
@@ -143,6 +145,7 @@ export type CanvasProps = {
   gitCommits?: CommitDescriptor[];
   gitHead?: string | null;
   gitDirtyCount?: number;
+  gitHosts?: SessionHost[];
   /** SHA produced by a commit explicitly started from this MiniClaw2 UI. */
   commitPositionTarget?: string | null;
   onCommitPositionTransferHandled?: (sha: string) => void;
@@ -181,6 +184,7 @@ function CanvasInner({
   gitCommits,
   gitHead,
   gitDirtyCount,
+  gitHosts,
   commitPositionTarget = null,
   onCommitPositionTransferHandled,
 }: CanvasProps) {
@@ -268,6 +272,7 @@ function CanvasInner({
         gitCommits,
         gitHead,
         gitDirtyCount,
+        gitHosts,
       }),
     [
       nodes,
@@ -282,6 +287,7 @@ function CanvasInner({
       gitCommits,
       gitHead,
       gitDirtyCount,
+      gitHosts,
       layoutHydrationVersion,
     ],
   );

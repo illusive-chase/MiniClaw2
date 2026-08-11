@@ -271,7 +271,9 @@ class NodeRunner:
                             ),
                             _skill_suggestion_block(self._skill_materialization),
                             build_dependency_launch_block(
-                                self.node, lane_path=self._lane_prompt_path()
+                                self.node,
+                                lane_path=self._lane_prompt_path(),
+                                foreign_hosts=self._foreign_dependency_hosts(),
                             ),
                             context_bundle.turn_text,
                             language_launch_instruction(
@@ -891,6 +893,25 @@ class NodeRunner:
     def _lane_prompt_path(self) -> str:
         lane_id = self.node.planspace_id or ""
         return f"{GRAPH_RUNS_DIRNAME}/{self.node.id}/lanes/{lane_id}".rstrip("/")
+
+    def _foreign_dependency_hosts(self) -> dict[str, str]:
+        labels = {
+            host.get("mid"): host.get("label") or host.get("mid")
+            for host in self.store.list_hosts(self.project.id)
+            if isinstance(host.get("mid"), str)
+        }
+        foreign: dict[str, str] = {}
+        for dep_id in self.node.scheduled_deps:
+            dependency = self.store.load_node(self.project.id, dep_id)
+            if (
+                dependency is None
+                or not dependency.owner_host_id
+                or dependency.owner_host_id == self.store.machine.id
+            ):
+                continue
+            label = labels.get(dependency.owner_host_id) or dependency.owner_host_id
+            foreign[dep_id] = str(label)
+        return foreign
 
     def _cleanup_lane_projection(self) -> None:
         run_root = Path(self.project.root_path) / GRAPH_RUNS_DIRNAME / self.node.id
