@@ -34,6 +34,7 @@ import {
   setTurnsStreaming,
 } from "../transcript";
 import { ToolActivity } from "../components/ToolActivity";
+import { ZoomableText } from "../components/TextZoom";
 import {
   PendingGateInline,
   type ResolveGatePayload,
@@ -1847,8 +1848,10 @@ function parsePreviewFields(preview: string | null): PreviewFields | null {
   }
 }
 
+const PREVIEW_FIELD_EMPTY = "未记录";
+
 function previewFieldValue(value: unknown): string {
-  return typeof value === "string" && value.trim() ? value.trim() : "未记录";
+  return typeof value === "string" && value.trim() ? value.trim() : PREVIEW_FIELD_EMPTY;
 }
 
 function PreviewField({
@@ -1876,24 +1879,27 @@ function PreviewField({
   }[tone];
 
   return (
-    <div className={`rounded-md border px-2.5 py-2 ${styles.panel}`}>
-      <div className="flex items-start gap-2.5">
-        <span
-          className={`mt-px flex h-6 w-6 flex-none items-center justify-center rounded ${styles.icon}`}
-          aria-hidden="true"
-        >
-          <PreviewFieldIcon tone={tone} />
-        </span>
-        <div className="min-w-0 flex-1">
-          <dt className="text-[9.5px] font-semibold uppercase tracking-[0.12em] text-ink-muted">
-            {label}
-          </dt>
-          <dd className="mt-0.5 whitespace-pre-wrap break-words text-[11.5px] leading-[1.45] text-ink-strong">
-            {value}
-          </dd>
-        </div>
+    <ZoomableText
+      title={label}
+      text={value === PREVIEW_FIELD_EMPTY ? "" : value}
+      defaultView="markdown"
+      className={`flex items-start gap-2.5 rounded-md border px-2.5 py-2 ${styles.panel}`}
+    >
+      <span
+        className={`mt-px flex h-6 w-6 flex-none items-center justify-center rounded ${styles.icon}`}
+        aria-hidden="true"
+      >
+        <PreviewFieldIcon tone={tone} />
+      </span>
+      <div className="min-w-0 flex-1">
+        <dt className="text-[9.5px] font-semibold uppercase tracking-[0.12em] text-ink-muted">
+          {label}
+        </dt>
+        <dd className="mt-0.5 whitespace-pre-wrap break-words text-[11.5px] leading-[1.45] text-ink-strong">
+          {value}
+        </dd>
       </div>
-    </div>
+    </ZoomableText>
   );
 }
 
@@ -2063,14 +2069,21 @@ const TranscriptItemView = memo(function TranscriptItemView({
   }
   if (item.kind === "text") {
     return (
-      <div className="md-prose rounded-md border border-line bg-surface-raised px-3 py-2 text-[13px] leading-relaxed text-ink-strong">
-        <ReactMarkdown
-          remarkPlugins={[remarkGfm]}
-          rehypePlugins={[[rehypeHighlight, { detect: true, ignoreMissing: true }]]}
-        >
-          {item.text}
-        </ReactMarkdown>
-      </div>
+      <ZoomableText
+        title="Agent output"
+        text={item.text}
+        defaultView="markdown"
+        className="rounded-md border border-line bg-surface-raised"
+      >
+        <div className="md-prose px-3 py-2 text-[13px] leading-relaxed text-ink-strong">
+          <ReactMarkdown
+            remarkPlugins={[remarkGfm]}
+            rehypePlugins={[[rehypeHighlight, { detect: true, ignoreMissing: true }]]}
+          >
+            {item.text}
+          </ReactMarkdown>
+        </div>
+      </ZoomableText>
     );
   }
   if (item.kind === "error") {

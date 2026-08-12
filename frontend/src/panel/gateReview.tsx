@@ -4,6 +4,7 @@ import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
 
 import type { InteractionRequest, NodeInfo } from "../types";
+import { ZoomableText } from "../components/TextZoom";
 
 export type GateReviewSubmit = (payload: {
   id: string;
@@ -109,14 +110,22 @@ export function GateReviewForm({
       <section>
         <SectionHeading>Review handoff</SectionHeading>
         {guidance ? (
-          <div className="md-prose mt-2 rounded-md border border-line bg-surface-raised px-4 py-3 text-[13px] leading-relaxed text-ink-strong shadow-card">
-            <ReactMarkdown
-              remarkPlugins={[remarkGfm]}
-              rehypePlugins={[[rehypeHighlight, { detect: true, ignoreMissing: true }]]}
-            >
-              {guidance}
-            </ReactMarkdown>
-          </div>
+          <ZoomableText
+            title="Review handoff"
+            subtitle={`node ${node.id.slice(0, 8)}`}
+            text={guidance}
+            defaultView="markdown"
+            className="mt-2 rounded-md border border-line bg-surface-raised shadow-card"
+          >
+            <div className="md-prose px-4 py-3 text-[13px] leading-relaxed text-ink-strong">
+              <ReactMarkdown
+                remarkPlugins={[remarkGfm]}
+                rehypePlugins={[[rehypeHighlight, { detect: true, ignoreMissing: true }]]}
+              >
+                {guidance}
+              </ReactMarkdown>
+            </div>
+          </ZoomableText>
         ) : (
           <div className="mt-2 rounded-md border border-line bg-surface-sunken px-3 py-3 text-[12px] text-ink-muted">
             No review handoff was written.

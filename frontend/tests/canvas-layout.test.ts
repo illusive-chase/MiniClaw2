@@ -18,7 +18,11 @@ import type {
   ContextBundle,
   NodeInfo,
 } from "../src/types";
-import { nodeIdsNeedingEventReplay } from "../src/nodeUtil";
+import {
+  nodeIdsNeedingEventReplay,
+  shouldAutoSelectEventNode,
+  shouldOpenInteractionNode,
+} from "../src/nodeUtil";
 
 const principle = {
   id: "principles.careful",
@@ -60,6 +64,37 @@ assert.deepEqual(
   ]),
   ["queued", "running", "waiting", "review"],
   "queued nodes must request replay before their buffered node_started event can be delivered",
+);
+
+assert.equal(
+  shouldAutoSelectEventNode({ kind: "none" }),
+  true,
+  "runner events may surface a node when the user has no selection",
+);
+assert.equal(
+  shouldAutoSelectEventNode({ kind: "agent" }),
+  false,
+  "runner events must not replace another selected node",
+);
+assert.equal(
+  shouldAutoSelectEventNode({ kind: "context" }),
+  false,
+  "runner events must preserve non-agent editor selections too",
+);
+assert.equal(
+  shouldOpenInteractionNode({ kind: "agent", nodeId: "review" }, "review"),
+  true,
+  "an interaction must reopen controls for the already-selected node",
+);
+assert.equal(
+  shouldOpenInteractionNode({ kind: "agent", nodeId: "draft" }, "review"),
+  false,
+  "an interaction must not replace a different selected node",
+);
+assert.equal(
+  shouldOpenInteractionNode({ kind: "artifact", nodeId: "review" }, "review"),
+  false,
+  "an interaction must preserve a non-execution selection",
 );
 
 function commit(
@@ -287,6 +322,46 @@ function testVerticalCommitTrunkAndStableLaneX(): void {
   assert.equal(empty.rfEdges.length, 0);
 }
 
+function testChangesNodePreservesSavedPosition(): void {
+  const headPosition = { x: 360, y: 520 };
+  const savedChangesPosition = { x: 40, y: 80 };
+  const graph = buildGraph(args({
+    gitCommits: [commit("base"), commit("head")],
+    gitHead: "head",
+    gitDirtyCount: 2,
+    layoutHints: {
+      "commit:head": headPosition,
+      "commit:ghost": savedChangesPosition,
+    },
+  }));
+
+  assert.deepEqual(
+    graph.rfNodes.find((item) => item.id === "commit:ghost")?.position,
+    savedChangesPosition,
+  );
+  assert.equal(
+    graph.rfEdges.some((edge) => edge.id === "commit-trunk:head:ghost"),
+    true,
+  );
+}
+
+function testChangesNodeAvoidsPostHeadRows(): void {
+  const graph = buildGraph(args({
+    gitCommits: [commit("base"), commit("head"), commit("stale")],
+    gitHead: "head",
+    gitDirtyCount: 1,
+  }));
+  const stalePosition = graph.rfNodes.find(
+    (item) => item.id === "commit:stale",
+  )?.position;
+
+  assert.ok(stalePosition);
+  assert.deepEqual(
+    graph.rfNodes.find((item) => item.id === "commit:ghost")?.position,
+    { x: LANE.trunkX, y: stalePosition.y + LANE.trunkStep },
+  );
+}
+
 function testCommitLayoutResolvesShaAliases(): void {
   const aliasedCommit = {
     ...commit("rebased"),
@@ -378,8 +453,8 @@ function testRemainingChangesMoveToTheNextCommitSlot(): void {
     toId: "commit:new",
     position: { x: 360, y: 520 },
     resetGhostPosition: {
-      x: LANE.trunkX,
-      y: LANE.trunkStartY + LANE.trunkStep * 2,
+      x: 360,
+      y: 520 + LANE.trunkStep,
     },
   });
 }
@@ -429,8 +504,8 @@ function testAlreadyRenderedCommitDoesNotUseRemainingChangesPosition(): void {
       toId: "commit:new",
       position: { x: 360, y: 520 },
       resetGhostPosition: {
-        x: LANE.trunkX,
-        y: LANE.trunkStartY + LANE.trunkStep * 2,
+        x: 360,
+        y: 520 + LANE.trunkStep,
       },
     },
   );
@@ -1199,6 +1274,8 @@ testNoRootOrFabricatedDependencies();
 testKnownLaneOrderSurvivesNodeCreationOrder();
 testProjectScopedLaneLabelShowsOnlyDirectionName();
 testVerticalCommitTrunkAndStableLaneX();
+testChangesNodePreservesSavedPosition();
+testChangesNodeAvoidsPostHeadRows();
 testCommitBranchesUseParentsAndColumns();
 testPeerCommitRowsFollowVisibleParents();
 testCommitFallbackDoesNotCrossColumnsAndHintsWin();

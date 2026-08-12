@@ -5,6 +5,7 @@ import rehypeHighlight from "rehype-highlight";
 import remarkGfm from "remark-gfm";
 
 import { getSessionFile } from "../api";
+import { ZoomableText } from "../components/TextZoom";
 import type { NodeInfo, SessionFile } from "../types";
 
 export type PlanspaceFilePanelProps = {
@@ -87,14 +88,22 @@ export function PlanspaceFilePanel({
               {loading ? "Loading file..." : "File not loaded."}
             </div>
           ) : (
-            <div className="md-prose rounded-md border border-line bg-surface-raised px-4 py-3 text-[13px] leading-relaxed text-ink-strong shadow-card">
-              <ReactMarkdown
-                remarkPlugins={[remarkGfm]}
-                rehypePlugins={[[rehypeHighlight, { detect: true, ignoreMissing: true }]]}
-              >
-                {file.text || "_Empty file._"}
-              </ReactMarkdown>
-            </div>
+            <ZoomableText
+              title="CONTEXT.md"
+              subtitle={file.path}
+              text={file.text}
+              defaultView="markdown"
+              className="rounded-md border border-line bg-surface-raised shadow-card"
+            >
+              <div className="md-prose px-4 py-3 text-[13px] leading-relaxed text-ink-strong">
+                <ReactMarkdown
+                  remarkPlugins={[remarkGfm]}
+                  rehypePlugins={[[rehypeHighlight, { detect: true, ignoreMissing: true }]]}
+                >
+                  {file.text || "_Empty file._"}
+                </ReactMarkdown>
+              </div>
+            </ZoomableText>
           )}
         </section>
 

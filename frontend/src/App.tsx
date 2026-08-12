@@ -59,6 +59,7 @@ import { ProjectsLanding } from "./components/ProjectsLanding";
 import { ThemeToggle } from "./components/ThemeToggle";
 import { UsageStrip } from "./components/UsageStrip";
 import { GitWorkspaceStatus } from "./components/GitWorkspaceStatus";
+import { TextZoomProvider } from "./components/TextZoom";
 import type {
   ContextBundle,
   EventRecord,
@@ -76,7 +77,12 @@ import type {
   CommitDescriptor,
 } from "./types";
 import { useSessionSocket } from "./ws";
-import { canResumeNode, nodeIdsNeedingEventReplay } from "./nodeUtil";
+import {
+  canResumeNode,
+  nodeIdsNeedingEventReplay,
+  shouldAutoSelectEventNode,
+  shouldOpenInteractionNode,
+} from "./nodeUtil";
 import { defaultModelPresetId } from "./modelPresets";
 
 type Route = "landing" | "project";
@@ -110,6 +116,8 @@ export function App() {
   const [uiCommitPositionTargets, setUiCommitPositionTargets] = useState<string[]>([]);
 
   const [selection, setSelection] = useState<CanvasSelection>({ kind: "none" });
+  const selectionRef = useRef<CanvasSelection>(selection);
+  selectionRef.current = selection;
   /* For data-fetching purposes we track the "currently inspected nodeId" — the
    * agent/op whose events, diff, and context bundle we should load. For context
    * selections, this stays pointed at the owning node. */
@@ -311,11 +319,29 @@ export function App() {
    * user. */
   const selectAndOpenNode = useCallback(
     (nodeId: string, kind: "agent" | "op" = "agent") => {
-      setSelection({ kind, nodeId });
+      const nextSelection: CanvasSelection = { kind, nodeId };
+      selectionRef.current = nextSelection;
+      setSelection(nextSelection);
       inspectNode(nodeId);
       setPanelState({ open: true, mode: "details" });
     },
     [inspectNode],
+  );
+
+  const selectEventNodeIfIdle = useCallback(
+    (nodeId: string) => {
+      if (!shouldAutoSelectEventNode(selectionRef.current)) return;
+      selectAndOpenNode(nodeId);
+    },
+    [selectAndOpenNode],
+  );
+
+  const openInteractionNodeIfAppropriate = useCallback(
+    (nodeId: string) => {
+      if (!shouldOpenInteractionNode(selectionRef.current, nodeId)) return;
+      selectAndOpenNode(nodeId);
+    },
+    [selectAndOpenNode],
   );
 
   const panelRef = useRef<HTMLElement | null>(null);
@@ -631,10 +657,13 @@ export function App() {
           : current,
       );
       const currentInspectedNodeId = inspectedNodeIdRef.current;
+      const idleFallbackNodeId = shouldAutoSelectEventNode(selectionRef.current)
+        ? next.at(-1)?.id ?? null
+        : null;
       inspectNode(
         wasRemovedByRefresh(currentInspectedNodeId)
           ? null
-          : currentInspectedNodeId ?? next.at(-1)?.id ?? null,
+          : currentInspectedNodeId ?? idleFallbackNodeId,
       );
     } catch (err) {
       console.error("list nodes failed:", err);
@@ -1565,7 +1594,7 @@ export function App() {
         } else {
           setPendingGates((current) => ({ ...current, [ev.node_id]: pending }));
         }
-        selectAndOpenNode(ev.node_id);
+        openInteractionNodeIfAppropriate(ev.node_id);
         void refreshNodes();
       } else if (ev.type === "turn_done") {
         setPendingGates((current) => withoutPendingNode(current, ev.node_id));
@@ -1577,7 +1606,7 @@ export function App() {
         eventNodeId = ev.node_id;
         const startedKind = ev.kind ?? "agent";
         if (startedKind !== "op") {
-          selectAndOpenNode(ev.node_id);
+          selectEventNodeIfIdle(ev.node_id);
         }
         void refreshNodes();
       } else if (ev.type === "node_updated") {
@@ -1624,7 +1653,14 @@ export function App() {
       }
       appendSelectedEvent(eventNodeId, ev);
     },
-    [appendSelectedEvent, inspectNode, refreshGit, refreshNodes, selectAndOpenNode],
+    [
+      appendSelectedEvent,
+      inspectNode,
+      openInteractionNodeIfAppropriate,
+      refreshGit,
+      refreshNodes,
+      selectEventNodeIfIdle,
+    ],
   );
 
   const { status, send } = useSessionSocket(
@@ -1990,6 +2026,17 @@ export function App() {
   const projectTitle =
     session?.name?.trim() ||
     (session ? `Project ${session.id.slice(0, 8)}` : "Project");
+  const pendingControlsNodeId =
+    panelState.open &&
+    panelState.mode === "details" &&
+    (selection.kind === "agent" || selection.kind === "op")
+      ? selection.nodeId
+      : null;
+  const pendingNotice = pendingBanner(
+    activePendingGate,
+    activePendingReview,
+    pendingControlsNodeId,
+  );
 
   const wsTone =
     status === "open"
@@ -2050,7 +2097,7 @@ export function App() {
   const reviewGitChanges = () => runGitAction("review");
 
   return (
-    <>
+    <TextZoomProvider preferredLanguage={session?.preferred_language ?? null}>
     <div className="flex h-screen flex-col bg-surface text-ink">
       <header className="flex items-center justify-between gap-4 border-b border-line bg-surface-raised px-6 py-2.5">
         <div className="flex min-w-0 items-center gap-3">
@@ -2233,18 +2280,14 @@ export function App() {
             </div>
           )}
 
-          {/* Cross-node pending banner — only show if the pending node isn't the
-              one the user is currently inspecting. */}
-          {!readOnly && pendingBanner(activePendingGate, activePendingReview, inspectedNodeId) && (
+          {/* Hide the banner only while the matching response controls are
+              actually visible in the details panel. */}
+          {!readOnly && pendingNotice && (
             <PendingBanner
-              label={
-                pendingBanner(activePendingGate, activePendingReview, inspectedNodeId)!.label
-              }
+              label={pendingNotice.label}
               panelOpen={panelState.open}
               onJump={() => {
-                const target =
-                  pendingBanner(activePendingGate, activePendingReview, inspectedNodeId)!.nodeId;
-                onSelectNode(target);
+                onSelectNode(pendingNotice.nodeId);
               }}
             />
           )}
@@ -2392,7 +2435,7 @@ export function App() {
         setLibraryRefreshToken((v) => v + 1);
       }}
     />
-    </>
+    </TextZoomProvider>
   );
 }
 
@@ -2530,10 +2573,10 @@ function isReviewInteraction(request: InteractionRequest): boolean {
 function pendingBanner(
   gate: PendingGateState | null,
   review: PendingGateState | null,
-  selectedId: string | null,
+  visibleControlsNodeId: string | null,
 ): { nodeId: string; label: string } | null {
   const active = review ?? gate;
-  if (!active || active.nodeId === selectedId) return null;
+  if (!active || active.nodeId === visibleControlsNodeId) return null;
   const labelKind = isReviewInteraction(active.request) ? "review" : "response";
   return {
     nodeId: active.nodeId,

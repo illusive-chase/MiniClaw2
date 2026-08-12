@@ -4,6 +4,8 @@ import rehypeHighlight from "rehype-highlight";
 import remarkGfm from "remark-gfm";
 
 import { artifactRawUrl, getNodeArtifact } from "../api";
+import { writeClipboard } from "../clipboard";
+import { ZoomableText } from "../components/TextZoom";
 import type { ArtifactFile, ArtifactRef } from "../types";
 
 export type ArtifactPanelProps = {
@@ -162,22 +164,38 @@ export function ArtifactPanel({ sessionId, nodeId, artifact, ext }: ArtifactPane
                 {loading ? "Loading artifact..." : "Artifact not loaded."}
               </div>
             ) : ext === "md" ? (
-              <div className="md-prose rounded-md border border-line bg-surface-raised px-4 py-3 text-[13px] leading-relaxed text-ink-strong shadow-card">
-                <ReactMarkdown
-                  remarkPlugins={[remarkGfm]}
-                  rehypePlugins={[[rehypeHighlight, { detect: true, ignoreMissing: true }]]}
-                >
-                  {file.text || "_Empty file._"}
-                </ReactMarkdown>
-              </div>
+              <ZoomableText
+                title={artifact.name}
+                subtitle={`node ${nodeId.slice(0, 8)}`}
+                text={file.text}
+                defaultView="markdown"
+                className="rounded-md border border-line bg-surface-raised shadow-card"
+              >
+                <div className="md-prose px-4 py-3 text-[13px] leading-relaxed text-ink-strong">
+                  <ReactMarkdown
+                    remarkPlugins={[remarkGfm]}
+                    rehypePlugins={[[rehypeHighlight, { detect: true, ignoreMissing: true }]]}
+                  >
+                    {file.text || "_Empty file._"}
+                  </ReactMarkdown>
+                </div>
+              </ZoomableText>
             ) : (
-              <div className="md-prose rounded-md border border-line bg-surface-raised px-3 py-2 text-[12px] shadow-card">
-                <ReactMarkdown
-                  rehypePlugins={[[rehypeHighlight, { detect: true, ignoreMissing: true }]]}
-                >
-                  {`~~~json\n${jsonPreview}\n~~~`}
-                </ReactMarkdown>
-              </div>
+              <ZoomableText
+                title={artifact.name}
+                subtitle={`node ${nodeId.slice(0, 8)}`}
+                text={jsonPreview}
+                rawOnly
+                className="rounded-md border border-line bg-surface-raised shadow-card"
+              >
+                <div className="md-prose px-3 py-2 text-[12px]">
+                  <ReactMarkdown
+                    rehypePlugins={[[rehypeHighlight, { detect: true, ignoreMissing: true }]]}
+                  >
+                    {`~~~json\n${jsonPreview}\n~~~`}
+                  </ReactMarkdown>
+                </div>
+              </ZoomableText>
             )}
             {file?.truncated && (
               <div className="mt-2 rounded-md border border-state-waiting/30 bg-state-waiting-soft px-3 py-2 text-[11px] text-state-waiting">
@@ -192,32 +210,6 @@ export function ArtifactPanel({ sessionId, nodeId, artifact, ext }: ArtifactPane
       </div>
     </div>
   );
-}
-
-async function writeClipboard(text: string): Promise<void> {
-  try {
-    if (navigator.clipboard?.writeText) {
-      await navigator.clipboard.writeText(text);
-      return;
-    }
-  } catch {
-    // Fall through for browsers that expose Clipboard API without granting access.
-  }
-
-  const textarea = document.createElement("textarea");
-  textarea.value = text;
-  textarea.setAttribute("readonly", "");
-  textarea.style.position = "fixed";
-  textarea.style.opacity = "0";
-  document.body.appendChild(textarea);
-  textarea.select();
-  let copied = false;
-  try {
-    copied = document.execCommand("copy");
-  } finally {
-    textarea.remove();
-  }
-  if (!copied) throw new Error("Clipboard copy was rejected");
 }
 
 function CopyIcon() {
