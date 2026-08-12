@@ -107,6 +107,8 @@ export type PlanspaceLaneData = {
   height: number;
   color: PlanspaceColor;
   active: boolean;
+  auto: boolean;
+  canActivate: boolean;
   canCreateVirtual: boolean;
 };
 
@@ -166,6 +168,19 @@ const PLANSPACE_CHILD_EXTENT: CoordinateExtent = [
   [LANE.planspaceLanePaddingX, LANE.planspaceLanePaddingY],
   [Number.POSITIVE_INFINITY, Number.POSITIVE_INFINITY],
 ];
+
+export function snapPlanspaceChildPosition(
+  flowPosition: { x: number; y: number },
+  lanePosition: { x: number; y: number },
+  gridSize = 8,
+): { x: number; y: number } {
+  const minX = PLANSPACE_CHILD_EXTENT[0][0];
+  const minY = PLANSPACE_CHILD_EXTENT[0][1];
+  return {
+    x: Math.max(minX, Math.round((flowPosition.x - lanePosition.x) / gridSize) * gridSize),
+    y: Math.max(minY, Math.round((flowPosition.y - lanePosition.y) / gridSize) * gridSize),
+  };
+}
 
 export const PLANSPACE_PALETTE: PlanspaceColor[] = [
   {
@@ -311,10 +326,14 @@ export type BuildGraphArgs = {
   contextBundlesByNodeId: Record<string, ContextBundle | null | undefined>;
   /** planspaces known from the project binding, including empty lanes */
   knownPlanspaceIds: string[];
+  /** planspaces in the currently resolved binding */
+  activatablePlanspaceIds: string[];
   /** planspaces hidden by per-project view state */
   hiddenPlanspaceIds: string[];
   /** active write target */
   activePlanspaceId: string | null;
+  /** planspaces configured to auto-promote when active */
+  autoPlanspaceIds: string[];
   /** true when the active lane's virtual create button should be enabled */
   canCreateVirtual: boolean;
   /** User-wide principles, used to resolve bound ids to paths and titles. */
@@ -411,8 +430,10 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
     layoutHints,
     contextBundlesByNodeId,
     knownPlanspaceIds,
+    activatablePlanspaceIds,
     hiddenPlanspaceIds,
     activePlanspaceId,
+    autoPlanspaceIds,
     canCreateVirtual,
     principles = [],
     skills = [],
@@ -1403,11 +1424,14 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
         height,
         color,
         active: planspaceId === activePlanspaceId,
+        auto: autoPlanspaceIds.includes(planspaceId),
+        canActivate: activatablePlanspaceIds.includes(planspaceId),
         canCreateVirtual,
       },
       selectable: true,
       draggable: true,
       dragHandle: ".planspace-lane-drag-handle",
+      style: { pointerEvents: "none" },
       zIndex: -20,
     });
   }

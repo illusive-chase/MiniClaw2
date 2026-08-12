@@ -167,6 +167,7 @@ class Project(BaseModel):
     preferred_language: str | None = None
     project_context_binding_id: str | None = None
     active_planspace_id: str | None = None
+    planspace_selection_explicit: bool = False
     settings_override: dict[str, Any] = Field(default_factory=dict)
     temporary: bool = False
     template_id: str | None = None

@@ -206,6 +206,29 @@ class ProjectConcurrencySchedulerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(promoted.state, NodeState.QUEUED)
         self.assertNotIn(third.id, self.registry._runtimes[self.project.id].runners)
 
+    async def test_busy_concierge_waits_until_project_is_idle(self) -> None:
+        current = self._virtual("current-work")
+        self.registry.promote_virtual(self.project.id, current.id)
+        await self._settle()
+
+        result = self.registry.create_planspace_and_launch_concierge(
+            self.project.id,
+            title="Background direction",
+            seed="Plan the next direction",
+            mode="manual",
+        )
+        assert result is not None
+        runtime = self.registry._runtimes[self.project.id]
+        self.assertFalse(result.activated)
+        self.assertNotIn(result.node.id, runtime.runners)
+        self.assertIn(result.node.id, runtime.deferred_until_idle_node_ids)
+
+        _ControlledRunner.instances[current.id].release.set()
+        await self._settle()
+
+        self.assertIn(result.node.id, runtime.runners)
+        self.assertNotIn(result.node.id, runtime.deferred_until_idle_node_ids)
+
     async def test_dequeue_restores_queued_virtual_intent(self) -> None:
         first = self._virtual("dequeue-first")
         second = self._virtual("dequeue-second")

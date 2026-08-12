@@ -113,6 +113,7 @@ export type SidePanelProps = {
      reloads the file content. */
   contextReloadVersion?: number;
   focusRequestVersion: number;
+  activityFocusRequestVersion: number;
   newDirectionRequestVersion: number;
   onNewDirectionRequestHandled: () => void;
 
@@ -215,6 +216,7 @@ function Inner(props: SidePanelProps & { nodesById: Map<string, NodeInfo> }) {
     onTogglePlanspaceVisibility,
     contextReloadVersion,
     focusRequestVersion,
+    activityFocusRequestVersion,
     newDirectionRequestVersion,
     onNewDirectionRequestHandled,
     principles,
@@ -385,8 +387,22 @@ function Inner(props: SidePanelProps & { nodesById: Map<string, NodeInfo> }) {
           !canMutateNode
         }
         manualPromotionPlanspaceId={manualPromotionPlanspaceId}
+        activePlanspaceId={contextSpace?.active_planspace_id ?? null}
+        knownPlanspaceIds={
+          contextSpace?.bindings
+            .find(
+              (binding) => binding.id === contextSpace.resolved_binding_id,
+            )
+            ?.plugs.filter((plug) => plug.kind === "planspace")
+            .map((plug) => plug.id) ?? []
+        }
+        onActivatePlanspace={(planspaceId) => {
+          const bindingId = contextSpace?.resolved_binding_id;
+          if (bindingId) onActivatePlanspace(bindingId, planspaceId);
+        }}
         isManualPlanspace={isManualPlanspace}
         focusRequestVersion={focusRequestVersion}
+        activityFocusRequestVersion={activityFocusRequestVersion}
         onSelectArtifact={onSelectArtifact}
       />
     );

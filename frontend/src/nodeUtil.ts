@@ -43,3 +43,7 @@ export function shouldOpenInteractionNode(
       selection.nodeId === nodeId)
   );
 }
+
+export function shouldOpenCreatedPlanspace(activated: boolean): boolean {
+  return activated;
+}

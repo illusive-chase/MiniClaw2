@@ -42,7 +42,11 @@ import {
   type SkillSummary,
   type UpdateVirtualPayload,
 } from "./api";
-import { Canvas, type CanvasSelection } from "./canvas/Canvas";
+import {
+  Canvas,
+  type CanvasNodePositionTarget,
+  type CanvasSelection,
+} from "./canvas/Canvas";
 import { artifactNodeId } from "./canvas/layout";
 import { setAgentNodeContext } from "./canvas/nodes/AgentNode";
 import { setPlanspaceLaneContext } from "./canvas/nodes/PlanspaceLaneNode";
@@ -81,6 +85,7 @@ import {
   canResumeNode,
   nodeIdsNeedingEventReplay,
   shouldAutoSelectEventNode,
+  shouldOpenCreatedPlanspace,
   shouldOpenInteractionNode,
 } from "./nodeUtil";
 import { defaultModelPresetId } from "./modelPresets";
@@ -93,6 +98,12 @@ type PendingGateState = {
 type SelectedEventsState = {
   nodeId: string | null;
   records: EventRecord[];
+};
+type LaneCreationNotice = {
+  planspaceId: string;
+  bindingId: string;
+  nodeId: string;
+  kind: "concierge" | "blank";
 };
 
 const TERMINAL_STATES = new Set<NodeInfo["state"]>(["done", "error", "cancelled"]);
@@ -118,6 +129,8 @@ export function App() {
   const [selection, setSelection] = useState<CanvasSelection>({ kind: "none" });
   const selectionRef = useRef<CanvasSelection>(selection);
   selectionRef.current = selection;
+  const [activityFocusRequestVersion, setActivityFocusRequestVersion] =
+    useState(0);
   /* For data-fetching purposes we track the "currently inspected nodeId" — the
    * agent/op whose events, diff, and context bundle we should load. For context
    * selections, this stays pointed at the owning node. */
@@ -221,6 +234,10 @@ export function App() {
   const [pendingReviews, setPendingReviews] = useState<Record<string, PendingGateState>>({});
 
   const [projectMutationPending, setProjectMutationPending] = useState(false);
+  const [laneCreationNotice, setLaneCreationNotice] =
+    useState<LaneCreationNotice | null>(null);
+  const [nodePositionTarget, setNodePositionTarget] =
+    useState<CanvasNodePositionTarget | null>(null);
 
   /* True once both initial fetches (nodes + contextspace) have settled for the
    * current session. The canvas is held off-screen until then so hidden-planspace
@@ -421,9 +438,12 @@ export function App() {
     pendingUiCommitNodeIdsRef.current.clear();
     setUiCommitPositionTargets([]);
     setProjectMutationPending(false);
+    setLaneCreationNotice(null);
+    setNodePositionTarget(null);
     setPendingGates({});
     setPendingReviews({});
     setFocusRequestVersion(0);
+    setActivityFocusRequestVersion(0);
     setNewDirectionRequestVersion(0);
     setInitialLoadComplete(false);
     inflightBundleFetchRef.current.clear();
@@ -513,8 +533,6 @@ export function App() {
     () => nodes.some((n) => isNodeNative(n) && INTERRUPTIBLE_STATES.has(n.state)),
     [isNodeNative, nodes],
   );
-  const projectRunnerActive = activeNodesFromList.length > 0;
-  const projectRunnerBusy = projectMutationPending || projectRunnerActive;
   const readOnly = session?.read_only ?? false;
   const activeCanvasNodeIds = useMemo(
     () => activeNodesFromList.map((node) => node.id),
@@ -901,7 +919,7 @@ export function App() {
 
   const startNewDirection = useCallback(
     async (userSeed: string, mode: PlanspaceMode, modelPresetId: string) => {
-      if (!session?.id || sessionSettingsSaving || projectRunnerBusy) return;
+      if (!session?.id || projectMutationPending) return;
       setSessionContextSpaceSaving(true);
       setSessionContextSpaceError(null);
       setProjectMutationPending(true);
@@ -911,7 +929,16 @@ export function App() {
           mode,
           model_preset_id: modelPresetId,
         });
-        selectAndOpenNode(created.node_id);
+        if (shouldOpenCreatedPlanspace(created.activated)) {
+          selectAndOpenNode(created.node_id);
+        } else {
+          setLaneCreationNotice({
+            planspaceId: created.planspace_id,
+            bindingId: created.binding_id,
+            nodeId: created.node_id,
+            kind: "concierge",
+          });
+        }
         await refreshContextSpace();
         await refreshNodes();
       } catch (err) {
@@ -923,8 +950,7 @@ export function App() {
     },
     [
       session?.id,
-      sessionSettingsSaving,
-      projectRunnerBusy,
+      projectMutationPending,
       refreshContextSpace,
       refreshNodes,
       selectAndOpenNode,
@@ -933,29 +959,39 @@ export function App() {
 
   const startBlankDirection = useCallback(
     async (userSeed: string, mode: PlanspaceMode, modelPresetId: string) => {
-      if (!session?.id || sessionSettingsSaving || projectRunnerBusy) return;
+      if (!session?.id || projectMutationPending) return;
       setSessionContextSpaceSaving(true);
       setSessionContextSpaceError(null);
+      setProjectMutationPending(true);
       try {
         const created = await createBlankPlanspace(session.id, {
           seed: userSeed,
           mode,
           model_preset_id: modelPresetId,
         });
-        selectAndOpenNode(created.node_id);
-        setFocusRequestVersion((version) => version + 1);
+        if (shouldOpenCreatedPlanspace(created.activated)) {
+          selectAndOpenNode(created.node_id);
+          setFocusRequestVersion((version) => version + 1);
+        } else {
+          setLaneCreationNotice({
+            planspaceId: created.planspace_id,
+            bindingId: created.binding_id,
+            nodeId: created.node_id,
+            kind: "blank",
+          });
+        }
         await refreshContextSpace();
         await refreshNodes();
       } catch (err) {
         setSessionContextSpaceError(String(err));
       } finally {
+        setProjectMutationPending(false);
         setSessionContextSpaceSaving(false);
       }
     },
     [
       session?.id,
-      sessionSettingsSaving,
-      projectRunnerBusy,
+      projectMutationPending,
       refreshContextSpace,
       refreshNodes,
       selectAndOpenNode,
@@ -1114,6 +1150,7 @@ export function App() {
       scheduled_deps?: string[];
       model_preset_id?: string | null;
       resume_from_node_id?: string | null;
+      position?: { x: number; y: number };
     }) => {
       if (!session?.id || virtualCreateDisabled) return;
       setProjectMutationPending(true);
@@ -1133,6 +1170,12 @@ export function App() {
           planspace_id: payload.planspace_id,
           resume_from_node_id: payload.resume_from_node_id ?? null,
         });
+        if (payload.position) {
+          setNodePositionTarget({
+            nodeId: result.node.id,
+            position: payload.position,
+          });
+        }
         setNodes((prev) => {
           const updated = upsertNode(prev, result.node);
           nodeCountRef.current = updated.length;
@@ -1158,7 +1201,7 @@ export function App() {
   );
 
   const createUnparentedVirtual = useCallback(
-    (planspaceId: string) => {
+    (planspaceId: string, position?: { x: number; y: number }) => {
       // Prefer the planspace's own model preset (from its earliest node) over
       // the project-level default.
       const laneNodes = nodes.filter((n) => n.planspace_id === planspaceId);
@@ -1170,6 +1213,7 @@ export function App() {
       void createVirtualNode({
         planspace_id: planspaceId,
         model_preset_id: modelPresetId,
+        position,
       });
     },
     [createVirtualNode, nodes, session?.model_preset_id],
@@ -1690,6 +1734,17 @@ export function App() {
     [planspaceOptions],
   );
 
+  const activatablePlanspaceIds = useMemo(() => {
+    if (readOnly) return [];
+    const resolvedBindingId = sessionContextSpace?.resolved_binding_id;
+    const binding = sessionContextSpace?.bindings.find(
+      (candidate) => candidate.id === resolvedBindingId,
+    );
+    return (binding?.plugs ?? [])
+      .filter((plug) => plug.kind === "planspace")
+      .map((plug) => plug.id);
+  }, [readOnly, sessionContextSpace]);
+
   const manualPromotionPlanspaceId = useMemo(() => {
     const activeId = sessionContextSpace?.active_planspace_id ?? null;
     if (!activeId) return null;
@@ -1714,6 +1769,15 @@ export function App() {
     }
     return out;
   }, [sessionContextSpace]);
+
+  useEffect(() => {
+    if (
+      laneCreationNotice &&
+      sessionContextSpace?.active_planspace_id === laneCreationNotice.planspaceId
+    ) {
+      setLaneCreationNotice(null);
+    }
+  }, [laneCreationNotice, sessionContextSpace?.active_planspace_id]);
 
   const isManualPlanspace = useCallback(
     (planspaceId: string | null | undefined): boolean =>
@@ -1773,8 +1837,18 @@ export function App() {
       },
       onTogglePlanspaceVisibility: togglePlanspaceVisibility,
       onCreateVirtual: createUnparentedVirtual,
+      onActivatePlanspace: (planspaceId) => {
+        const bindingId = sessionContextSpace?.resolved_binding_id;
+        if (bindingId) void activatePlanspace(bindingId, planspaceId);
+      },
     });
-  }, [togglePlanspaceVisibility, createUnparentedVirtual, inspectNode]);
+  }, [
+    activatePlanspace,
+    createUnparentedVirtual,
+    inspectNode,
+    sessionContextSpace?.resolved_binding_id,
+    togglePlanspaceVisibility,
+  ]);
 
   const onResolveGate = useCallback(
     (
@@ -1820,6 +1894,14 @@ export function App() {
       setPanelState((prev) =>
         prev.open && prev.mode === "details" ? prev : { open: true, mode: "details" },
       );
+    }
+    if (
+      sel.kind === "agent" &&
+      nodesRef.current.some(
+        (node) => node.id === sel.nodeId && node.state === "running",
+      )
+    ) {
+      setActivityFocusRequestVersion((version) => version + 1);
     }
   }, [inspectNode]);
 
@@ -2253,9 +2335,18 @@ export function App() {
               pendingGateNodeIds={pendingGateNodeIds}
               contextBundlesByNodeId={contextBundlesByNodeId}
               knownPlanspaceIds={knownPlanspaceIds}
+              activatablePlanspaceIds={activatablePlanspaceIds}
               hiddenPlanspaceIds={hiddenPlanspaceIds}
               activePlanspaceId={sessionContextSpace?.active_planspace_id ?? null}
+              autoPlanspaceIds={Array.from(autoPlanspaceIds)}
               canCreateVirtual={!virtualCreateDisabled}
+              nodePositionTarget={nodePositionTarget}
+              onNodePositionTargetApplied={(nodeId) => {
+                setNodePositionTarget((current) =>
+                  current?.nodeId === nodeId ? null : current,
+                );
+              }}
+              onCreateVirtualAt={createUnparentedVirtual}
               principles={principles}
               skills={skills}
               gitCommits={gitCommits}
@@ -2289,6 +2380,40 @@ export function App() {
               onJump={() => {
                 onSelectNode(pendingNotice.nodeId);
               }}
+            />
+          )}
+
+          {!readOnly && !pendingNotice && laneCreationNotice && (
+            <CanvasNotice
+              label={
+                laneCreationNotice.kind === "concierge"
+                  ? "新方向已创建并排队，将在当前节点跑完后自动开始"
+                  : "新方向已创建，尚未激活"
+              }
+              panelOpen={panelState.open}
+              actions={[
+                {
+                  label: "跳转",
+                  onClick: () => {
+                    selectAndOpenNode(laneCreationNotice.nodeId);
+                    setLaneCreationNotice(null);
+                  },
+                },
+                ...(laneCreationNotice.kind === "blank"
+                  ? [
+                      {
+                        label: "激活",
+                        onClick: () => {
+                          void activatePlanspace(
+                            laneCreationNotice.bindingId,
+                            laneCreationNotice.planspaceId,
+                          );
+                          setLaneCreationNotice(null);
+                        },
+                      },
+                    ]
+                  : []),
+              ]}
             />
           )}
 
@@ -2401,6 +2526,7 @@ export function App() {
                 onTogglePlanspaceVisibility={togglePlanspaceVisibility}
                 contextReloadVersion={contextReloadVersion}
                 focusRequestVersion={focusRequestVersion}
+                activityFocusRequestVersion={activityFocusRequestVersion}
                 newDirectionRequestVersion={newDirectionRequestVersion}
                 onNewDirectionRequestHandled={acknowledgeNewDirectionRequest}
                 principles={principles}
@@ -2474,6 +2600,24 @@ function PendingBanner({
   onJump: () => void;
   panelOpen: boolean;
 }) {
+  return (
+    <CanvasNotice
+      label={label}
+      panelOpen={panelOpen}
+      actions={[{ label: "Jump", onClick: onJump }]}
+    />
+  );
+}
+
+function CanvasNotice({
+  label,
+  actions,
+  panelOpen,
+}: {
+  label: string;
+  actions: Array<{ label: string; onClick: () => void }>;
+  panelOpen: boolean;
+}) {
   /* When the floating side panel is open it sits at z-20 in the bottom-right
    * corner (w-380px). Slide the banner past the panel's left edge so the
    * Jump affordance stays clickable instead of being hidden underneath. */
@@ -2486,13 +2630,18 @@ function PendingBanner({
       }
     >
       <span>{label}</span>
-      <button
-        type="button"
-        onClick={onJump}
-        className="rounded border border-state-waiting/40 bg-surface-raised px-2 py-0.5 text-state-waiting transition hover:border-state-waiting/70"
-      >
-        Jump
-      </button>
+      <span className="flex flex-none items-center gap-1.5">
+        {actions.map((action) => (
+          <button
+            key={action.label}
+            type="button"
+            onClick={action.onClick}
+            className="rounded border border-state-waiting/40 bg-surface-raised px-2 py-0.5 text-state-waiting transition hover:border-state-waiting/70"
+          >
+            {action.label}
+          </button>
+        ))}
+      </span>
     </div>
   );
 }

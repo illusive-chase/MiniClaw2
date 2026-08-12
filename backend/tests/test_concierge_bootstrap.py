@@ -65,14 +65,16 @@ class ConciergeBootstrapTests(unittest.IsolatedAsyncioTestCase):
     async def test_creates_planspace_activates_and_launches_planning_agent(self) -> None:
         stub = _StubProvider()
         with patch.object(runner_module, "_make_provider", return_value=stub):
-            node = self.registry.create_planspace_and_launch_concierge(
+            result = self.registry.create_planspace_and_launch_concierge(
                 self.pid,
                 title="Auth flow",
                 seed="Build a signup screen wired to Stripe",
                 mode="manual",
             )
-            self.assertIsNotNone(node)
-            assert node is not None
+            self.assertIsNotNone(result)
+            assert result is not None
+            self.assertTrue(result.activated)
+            node = result.node
             rt = self.registry._runtimes[self.pid]
             await asyncio.wait_for(rt.runner_tasks[node.id], timeout=5.0)
 
@@ -130,7 +132,15 @@ class ConciergeBootstrapTests(unittest.IsolatedAsyncioTestCase):
                 mode="weird",
             )
 
-    async def test_returns_none_when_project_busy(self) -> None:
+    async def test_queues_new_lane_without_activating_when_project_busy(self) -> None:
+        current = self.registry.create_blank_planspace(
+            self.pid,
+            title="Current",
+            seed="Current work",
+            mode="manual",
+        )
+        assert current is not None
+        old_lane = current.node.planspace_id
         rt = self.registry._runtimes[self.pid]
 
         async def _hold() -> None:
@@ -138,13 +148,59 @@ class ConciergeBootstrapTests(unittest.IsolatedAsyncioTestCase):
 
         rt.runner_tasks["busy"] = asyncio.create_task(_hold())
         try:
-            runner = self.registry.create_planspace_and_launch_concierge(
+            result = self.registry.create_planspace_and_launch_concierge(
                 self.pid,
                 title="t",
                 seed="s",
                 mode="manual",
             )
-            self.assertIsNone(runner)
+            self.assertIsNotNone(result)
+            assert result is not None
+            self.assertFalse(result.activated)
+            self.assertEqual(result.node.state, NodeState.QUEUED)
+            self.assertNotEqual(result.node.planspace_id, old_lane)
+            project = self.registry.get_project(self.pid)
+            assert project is not None
+            self.assertEqual(project.active_planspace_id, old_lane)
+            self.assertNotIn(result.node.id, rt.runner_tasks)
+        finally:
+            task = rt.runner_tasks["busy"]
+            task.cancel()
+            try:
+                await task
+            except BaseException:
+                pass
+
+    async def test_busy_first_concierge_stays_inactive_and_persists_binding(self) -> None:
+        self.registry.enable_sharing(self.pid)
+        rt = self.registry._runtimes[self.pid]
+
+        async def _hold() -> None:
+            await asyncio.sleep(0.5)
+
+        rt.runner_tasks["busy"] = asyncio.create_task(_hold())
+        try:
+            result = self.registry.create_planspace_and_launch_concierge(
+                self.pid,
+                title="First queued direction",
+                seed="Plan later",
+                mode="manual",
+            )
+            assert result is not None
+            self.assertFalse(result.activated)
+            self.assertNotIn(result.node.id, rt.runner_tasks)
+            project = self.registry.get_project(self.pid)
+            assert project is not None
+            self.assertIsNone(project.active_planspace_id)
+            persisted = {
+                item.id: item
+                for item in Store(root=self.store_root).list_projects()
+            }[self.pid]
+            self.assertEqual(
+                persisted.project_context_binding_id,
+                project.project_context_binding_id,
+            )
+            self.assertIsNotNone(persisted.project_context_binding_id)
         finally:
             task = rt.runner_tasks["busy"]
             task.cancel()

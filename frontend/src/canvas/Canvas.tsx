@@ -24,6 +24,7 @@ import {
   classifyPlanspaceLaneResizes,
   resolveCommitPositionTransfer,
   resizePlanspaceLanes,
+  snapPlanspaceChildPosition,
   type RFNode,
   type PrincipleEnumeration,
   type SkillEnumeration,
@@ -90,6 +91,11 @@ export type CanvasSelection =
   | { kind: "commit"; sha: string | null }
   | { kind: "none" };
 
+export type CanvasNodePositionTarget = {
+  nodeId: string;
+  position: { x: number; y: number };
+};
+
 export type CanvasProps = {
   nodes: NodeInfo[];
   sessionId: string;
@@ -99,9 +105,17 @@ export type CanvasProps = {
   pendingGateNodeIds?: string[];
   contextBundlesByNodeId: Record<string, ContextBundle | null | undefined>;
   knownPlanspaceIds: string[];
+  activatablePlanspaceIds: string[];
   hiddenPlanspaceIds: string[];
   activePlanspaceId: string | null;
+  autoPlanspaceIds: string[];
   canCreateVirtual: boolean;
+  nodePositionTarget?: CanvasNodePositionTarget | null;
+  onNodePositionTargetApplied?: (nodeId: string) => void;
+  onCreateVirtualAt?: (
+    planspaceId: string,
+    position: { x: number; y: number },
+  ) => void;
   /** Library entries used only to resolve visible observed/declared bindings. */
   principles?: PrincipleEnumeration[];
   skills?: SkillEnumeration[];
@@ -167,9 +181,14 @@ function CanvasInner({
   pendingGateNodeIds = [],
   contextBundlesByNodeId,
   knownPlanspaceIds,
+  activatablePlanspaceIds,
   hiddenPlanspaceIds,
   activePlanspaceId,
+  autoPlanspaceIds,
   canCreateVirtual,
+  nodePositionTarget,
+  onNodePositionTargetApplied,
+  onCreateVirtualAt,
   principles,
   skills,
   initialLayoutHints,
@@ -201,8 +220,21 @@ function CanvasInner({
   const pendingViewportRef = useRef<Viewport | null>(null);
   const flushTimerRef = useRef<number | null>(null);
   const wrapperRef = useRef<HTMLDivElement | null>(null);
+  const appliedNodePositionTargetRef = useRef<string | null>(null);
+  const pendingNodePositionTargetRef = useRef<string | null>(null);
+  if (
+    nodePositionTarget &&
+    appliedNodePositionTargetRef.current !== nodePositionTarget.nodeId
+  ) {
+    const position = { ...nodePositionTarget.position };
+    layoutHintsRef.current[nodePositionTarget.nodeId] = position;
+    pendingHintsRef.current[nodePositionTarget.nodeId] = position;
+    pendingHintRemovalsRef.current.delete(nodePositionTarget.nodeId);
+    appliedNodePositionTargetRef.current = nodePositionTarget.nodeId;
+    pendingNodePositionTargetRef.current = nodePositionTarget.nodeId;
+  }
   const [hoverGroup, setHoverGroupState] = useState<string[]>([]);
-  const { getViewport, setViewport } = useReactFlow();
+  const { getViewport, screenToFlowPosition, setViewport } = useReactFlow();
   const [layoutHydrationVersion, setLayoutHydrationVersion] = useState(0);
   const appliedLayoutHydrationVersionRef = useRef(layoutHydrationVersion);
   const previousPrimarySelectionRef = useRef(selectedNodeId);
@@ -256,6 +288,22 @@ function CanvasInner({
     };
   }, [flushPendingLayout]);
 
+  useEffect(() => {
+    if (
+      !nodePositionTarget ||
+      pendingNodePositionTargetRef.current !== nodePositionTarget.nodeId
+    ) {
+      return;
+    }
+    pendingNodePositionTargetRef.current = null;
+    scheduleFlushLayout(0);
+    onNodePositionTargetApplied?.(nodePositionTarget.nodeId);
+  }, [
+    nodePositionTarget,
+    onNodePositionTargetApplied,
+    scheduleFlushLayout,
+  ]);
+
   const built = useMemo(
     () =>
       buildGraph({
@@ -264,8 +312,10 @@ function CanvasInner({
         layoutHints: layoutHintsRef.current,
         contextBundlesByNodeId,
         knownPlanspaceIds,
+        activatablePlanspaceIds,
         hiddenPlanspaceIds,
         activePlanspaceId,
+        autoPlanspaceIds,
         canCreateVirtual,
         principles,
         skills,
@@ -279,8 +329,10 @@ function CanvasInner({
       activeNodeIds,
       contextBundlesByNodeId,
       knownPlanspaceIds,
+      activatablePlanspaceIds,
       hiddenPlanspaceIds,
       activePlanspaceId,
+      autoPlanspaceIds,
       canCreateVirtual,
       principles,
       skills,
@@ -682,6 +734,53 @@ function CanvasInner({
     [onSelectionChange],
   );
 
+  const onCanvasDoubleClick = useCallback(
+    (event: React.MouseEvent<HTMLDivElement>) => {
+      if (
+        event.button !== 0 ||
+        !canCreateVirtual ||
+        !activePlanspaceId ||
+        !onCreateVirtualAt
+      ) {
+        return;
+      }
+      const target = event.target as HTMLElement;
+      if (!target.classList.contains("react-flow__pane")) return;
+
+      const flowPosition = screenToFlowPosition({
+        x: event.clientX,
+        y: event.clientY,
+      });
+      const lane = rfNodesRef.current.find(
+        (node) => node.id === `planspace:${activePlanspaceId}`,
+      );
+      if (!lane || lane.type !== "planspaceLane") return;
+      const data = lane.data as import("./layout").PlanspaceLaneData;
+      const width = lane.width ?? data.width;
+      const height = lane.height ?? data.height;
+      if (
+        flowPosition.x < lane.position.x ||
+        flowPosition.x > lane.position.x + width ||
+        flowPosition.y < lane.position.y ||
+        flowPosition.y > lane.position.y + height
+      ) {
+        return;
+      }
+
+      event.preventDefault();
+      onCreateVirtualAt(
+        activePlanspaceId,
+        snapPlanspaceChildPosition(flowPosition, lane.position),
+      );
+    },
+    [
+      activePlanspaceId,
+      canCreateVirtual,
+      onCreateVirtualAt,
+      screenToFlowPosition,
+    ],
+  );
+
   const onNodeMouseEnter = useCallback<NodeMouseHandler>((_, node) => {
     const group = resolveHoverGroup(
       node.id,
@@ -805,6 +904,7 @@ function CanvasInner({
       ref={wrapperRef}
       className="relative h-full w-full"
       onWheelCapture={onWheelCapture}
+      onDoubleClick={onCanvasDoubleClick}
       onDragOver={onCanvasDragOver}
       onDrop={onCanvasDrop}
     >
@@ -833,9 +933,10 @@ function CanvasInner({
         minZoom={MIN_ZOOM}
         maxZoom={MAX_ZOOM}
         zoomOnScroll={false}
+        zoomOnDoubleClick={false}
         panOnScroll
-        panOnDrag
-        selectionOnDrag={false}
+        panOnDrag={[2]}
+        selectionOnDrag
         selectNodesOnDrag={false}
         multiSelectionKeyCode="Shift"
         snapToGrid

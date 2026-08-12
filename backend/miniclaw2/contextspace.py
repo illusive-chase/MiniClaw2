@@ -981,6 +981,8 @@ def _select_active_planspace(
             if plug.id == requested or _plug_slug(plug.id) == requested:
                 return plug
         return None
+    if project.planspace_selection_explicit:
+        return None
     if len(planspaces) == 1:
         return planspaces[0]
     return None

@@ -6,6 +6,7 @@ import {
 } from "../src/canvas/nodeLayers";
 import {
   buildGraph,
+  snapPlanspaceChildPosition,
   classifyPlanspaceLaneResizes,
   contextIdentityKey,
   LANE,
@@ -21,6 +22,7 @@ import type {
 import {
   nodeIdsNeedingEventReplay,
   shouldAutoSelectEventNode,
+  shouldOpenCreatedPlanspace,
   shouldOpenInteractionNode,
 } from "../src/nodeUtil";
 
@@ -95,6 +97,16 @@ assert.equal(
   shouldOpenInteractionNode({ kind: "artifact", nodeId: "review" }, "review"),
   false,
   "an interaction must preserve a non-execution selection",
+);
+assert.equal(
+  shouldOpenCreatedPlanspace(true),
+  true,
+  "an idle planspace creation should open its seeded node",
+);
+assert.equal(
+  shouldOpenCreatedPlanspace(false),
+  false,
+  "a background planspace creation must preserve the current selection",
 );
 
 function commit(
@@ -202,8 +214,10 @@ function args(overrides: Partial<BuildGraphArgs> = {}): BuildGraphArgs {
     layoutHints: {},
     contextBundlesByNodeId: {},
     knownPlanspaceIds: [],
+    activatablePlanspaceIds: [],
     hiddenPlanspaceIds: [],
     activePlanspaceId: null,
+    autoPlanspaceIds: [],
     canCreateVirtual: true,
     principles: [principle],
     skills: [skill],
@@ -274,6 +288,34 @@ function testKnownLaneOrderSurvivesNodeCreationOrder(): void {
     lanes(empty).map((item) => item.position.x),
   );
   assert.ok(lanes(populated)[1].position.y > lanes(populated)[0].position.y);
+}
+
+function testInactiveAutoLaneIsMarkedForActivation(): void {
+  const graph = buildGraph(args({
+    knownPlanspaceIds: ["planspaces.auto"],
+    activatablePlanspaceIds: ["planspaces.auto"],
+    autoPlanspaceIds: ["planspaces.auto"],
+    activePlanspaceId: null,
+  }));
+  const lane = graph.rfNodes.find((item) => item.id === "planspace:planspaces.auto");
+  assert.equal(lane?.type, "planspaceLane");
+  if (lane?.type !== "planspaceLane") throw new Error("missing planspace lane");
+  assert.equal(lane.data.active, false);
+  assert.equal(lane.data.auto, true);
+  assert.equal(lane.data.canActivate, true);
+  assert.deepEqual(lane.style, { pointerEvents: "none" });
+}
+
+function testPlanspaceChildPositionUsesLaneRelativeSnapGrid(): void {
+  assert.deepEqual(
+    snapPlanspaceChildPosition({ x: 146, y: 289 }, { x: 100, y: 200 }),
+    { x: 48, y: 88 },
+  );
+  assert.deepEqual(
+    snapPlanspaceChildPosition({ x: 105, y: 211 }, { x: 100, y: 200 }),
+    { x: 40, y: 40 },
+    "new nodes must stay inside the planspace child extent",
+  );
 }
 
 function testProjectScopedLaneLabelShowsOnlyDirectionName(): void {
@@ -1272,6 +1314,8 @@ function testPendingGateNodeLayer(): void {
 
 testNoRootOrFabricatedDependencies();
 testKnownLaneOrderSurvivesNodeCreationOrder();
+testInactiveAutoLaneIsMarkedForActivation();
+testPlanspaceChildPositionUsesLaneRelativeSnapGrid();
 testProjectScopedLaneLabelShowsOnlyDirectionName();
 testVerticalCommitTrunkAndStableLaneX();
 testChangesNodePreservesSavedPosition();

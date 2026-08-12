@@ -81,6 +81,12 @@ class VirtualPromotionResult:
     blockers: tuple[str, ...] = ()
 
 
+@dataclass(frozen=True)
+class PlanspaceCreationResult:
+    node: Node
+    activated: bool
+
+
 class NonNativeProjectError(PermissionError):
     def __init__(self, project: Project) -> None:
         label = project.machine_label or project.machine_id or "another machine"
@@ -146,6 +152,7 @@ class ProjectRuntime:
         self.runner_tasks: dict[str, asyncio.Task[None]] = {}
         self.background_tasks: set[asyncio.Task[Any]] = set()
         self.priority_node_ids: list[str] = []
+        self.deferred_until_idle_node_ids: set[str] = set()
         self.closed = False
         self.reap_lock = asyncio.Lock()
         self.observers: dict[str, Callable[[dict[str, Any]], Awaitable[None]]] = {}
@@ -641,7 +648,10 @@ class ProjectRegistry:
                 and active_planspace_id.strip()
                 else None
             )
+            rt.project.planspace_selection_explicit = True
         self.store.update_project(rt.project)
+        if active_planspace_id is not _UNSET:
+            self._auto_promote_eligible_virtuals(rt)
         return rt.project
 
     def update_layout_hints(
@@ -984,6 +994,7 @@ class ProjectRegistry:
         task = asyncio.create_task(coro if coro is not None else runner.run())
         rt.runners[node.id] = runner
         rt.runner_tasks[node.id] = task
+        rt.deferred_until_idle_node_ids.discard(node.id)
         task.add_done_callback(
             lambda _task, _rt=rt, _node_id=node.id: self._on_runner_done(
                 _rt, _node_id, _task
@@ -994,6 +1005,8 @@ class ProjectRegistry:
     def _schedule_queued(self, rt: ProjectRuntime) -> None:
         if not self.is_native_project(rt.project):
             return
+        if not rt.is_running():
+            rt.deferred_until_idle_node_ids.clear()
         while rt.has_capacity():
             if self._exclusive_node_active(rt):
                 return
@@ -1029,6 +1042,7 @@ class ProjectRegistry:
                     for node in self.store.list_nodes(rt.project.id)
                     if node.state is NodeState.QUEUED
                     and node.id not in rt.runner_tasks
+                    and node.id not in rt.deferred_until_idle_node_ids
                     and self.is_native_node(rt.project, node)
                 ),
                 key=lambda node: (node.created_at, node.id),
@@ -1246,20 +1260,19 @@ class ProjectRegistry:
         mode: str | None = None,
         provider: str | None = None,
         model_preset_id: str | None = None,
-    ) -> Node | None:
-        """Create a new planspace, activate it, and launch the concierge.
+    ) -> PlanspaceCreationResult | None:
+        """Create a new planspace and launch its concierge.
 
         The concierge is a planning-category agent node whose prompt is
         the rendered ``concierge_bootstrap.md`` template with the user's
-        free-form ``seed`` substituted in. Returns the persisted queued/running
-        node on success, or ``None`` if the project is already running.
+        free-form ``seed`` substituted in. A new lane is activated only when
+        the project is idle; otherwise the concierge remains queued without
+        changing the current lane.
         """
         rt = self._runtimes.get(pid)
         if rt is None:
             return None
         self.require_native(pid)
-        if rt.is_running():
-            return None
         if not seed.strip():
             raise ValueError("seed must be non-empty")
         if provider is not None:
@@ -1272,6 +1285,8 @@ class ProjectRegistry:
             else rt.project.model_preset_id
         )
         normalized_mode = normalize_planspace_mode(mode)
+        activated = not rt.is_running()
+        self._preserve_implicit_active_planspace(rt, activated=activated)
         plug_id = create_planspace(
             rt.project,
             title=title or "Direction",
@@ -1279,7 +1294,9 @@ class ProjectRegistry:
             store_root=self.store.root,
             seed_text=seed,
         )
-        rt.project.active_planspace_id = plug_id
+        if activated:
+            rt.project.active_planspace_id = plug_id
+        rt.project.planspace_selection_explicit = True
         self.store.update_project(rt.project)
 
         prompt_text = _render_concierge_prompt(seed.strip())
@@ -1294,8 +1311,13 @@ class ProjectRegistry:
         )
         self.store.create_node(node)
 
+        if not activated:
+            rt.deferred_until_idle_node_ids.add(node.id)
         self._schedule_queued(rt)
-        return self.store.load_node(pid, node.id) or node
+        return PlanspaceCreationResult(
+            node=self.store.load_node(pid, node.id) or node,
+            activated=activated,
+        )
 
     def create_blank_planspace(
         self,
@@ -1306,14 +1328,12 @@ class ProjectRegistry:
         mode: str | None = None,
         provider: str | None = None,
         model_preset_id: str | None = None,
-    ) -> Node | None:
+    ) -> PlanspaceCreationResult | None:
         """Create a planspace and seed it with one empty editable virtual."""
         rt = self._runtimes.get(pid)
         if rt is None:
             return None
         self.require_native(pid)
-        if rt.is_running():
-            return None
         if not seed.strip():
             raise ValueError("seed must be non-empty")
         if provider is not None:
@@ -1326,6 +1346,8 @@ class ProjectRegistry:
             else rt.project.model_preset_id
         )
         normalized_mode = normalize_planspace_mode(mode)
+        activated = not rt.is_running()
+        self._preserve_implicit_active_planspace(rt, activated=activated)
         plug_id = create_planspace(
             rt.project,
             title=title or seed.strip() or "Direction",
@@ -1333,7 +1355,9 @@ class ProjectRegistry:
             store_root=self.store.root,
             seed_text=seed,
         )
-        rt.project.active_planspace_id = plug_id
+        if activated:
+            rt.project.active_planspace_id = plug_id
+        rt.project.planspace_selection_explicit = True
         self.store.update_project(rt.project)
 
         node = self.create_virtual(
@@ -1348,7 +1372,24 @@ class ProjectRegistry:
         )
         if node is None:
             return None
-        return node
+        return PlanspaceCreationResult(node=node, activated=activated)
+
+    def _preserve_implicit_active_planspace(
+        self,
+        rt: ProjectRuntime,
+        *,
+        activated: bool,
+    ) -> None:
+        """Make a single-lane implicit selection durable before adding a lane."""
+        if activated or rt.project.active_planspace_id:
+            return
+        active = resolve_active_planspace(
+            rt.project, contextspace_root(self.store.root)
+        )
+        if active is None:
+            return
+        rt.project.active_planspace_id = active[1].id
+        self.store.update_project(rt.project)
 
     # ---- auto-promotion ----
 

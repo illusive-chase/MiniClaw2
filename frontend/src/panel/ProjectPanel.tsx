@@ -565,6 +565,7 @@ function DirectionRow({
             {plug.slug}
             {plug.mode ? ` · ${plug.mode}` : ""}
             {plug.active ? " · active" : ""}
+            {plug.mode === "auto" && !plug.active ? " · 待激活" : ""}
             {hidden ? " · hidden" : ""}
           </span>
         </span>

@@ -6,6 +6,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import yaml
 
@@ -209,15 +210,17 @@ class BlankPlanspaceRegistryTests(unittest.TestCase):
         self.tmp.cleanup()
 
     def test_create_blank_planspace_seeds_empty_virtual_and_activates_lane(self) -> None:
-        node = self.registry.create_blank_planspace(
+        result = self.registry.create_blank_planspace(
             self.project.id,
             title="Auth flow",
             seed="Sketch auth work",
             mode="manual",
         )
 
-        self.assertIsNotNone(node)
-        assert node is not None
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertTrue(result.activated)
+        node = result.node
         self.assertEqual(node.state, NodeState.VIRTUAL)
         self.assertEqual(node.prompt_draft, "")
         self.assertEqual(node.summary, "")
@@ -249,15 +252,16 @@ class BlankPlanspaceRegistryTests(unittest.TestCase):
         )
 
     def test_create_blank_planspace_propagates_auto_mode(self) -> None:
-        node = self.registry.create_blank_planspace(
+        result = self.registry.create_blank_planspace(
             self.project.id,
             title="Auto lane",
             seed="Prepare auto work",
             mode="auto",
         )
 
-        self.assertIsNotNone(node)
-        assert node is not None
+        self.assertIsNotNone(result)
+        assert result is not None
+        node = result.node
         project = self.registry.get_project(self.project.id)
         assert project is not None
         self.assertEqual(read_planspace_mode(project, node.planspace_id or ""), "auto")
@@ -281,9 +285,13 @@ class BlankPlanspaceRegistryTests(unittest.TestCase):
 
         assert first is not None
         assert second is not None
-        self.assertEqual(first.planspace_id, "planspaces.blank-project.direction")
-        self.assertEqual(second.planspace_id, "planspaces.blank-project.direction-2")
-        self.assertNotEqual(first.planspace_id, second.planspace_id)
+        self.assertEqual(
+            first.node.planspace_id, "planspaces.blank-project.direction"
+        )
+        self.assertEqual(
+            second.node.planspace_id, "planspaces.blank-project.direction-2"
+        )
+        self.assertNotEqual(first.node.planspace_id, second.node.planspace_id)
 
     def test_create_blank_planspace_rejects_empty_seed(self) -> None:
         with self.assertRaisesRegex(ValueError, "seed"):
@@ -294,11 +302,19 @@ class BlankPlanspaceRegistryTests(unittest.TestCase):
                 mode="manual",
             )
 
-    def test_create_blank_planspace_returns_none_when_turn_running(self) -> None:
+    def test_create_blank_planspace_while_running_preserves_active_lane(self) -> None:
+        first = self.registry.create_blank_planspace(
+            self.project.id,
+            title="Current",
+            seed="Current work",
+            mode="manual",
+        )
+        assert first is not None
+        old_lane = first.node.planspace_id
         runtime = self.registry._runtimes[self.project.id]
         runtime.runner_tasks["busy"] = _PendingTask()  # type: ignore[assignment]
         try:
-            node = self.registry.create_blank_planspace(
+            result = self.registry.create_blank_planspace(
                 self.project.id,
                 title="Busy",
                 seed="Busy work",
@@ -307,7 +323,98 @@ class BlankPlanspaceRegistryTests(unittest.TestCase):
         finally:
             runtime.runner_tasks["busy"].cancel()
 
-        self.assertIsNone(node)
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertFalse(result.activated)
+        self.assertEqual(result.node.state, NodeState.VIRTUAL)
+        self.assertNotEqual(result.node.planspace_id, old_lane)
+        project = self.registry.get_project(self.project.id)
+        assert project is not None
+        self.assertEqual(project.active_planspace_id, old_lane)
+
+    def test_running_creation_preserves_implicit_single_active_lane(self) -> None:
+        first = self.registry.create_blank_planspace(
+            self.project.id,
+            title="Implicit",
+            seed="Implicit work",
+            mode="manual",
+        )
+        assert first is not None
+        old_lane = first.node.planspace_id
+        self.project.active_planspace_id = None
+        self.project.planspace_selection_explicit = False
+        self.store.update_project(self.project)
+
+        runtime = self.registry._runtimes[self.project.id]
+        runtime.runner_tasks["busy"] = _PendingTask()  # type: ignore[assignment]
+        try:
+            result = self.registry.create_blank_planspace(
+                self.project.id,
+                title="Second",
+                seed="Second work",
+                mode="manual",
+            )
+        finally:
+            runtime.runner_tasks["busy"].cancel()
+
+        assert result is not None
+        self.assertFalse(result.activated)
+        project = self.registry.get_project(self.project.id)
+        assert project is not None
+        self.assertEqual(project.active_planspace_id, old_lane)
+
+    def test_busy_first_blank_lane_stays_inactive_and_persists_binding(self) -> None:
+        runtime = self.registry._runtimes[self.project.id]
+        runtime.runner_tasks["busy"] = _PendingTask()  # type: ignore[assignment]
+        try:
+            result = self.registry.create_blank_planspace(
+                self.project.id,
+                title="Queued first lane",
+                seed="Prepare queued work",
+                mode="auto",
+            )
+        finally:
+            runtime.runner_tasks["busy"].cancel()
+
+        assert result is not None
+        self.assertFalse(result.activated)
+        project = self.registry.get_project(self.project.id)
+        assert project is not None
+        self.assertIsNone(project.active_planspace_id)
+        self.assertTrue(project.planspace_selection_explicit)
+        self.assertIsNone(
+            describe_project_contextspace(
+                project, store_root=self.store.root
+            )["active_planspace_id"]
+        )
+        persisted = {
+            item.id: item for item in Store(root=self.store.root).list_projects()
+        }[self.project.id]
+        self.assertEqual(
+            persisted.project_context_binding_id,
+            project.project_context_binding_id,
+        )
+        self.assertIsNotNone(persisted.project_context_binding_id)
+
+    def test_activating_planspace_runs_auto_promotion_pass(self) -> None:
+        result = self.registry.create_blank_planspace(
+            self.project.id,
+            title="Auto",
+            seed="Auto work",
+            mode="auto",
+        )
+        assert result is not None
+        runtime = self.registry._runtimes[self.project.id]
+
+        with patch.object(
+            self.registry, "_auto_promote_eligible_virtuals"
+        ) as promote:
+            self.registry.update_project_context(
+                self.project.id,
+                active_planspace_id=result.node.planspace_id,
+            )
+
+        promote.assert_called_once_with(runtime)
 
 
 class _PendingTask:

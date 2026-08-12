@@ -869,7 +869,7 @@ def create_app(registry: ProjectRegistry | None = None) -> FastAPI:
         return describe_project_contextspace(project, store_root=registry.store.root)
 
     @app.patch("/sessions/{sid}/contextspace", response_model=dict[str, Any])
-    def update_session_contextspace(
+    async def update_session_contextspace(
         sid: str,
         req: UpdateSessionContextRequest,
     ) -> dict[str, Any]:
@@ -954,7 +954,7 @@ def create_app(registry: ProjectRegistry | None = None) -> FastAPI:
         if seed is None or not seed.strip():
             raise HTTPException(400, "seed must be non-empty")
         try:
-            node = registry.create_planspace_and_launch_concierge(
+            result = registry.create_planspace_and_launch_concierge(
                 sid,
                 title=req.title.strip(),
                 seed=seed,
@@ -963,14 +963,16 @@ def create_app(registry: ProjectRegistry | None = None) -> FastAPI:
             )
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
-        if node is None:
-            raise HTTPException(409, "failed to launch concierge")
+        if result is None:
+            raise HTTPException(409, "project runtime is unavailable")
+        node = result.node
         contextspace = describe_project_contextspace(
             project, store_root=registry.store.root
         )
         contextspace["node_id"] = node.id
         contextspace["planspace_id"] = node.planspace_id
         contextspace["binding_id"] = contextspace.get("resolved_binding_id")
+        contextspace["activated"] = result.activated
         return contextspace
 
     @app.post("/sessions/{sid}/planspaces/blank", response_model=dict[str, Any])
@@ -986,7 +988,7 @@ def create_app(registry: ProjectRegistry | None = None) -> FastAPI:
         if not req.seed.strip():
             raise HTTPException(400, "seed must be non-empty")
         try:
-            node = registry.create_blank_planspace(
+            result = registry.create_blank_planspace(
                 sid,
                 title=(req.title or "").strip(),
                 seed=req.seed,
@@ -995,14 +997,16 @@ def create_app(registry: ProjectRegistry | None = None) -> FastAPI:
             )
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
-        if node is None:
-            raise HTTPException(409, "project is busy")
+        if result is None:
+            raise HTTPException(409, "project runtime is unavailable")
+        node = result.node
         contextspace = describe_project_contextspace(
             project, store_root=registry.store.root
         )
         contextspace["node_id"] = node.id
         contextspace["planspace_id"] = node.planspace_id
         contextspace["binding_id"] = contextspace.get("resolved_binding_id")
+        contextspace["activated"] = result.activated
         return contextspace
 
     @app.patch("/sessions/{sid}/planspaces/{planspace_id}/mode", response_model=dict[str, Any])

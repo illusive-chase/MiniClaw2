@@ -81,8 +81,12 @@ export type AgentPanelProps = {
   canMutate: boolean;
   canClaim: boolean;
   manualPromotionPlanspaceId: string | null;
+  activePlanspaceId: string | null;
+  knownPlanspaceIds: string[];
+  onActivatePlanspace: (planspaceId: string) => void;
   isManualPlanspace: (planspaceId: string | null | undefined) => boolean;
   focusRequestVersion: number;
+  activityFocusRequestVersion: number;
   onSelectArtifact: (
     nodeId: string,
     name: string,
@@ -119,10 +123,19 @@ export function AgentPanel({
   canMutate,
   canClaim,
   manualPromotionPlanspaceId,
+  activePlanspaceId,
+  knownPlanspaceIds,
+  onActivatePlanspace,
   isManualPlanspace,
   focusRequestVersion,
+  activityFocusRequestVersion,
   onSelectArtifact,
 }: AgentPanelProps) {
+  const inactiveKnownPlanspace =
+    node.state === "virtual" &&
+    !!node.planspace_id &&
+    node.planspace_id !== activePlanspaceId &&
+    knownPlanspaceIds.includes(node.planspace_id);
   const headline = (
     node.summary ||
     node.prompt_draft ||
@@ -150,6 +163,12 @@ export function AgentPanel({
     ready: boolean;
   } | null>(null);
   const virtualNodeBodyRef = useRef<VirtualNodeBodyHandle | null>(null);
+  const panelScrollRef = useRef<HTMLDivElement | null>(null);
+  const activityDetailsRef = useRef<HTMLDetailsElement | null>(null);
+  const latestActivityRef = useRef<HTMLDivElement | null>(null);
+  const handledActivityFocusRef = useRef(0);
+  const eventsLoadingRef = useRef(eventsLoading);
+  eventsLoadingRef.current = eventsLoading;
   const currentReadyToPromote =
     draftPromotability?.nodeId === node.id
       ? draftPromotability.ready
@@ -218,6 +237,54 @@ export function AgentPanel({
       cancelled = true;
     };
   }, [sessionId, node.id, node.state, node.finished_at]);
+
+  const scrollToLatestActivity = useCallback(() => {
+    const container = panelScrollRef.current;
+    const details = activityDetailsRef.current;
+    const marker = latestActivityRef.current;
+    if (!container || !details || !marker) return;
+
+    details.open = true;
+    const containerRect = container.getBoundingClientRect();
+    const markerRect = marker.getBoundingClientRect();
+    container.scrollTo({
+      top: Math.max(
+        0,
+        container.scrollTop + markerRect.bottom - containerRect.bottom + 12,
+      ),
+      behavior: "smooth",
+    });
+  }, []);
+
+  useEffect(() => {
+    if (
+      activityFocusRequestVersion === 0 ||
+      handledActivityFocusRef.current === activityFocusRequestVersion ||
+      node.state !== "running" ||
+      eventsLoading
+    ) {
+      return;
+    }
+    const requestVersion = activityFocusRequestVersion;
+    const frame = window.requestAnimationFrame(() => {
+      if (
+        handledActivityFocusRef.current === requestVersion ||
+        eventsLoadingRef.current
+      ) {
+        return;
+      }
+      scrollToLatestActivity();
+      handledActivityFocusRef.current = requestVersion;
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [
+    activityFocusRequestVersion,
+    eventsLoading,
+    node.id,
+    node.state,
+    scrollToLatestActivity,
+    transcriptItems.length,
+  ]);
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
@@ -316,10 +383,25 @@ export function AgentPanel({
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto bg-surface px-4 py-3 text-sm">
+      <div
+        ref={panelScrollRef}
+        className="flex-1 overflow-y-auto bg-surface px-4 py-3 text-sm"
+      >
         {!canMutate && (
           <div className="mb-3 rounded-md border border-state-waiting/30 bg-state-waiting-soft px-3 py-2 text-[11px] text-state-waiting">
             此节点属于另一台设备，本机可查看或复制认领，但不会修改原节点。
+          </div>
+        )}
+        {canMutate && inactiveKnownPlanspace && node.planspace_id && (
+          <div className="mb-3 flex items-center justify-between gap-3 rounded-md border border-state-waiting/30 bg-state-waiting-soft px-3 py-2 text-[11px] text-state-waiting">
+            <span>该方向未激活，节点无法推进。激活后可 Promote。</span>
+            <button
+              type="button"
+              onClick={() => onActivatePlanspace(node.planspace_id!)}
+              className="flex-none rounded border border-state-waiting/40 bg-surface-raised px-2 py-1 font-medium transition hover:border-state-waiting/70"
+            >
+              激活此方向
+            </button>
           </div>
         )}
         {(node.claims?.length ?? 0) > 0 && (
@@ -456,6 +538,7 @@ export function AgentPanel({
 
             <section className="mb-5">
               <details
+                ref={activityDetailsRef}
                 key={node.id}
                 open={activityDefaultOpen}
                 className="overflow-hidden rounded-md border border-line bg-surface-sunken"
@@ -478,6 +561,7 @@ export function AgentPanel({
                     items={transcriptItems}
                     streaming={node.state === "running"}
                   />
+                  <div ref={latestActivityRef} aria-hidden="true" />
                 </div>
               </details>
             </section>

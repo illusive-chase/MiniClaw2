@@ -287,7 +287,12 @@ export async function createPlanspace(
     mode?: PlanspaceMode;
     model_preset_id?: string;
   },
-): Promise<{ planspace_id: string; binding_id: string; node_id: string }> {
+): Promise<{
+  planspace_id: string;
+  binding_id: string;
+  node_id: string;
+  activated: boolean;
+}> {
   const res = await fetch(`/sessions/${sessionId}/planspaces`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -307,7 +312,12 @@ export type CreateBlankPlanspacePayload = {
 export async function createBlankPlanspace(
   sessionId: string,
   body: CreateBlankPlanspacePayload,
-): Promise<{ planspace_id: string; binding_id: string; node_id: string }> {
+): Promise<{
+  planspace_id: string;
+  binding_id: string;
+  node_id: string;
+  activated: boolean;
+}> {
   const res = await fetch(`/sessions/${sessionId}/planspaces/blank`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },

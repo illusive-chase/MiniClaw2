@@ -22,7 +22,7 @@ function PlanspaceLaneNodeImpl({ data }: NodeProps<PlanspaceLaneData>) {
        * by React Flow's onNodeClick in Canvas, which selects the planspace,
        * so this div doesn't need its own onClick. */}
       <div
-        className="planspace-lane-drag-handle flex h-8 w-full cursor-grab items-center gap-2 border-b px-3 text-[10px] font-medium uppercase tracking-[0.14em] transition hover:bg-surface-raised/40 active:cursor-grabbing"
+        className="planspace-lane-drag-handle pointer-events-auto flex h-8 w-full cursor-grab items-center gap-2 border-b px-3 text-[10px] font-medium uppercase tracking-[0.14em] transition hover:bg-surface-raised/40 active:cursor-grabbing"
         style={{
           borderColor: data.color.border,
           color: data.color.text,
@@ -40,7 +40,26 @@ function PlanspaceLaneNodeImpl({ data }: NodeProps<PlanspaceLaneData>) {
             active
           </span>
         )}
+        {!data.active && data.auto && (
+          <span className="flex-none rounded border border-current/30 px-1 py-px text-[9px] opacity-80">
+            待激活
+          </span>
+        )}
         <span className="ml-auto flex-none font-mono opacity-70">{data.nodeCount} nodes</span>
+        {!data.active && data.canActivate && (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              planspaceLaneContext.onActivatePlanspace(data.planspaceId);
+            }}
+            onMouseDown={(e) => e.stopPropagation()}
+            className="nodrag -mr-1 inline-flex h-5 flex-none items-center justify-center rounded border border-current/30 bg-surface-raised/70 px-1.5 text-[9px] opacity-90 transition hover:bg-surface-raised"
+            title="激活此方向"
+          >
+            激活
+          </button>
+        )}
         {data.active && (
           <button
             type="button"
@@ -68,12 +87,14 @@ export type PlanspaceLaneContext = {
   onSelectPlanspace: (planspaceId: string) => void;
   onTogglePlanspaceVisibility: (planspaceId: string, hidden: boolean) => void;
   onCreateVirtual: (planspaceId: string) => void;
+  onActivatePlanspace: (planspaceId: string) => void;
 };
 
 let planspaceLaneContext: PlanspaceLaneContext = {
   onSelectPlanspace: () => {},
   onTogglePlanspaceVisibility: () => {},
   onCreateVirtual: () => {},
+  onActivatePlanspace: () => {},
 };
 
 export function setPlanspaceLaneContext(ctx: PlanspaceLaneContext): void {
