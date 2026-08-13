@@ -13,6 +13,8 @@ import type {
   ReviewSubtype,
   PlanspaceMode,
   TemplateSummary,
+  TemplateDetail,
+  TemplateInstanceRecord,
   SessionFile,
   SessionFileRole,
   CanvasViewport,
@@ -23,6 +25,7 @@ import type {
   GitStatus,
   SkillSelection,
 } from "./types";
+import type { TemplateRewritePayload } from "./templateEditor";
 
 export class ApiError extends Error {
   readonly status: number;
@@ -758,6 +761,45 @@ export async function listUserTemplates(): Promise<TemplateSummary[]> {
   return res.json();
 }
 
+/** Read one template with full prompt source for each node.
+ *
+ * The list endpoints carry only `prompt_preview`, a 160-character truncation.
+ * The editor must load through here — editing a preview would silently discard
+ * the tail of every long prompt on the next save.
+ */
+export async function getUserTemplate(slug: string): Promise<TemplateDetail> {
+  const res = await fetch(`/user-templates/${encodeURIComponent(slug)}`);
+  if (!res.ok) {
+    throw new ApiError("getUserTemplate", res.status, await readErrorDetail(res));
+  }
+  return res.json();
+}
+
+/** Replace a template from the editor's complete state.
+ *
+ * The backend writes a candidate directory, loads it back through the same
+ * loader path the runtime uses, and only then swaps it in — so a 400 here means
+ * the old template is still intact on disk and the editor may keep its state.
+ */
+export async function rewriteUserTemplate(
+  slug: string,
+  payload: TemplateRewritePayload,
+): Promise<TemplateDetail> {
+  const res = await fetch(`/user-templates/${encodeURIComponent(slug)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    throw new ApiError(
+      "rewriteUserTemplate",
+      res.status,
+      await readErrorDetail(res),
+    );
+  }
+  return res.json();
+}
+
 export type SaveUserTemplatePayload = {
   name: string;
   brief: string;
@@ -796,28 +838,33 @@ export async function saveUserTemplate(
   return res.json();
 }
 
+export type ApplyUserTemplatePayload = {
+  anchor_node_id: string | null;
+  arguments: Record<string, string>;
+  input_bindings: Record<string, string>;
+};
+
+export type ApplyUserTemplateResponse = {
+  node_ids: string[];
+  /** Groups the stamped nodes; the collapse state is keyed by it. */
+  instance_id: string;
+};
+
 export async function applyUserTemplate(
   sessionId: string,
   slug: string,
-  anchorNodeId: string | null,
-): Promise<{ node_ids: string[] }> {
+  payload: ApplyUserTemplatePayload,
+): Promise<ApplyUserTemplateResponse> {
   const res = await fetch(
     `/sessions/${encodeURIComponent(sessionId)}/user-templates/${encodeURIComponent(slug)}/apply`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ anchor_node_id: anchorNodeId }),
+      body: JSON.stringify(payload),
     },
   );
   if (!res.ok) {
-    let detail = `${res.status}`;
-    try {
-      const body = await res.json();
-      if (body && typeof body.detail === "string") detail = body.detail;
-    } catch {
-      /* ignore */
-    }
-    throw new Error(detail);
+    throw new ApiError("applyUserTemplate", res.status, await readErrorDetail(res));
   }
   return res.json();
 }
@@ -829,6 +876,21 @@ export async function deleteUserTemplate(slug: string): Promise<void> {
   if (!res.ok && res.status !== 204) {
     throw new Error(`deleteUserTemplate failed: ${res.status}`);
   }
+}
+
+/** Instance records for one planspace, newest last. Nodes carry only the
+ * instance id, so the group header reads its template and arguments here. */
+export async function listTemplateInstances(
+  sessionId: string,
+  planspaceId: string,
+): Promise<TemplateInstanceRecord[]> {
+  const res = await fetch(
+    `/sessions/${encodeURIComponent(sessionId)}/planspaces/${encodeURIComponent(planspaceId)}/template-instances`,
+  );
+  if (!res.ok) {
+    throw new ApiError("listTemplateInstances", res.status, await readErrorDetail(res));
+  }
+  return res.json();
 }
 
 export type PrincipleSummary = {

@@ -218,6 +218,8 @@ def rewrite_user_template(
             entry["scheduled_deps"] = node["scheduled_deps"]
         if node.get("resume_from"):
             entry["resume_from"] = node["resume_from"]
+        if node.get("motivation"):
+            entry["motivation"] = node["motivation"]
 
         prompt = node.get("prompt")
         if not isinstance(prompt, str):

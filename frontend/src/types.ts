@@ -219,6 +219,29 @@ export type SessionHost = {
   dirty?: boolean;
 };
 
+export type TemplateArgumentMeta = {
+  name: string;
+  description: string;
+  /** null means required; "" is an optional empty value. Never infer
+   * requiredness from this field — read `required` instead. */
+  default: string | null;
+  required: boolean;
+  /** false when the loader scanned the placeholder out of a prompt but
+   * template.yaml never declared it. */
+  declared: boolean;
+};
+
+export type TemplateInputMeta = {
+  name: string;
+  description: string;
+};
+
+export type TemplateWarningMeta = {
+  code: string;
+  name: string;
+  message: string;
+};
+
 export type TemplateSummary = {
   slug: string;
   name: string;
@@ -227,6 +250,30 @@ export type TemplateSummary = {
   auto_commit: boolean;
   node_count: number;
   nodes?: TemplateNodeSpec[];
+  schema_version: number;
+  arguments: TemplateArgumentMeta[];
+  inputs: TemplateInputMeta[];
+  warnings: TemplateWarningMeta[];
+};
+
+/** Same payload as {@link TemplateSummary} plus per-node prompt source. */
+export type TemplateDetail = TemplateSummary;
+
+/** One stamped template instance, stored on the planspace manifest alongside
+ * its nodes. Nodes carry only `template_instance_id`; the source template and
+ * the values it was stamped with live here. */
+export type TemplateInstanceRecord = {
+  instance_id: string;
+  template_slug: string;
+  template_name: string;
+  /** Argument values as resolved at stamp time — replacement is final, so
+   * these describe the prompts that were actually written. */
+  arguments: Record<string, string>;
+  /** Input port name → the node id it was bound to. */
+  input_bindings: Record<string, string>;
+  created_at: number;
+  /** Reserved for v2 template nesting; always null today. */
+  parent_instance_id?: string | null;
 };
 
 export type TemplateNodeSpec = {
@@ -238,6 +285,11 @@ export type TemplateNodeSpec = {
   resume_from?: string | null;
   prompt_preview: string;
   brief?: ReviewBrief | null;
+  /** Full prompt source, with placeholders intact. Detail responses only —
+   * list responses omit it to keep library refreshes small. */
+  prompt?: string;
+  /** Stable node label/motivation. Detail responses only. */
+  motivation?: string;
 };
 
 export type NodeKind = "agent" | "op" | "verifier";
@@ -335,6 +387,9 @@ export type NodeInfo = {
   origin_machine_id?: string;
   owner_host_id?: string;
   promoted_from?: string | null;
+  /** Shared by every node one template stamp created. Absent on nodes that
+   * predate templating and on hand-made virtuals. */
+  template_instance_id?: string | null;
   claims?: Array<{ claimed_by: string; as_node: string; claimed_at: number }>;
   commit_before?: string | null;
   commit_after?: string | null;

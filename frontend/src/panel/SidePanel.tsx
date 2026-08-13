@@ -12,6 +12,7 @@ import type {
   SessionContextSpaceInfo,
   SessionInfo,
   CommitDescriptor,
+  TemplateInstanceRecord,
 } from "../types";
 import type { PrincipleSummary, SkillSummary, UpdateVirtualPayload } from "../api";
 import {
@@ -123,6 +124,10 @@ export type SidePanelProps = {
   onDeletePrinciple?: (slug: string) => Promise<void> | void;
   skills?: SkillSummary[];
   onDeleteSkill?: (slug: string) => Promise<void> | void;
+  /** Stamped instance records, for the template-instance selection. */
+  templateInstances?: TemplateInstanceRecord[];
+  /** Creates a virtual depending on every sink of the selected instance. */
+  onCreateDownstreamOfTemplateInstance?: (sinkNodeIds: string[]) => void;
 
   onClose: () => void;
   gitCommits?: CommitDescriptor[];
@@ -442,6 +447,20 @@ function Inner(props: SidePanelProps & { nodesById: Map<string, NodeInfo> }) {
     );
   }
 
+  if (selection.kind === "templateInstance") {
+    return (
+      <TemplateInstancePanel
+        selection={selection}
+        record={props.templateInstances?.find(
+          (candidate) => candidate.instance_id === selection.instanceId,
+        )}
+        nodesById={props.nodesById}
+        onSelectNode={onSelectNode}
+        onCreateDownstream={props.onCreateDownstreamOfTemplateInstance}
+      />
+    );
+  }
+
   if (selection.kind === "context") {
     /* Find all nodes whose bundle includes this path. */
     const loadedByNodeIds: string[] = [];
@@ -603,6 +622,129 @@ function PlanspaceLanePanel({
             <dd className="font-mono text-ink">{mode}</dd>
           </div>
         </dl>
+      </div>
+    </div>
+  );
+}
+
+/** Read-only view of one stamped instance: where it came from, what it was
+ * stamped with, and which of its members are outputs. Editing happens on the
+ * member nodes themselves — an instance is not an editable entity (§8: no
+ * re-parameterizing after stamping). */
+function TemplateInstancePanel({
+  selection,
+  record,
+  nodesById,
+  onSelectNode,
+  onCreateDownstream,
+}: {
+  selection: Extract<CanvasSelection, { kind: "templateInstance" }>;
+  record: TemplateInstanceRecord | undefined;
+  nodesById: Map<string, NodeInfo>;
+  onSelectNode: (nodeId: string) => void;
+  onCreateDownstream?: (sinkNodeIds: string[]) => void;
+}) {
+  const sinks = new Set(selection.sinkNodeIds);
+  return (
+    <div className="flex h-full flex-col overflow-hidden">
+      <div className="border-b border-line bg-surface-raised px-4 py-3">
+        <div className="text-[10px] font-medium uppercase tracking-[0.14em] text-ink-subtle">
+          Template instance
+        </div>
+        <h2 className="mt-1 truncate font-display text-[15px] font-semibold leading-snug text-ink-strong">
+          {record?.template_name || record?.template_slug || "Template"}
+        </h2>
+        <div className="mt-1 font-mono text-[10.5px] text-ink-muted">
+          {selection.instanceId}
+        </div>
+      </div>
+      <div className="flex-1 overflow-y-auto bg-surface px-4 py-3 text-sm">
+        {record && Object.keys(record.arguments).length > 0 && (
+          <section className="mb-5">
+            <div className="text-[10px] font-medium uppercase tracking-[0.14em] text-ink-subtle">
+              Arguments
+            </div>
+            <dl className="mt-2 rounded-md border border-line bg-surface-sunken px-3 py-2 text-[11.5px]">
+              {Object.entries(record.arguments).map(([name, value]) => (
+                <div key={name} className="grid grid-cols-[120px_1fr] gap-3 py-0.5">
+                  <dt className="truncate font-mono text-ink-subtle">{name}</dt>
+                  <dd className="break-words font-mono text-ink">{value || "—"}</dd>
+                </div>
+              ))}
+            </dl>
+          </section>
+        )}
+
+        {record && Object.keys(record.input_bindings).length > 0 && (
+          <section className="mb-5">
+            <div className="text-[10px] font-medium uppercase tracking-[0.14em] text-ink-subtle">
+              Input bindings
+            </div>
+            <dl className="mt-2 rounded-md border border-line bg-surface-sunken px-3 py-2 text-[11.5px]">
+              {Object.entries(record.input_bindings).map(([port, nodeId]) => (
+                <div key={port} className="grid grid-cols-[120px_1fr] gap-3 py-0.5">
+                  <dt className="truncate font-mono text-ink-subtle">{port}</dt>
+                  <dd>
+                    <button
+                      type="button"
+                      onClick={() => onSelectNode(nodeId)}
+                      className="font-mono text-ink underline-offset-2 hover:underline"
+                    >
+                      {nodeId.slice(0, 8)}
+                    </button>
+                  </dd>
+                </div>
+              ))}
+            </dl>
+          </section>
+        )}
+
+        <section>
+          <div className="flex items-center gap-2">
+            <div className="text-[10px] font-medium uppercase tracking-[0.14em] text-ink-subtle">
+              Nodes · {selection.memberNodeIds.length}
+            </div>
+            {onCreateDownstream && selection.sinkNodeIds.length > 0 && (
+              <button
+                type="button"
+                onClick={() => onCreateDownstream(selection.sinkNodeIds)}
+                className="ml-auto rounded border border-line bg-surface-sunken px-2 py-1 text-[11px] text-ink-muted transition hover:bg-surface-raised hover:text-ink"
+                title={`新建下游节点 · 依赖标记为 output 的 ${selection.sinkNodeIds.length} 个节点`}
+              >
+                新建下游节点
+              </button>
+            )}
+          </div>
+          <ul className="mt-2 space-y-1">
+            {selection.memberNodeIds.map((nodeId) => {
+              const member = nodesById.get(nodeId);
+              return (
+                <li key={nodeId}>
+                  <button
+                    type="button"
+                    onClick={() => onSelectNode(nodeId)}
+                    className="flex w-full items-center gap-2 rounded border border-line bg-surface-sunken px-2 py-1.5 text-left text-[11.5px] transition hover:bg-surface-raised"
+                  >
+                    <span className="font-mono text-ink-subtle">
+                      {nodeId.slice(0, 8)}
+                    </span>
+                    <span className="truncate text-ink">
+                      {member?.summary || member?.prompt || member?.prompt_draft || "—"}
+                    </span>
+                    {sinks.has(nodeId) && (
+                      <span
+                        className="ml-auto flex-none rounded border border-line px-1 py-px font-mono text-[9px] uppercase text-ink-subtle"
+                        title="实例输出：下游节点接到实例上时会依赖它"
+                      >
+                        output
+                      </span>
+                    )}
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        </section>
       </div>
     </div>
   );

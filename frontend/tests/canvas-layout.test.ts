@@ -6,6 +6,7 @@ import {
 } from "../src/canvas/nodeLayers";
 import {
   buildGraph,
+  clusterTemplateInstances,
   snapPlanspaceChildPosition,
   classifyPlanspaceLaneResizes,
   contextIdentityKey,
@@ -13,6 +14,10 @@ import {
   resolveCommitPositionTransfer,
   resolveGitChangesAppearancePosition,
   resizePlanspaceLanes,
+  summarizeInstanceArguments,
+  summarizeInstanceProgress,
+  templateInstanceBoxNodeId,
+  TEMPLATE_GROUP_NODE_Z_INDEX,
   type BuildGraphArgs,
 } from "../src/canvas/layout";
 import type {
@@ -1336,6 +1341,555 @@ function testPendingGateNodeLayer(): void {
   assert.equal(decoratePendingGateLayers(graph.rfNodes, []), graph.rfNodes);
 }
 
+/* ───────── template instance groups ───────── */
+
+const TEMPLATE_LANE = "planspaces.alpha";
+
+/** Three stamped members: two roots and one that depends on both. */
+function instanceNodes(
+  instanceId = "inst-1",
+  overrides: Partial<NodeInfo> = {},
+): NodeInfo[] {
+  return [
+    node("tpl-a", {
+      planspace_id: TEMPLATE_LANE,
+      template_instance_id: instanceId,
+      state: "virtual",
+      created_at: 1,
+      ...overrides,
+    }),
+    node("tpl-b", {
+      planspace_id: TEMPLATE_LANE,
+      template_instance_id: instanceId,
+      state: "virtual",
+      created_at: 2,
+      ...overrides,
+    }),
+    node("tpl-sink", {
+      planspace_id: TEMPLATE_LANE,
+      template_instance_id: instanceId,
+      state: "virtual",
+      scheduled_deps: ["tpl-a", "tpl-b"],
+      created_at: 3,
+      ...overrides,
+    }),
+  ];
+}
+
+function instanceRecord(instanceId = "inst-1") {
+  return {
+    instance_id: instanceId,
+    template_slug: "payment-refactor",
+    template_name: "Payment Refactor",
+    arguments: { topic: "支付重构" },
+    input_bindings: {},
+    created_at: 10,
+    parent_instance_id: null,
+  };
+}
+
+function templateArgs(overrides: Partial<BuildGraphArgs> = {}): BuildGraphArgs {
+  return args({
+    nodes: instanceNodes(),
+    knownPlanspaceIds: [TEMPLATE_LANE],
+    templateInstances: [instanceRecord()],
+    ...overrides,
+  });
+}
+
+function testSameInstanceNodesClusterTogether(): void {
+  const graph = buildGraph(templateArgs());
+  const positions = ["tpl-a", "tpl-b", "tpl-sink"].map((id) => {
+    const found = graph.rfNodes.find((item) => item.id === id);
+    assert.ok(found, `${id} must be placed`);
+    return found.position;
+  });
+
+  /* Members share the agent row and step by exactly one agent slot: without
+   * clustering, `tpl-sink` would be placed relative to its dependency by
+   * placeAnchoredVirtualInLane and drop a row instead. */
+  for (const position of positions) {
+    assert.equal(position.y, LANE.planspaceLaneAgentRowY);
+  }
+  assert.equal(positions[1].x - positions[0].x, LANE.agentSpacing);
+  assert.equal(positions[2].x - positions[1].x, LANE.agentSpacing);
+
+  const frame = graph.rfNodes.find((item) => item.type === "templateGroup");
+  assert.ok(frame, "an expanded instance must render a group frame");
+  assert.equal(frame.data.instanceId, "inst-1");
+  assert.equal(frame.parentNode, `planspace:${TEMPLATE_LANE}`);
+  assert.equal(frame.draggable, false);
+  assert.deepEqual(frame.style, { pointerEvents: "none" });
+  assert.equal(frame.zIndex, TEMPLATE_GROUP_NODE_Z_INDEX);
+  /* Behind its members but in front of the lane background. */
+  assert.ok(frame.zIndex! > -20 && frame.zIndex! < 0);
+
+  /* The frame must enclose every member on all four sides. */
+  const frameRight = frame.position.x + (frame.width ?? 0);
+  const frameBottom = frame.position.y + (frame.height ?? 0);
+  for (const position of positions) {
+    assert.ok(frame.position.x <= position.x, "frame starts left of its members");
+    assert.ok(frame.position.y <= position.y, "frame starts above its members");
+    assert.ok(frameRight >= position.x + LANE.agentWidth);
+    assert.ok(frameBottom >= position.y + 86);
+  }
+
+  /* Header text comes from the instance record, not the node payloads. */
+  assert.equal(frame.data.label, "Payment Refactor");
+  assert.deepEqual(frame.data.argumentSummary, [
+    { name: "topic", value: "支付重构" },
+  ]);
+}
+
+function testInstanceGroupDoesNotConsumeExtraLaneSlots(): void {
+  /* A node created after the instance must sit clear of the whole block, not
+   * inside it — the reserved block is what keeps the lane cursor monotonic. */
+  const graph = buildGraph(templateArgs({
+    nodes: [
+      ...instanceNodes(),
+      node("after", { planspace_id: TEMPLATE_LANE, created_at: 4 }),
+    ],
+  }));
+  const frame = graph.rfNodes.find((item) => item.type === "templateGroup");
+  const after = graph.rfNodes.find((item) => item.id === "after");
+  assert.ok(frame);
+  assert.ok(after);
+  assert.ok(
+    after.position.x >= frame.position.x + (frame.width ?? 0),
+    "a later node must not be placed inside the instance frame",
+  );
+}
+
+function testLayoutHintsOverrideInstanceClustering(): void {
+  const dragged = { x: 900, y: 420 };
+  const graph = buildGraph(templateArgs({ layoutHints: { "tpl-b": dragged } }));
+
+  assert.deepEqual(
+    graph.rfNodes.find((item) => item.id === "tpl-b")?.position,
+    dragged,
+    "a manual drag must beat cluster placement",
+  );
+  /* The frame follows the dragged member rather than clipping it. */
+  const frame = graph.rfNodes.find((item) => item.type === "templateGroup");
+  assert.ok(frame);
+  assert.ok(frame.position.x + (frame.width ?? 0) >= dragged.x + LANE.agentWidth);
+  assert.ok(frame.position.y + (frame.height ?? 0) >= dragged.y + 86);
+}
+
+function testInstanceClusteringSurvivesReversedNodeOrder(): void {
+  /* The placement pass is single-pass and order-dependent, so a member that
+   * appears before the sibling it depends on used to fall back to cursor
+   * placement. Clustering is resolved in a pre-pass, so reversing the input
+   * must produce the same relative layout instead of degrading. */
+  const forward = buildGraph(templateArgs());
+  const reversed = buildGraph(templateArgs({
+    nodes: [...instanceNodes()].reverse(),
+  }));
+
+  const frameOf = (graph: ReturnType<typeof buildGraph>) =>
+    graph.rfNodes.find((item) => item.type === "templateGroup");
+  assert.ok(frameOf(reversed), "reversed input must still render one frame");
+  assert.equal(
+    reversed.rfNodes.filter((item) => item.type === "templateGroup").length,
+    1,
+  );
+  for (const id of ["tpl-a", "tpl-b", "tpl-sink"]) {
+    assert.equal(
+      reversed.rfNodes.find((item) => item.id === id)?.position.y,
+      LANE.planspaceLaneAgentRowY,
+      `${id} must stay on the agent row regardless of input order`,
+    );
+  }
+  /* Every member still lands inside the frame. */
+  const frame = frameOf(reversed)!;
+  for (const id of ["tpl-a", "tpl-b", "tpl-sink"]) {
+    const member = reversed.rfNodes.find((item) => item.id === id)!;
+    assert.ok(member.position.x >= frame.position.x);
+    assert.ok(
+      member.position.x + LANE.agentWidth <= frame.position.x + (frame.width ?? 0),
+    );
+  }
+  assert.deepEqual(
+    Object.keys(reversed.templateInstances),
+    Object.keys(forward.templateInstances),
+  );
+}
+
+function testInstanceSpanningTwoLanesDegradesGracefully(): void {
+  /* A frame cannot span two lanes. Falling back to ordinary placement is the
+   * documented degradation — the nodes must still render. */
+  const graph = buildGraph(args({
+    nodes: [
+      node("split-a", {
+        planspace_id: TEMPLATE_LANE,
+        template_instance_id: "inst-split",
+      }),
+      node("split-b", {
+        planspace_id: "planspaces.beta",
+        template_instance_id: "inst-split",
+      }),
+    ],
+    knownPlanspaceIds: [TEMPLATE_LANE, "planspaces.beta"],
+  }));
+
+  assert.equal(graph.rfNodes.some((item) => item.type === "templateGroup"), false);
+  assert.deepEqual(graph.templateInstances, {});
+  for (const id of ["split-a", "split-b"]) {
+    assert.ok(graph.rfNodes.find((item) => item.id === id), `${id} must still render`);
+  }
+}
+
+function testInstanceGeometryFlowsIntoLaneSizing(): void {
+  const laneId = `planspace:${TEMPLATE_LANE}`;
+  const withInstance = buildGraph(templateArgs());
+  const single = buildGraph(args({
+    nodes: [node("solo", { planspace_id: TEMPLATE_LANE })],
+    knownPlanspaceIds: [TEMPLATE_LANE],
+  }));
+
+  const grouped = withInstance.rfNodes.find((item) => item.id === laneId);
+  const lone = single.rfNodes.find((item) => item.id === laneId);
+  assert.ok(grouped);
+  assert.ok(lone);
+  assert.ok(
+    (grouped.width ?? 0) > (lone.width ?? 0),
+    "a lane holding an instance must be wider than one holding a single node",
+  );
+
+  /* The lane must contain the frame, not clip it — the frame's geometry has to
+   * reach recordChildExtent and the shared resize path. */
+  const frame = withInstance.rfNodes.find((item) => item.type === "templateGroup");
+  assert.ok(frame);
+  assert.ok(
+    frame.position.x + (frame.width ?? 0) + LANE.planspaceLanePaddingX <=
+      (grouped.width ?? 0),
+    "lane width must cover the frame plus padding",
+  );
+  assert.ok(
+    frame.position.y + (frame.height ?? 0) + LANE.planspaceLanePaddingY <=
+      (grouped.height ?? 0),
+    "lane height must cover the frame plus padding",
+  );
+  assert.equal((grouped.data as { width?: number }).width, grouped.width);
+}
+
+function testSinkDetectionIgnoresExternalDownstream(): void {
+  /* A sink has no downstream INSIDE the instance. An outside consumer is
+   * exactly what makes it an output, so it must not disqualify it. */
+  const graph = buildGraph(templateArgs({
+    nodes: [
+      ...instanceNodes(),
+      node("outside", {
+        planspace_id: TEMPLATE_LANE,
+        scheduled_deps: ["tpl-sink"],
+        created_at: 4,
+      }),
+    ],
+  }));
+  const cluster = graph.templateInstances["inst-1"];
+  assert.ok(cluster);
+  assert.deepEqual(cluster.sinkNodeIds, ["tpl-sink"]);
+  assert.deepEqual(cluster.memberNodeIds, ["tpl-a", "tpl-b", "tpl-sink"]);
+  assert.equal(cluster.planspaceId, TEMPLATE_LANE);
+  assert.equal(cluster.collapsed, false);
+
+  /* Resume edges count as internal downstream too. */
+  const resumed = clusterTemplateInstances(
+    [
+      node("r-a", { planspace_id: TEMPLATE_LANE, template_instance_id: "i" }),
+      node("r-b", {
+        planspace_id: TEMPLATE_LANE,
+        template_instance_id: "i",
+        resume_from_node_id: "r-a",
+      }),
+    ],
+    new Map([
+      ["r-a", node("r-a", { planspace_id: TEMPLATE_LANE })],
+      ["r-b", node("r-b", { planspace_id: TEMPLATE_LANE })],
+    ]),
+  );
+  assert.deepEqual(resumed.get("i")?.sinkNodeIds, ["r-b"]);
+
+  /* Every member is a sink when nothing depends on anything. */
+  const parallel = buildGraph(templateArgs({
+    nodes: instanceNodes().map((member) =>
+      member.id === "tpl-sink" ? { ...member, scheduled_deps: [] } : member,
+    ),
+  }));
+  assert.deepEqual(
+    parallel.templateInstances["inst-1"].sinkNodeIds,
+    ["tpl-a", "tpl-b", "tpl-sink"],
+  );
+}
+
+function testCollapsedInstanceRendersOneBoxAndRedirectsEdges(): void {
+  const graph = buildGraph(templateArgs({
+    nodes: [
+      node("upstream", { planspace_id: TEMPLATE_LANE, created_at: 0 }),
+      ...instanceNodes().map((member) =>
+        member.id === "tpl-a"
+          ? { ...member, scheduled_deps: ["upstream"] }
+          : member,
+      ),
+      node("downstream", {
+        planspace_id: TEMPLATE_LANE,
+        scheduled_deps: ["tpl-sink"],
+        created_at: 4,
+      }),
+    ],
+    collapsedTemplateInstanceIds: ["inst-1"],
+  }));
+  const boxId = templateInstanceBoxNodeId("inst-1");
+
+  /* Exactly one box, no members, no frame. */
+  const box = graph.rfNodes.find((item) => item.id === boxId);
+  assert.ok(box, "a collapsed instance must render its box");
+  assert.equal(box.type, "templateInstanceBox");
+  assert.equal(box.parentNode, `planspace:${TEMPLATE_LANE}`);
+  assert.equal(graph.rfNodes.some((item) => item.type === "templateGroup"), false);
+  for (const id of ["tpl-a", "tpl-b", "tpl-sink"]) {
+    assert.equal(
+      graph.rfNodes.some((item) => item.id === id),
+      false,
+      `${id} must be hidden while its instance is collapsed`,
+    );
+  }
+  assert.equal(box.data.progress.total, 3);
+  assert.deepEqual(box.data.sinkNodeIds, ["tpl-sink"]);
+  assert.equal(graph.templateInstances["inst-1"].collapsed, true);
+
+  /* Boundary-crossing edges land on the box; internal ones are dropped. */
+  const edgeIds = graph.rfEdges.map((edge) => edge.id);
+  assert.ok(edgeIds.includes(`dep:upstream->${boxId}`), "input binding reaches the box");
+  assert.ok(edgeIds.includes(`dep:${boxId}->downstream`), "consumers leave the box");
+  for (const edge of graph.rfEdges) {
+    assert.notEqual(edge.source, edge.target, "no self-loop from a collapsed instance");
+    for (const id of ["tpl-a", "tpl-b", "tpl-sink"]) {
+      assert.notEqual(edge.source, id);
+      assert.notEqual(edge.target, id);
+    }
+  }
+  /* tpl-sink depended on both tpl-a and tpl-b; those two edges collapse onto
+   * the same pair and must be de-duplicated rather than emitted twice. */
+  assert.equal(new Set(edgeIds).size, edgeIds.length, "edge ids stay unique");
+
+  /* A collapsed instance must not make its upstream look like a lane tail. */
+  const upstream = graph.rfNodes.find((item) => item.id === "upstream");
+  assert.equal(
+    (upstream?.data as { isLastInLane?: boolean }).isLastInLane,
+    false,
+    "a node feeding a collapsed instance still has a descendant",
+  );
+}
+
+function testCollapsedInstanceErrorAndProgressRollup(): void {
+  const graph = buildGraph(templateArgs({
+    nodes: instanceNodes().map((member) => {
+      if (member.id === "tpl-a") return { ...member, state: "done" as const };
+      if (member.id === "tpl-b") return { ...member, state: "error" as const };
+      return member;
+    }),
+    collapsedTemplateInstanceIds: ["inst-1"],
+  }));
+  const box = graph.rfNodes.find(
+    (item) => item.id === templateInstanceBoxNodeId("inst-1"),
+  );
+  assert.ok(box);
+  assert.deepEqual(box.data.progress, {
+    total: 3,
+    done: 1,
+    running: 0,
+    hasError: true,
+  });
+}
+
+function testCollapsedInstanceKeepsItsLaneAndHonoursHints(): void {
+  /* A lane whose only nodes are inside a collapsed instance must keep its
+   * swimlane, and the box must accept a manual position. */
+  const dragged = { x: 640, y: 300 };
+  const graph = buildGraph(templateArgs({
+    collapsedTemplateInstanceIds: ["inst-1"],
+    layoutHints: { [templateInstanceBoxNodeId("inst-1")]: dragged },
+  }));
+  const lane = graph.rfNodes.find(
+    (item) => item.id === `planspace:${TEMPLATE_LANE}`,
+  );
+  assert.ok(lane, "the lane must survive collapsing every node inside it");
+  const box = graph.rfNodes.find(
+    (item) => item.id === templateInstanceBoxNodeId("inst-1"),
+  );
+  assert.deepEqual(box?.position, dragged);
+  assert.ok(
+    dragged.x + (box?.width ?? 0) + LANE.planspaceLanePaddingX <= (lane.width ?? 0),
+    "the lane must grow to contain a dragged box",
+  );
+
+  /* A collapsed box consumes exactly one lane slot, and a dragged box advances
+   * the cursor from where it actually sits — the same rule `nextLanePosition`
+   * applies to a dragged tile. Asserted against the equivalent plain graph so
+   * the two stay consistent rather than pinned to a literal. */
+  const withLater = buildGraph(templateArgs({
+    nodes: [
+      ...instanceNodes(),
+      node("after-box", { planspace_id: TEMPLATE_LANE, created_at: 9 }),
+    ],
+    collapsedTemplateInstanceIds: ["inst-1"],
+    layoutHints: { [templateInstanceBoxNodeId("inst-1")]: dragged },
+  }));
+  const equivalentTile = buildGraph(args({
+    nodes: [
+      node("stand-in", { planspace_id: TEMPLATE_LANE, created_at: 1 }),
+      node("after-box", { planspace_id: TEMPLATE_LANE, created_at: 9 }),
+    ],
+    knownPlanspaceIds: [TEMPLATE_LANE],
+    layoutHints: { "stand-in": dragged },
+  }));
+  assert.deepEqual(
+    withLater.rfNodes.find((item) => item.id === "after-box")?.position,
+    equivalentTile.rfNodes.find((item) => item.id === "after-box")?.position,
+    "a collapsed instance must occupy one lane slot, exactly like one tile",
+  );
+}
+
+function testNonTemplateLayoutIsUnchangedByGroupSupport(): void {
+  /* buildGraph is the common path for every canvas, so a graph with no
+   * template nodes must be byte-identical whether or not instance inputs are
+   * supplied. This is the guard against group support leaking into ordinary
+   * layout. */
+  const plainNodes = () => [
+    node("first", { planspace_id: TEMPLATE_LANE, created_at: 1 }),
+    node("second", {
+      planspace_id: TEMPLATE_LANE,
+      state: "virtual",
+      scheduled_deps: ["first"],
+      created_at: 2,
+    }),
+    node("failed", {
+      planspace_id: TEMPLATE_LANE,
+      state: "error",
+      error: "boom",
+      created_at: 3,
+    }),
+    node("rerun", {
+      planspace_id: TEMPLATE_LANE,
+      state: "queued",
+      proposed_by: "rerun:failed",
+      created_at: 4,
+    }),
+    node("free", { created_at: 5 }),
+  ];
+  const baseline = buildGraph(args({
+    nodes: plainNodes(),
+    knownPlanspaceIds: [TEMPLATE_LANE],
+  }));
+  const withInstanceInputs = buildGraph(args({
+    nodes: plainNodes(),
+    knownPlanspaceIds: [TEMPLATE_LANE],
+    templateInstances: [instanceRecord()],
+    collapsedTemplateInstanceIds: ["inst-1"],
+  }));
+
+  assert.deepEqual(
+    withInstanceInputs.rfNodes.map((item) => ({
+      id: item.id,
+      type: item.type,
+      position: item.position,
+      width: item.width,
+      height: item.height,
+      parentNode: item.parentNode,
+    })),
+    baseline.rfNodes.map((item) => ({
+      id: item.id,
+      type: item.type,
+      position: item.position,
+      width: item.width,
+      height: item.height,
+      parentNode: item.parentNode,
+    })),
+    "instance inputs must not move any non-template node",
+  );
+  assert.deepEqual(
+    withInstanceInputs.rfEdges.map((edge) => edge.id).sort(),
+    baseline.rfEdges.map((edge) => edge.id).sort(),
+    "instance inputs must not change edges for a template-free graph",
+  );
+  assert.deepEqual(baseline.templateInstances, {});
+  assert.equal(
+    baseline.rfNodes.some(
+      (item) => item.type === "templateGroup" || item.type === "templateInstanceBox",
+    ),
+    false,
+  );
+}
+
+function testInstanceSummaryHelpers(): void {
+  assert.deepEqual(summarizeInstanceArguments(undefined), []);
+  assert.deepEqual(
+    summarizeInstanceArguments({
+      ...instanceRecord(),
+      arguments: { a: "1", b: "2", c: "3", d: "4" },
+    }),
+    [
+      { name: "a", value: "1" },
+      { name: "b", value: "2" },
+      { name: "c", value: "3" },
+    ],
+    "the header shows at most three arguments",
+  );
+  assert.deepEqual(
+    summarizeInstanceProgress(["x", "missing"], new Map([["x", node("x")]])),
+    { total: 2, done: 1, running: 0, hasError: false },
+    "an unknown member still counts toward the total",
+  );
+}
+
+function testCollapsingKeepsTheInstanceInPlace(): void {
+  /* Collapsing must not relocate the instance: the box claims the lane slot of
+   * its first member rather than being appended after every other tile, so a
+   * node that sat downstream of the instance stays downstream of the box. */
+  const laneNodes = [
+    node("before", { planspace_id: TEMPLATE_LANE, created_at: 0 }),
+    ...instanceNodes(),
+    node("after", { planspace_id: TEMPLATE_LANE, created_at: 4 }),
+  ];
+  const expanded = buildGraph(templateArgs({ nodes: laneNodes }));
+  const collapsed = buildGraph(templateArgs({
+    nodes: laneNodes,
+    collapsedTemplateInstanceIds: ["inst-1"],
+  }));
+
+  const box = collapsed.rfNodes.find(
+    (item) => item.id === templateInstanceBoxNodeId("inst-1"),
+  );
+  const frame = expanded.rfNodes.find((item) => item.type === "templateGroup");
+  assert.ok(box);
+  assert.ok(frame);
+  /* The box occupies the frame's slot, not the first member's — the members sit
+   * inset by the frame padding, so comparing against the frame is what keeps
+   * expand/collapse from nudging the instance sideways. */
+  assert.equal(
+    box.position.x,
+    frame.position.x,
+    "the box takes the lane slot its group frame held",
+  );
+
+  const beforeX = (graph: ReturnType<typeof buildGraph>) =>
+    graph.rfNodes.find((item) => item.id === "before")!.position.x;
+  assert.equal(beforeX(collapsed), beforeX(expanded), "upstream tiles do not move");
+  const afterCollapsed = collapsed.rfNodes.find((item) => item.id === "after")!;
+  assert.ok(
+    afterCollapsed.position.x > box.position.x,
+    "a downstream tile stays to the right of the collapsed box",
+  );
+  /* Collapsing frees the slots the hidden members held, so the lane shrinks. */
+  const laneWidth = (graph: ReturnType<typeof buildGraph>) =>
+    graph.rfNodes.find((item) => item.id === `planspace:${TEMPLATE_LANE}`)!.width ?? 0;
+  assert.ok(
+    laneWidth(collapsed) < laneWidth(expanded),
+    "a collapsed instance needs less lane width than its expanded members",
+  );
+}
+
 testNoRootOrFabricatedDependencies();
 testKnownLaneOrderSurvivesNodeCreationOrder();
 testInactiveAutoLaneIsMarkedForActivation();
@@ -1371,4 +1925,17 @@ testObservedSkillMetadataEnrichment();
 testAutoAttachedSkillsFoldIntoTheirRootTile();
 testEdgeWeights();
 testPendingGateNodeLayer();
+testSameInstanceNodesClusterTogether();
+testInstanceGroupDoesNotConsumeExtraLaneSlots();
+testLayoutHintsOverrideInstanceClustering();
+testInstanceClusteringSurvivesReversedNodeOrder();
+testInstanceSpanningTwoLanesDegradesGracefully();
+testInstanceGeometryFlowsIntoLaneSizing();
+testSinkDetectionIgnoresExternalDownstream();
+testCollapsedInstanceRendersOneBoxAndRedirectsEdges();
+testCollapsedInstanceErrorAndProgressRollup();
+testCollapsedInstanceKeepsItsLaneAndHonoursHints();
+testCollapsingKeepsTheInstanceInPlace();
+testNonTemplateLayoutIsUnchangedByGroupSupport();
+testInstanceSummaryHelpers();
 console.log("canvas layout tests passed");

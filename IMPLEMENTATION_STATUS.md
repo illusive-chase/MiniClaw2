@@ -626,11 +626,15 @@ Trunk: `frontend/src/canvas/Canvas.tsx`, `frontend/src/canvas/layout.ts`,
 - React Flow canvas; one canvas per project; pan/zoom per-project.
 - Node kinds rendered: `AgentNode`, `OpNode`, `ContextNode`,
   `ArtifactNode`, `ErrorTerminalNode`, `PlanspaceLaneNode`,
+  `TemplateGroupNode`, `TemplateInstanceBoxNode`,
   and `CommitNode`. `ProjectRootNode`, passive `GateNode`, and the old
   phantom composer node have been removed; the project home glyph lives
   in the header and opens `ProjectPanel` plus its direction composer.
+  The two template nodes are view-only groupings over `template_instance_id`
+  (section 8) — they carry no run state of their own.
 - Polymorphic side panel: `AgentPanel`, `ContextNodePanel`,
-  `ArtifactPanel`, `OpPanel`, `GitCommitPanel`, lane panel, `ProjectPanel`
+  `ArtifactPanel`, `OpPanel`, `GitCommitPanel`, lane panel,
+  `TemplateInstancePanel`, `ProjectPanel`
   switched by selection (`SidePanel.tsx`).
 - The new-direction composer offers two bootstraps: `Draft with
   concierge` launches the planning bootstrap agent, while `Start blank`
@@ -979,8 +983,11 @@ virtual into their subgraph.
 - Frontend: the Templates section of `LibraryDock` lists user templates
   (bundled ones stay in the Tests modal), supports drag via the
   `application/x-miniclaw-template` MIME type, and offers deletion.
-  Dropping a card onto an agent tile anchors the root virtuals to that
-  tile; dropping onto empty canvas leaves root virtuals unparented.
+  For a template that declares neither arguments nor inputs, dropping a card
+  onto an agent tile anchors the root virtuals to that tile and dropping onto
+  empty canvas leaves them unparented. Templates that declare either one route
+  through the instantiation dialog instead (see the schema v2 frontend section
+  below).
 
 ### Landed — schema v2 (loader层)
 
@@ -1104,9 +1111,201 @@ loader.py` owns parsing; nothing below changes stamp-time behaviour.
   `prompt_preview`, preventing LibraryDock refreshes from downloading all
   prompt source.
 
+### Landed — 前端实例化弹窗
+
+- `frontend/src/types.ts` mirrors the v2 metadata: `TemplateArgumentMeta`
+  (`description` / `default` / `required` / `declared`), `TemplateInputMeta`,
+  `TemplateWarningMeta`, and the `schema_version` / `arguments` / `inputs` /
+  `warnings` fields on `TemplateSummary`. `default` is `string | null` where
+  `null` means required; requiredness is always read from the `required` flag,
+  never inferred from `default`, because `default: ""` is an optional empty
+  value. `TemplateDetail` aliases the summary and `TemplateNodeSpec.prompt` is
+  optional, present only on detail responses.
+- `frontend/src/templateInstantiate.ts` holds the dialog's decision logic as
+  pure functions, covered by `frontend/tests/template-instantiate.test.ts`
+  (registered in `npm test` alongside the canvas-layout suite):
+  `templateNeedsInstantiateDialog`, `initialArgumentValues`,
+  `argumentsComplete` / `missingRequiredArguments`, `inputBindingsComplete` /
+  `unboundInputPorts`, `canSubmitInstantiation`, `initialInputBindings`,
+  `inputCandidates`, `buildInstantiateRequest`, `warningText`, and
+  `isRetryableApplyStatus`.
+- A template with no arguments and no inputs skips the dialog entirely, so
+  every pre-v2 template keeps its drag-drop-stamped behaviour with the hovered
+  tile still acting as the implicit anchor. Warnings alone never trigger it.
+- `components/InstantiateTemplateModal.tsx` follows the
+  `SaveAsTemplateModal` skeleton (controlled `open`, per-opening reset and
+  autofocus, local `submitting`/`error`, scrim + card + three-part layout) and
+  additionally registers a capture-phase Escape listener, which the older
+  dialogs still lack. The footer names the outstanding fields, and "创建" stays
+  disabled until every required argument holds a non-blank value and every port
+  is bound.
+- Input candidates mirror the backend's binding rule: active-planspace nodes
+  only, obsolete ones filtered out. Dropping onto a node prefills that node as
+  the *first* port's binding rather than spending it on the legacy anchor;
+  `buildInstantiateRequest` drops `anchor_node_id` whenever ports exist, which
+  matches the backend ignoring it in that case. `pruneStaleBindings` clears a
+  port whose node stops being a candidate while the dialog is open (the lane
+  keeps refreshing over the websocket), so a vanished id cannot reach the
+  backend; it returns its input by identity when nothing changed.
+- `arguments` are sent for every field the dialog displayed, including
+  untouched defaults, because substitution is frozen into `prompt_draft` at
+  stamp time. Keys the template does not declare are never sent, so stale form
+  state cannot trip the backend's unknown-name check.
+- `api.ts`'s `applyUserTemplate` now takes an `{anchor_node_id, arguments,
+  input_bindings}` payload, throws `ApiError` (carrying status + detail) like
+  the rest of the module, and returns `instance_id` alongside `node_ids` for
+  group-collapse keying.
+- Errors stay inside the dialog so filled-in values survive: a 400 detail
+  renders in place for correction, and 409 (`turn in progress`, `context
+  refresh in progress`) renders as a retryable amber notice. Author-side
+  `warnings` render as advisory lines and never block instantiation.
+- `App.tsx` fetches the summary on drop rather than reading the dock's cache,
+  so a template edited since the last library refresh still gets its current
+  argument list, then either opens the dialog or stamps directly. Both paths
+  call `refreshNodes()` because manual-lane stamps emit no `node_updated`.
+
+### Landed — 前端模板编辑器
+
+Entry points: the "编辑" button on each `LibraryDock` template card, and
+"保存并编辑" in `SaveAsTemplateModal`, which is the intended path after a
+selection save — the captured prompts still need their literals turned into
+`{{placeholders}}` and any dropped external dependency re-pointed at a named
+input port.
+
+- `frontend/src/templateEditor.ts` holds the editor's decision logic as pure
+  functions, covered by `frontend/tests/template-editor.test.ts` (registered in
+  `npm test` beside the canvas-layout and instantiate suites): placeholder
+  scanning, `argumentReferences` / `inputReferences`, argument resolution and
+  `upsertArgument` / `pruneArguments`, port add / rename / delete / connect,
+  node add / remove / connect / resume, `topologicalOrder`,
+  `validateEditorState`, and `buildRewritePayload`.
+- `scanPlaceholders`, `PARAM_NAME_RE`, and the placeholder regex mirror
+  `loader.py` exactly, including its rule that a body failing the naming
+  pattern stays literal text. The scan powers the panel's read-only "referenced
+  by" lists; `dangling_argument` / `unreferenced_input` are **not** re-derived
+  locally — they are read from the backend's `warnings`, and the one-click
+  cleanup passes those warning names back through `pruneArguments`.
+- The editor loads through `GET /user-templates/{slug}` for each node's
+  untruncated `prompt`. `prompt_preview` is never used as edit source; a node
+  whose payload lacks `prompt` loads empty rather than silently truncated.
+- Requiredness is a two-state control, not an empty text field: a "有默认值"
+  checkbox toggles `default` between `null` (required) and `""`, so "no
+  default" and "the default is the empty string" stay distinguishable in the
+  UI as they are on disk.
+- Input ports are a pure frontend node type (`TemplatePortNode`) — not an
+  agent, no state, never scheduled. Connecting one to a body node writes
+  `scheduled_deps: ["in:<name>"]`. Renaming rewrites both reference forms
+  together (`in:<name>` deps and `{{input.<name>}}` placeholders) because
+  leaving either behind makes the template unloadable; since `arguments` and
+  `inputs` are independent namespaces, a same-spelled `{{alpha}}` argument is
+  deliberately left untouched by an `alpha` port rename. Deleting a port drops
+  its deps but leaves prompt placeholders alone, and validation then blocks the
+  save rather than silently editing prompt bodies.
+- `validateEditorState` mirrors the loader's hard rules (duplicate/reserved
+  node ids, undeclared ports in deps or placeholders, unknown deps, review
+  subtype/brief presence, `resume_from` also being a dep, cycles, verifier
+  nodes) and gates the save button. It is not a second source of truth: the
+  backend still writes a candidate directory and reads it back through
+  `_load_from_root`, so anything not covered here surfaces as a 400.
+- `buildRewritePayload` emits nodes in topological order because `lane.yaml`
+  carries topology in file order — the loader requires each dep to name an
+  earlier entry, so drawing an edge "backwards" is a legal graph edit that must
+  be normalized rather than rejected. Every resolved argument is sent,
+  including scan-only ones, which is how a typed placeholder becomes a declared
+  parameter. `allowed_model_preset_ids`, `lane_mode`, and `schema_version` are
+  omitted by design; the backend carries them over.
+- Save failures keep all editor state: the backend leaves the old template
+  intact on a 400, so the detail renders in the editor and the author corrects
+  in place. A successful save reloads from the response so backend-persisted
+  arguments and fresh warnings replace local guesses.
+- The canvas is a dedicated React Flow surface rather than the project
+  `Canvas`: that component is built around `NodeInfo` (run state, planspace
+  lanes, commits, session-persisted layout hints), none of which a template
+  has. Reused are the pieces carrying the visual language — the same
+  interaction config, the `DependencyEdge` / `ResumeEdge` renderers, and node
+  tiles matching `AgentNode`'s geometry. Node positions are editor-local;
+  a template has no persisted layout and inventing one would put view state
+  into the on-disk schema.
+- Dependencies are drawn with a two-click gesture (source ↘, then target)
+  because ports and body nodes are different shapes with different legal
+  targets; clicking an edge removes it. Cycles are refused at the gesture so
+  the error lands next to the edge just drawn.
+- Per proposal §5 and §8 the editor offers **no run affordance** (a template is
+  a static definition; trying it out means instantiating it into a project) and
+  **no template nesting**.
+
+### Landed — 前端 group 渲染与折叠 black box
+
+Proposal §6.2: nodes stamped from one template read as a single operator on the
+main canvas. Scheduling and storage are untouched — this is a layout and
+rendering layer over the `template_instance_id` that `launcher` already stamps
+plus the planspace-level instance records it already writes.
+
+- `NodeInfo.template_instance_id` and `TemplateInstanceRecord` are in
+  `frontend/src/types.ts`; `listTemplateInstances` in `api.ts` reads
+  `GET /sessions/{sid}/planspaces/{planspace_id}/template-instances`. App fetches
+  per lane that owns a stamped node, keyed on the joined lane ids so unrelated
+  node updates do not refetch. A failed fetch is warn-only: the group still
+  renders, with a generic label instead of the template name and arguments.
+- `clusterTemplateInstances` in `canvas/layout.ts` runs as a **pre-pass before
+  placement**, which is what makes clustering possible at all: the placement
+  pass is single-pass and order-dependent, so a member appearing before the
+  sibling it depends on could not be positioned relative to it. Cluster geometry
+  is then reserved as one contiguous block per instance, claimed from the lane
+  cursor by the first member placed, so `laneCursors` stays monotonic and
+  append-don't-reflow still holds for everything placed afterwards.
+- `placeInstanceBlock` sits in the agent `??` chain **after** `placeRerunInLane`
+  and **before** `placeAnchoredVirtualInLane`. Ahead of the anchored-virtual
+  branch because a member's `scheduled_deps` point at its own siblings, which
+  would otherwise stack the instance diagonally instead of clustering it; a
+  saved `layoutHints` entry is still checked first inside the helper, so a manual
+  drag continues to win. It returns null for every non-member, and a
+  template-free graph is asserted byte-identical with and without instance
+  inputs.
+- An instance whose visible members do not all share one planspace is **not**
+  clustered: a frame cannot span two lanes, so those nodes fall back to ordinary
+  placement rather than disappearing.
+- Both the expanded frame (`TemplateGroupNode`) and the collapsed box
+  (`TemplateInstanceBoxNode`) feed `recordChildExtent` and flow through the
+  shared `resizePlanspaceLanes` path, so the lane grows to contain them instead
+  of clipping. The frame is a lane **sibling** of its members, not their React
+  Flow parent — member drag, `extent` and lane fitting keep behaving exactly as
+  outside a group. It is `draggable: false` and derived from member bounds on
+  every rebuild (so `Canvas` deliberately excludes it from runtime position and
+  measured-size carry-over), and takes pointer events only on its header band so
+  clicks and marquee selection reach the members underneath.
+- Collapsed is the default for a freshly stamped instance. Collapsing hides the
+  members and redirects both endpoints of every boundary-crossing edge onto the
+  box — inbound edges are the input bindings, outbound edges are downstream
+  consumers of the sinks — de-duplicating pairs that collapse together and
+  dropping fully-internal edges instead of emitting self-loops. The box claims
+  the lane slot the frame held, so expanding and collapsing does not walk the
+  instance sideways. Dependency resolution, promote-readiness and lane-tail
+  detection continue to scan every lane-visible node, so a hidden member never
+  makes its upstream look like a tail.
+- Collapse is **view state only**: a `Record<sessionId, instanceId[]>` under
+  `miniclaw.collapsedTemplateInstances` in `localStorage`, following the
+  `miniclaw.panelState` reader/writer pattern. It is keyed by session because
+  instance ids are only unique within a project. Nothing about it is sent to the
+  backend and no node field carries it.
+- Output semantics (§4.3) need no declaration: a member with no downstream
+  *inside* the instance is a sink, and an outside consumer is exactly what makes
+  it an output rather than disqualifying it. Attaching downstream of an instance
+  — the box's ↘ affordance, or the side panel's 新建下游节点 — expands
+  `scheduled_deps` to **all** sinks. The expanded view keeps every per-node
+  affordance, so connecting to one internal node stays possible: the black box
+  is the default reading, not a boundary.
+- Per §8 there is no nesting. `parent_instance_id` is carried on the record type
+  and is always null; no nested rendering exists.
+- `frontend/tests/canvas-layout.test.ts` gains 13 template cases covering
+  clustering, hint override, reversed node order, cross-lane degradation, lane
+  sizing, sink detection (including resume edges and external consumers), the
+  collapsed box with edge redirection and progress rollup, positional stability
+  across collapse, and the non-template regression guard. Existing assertions
+  were only added to, never weakened.
+
 ### Pending
 
-- Frontend instantiation dialog, template editor, and group rendering.
 - Template versioning beyond the instantiated node snapshots.
 - Template export / import / sharing across machines.
 - Library-card mini-DAG preview.

@@ -1,5 +1,12 @@
 import type { CoordinateExtent, Edge, Node, NodeChange } from "reactflow";
-import type { ArtifactRef, CommitDescriptor, ContextBundle, NodeInfo, SessionHost } from "../types";
+import type {
+  ArtifactRef,
+  CommitDescriptor,
+  ContextBundle,
+  NodeInfo,
+  SessionHost,
+  TemplateInstanceRecord,
+} from "../types";
 
 /* ───────── canvas node payloads ───────── */
 
@@ -112,6 +119,48 @@ export type PlanspaceLaneData = {
   canCreateVirtual: boolean;
 };
 
+/** One `key=value` pair from the instance record, for the group header. */
+export type TemplateArgumentDisplay = {
+  name: string;
+  value: string;
+};
+
+/** Rolled-up member states. `hasError` drives the error accent independently
+ * of the counts so a single failure is never averaged away. */
+export type TemplateInstanceProgress = {
+  total: number;
+  done: number;
+  running: number;
+  hasError: boolean;
+};
+
+/** The frame drawn around an expanded instance. Purely decorative: it is a
+ * lane sibling of its members, not their React Flow parent, so member drag,
+ * extent and lane fitting keep working exactly as they do outside a group. */
+export type TemplateGroupData = {
+  instanceId: string;
+  label: string;
+  argumentSummary: TemplateArgumentDisplay[];
+  progress: TemplateInstanceProgress;
+  width: number;
+  height: number;
+  color: PlanspaceColor | null;
+};
+
+/** The collapsed stand-in for a whole instance. */
+export type TemplateInstanceBoxData = {
+  instanceId: string;
+  label: string;
+  argumentSummary: TemplateArgumentDisplay[];
+  progress: TemplateInstanceProgress;
+  /** Members with no downstream inside the instance — the implicit outputs a
+   * new downstream node attaches to. */
+  sinkNodeIds: string[];
+  memberNodeIds: string[];
+  color: PlanspaceColor | null;
+  canCreateVirtual: boolean;
+};
+
 export type RFNodeData =
   | AgentNodeData
   | OpNodeData
@@ -119,6 +168,8 @@ export type RFNodeData =
   | CommitNodeData
   | CommitColumnHeaderData
   | PlanspaceLaneData
+  | TemplateGroupData
+  | TemplateInstanceBoxData
   | ErrorTerminalData
   | ArtifactNodeData;
 
@@ -162,12 +213,33 @@ export const LANE = {
   planspaceLaneMinHeight: AGENT_NODE_HEIGHT,
   /* Horizontal step between ctx tiles inside a lane (tile width ~160 + gap). */
   planspaceCtxStep: 180,
+  /* Template instance groups. Members are laid out in a row inside the frame,
+   * which is inset from them by `templateGroupPadding` on every side plus a
+   * header band on top. A collapsed instance renders as one agent-sized tile. */
+  templateGroupPadding: 20,
+  templateGroupHeaderHeight: 34,
+  templateGroupGap: 32,
+  templateBoxWidth: 224,
+  templateBoxHeight: 96,
 };
 
 const PLANSPACE_CHILD_EXTENT: CoordinateExtent = [
   [LANE.planspaceLanePaddingX, LANE.planspaceLanePaddingY],
   [Number.POSITIVE_INFINITY, Number.POSITIVE_INFINITY],
 ];
+
+/** Lane backgrounds sit at -20 and ordinary tiles at the React Flow default.
+ * A group frame belongs between them: behind its own members, in front of the
+ * lane it lives in. */
+export const TEMPLATE_GROUP_NODE_Z_INDEX = -10;
+
+export function templateGroupNodeId(instanceId: string): string {
+  return `tplgroup:${instanceId}`;
+}
+
+export function templateInstanceBoxNodeId(instanceId: string): string {
+  return `tplbox:${instanceId}`;
+}
 
 export function snapPlanspaceChildPosition(
   flowPosition: { x: number; y: number },
@@ -336,6 +408,12 @@ export type BuildGraphArgs = {
   autoPlanspaceIds: string[];
   /** true when the active lane's virtual create button should be enabled */
   canCreateVirtual: boolean;
+  /** Stamped template instances for the visible planspaces. Supplies the group
+   * header's template name and argument values; nodes carry only the id. */
+  templateInstances?: TemplateInstanceRecord[];
+  /** Instances currently drawn as a single collapsed box. View state only —
+   * it never reaches the backend and never affects scheduling. */
+  collapsedTemplateInstanceIds?: string[];
   /** User-wide principles, used to resolve bound ids to paths and titles. */
   principles?: PrincipleEnumeration[];
   /** Native Agent Skills enumerated from GET /skills. */
@@ -351,6 +429,21 @@ export type BuildGraphResult = {
   rfEdges: RFEdge[];
   epochMembersByCommitSha: Record<string, string[]>;
   commitHubIdByNodeId: Record<string, string>;
+  /** Per instance: members, sinks and lane, for both the collapse toggle and
+   * the sink-expanding dependency default. Present whether or not the instance
+   * is currently collapsed. */
+  templateInstances: Record<string, TemplateInstanceCluster>;
+};
+
+/** A template instance as the canvas understands it: which visible nodes it
+ * owns, which of them are its outputs, and where it lives. */
+export type TemplateInstanceCluster = {
+  instanceId: string;
+  planspaceId: string | null;
+  memberNodeIds: string[];
+  /** Members no other member depends on — the implicit outputs (§4.3). */
+  sinkNodeIds: string[];
+  collapsed: boolean;
 };
 
 export type CommitPositionTransfer = {
@@ -438,6 +531,111 @@ export function resolveCommitPositionTransfer(
   };
 }
 
+/**
+ * Group visible nodes by `template_instance_id` and resolve each instance's
+ * sinks. Runs before placement because clustering is anchor-relative and the
+ * placement pass is single-pass and order-dependent: a member may appear in
+ * the node list before the member it depends on.
+ *
+ * An instance is only clustered when all its visible members share one
+ * planspace. Members split across lanes (or with no lane) are left to the
+ * ordinary per-node placement — a frame cannot span two lanes, and degrading
+ * to the old layout is better than dropping the nodes.
+ */
+export function clusterTemplateInstances(
+  visibleNodes: readonly NodeInfo[],
+  byId: Map<string, NodeInfo>,
+  collapsedInstanceIds: readonly string[] = [],
+): Map<string, TemplateInstanceCluster> {
+  const collapsed = new Set(collapsedInstanceIds);
+  const membersByInstance = new Map<string, NodeInfo[]>();
+  for (const node of visibleNodes) {
+    const instanceId = node.template_instance_id;
+    if (!instanceId) continue;
+    const members = membersByInstance.get(instanceId);
+    if (members) members.push(node);
+    else membersByInstance.set(instanceId, [node]);
+  }
+
+  const out = new Map<string, TemplateInstanceCluster>();
+  for (const [instanceId, members] of membersByInstance) {
+    const planspaceIds = new Set(
+      members.map((member) => resolvePlanspaceId(member, byId)),
+    );
+    if (planspaceIds.size !== 1) continue;
+    const planspaceId = members[0] ? resolvePlanspaceId(members[0], byId) : null;
+    if (!planspaceId) continue;
+    const memberIds = new Set(members.map((member) => member.id));
+    /* A sink has no downstream INSIDE the instance. Downstream outside the
+     * instance is exactly what makes it an output worth attaching to. */
+    const hasInternalDownstream = new Set<string>();
+    for (const member of members) {
+      for (const depId of internalPredecessorIds(member, byId, memberIds)) {
+        hasInternalDownstream.add(depId);
+      }
+    }
+    out.set(instanceId, {
+      instanceId,
+      planspaceId,
+      memberNodeIds: members.map((member) => member.id),
+      sinkNodeIds: members
+        .map((member) => member.id)
+        .filter((id) => !hasInternalDownstream.has(id)),
+      collapsed: collapsed.has(instanceId),
+    });
+  }
+  return out;
+}
+
+/** Predecessors of `node` that are themselves members of the same instance. */
+function internalPredecessorIds(
+  node: NodeInfo,
+  byId: Map<string, NodeInfo>,
+  memberIds: ReadonlySet<string>,
+): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  const candidates = [
+    ...(node.scheduled_deps ?? []),
+    findContinueSourceId(node, byId),
+  ];
+  for (const id of candidates) {
+    if (!id || seen.has(id) || !memberIds.has(id) || id === node.id) continue;
+    seen.add(id);
+    out.push(id);
+  }
+  return out;
+}
+
+/** Roll up member states for the group header and the collapsed box. */
+export function summarizeInstanceProgress(
+  memberNodeIds: readonly string[],
+  byId: Map<string, NodeInfo>,
+): TemplateInstanceProgress {
+  let done = 0;
+  let running = 0;
+  let hasError = false;
+  for (const id of memberNodeIds) {
+    const member = byId.get(id);
+    if (!member) continue;
+    if (member.state === "done") done += 1;
+    else if (member.state === "running") running += 1;
+    else if (member.state === "error") hasError = true;
+  }
+  return { total: memberNodeIds.length, done, running, hasError };
+}
+
+/** Argument values for the header, in declaration order, longest values cut. */
+export function summarizeInstanceArguments(
+  record: TemplateInstanceRecord | undefined,
+  limit = 3,
+): TemplateArgumentDisplay[] {
+  if (!record) return [];
+  return Object.entries(record.arguments ?? {})
+    .slice(0, limit)
+    .map(([name, value]) => ({ name, value }));
+}
+
 export function resolveGitChangesAppearancePosition(
   currentNodes: readonly RFNode[],
   nextNodes: readonly RFNode[],
@@ -466,6 +664,8 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
     activePlanspaceId,
     autoPlanspaceIds,
     canCreateVirtual,
+    templateInstances: templateInstanceRecords = [],
+    collapsedTemplateInstanceIds = [],
     principles = [],
     skills = [],
     gitCommits = [],
@@ -479,20 +679,56 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
   const hiddenPlanspaces = new Set(hiddenPlanspaceIds);
   const allNodeById = new Map<string, NodeInfo>();
   for (const n of nodes) allNodeById.set(n.id, n);
-  const visibleNodes = nodes.filter((node) => {
+  const laneVisibleNodes = nodes.filter((node) => {
     if (node.kind === "op") return false;
     const planspaceId = resolvePlanspaceId(node, allNodeById);
     return !planspaceId || !hiddenPlanspaces.has(planspaceId);
   });
+  /* Instance clustering is resolved against every lane-visible node, so a
+   * collapsed instance still knows all its members and sinks. Only the
+   * placement pass below skips the members a collapsed box stands in for. */
+  const instanceClusters = clusterTemplateInstances(
+    laneVisibleNodes,
+    (() => {
+      const byId = new Map<string, NodeInfo>();
+      for (const n of laneVisibleNodes) byId.set(n.id, n);
+      return byId;
+    })(),
+    collapsedTemplateInstanceIds,
+  );
+  const instanceRecordById = new Map(
+    templateInstanceRecords.map((record) => [record.instance_id, record]),
+  );
+  const collapsedMemberIds = new Set<string>();
+  const clusterByMemberId = new Map<string, TemplateInstanceCluster>();
+  for (const cluster of instanceClusters.values()) {
+    for (const memberId of cluster.memberNodeIds) {
+      clusterByMemberId.set(memberId, cluster);
+      if (cluster.collapsed) collapsedMemberIds.add(memberId);
+    }
+  }
+  const visibleNodes = laneVisibleNodes.filter(
+    (node) => !collapsedMemberIds.has(node.id),
+  );
   const visibleNodeIds = new Set(visibleNodes.map((node) => node.id));
+  /* Keyed on every lane-visible node, including members a collapsed box hides.
+   * Collapse is a rendering choice: dependency resolution, promote-readiness
+   * and tail detection must keep seeing the real DAG. Endpoints that land on a
+   * hidden member are redirected to its box by `renderIdFor` at edge time. */
   const nodeById = new Map<string, NodeInfo>();
-  for (const n of visibleNodes) nodeById.set(n.id, n);
+  for (const n of laneVisibleNodes) nodeById.set(n.id, n);
+  const renderIdFor = (nodeId: string): string => {
+    const cluster = clusterByMemberId.get(nodeId);
+    return cluster?.collapsed ? templateInstanceBoxNodeId(cluster.instanceId) : nodeId;
+  };
   const planspaceOrder: string[] = [];
   for (const id of knownPlanspaceIds) {
     if (!id || hiddenPlanspaces.has(id) || planspaceOrder.includes(id)) continue;
     planspaceOrder.push(id);
   }
-  for (const id of collectPlanspaceOrder(visibleNodes, allNodeById)) {
+  /* Lane order comes from every lane-visible node so a lane whose only nodes
+   * are inside a collapsed instance keeps its swimlane. */
+  for (const id of collectPlanspaceOrder(laneVisibleNodes, allNodeById)) {
     if (planspaceOrder.includes(id)) continue;
     planspaceOrder.push(id);
   }
@@ -642,9 +878,11 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
   );
 
   /* Mark agent nodes that no other work node depends on or continues from. The
-   * "+" hover affordance only appears on these tail tiles. */
+   * "+" hover affordance only appears on these tail tiles. Scanned over every
+   * lane-visible node so a node feeding a collapsed instance is not mistaken
+   * for a tail just because its consumer is hidden. */
   const hasDescendantById = new Set<string>();
-  for (const candidate of visibleNodes) {
+  for (const candidate of laneVisibleNodes) {
     if (candidate.kind === "op") continue;
     for (const depId of visibleScheduledDepIds(candidate, nodeById)) {
       hasDescendantById.add(depId);
@@ -714,7 +952,9 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
   let freeCursorX = initialFreeCursorX(
     planspaceOrder,
     laneAbsPos,
-    visibleNodes,
+    /* Lane-visible rather than placed: a collapsed instance still occupies its
+     * lane, so a free top-level tile must clear it too. */
+    laneVisibleNodes,
     allNodeById,
     layoutHints,
   );
@@ -749,7 +989,68 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
     laneChildCount.set(laneId, (laneChildCount.get(laneId) ?? 0) + 1);
   };
 
-  visibleNodes.forEach((node) => {
+  /* Each expanded instance takes one contiguous block of the lane's agent row.
+   * The origin is claimed from the lane cursor the first time any member is
+   * placed, then every later member of that instance is positioned relative to
+   * it — so members cluster regardless of their order in the node list, and no
+   * unrelated node can land between them. The block reserves room for all
+   * members up front, which is what keeps the cursor monotonic and preserves
+   * append-don't-reflow for everything placed afterwards. */
+  const instanceOrigins = new Map<string, { x: number; y: number }>();
+  const instanceMemberSlots = new Map<string, Map<string, number>>();
+  const instanceOriginFor = (
+    cluster: TemplateInstanceCluster,
+    laneId: string,
+  ): { x: number; y: number } => {
+    const existing = instanceOrigins.get(cluster.instanceId);
+    if (existing) return existing;
+    const memberCount = Math.max(1, cluster.memberNodeIds.length);
+    const blockWidth =
+      memberCount * LANE.agentWidth +
+      (memberCount - 1) * (LANE.agentSpacing - LANE.agentWidth);
+    /* Reserve the frame's own inset so the border never overlaps a neighbour. */
+    const origin = nextLanePosition(
+      laneId,
+      blockWidth + LANE.templateGroupPadding * 2 + LANE.templateGroupGap,
+      undefined,
+      LANE.planspaceLaneAgentRowY,
+    );
+    const shifted = { x: origin.x + LANE.templateGroupPadding, y: origin.y };
+    instanceOrigins.set(cluster.instanceId, shifted);
+    instanceMemberSlots.set(
+      cluster.instanceId,
+      new Map(cluster.memberNodeIds.map((id, index) => [id, index])),
+    );
+    return shifted;
+  };
+  /* A collapsed instance takes one tile-sized slot, claimed at the position of
+   * its FIRST member in node order — so collapsing does not move the instance
+   * to the end of the lane, and expanding it again puts it back where it was.
+   * Filled during the placement pass below, consumed when the box is built. */
+  const collapsedBoxPositions = new Map<string, { x: number; y: number }>();
+
+  laneVisibleNodes.forEach((node) => {
+    /* Members of a collapsed instance render as one box instead of tiles. The
+     * first one reserves the box's lane slot; the rest are simply skipped. */
+    const collapsedCluster = collapsedMemberIds.has(node.id)
+      ? clusterByMemberId.get(node.id)
+      : undefined;
+    if (collapsedCluster) {
+      const laneId = resolvePlanspaceId(node, allNodeById);
+      if (laneId && !collapsedBoxPositions.has(collapsedCluster.instanceId)) {
+        const boxId = templateInstanceBoxNodeId(collapsedCluster.instanceId);
+        collapsedBoxPositions.set(
+          collapsedCluster.instanceId,
+          nextLanePosition(
+            laneId,
+            LANE.agentSpacing,
+            layoutHints[boxId],
+            LANE.planspaceLaneAgentRowY,
+          ),
+        );
+      }
+      return;
+    }
     const resumeParent = findResumeParent(node, nodeById);
     const isActive = activeNodeIds.includes(node.id);
     const stored = layoutHints[node.id];
@@ -773,6 +1074,44 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
         defaultY,
       );
       recordChildExtent(planspaceId!, position.x, position.y, width, height);
+      nodeRelativePositions.set(node.id, position);
+      return position;
+    };
+    /* Cluster a member into its instance's reserved block. Placed before
+     * `placeInLane` in the chain so grouped members never consume a lane
+     * cursor slot of their own, and after the `stored` check inside so a
+     * manual drag still wins. */
+    const placeInInstanceBlock = (): { x: number; y: number } | null => {
+      if (!planspaceId) return null;
+      const cluster = clusterByMemberId.get(node.id);
+      if (!cluster || cluster.collapsed) return null;
+      if (stored) {
+        /* Claim the block anyway: the frame must still enclose this member,
+         * and skipping it would let the next instance reuse the same slot. */
+        instanceOriginFor(cluster, planspaceId);
+        recordChildExtent(
+          planspaceId,
+          stored.x,
+          stored.y,
+          LANE.agentWidth,
+          LANE.agentHeight,
+        );
+        nodeRelativePositions.set(node.id, stored);
+        return stored;
+      }
+      const origin = instanceOriginFor(cluster, planspaceId);
+      const slot = instanceMemberSlots.get(cluster.instanceId)?.get(node.id) ?? 0;
+      const position = {
+        x: origin.x + slot * LANE.agentSpacing,
+        y: origin.y,
+      };
+      recordChildExtent(
+        planspaceId,
+        position.x,
+        position.y,
+        LANE.agentWidth,
+        LANE.agentHeight,
+      );
       nodeRelativePositions.set(node.id, position);
       return position;
     };
@@ -868,6 +1207,11 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
       const position = planspaceId
         ? (
             placeRerunInLane(rerunAnchorId) ??
+            /* Ahead of the anchored-virtual branch: a stamped member's
+             * scheduled_deps point at its siblings, which would otherwise
+             * stack the instance diagonally instead of clustering it. Returns
+             * null for every non-member, so ordinary layout is untouched. */
+            placeInInstanceBlock() ??
             placeAnchoredVirtualInLane(branchAnchorId) ??
             placeInLane(
               LANE.agentSpacing,
@@ -904,18 +1248,37 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
   /* Dependency arrows are only the planning/template DAG declared by
    * scheduled_deps. A node without deps has no fabricated incoming edge. */
   const continueSourceByNodeId = new Map<string, string>();
-  for (const node of visibleNodes) {
+  for (const node of laneVisibleNodes) {
     if (node.kind === "op") continue;
     const continueSourceId = findContinueSourceId(node, nodeById);
     if (continueSourceId) continueSourceByNodeId.set(node.id, continueSourceId);
   }
 
-  for (const node of visibleNodes) {
+  /* Both endpoints are mapped through `renderIdFor`, so a dependency crossing
+   * the boundary of a collapsed instance lands on its box: inbound edges are
+   * the instance's input bindings, outbound edges are downstream consumers of
+   * its sinks. Edges fully inside one collapsed instance become self-loops and
+   * are dropped. Iterating every lane-visible node (not just the placed ones)
+   * is what lets a hidden member's own upstream edge still reach the box.
+   * `pushRenderedEdge` de-duplicates because several member edges can collapse
+   * onto the same pair. */
+  const emittedEdgeIds = new Set<string>();
+  const pushRenderedEdge = (edge: RFEdge): void => {
+    const source = renderIdFor(edge.source);
+    const target = renderIdFor(edge.target);
+    if (source === target) return;
+    const id = `${edge.id.slice(0, edge.id.indexOf(":") + 1)}${source}->${target}`;
+    if (emittedEdgeIds.has(id)) return;
+    emittedEdgeIds.add(id);
+    rfEdges.push({ ...edge, id, source, target });
+  };
+
+  for (const node of laneVisibleNodes) {
     if (node.kind === "op") continue;
     const visibleDeps = visibleScheduledDepIds(node, nodeById);
     const continueSourceId = continueSourceByNodeId.get(node.id);
     for (const depId of visibleDeps) {
-      rfEdges.push({
+      pushRenderedEdge({
         id: `dep:${depId}->${node.id}`,
         source: depId,
         target: node.id,
@@ -931,11 +1294,11 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
   /* Continue arrows — explicit provider-conversation continuation. Prefer the
    * virtual/template field, but fall back to parent_node_id for older/directly
    * launched continuation runs that materialized before that field was set. */
-  for (const node of visibleNodes) {
+  for (const node of laneVisibleNodes) {
     if (node.kind === "op") continue;
     const sourceId = continueSourceByNodeId.get(node.id);
     if (!sourceId) continue;
-    rfEdges.push({
+    pushRenderedEdge({
       id: `continue:${sourceId}->${node.id}`,
       source: sourceId,
       target: node.id,
@@ -1391,6 +1754,120 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
     }
   }
 
+  /* Template instance visuals. Built AFTER every member has a position so an
+   * expanded frame can be fitted to the members' actual bounds — including
+   * members the user has dragged out of the reserved block. Both the frame and
+   * the collapsed box feed `recordChildExtent`, so the lane grows to contain
+   * them rather than clipping them. */
+  const templateGroupNodes: RFNode[] = [];
+  const templateBoxNodes: RFNode[] = [];
+  for (const cluster of instanceClusters.values()) {
+    const { instanceId, planspaceId } = cluster;
+    if (!planspaceId) continue;
+    const record = instanceRecordById.get(instanceId);
+    const label = record?.template_name ?? record?.template_slug ?? "Template";
+    const argumentSummary = summarizeInstanceArguments(record);
+    const progress = summarizeInstanceProgress(cluster.memberNodeIds, nodeById);
+    const color =
+      laneColors.get(planspaceId) ??
+      colorForPlanspace(planspaceId, planspaceIndex, planspaceColorOverrides);
+
+    if (cluster.collapsed) {
+      const boxId = templateInstanceBoxNodeId(instanceId);
+      /* The slot was reserved in node order during the placement pass, so the
+       * box sits where its members were rather than at the end of the lane. */
+      const position =
+        collapsedBoxPositions.get(instanceId) ??
+        nextLanePosition(
+          planspaceId,
+          LANE.agentSpacing,
+          layoutHints[boxId],
+          LANE.planspaceLaneAgentRowY,
+        );
+      recordChildExtent(
+        planspaceId,
+        position.x,
+        position.y,
+        LANE.templateBoxWidth,
+        LANE.templateBoxHeight,
+      );
+      templateBoxNodes.push({
+        id: boxId,
+        type: "templateInstanceBox",
+        position,
+        width: LANE.templateBoxWidth,
+        height: LANE.templateBoxHeight,
+        data: {
+          instanceId,
+          label,
+          argumentSummary,
+          progress,
+          sinkNodeIds: cluster.sinkNodeIds,
+          memberNodeIds: cluster.memberNodeIds,
+          color,
+          canCreateVirtual,
+        },
+        draggable: true,
+        selectable: true,
+        parentNode: `planspace:${planspaceId}`,
+        extent: PLANSPACE_CHILD_EXTENT,
+      });
+      continue;
+    }
+
+    const memberBounds = cluster.memberNodeIds
+      .map((id) => nodeRelativePositions.get(id))
+      .filter((position): position is { x: number; y: number } => !!position);
+    if (memberBounds.length === 0) continue;
+    const minX = Math.min(...memberBounds.map((position) => position.x));
+    const minY = Math.min(...memberBounds.map((position) => position.y));
+    const maxX = Math.max(
+      ...memberBounds.map((position) => position.x + LANE.agentWidth),
+    );
+    const maxY = Math.max(
+      ...memberBounds.map((position) => position.y + AGENT_NODE_HEIGHT),
+    );
+    /* The frame is inset from its members and clamped to the lane's padding so
+     * a member dragged to the lane edge cannot push the border out of bounds. */
+    const frameX = Math.max(
+      LANE.planspaceLanePaddingX,
+      minX - LANE.templateGroupPadding,
+    );
+    const frameY = Math.max(
+      LANE.planspaceLanePaddingY,
+      minY - LANE.templateGroupPadding - LANE.templateGroupHeaderHeight,
+    );
+    const width = maxX + LANE.templateGroupPadding - frameX;
+    const height = maxY + LANE.templateGroupPadding - frameY;
+    recordChildExtent(planspaceId, frameX, frameY, width, height);
+    templateGroupNodes.push({
+      id: templateGroupNodeId(instanceId),
+      type: "templateGroup",
+      position: { x: frameX, y: frameY },
+      width,
+      height,
+      data: {
+        instanceId,
+        label,
+        argumentSummary,
+        progress,
+        width,
+        height,
+        color,
+      },
+      /* Not draggable: the frame is derived from its members' bounds, so a drag
+       * would be silently discarded on the next rebuild. Members move; the
+       * frame follows. Pointer events are enabled only on the header band, so
+       * clicks and marquee selection reach the members underneath. */
+      draggable: false,
+      selectable: true,
+      parentNode: `planspace:${planspaceId}`,
+      extent: PLANSPACE_CHILD_EXTENT,
+      style: { pointerEvents: "none" },
+      zIndex: TEMPLATE_GROUP_NODE_Z_INDEX,
+    });
+  }
+
   /* Lane swimlanes. Constructed AFTER both the main child loop and the ctx
    * loop so the per-lane width includes the longest of (agent row, ctx row).
    * Spliced at the front because React Flow requires parents to come before
@@ -1453,7 +1930,12 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
       zIndex: -20,
     });
   }
-  rfNodes.splice(0, 0, ...laneNodes);
+  /* Collapsed boxes are ordinary lane children and can go anywhere after their
+   * lane. Group frames must precede the members they visually enclose only for
+   * paint order, which `zIndex` already settles — but both are lane children,
+   * so they follow the lane nodes spliced in below. */
+  rfNodes.push(...templateBoxNodes);
+  rfNodes.splice(0, 0, ...laneNodes, ...templateGroupNodes);
 
   /* Use the same child-bounds calculation as interactive drag-stop fitting.
    * The incremental extents above are useful while materializing the lane,
@@ -1472,6 +1954,7 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
     rfEdges,
     epochMembersByCommitSha,
     commitHubIdByNodeId,
+    templateInstances: Object.fromEntries(instanceClusters),
   };
 }
 

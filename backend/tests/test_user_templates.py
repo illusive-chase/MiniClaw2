@@ -869,6 +869,7 @@ class UserTemplateHttpApiTest(unittest.TestCase):
                     "subtype": None,
                     "brief": None,
                     "prompt": "Topic={{topic}} source={{input.source}}",
+                    "motivation": "Compare the two source branches.",
                     "scheduled_deps": ["in:source"],
                     "resume_from": None,
                 },
@@ -912,6 +913,10 @@ class UserTemplateHttpApiTest(unittest.TestCase):
         self.assertEqual(body["name"], "Edited template")
         self.assertEqual(body["nodes"][0]["prompt"], payload["nodes"][0]["prompt"])
         self.assertEqual(
+            body["nodes"][0]["motivation"],
+            "Compare the two source branches.",
+        )
+        self.assertEqual(
             [argument["name"] for argument in body["arguments"]],
             ["topic", "required_missing", "required_null", "discovered"],
         )
@@ -921,6 +926,10 @@ class UserTemplateHttpApiTest(unittest.TestCase):
         loaded = load_user_template("editable", self.store.root)
         self.assertEqual(loaded.name, "Edited template")
         self.assertEqual(loaded.nodes[0].scheduled_deps, ["in:source"])
+        self.assertEqual(
+            loaded.nodes[0].summary,
+            "Compare the two source branches.",
+        )
         self.assertEqual(loaded.nodes[1].resume_from, "first")
         self.assertEqual(loaded.arguments[0].default, "")
         self.assertTrue(all(argument.declared for argument in loaded.arguments))

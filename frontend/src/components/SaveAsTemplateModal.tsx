@@ -7,6 +7,11 @@ type Props = {
   nodeIds: string[];
   onCancel: () => void;
   onSaved: (slug: string) => void;
+  /** Save, then open the template editor on the new slug. This is the intended
+   * next step for most saves: the selection's literals still need turning into
+   * `{{placeholders}}`, and any dropped external dependency needs re-pointing
+   * at a named input port. */
+  onSavedAndEdit?: (slug: string) => void;
 };
 
 export function SaveAsTemplateModal({
@@ -15,6 +20,7 @@ export function SaveAsTemplateModal({
   nodeIds,
   onCancel,
   onSaved,
+  onSavedAndEdit,
 }: Props) {
   const [name, setName] = useState("");
   const [brief, setBrief] = useState("");
@@ -34,7 +40,7 @@ export function SaveAsTemplateModal({
 
   if (!open) return null;
 
-  const submit = async () => {
+  const submit = async (thenEdit = false) => {
     if (!sessionId || !name.trim()) return;
     setSubmitting(true);
     setError(null);
@@ -44,7 +50,8 @@ export function SaveAsTemplateModal({
         brief: brief.trim(),
         node_ids: nodeIds,
       });
-      onSaved(res.slug);
+      if (thenEdit && onSavedAndEdit) onSavedAndEdit(res.slug);
+      else onSaved(res.slug);
     } catch (err) {
       setError(String(err instanceof Error ? err.message : err));
       setSubmitting(false);
@@ -87,7 +94,7 @@ export function SaveAsTemplateModal({
               value={name}
               onChange={(e) => setName(e.target.value)}
               onKeyDown={(e) => {
-                if (e.key === "Enter" && name.trim() && !submitting) submit();
+                if (e.key === "Enter" && name.trim() && !submitting) void submit();
               }}
               placeholder="e.g. Draft then critique"
               className="rounded-md border border-line bg-surface-sunken px-3 py-2 text-sm text-ink-strong placeholder:text-ink-subtle focus:border-brand focus:outline-none"
@@ -127,10 +134,21 @@ export function SaveAsTemplateModal({
             type="button"
             disabled={submitting || !name.trim() || nodeCount === 0}
             onClick={() => void submit()}
-            className="rounded-md bg-brand px-3 py-1.5 text-xs font-medium text-white shadow-card transition hover:brightness-[0.95] disabled:opacity-40"
+            className="rounded-md border border-line bg-surface px-3 py-1.5 text-xs text-ink-muted transition hover:border-line-strong hover:text-ink disabled:opacity-40"
           >
             {submitting ? "Saving…" : "Save template"}
           </button>
+          {onSavedAndEdit && (
+            <button
+              type="button"
+              disabled={submitting || !name.trim() || nodeCount === 0}
+              onClick={() => void submit(true)}
+              title="保存后直接打开模板编辑器，把字面量参数化、接上输入端口"
+              className="rounded-md bg-brand px-3 py-1.5 text-xs font-medium text-white shadow-card transition hover:brightness-[0.95] disabled:opacity-40"
+            >
+              {submitting ? "Saving…" : "保存并编辑"}
+            </button>
+          )}
         </div>
       </div>
     </div>

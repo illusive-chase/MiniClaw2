@@ -17,7 +17,13 @@ import ReactFlow, {
 } from "reactflow";
 import "reactflow/dist/style.css";
 
-import type { CommitDescriptor, ContextBundle, NodeInfo, SessionHost } from "../types";
+import type {
+  CommitDescriptor,
+  ContextBundle,
+  NodeInfo,
+  SessionHost,
+  TemplateInstanceRecord,
+} from "../types";
 import { artifactRawUrl } from "../api";
 import {
   buildGraph,
@@ -34,6 +40,8 @@ import { AgentNode } from "./nodes/AgentNode";
 import { OpNode } from "./nodes/OpNode";
 import { ContextNode } from "./nodes/ContextNode";
 import { PlanspaceLaneNode } from "./nodes/PlanspaceLaneNode";
+import { TemplateGroupNode } from "./nodes/TemplateGroupNode";
+import { TemplateInstanceBoxNode } from "./nodes/TemplateInstanceBoxNode";
 import {
   DependencyEdge,
   LoadsEdge,
@@ -55,6 +63,8 @@ const NODE_TYPES = {
   op: OpNode,
   context: ContextNode,
   planspaceLane: PlanspaceLaneNode,
+  templateGroup: TemplateGroupNode,
+  templateInstanceBox: TemplateInstanceBoxNode,
   errorTerminal: ErrorTerminalNode,
   artifact: ArtifactNode,
   commit: CommitNode,
@@ -87,6 +97,14 @@ export type CanvasSelection =
       plugId?: string | null;
     }
   | { kind: "planspace"; planspaceId: string }
+  | {
+      kind: "templateInstance";
+      instanceId: string;
+      /** Implicit outputs — what a new downstream node attaches to (§4.3). */
+      sinkNodeIds: string[];
+      memberNodeIds: string[];
+      collapsed: boolean;
+    }
   | { kind: "artifact"; nodeId: string; name: string; ext: "md" | "json" | "html" }
   | { kind: "projectRoot" }
   | { kind: "commit"; sha: string | null }
@@ -111,6 +129,12 @@ export type CanvasProps = {
   activePlanspaceId: string | null;
   autoPlanspaceIds: string[];
   canCreateVirtual: boolean;
+  /** Stamped instance records, for the group header's name and arguments. */
+  templateInstances?: TemplateInstanceRecord[];
+  /** Instances drawn as a single collapsed box. View state only. The collapse
+   * toggle itself goes through `setTemplateGroupContext` /
+   * `setTemplateInstanceBoxContext`, as the lane and agent tiles do. */
+  collapsedTemplateInstanceIds?: string[];
   nodePositionTarget?: CanvasNodePositionTarget | null;
   onNodePositionTargetApplied?: (nodeId: string) => void;
   onCreateVirtualAt?: (
@@ -141,9 +165,15 @@ export type CanvasProps = {
   /**
    * Fires when a template card is dropped on the canvas. The callback
    * receives the anchor node id (if the drop target was an agent tile)
-   * and the raw template slug string that was dragged.
+   * and the raw template slug string that was dragged. Dropping on a
+   * collapsed instance instead supplies its sink node ids, which the caller
+   * uses as the new nodes' dependencies (§4.3).
    */
-  onTemplateDrop?: (slug: string, anchorNodeId: string | null) => void;
+  onTemplateDrop?: (
+    slug: string,
+    anchorNodeId: string | null,
+    anchorSinkNodeIds?: string[],
+  ) => void;
   /**
    * Fires when a principle card is dragged from Library and dropped onto
    * a virtual agent tile. The callback receives the virtual node id and
@@ -187,6 +217,8 @@ function CanvasInner({
   activePlanspaceId,
   autoPlanspaceIds,
   canCreateVirtual,
+  templateInstances,
+  collapsedTemplateInstanceIds,
   nodePositionTarget,
   onNodePositionTargetApplied,
   onCreateVirtualAt,
@@ -318,6 +350,8 @@ function CanvasInner({
         activePlanspaceId,
         autoPlanspaceIds,
         canCreateVirtual,
+        templateInstances,
+        collapsedTemplateInstanceIds,
         principles,
         skills,
         gitCommits,
@@ -335,6 +369,8 @@ function CanvasInner({
       activePlanspaceId,
       autoPlanspaceIds,
       canCreateVirtual,
+      templateInstances,
+      collapsedTemplateInstanceIds,
       principles,
       skills,
       gitCommits,
@@ -344,6 +380,11 @@ function CanvasInner({
       layoutHydrationVersion,
     ],
   );
+  /* Read imperatively by onNodeClick, which must not be re-created on every
+   * rebuild — the group frame only carries its instance id, so the click needs
+   * the current cluster to report members and sinks. */
+  const builtRef = useRef(built);
+  builtRef.current = built;
   const layeredBuiltNodes = useMemo(
     () => decoratePendingGateLayers(built.rfNodes, pendingGateNodeIds),
     [built.rfNodes, pendingGateNodeIds],
@@ -434,15 +475,19 @@ function CanvasInner({
         /* Fresh graph nodes carry bootstrap dimensions, while React Flow's
          * runtime copy contains the measured DOM size. Preserve the measured
          * child geometry across status-driven graph rebuilds so lane fitting
-         * uses the same bounds as drag-stop fitting. */
-        if (runtime && n.type !== "planspaceLane") {
+         * uses the same bounds as drag-stop fitting. Lanes and template group
+         * frames are excluded: both are sized by layout from their children's
+         * bounds, so the computed value is the authoritative one. */
+        if (runtime && n.type !== "planspaceLane" && n.type !== "templateGroup") {
           out = {
             ...out,
             width: runtime.width ?? n.width,
             height: runtime.height ?? n.height,
           };
         }
-        if (!hydrateFromLayout) {
+        /* Same reason: a group frame is derived, never dragged, so a rebuild
+         * must be free to move it when its members move. */
+        if (!hydrateFromLayout && n.type !== "templateGroup") {
           const existing = runtime?.position;
           if (
             existing &&
@@ -694,6 +739,36 @@ function CanvasInner({
           preserveExisting: event.shiftKey,
         };
         onSelectionChange({ kind: "planspace", planspaceId: data.planspaceId });
+      } else if (n.type === "templateGroup") {
+        const data = n.data as import("./layout").TemplateGroupData;
+        pendingUserSelectionRef.current = {
+          nodeId: n.id,
+          preserveExisting: event.shiftKey,
+        };
+        const cluster = builtRef.current.templateInstances[data.instanceId];
+        onSelectionChange({
+          kind: "templateInstance",
+          instanceId: data.instanceId,
+          sinkNodeIds: cluster?.sinkNodeIds ?? [],
+          memberNodeIds: cluster?.memberNodeIds ?? [],
+          /* The expanded frame only accepts pointer events on its header, and
+           * that same click collapses it. Select the box that will replace the
+           * frame so the highlight follows the interaction. */
+          collapsed: true,
+        });
+      } else if (n.type === "templateInstanceBox") {
+        const data = n.data as import("./layout").TemplateInstanceBoxData;
+        pendingUserSelectionRef.current = {
+          nodeId: n.id,
+          preserveExisting: event.shiftKey,
+        };
+        onSelectionChange({
+          kind: "templateInstance",
+          instanceId: data.instanceId,
+          sinkNodeIds: data.sinkNodeIds,
+          memberNodeIds: data.memberNodeIds,
+          collapsed: true,
+        });
       } else if (n.type === "errorTerminal") {
         const data = n.data as import("./layout").ErrorTerminalData;
         /* The terminal itself has no panel — selecting it focuses its owner. */
@@ -874,6 +949,9 @@ function CanvasInner({
       // node element and read its data-id. If none, the drop hit the pane.
       let anchorAgentId: string | null = null;
       let anchorNode: RFNode | null = null;
+      /* A drop on a collapsed instance anchors to its sinks (§4.3) rather than
+       * to a node the user cannot see. */
+      let anchorSinkNodeIds: string[] = [];
       let cursor = event.target as HTMLElement | null;
       while (cursor && cursor !== event.currentTarget) {
         const dataId = cursor.getAttribute?.("data-id");
@@ -884,6 +962,9 @@ function CanvasInner({
             if (found.type === "agent") {
               const data = found.data as import("./layout").AgentNodeData;
               anchorAgentId = data.node.id;
+            } else if (found.type === "templateInstanceBox") {
+              const data = found.data as import("./layout").TemplateInstanceBoxData;
+              anchorSinkNodeIds = data.sinkNodeIds;
             }
           }
           break;
@@ -911,7 +992,7 @@ function CanvasInner({
         }
         return;
       }
-      onTemplateDrop?.(templateSlug, anchorAgentId);
+      onTemplateDrop?.(templateSlug, anchorAgentId, anchorSinkNodeIds);
     },
     [built.rfNodes, onTemplateDrop, onAttachPrincipleToVirtual, onAttachSkillToVirtual],
   );

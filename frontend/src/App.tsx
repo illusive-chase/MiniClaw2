@@ -47,18 +47,35 @@ import {
   type CanvasNodePositionTarget,
   type CanvasSelection,
 } from "./canvas/Canvas";
-import { artifactNodeId } from "./canvas/layout";
+import {
+  artifactNodeId,
+  templateGroupNodeId,
+  templateInstanceBoxNodeId,
+} from "./canvas/layout";
 import { setAgentNodeContext } from "./canvas/nodes/AgentNode";
 import { setPlanspaceLaneContext } from "./canvas/nodes/PlanspaceLaneNode";
+import { setTemplateGroupContext } from "./canvas/nodes/TemplateGroupNode";
+import { setTemplateInstanceBoxContext } from "./canvas/nodes/TemplateInstanceBoxNode";
 import { SidePanel } from "./panel/SidePanel";
 import { NewProjectModal } from "./components/NewProjectModal";
 import { SaveAsTemplateModal } from "./components/SaveAsTemplateModal";
+import { InstantiateTemplateModal } from "./components/InstantiateTemplateModal";
+import { TemplateEditor } from "./components/TemplateEditor";
 import {
   LibraryDock,
   type LibraryEntrySelection,
 } from "./components/LibraryDock";
 import { ContextMenu, type ContextMenuItem } from "./canvas/ContextMenu";
-import { applyUserTemplate } from "./api";
+import {
+  ApiError,
+  applyUserTemplate,
+  listTemplateInstances,
+  listUserTemplates,
+} from "./api";
+import {
+  templateInstanceFetchScope,
+  templateNeedsInstantiateDialog,
+} from "./templateInstantiate";
 import { ProjectsLanding } from "./components/ProjectsLanding";
 import { ThemeToggle } from "./components/ThemeToggle";
 import { UsageStrip } from "./components/UsageStrip";
@@ -79,6 +96,8 @@ import type {
   PlanspaceMode,
   GitStatus,
   CommitDescriptor,
+  TemplateSummary,
+  TemplateInstanceRecord,
 } from "./types";
 import { useSessionSocket } from "./ws";
 import {
@@ -112,6 +131,12 @@ const INTERRUPTIBLE_STATES = new Set<NodeInfo["state"]>([
   "waiting",
   "awaiting_human_input",
 ]);
+
+/** Prefer the backend's `detail` over the generic wrapper message. */
+function apiErrorText(err: unknown): string {
+  if (err instanceof ApiError) return err.detail ?? err.message;
+  return err instanceof Error ? err.message : String(err);
+}
 export function App() {
   const [route, setRoute] = useState<Route>("landing");
   const [session, setSession] = useState<SessionInfo | null>(null);
@@ -260,6 +285,23 @@ export function App() {
   >(null);
   const [saveTemplateOpen, setSaveTemplateOpen] = useState(false);
   const [saveTemplateNodeIds, setSaveTemplateNodeIds] = useState<string[]>([]);
+  /* Slug currently open in the template editor. Templates are session-
+   * independent library state, so this is not tied to the active project. */
+  const [editingTemplateSlug, setEditingTemplateSlug] = useState<string | null>(null);
+  /* Set when a dropped template declares arguments or input ports; the anchor
+   * travels with it so the dialog can prefill the first port. */
+  const [instantiateTarget, setInstantiateTarget] = useState<{
+    template: TemplateSummary;
+    anchorNodeId: string | null;
+  } | null>(null);
+  /* Stamped instance records for the active planspace — the group header's
+   * template name and argument values. Nodes only carry the instance id. */
+  const [templateInstances, setTemplateInstances] = useState<TemplateInstanceRecord[]>([]);
+  /* Which instances render as a single collapsed box. Purely a view concern:
+   * persisted locally per session, never sent to the backend, and with no
+   * effect on scheduling or on the stored graph. */
+  const [collapsedTemplateInstancesBySession, setCollapsedTemplateInstancesBySession] =
+    useState<Record<string, string[]>>(() => readCollapsedTemplateInstances());
   const [libraryRefreshToken, setLibraryRefreshToken] = useState(0);
   const [librarySurfaceToken, setLibrarySurfaceToken] = useState(0);
   const [librarySurfaceBaselineIds, setLibrarySurfaceBaselineIds] = useState<string[]>([]);
@@ -282,6 +324,16 @@ export function App() {
       /* localStorage unavailable — state stays session-scoped */
     }
   }, [panelState]);
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(
+        "miniclaw.collapsedTemplateInstances",
+        JSON.stringify(collapsedTemplateInstancesBySession),
+      );
+    } catch {
+      /* localStorage unavailable — state stays session-scoped */
+    }
+  }, [collapsedTemplateInstancesBySession]);
   const closePanel = useCallback(() => {
     setPanelState((prev) => (prev.open ? { ...prev, open: false } : prev));
   }, []);
@@ -699,6 +751,65 @@ export function App() {
       console.warn("get git state failed:", err);
     }
   }, [session?.id]);
+
+  /* Instance records are stored per planspace, so every lane that owns a
+   * stamped node is fetched. Missing records degrade to a generic group label
+   * rather than hiding the group, so a failure here is warn-only. */
+  const templateInstanceFetchScopeState = useMemo(
+    () => templateInstanceFetchScope(nodes),
+    [nodes],
+  );
+  const laneIdsWithTemplateInstances = templateInstanceFetchScopeState.laneIds;
+  const templateInstanceFetchKey = templateInstanceFetchScopeState.key;
+
+  useEffect(() => {
+    const sessionId = session?.id;
+    if (!sessionId || laneIdsWithTemplateInstances.length === 0) {
+      setTemplateInstances([]);
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      const collected: TemplateInstanceRecord[] = [];
+      for (const laneId of laneIdsWithTemplateInstances) {
+        try {
+          collected.push(...(await listTemplateInstances(sessionId, laneId)));
+        } catch (err) {
+          console.warn("list template instances failed:", err);
+        }
+      }
+      if (!cancelled) setTemplateInstances(collected);
+    })();
+    return () => {
+      cancelled = true;
+    };
+    /* The stable key includes instance ids as well as lane ids: a second stamp
+     * in an existing lane must refresh records, while a state-only node update
+     * must not. `laneIdsWithTemplateInstances` is rebuilt with the key. */
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session?.id, templateInstanceFetchKey]);
+
+  const collapsedTemplateInstanceIds = useMemo(
+    () =>
+      session?.id ? collapsedTemplateInstancesBySession[session.id] ?? [] : [],
+    [collapsedTemplateInstancesBySession, session?.id],
+  );
+
+  const toggleTemplateInstanceCollapsed = useCallback(
+    (instanceId: string, collapsed: boolean) => {
+      const sessionId = session?.id;
+      if (!sessionId) return;
+      setCollapsedTemplateInstancesBySession((current) => {
+        const existing = current[sessionId] ?? [];
+        if (collapsed === existing.includes(instanceId)) return current;
+        const next = collapsed
+          ? [...existing, instanceId]
+          : existing.filter((id) => id !== instanceId);
+        return { ...current, [sessionId]: next };
+      });
+    },
+    [session?.id],
+  );
 
   useEffect(() => {
     let committed = false;
@@ -1231,6 +1342,36 @@ export function App() {
       });
     },
     [createVirtualNode, nodes, session?.model_preset_id, sessionContextSpace?.active_planspace_id],
+  );
+
+  /* Attaching downstream of a whole instance (§4.3). The instance declares no
+   * explicit outputs: its sinks — members with no downstream inside it — are
+   * the outputs, so the new node depends on all of them. In the expanded view
+   * the per-node "↘" affordance still creates a single-parent dependency, so
+   * connecting to one internal node remains possible; the black box is the
+   * default reading, not a wall. */
+  const createDownstreamOfTemplateInstance = useCallback(
+    (sinkNodeIds: string[]) => {
+      const sinks = sinkNodeIds
+        .map((nodeId) => nodes.find((node) => node.id === nodeId))
+        .filter((node): node is NodeInfo => !!node);
+      if (sinks.length === 0) return;
+      const planspaceId =
+        sinks[0].planspace_id ?? sessionContextSpace?.active_planspace_id;
+      if (!planspaceId) return;
+      void createVirtualNode({
+        planspace_id: planspaceId,
+        scheduled_deps: sinks.map((node) => node.id),
+        model_preset_id:
+          sinks[0].model_preset_id ?? session?.model_preset_id ?? null,
+      });
+    },
+    [
+      createVirtualNode,
+      nodes,
+      session?.model_preset_id,
+      sessionContextSpace?.active_planspace_id,
+    ],
   );
 
   const createContinuationVirtual = useCallback(
@@ -1850,6 +1991,16 @@ export function App() {
     togglePlanspaceVisibility,
   ]);
 
+  /* Wire both instance views' collapse toggles. Collapsing is view-only, so it
+   * touches no node state and issues no request. */
+  useEffect(() => {
+    setTemplateGroupContext({ onToggleCollapsed: toggleTemplateInstanceCollapsed });
+    setTemplateInstanceBoxContext({
+      onToggleCollapsed: toggleTemplateInstanceCollapsed,
+      onCreateDownstream: createDownstreamOfTemplateInstance,
+    });
+  }, [createDownstreamOfTemplateInstance, toggleTemplateInstanceCollapsed]);
+
   const onResolveGate = useCallback(
     (
       id: string,
@@ -1926,22 +2077,43 @@ export function App() {
     [],
   );
 
+  /* A dropped template either stamps straight away (no arguments, no input
+   * ports — unchanged pre-schema-v2 behaviour) or opens the instantiation
+   * dialog. The summary is fetched on drop rather than read from the dock's
+   * cache so a template edited since the last library refresh still gets its
+   * current argument list. */
   const onTemplateDrop = useCallback(
-    async (slug: string, anchorNodeId: string | null) => {
+    async (slug: string, anchorNodeId: string | null, anchorSinkNodeIds?: string[]) => {
       if (!session?.id || readOnly) return;
+      /* Dropping on a collapsed instance anchors to its output. `apply` takes a
+       * single anchor, so the first sink is used; full multi-sink expansion is
+       * available on the virtual-creation path, where the frontend owns the
+       * whole dependency array (§4.3). */
+      const resolvedAnchorNodeId = anchorNodeId ?? anchorSinkNodeIds?.[0] ?? null;
       try {
-        await applyUserTemplate(session.id, slug, anchorNodeId);
+        const templates = await listUserTemplates();
+        const template = templates.find((item) => item.slug === slug);
+        if (!template) throw new Error(`template not found: ${slug}`);
+        if (templateNeedsInstantiateDialog(template)) {
+          setInstantiateTarget({ template, anchorNodeId: resolvedAnchorNodeId });
+          return;
+        }
+        const applied = await applyUserTemplate(session.id, slug, {
+          anchor_node_id: resolvedAnchorNodeId,
+          arguments: {},
+          input_bindings: {},
+        });
+        /* Collapsed is the default view for a fresh instance (§6.2). */
+        toggleTemplateInstanceCollapsed(applied.instance_id, true);
         // Manual-lane stamps do not emit node_updated events.
         await refreshNodes();
       } catch (err) {
         // eslint-disable-next-line no-console
         console.error("applyUserTemplate failed", err);
-        window.alert(
-          `Could not apply template: ${err instanceof Error ? err.message : String(err)}`,
-        );
+        window.alert(`Could not apply template: ${apiErrorText(err)}`);
       }
     },
-    [readOnly, refreshNodes, session?.id],
+    [readOnly, refreshNodes, session?.id, toggleTemplateInstanceCollapsed],
   );
 
   /* select a specific node id (used by panel "jump to" affordances and the
@@ -2340,6 +2512,8 @@ export function App() {
               activePlanspaceId={sessionContextSpace?.active_planspace_id ?? null}
               autoPlanspaceIds={Array.from(autoPlanspaceIds)}
               canCreateVirtual={!virtualCreateDisabled}
+              templateInstances={templateInstances}
+              collapsedTemplateInstanceIds={collapsedTemplateInstanceIds}
               nodePositionTarget={nodePositionTarget}
               onNodePositionTargetApplied={(nodeId) => {
                 setNodePositionTarget((current) =>
@@ -2441,6 +2615,7 @@ export function App() {
                 onDeletePrinciple={handleDeletePrinciple}
                 onDeleteSkill={handleDeleteSkill}
                 onOpenFull={openLibraryEntry}
+                onEditTemplate={setEditingTemplateSlug}
                 onClose={closePanel}
               />
             ) : (
@@ -2457,6 +2632,10 @@ export function App() {
                 nodes={nodes}
                 session={sessionWithRuntimeCounts}
                 modelPresets={modelPresets}
+                templateInstances={templateInstances}
+                onCreateDownstreamOfTemplateInstance={
+                  virtualCreateDisabled ? undefined : createDownstreamOfTemplateInstance
+                }
                 events={selectedEvents}
                 eventsLoading={selectedEventsLoading}
                 diff={selectedDiff}
@@ -2559,6 +2738,33 @@ export function App() {
       onSaved={() => {
         setSaveTemplateOpen(false);
         setLibraryRefreshToken((v) => v + 1);
+      }}
+      onSavedAndEdit={(slug) => {
+        setSaveTemplateOpen(false);
+        setLibraryRefreshToken((v) => v + 1);
+        setEditingTemplateSlug(slug);
+      }}
+    />
+    <TemplateEditor
+      slug={editingTemplateSlug}
+      onClose={() => setEditingTemplateSlug(null)}
+      onSaved={() => setLibraryRefreshToken((v) => v + 1)}
+    />
+    <InstantiateTemplateModal
+      open={instantiateTarget !== null}
+      sessionId={session?.id ?? null}
+      template={instantiateTarget?.template ?? null}
+      nodes={nodes}
+      activePlanspaceId={sessionContextSpace?.active_planspace_id ?? null}
+      anchorNodeId={instantiateTarget?.anchorNodeId ?? null}
+      onCancel={() => setInstantiateTarget(null)}
+      onApplied={(result) => {
+        setInstantiateTarget(null);
+        /* Collapsed is the default view for a fresh instance (§6.2): the
+         * template reads as one operator until the user opens it. */
+        toggleTemplateInstanceCollapsed(result.instanceId, true);
+        // Manual-lane stamps do not emit node_updated events.
+        void refreshNodes();
       }}
     />
     </TextZoomProvider>
@@ -2765,8 +2971,36 @@ function graphNodeIdForSelection(selection: CanvasSelection): string | null {
   if (selection.kind === "planspace") {
     return `planspace:${selection.planspaceId}`;
   }
+  if (selection.kind === "templateInstance") {
+    return selection.collapsed
+      ? templateInstanceBoxNodeId(selection.instanceId)
+      : templateGroupNodeId(selection.instanceId);
+  }
   if (selection.kind === "commit") {
     return selection.sha ? `commit:${selection.sha}` : "commit:ghost";
   }
   return null;
+}
+
+/** Collapsed instance ids per session. Instance ids are only unique within a
+ * project, so the map is keyed by session id — a bare id set would collapse an
+ * unrelated instance after switching projects. */
+function readCollapsedTemplateInstances(): Record<string, string[]> {
+  try {
+    const raw = window.localStorage.getItem("miniclaw.collapsedTemplateInstances");
+    if (raw) {
+      const parsed: unknown = JSON.parse(raw);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        const out: Record<string, string[]> = {};
+        for (const [sessionId, ids] of Object.entries(parsed)) {
+          if (!Array.isArray(ids)) continue;
+          out[sessionId] = ids.filter((id): id is string => typeof id === "string");
+        }
+        return out;
+      }
+    }
+  } catch {
+    /* fall through */
+  }
+  return {};
 }

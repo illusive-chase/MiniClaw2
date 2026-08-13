@@ -33,6 +33,8 @@ type Props = {
   onDeletePrinciple: (slug: string) => Promise<void> | void;
   onDeleteSkill: (slug: string) => Promise<void> | void;
   onOpenFull: (entry: LibraryEntrySelection) => void;
+  /** Opens the template editor on this slug. */
+  onEditTemplate: (slug: string) => void;
   onError?: (message: string) => void;
   onClose: () => void;
 };
@@ -50,6 +52,7 @@ export function LibraryDock({
   onDeletePrinciple,
   onDeleteSkill,
   onOpenFull,
+  onEditTemplate,
   onError,
   onClose,
 }: Props) {
@@ -167,8 +170,50 @@ export function LibraryDock({
                         ? ` · ${template.allowed_model_preset_ids.map((id) => modelPresetLabel(modelPresets, id)).join(", ")}`
                         : ""}
                     </div>
+                    {/* The template's signature — what the instantiation dialog
+                      * will ask for. Warnings are authoring problems, so they
+                      * point at the editor rather than blocking a drag. */}
+                    {(template.arguments.length > 0 ||
+                      template.inputs.length > 0 ||
+                      template.warnings.length > 0) && (
+                      <div className="mt-1 flex flex-wrap items-center gap-1">
+                        {template.arguments.length > 0 && (
+                          <span className="rounded border border-line bg-surface px-1 py-0.5 font-mono text-[9px] text-ink-muted">
+                            {template.arguments.length} 参数
+                          </span>
+                        )}
+                        {template.inputs.length > 0 && (
+                          <span className="rounded border border-line bg-surface px-1 py-0.5 font-mono text-[9px] text-ink-muted">
+                            {template.inputs.length} 端口
+                          </span>
+                        )}
+                        {template.warnings.length > 0 && (
+                          <span
+                            className="rounded border border-state-waiting/40 bg-state-waiting-soft px-1 py-0.5 font-mono text-[9px] text-state-waiting"
+                            title={template.warnings.map((w) => w.message).join("\n")}
+                          >
+                            {template.warnings.length} 警告
+                          </span>
+                        )}
+                      </div>
+                    )}
                   </div>
-                  <DeleteButton label={`Delete template ${template.name}`} onDelete={() => removeTemplate(slug)} />
+                  <div className="flex shrink-0 items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        onEditTemplate(slug);
+                      }}
+                      onMouseDown={(event) => event.stopPropagation()}
+                      className="nodrag rounded border border-line px-1.5 py-1 text-[10px] text-ink-muted opacity-0 transition hover:border-line-strong hover:text-ink group-hover:opacity-100"
+                      title={`Edit template ${template.name}`}
+                      aria-label={`Edit template ${template.name}`}
+                    >
+                      编辑
+                    </button>
+                    <DeleteButton label={`Delete template ${template.name}`} onDelete={() => removeTemplate(slug)} />
+                  </div>
                 </div>
               </div>
             );

@@ -365,6 +365,7 @@ class UserTemplateNodeWrite(BaseModel):
     subtype: str | None = None
     brief: dict[str, Any] | None = None
     prompt: str
+    motivation: str = ""
     scheduled_deps: list[str] = Field(default_factory=list)
     resume_from: str | None = None
 
@@ -401,7 +402,11 @@ def _template_detail_payload(template: Template) -> dict[str, Any]:
     """
     payload = template.metadata()
     payload["nodes"] = [
-        {**node.metadata(), "prompt": node.prompt}
+        {
+            **node.metadata(),
+            "prompt": node.prompt,
+            "motivation": node.summary,
+        }
         for node in template.nodes
     ]
     return payload
