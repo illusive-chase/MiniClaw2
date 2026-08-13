@@ -97,6 +97,7 @@ class ClaudeNativeSession:
         self._interrupt_requested = False
         self._dispatch_registered = False
         self._session_ready_event: asyncio.Event | None = None
+        self._session_ready_key: str = self._session_id
         self._turn_complete_event: asyncio.Event | None = None
 
     @property
@@ -127,6 +128,7 @@ class ClaudeNativeSession:
         # Register the session-ready waiter before spawning: the child can
         # run its SessionStart hook and POST /hook/* immediately after fork,
         # and signal_session_ready() drops signals for unregistered ids.
+        self._session_ready_key = self._session_id
         self._session_ready_event = hook_runtime.register_session_ready(
             self._session_id
         )
@@ -140,16 +142,10 @@ class ClaudeNativeSession:
                 None, _spawn_pty, argv, self._cwd, env
             )
         except ClaudeBinaryNotFoundError:
-            hook_runtime.unregister_session_ready(self._session_id)
-            hook_runtime.unregister_turn_complete(self._node_id)
-            self._session_ready_event = None
-            self._turn_complete_event = None
+            self._release_hook_registrations()
             raise
         except Exception as exc:  # noqa: BLE001
-            hook_runtime.unregister_session_ready(self._session_id)
-            hook_runtime.unregister_turn_complete(self._node_id)
-            self._session_ready_event = None
-            self._turn_complete_event = None
+            self._release_hook_registrations()
             raise ClaudeNativeError(f"failed to spawn claude PTY: {exc}") from exc
 
         submit_result = resolve_submit_key(self._data_dir)
@@ -340,10 +336,9 @@ class ClaudeNativeSession:
         self._closed = True
 
         if self._dispatch_registered:
-            hook_runtime.unregister_ask_dispatcher(self._node_id)
+            hook_runtime.unregister_ask_dispatcher(self._node_id, self._ask_dispatcher)
             self._dispatch_registered = False
-        hook_runtime.unregister_session_ready(self._session_id)
-        hook_runtime.unregister_turn_complete(self._node_id)
+        self._release_hook_registrations()
 
         pty = self._pty
         if pty is not None:
@@ -368,6 +363,24 @@ class ClaudeNativeSession:
                 pass
 
     # ---- internals ------------------------------------------------------
+
+    def _release_hook_registrations(self) -> None:
+        """Drop this session's hook slots without disturbing a successor's.
+
+        Teardown of a superseded session is finalized after the next turn
+        on the same node has already registered, so we release by the key
+        we registered under and only when our own event still occupies it.
+        """
+        if self._session_ready_event is not None:
+            hook_runtime.unregister_session_ready(
+                self._session_ready_key, self._session_ready_event
+            )
+            self._session_ready_event = None
+        if self._turn_complete_event is not None:
+            hook_runtime.unregister_turn_complete(
+                self._node_id, self._turn_complete_event
+            )
+            self._turn_complete_event = None
 
     def _pty_write(self, data: bytes) -> None:
         pty = self._pty

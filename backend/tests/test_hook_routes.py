@@ -156,6 +156,77 @@ class HookBridgeTest(unittest.TestCase):
         self.assertEqual(json.loads(request.data), {"node_id": "node-1"})
 
 
+class HookRegistrySupersedeTest(unittest.TestCase):
+    """A superseded session's teardown must not silence its successor.
+
+    Consecutive turns on one node (the preview-repair retry) each spawn a
+    session, and the outgoing session's ``close()`` is finalized *after*
+    the incoming one has registered. Releasing by key alone dropped the
+    live turn's slot, so its ``Stop`` hook was delivered to nobody and the
+    node hung until the stall timeout.
+    """
+
+    def test_superseded_turn_complete_release_keeps_successor(self) -> None:
+        node_id = "node-supersede"
+        first = hook_runtime.register_turn_complete(node_id)
+        hook_runtime.signal_turn_complete(node_id)
+        self.assertTrue(first.is_set())
+
+        second = hook_runtime.register_turn_complete(node_id)
+        self.addCleanup(hook_runtime.unregister_turn_complete, node_id)
+        self.assertIsNot(second, first)
+        self.assertFalse(second.is_set())
+
+        # Turn 1's late teardown must be a no-op now.
+        hook_runtime.unregister_turn_complete(node_id, first)
+
+        self.assertTrue(hook_runtime.signal_turn_complete(node_id))
+        self.assertTrue(second.is_set())
+
+    def test_owner_release_clears_turn_complete_slot(self) -> None:
+        node_id = "node-owner-release"
+        event = hook_runtime.register_turn_complete(node_id)
+
+        hook_runtime.unregister_turn_complete(node_id, event)
+
+        self.assertFalse(hook_runtime.signal_turn_complete(node_id))
+
+    def test_superseded_session_ready_release_keeps_successor(self) -> None:
+        session_id = "session-supersede"
+        first = hook_runtime.register_session_ready(session_id)
+        hook_runtime.signal_session_ready(session_id)
+        self.assertTrue(first.is_set())
+
+        # A resumed turn reuses the session id; it must get a fresh waiter
+        # rather than the previous turn's already-set event.
+        second = hook_runtime.register_session_ready(session_id)
+        self.addCleanup(hook_runtime.unregister_session_ready, session_id)
+        self.assertIsNot(second, first)
+        self.assertFalse(second.is_set())
+
+        hook_runtime.unregister_session_ready(session_id, first)
+
+        self.assertTrue(hook_runtime.signal_session_ready(session_id))
+        self.assertTrue(second.is_set())
+
+    def test_superseded_ask_dispatcher_release_keeps_successor(self) -> None:
+        node_id = "node-ask-supersede"
+
+        async def first(_payload: dict) -> dict:
+            return {"which": "first"}
+
+        async def second(_payload: dict) -> dict:
+            return {"which": "second"}
+
+        hook_runtime.register_ask_dispatcher(node_id, first)
+        hook_runtime.register_ask_dispatcher(node_id, second)
+        self.addCleanup(hook_runtime.unregister_ask_dispatcher, node_id)
+
+        hook_runtime.unregister_ask_dispatcher(node_id, first)
+
+        self.assertIs(hook_runtime.get_ask_dispatcher(node_id), second)
+
+
 class HookAskRouteTest(unittest.TestCase):
     def test_hook_turn_complete_signals_active_node(self) -> None:
         node_id = "node-complete"

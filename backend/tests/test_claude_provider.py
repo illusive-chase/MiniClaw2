@@ -18,6 +18,7 @@ from miniclaw2.providers.base import (
 )
 from miniclaw2.providers.claude import ClaudeProvider, _unknown_code_review_command
 from miniclaw2.providers.claude_native import ClaudeNativeSession
+from miniclaw2.providers.claude_native import hook_runtime
 from miniclaw2.providers.claude_native.ask_payload import (
     format_ask_directive,
     parse_ask_payload,
@@ -963,6 +964,63 @@ class ClaudeNativeStreamTerminalTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(events), 1)
         self.assertEqual(events[0].kind, "done")
         self.assertEqual(events[0].final_state, "cancelled")
+
+    async def test_superseded_session_close_keeps_next_turn_signalable(
+        self,
+    ) -> None:
+        """The preview-repair hang: turn 1's late ``close()`` must not
+        deregister the repair turn's ``Stop`` waiter.
+        """
+        with tempfile.TemporaryDirectory() as raw:
+            node_id = "node-repair-race"
+            first = ClaudeNativeSession(
+                cwd=raw,
+                node_id=node_id,
+                project_id="project-1",
+                ask_dispatcher=_ask_dispatcher,
+                data_dir=Path(raw) / "data",
+            )
+            first._pty = _FakePty(alive=True)
+            first._session_ready_event = hook_runtime.register_session_ready(
+                first.session_id
+            )
+            first._session_ready_key = first.session_id
+            first._turn_complete_event = hook_runtime.register_turn_complete(node_id)
+            self.assertTrue(hook_runtime.signal_turn_complete(node_id))
+
+            # The repair turn spawns while turn 1's generator is still
+            # awaiting finalization.
+            second = ClaudeNativeSession(
+                cwd=raw,
+                node_id=node_id,
+                project_id="project-1",
+                ask_dispatcher=_ask_dispatcher,
+                data_dir=Path(raw) / "data",
+            )
+            second._pty = _FakePty(alive=True)
+            second._input = _FakeInput()
+            second._jsonl_path = Path(raw) / "repair.jsonl"
+            second._session_ready_event = hook_runtime.register_session_ready(
+                second.session_id
+            )
+            second._session_ready_key = second.session_id
+            second._turn_complete_event = hook_runtime.register_turn_complete(node_id)
+            self.addCleanup(hook_runtime.unregister_turn_complete, node_id)
+
+            await first.close()
+
+            self.assertTrue(hook_runtime.signal_turn_complete(node_id))
+            self.assertTrue(second._turn_complete_event.is_set())
+
+            with patch(
+                "miniclaw2.providers.claude_native._STREAM_POLL_INTERVAL", 0
+            ):
+                events = await asyncio.wait_for(
+                    _collect(second.stream_events()), timeout=5
+                )
+
+        self.assertEqual(events[-1].kind, "done")
+        self.assertEqual(events[-1].final_state, "done")
 
     async def test_claude_provider_turns_bare_native_exhaustion_into_error(self) -> None:
         class BareSession:
