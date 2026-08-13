@@ -128,3 +128,30 @@ export function searchEntries(names: string[], query: string): SearchHit[] {
   hits.sort((left, right) => left.rank - right.rank || compareStrings(left.entry, right.entry));
   return hits.map(({ rank: _rank, ...hit }) => hit);
 }
+
+/** Directory path keys that must be expanded for `entryName` to be visible.
+ *
+ * Derived from the folded tree rather than from `entryName.split("-")`, because
+ * folding merges single-child directories: `lark-workflow-meeting-summary` sits
+ * under `lark` › `workflow`, and no directory key `lark-workflow-meeting`
+ * exists. Keys match `pathKey` (segments joined with `-`). Returns an empty
+ * array for a root-level leaf, or for a name that is not present.
+ *
+ * A node that is both a directory and an entry (`lark-vc`) includes its own key:
+ * its entry row renders inside its expansion, below the caret.
+ */
+export function ancestorDirectoryPaths(names: string[], entryName: string): string[] {
+  const walk = (nodes: HierarchyNode[], trail: string[]): string[] | null => {
+    for (const node of nodes) {
+      const key = node.fullPath.join("-");
+      if (node.entry === entryName) {
+        return node.children.length > 0 ? [...trail, key] : trail;
+      }
+      if (node.children.length === 0) continue;
+      const found = walk(node.children, [...trail, key]);
+      if (found !== null) return found;
+    }
+    return null;
+  };
+  return walk(buildHierarchy(names), []) ?? [];
+}

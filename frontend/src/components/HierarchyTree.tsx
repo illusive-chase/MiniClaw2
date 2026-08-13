@@ -19,11 +19,22 @@ export type HierarchyTreeProps = {
   /** Expanded directory paths, joined with `-`. Owned by the caller. */
   expanded: ReadonlySet<string>;
   onToggle: (path: string) => void;
-  onSelect: (entry: HierarchyEntry) => void;
+  /** Picking an entry. Omit it where rows are not click targets — the library
+   * dock's rows are drag sources with explicit action buttons instead (design
+   * §3.2), so their labels render as plain text rather than dead buttons. */
+  onSelect?: (entry: HierarchyEntry) => void;
   /** Rendered in place of the tree when `entries` is empty. */
   emptyLabel?: string;
-  /** Row suffix, e.g. LibraryDock's drag handle and preview button. */
+  /** Row suffix, e.g. LibraryDock's preview and delete buttons. */
   renderRowActions?: (entry: HierarchyEntry) => React.ReactNode;
+  /** Always-visible marks beside the name, e.g. `new` and `attached N`. */
+  renderRowBadges?: (entry: HierarchyEntry) => React.ReactNode;
+  /** Extra attributes for the row container, e.g. `draggable`/`onDragStart`.
+   * `className` is appended to the row's own classes rather than replacing
+   * them. Applied to entry rows only — dragging a directory has no meaning. */
+  rowProps?: (
+    entry: HierarchyEntry,
+  ) => React.HTMLAttributes<HTMLDivElement> & { draggable?: boolean };
 };
 
 /* One indent step. Deep enough to read as a level at 11–12px type, shallow
@@ -81,50 +92,80 @@ function EntryRow({
   label,
   onSelect,
   renderRowActions,
+  renderRowBadges,
+  rowProps,
   selfMarker,
   descriptionLines,
 }: {
   entry: HierarchyEntry;
   depth: number;
   label: React.ReactNode;
-  onSelect: (entry: HierarchyEntry) => void;
+  onSelect?: (entry: HierarchyEntry) => void;
   renderRowActions?: (entry: HierarchyEntry) => React.ReactNode;
+  renderRowBadges?: (entry: HierarchyEntry) => React.ReactNode;
+  rowProps?: (
+    entry: HierarchyEntry,
+  ) => React.HTMLAttributes<HTMLDivElement> & { draggable?: boolean };
   /* Set on a node that is both a directory and an entry (`lark-vc`), so the
    * first child row is not mistaken for a sibling of the ones below it. */
   selfMarker?: boolean;
   descriptionLines: 1 | 2;
 }) {
   const disabled = entry.disabled === true;
+  const { className: extraClassName, ...extraProps } = rowProps?.(entry) ?? {};
+
+  const content = (
+    <span className="min-w-0 flex-1">
+      <span className="flex items-baseline gap-1.5">
+        <span className="min-w-0 truncate text-[11.5px] text-ink-strong">{label}</span>
+        {selfMarker && (
+          <span className="shrink-0 text-[9px] text-ink-subtle" title="该目录自身也是一个条目">
+            自身
+          </span>
+        )}
+        {disabled && <span className="shrink-0 text-[9px] text-ink-subtle">已附加</span>}
+        {renderRowBadges?.(entry)}
+      </span>
+      {entry.description ? (
+        <Description text={entry.description} lines={descriptionLines} />
+      ) : null}
+    </span>
+  );
+
   return (
     <div
-      className="group flex items-start gap-1.5 rounded-md px-1.5 py-1 hover:bg-surface-sunken"
+      {...extraProps}
+      className={
+        "group flex items-start gap-1.5 rounded-md px-1.5 py-1 hover:bg-surface-sunken "
+        + (extraClassName ?? "")
+      }
       style={{ paddingLeft: 6 + depth * INDENT_PX }}
     >
-      <button
-        type="button"
-        disabled={disabled}
-        onClick={() => onSelect(entry)}
-        title={disabled ? `${entry.name} · 已附加` : entry.name}
-        className={
-          "min-w-0 flex-1 rounded text-left transition " +
-          (disabled ? "cursor-default opacity-45" : "cursor-pointer")
-        }
-      >
-        <span className="flex items-baseline gap-1.5">
-          <span className="min-w-0 truncate text-[11.5px] text-ink-strong">{label}</span>
-          {selfMarker && (
-            <span className="shrink-0 text-[9px] text-ink-subtle" title="该目录自身也是一个条目">
-              自身
-            </span>
-          )}
-          {disabled && <span className="shrink-0 text-[9px] text-ink-subtle">已附加</span>}
+      {onSelect ? (
+        <button
+          type="button"
+          disabled={disabled}
+          onClick={() => onSelect(entry)}
+          title={disabled ? `${entry.name} · 已附加` : entry.name}
+          className={
+            "flex min-w-0 flex-1 rounded text-left transition "
+            + (disabled ? "cursor-default opacity-45" : "cursor-pointer")
+          }
+        >
+          {content}
+        </button>
+      ) : (
+        /* No `onSelect`: the row itself is the affordance (a drag source), so a
+         * button here would only add a focus stop that does nothing. */
+        <span
+          title={entry.name}
+          className={"flex min-w-0 flex-1 " + (disabled ? "opacity-45" : "")}
+        >
+          {content}
         </span>
-        {entry.description ? (
-          <Description text={entry.description} lines={descriptionLines} />
-        ) : null}
-      </button>
+      )}
       {renderRowActions ? (
-        <span className="shrink-0 opacity-0 transition group-hover:opacity-100">
+        <span className="shrink-0 opacity-0 transition focus-within:opacity-100 group-hover:opacity-100">
           {renderRowActions(entry)}
         </span>
       ) : null}
@@ -140,14 +181,20 @@ function TreeLevel({
   onToggle,
   onSelect,
   renderRowActions,
+  renderRowBadges,
+  rowProps,
 }: {
   nodes: HierarchyNode[];
   depth: number;
   entriesByName: Map<string, HierarchyEntry>;
   expanded: ReadonlySet<string>;
   onToggle: (path: string) => void;
-  onSelect: (entry: HierarchyEntry) => void;
+  onSelect?: (entry: HierarchyEntry) => void;
   renderRowActions?: (entry: HierarchyEntry) => React.ReactNode;
+  renderRowBadges?: (entry: HierarchyEntry) => React.ReactNode;
+  rowProps?: (
+    entry: HierarchyEntry,
+  ) => React.HTMLAttributes<HTMLDivElement> & { draggable?: boolean };
 }) {
   return (
     <>
@@ -166,6 +213,8 @@ function TreeLevel({
               label={node.segment}
               onSelect={onSelect}
               renderRowActions={renderRowActions}
+              renderRowBadges={renderRowBadges}
+              rowProps={rowProps}
               descriptionLines={1}
             />
           );
@@ -201,6 +250,8 @@ function TreeLevel({
                     label={selfEntry.name}
                     onSelect={onSelect}
                     renderRowActions={renderRowActions}
+                    renderRowBadges={renderRowBadges}
+                    rowProps={rowProps}
                     selfMarker
                     descriptionLines={1}
                   />
@@ -213,6 +264,8 @@ function TreeLevel({
                   onToggle={onToggle}
                   onSelect={onSelect}
                   renderRowActions={renderRowActions}
+                  renderRowBadges={renderRowBadges}
+                  rowProps={rowProps}
                 />
               </>
             )}
@@ -267,6 +320,8 @@ export function HierarchyTree({
   onSelect,
   emptyLabel = "暂无条目。",
   renderRowActions,
+  renderRowBadges,
+  rowProps,
 }: HierarchyTreeProps) {
   const entriesByName = useMemo(
     () => new Map(entries.map((entry) => [entry.name, entry])),
@@ -312,6 +367,8 @@ export function HierarchyTree({
               label={<HitLabel fullPath={hit.fullPath} matchRange={hit.matchRange} />}
               onSelect={onSelect}
               renderRowActions={renderRowActions}
+              renderRowBadges={renderRowBadges}
+              rowProps={rowProps}
               descriptionLines={2}
             />
           );
@@ -330,6 +387,8 @@ export function HierarchyTree({
         onToggle={onToggle}
         onSelect={onSelect}
         renderRowActions={renderRowActions}
+        renderRowBadges={renderRowBadges}
+        rowProps={rowProps}
       />
     </div>
   );

@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import {
   deleteUserTemplate,
   listUserTemplates,
@@ -11,7 +18,18 @@ import type {
   NodeInfo,
   TemplateSummary,
 } from "../types";
-import { modelPresetLabel } from "../modelPresets";
+import { ancestorDirectoryPaths, searchEntries } from "../hierarchy";
+import { HierarchyTree, type HierarchyEntry } from "./HierarchyTree";
+import {
+  readLibraryTreeState,
+  writeLibraryTreeState,
+  type LibrarySectionKey,
+  type LibraryTreeState,
+} from "../libraryTreeState";
+import {
+  LibraryEntryPreviewModal,
+  type LibraryPreviewTarget,
+} from "./LibraryEntryPreviewModal";
 
 export type LibraryEntrySelection = {
   identityKey: string;
@@ -35,8 +53,22 @@ type Props = {
   onOpenFull: (entry: LibraryEntrySelection) => void;
   /** Opens the template editor on this slug. */
   onEditTemplate: (slug: string) => void;
+  /** Stamps a template onto the canvas — the preview modal's primary action,
+   * sharing the drag-drop path's anchor logic. */
+  onApplyTemplate?: (slug: string) => void;
+  /** Attaches a skill/principle id to the selected virtual node. Omitted when
+   * the current selection cannot receive one. */
+  onAttachToVirtual?: (entryId: string) => void;
+  /** Label of the node `onAttachToVirtual` would target. */
+  attachTargetLabel?: string | null;
   onError?: (message: string) => void;
   onClose: () => void;
+};
+
+const MIME_BY_SECTION: Record<LibrarySectionKey, string> = {
+  templates: "application/x-miniclaw-template",
+  principles: "application/x-miniclaw-principle",
+  skills: "application/x-miniclaw-skill",
 };
 
 export function LibraryDock({
@@ -53,19 +85,28 @@ export function LibraryDock({
   onDeleteSkill,
   onOpenFull,
   onEditTemplate,
+  onApplyTemplate,
+  onAttachToVirtual,
+  attachTargetLabel,
   onError,
   onClose,
 }: Props) {
   const [templates, setTemplates] = useState<TemplateSummary[]>([]);
   const [loading, setLoading] = useState(false);
-  const [openSections, setOpenSections] = useState({
-    templates: true,
-    principles: false,
-    skills: false,
-  });
-  const [expandedEntry, setExpandedEntry] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
+  /* Section open state and expanded directories restored from localStorage.
+   * Before the tree, a reset cost nothing; now it costs reopening `lark ›
+   * workflow` on every mount (design §3.1). */
+  const [treeState, setTreeState] = useState<LibraryTreeState>(() =>
+    readLibraryTreeState(),
+  );
   const [newEntryIds, setNewEntryIds] = useState<Set<string>>(new Set());
+  const [preview, setPreview] = useState<LibraryPreviewTarget | null>(null);
   const handledSurfaceTokenRef = useRef(0);
+
+  useEffect(() => {
+    writeLibraryTreeState(treeState);
+  }, [treeState]);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -86,11 +127,40 @@ export function LibraryDock({
     void refresh();
   }, [refresh, refreshToken]);
 
+  const setSectionOpen = useCallback((section: LibrarySectionKey, open: boolean) => {
+    setTreeState((current) =>
+      current.open[section] === open
+        ? current
+        : { ...current, open: { ...current.open, [section]: open } },
+    );
+  }, []);
+
+  const toggleSection = useCallback((section: LibrarySectionKey) => {
+    setTreeState((current) => ({
+      ...current,
+      open: { ...current.open, [section]: !current.open[section] },
+    }));
+  }, []);
+
+  const toggleDirectory = useCallback((section: LibrarySectionKey, path: string) => {
+    setTreeState((current) => {
+      const paths = current.expanded[section];
+      const next = paths.includes(path)
+        ? paths.filter((entry) => entry !== path)
+        : [...paths, path];
+      return { ...current, expanded: { ...current.expanded, [section]: next } };
+    });
+  }, []);
+
   useEffect(() => {
     if (surfaceNewToken <= 0) return;
-    setOpenSections((current) => ({ ...current, principles: true, skills: true }));
-  }, [surfaceNewToken]);
+    setSectionOpen("principles", true);
+    setSectionOpen("skills", true);
+  }, [setSectionOpen, surfaceNewToken]);
 
+  /* A freshly created principle/skill gets the `new` badge and is revealed:
+   * its section opens and the directories above it expand, since a new entry
+   * buried inside a collapsed `lark` would otherwise be invisible. */
   useEffect(() => {
     if (
       surfaceNewToken <= 0 ||
@@ -105,14 +175,21 @@ export function LibraryDock({
     ].filter((id) => !baseline.has(id)));
     if (added.size === 0) return;
     setNewEntryIds(added);
-    const first = [...added][0];
-    setExpandedEntry(first);
-    setOpenSections((state) => ({
-      ...state,
-      principles: state.principles || first.startsWith("principles."),
-      skills: state.skills || first.startsWith("skills."),
-    }));
     handledSurfaceTokenRef.current = surfaceNewToken;
+
+    const first = [...added][0];
+    const isSkill = first.startsWith("skills.");
+    const section: LibrarySectionKey = isSkill ? "skills" : "principles";
+    const slug = first.slice(first.indexOf(".") + 1);
+    const names = (isSkill ? skills : principles).map((item) => item.slug);
+    const reveal = ancestorDirectoryPaths(names, slug);
+    setTreeState((current) => ({
+      open: { ...current.open, [section]: true },
+      expanded: {
+        ...current.expanded,
+        [section]: [...new Set([...current.expanded[section], ...reveal])],
+      },
+    }));
   }, [principles, skills, surfaceBaselineIds, surfaceNewToken]);
 
   const removeTemplate = useCallback(async (slug: string) => {
@@ -124,9 +201,114 @@ export function LibraryDock({
     }
   }, [onError]);
 
-  const attachedCounts = countBindings(nodes, contextBundlesByNodeId);
-  const toggleSection = (section: keyof typeof openSections) => {
-    setOpenSections((state) => ({ ...state, [section]: !state[section] }));
+  const attachedCounts = useMemo(
+    () => countBindings(nodes, contextBundlesByNodeId),
+    [nodes, contextBundlesByNodeId],
+  );
+
+  /* `slug` drives the hierarchy; `id` is what drags and previews speak. */
+  const templateEntries: HierarchyEntry[] = useMemo(
+    () =>
+      templates.map((template) => ({
+        id: template.slug,
+        name: template.slug,
+        description: template.brief || null,
+      })),
+    [templates],
+  );
+  const principleEntries: HierarchyEntry[] = useMemo(
+    () =>
+      principles.map((principle) => ({
+        id: principle.id,
+        name: principle.slug,
+        description: principle.description,
+      })),
+    [principles],
+  );
+  const skillEntries: HierarchyEntry[] = useMemo(
+    () =>
+      skills.map((skill) => ({
+        id: skill.id,
+        name: skill.slug,
+        description: skill.description,
+      })),
+    [skills],
+  );
+
+  const templatesBySlug = useMemo(
+    () => new Map(templates.map((item) => [item.slug, item])),
+    [templates],
+  );
+  const principlesById = useMemo(
+    () => new Map(principles.map((item) => [item.id, item])),
+    [principles],
+  );
+  const skillsById = useMemo(
+    () => new Map(skills.map((item) => [item.id, item])),
+    [skills],
+  );
+
+  const trimmedQuery = query.trim();
+
+  /* Hit counts drive both the per-section badge and the auto-collapse: with a
+   * query active, a section that matches nothing folds itself away so the eye
+   * lands on the section that did match (design §3.1). */
+  const hitCounts = useMemo(() => {
+    if (trimmedQuery.length === 0) return null;
+    const count = (entries: HierarchyEntry[]) =>
+      searchEntries(entries.map((entry) => entry.name), trimmedQuery).length;
+    return {
+      templates: count(templateEntries),
+      principles: count(principleEntries),
+      skills: count(skillEntries),
+    };
+  }, [principleEntries, skillEntries, templateEntries, trimmedQuery]);
+
+  const sections: Array<{
+    key: LibrarySectionKey;
+    title: string;
+    entries: HierarchyEntry[];
+    total: number;
+    emptyLabel: string;
+  }> = [
+    {
+      key: "templates",
+      title: "Templates",
+      entries: templateEntries,
+      total: templates.length,
+      emptyLabel: loading ? "正在加载…" : "还没有保存的模板。框选画布上的节点即可保存一个。",
+    },
+    {
+      key: "principles",
+      title: "Principles",
+      entries: principleEntries,
+      total: principles.length,
+      /* §7 called this out: principles is empty on a fresh install, so the
+       * empty state has to carry the next step rather than just say "none". */
+      emptyLabel: "还没有 principle。可在项目面板用「New principle / skill」创建。",
+    },
+    {
+      key: "skills",
+      title: "Skills",
+      entries: skillEntries,
+      total: skills.length,
+      emptyLabel: "还没有 skill。可在项目面板导入或创建。",
+    },
+  ];
+
+  const openPreview = (section: LibrarySectionKey, entry: HierarchyEntry) => {
+    if (section === "templates") {
+      const summary = templatesBySlug.get(entry.id);
+      if (summary) setPreview({ kind: "template", slug: entry.id, summary });
+      return;
+    }
+    if (section === "principles") {
+      const summary = principlesById.get(entry.id);
+      if (summary) setPreview({ kind: "principle", slug: summary.slug, summary });
+      return;
+    }
+    const summary = skillsById.get(entry.id);
+    if (summary) setPreview({ kind: "skill", slug: summary.slug, summary });
   };
 
   return (
@@ -141,205 +323,291 @@ export function LibraryDock({
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto">
-        <LibrarySection
-          title="Templates"
-          count={templates.length}
-          open={openSections.templates}
-          onToggle={() => toggleSection("templates")}
-        >
-          {loading && templates.length === 0 && <Empty>Loading...</Empty>}
-          {!loading && templates.length === 0 && <Empty>No saved templates.</Empty>}
-          {templates.map((template) => {
-            const slug = template.slug;
-            return (
-              <div
-                key={slug}
-                draggable
-                onDragStart={(event) => setDragData(event, "application/x-miniclaw-template", slug)}
-                className="group cursor-grab rounded-md border border-line bg-surface-raised px-3 py-2 text-xs shadow-card transition hover:border-brand/60 active:cursor-grabbing"
-                title="Drag onto the canvas to apply this template"
-              >
-                <div className="flex items-start justify-between gap-2">
-                  <div className="min-w-0 flex-1">
-                    <div className="truncate font-medium text-ink-strong">{template.name}</div>
-                    {template.brief && <div className="mt-0.5 line-clamp-2 text-[11px] leading-snug text-ink-muted">{template.brief}</div>}
-                    <div className="mt-1 text-[10px] text-ink-subtle">
-                      {template.node_count} {template.node_count === 1 ? "node" : "nodes"}
-                      {template.allowed_model_preset_ids.length > 0
-                        ? ` · ${template.allowed_model_preset_ids.map((id) => modelPresetLabel(modelPresets, id)).join(", ")}`
-                        : ""}
-                    </div>
-                    {/* The template's signature — what the instantiation dialog
-                      * will ask for. Warnings are authoring problems, so they
-                      * point at the editor rather than blocking a drag. */}
-                    {(template.arguments.length > 0 ||
-                      template.inputs.length > 0 ||
-                      template.warnings.length > 0) && (
-                      <div className="mt-1 flex flex-wrap items-center gap-1">
-                        {template.arguments.length > 0 && (
-                          <span className="rounded border border-line bg-surface px-1 py-0.5 font-mono text-[9px] text-ink-muted">
-                            {template.arguments.length} 参数
-                          </span>
-                        )}
-                        {template.inputs.length > 0 && (
-                          <span className="rounded border border-line bg-surface px-1 py-0.5 font-mono text-[9px] text-ink-muted">
-                            {template.inputs.length} 端口
-                          </span>
-                        )}
-                        {template.warnings.length > 0 && (
-                          <span
-                            className="rounded border border-state-waiting/40 bg-state-waiting-soft px-1 py-0.5 font-mono text-[9px] text-state-waiting"
-                            title={template.warnings.map((w) => w.message).join("\n")}
-                          >
-                            {template.warnings.length} 警告
-                          </span>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                  <div className="flex shrink-0 items-center gap-1">
-                    <button
-                      type="button"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        onEditTemplate(slug);
-                      }}
-                      onMouseDown={(event) => event.stopPropagation()}
-                      className="nodrag rounded border border-line px-1.5 py-1 text-[10px] text-ink-muted opacity-0 transition hover:border-line-strong hover:text-ink group-hover:opacity-100"
-                      title={`Edit template ${template.name}`}
-                      aria-label={`Edit template ${template.name}`}
-                    >
-                      编辑
-                    </button>
-                    <DeleteButton label={`Delete template ${template.name}`} onDelete={() => removeTemplate(slug)} />
-                  </div>
-                </div>
-              </div>
-            );
-          })}
-        </LibrarySection>
-
-        <LibrarySection
-          title="Principles"
-          count={principles.length}
-          open={openSections.principles}
-          onToggle={() => toggleSection("principles")}
-        >
-          {principles.length === 0 && <Empty>No principles.</Empty>}
-          {principles.map((principle) => {
-            const path = `${principle.path}/CONTEXT.md`;
-            return (
-              <EntryCard
-                key={principle.id}
-                id={principle.id}
-                title={principle.title}
-                description={principle.description}
-                kind="principle"
-                mime="application/x-miniclaw-principle"
-                expanded={expandedEntry === principle.id}
-                isNew={newEntryIds.has(principle.id)}
-                attachedCount={attachedCounts[principle.id] ?? 0}
-                onToggle={() => setExpandedEntry((id) => id === principle.id ? null : principle.id)}
-              >
-                <div className="break-all font-mono text-[10px] text-ink-subtle">{path}</div>
-                <div className="text-[10.5px] text-ink-muted">Injection: {formatValue(principle.injection)} · limit: {formatValue(principle.max_chars)}</div>
-                <EntryActions
-                  onOpen={() => onOpenFull({ identityKey: contextIdentityKey("principle", path), path, sourceKind: "principle", plugId: principle.id })}
-                  onDelete={() => onDeletePrinciple(principle.slug)}
-                  deleteLabel={`Delete principle ${principle.title}`}
-                />
-              </EntryCard>
-            );
-          })}
-        </LibrarySection>
-
-        <LibrarySection
-          title="Skills"
-          count={skills.length}
-          open={openSections.skills}
-          onToggle={() => toggleSection("skills")}
-        >
-          {skills.length === 0 && <Empty>No skills.</Empty>}
-          {skills.map((skill) => {
-            const path = `${skill.path}/SKILL.md`;
-            return (
-              <EntryCard
-                key={skill.id}
-                id={skill.id}
-                title={skill.title}
-                description={skill.description}
-                kind="skill"
-                mime="application/x-miniclaw-skill"
-                expanded={expandedEntry === skill.id}
-                isNew={newEntryIds.has(skill.id)}
-                attachedCount={attachedCounts[skill.id] ?? 0}
-                onToggle={() => setExpandedEntry((id) => id === skill.id ? null : skill.id)}
-              >
-                <div className="break-all font-mono text-[10px] text-ink-subtle">{path}</div>
-                <div className="text-[10.5px] text-ink-muted">
-                  {skill.files.length} files{skill.version ? ` · v${skill.version}` : ""}{skill.import_source ? ` · ${skill.import_source}` : ""}
-                </div>
-                {skill.files.length > 0 && <div className="max-h-24 overflow-auto font-mono text-[10px] text-ink-muted">{skill.files.join("\n")}</div>}
-                <EntryActions
-                  onOpen={() => onOpenFull({ identityKey: contextIdentityKey("skill", path), path, sourceKind: "skill", plugId: skill.id })}
-                  onDelete={() => onDeleteSkill(skill.slug)}
-                  deleteLabel={`Delete skill ${skill.title}`}
-                />
-              </EntryCard>
-            );
-          })}
-        </LibrarySection>
+      {/* One box across all three sections: it answers "I know the name but not
+        * whether it is a template or a skill" (design §3.1). */}
+      <div className="border-b border-line px-3 py-2">
+        <div className="relative">
+          <input
+            type="search"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="搜索全库…"
+            aria-label="按名称搜索整个 library"
+            className="w-full rounded-md border border-line bg-surface-sunken px-2.5 py-1.5 text-[11.5px] text-ink-strong placeholder:text-ink-subtle focus:border-brand focus:outline-none"
+          />
+        </div>
       </div>
+
+      <div className="flex-1 overflow-y-auto">
+        {sections.map((section) => {
+          const hits = hitCounts?.[section.key] ?? null;
+          /* Auto-collapse is a display override, not a state write: clearing
+           * the query must restore exactly what the user had open. */
+          const open = hits === null ? treeState.open[section.key] : hits > 0;
+          return (
+            <LibrarySection
+              key={section.key}
+              title={section.title}
+              count={hits ?? section.total}
+              countHint={hits !== null ? `${hits} 个命中，共 ${section.total} 个` : undefined}
+              matching={hits !== null}
+              open={open}
+              onToggle={() => toggleSection(section.key)}
+            >
+              <HierarchyTree
+                entries={section.entries}
+                query={trimmedQuery}
+                expanded={new Set(treeState.expanded[section.key])}
+                onToggle={(path) => toggleDirectory(section.key, path)}
+                emptyLabel={section.emptyLabel}
+                rowProps={(entry) => ({
+                  draggable: true,
+                  onDragStart: (event) =>
+                    setDragData(event, MIME_BY_SECTION[section.key], entry.id),
+                  className: "cursor-grab active:cursor-grabbing",
+                  title:
+                    section.key === "templates"
+                      ? "拖到画布以应用这个模板"
+                      : `拖到虚拟节点以附加这个 ${section.key === "skills" ? "skill" : "principle"}`,
+                })}
+                renderRowBadges={(entry) => (
+                  <RowBadges
+                    isNew={newEntryIds.has(entry.id)}
+                    attachedCount={
+                      section.key === "templates" ? null : attachedCounts[entry.id] ?? 0
+                    }
+                  />
+                )}
+                renderRowActions={(entry) => (
+                  <RowActions
+                    onPreview={() => openPreview(section.key, entry)}
+                    onOpenFull={
+                      section.key === "templates"
+                        ? undefined
+                        : () => {
+                            const isSkill = section.key === "skills";
+                            const summary = isSkill
+                              ? skillsById.get(entry.id)
+                              : principlesById.get(entry.id);
+                            if (!summary) return;
+                            const path = `${summary.path}/${isSkill ? "SKILL.md" : "CONTEXT.md"}`;
+                            onOpenFull({
+                              identityKey: contextIdentityKey(
+                                isSkill ? "skill" : "principle",
+                                path,
+                              ),
+                              path,
+                              sourceKind: isSkill ? "skill" : "principle",
+                              plugId: summary.id,
+                            });
+                          }
+                    }
+                    onDelete={() => {
+                      if (section.key === "templates") return removeTemplate(entry.id);
+                      const slug = entry.name;
+                      return section.key === "skills"
+                        ? onDeleteSkill(slug)
+                        : onDeletePrinciple(slug);
+                    }}
+                    deleteLabel={`删除 ${entry.name}`}
+                  />
+                )}
+              />
+            </LibrarySection>
+          );
+        })}
+      </div>
+
+      <LibraryEntryPreviewModal
+        target={preview}
+        modelPresets={modelPresets}
+        onClose={() => setPreview(null)}
+        onApplyTemplate={
+          onApplyTemplate
+            ? (slug) => {
+                setPreview(null);
+                onApplyTemplate(slug);
+              }
+            : undefined
+        }
+        onEditTemplate={(slug) => {
+          setPreview(null);
+          onEditTemplate(slug);
+        }}
+        onAttachToVirtual={
+          onAttachToVirtual
+            ? (entryId) => {
+                setPreview(null);
+                onAttachToVirtual(entryId);
+              }
+            : undefined
+        }
+        attachTargetLabel={attachTargetLabel}
+      />
     </div>
   );
 }
 
-function LibrarySection({ title, count, open, onToggle, children }: { title: string; count: number; open: boolean; onToggle: () => void; children: ReactNode }) {
+function LibrarySection({
+  title,
+  count,
+  countHint,
+  matching,
+  open,
+  onToggle,
+  children,
+}: {
+  title: string;
+  count: number;
+  countHint?: string;
+  /** A query is active, so `count` is a hit count rather than a total. */
+  matching: boolean;
+  open: boolean;
+  onToggle: () => void;
+  children: ReactNode;
+}) {
   return (
     <section className="border-b border-line">
-      <button type="button" onClick={onToggle} aria-expanded={open} className="flex w-full items-center justify-between px-3 py-2.5 text-left transition hover:bg-surface-raised">
+      <button
+        type="button"
+        onClick={onToggle}
+        aria-expanded={open}
+        className="flex w-full items-center justify-between px-3 py-2.5 text-left transition hover:bg-surface-raised"
+      >
         <span className="text-[11px] font-medium text-ink-strong">{title}</span>
-        <span className="flex items-center gap-2 font-mono text-[10px] text-ink-subtle"><span>{count}</span><span aria-hidden="true">{open ? "▾" : "▸"}</span></span>
+        <span className="flex items-center gap-2 font-mono text-[10px] text-ink-subtle" title={countHint}>
+          {/* While searching, a non-zero hit count is the thing worth looking
+            * at, so it takes brand ink; a zero stays quiet and the section
+            * folds itself. */}
+          <span className={matching && count > 0 ? "text-brand" : undefined}>{count}</span>
+          <span aria-hidden="true">{open ? "▾" : "▸"}</span>
+        </span>
       </button>
-      {open && <div className="space-y-2 px-3 pb-3">{children}</div>}
+      {open && <div className="px-1.5 pb-2">{children}</div>}
     </section>
   );
 }
 
-function EntryCard({ id, title, description, kind, mime, expanded, isNew, attachedCount, onToggle, children }: { id: string; title: string; description: string | null; kind: "principle" | "skill"; mime: string; expanded: boolean; isNew: boolean; attachedCount: number; onToggle: () => void; children: ReactNode }) {
+/** Always-visible marks: `new` and the attachment count. Kept from the flat
+ * cards, moved onto the leaf row (design §3.1). */
+function RowBadges({
+  isNew,
+  attachedCount,
+}: {
+  isNew: boolean;
+  attachedCount: number | null;
+}) {
   return (
-    <div draggable onDragStart={(event) => setDragData(event, mime, id)} className="cursor-grab rounded-md border border-line bg-surface-raised px-3 py-2 shadow-card transition hover:border-brand/60 active:cursor-grabbing" title={`Drag onto a virtual node to attach this ${kind}`}>
-      <div className="flex items-start gap-2">
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-1.5">
-            <span className="truncate text-xs font-medium text-ink-strong">{title}</span>
-            {isNew && <span className="rounded border border-brand/40 bg-brand-soft px-1 py-0.5 text-[8px] font-medium uppercase text-brand">new</span>}
-          </div>
-          {description && <div className="mt-0.5 line-clamp-2 text-[11px] leading-snug text-ink-muted">{description}</div>}
-          <div className="mt-1 font-mono text-[9.5px] text-ink-subtle">attached {attachedCount}</div>
-        </div>
-        <button type="button" onClick={(event) => { event.stopPropagation(); onToggle(); }} onMouseDown={(event) => event.stopPropagation()} className="nodrag flex h-6 w-6 items-center justify-center rounded text-[11px] text-ink-muted hover:bg-surface-sunken" title={expanded ? "Collapse details" : "Expand details"} aria-label={expanded ? "Collapse details" : "Expand details"}>{expanded ? "▾" : "▸"}</button>
-      </div>
-      {expanded && <div className="nodrag mt-2 space-y-2 border-t border-line pt-2" onMouseDown={(event) => event.stopPropagation()}>{children}</div>}
-    </div>
+    <>
+      {isNew && (
+        <span className="shrink-0 rounded border border-brand/40 bg-brand-soft px-1 text-[8px] font-medium uppercase text-brand">
+          new
+        </span>
+      )}
+      {attachedCount !== null && attachedCount > 0 && (
+        /* Tinted pill, not a bare number: the directory rows already end in a
+         * plain subtle count, and "attached to 8 nodes" must not read as
+         * "contains 8 entries". The full sentence lives in the tooltip. */
+        <span
+          className="flex shrink-0 items-center gap-0.5 rounded-full bg-state-review/15 px-1.5 text-[9px] font-medium leading-[1.35] text-state-review"
+          title={`已被 ${attachedCount} 个节点附加`}
+        >
+          <svg viewBox="0 0 24 24" width="7" height="7" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" aria-hidden="true">
+            <path d="M9.5 14.5 14.5 9.5" />
+            <path d="M7 12 4.8 14.2a3.6 3.6 0 0 0 5.1 5.1L12 17" />
+            <path d="M17 12l2.2-2.2a3.6 3.6 0 0 0-5.1-5.1L12 7" />
+          </svg>
+          {attachedCount}
+        </span>
+      )}
+    </>
   );
 }
 
-function EntryActions({ onOpen, onDelete, deleteLabel }: { onOpen: () => void; onDelete: () => Promise<void> | void; deleteLabel: string }) {
-  return <div className="flex items-center gap-2"><button type="button" onClick={onOpen} className="rounded border border-line px-2 py-1 text-[10.5px] text-ink-muted hover:border-line-strong hover:text-ink">Open full</button><DeleteButton label={deleteLabel} onDelete={onDelete} visible /></div>;
+/* Hover-revealed by the row wrapper. Explicit buttons rather than click-to-
+ * preview: the row is a drag source, and a jittered drag should not throw a
+ * modal over the canvas (design §3.2). */
+function RowActions({
+  onPreview,
+  onOpenFull,
+  onDelete,
+  deleteLabel,
+}: {
+  onPreview: () => void;
+  onOpenFull?: () => void;
+  onDelete: () => Promise<void> | void;
+  deleteLabel: string;
+}) {
+  return (
+    <span className="flex items-center gap-0.5">
+      <RowIconButton label="预览" onClick={onPreview}>
+        {/* An eye, drawn inline: the dock has no icon set to draw from. */}
+        <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="M1.8 12S5.4 5.5 12 5.5 22.2 12 22.2 12 18.6 18.5 12 18.5 1.8 12 1.8 12Z" />
+          <circle cx="12" cy="12" r="2.6" />
+        </svg>
+      </RowIconButton>
+      {onOpenFull && (
+        <RowIconButton label="在侧栏中打开" onClick={onOpenFull}>
+          <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M14 4h6v6" />
+            <path d="M20 4l-8 8" />
+            <path d="M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5" />
+          </svg>
+        </RowIconButton>
+      )}
+      <RowIconButton
+        label={deleteLabel}
+        danger
+        onClick={() => {
+          if (window.confirm(`${deleteLabel}?`)) void onDelete();
+        }}
+      >
+        ×
+      </RowIconButton>
+    </span>
+  );
 }
 
-function DeleteButton({ label, onDelete, visible = false }: { label: string; onDelete: () => Promise<void> | void; visible?: boolean }) {
-  return <button type="button" onClick={(event) => { event.stopPropagation(); if (window.confirm(`${label}?`)) void onDelete(); }} className={`rounded px-1.5 py-1 text-[10px] text-ink-subtle transition hover:bg-state-error-soft hover:text-state-error ${visible ? "" : "opacity-0 group-hover:opacity-100"}`} title={label} aria-label={label}>×</button>;
+function RowIconButton({
+  label,
+  onClick,
+  danger = false,
+  children,
+}: {
+  label: string;
+  onClick: () => void;
+  danger?: boolean;
+  children: ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      /* The row above is a drag source: without stopping these, a click on the
+       * button would also start a drag gesture on the row. */
+      onClick={(event) => {
+        event.stopPropagation();
+        onClick();
+      }}
+      onMouseDown={(event) => event.stopPropagation()}
+      draggable={false}
+      onDragStart={(event) => event.preventDefault()}
+      className={
+        "nodrag flex h-5 w-5 items-center justify-center rounded text-[11px] leading-none transition "
+        + (danger
+          ? "text-ink-subtle hover:bg-state-error-soft hover:text-state-error"
+          : "text-ink-muted hover:bg-surface-raised hover:text-ink")
+      }
+      title={label}
+      aria-label={label}
+    >
+      {children}
+    </button>
+  );
 }
 
 function IconButton({ label, onClick, children }: { label: string; onClick: () => void; children: ReactNode }) {
   return <button type="button" onClick={onClick} className="flex h-6 w-6 items-center justify-center rounded text-[12px] text-ink-muted transition hover:bg-surface-raised hover:text-ink" title={label} aria-label={label}>{children}</button>;
-}
-
-function Empty({ children }: { children: ReactNode }) {
-  return <div className="py-1 text-[11px] text-ink-subtle">{children}</div>;
 }
 
 function setDragData(event: React.DragEvent, mime: string, value: string): void {
@@ -391,11 +659,6 @@ function countBindings(
 
 function contextIdentityKey(kind: "principle" | "skill", path: string): string {
   return `contextspace::${kind}::${path}`;
-}
-
-function formatValue(value: unknown): string {
-  if (value === null || value === undefined) return "default";
-  return typeof value === "string" || typeof value === "number" ? String(value) : JSON.stringify(value);
 }
 
 function errorMessage(error: unknown): string {

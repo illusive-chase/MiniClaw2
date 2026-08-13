@@ -1255,6 +1255,39 @@ export function App() {
     [updateVirtualNode],
   );
 
+  /* The library preview modal's attach button targets whatever virtual node is
+   * selected, under the same eligibility rules the canvas drop path enforces
+   * (`Canvas.tsx:974-993`): a virtual, non-obsolete, mutable agent node. Null
+   * disables the button rather than hiding it, so the reason stays visible. */
+  const libraryAttachTarget = useMemo(() => {
+    if (readOnly) return null;
+    const nodeId = selection.kind === "agent" ? selection.nodeId : null;
+    if (!nodeId) return null;
+    const node = nodes.find((item) => item.id === nodeId);
+    if (!node || node.state !== "virtual" || node.obsolete_reason) return null;
+    if (!isNodeNative(node)) return null;
+    /* A motivation can run to a full paragraph, so the label is the first line
+     * trimmed to something that fits a one-line hint. */
+    const raw = (node.summary || node.prompt_draft || node.prompt || "").trim();
+    const firstLine = raw.split("\n", 1)[0].trim();
+    const label = firstLine.length > 0
+      ? (firstLine.length > 36 ? `${firstLine.slice(0, 36)}…` : firstLine)
+      : nodeId.slice(0, 8);
+    return { nodeId, label };
+  }, [isNodeNative, nodes, readOnly, selection]);
+
+  const handleAttachLibraryEntryToSelection = useCallback(
+    (entryId: string) => {
+      if (!libraryAttachTarget) return;
+      if (entryId.startsWith("skills.")) {
+        handleAttachSkillToVirtual(libraryAttachTarget.nodeId, entryId);
+      } else {
+        handleAttachPrincipleToVirtual(libraryAttachTarget.nodeId, entryId);
+      }
+    },
+    [handleAttachPrincipleToVirtual, handleAttachSkillToVirtual, libraryAttachTarget],
+  );
+
   const createVirtualNode = useCallback(
     async (payload: {
       planspace_id: string;
@@ -2616,6 +2649,13 @@ export function App() {
                 onDeleteSkill={handleDeleteSkill}
                 onOpenFull={openLibraryEntry}
                 onEditTemplate={setEditingTemplateSlug}
+                onApplyTemplate={
+                  readOnly ? undefined : (slug) => void onTemplateDrop(slug, null)
+                }
+                onAttachToVirtual={
+                  libraryAttachTarget ? handleAttachLibraryEntryToSelection : undefined
+                }
+                attachTargetLabel={libraryAttachTarget?.label ?? null}
                 onClose={closePanel}
               />
             ) : (
