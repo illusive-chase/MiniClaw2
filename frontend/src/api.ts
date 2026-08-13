@@ -349,6 +349,43 @@ export async function updatePlanspaceMode(
   return res.json();
 }
 
+/** Raised when the lane still holds queued or running nodes. */
+export class DeletePlanspaceBusyError extends Error {
+  busy: string[];
+
+  constructor(busy: string[]) {
+    super(`deletePlanspace blocked by: ${busy.join(", ")}`);
+    this.name = "DeletePlanspaceBusyError";
+    this.busy = busy;
+  }
+}
+
+export async function deletePlanspace(
+  sessionId: string,
+  planspaceId: string,
+): Promise<SessionContextSpaceInfo> {
+  const res = await fetch(
+    `/sessions/${sessionId}/planspaces/${encodeURIComponent(planspaceId)}`,
+    { method: "DELETE" },
+  );
+  if (res.ok) return res.json();
+  let detail: string | null = null;
+  try {
+    const body: unknown = await res.json();
+    const raw = (body as { detail?: unknown } | null)?.detail;
+    const busy = (raw as { busy?: unknown } | undefined)?.busy;
+    if (Array.isArray(busy)) {
+      throw new DeletePlanspaceBusyError(
+        busy.filter((value): value is string => typeof value === "string"),
+      );
+    }
+    detail = typeof raw === "string" ? raw : raw ? JSON.stringify(raw) : null;
+  } catch (err) {
+    if (err instanceof DeletePlanspaceBusyError) throw err;
+  }
+  throw new ApiError("deletePlanspace", res.status, detail);
+}
+
 export async function promoteVirtual(
   sessionId: string,
   nodeId: string,

@@ -725,6 +725,70 @@ def add_planspace_to_binding(
     _write_yaml(binding.path, raw)
 
 
+def remove_planspace_from_binding(
+    binding: ProjectBinding,
+    plug_id: str,
+) -> bool:
+    """Drop a planspace plug ref from ``binding``. True when it was present."""
+    raw = dict(binding.raw)
+    plugs = list(raw.get("plugs") or [])
+    kept = [item for item in plugs if _extract_plug_id(item) != plug_id]
+    if len(kept) == len(plugs):
+        return False
+    raw["plugs"] = kept
+    binding.raw = raw
+    binding.plugs = [ref for ref in binding.plugs if ref.id != plug_id]
+    _write_yaml(binding.path, raw)
+    return True
+
+
+def delete_planspace(
+    project: Project,
+    plug_id: str,
+    *,
+    store_root: Path | None = None,
+) -> bool:
+    """Remove one planspace from the project's binding and delete its plug.
+
+    The plug directory is retained when another binding still references it,
+    matching ``delete_project_contextspace``. Returns True when the plug ref
+    was removed from this project's binding.
+    """
+    if _plug_kind(plug_id) != "planspace":
+        raise ValueError(f"not a planspace plug: {plug_id!r}")
+    root = contextspace_root(store_root)
+    binding = resolve_project_binding(project, root)
+    if binding is None:
+        return False
+    if not remove_planspace_from_binding(binding, plug_id):
+        return False
+
+    referenced_elsewhere = any(
+        ref.id == plug_id
+        for other in list_project_bindings(root)
+        if other.id != binding.id
+        for ref in other.plugs
+    )
+    if referenced_elsewhere:
+        return True
+
+    plug_dir = _plug_dir(root, plug_id)
+    if plug_dir is None or not plug_dir.exists():
+        return True
+    planspaces_root = root / "plugs" / "planspaces"
+    try:
+        resolved_dir = plug_dir.resolve()
+        resolved_root = planspaces_root.resolve()
+    except OSError:
+        return True
+    # Guards against a crafted plug id escaping the planspaces root, the same
+    # containment check the project-level delete makes before rmtree.
+    if resolved_dir.parent != resolved_root:
+        return True
+    shutil.rmtree(plug_dir)
+    return True
+
+
 def resolve_project_binding(project: Project, root: Path) -> ProjectBinding | None:
     explicit = project.project_context_binding_id
     if explicit:

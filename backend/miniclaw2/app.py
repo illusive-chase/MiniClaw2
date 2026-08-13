@@ -1156,6 +1156,25 @@ def create_app(registry: ProjectRegistry | None = None) -> FastAPI:
             raise HTTPException(404, "session not found")
         return describe_project_contextspace(project, store_root=registry.store.root)
 
+    @app.delete("/sessions/{sid}/planspaces/{planspace_id}", response_model=dict[str, Any])
+    async def delete_planspace(sid: str, planspace_id: str) -> dict[str, Any]:
+        project = registry.get_project(sid)
+        if project is None:
+            raise HTTPException(404, "session not found")
+        if _context_task_running(project.id):
+            raise HTTPException(409, "context refresh in progress")
+        try:
+            deleted, busy = registry.delete_planspace(sid, planspace_id)
+        except RuntimeError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        if busy:
+            raise HTTPException(409, {"busy": busy})
+        if not deleted:
+            raise HTTPException(404, "planspace not found")
+        return describe_project_contextspace(project, store_root=registry.store.root)
+
     @app.get(
         "/sessions/{sid}/planspaces/{planspace_id}/template-instances",
         response_model=list[dict[str, Any]],

@@ -15,10 +15,12 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from .artifacts import workspace_artifacts_dir
 from .contextspace import (
     clear_owned_binding_local_paths,
     contextspace_root,
     create_planspace,
+    delete_planspace,
     delete_project_contextspace,
     normalize_principle_ids,
     read_planspace_mode,
@@ -49,6 +51,7 @@ from .domain import (
     normalize_planspace_mode,
 )
 from .language import normalize_preferred_language
+from .materialize import ARTIFACTS_DIRNAME, GRAPH_DIRNAME, lane_root
 from .model_catalog import (
     default_code_review_model_preset_id,
     default_model_preset_id,
@@ -752,6 +755,140 @@ class ProjectRegistry:
             self._auto_promote_eligible_virtuals(rt)
         self.store.sync.schedule_commit(f"update planspace {planspace_id}")
         return written
+
+    def delete_planspace(self, pid: str, planspace_id: str) -> tuple[bool, list[str]]:
+        """Hard-delete one planspace and every node that lives in it.
+
+        Returns ``(True, [])`` on success. A non-empty second element lists
+        node ids that are still queued or running in the lane, which the
+        caller should report as a conflict. ``(False, [])`` means the project
+        or the planspace does not exist. Deleting the active lane raises
+        ``ValueError`` — the caller must activate another lane first.
+        """
+        rt = self._runtimes.get(pid)
+        if rt is None:
+            return False, []
+        self.require_native(pid)
+        lane_id = planspace_id.strip()
+        if not lane_id:
+            raise ValueError("planspace id is required")
+
+        root = contextspace_root(self.store.root)
+        binding = resolve_project_binding(rt.project, root)
+        if binding is None or not any(ref.id == lane_id for ref in binding.plugs):
+            return False, []
+
+        active = resolve_active_planspace(rt.project, root)
+        active_lane = active[1].id if active is not None else ""
+        if lane_id == active_lane:
+            raise ValueError(
+                "cannot delete the active planspace; activate another one first"
+            )
+
+        nodes = self.store.list_nodes(pid)
+        lane_nodes = [n for n in nodes if (n.planspace_id or "") == lane_id]
+        # A runner persists its terminal state before awaiting its final
+        # broadcasts, so a node can read as terminal while its task is still
+        # finalizing. Deleting then lets the callback emit events for — or even
+        # auto-commit into — a lane that no longer exists, so runtime
+        # ownership counts as busy until _on_runner_done drops the task.
+        busy = [
+            n.id
+            for n in lane_nodes
+            if n.id in rt.runner_tasks
+            or (
+                n.state is not NodeState.VIRTUAL
+                and n.state not in TERMINAL_NODE_STATES
+            )
+        ]
+        if busy:
+            return False, busy
+
+        # Drop dangling scheduled_deps in surviving lanes before the nodes go,
+        # mirroring delete_virtual. Cross-lane deps are rejected at reap time,
+        # but a stale store can still carry one.
+        doomed = {n.id for n in lane_nodes}
+        for other in nodes:
+            if other.id in doomed or not (other.scheduled_deps or []):
+                continue
+            cleaned = [dep for dep in other.scheduled_deps if dep not in doomed]
+            if cleaned == other.scheduled_deps:
+                continue
+            if not self.is_native_node(rt.project, other):
+                continue
+            other.scheduled_deps = cleaned
+            self.store.update_node(other)
+            try:
+                self.store.write_node_preview(
+                    pid, other.id, render_virtual_preview(other)
+                )
+            except Exception:  # noqa: BLE001
+                logger.exception("failed to write virtual preview after lane delete")
+
+        removed: list[str] = []
+        for node in lane_nodes:
+            if self.store.delete_node(pid, node.id):
+                removed.append(node.id)
+            self._remove_workspace_artifacts(rt.project, node.id)
+            rt.deferred_until_idle_node_ids.discard(node.id)
+        rt.priority_node_ids = [
+            node_id for node_id in rt.priority_node_ids if node_id not in doomed
+        ]
+
+        delete_planspace(rt.project, lane_id, store_root=self.store.root)
+        self._remove_lane_projection(rt.project, lane_id)
+
+        view = dict(rt.project.planspace_view)
+        view.pop(lane_id, None)
+        rt.project.planspace_view = view
+        hints = dict(rt.project.layout_hints)
+        hints.pop(f"planspace:{lane_id}", None)
+        for node_id in removed:
+            hints.pop(node_id, None)
+        rt.project.layout_hints = hints
+        self.store.update_project(rt.project)
+        self.store.sync.schedule_commit(f"delete planspace {lane_id}")
+
+        for node_id in removed:
+            try:
+                asyncio.get_running_loop().create_task(
+                    rt.broadcast(NodeRemoved(id=node_id).model_dump())
+                )
+            except RuntimeError:
+                break
+        return True, []
+
+    def _remove_workspace_artifacts(self, project: Project, node_id: str) -> None:
+        """Delete a node's workspace output directory, if any.
+
+        The store copy only holds declared artifacts, so the workspace source
+        must go too for a lane delete to be the hard delete the UI promises.
+        Best effort: removing the node record is the primary semantics, so a
+        failure here is logged instead of aborting the delete.
+        """
+        if not node_id or node_id in {".", ".."} or Path(node_id).name != node_id:
+            return
+        try:
+            path = workspace_artifacts_dir(project, node_id)
+            expected_parent = Path(project.root_path) / ARTIFACTS_DIRNAME
+            if path.resolve().parent != expected_parent.resolve():
+                return
+            if path.exists():
+                shutil.rmtree(path)
+        except OSError:
+            logger.exception("failed to remove workspace artifacts for %s", node_id)
+
+    def _remove_lane_projection(self, project: Project, lane_id: str) -> None:
+        """Delete the durable materialized lane subtree, if any."""
+        try:
+            path = lane_root(project, lane_id)
+            expected_parent = Path(project.root_path) / GRAPH_DIRNAME
+            if path.resolve().parent != expected_parent.resolve():
+                return
+            if path.exists():
+                shutil.rmtree(path)
+        except OSError:
+            logger.exception("failed to remove lane projection for %s", lane_id)
 
     def delete_project(self, pid: str) -> bool:
         rt = self._runtimes.get(pid)

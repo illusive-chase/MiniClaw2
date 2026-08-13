@@ -507,6 +507,86 @@ class PlanspaceApiTest(unittest.TestCase):
             self.assertEqual(res.status_code, 200, res.text)
             self.assertEqual(res.json()["node"]["state"], "virtual")
 
+    def test_delete_planspace_returns_refreshed_contextspace(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            project = Project(root_path=raw, name="Project")
+            calls: list[tuple[str, str]] = []
+
+            class _Registry:
+                store = SimpleNamespace(root=Path(raw) / "store")
+
+                def get_project(self, sid: str) -> Project | None:
+                    return project if sid == project.id else None
+
+                def delete_planspace(
+                    self, sid: str, planspace_id: str
+                ) -> tuple[bool, list[str]]:
+                    calls.append((sid, planspace_id))
+                    return True, []
+
+            with patch.object(app_module, "ProjectRegistry", return_value=_Registry()):
+                with patch.object(
+                    app_module,
+                    "describe_project_contextspace",
+                    return_value={"active_planspace_id": "planspaces.keep"},
+                ):
+                    client = TestClient(app_module.create_app())
+                    try:
+                        res = client.delete(
+                            f"/sessions/{project.id}/planspaces/planspaces.drop"
+                        )
+                    finally:
+                        client.close()
+
+            self.assertEqual(res.status_code, 200, res.text)
+            self.assertEqual(res.json()["active_planspace_id"], "planspaces.keep")
+            self.assertEqual(calls, [(project.id, "planspaces.drop")])
+
+    def test_delete_planspace_maps_registry_outcomes_to_status_codes(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            project = Project(root_path=raw, name="Project")
+
+            class _Registry:
+                store = SimpleNamespace(root=Path(raw) / "store")
+
+                def get_project(self, sid: str) -> Project | None:
+                    return project if sid == project.id else None
+
+                def delete_planspace(
+                    self, sid: str, planspace_id: str
+                ) -> tuple[bool, list[str]]:
+                    if planspace_id == "planspaces.active":
+                        raise ValueError("cannot delete the active planspace")
+                    if planspace_id == "planspaces.busy":
+                        return False, ["node-1", "node-2"]
+                    if planspace_id == "planspaces.readonly":
+                        raise RuntimeError("store is read-only")
+                    return False, []
+
+            with patch.object(app_module, "ProjectRegistry", return_value=_Registry()):
+                with patch.object(
+                    app_module, "describe_project_contextspace", return_value={}
+                ):
+                    client = TestClient(app_module.create_app())
+                    try:
+                        base = f"/sessions/{project.id}/planspaces"
+                        active = client.delete(f"{base}/planspaces.active")
+                        busy = client.delete(f"{base}/planspaces.busy")
+                        readonly = client.delete(f"{base}/planspaces.readonly")
+                        missing = client.delete(f"{base}/planspaces.missing")
+                        no_session = client.delete(
+                            "/sessions/nope/planspaces/planspaces.drop"
+                        )
+                    finally:
+                        client.close()
+
+            self.assertEqual(active.status_code, 400, active.text)
+            self.assertEqual(busy.status_code, 409, busy.text)
+            self.assertEqual(busy.json()["detail"]["busy"], ["node-1", "node-2"])
+            self.assertEqual(readonly.status_code, 409, readonly.text)
+            self.assertEqual(missing.status_code, 404, missing.text)
+            self.assertEqual(no_session.status_code, 404, no_session.text)
+
 
 if __name__ == "__main__":
     unittest.main()

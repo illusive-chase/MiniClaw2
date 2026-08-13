@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 
 import { LANGUAGE_OPTIONS } from "../languages";
+import { ApiError, DeletePlanspaceBusyError } from "../api";
 import {
   defaultModelPresetId,
   modelPresetDetail,
@@ -46,6 +47,7 @@ export type ProjectPanelProps = {
   onContextRefresh: () => void;
   onContextCancel: () => void;
   onTogglePlanspaceVisibility: (planspaceId: string, hidden: boolean) => void;
+  onDeletePlanspace: (planspaceId: string) => Promise<void>;
   newDirectionRequestVersion: number;
   onNewDirectionRequestHandled: () => void;
 };
@@ -77,6 +79,7 @@ export function ProjectPanel({
   onContextRefresh,
   onContextCancel,
   onTogglePlanspaceVisibility,
+  onDeletePlanspace,
   newDirectionRequestVersion,
   onNewDirectionRequestHandled,
 }: ProjectPanelProps) {
@@ -488,6 +491,7 @@ export function ProjectPanel({
                     saving={busy}
                     onActivatePlanspace={onActivatePlanspace}
                     onTogglePlanspaceVisibility={onTogglePlanspaceVisibility}
+                    onDeletePlanspace={onDeletePlanspace}
                   />
                 </li>
               ))}
@@ -531,55 +535,135 @@ function DirectionRow({
   saving,
   onActivatePlanspace,
   onTogglePlanspaceVisibility,
+  onDeletePlanspace,
 }: {
   binding: ContextSpaceBindingSummary;
   plug: ContextSpacePlugSummary;
   saving: boolean;
   onActivatePlanspace: (binding_id: string, planspace_id: string) => void;
   onTogglePlanspaceVisibility: (planspaceId: string, hidden: boolean) => void;
+  onDeletePlanspace: (planspaceId: string) => Promise<void>;
 }) {
   const hidden = !!plug.hidden;
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+
+  /* The active lane is rejected by the backend, so the control explains the
+   * prerequisite instead of offering a call that is certain to fail. */
+  const blockedReason = plug.active
+    ? "当前方向正在使用中，请先激活其他方向再删除。"
+    : null;
+
+  const runDelete = async () => {
+    setDeleting(true);
+    setDeleteError(null);
+    try {
+      await onDeletePlanspace(plug.id);
+      setConfirmOpen(false);
+    } catch (err) {
+      setDeleteError(describeDeleteError(err));
+    } finally {
+      setDeleting(false);
+    }
+  };
+
   return (
     <div
       className={
-        "flex items-center gap-2 rounded-md border px-3 py-2 text-[12px] transition " +
+        "rounded-md border px-3 py-2 text-[12px] transition " +
         (plug.active
           ? "border-brand bg-brand-soft text-brand-ink"
           : "border-line bg-surface-raised text-ink")
       }
     >
-      <button
-        type="button"
-        disabled={saving}
-        onClick={() => onActivatePlanspace(binding.id, plug.id)}
-        className="flex min-w-0 flex-1 items-center gap-2 text-left disabled:opacity-50"
-      >
-        <span
-          className="h-2.5 w-2.5 flex-none rounded-full border border-line"
-          style={{ background: colorSwatch(plug) }}
-          aria-hidden="true"
-        />
-        <span className="min-w-0 flex-1">
-          <span className="block truncate font-medium">{plug.title}</span>
-          <span className="mt-0.5 block truncate font-mono text-[10.5px] text-ink-muted">
-            {plug.slug}
-            {plug.mode ? ` · ${plug.mode}` : ""}
-            {plug.active ? " · active" : ""}
-            {plug.mode === "auto" && !plug.active ? " · 待激活" : ""}
-            {hidden ? " · hidden" : ""}
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          disabled={saving}
+          onClick={() => onActivatePlanspace(binding.id, plug.id)}
+          className="flex min-w-0 flex-1 items-center gap-2 text-left disabled:opacity-50"
+        >
+          <span
+            className="h-2.5 w-2.5 flex-none rounded-full border border-line"
+            style={{ background: colorSwatch(plug) }}
+            aria-hidden="true"
+          />
+          <span className="min-w-0 flex-1">
+            <span className="block truncate font-medium">{plug.title}</span>
+            <span className="mt-0.5 block truncate font-mono text-[10.5px] text-ink-muted">
+              {plug.slug}
+              {plug.mode ? ` · ${plug.mode}` : ""}
+              {plug.active ? " · active" : ""}
+              {plug.mode === "auto" && !plug.active ? " · 待激活" : ""}
+              {hidden ? " · hidden" : ""}
+            </span>
           </span>
-        </span>
-      </button>
-      <button
-        type="button"
-        disabled={saving}
-        onClick={() => onTogglePlanspaceVisibility(plug.id, !hidden)}
-        className="flex-none rounded border border-line bg-surface px-2 py-1 text-[11px] text-ink-muted transition hover:border-line-strong hover:text-ink disabled:opacity-40"
-      >
-        {hidden ? "Show" : "Hide"}
-      </button>
+        </button>
+        <button
+          type="button"
+          disabled={saving}
+          onClick={() => onTogglePlanspaceVisibility(plug.id, !hidden)}
+          className="flex-none rounded border border-line bg-surface px-2 py-1 text-[11px] text-ink-muted transition hover:border-line-strong hover:text-ink disabled:opacity-40"
+        >
+          {hidden ? "Show" : "Hide"}
+        </button>
+        <button
+          type="button"
+          disabled={saving || deleting || !!blockedReason}
+          title={blockedReason ?? "删除此方向及其全部节点"}
+          onClick={() => {
+            setDeleteError(null);
+            setConfirmOpen((open) => !open);
+          }}
+          className="flex-none rounded border border-line bg-surface px-2 py-1 text-[11px] text-ink-muted transition hover:border-state-error hover:text-state-error disabled:opacity-40 disabled:hover:border-line disabled:hover:text-ink-muted"
+        >
+          删除
+        </button>
+      </div>
+      {confirmOpen && (
+        <div className="mt-2 rounded border border-state-error/40 bg-state-error-soft px-2.5 py-2 text-[11.5px] text-ink">
+          <p>
+            删除后，该方向及其 <span className="font-medium">全部节点</span>
+            （含已执行的记录与产物）将被永久移除，无法撤销。
+          </p>
+          {deleteError && (
+            <p className="mt-1.5 text-state-error">{deleteError}</p>
+          )}
+          <div className="mt-2 flex items-center gap-2">
+            <button
+              type="button"
+              disabled={deleting}
+              onClick={() => void runDelete()}
+              className="rounded border border-state-error bg-surface px-2 py-1 text-[11px] font-medium text-state-error transition hover:bg-state-error-soft disabled:opacity-50"
+            >
+              {deleting ? "删除中…" : "确认删除"}
+            </button>
+            <button
+              type="button"
+              disabled={deleting}
+              onClick={() => {
+                setConfirmOpen(false);
+                setDeleteError(null);
+              }}
+              className="rounded border border-line bg-surface px-2 py-1 text-[11px] text-ink-muted transition hover:text-ink disabled:opacity-50"
+            >
+              取消
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
+}
+
+/** Turns a delete rejection into one sentence the panel can show inline. */
+function describeDeleteError(err: unknown): string {
+  if (err instanceof DeletePlanspaceBusyError) {
+    return `该方向还有 ${err.busy.length} 个节点正在运行或排队，请等待结束后再删除。`;
+  }
+  if (err instanceof ApiError && err.detail) return err.detail;
+  return err instanceof Error ? err.message : String(err);
 }
 
 function collectDirections(binding: ContextSpaceBindingSummary | undefined) {

@@ -19,6 +19,7 @@ import {
   refreshProjectContext,
   rerunNode,
   updateLayoutHints,
+  deletePlanspace,
   updatePlanspaceMode,
   updatePlanspaceView,
   updateSessionContextSpace,
@@ -1126,6 +1127,35 @@ export function App() {
       }
     },
     [refreshNodes, session?.id],
+  );
+
+  /* Throws instead of swallowing so the caller can render the busy-node
+   * conflict inline; the lane and all of its nodes are gone server-side, so
+   * both the contextspace and the node list must be refetched. */
+  const deletePlanspaceLane = useCallback(
+    async (planspaceId: string) => {
+      if (!session?.id) throw new Error("No active project.");
+      if (projectMutationPending) {
+        throw new Error("Project is busy.");
+      }
+      setProjectMutationPending(true);
+      setSessionContextSpaceSaving(true);
+      setSessionContextSpaceError(null);
+      try {
+        const next = await deletePlanspace(session.id, planspaceId);
+        setSessionContextSpace(next);
+        setSelection((current) =>
+          current.kind === "planspace" && current.planspaceId === planspaceId
+            ? { kind: "none" }
+            : current,
+        );
+        await refreshNodes();
+      } finally {
+        setProjectMutationPending(false);
+        setSessionContextSpaceSaving(false);
+      }
+    },
+    [projectMutationPending, refreshNodes, session?.id],
   );
 
   const promoteVirtualNode = useCallback(
@@ -2744,6 +2774,7 @@ export function App() {
                 onContextRefresh={runContextRefresh}
                 onContextCancel={runContextCancel}
                 onTogglePlanspaceVisibility={togglePlanspaceVisibility}
+                onDeletePlanspace={deletePlanspaceLane}
                 contextReloadVersion={contextReloadVersion}
                 focusRequestVersion={focusRequestVersion}
                 activityFocusRequestVersion={activityFocusRequestVersion}
