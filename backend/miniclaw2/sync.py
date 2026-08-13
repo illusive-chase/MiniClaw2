@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shutil
 import socket
@@ -19,9 +20,12 @@ import yaml
 
 MACHINE_FILENAME = "machine.json"
 SCHEMA_FILENAME = "schema.json"
-SCHEMA_VERSION = 7
-SCHEMA_NAME = "host-partition-v7"
+SCHEMA_VERSION = 8
+SCHEMA_NAME = "user-template-schema-v2-v8"
 DEFAULT_COMMIT_DEBOUNCE_SECONDS = 30.0
+
+
+logger = logging.getLogger(__name__)
 
 
 class SyncError(RuntimeError):
@@ -154,6 +158,8 @@ def ensure_store_metadata(root: Path, identity: MachineIdentity) -> None:
     legacy_skill_plugs = context_root / "plugs" / "skills"
     if existing_version < 6 and (existing_version > 0 or legacy_skill_plugs.exists()):
         _migrate_principles_and_skills(root, context_root=context_root)
+    if existing_version < 8:
+        _migrate_user_templates_v2(root, context_root=context_root)
 
     project_files = sorted((root / "projects").glob("*/project.json"))
     legacy_files: list[tuple[Path, dict[str, Any]]] = []
@@ -193,6 +199,88 @@ def _configured_contextspace_root(root: Path) -> Path:
     if override:
         return Path(override).expanduser().resolve()
     return (root / "contextspace").resolve()
+
+
+def _migrate_user_templates_v2(root: Path, *, context_root: Path) -> None:
+    """Upgrade user-authored template manifests to template schema v2."""
+    from .templates.loader import SCHEMA_VERSION as template_schema_version
+
+    templates_root = context_root / "templates"
+    if not templates_root.is_dir():
+        return
+
+    backup_root = (
+        root
+        / "migration-backups"
+        / f"{SCHEMA_NAME}-{int(time.time())}"
+        / "contextspace"
+        / "templates"
+    )
+    shutil.copytree(templates_root, backup_root, dirs_exist_ok=True)
+
+    for template_root in sorted(templates_root.iterdir(), key=lambda path: path.name):
+        manifest = template_root / "template.yaml"
+        if not template_root.is_dir() or not manifest.is_file():
+            continue
+        try:
+            payload = _read_yaml_mapping(manifest)
+            if payload is None:
+                raise SyncError(f"{manifest} 顶层必须是 YAML mapping")
+
+            version = payload.get("schema_version")
+            if version == template_schema_version and not isinstance(version, bool):
+                continue
+            if version is not None and (
+                isinstance(version, bool) or not isinstance(version, int)
+            ):
+                raise SyncError(f"{manifest} 的 schema_version 必须是整数")
+            if isinstance(version, int) and version > template_schema_version:
+                raise SyncError(
+                    f"{manifest} 使用了更新的模板 schema_version {version}"
+                )
+
+            placeholder_warnings = _template_placeholder_warnings(template_root)
+            migrated: dict[str, Any] = {"schema_version": template_schema_version}
+            migrated.update(
+                (key, value)
+                for key, value in payload.items()
+                if key != "schema_version"
+            )
+            migrated.setdefault("arguments", [])
+            migrated.setdefault("inputs", [])
+            _write_yaml_mapping(manifest, migrated)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("用户模板 %r 迁移失败：%s", template_root.name, exc)
+            continue
+
+        if placeholder_warnings:
+            logger.warning(
+                "用户模板 %r 已迁移到 schema v%d；以下占位符将被识别为参数，"
+                "请确认它们符合作者意图：\n%s",
+                template_root.name,
+                template_schema_version,
+                "\n".join(f"  - {item}" for item in placeholder_warnings),
+            )
+
+
+def _template_placeholder_warnings(template_root: Path) -> list[str]:
+    """List prompt placeholders whose meaning changes under template schema v2."""
+    from .templates.loader import PARAM_NAME_RE, _PLACEHOLDER_RE
+
+    prompts_root = template_root / "prompts"
+    if not prompts_root.is_dir():
+        return []
+
+    warnings: list[str] = []
+    for prompt_path in sorted(prompts_root.rglob("*.md")):
+        text = prompt_path.read_text(encoding="utf-8")
+        relative = prompt_path.relative_to(template_root).as_posix()
+        for match in _PLACEHOLDER_RE.finditer(text):
+            name = match.group(1)
+            if PARAM_NAME_RE.fullmatch(name):
+                line = text.count("\n", 0, match.start()) + 1
+                warnings.append(f"{relative}:{line}: {match.group(0)}")
+    return warnings
 
 
 def _migrate_principles_and_skills(

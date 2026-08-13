@@ -8,20 +8,31 @@ share the ``Template``/``TemplateNodeSpec`` schema in ``loader.py``.
 
 from .launcher import apply_user_template, launch_template
 from .loader import (
+    SCHEMA_VERSION,
     Template,
+    TemplateArgument,
     TemplateError,
+    TemplateInput,
     list_templates,
     list_user_templates,
     load_template,
     load_user_template,
     user_templates_root,
 )
-from .serializer import SerializerError, delete_user_template, serialize_selection
+from .serializer import (
+    SerializerError,
+    delete_user_template,
+    rewrite_user_template,
+    serialize_selection,
+)
 
 __all__ = [
+    "SCHEMA_VERSION",
     "SerializerError",
     "Template",
+    "TemplateArgument",
     "TemplateError",
+    "TemplateInput",
     "apply_user_template",
     "delete_user_template",
     "launch_template",
@@ -29,6 +40,7 @@ __all__ = [
     "list_user_templates",
     "load_template",
     "load_user_template",
+    "rewrite_user_template",
     "serialize_selection",
     "user_templates_root",
 ]

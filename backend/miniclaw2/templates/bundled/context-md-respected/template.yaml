@@ -1,3 +1,4 @@
+schema_version: 2
 name: context-md-respected
 brief: Project-neutral CONTEXT.md is honored by both providers.
 allowed_model_preset_ids:

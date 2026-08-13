@@ -1,3 +1,4 @@
+schema_version: 2
 name: hello-text
 brief: 'Simplest end-to-end run: agent produces a sensible text reply.'
 allowed_model_preset_ids:

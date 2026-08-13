@@ -220,6 +220,7 @@ export type SessionHost = {
 };
 
 export type TemplateSummary = {
+  slug: string;
   name: string;
   brief: string;
   allowed_model_preset_ids: string[];

@@ -28,6 +28,7 @@ from .contextspace import (
     list_principles,
     load_context_bundle_for_node,
     read_project_context,
+    read_template_instances,
 )
 from .context_refresh import cancel_context_task, context_refresh_status, start_context_task
 from .domain import Node
@@ -62,7 +63,9 @@ from .skills import (
 from .store import StoreReadOnlyError
 from .sync import SyncError
 from .templates import (
+    SCHEMA_VERSION as TEMPLATE_SCHEMA_VERSION,
     SerializerError,
+    Template,
     TemplateError,
     apply_user_template,
     delete_user_template,
@@ -71,6 +74,7 @@ from .templates import (
     list_user_templates,
     load_template,
     load_user_template,
+    rewrite_user_template,
     serialize_selection,
 )
 
@@ -264,22 +268,57 @@ class GitCommitRequest(BaseModel):
     message: str = ""
 
 
+class TemplateArgumentMeta(BaseModel):
+    """A template argument as rendered in the instantiation dialog."""
+
+    name: str
+    description: str = ""
+    default: str | None = None
+    required: bool = True
+    declared: bool = True
+
+
+class TemplateInputMeta(BaseModel):
+    """A named upstream port the caller binds to an existing node."""
+
+    name: str
+    description: str = ""
+
+
+class TemplateWarningMeta(BaseModel):
+    """Non-fatal schema complaint the template editor surfaces."""
+
+    code: str
+    name: str = ""
+    message: str = ""
+
+
 class TemplateSummary(BaseModel):
+    slug: str
     name: str
     brief: str
     allowed_model_preset_ids: list[str]
     auto_commit: bool
     node_count: int
     nodes: list[dict[str, Any]] = Field(default_factory=list)
+    schema_version: int = TEMPLATE_SCHEMA_VERSION
+    arguments: list[TemplateArgumentMeta] = Field(default_factory=list)
+    inputs: list[TemplateInputMeta] = Field(default_factory=list)
+    warnings: list[TemplateWarningMeta] = Field(default_factory=list)
 
 
 class TemplateDetail(BaseModel):
+    slug: str
     name: str
     brief: str
     allowed_model_preset_ids: list[str]
     auto_commit: bool
     node_count: int
     nodes: list[dict[str, Any]] = Field(default_factory=list)
+    schema_version: int = TEMPLATE_SCHEMA_VERSION
+    arguments: list[TemplateArgumentMeta] = Field(default_factory=list)
+    inputs: list[TemplateInputMeta] = Field(default_factory=list)
+    warnings: list[TemplateWarningMeta] = Field(default_factory=list)
 
 
 class TemplateRunRequest(BaseModel):
@@ -301,12 +340,71 @@ class SaveUserTemplateResponse(BaseModel):
     node_count: int
 
 
+class UserTemplateArgumentWrite(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    description: str = ""
+    # Missing and explicit null both mean required; "" is an optional value.
+    default: str | None = None
+
+
+class UserTemplateInputWrite(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    description: str = ""
+
+
+class UserTemplateNodeWrite(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    kind: str
+    category: str
+    subtype: str | None = None
+    brief: dict[str, Any] | None = None
+    prompt: str
+    scheduled_deps: list[str] = Field(default_factory=list)
+    resume_from: str | None = None
+
+
+class RewriteUserTemplateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    brief: str = ""
+    nodes: list[UserTemplateNodeWrite] = Field(default_factory=list)
+    arguments: list[UserTemplateArgumentWrite] = Field(default_factory=list)
+    inputs: list[UserTemplateInputWrite] = Field(default_factory=list)
+
+
 class ApplyUserTemplateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     anchor_node_id: str | None = None
+    arguments: dict[str, str] = Field(default_factory=dict)
+    input_bindings: dict[str, str] = Field(default_factory=dict)
 
 
 class ApplyUserTemplateResponse(BaseModel):
     node_ids: list[str]
+    instance_id: str
+
+
+def _template_detail_payload(template: Template) -> dict[str, Any]:
+    """Add editable prompt source only to detail responses.
+
+    ``Template.metadata()`` also powers both list endpoints, which refresh in
+    the library UI. Keeping full prompt text in this detail-only branch avoids
+    making every library refresh download every template's source files.
+    """
+    payload = template.metadata()
+    payload["nodes"] = [
+        {**node.metadata(), "prompt": node.prompt}
+        for node in template.nodes
+    ]
+    return payload
 
 
 def create_app(registry: ProjectRegistry | None = None) -> FastAPI:
@@ -1026,6 +1124,26 @@ def create_app(registry: ProjectRegistry | None = None) -> FastAPI:
             raise HTTPException(404, "session not found")
         return describe_project_contextspace(project, store_root=registry.store.root)
 
+    @app.get(
+        "/sessions/{sid}/planspaces/{planspace_id}/template-instances",
+        response_model=list[dict[str, Any]],
+    )
+    def list_template_instances_endpoint(
+        sid: str,
+        planspace_id: str,
+    ) -> list[dict[str, Any]]:
+        project = registry.get_project(sid)
+        if project is None:
+            raise HTTPException(404, "session not found")
+        try:
+            return read_template_instances(
+                project,
+                planspace_id,
+                store_root=registry.store.root,
+            )
+        except ValueError as exc:
+            raise HTTPException(404, str(exc)) from exc
+
     @app.post("/sessions/{sid}/virtuals", response_model=dict[str, Any])
     async def create_virtual(
         sid: str,
@@ -1346,7 +1464,7 @@ def create_app(registry: ProjectRegistry | None = None) -> FastAPI:
             template = load_template(name, store_root=registry.store.root)
         except TemplateError as exc:
             raise HTTPException(404, str(exc)) from exc
-        return TemplateDetail(**template.metadata())
+        return TemplateDetail(**_template_detail_payload(template))
 
     @app.post("/templates/{name}/run", response_model=SessionInfo)
     async def run_template(name: str, req: TemplateRunRequest) -> SessionInfo:
@@ -1373,7 +1491,28 @@ def create_app(registry: ProjectRegistry | None = None) -> FastAPI:
             template = load_user_template(slug, registry.store.root)
         except TemplateError as exc:
             raise HTTPException(404, str(exc)) from exc
-        return TemplateDetail(**template.metadata())
+        return TemplateDetail(**_template_detail_payload(template))
+
+    @app.put("/user-templates/{slug}", response_model=TemplateDetail)
+    def rewrite_user_template_endpoint(
+        slug: str,
+        req: RewriteUserTemplateRequest,
+    ) -> TemplateDetail:
+        registry.store.assert_writable()
+        try:
+            template = rewrite_user_template(
+                slug,
+                name=req.name,
+                brief=req.brief,
+                nodes=[node.model_dump() for node in req.nodes],
+                arguments=[argument.model_dump() for argument in req.arguments],
+                inputs=[input_spec.model_dump() for input_spec in req.inputs],
+                store_root=registry.store.root,
+            )
+        except (SerializerError, TemplateError) as exc:
+            raise HTTPException(400, str(exc)) from exc
+        registry.store.sync.schedule_commit(f"update template {slug}")
+        return TemplateDetail(**_template_detail_payload(template))
 
     @app.delete("/user-templates/{slug}", status_code=204)
     def delete_user_template_endpoint(slug: str) -> Response:
@@ -1496,11 +1635,19 @@ def create_app(registry: ProjectRegistry | None = None) -> FastAPI:
                 project,
                 registry,
                 anchor_node_id=req.anchor_node_id,
+                arguments=req.arguments,
+                input_bindings=req.input_bindings,
             )
         except TemplateError as exc:
             raise HTTPException(400, str(exc)) from exc
         registry.promote_next_virtual(sid)
-        return ApplyUserTemplateResponse(node_ids=[n.id for n in created])
+        instance_id = created[0].template_instance_id if created else None
+        if instance_id is None:
+            raise HTTPException(500, "stamped template has no instance id")
+        return ApplyUserTemplateResponse(
+            node_ids=[n.id for n in created],
+            instance_id=instance_id,
+        )
 
     @app.websocket("/ws/{sid}")
     async def ws(websocket: WebSocket, sid: str) -> None:

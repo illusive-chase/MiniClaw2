@@ -230,6 +230,7 @@ class Node(BaseModel):
     provider_turn_id: str | None = None
     origin_machine_id: str = ""
     promoted_from: str | None = None
+    template_instance_id: str | None = None
     commit_before: str | None = None
     commit_after: str | None = None
     prompt: str = ""

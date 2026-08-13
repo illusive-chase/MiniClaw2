@@ -897,8 +897,11 @@ time behaviour:
   the side-panel Library dock, and stamp their subgraph into the *current*
   project's active planspace when dropped onto the canvas.
 
-Templates apply verbatim — no parameter substitution, no concierge
-prefix. A template author who wants adaptation bakes a `planning`
+Templates are being reshaped into *functions* (see the schema v2 section
+below): `template.yaml` declares `arguments` (string parameters) and
+`inputs` (named upstream ports). The loader validates the declarations and
+`launcher.py` resolves them when stamping. There is no concierge prefix. A
+template author who wants adaptation beyond parameters bakes a `planning`
 virtual into their subgraph.
 
 ### Landed — bundled
@@ -906,10 +909,10 @@ virtual into their subgraph.
 - `backend/miniclaw2/templates/` provides `loader.py`, `launcher.py`,
   and `bundled/` template definitions with `template.yaml`,
   `lane.yaml`, `prompts/`, `scripts/`, and optional `seed/`.
-- Current template metadata declares only `allowed_model_preset_ids`;
-  runtime loaders reject legacy `providers` and singular
-  `model_preset_id` fields. Historical template shapes are no longer
-  supported.
+- Model selection metadata declares `allowed_model_preset_ids`; runtime
+  loaders reject legacy `providers` and singular `model_preset_id` fields.
+  Historical template shapes are no longer supported. `schema_version`,
+  `arguments`, and `inputs` are covered in the schema v2 section below.
 - REST exposes `GET /templates`, `GET /templates/{name}`, and
   `POST /templates/{name}/run`. The old `/scenarios` and
   `/sessions/{sid}/verify` endpoints have been removed.
@@ -950,7 +953,10 @@ virtual into their subgraph.
   `resume_from` links leaving the selection, disconnected selections
   (must be one component under `scheduled_deps ∪ resume_from_node_id`),
   and slug collisions. External `scheduled_deps` are dropped so the
-  template becomes topologically self-contained.
+  template becomes topologically self-contained. They are deliberately not
+  converted to generated input names: runtime node ids do not provide a
+  stable, meaningful port interface, so authors name and connect those ports
+  explicitly in the template editor.
 - `virtual_graph.is_connected` performs the undirected BFS used by the
   connectedness check.
 - `launcher.apply_user_template` stamps a user template into the
@@ -960,6 +966,7 @@ virtual into their subgraph.
   deps) get an implicit `scheduled_deps=[anchor]`.
 - REST endpoints:
   `GET /user-templates`, `GET /user-templates/{slug}`,
+  `PUT /user-templates/{slug}` (complete editor-state rewrite),
   `DELETE /user-templates/{slug}`,
   `POST /sessions/{sid}/user-templates` (save selection),
   `POST /sessions/{sid}/user-templates/{slug}/apply`.
@@ -975,9 +982,131 @@ virtual into their subgraph.
   Dropping a card onto an agent tile anchors the root virtuals to that
   tile; dropping onto empty canvas leaves root virtuals unparented.
 
+### Landed — schema v2 (loader层)
+
+Disk format for the function-style template. `backend/miniclaw2/templates/
+loader.py` owns parsing; nothing below changes stamp-time behaviour.
+
+- `template.yaml` must declare `schema_version: 2`. A missing or older
+  value raises `TemplateError` with a "run the template migration" hint —
+  strict single-path parsing, no dual-track v1 fallback. `SCHEMA_VERSION`
+  is exported from `miniclaw2.templates`.
+- `arguments`: list of `{name, description?, default?}`. `name` matches
+  `^[a-z][a-z0-9_]*$` and is unique. An absent `default` key and an
+  explicit `default: null` both mean **required**; `default: ""` is a
+  supplied empty string and is therefore optional. Empty list is legal.
+- `inputs`: list of `{name, description?}` with the same naming and
+  uniqueness rules. `arguments` and `inputs` are **independent
+  namespaces** — a `topic` argument and a `topic` input coexist because
+  their reference syntax differs.
+- Placeholder scan: every node prompt is scanned for `{{name}}`.
+  Scanned-but-undeclared arguments are appended in memory with
+  `declared=False`, so authors can use a new placeholder without editing
+  `template.yaml` first. Braces whose body fails the naming rule
+  (`{{Bad-Name}}`, `{{a b}}`) stay literal text and are never treated as
+  parameters, keeping accidental substitution out of the picture.
+- `{{input.<port>}}` referencing an undeclared port is an **error**: that
+  declaration drives the instantiation dialog's binding form, so it cannot
+  be inferred.
+- `in:<name>` in `scheduled_deps` names an input port. Ports are
+  out-of-graph source points: `_validate_lane_graph` checks them against
+  the declared `inputs`, then excludes them from both the
+  "dep must reference an earlier node" ordering rule and cycle detection.
+  `TemplateNodeSpec.input_deps` / `.internal_deps` split the two kinds.
+- Warnings (structured, non-fatal, exposed for the editor to render):
+  `dangling_argument` when a declared argument no longer appears in any
+  prompt, and `unreferenced_input` when a declared input is referenced by
+  neither `in:<name>` nor `{{input.<name>}}`. Both are warnings by design
+  so a half-finished template still loads.
+- `Template.metadata()` adds `schema_version`, `arguments` (with
+  `description` / `default` / `required` / `declared`), `inputs`, and
+  `warnings`. `TemplateSummary` / `TemplateDetail` in `app.py` carry them
+  through `GET /templates`, `GET /templates/{name}`,
+  `GET /user-templates`, and `GET /user-templates/{slug}`.
+- All seven bundled templates carry `schema_version: 2`.
+  `serializer.serialize_selection` emits `schema_version: 2`, keeps `inputs`
+  empty, and uses the loader's placeholder scanner to persist any `{{name}}`
+  already present in a selected prompt as a declared argument. Save-as-
+  template therefore follows the same naming and scan rules as loading,
+  without attempting to infer named input ports from external dependencies.
+- The store schema v8 migration described below upgrades pre-existing user
+  templates before the strict loader enumerates them.
+
+### Landed — schema v2 (stamp 与实例记录)
+
+- `POST /sessions/{sid}/user-templates/{slug}/apply` accepts string maps
+  `arguments` and `input_bindings` (both default to `{}` for old empty-schema
+  callers) and returns the stamped `node_ids` plus a shared `instance_id`.
+- Stamp resolves omitted optional arguments from their defaults, including
+  `default: ""`; missing required arguments, unknown argument/input names,
+  absent bindings, missing nodes, and cross-planspace bindings raise
+  `TemplateError` and map to HTTP 400.
+- Prompt substitution is one `_PLACEHOLDER_RE.sub` callback using the
+  loader's `PARAM_NAME_RE`: replacement strings are literal, so backreferences
+  and inserted braces are never interpreted in a second pass.
+  `{{input.<port>}}` becomes that node's run-lane preview path. A final scan
+  rejects any legal argument or input placeholder left in `prompt_draft`.
+- `TemplateNodeSpec.internal_deps` translates through the fresh slug-to-node
+  map; `input_deps` translates through caller bindings. Templates with inputs
+  never inherit the drag anchor. Templates without inputs retain the existing
+  root-anchor behavior.
+- Every stamp builds all nodes and translated dependencies in memory, checks
+  the combined active-lane DAG for cycles, and completes validation before the
+  first `create_node`. Write failures roll back nodes created by that call.
+- `Node.template_instance_id` is optional and defaults to `None`, so old node
+  records still deserialize. All nodes from one stamp share the generated ID,
+  which is exposed automatically by node REST payloads.
+- Planspace `manifest.yaml` owns `template_instances`, with records containing
+  `instance_id`, template slug/name, resolved arguments, input bindings,
+  `created_at`, and reserved `parent_instance_id: null`. The project binding
+  is checked before reads or writes. `GET /sessions/{sid}/planspaces/
+  {planspace_id}/template-instances` exposes these records for group headers.
+
+### Landed — schema v2（存量用户模板迁移）
+
+- Store schema is `user-template-schema-v2-v8` / version 8. Startup upgrades
+  older stores after resolving `$MINICLAW_CONTEXT_HOME`, while stores with a
+  newer schema still remain untouched/read-only under the existing policy.
+- Before rewriting anything, migration copies the complete ContextSpace
+  `templates/` tree to `migration-backups/user-template-schema-v2-v8-<timestamp>/
+  contextspace/templates/`. Each legacy `template.yaml` receives
+  `schema_version: 2`, `arguments: []`, and `inputs: []`; existing declarations
+  are preserved and already-v2 manifests are not rewritten.
+- Prompt scanning imports the loader's `_PLACEHOLDER_RE` and `PARAM_NAME_RE`
+  directly. Every legal `{{argument}}` occurrence in a migrated template is
+  emitted through the startup logger with template, prompt path, and line
+  number for user confirmation. Invalid names remain literal and are omitted
+  from the checklist, matching loader behaviour.
+- Migration isolates failures per template: malformed/unreadable templates
+  are logged by slug and reason while remaining templates continue. A second
+  startup is a no-op because the store schema is already v8 and migrated files
+  are stable.
+
+### Landed — serializer v2 与编辑器写回 API
+
+- `PUT /user-templates/{slug}` accepts the template editor's complete state:
+  name/brief, agent node definitions with full prompt source and `in:*`
+  dependencies, argument descriptions/defaults, and input declarations.
+  Verifier nodes and path-like slugs are rejected. The template keeps its
+  existing `allowed_model_preset_ids` and slug.
+- Missing argument `default` and explicit `default: null` both persist as
+  required; `default: ""` remains an optional empty-string default. Prompt
+  arguments omitted by the request are appended using the loader's own
+  placeholder scanner, so an editor save materializes scan-only arguments.
+- New selection saves and editor rewrites share `_materialize_template`:
+  files use atomic `.tmp` writes, a complete sibling candidate directory is
+  loaded through `_load_from_root`, and only a valid candidate replaces the
+  current directory. Any write or validation failure cleans the candidate and
+  leaves the previous template intact; a successful update schedules sync.
+- Detail endpoints (`GET /templates/{name}` and
+  `GET /user-templates/{slug}`) add each node's untruncated `prompt` through a
+  detail-only serialization branch. List endpoints continue to expose only
+  `prompt_preview`, preventing LibraryDock refreshes from downloading all
+  prompt source.
+
 ### Pending
 
-- Template parameters / slot interpolation / branching DSL.
+- Frontend instantiation dialog, template editor, and group rendering.
 - Template versioning beyond the instantiated node snapshots.
 - Template export / import / sharing across machines.
 - Library-card mini-DAG preview.

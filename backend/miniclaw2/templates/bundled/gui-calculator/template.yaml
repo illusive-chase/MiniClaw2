@@ -1,3 +1,4 @@
+schema_version: 2
 name: gui-calculator
 brief: Build a PySide6 Qt calculator, then review it via a human-interact review agent.
 allowed_model_preset_ids:

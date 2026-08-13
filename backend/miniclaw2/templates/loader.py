@@ -11,11 +11,19 @@ Two roots are supported:
   by ``serializer.serialize_selection``.
 
 Both flavours share the same YAML shape and parsing pipeline (``_load_from_root``).
+
+Templates are *functions*: ``arguments`` are string parameters filled in at
+instantiation time, ``inputs`` are named upstream ports each bound to one
+existing node. Both are declared in ``template.yaml``; argument placeholders
+are additionally discovered by scanning prompt text (see
+``_resolve_parameters``). Only ``schema_version: 2`` is accepted — v1
+templates must be migrated, not parsed on a second code path.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import re
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -44,6 +52,19 @@ TEMPLATE_ORDER = [
 ]
 _TEMPLATE_RANK = {name: idx for idx, name in enumerate(TEMPLATE_ORDER)}
 
+SCHEMA_VERSION = 2
+
+#: Legal argument / input identifier.
+PARAM_NAME_RE = re.compile(r"^[a-z][a-z0-9_]*$")
+
+#: Placeholder occurrences inside prompt text. The inner pattern is
+#: deliberately permissive so ``{{Bad-Name}}`` is *matched* here and then
+#: discarded by :data:`PARAM_NAME_RE`; unmatched braces stay literal text.
+_PLACEHOLDER_RE = re.compile(r"\{\{\s*([^{}]*?)\s*\}\}")
+
+#: ``scheduled_deps`` prefix marking a reference to a named input port.
+INPUT_DEP_PREFIX = "in:"
+
 
 def user_templates_root(store_root: Path | None = None) -> Path:
     """Return the on-disk root where user templates live."""
@@ -52,6 +73,50 @@ def user_templates_root(store_root: Path | None = None) -> Path:
 
 class TemplateError(Exception):
     """Raised when a template's YAML or referenced files are invalid."""
+
+
+@dataclass(slots=True)
+class TemplateArgument:
+    """A string parameter filled in when the template is instantiated.
+
+    ``default is None`` means the argument is required; the instantiation
+    dialog refuses to create the instance until the caller supplies a value.
+    ``declared`` is False for arguments discovered only by scanning prompt
+    text, which is what lets authors use a new ``{{placeholder}}`` without
+    first editing ``template.yaml``.
+    """
+
+    name: str
+    description: str = ""
+    default: str | None = None
+    declared: bool = True
+
+    @property
+    def required(self) -> bool:
+        return self.default is None
+
+    def metadata(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "description": self.description,
+            "default": self.default,
+            "required": self.required,
+            "declared": self.declared,
+        }
+
+
+@dataclass(slots=True)
+class TemplateInput:
+    """A named upstream port bound to exactly one existing node on apply."""
+
+    name: str
+    description: str = ""
+
+    def metadata(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "description": self.description,
+        }
 
 
 @dataclass(slots=True)
@@ -66,6 +131,28 @@ class TemplateNodeSpec:
     scheduled_deps: list[str] | None = None
     resume_from: str = ""
     summary: str = ""
+
+    @property
+    def input_deps(self) -> list[str]:
+        """Port names this node depends on, from ``in:<name>`` deps.
+
+        These are out-of-graph source points: they are bound to real nodes at
+        stamp time, so they take no part in the template's internal topology.
+        """
+        return [
+            dep[len(INPUT_DEP_PREFIX) :]
+            for dep in (self.scheduled_deps or [])
+            if dep.startswith(INPUT_DEP_PREFIX)
+        ]
+
+    @property
+    def internal_deps(self) -> list[str]:
+        """Deps naming another node in this template."""
+        return [
+            dep
+            for dep in (self.scheduled_deps or [])
+            if not dep.startswith(INPUT_DEP_PREFIX)
+        ]
 
     def metadata(self) -> dict[str, Any]:
         return {
@@ -82,6 +169,7 @@ class TemplateNodeSpec:
 
 @dataclass(slots=True)
 class Template:
+    slug: str
     name: str
     brief: str
     allowed_model_preset_ids: list[str]
@@ -91,15 +179,23 @@ class Template:
     nodes: list[TemplateNodeSpec]
     seed: list[tuple[Path, str]]
     root: Path
+    arguments: list[TemplateArgument] = field(default_factory=list)
+    inputs: list[TemplateInput] = field(default_factory=list)
+    warnings: list[dict[str, str]] = field(default_factory=list)
 
     def metadata(self) -> dict[str, Any]:
         return {
+            "slug": self.slug,
             "name": self.name,
             "brief": self.brief,
             "allowed_model_preset_ids": list(self.allowed_model_preset_ids),
             "auto_commit": self.auto_commit,
             "node_count": len(self.nodes),
             "nodes": [node.metadata() for node in self.nodes],
+            "schema_version": SCHEMA_VERSION,
+            "arguments": [arg.metadata() for arg in self.arguments],
+            "inputs": [inp.metadata() for inp in self.inputs],
+            "warnings": [dict(warning) for warning in self.warnings],
         }
 
 
@@ -160,6 +256,9 @@ def _load_from_root(
 ) -> Template:
     template_data = _read_yaml(root / "template.yaml", name, "template.yaml")
     lane_data = _read_yaml(root / "lane.yaml", name, "lane.yaml")
+    slug = name
+
+    _require_schema_version(name, template_data)
 
     raw_name = template_data.get("name") or name
     if not isinstance(raw_name, str) or not raw_name.strip():
@@ -195,10 +294,14 @@ def _load_from_root(
         raise TemplateError(f"{name}: invalid lane_mode: {exc}") from exc
 
     nodes = _parse_lane_nodes(name, root, lane_data)
-    _validate_lane_graph(name, nodes)
+    declared_arguments = _parse_arguments(name, template_data)
+    inputs = _parse_inputs(name, template_data)
+    arguments, warnings = _resolve_parameters(name, nodes, declared_arguments, inputs)
+    _validate_lane_graph(name, nodes, inputs)
     seed = _parse_seed(name, root, template_data)
 
     return Template(
+        slug=slug,
         name=name,
         brief=brief,
         allowed_model_preset_ids=allowed_model_preset_ids,
@@ -208,7 +311,207 @@ def _load_from_root(
         nodes=nodes,
         seed=seed,
         root=root,
+        arguments=arguments,
+        inputs=inputs,
+        warnings=warnings,
     )
+
+
+def _require_schema_version(name: str, template_data: dict[str, Any]) -> None:
+    """Reject anything that is not schema v2.
+
+    Strictly one parsing path: a template without ``schema_version: 2`` is a
+    migration task, not a compatibility mode.
+    """
+    if "schema_version" not in template_data:
+        raise TemplateError(
+            f"{name}: template.yaml is missing schema_version; this template"
+            f" predates schema v{SCHEMA_VERSION} — run the template migration"
+            " to upgrade it"
+        )
+    raw = template_data.get("schema_version")
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        raise TemplateError(
+            f"{name}: schema_version must be the integer {SCHEMA_VERSION}"
+        )
+    if raw != SCHEMA_VERSION:
+        raise TemplateError(
+            f"{name}: unsupported schema_version {raw}; expected"
+            f" {SCHEMA_VERSION} — run the template migration to upgrade it"
+        )
+
+
+def _parse_arguments(
+    name: str,
+    template_data: dict[str, Any],
+) -> list[TemplateArgument]:
+    raw = template_data.get("arguments")
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise TemplateError(f"{name}: arguments must be a list")
+
+    out: list[TemplateArgument] = []
+    seen: set[str] = set()
+    for idx, entry in enumerate(raw):
+        if not isinstance(entry, dict):
+            raise TemplateError(f"{name}: argument #{idx} must be a mapping")
+        arg_name = _parse_param_name(name, "argument", idx, entry.get("name"))
+        if arg_name in seen:
+            raise TemplateError(f"{name}: duplicate argument name {arg_name!r}")
+        seen.add(arg_name)
+
+        description = entry.get("description") or ""
+        if not isinstance(description, str):
+            raise TemplateError(
+                f"{name}: argument {arg_name!r} description must be a string"
+            )
+
+        # Absent key and explicit ``default: null`` both mean "required".
+        default = entry.get("default")
+        if default is not None and not isinstance(default, str):
+            raise TemplateError(
+                f"{name}: argument {arg_name!r} default must be a string or null"
+            )
+
+        out.append(
+            TemplateArgument(
+                name=arg_name,
+                description=description.strip(),
+                default=default,
+                declared=True,
+            )
+        )
+    return out
+
+
+def _parse_inputs(name: str, template_data: dict[str, Any]) -> list[TemplateInput]:
+    raw = template_data.get("inputs")
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise TemplateError(f"{name}: inputs must be a list")
+
+    out: list[TemplateInput] = []
+    seen: set[str] = set()
+    for idx, entry in enumerate(raw):
+        if not isinstance(entry, dict):
+            raise TemplateError(f"{name}: input #{idx} must be a mapping")
+        input_name = _parse_param_name(name, "input", idx, entry.get("name"))
+        if input_name in seen:
+            raise TemplateError(f"{name}: duplicate input name {input_name!r}")
+        seen.add(input_name)
+
+        description = entry.get("description") or ""
+        if not isinstance(description, str):
+            raise TemplateError(
+                f"{name}: input {input_name!r} description must be a string"
+            )
+        out.append(
+            TemplateInput(name=input_name, description=description.strip())
+        )
+    return out
+
+
+def _parse_param_name(name: str, label: str, idx: int, raw: Any) -> str:
+    if not isinstance(raw, str) or not raw.strip():
+        raise TemplateError(f"{name}: {label} #{idx} name must be a non-empty string")
+    value = raw.strip()
+    if not PARAM_NAME_RE.match(value):
+        raise TemplateError(
+            f"{name}: {label} name {value!r} must match [a-z][a-z0-9_]*"
+        )
+    return value
+
+
+def _scan_placeholders(text: str) -> tuple[list[str], list[str]]:
+    """Return ``(argument_names, input_ports)`` referenced by ``text``.
+
+    Placeholders whose body matches neither an argument name nor
+    ``input.<port>`` are ignored — they stay literal text so hand-written
+    braces are never rewritten by mistake.
+    """
+    args: list[str] = []
+    ports: list[str] = []
+    for body in _PLACEHOLDER_RE.findall(text):
+        if body.startswith("input."):
+            port = body[len("input.") :]
+            if PARAM_NAME_RE.match(port) and port not in ports:
+                ports.append(port)
+        elif PARAM_NAME_RE.match(body) and body not in args:
+            args.append(body)
+    return args, ports
+
+
+def _resolve_parameters(
+    name: str,
+    nodes: list[TemplateNodeSpec],
+    declared: list[TemplateArgument],
+    inputs: list[TemplateInput],
+) -> tuple[list[TemplateArgument], list[dict[str, str]]]:
+    """Merge declared arguments with those scanned out of prompt text.
+
+    Scanned-but-undeclared arguments are appended in memory (the editor
+    persists them on save). Declared-but-absent ones are kept and reported as
+    ``dangling_argument`` warnings so the editor can offer a one-click
+    cleanup — the loader does not treat them as errors, since a template may
+    legitimately be a work in progress.
+    """
+    input_names = {inp.name for inp in inputs}
+
+    used_args: list[str] = []
+    referenced_ports: set[str] = set()
+    for spec in nodes:
+        scanned_args, scanned_ports = _scan_placeholders(spec.prompt)
+        for arg_name in scanned_args:
+            if arg_name not in used_args:
+                used_args.append(arg_name)
+        for port in scanned_ports:
+            if port not in input_names:
+                raise TemplateError(
+                    f"{name}: node {spec.id} references undeclared input port"
+                    f" {port!r} via {{{{input.{port}}}}} — declare it under inputs"
+                )
+            referenced_ports.add(port)
+        referenced_ports.update(spec.input_deps)
+
+    arguments = list(declared)
+    declared_names = {arg.name for arg in arguments}
+    for arg_name in used_args:
+        if arg_name not in declared_names:
+            arguments.append(
+                TemplateArgument(name=arg_name, description="", default=None, declared=False)
+            )
+            declared_names.add(arg_name)
+
+    warnings: list[dict[str, str]] = []
+    used = set(used_args)
+    for arg in declared:
+        if arg.name not in used:
+            warnings.append(
+                {
+                    "code": "dangling_argument",
+                    "name": arg.name,
+                    "message": (
+                        f"argument {arg.name!r} is declared but no prompt uses"
+                        f" {{{{{arg.name}}}}}"
+                    ),
+                }
+            )
+    for inp in inputs:
+        if inp.name not in referenced_ports:
+            warnings.append(
+                {
+                    "code": "unreferenced_input",
+                    "name": inp.name,
+                    "message": (
+                        f"input {inp.name!r} is declared but no node references it"
+                        f" via scheduled_deps 'in:{inp.name}' or"
+                        f" {{{{input.{inp.name}}}}}"
+                    ),
+                }
+            )
+    return arguments, warnings
 
 
 def _parse_allowed_model_preset_ids(
@@ -457,11 +760,26 @@ def _parse_seed(
     return out
 
 
-def _validate_lane_graph(name: str, nodes: list[TemplateNodeSpec]) -> None:
+def _validate_lane_graph(
+    name: str,
+    nodes: list[TemplateNodeSpec],
+    inputs: list[TemplateInput] | None = None,
+) -> None:
     by_slug = {spec.id: spec for spec in nodes}
     order = {spec.id: idx for idx, spec in enumerate(nodes)}
+    input_names = {inp.name for inp in (inputs or [])}
+
     for spec in nodes:
-        for dep in spec.scheduled_deps or []:
+        # ``in:<port>`` deps are out-of-graph source points: they are bound to
+        # real nodes at stamp time, so they are checked against the declared
+        # ports here and then excluded from ordering and cycle analysis.
+        for port in spec.input_deps:
+            if port not in input_names:
+                raise TemplateError(
+                    f"{name}: node {spec.id} scheduled_dep references undeclared"
+                    f" input port {port!r}"
+                )
+        for dep in spec.internal_deps:
             if dep not in by_slug:
                 raise TemplateError(
                     f"{name}: node {spec.id} scheduled_dep references unknown node {dep!r}"
@@ -479,7 +797,7 @@ def _validate_lane_graph(name: str, nodes: list[TemplateNodeSpec]) -> None:
                 raise TemplateError(
                     f"{name}: node {spec.id} resume_from must reference an earlier node"
                 )
-            if spec.resume_from not in (spec.scheduled_deps or []):
+            if spec.resume_from not in spec.internal_deps:
                 raise TemplateError(
                     f"{name}: node {spec.id} resume_from must also appear in scheduled_deps"
                 )
@@ -489,7 +807,7 @@ def _validate_lane_graph(name: str, nodes: list[TemplateNodeSpec]) -> None:
         def __init__(self, deps: list[str]) -> None:
             self.scheduled_deps = deps
 
-    if has_cycle({spec.id: _Node(spec.scheduled_deps or []) for spec in nodes}):  # type: ignore[arg-type]
+    if has_cycle({spec.id: _Node(spec.internal_deps) for spec in nodes}):  # type: ignore[arg-type]
         raise TemplateError(f"{name}: scheduled_deps introduce a cycle")
 
 

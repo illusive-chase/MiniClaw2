@@ -1,10 +1,19 @@
 from __future__ import annotations
 
+import tempfile
 import unittest
+from pathlib import Path
+from typing import Any
+
+import yaml
 
 from miniclaw2.domain import Category, NodeKind, ReviewSubtype
 from miniclaw2.templates import TemplateError, list_templates, load_template
-from miniclaw2.templates.loader import _parse_allowed_model_preset_ids
+from miniclaw2.templates.loader import (
+    SCHEMA_VERSION,
+    _load_from_root,
+    _parse_allowed_model_preset_ids,
+)
 
 
 class TemplatesLoaderTest(unittest.TestCase):
@@ -85,6 +94,482 @@ class TemplatesLoaderTest(unittest.TestCase):
         self.assertEqual(fix.resume_from, "build")
         self.assertEqual(fix.scheduled_deps, ["build", "review"])
         self.assertTrue(template.auto_commit)
+
+    def test_bundled_templates_are_schema_v2_without_parameters(self) -> None:
+        for template in list_templates():
+            with self.subTest(template=template.name):
+                self.assertEqual(template.arguments, [])
+                self.assertEqual(template.inputs, [])
+                self.assertEqual(template.warnings, [])
+                self.assertEqual(
+                    template.metadata()["schema_version"], SCHEMA_VERSION
+                )
+
+
+class TemplateSchemaV2Test(unittest.TestCase):
+    """Schema v2: the ``schema_version`` gate, arguments, inputs, ``in:*`` deps."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name) / "tpl"
+        self.root.mkdir(parents=True)
+
+    def write(
+        self,
+        *,
+        prompts: dict[str, str],
+        nodes: list[dict[str, Any]],
+        template_extra: dict[str, Any] | None = None,
+        schema_version: Any = SCHEMA_VERSION,
+        omit_schema_version: bool = False,
+    ) -> Path:
+        """Materialise a minimal on-disk template and return its root."""
+        template_data: dict[str, Any] = {
+            "name": "fixture",
+            "brief": "fixture template",
+            "allowed_model_preset_ids": ["opus-4-8"],
+            "lane_mode": "manual",
+        }
+        if not omit_schema_version:
+            template_data = {"schema_version": schema_version, **template_data}
+        template_data.update(template_extra or {})
+
+        (self.root / "prompts").mkdir(parents=True, exist_ok=True)
+        for rel, text in prompts.items():
+            (self.root / "prompts" / rel).write_text(text, encoding="utf-8")
+        (self.root / "template.yaml").write_text(
+            yaml.safe_dump(template_data, sort_keys=False, allow_unicode=True),
+            encoding="utf-8",
+        )
+        (self.root / "lane.yaml").write_text(
+            yaml.safe_dump({"nodes": nodes}, sort_keys=False, allow_unicode=True),
+            encoding="utf-8",
+        )
+        return self.root
+
+    def simple(self, prompt: str, **kwargs: Any):
+        """Load a one-node template whose prompt is ``prompt``."""
+        root = self.write(
+            prompts={"n0.md": prompt},
+            nodes=[
+                {
+                    "id": "n0",
+                    "kind": "agent",
+                    "category": "regular",
+                    "prompt_file": "prompts/n0.md",
+                }
+            ],
+            **kwargs,
+        )
+        return _load_from_root(root, "fixture")
+
+    # --- schema_version gate (proposal §7) ---------------------------------
+
+    def test_missing_schema_version_is_rejected_with_migration_hint(self) -> None:
+        with self.assertRaisesRegex(TemplateError, "run the template migration"):
+            self.simple("plain prompt", omit_schema_version=True)
+
+    def test_schema_version_1_is_rejected_with_migration_hint(self) -> None:
+        with self.assertRaisesRegex(TemplateError, "unsupported schema_version 1"):
+            self.simple("plain prompt", schema_version=1)
+
+    def test_non_integer_schema_version_is_rejected(self) -> None:
+        with self.assertRaisesRegex(TemplateError, "schema_version must be"):
+            self.simple("plain prompt", schema_version="2")
+
+    def test_schema_version_2_loads(self) -> None:
+        template = self.simple("plain prompt")
+        self.assertEqual(template.name, "fixture")
+        self.assertEqual(template.arguments, [])
+        self.assertEqual(template.inputs, [])
+        self.assertEqual(template.warnings, [])
+
+    # --- arguments (proposal §3) -------------------------------------------
+
+    def test_declared_arguments_carry_description_and_default(self) -> None:
+        template = self.simple(
+            "topic={{topic}} style={{report_style}}",
+            template_extra={
+                "arguments": [
+                    {"name": "topic", "description": "关注主题", "default": None},
+                    {"name": "report_style", "description": "", "default": "简洁要点式"},
+                ]
+            },
+        )
+        topic, style = template.arguments
+        self.assertEqual(topic.name, "topic")
+        self.assertEqual(topic.description, "关注主题")
+        self.assertIsNone(topic.default)
+        self.assertTrue(topic.required)
+        self.assertEqual(style.default, "简洁要点式")
+        self.assertFalse(style.required)
+        self.assertEqual(template.warnings, [])
+
+    def test_argument_missing_default_key_is_required(self) -> None:
+        template = self.simple(
+            "{{topic}}",
+            template_extra={"arguments": [{"name": "topic"}]},
+        )
+        self.assertTrue(template.arguments[0].required)
+        self.assertIsNone(template.arguments[0].default)
+
+    def test_empty_default_string_is_not_required(self) -> None:
+        template = self.simple(
+            "{{topic}}",
+            template_extra={"arguments": [{"name": "topic", "default": ""}]},
+        )
+        self.assertFalse(template.arguments[0].required)
+        self.assertEqual(template.arguments[0].default, "")
+
+    def test_argument_name_must_match_naming_rule(self) -> None:
+        for bad in ["Topic", "1topic", "my-topic", "topic!", ""]:
+            with self.subTest(name=bad):
+                with self.assertRaises(TemplateError):
+                    self.simple(
+                        "prompt",
+                        template_extra={"arguments": [{"name": bad}]},
+                    )
+
+    def test_duplicate_argument_name_is_rejected(self) -> None:
+        with self.assertRaisesRegex(TemplateError, "duplicate argument name"):
+            self.simple(
+                "{{topic}}",
+                template_extra={
+                    "arguments": [{"name": "topic"}, {"name": "topic", "default": "x"}]
+                },
+            )
+
+    def test_empty_argument_list_is_legal(self) -> None:
+        template = self.simple("prompt", template_extra={"arguments": []})
+        self.assertEqual(template.arguments, [])
+
+    def test_argument_default_must_be_string_or_null(self) -> None:
+        with self.assertRaisesRegex(TemplateError, "default must be a string or null"):
+            self.simple(
+                "{{topic}}",
+                template_extra={"arguments": [{"name": "topic", "default": 7}]},
+            )
+
+    # --- inputs (proposal §3) ---------------------------------------------
+
+    def test_declared_inputs_are_parsed(self) -> None:
+        template = self.simple(
+            "compare {{input.alpha_branch}} against {{input.beta_branch}}",
+            template_extra={
+                "inputs": [
+                    {"name": "alpha_branch", "description": "alpha 末端节点"},
+                    {"name": "beta_branch"},
+                ]
+            },
+        )
+        self.assertEqual([i.name for i in template.inputs], ["alpha_branch", "beta_branch"])
+        self.assertEqual(template.inputs[0].description, "alpha 末端节点")
+        self.assertEqual(template.inputs[1].description, "")
+        self.assertEqual(template.warnings, [])
+
+    def test_input_name_must_match_naming_rule(self) -> None:
+        with self.assertRaisesRegex(TemplateError, r"input name .* must match"):
+            self.simple("prompt", template_extra={"inputs": [{"name": "Alpha"}]})
+
+    def test_duplicate_input_name_is_rejected(self) -> None:
+        with self.assertRaisesRegex(TemplateError, "duplicate input name"):
+            self.simple(
+                "{{input.alpha}}",
+                template_extra={"inputs": [{"name": "alpha"}, {"name": "alpha"}]},
+            )
+
+    def test_arguments_and_inputs_are_independent_namespaces(self) -> None:
+        """A ``topic`` argument and a ``topic`` input coexist — different syntax."""
+        template = self.simple(
+            "arg={{topic}} input={{input.topic}}",
+            template_extra={
+                "arguments": [{"name": "topic", "default": "d"}],
+                "inputs": [{"name": "topic"}],
+            },
+        )
+        self.assertEqual([a.name for a in template.arguments], ["topic"])
+        self.assertEqual([i.name for i in template.inputs], ["topic"])
+        self.assertEqual(template.warnings, [])
+
+    # --- placeholder scan + merge (proposal §3.2) --------------------------
+
+    def test_scanned_but_undeclared_argument_is_auto_added(self) -> None:
+        template = self.simple("围绕主题「{{topic}}」展开，风格 {{report_style}}")
+        self.assertEqual([a.name for a in template.arguments], ["topic", "report_style"])
+        for arg in template.arguments:
+            self.assertFalse(arg.declared)
+            self.assertTrue(arg.required)
+            self.assertEqual(arg.description, "")
+        self.assertEqual(template.warnings, [])
+
+    def test_scan_merges_with_declarations_without_duplicating(self) -> None:
+        template = self.simple(
+            "{{topic}} and {{extra}}",
+            template_extra={
+                "arguments": [{"name": "topic", "description": "d", "default": "x"}]
+            },
+        )
+        self.assertEqual([a.name for a in template.arguments], ["topic", "extra"])
+        topic, extra = template.arguments
+        self.assertTrue(topic.declared)
+        self.assertEqual(topic.default, "x")
+        self.assertFalse(extra.declared)
+        self.assertIsNone(extra.default)
+
+    def test_scan_covers_every_node_prompt(self) -> None:
+        root = self.write(
+            prompts={"n0.md": "{{alpha}}", "n1.md": "{{beta}}"},
+            nodes=[
+                {
+                    "id": "n0",
+                    "kind": "agent",
+                    "category": "regular",
+                    "prompt_file": "prompts/n0.md",
+                },
+                {
+                    "id": "n1",
+                    "kind": "agent",
+                    "category": "regular",
+                    "prompt_file": "prompts/n1.md",
+                    "scheduled_deps": ["n0"],
+                },
+            ],
+        )
+        template = _load_from_root(root, "fixture")
+        self.assertEqual([a.name for a in template.arguments], ["alpha", "beta"])
+
+    def test_dangling_declaration_warns_but_does_not_raise(self) -> None:
+        template = self.simple(
+            "no placeholders here",
+            template_extra={"arguments": [{"name": "topic", "default": "x"}]},
+        )
+        self.assertEqual([a.name for a in template.arguments], ["topic"])
+        self.assertEqual(
+            [(w["code"], w["name"]) for w in template.warnings],
+            [("dangling_argument", "topic")],
+        )
+        self.assertIn("topic", template.metadata()["warnings"][0]["message"])
+
+    def test_non_conforming_braces_are_left_literal(self) -> None:
+        template = self.simple(
+            "keep {{Bad-Name}} and {{ALLCAPS}} and {{9lives}} and {{a b}} intact"
+        )
+        self.assertEqual(template.arguments, [])
+        self.assertEqual(template.warnings, [])
+
+    def test_undeclared_input_port_placeholder_is_an_error(self) -> None:
+        with self.assertRaisesRegex(TemplateError, "undeclared input port"):
+            self.simple("bind {{input.alpha_branch}} here")
+
+    def test_declared_input_port_placeholder_is_accepted(self) -> None:
+        template = self.simple(
+            "bind {{input.alpha_branch}} here",
+            template_extra={"inputs": [{"name": "alpha_branch"}]},
+        )
+        self.assertEqual([i.name for i in template.inputs], ["alpha_branch"])
+        self.assertEqual(template.warnings, [])
+
+    # --- in:<name> deps (proposal §3.3) -----------------------------------
+
+    def test_input_dep_must_reference_declared_input(self) -> None:
+        root = self.write(
+            prompts={"n0.md": "work"},
+            nodes=[
+                {
+                    "id": "n0",
+                    "kind": "agent",
+                    "category": "regular",
+                    "prompt_file": "prompts/n0.md",
+                    "scheduled_deps": ["in:alpha_branch"],
+                }
+            ],
+        )
+        with self.assertRaisesRegex(TemplateError, "undeclared input port"):
+            _load_from_root(root, "fixture")
+
+    def test_input_dep_is_exempt_from_earlier_node_ordering(self) -> None:
+        """``in:*`` is an out-of-graph source, so it never violates ordering."""
+        root = self.write(
+            prompts={"n0.md": "work"},
+            nodes=[
+                {
+                    "id": "n0",
+                    "kind": "agent",
+                    "category": "regular",
+                    "prompt_file": "prompts/n0.md",
+                    "scheduled_deps": ["in:alpha_branch", "in:beta_branch"],
+                }
+            ],
+            template_extra={
+                "inputs": [{"name": "alpha_branch"}, {"name": "beta_branch"}]
+            },
+        )
+        template = _load_from_root(root, "fixture")
+        spec = template.nodes[0]
+        self.assertEqual(spec.scheduled_deps, ["in:alpha_branch", "in:beta_branch"])
+        self.assertEqual(spec.input_deps, ["alpha_branch", "beta_branch"])
+        self.assertEqual(spec.internal_deps, [])
+        self.assertEqual(template.warnings, [])
+
+    def test_input_dep_does_not_participate_in_cycle_detection(self) -> None:
+        """A port named after a node must not close a fake cycle."""
+        root = self.write(
+            prompts={"n0.md": "a", "n1.md": "b"},
+            nodes=[
+                {
+                    "id": "n0",
+                    "kind": "agent",
+                    "category": "regular",
+                    "prompt_file": "prompts/n0.md",
+                    "scheduled_deps": ["in:n1"],
+                },
+                {
+                    "id": "n1",
+                    "kind": "agent",
+                    "category": "regular",
+                    "prompt_file": "prompts/n1.md",
+                    "scheduled_deps": ["n0"],
+                },
+            ],
+            template_extra={"inputs": [{"name": "n1"}]},
+        )
+        template = _load_from_root(root, "fixture")
+        self.assertEqual([n.id for n in template.nodes], ["n0", "n1"])
+        self.assertEqual(template.nodes[0].input_deps, ["n1"])
+        self.assertEqual(template.nodes[1].internal_deps, ["n0"])
+
+    def test_internal_deps_still_reject_unknown_and_forward_references(self) -> None:
+        forward = self.write(
+            prompts={"n0.md": "a", "n1.md": "b"},
+            nodes=[
+                {
+                    "id": "n0",
+                    "kind": "agent",
+                    "category": "regular",
+                    "prompt_file": "prompts/n0.md",
+                    "scheduled_deps": ["n1"],
+                },
+                {
+                    "id": "n1",
+                    "kind": "agent",
+                    "category": "regular",
+                    "prompt_file": "prompts/n1.md",
+                },
+            ],
+        )
+        with self.assertRaisesRegex(TemplateError, "must reference an earlier node"):
+            _load_from_root(forward, "fixture")
+
+        unknown = self.write(
+            prompts={"n0.md": "a"},
+            nodes=[
+                {
+                    "id": "n0",
+                    "kind": "agent",
+                    "category": "regular",
+                    "prompt_file": "prompts/n0.md",
+                    "scheduled_deps": ["ghost"],
+                }
+            ],
+        )
+        with self.assertRaisesRegex(TemplateError, "unknown node"):
+            _load_from_root(unknown, "fixture")
+
+    # --- unreferenced input warning (proposal §3.3 rule 3) ----------------
+
+    def test_unreferenced_input_warns_but_does_not_raise(self) -> None:
+        template = self.simple(
+            "no reference to the port",
+            template_extra={"inputs": [{"name": "alpha_branch"}]},
+        )
+        self.assertEqual([i.name for i in template.inputs], ["alpha_branch"])
+        self.assertEqual(
+            [(w["code"], w["name"]) for w in template.warnings],
+            [("unreferenced_input", "alpha_branch")],
+        )
+
+    def test_input_referenced_only_by_dep_does_not_warn(self) -> None:
+        root = self.write(
+            prompts={"n0.md": "no placeholder, just the edge"},
+            nodes=[
+                {
+                    "id": "n0",
+                    "kind": "agent",
+                    "category": "regular",
+                    "prompt_file": "prompts/n0.md",
+                    "scheduled_deps": ["in:alpha_branch"],
+                }
+            ],
+            template_extra={"inputs": [{"name": "alpha_branch"}]},
+        )
+        self.assertEqual(_load_from_root(root, "fixture").warnings, [])
+
+    def test_input_referenced_only_by_placeholder_does_not_warn(self) -> None:
+        template = self.simple(
+            "see {{input.alpha_branch}}",
+            template_extra={"inputs": [{"name": "alpha_branch"}]},
+        )
+        self.assertEqual(template.warnings, [])
+
+    # --- metadata() surface (proposal §3, §7) -----------------------------
+
+    def test_metadata_exposes_arguments_inputs_and_warnings(self) -> None:
+        root = self.write(
+            prompts={"n0.md": "{{topic}} via {{input.alpha_branch}}"},
+            nodes=[
+                {
+                    "id": "n0",
+                    "kind": "agent",
+                    "category": "regular",
+                    "prompt_file": "prompts/n0.md",
+                    "scheduled_deps": ["in:alpha_branch"],
+                }
+            ],
+            template_extra={
+                "arguments": [
+                    {"name": "topic", "description": "关注主题"},
+                    {"name": "gone", "default": "d"},
+                ],
+                "inputs": [
+                    {"name": "alpha_branch", "description": "alpha 末端"},
+                    {"name": "orphan"},
+                ],
+            },
+        )
+        meta = _load_from_root(root, "fixture").metadata()
+
+        self.assertEqual(meta["schema_version"], SCHEMA_VERSION)
+        self.assertEqual(
+            meta["arguments"],
+            [
+                {
+                    "name": "topic",
+                    "description": "关注主题",
+                    "default": None,
+                    "required": True,
+                    "declared": True,
+                },
+                {
+                    "name": "gone",
+                    "description": "",
+                    "default": "d",
+                    "required": False,
+                    "declared": True,
+                },
+            ],
+        )
+        self.assertEqual(
+            meta["inputs"],
+            [
+                {"name": "alpha_branch", "description": "alpha 末端"},
+                {"name": "orphan", "description": ""},
+            ],
+        )
+        self.assertEqual(
+            sorted((w["code"], w["name"]) for w in meta["warnings"]),
+            [("dangling_argument", "gone"), ("unreferenced_input", "orphan")],
+        )
 
 
 if __name__ == "__main__":

@@ -1,3 +1,4 @@
+schema_version: 2
 name: bash-uname
 brief: Agent runs a single Bash command and reports its output.
 allowed_model_preset_ids:

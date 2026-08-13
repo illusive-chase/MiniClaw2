@@ -1,3 +1,4 @@
+schema_version: 2
 name: write-readme
 brief: "Agent produces one file via Edit/Write - README.md with a single line."
 allowed_model_preset_ids:

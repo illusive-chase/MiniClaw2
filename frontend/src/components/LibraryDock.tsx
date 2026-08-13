@@ -115,7 +115,7 @@ export function LibraryDock({
   const removeTemplate = useCallback(async (slug: string) => {
     try {
       await deleteUserTemplate(slug);
-      setTemplates((items) => items.filter((item) => slugFor(item.name) !== slug));
+      setTemplates((items) => items.filter((item) => item.slug !== slug));
     } catch (err) {
       onError?.(errorMessage(err));
     }
@@ -148,7 +148,7 @@ export function LibraryDock({
           {loading && templates.length === 0 && <Empty>Loading...</Empty>}
           {!loading && templates.length === 0 && <Empty>No saved templates.</Empty>}
           {templates.map((template) => {
-            const slug = slugFor(template.name);
+            const slug = template.slug;
             return (
               <div
                 key={slug}
@@ -346,10 +346,6 @@ function countBindings(
 
 function contextIdentityKey(kind: "principle" | "skill", path: string): string {
   return `contextspace::${kind}::${path}`;
-}
-
-function slugFor(name: string): string {
-  return name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
 }
 
 function formatValue(value: unknown): string {

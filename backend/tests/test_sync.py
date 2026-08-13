@@ -7,6 +7,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import yaml
 from fastapi.testclient import TestClient
 
 from miniclaw2.app import create_app
@@ -15,6 +16,7 @@ from miniclaw2.global_config import load_global_config, save_global_config
 from miniclaw2.registry import ProjectRegistry
 from miniclaw2.store import Store, StoreReadOnlyError
 from miniclaw2.sync import SCHEMA_VERSION, SchemaConflictError, SyncError, bootstrap_store
+from miniclaw2.templates import load_user_template
 
 
 def _git(*args: str, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
@@ -25,6 +27,36 @@ def _git(*args: str, cwd: Path | None = None) -> subprocess.CompletedProcess[str
         capture_output=True,
         text=True,
     )
+
+
+def _write_user_template(
+    root: Path,
+    slug: str,
+    *,
+    template_text: str,
+    prompt: str = "Do the work.",
+) -> Path:
+    template_root = root / "contextspace" / "templates" / slug
+    (template_root / "prompts").mkdir(parents=True)
+    (template_root / "template.yaml").write_text(template_text, encoding="utf-8")
+    (template_root / "lane.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "nodes": [
+                    {
+                        "id": "work",
+                        "kind": "agent",
+                        "category": "regular",
+                        "prompt_file": "prompts/work.md",
+                    }
+                ]
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    (template_root / "prompts" / "work.md").write_text(prompt, encoding="utf-8")
+    return template_root
 
 
 class StoreIdentityMigrationTests(unittest.TestCase):
@@ -54,6 +86,146 @@ class StoreIdentityMigrationTests(unittest.TestCase):
             self.assertIn("machine.json", ignore)
             self.assertIn("migration-backups/", ignore)
             self.assertIn("*.tmp", ignore)
+
+
+class UserTemplateSchemaMigrationTests(unittest.TestCase):
+    def _write_store_schema_v7(self, root: Path) -> None:
+        root.mkdir(parents=True, exist_ok=True)
+        (root / "schema.json").write_text(
+            json.dumps({"schema": "host-partition-v7", "schema_version": 7}),
+            encoding="utf-8",
+        )
+
+    def test_legacy_template_is_backed_up_migrated_loadable_and_warned(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._write_store_schema_v7(root)
+            template_root = _write_user_template(
+                root,
+                "legacy",
+                template_text=(
+                    "name: legacy\n"
+                    "brief: Legacy template\n"
+                    "allowed_model_preset_ids: [opus-4-8]\n"
+                    "lane_mode: manual\n"
+                ),
+                prompt="Discuss {{topic}} while preserving {{Not-An-Arg}}.\n",
+            )
+
+            with self.assertLogs("miniclaw2.sync", level="WARNING") as captured:
+                Store(root)
+
+            migrated = yaml.safe_load(
+                (template_root / "template.yaml").read_text(encoding="utf-8")
+            )
+            self.assertEqual(migrated["schema_version"], 2)
+            self.assertEqual(migrated["arguments"], [])
+            self.assertEqual(migrated["inputs"], [])
+            loaded = load_user_template("legacy", store_root=root)
+            self.assertEqual([argument.name for argument in loaded.arguments], ["topic"])
+
+            warning_text = "\n".join(captured.output)
+            self.assertIn("prompts/work.md:1: {{topic}}", warning_text)
+            self.assertNotIn("Not-An-Arg", warning_text)
+
+            backups = list(
+                (root / "migration-backups").glob(
+                    "user-template-schema-v2-v8-*/contextspace/templates/legacy/template.yaml"
+                )
+            )
+            self.assertEqual(len(backups), 1)
+            self.assertNotIn(
+                "schema_version",
+                yaml.safe_load(backups[0].read_text(encoding="utf-8")),
+            )
+
+            first_result = (template_root / "template.yaml").read_text(encoding="utf-8")
+            first_backups = sorted((root / "migration-backups").iterdir())
+            Store(root)
+            self.assertEqual(
+                (template_root / "template.yaml").read_text(encoding="utf-8"),
+                first_result,
+            )
+            self.assertEqual(
+                sorted((root / "migration-backups").iterdir()),
+                first_backups,
+            )
+
+    def test_schema_v2_template_is_skipped_without_rewriting(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._write_store_schema_v7(root)
+            original = (
+                "# preserve this exact v2 file\n"
+                "schema_version: 2\n"
+                "name: current\n"
+                "brief: Current template\n"
+                "allowed_model_preset_ids: [opus-4-8]\n"
+                "lane_mode: manual\n"
+            )
+            template_root = _write_user_template(
+                root,
+                "current",
+                template_text=original,
+                prompt="Discuss {{topic}}.\n",
+            )
+
+            Store(root)
+
+            self.assertEqual(
+                (template_root / "template.yaml").read_text(encoding="utf-8"),
+                original,
+            )
+            self.assertTrue(
+                list(
+                    (root / "migration-backups").glob(
+                        "user-template-schema-v2-v8-*/contextspace/templates/current/template.yaml"
+                    )
+                )
+            )
+
+    def test_bad_template_does_not_block_other_template_migrations(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._write_store_schema_v7(root)
+            bad_root = _write_user_template(
+                root,
+                "bad",
+                template_text="name: [\n",
+            )
+            good_root = _write_user_template(
+                root,
+                "good",
+                template_text=(
+                    "name: good\n"
+                    "brief: Good template\n"
+                    "allowed_model_preset_ids: [opus-4-8]\n"
+                    "lane_mode: manual\n"
+                ),
+            )
+            bad_original = (bad_root / "template.yaml").read_text(encoding="utf-8")
+
+            with self.assertLogs("miniclaw2.sync", level="ERROR") as captured:
+                Store(root)
+
+            self.assertIn("用户模板 'bad' 迁移失败", "\n".join(captured.output))
+            self.assertEqual(
+                (bad_root / "template.yaml").read_text(encoding="utf-8"),
+                bad_original,
+            )
+            self.assertEqual(
+                yaml.safe_load(
+                    (good_root / "template.yaml").read_text(encoding="utf-8")
+                )["schema_version"],
+                2,
+            )
+            load_user_template("good", store_root=root)
+            self.assertEqual(
+                json.loads((root / "schema.json").read_text(encoding="utf-8"))[
+                    "schema_version"
+                ],
+                SCHEMA_VERSION,
+            )
 
 
 class NonNativeProjectApiTests(unittest.TestCase):

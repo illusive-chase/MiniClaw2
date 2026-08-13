@@ -586,6 +586,84 @@ def set_planspace_mode(
     return normalized
 
 
+def read_template_instances(
+    project: Project,
+    lane_id: str,
+    *,
+    store_root: Path | None = None,
+) -> list[dict[str, Any]]:
+    """Return template-instance records stored on a project planspace."""
+    manifest_path, raw = _project_planspace_manifest(
+        project,
+        lane_id,
+        store_root=store_root,
+    )
+    del manifest_path
+    records = raw.get("template_instances", [])
+    if records is None:
+        return []
+    if not isinstance(records, list) or any(
+        not isinstance(record, dict) for record in records
+    ):
+        raise ValueError(f"invalid template instances in planspace: {lane_id}")
+    return [dict(record) for record in records]
+
+
+def append_template_instance(
+    project: Project,
+    lane_id: str,
+    record: dict[str, Any],
+    *,
+    store_root: Path | None = None,
+) -> None:
+    """Atomically append one template-instance record to a planspace manifest."""
+    instance_id = record.get("instance_id")
+    if not isinstance(instance_id, str) or not instance_id:
+        raise ValueError("template instance_id is required")
+    manifest_path, raw = _project_planspace_manifest(
+        project,
+        lane_id,
+        store_root=store_root,
+    )
+    records = raw.get("template_instances", [])
+    if records is None:
+        records = []
+    if not isinstance(records, list) or any(
+        not isinstance(existing, dict) for existing in records
+    ):
+        raise ValueError(f"invalid template instances in planspace: {lane_id}")
+    if any(existing.get("instance_id") == instance_id for existing in records):
+        raise ValueError(f"template instance already exists: {instance_id}")
+    raw["template_instances"] = [*records, dict(record)]
+    _write_yaml(manifest_path, raw)
+
+
+def _project_planspace_manifest(
+    project: Project,
+    lane_id: str,
+    *,
+    store_root: Path | None,
+) -> tuple[Path, dict[str, Any]]:
+    if not lane_id:
+        raise ValueError("planspace id is required")
+    root = contextspace_root(store_root)
+    binding = resolve_project_binding(project, root)
+    refs = _expand_required_plugs(root, binding.plugs) if binding is not None else []
+    if not any(
+        ref.id == lane_id and _plug_kind(ref.id) == "planspace"
+        for ref in refs
+    ):
+        raise ValueError(f"unknown planspace for project: {lane_id}")
+    plug_dir = _plug_dir(root, lane_id)
+    if plug_dir is None:
+        raise ValueError(f"unknown planspace for project: {lane_id}")
+    manifest_path = plug_dir / "manifest.yaml"
+    raw = _read_yaml(manifest_path)
+    if not isinstance(raw, dict):
+        raise ValueError(f"unknown planspace for project: {lane_id}")
+    return manifest_path, raw
+
+
 def create_planspace(
     project: Project,
     *,
