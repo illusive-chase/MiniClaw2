@@ -27,6 +27,7 @@ import type {
 } from "../src/types";
 import {
   nodeIdsNeedingEventReplay,
+  preferNewerNode,
   shouldAutoSelectEventNode,
   shouldOpenCreatedPlanspace,
   shouldOpenInteractionNode,
@@ -113,6 +114,23 @@ assert.equal(
   shouldOpenCreatedPlanspace(false),
   false,
   "a background planspace creation must preserve the current selection",
+);
+
+assert.equal(
+  preferNewerNode(
+    node("same", { rev: 3, state: "running" }),
+    node("same", { rev: 2, state: "waiting" }),
+  ).state,
+  "running",
+  "an older HTTP or WebSocket snapshot must not replace current node state",
+);
+assert.equal(
+  preferNewerNode(
+    node("same", { rev: 3, state: "waiting" }),
+    node("same", { rev: 4, state: "running" }),
+  ).state,
+  "running",
+  "a newer durable node snapshot must replace current node state",
 );
 
 function commit(
@@ -265,6 +283,49 @@ function testNoRootOrFabricatedDependencies(): void {
     nodes: [node("a"), node("b", { scheduled_deps: ["a"] })],
   }));
   assert.equal(withDep.rfEdges.some((edge) => edge.id === "dep:a->b"), true);
+}
+
+function testPromotedNodeDoesNotUseTransientParentFallback(): void {
+  const parent = node("parent");
+  const transient = node("promoted", {
+    state: "queued",
+    parent_node_id: parent.id,
+    proposed_by: "node:planner",
+    scheduled_deps: [],
+  });
+  const graph = buildGraph(args({ nodes: [parent, transient] }));
+  assert.equal(
+    graph.rfEdges.some(
+      (edge) => edge.source === parent.id && edge.target === transient.id,
+    ),
+    false,
+    "a promoted node must wait for declared dependencies instead of fabricating a parent edge",
+  );
+
+  const legacyDirect = buildGraph(args({
+    nodes: [parent, node("direct", { parent_node_id: parent.id })],
+  }));
+  assert.equal(
+    legacyDirect.rfEdges.some((edge) => edge.id === "continue:parent->direct"),
+    true,
+    "direct and legacy continuation nodes retain the parent fallback",
+  );
+
+  const explicitResume = buildGraph(args({
+    nodes: [
+      parent,
+      node("resume", {
+        parent_node_id: parent.id,
+        proposed_by: "user",
+        resume_from_node_id: parent.id,
+      }),
+    ],
+  }));
+  assert.equal(
+    explicitResume.rfEdges.some((edge) => edge.id === "continue:parent->resume"),
+    true,
+    "an explicit continuation remains visible after promotion",
+  );
 }
 
 function testKnownLaneOrderSurvivesNodeCreationOrder(): void {
@@ -1891,6 +1952,7 @@ function testCollapsingKeepsTheInstanceInPlace(): void {
 }
 
 testNoRootOrFabricatedDependencies();
+testPromotedNodeDoesNotUseTransientParentFallback();
 testKnownLaneOrderSurvivesNodeCreationOrder();
 testInactiveAutoLaneIsMarkedForActivation();
 testPlanspaceChildPositionUsesLaneRelativeSnapGrid();

@@ -221,6 +221,7 @@ class Node(BaseModel):
     # as ``str | None`` — see ``KNOWN_AGENT_OP_KINDS`` for the whitelist.
     agent_op_kind: str | None = None
     state: NodeState = NodeState.QUEUED
+    rev: int = Field(default=0, ge=0)
     parent_node_id: str | None = None
     planspace_id: str | None = None
     context_bundle_id: str | None = None

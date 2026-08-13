@@ -20,8 +20,8 @@ import yaml
 
 MACHINE_FILENAME = "machine.json"
 SCHEMA_FILENAME = "schema.json"
-SCHEMA_VERSION = 8
-SCHEMA_NAME = "user-template-schema-v2-v8"
+SCHEMA_VERSION = 9
+SCHEMA_NAME = "node-revision-v9"
 DEFAULT_COMMIT_DEBOUNCE_SECONDS = 30.0
 
 

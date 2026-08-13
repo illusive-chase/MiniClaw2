@@ -2124,6 +2124,9 @@ function findContinueSourceId(
   const parent = byId.get(node.parent_node_id);
   if (!parent || parent.kind === "op" || node.kind !== "agent") return null;
   if (node.category === "review") return null;
+  // Planned/promoted nodes declare graph relationships through scheduled_deps.
+  // Do not fabricate a parent edge while their dependency snapshot is changing.
+  if (node.proposed_by) return null;
   if ((node.scheduled_deps ?? []).length > 0) return null;
   return node.parent_node_id;
 }

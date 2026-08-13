@@ -130,7 +130,7 @@ class UserTemplateSchemaMigrationTests(unittest.TestCase):
 
             backups = list(
                 (root / "migration-backups").glob(
-                    "user-template-schema-v2-v8-*/contextspace/templates/legacy/template.yaml"
+                    "node-revision-v9-*/contextspace/templates/legacy/template.yaml"
                 )
             )
             self.assertEqual(len(backups), 1)
@@ -179,7 +179,7 @@ class UserTemplateSchemaMigrationTests(unittest.TestCase):
             self.assertTrue(
                 list(
                     (root / "migration-backups").glob(
-                        "user-template-schema-v2-v8-*/contextspace/templates/current/template.yaml"
+                        "node-revision-v9-*/contextspace/templates/current/template.yaml"
                     )
                 )
             )

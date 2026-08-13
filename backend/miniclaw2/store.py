@@ -369,8 +369,14 @@ class Store:
     def update_node(self, node: Node) -> None:
         self.assert_writable()
         node.bind_model_catalog(self.root)
+        path = self._node_file(node.project_id, node.id)
+        try:
+            persisted_rev = int(self._read_json(path).get("rev", 0))
+        except (OSError, ValueError, TypeError):
+            persisted_rev = 0
+        node.rev = max(node.rev, persisted_rev) + 1
         self._write_json(
-            self._node_file(node.project_id, node.id),
+            path,
             node.model_dump(exclude={"provider", "owner_host_id"}),
         )
         self.sync.schedule_commit(f"node {node.id} {node.state.value}")

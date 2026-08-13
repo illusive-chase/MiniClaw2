@@ -7,6 +7,12 @@ export function canResumeNode(node: NodeInfo): boolean {
   );
 }
 
+/** Prefer the latest durable node snapshot across HTTP and WebSocket paths.
+ * Missing revisions keep compatibility with servers predating node revisions. */
+export function preferNewerNode(current: NodeInfo, incoming: NodeInfo): NodeInfo {
+  return (incoming.rev ?? 0) >= (current.rev ?? 0) ? incoming : current;
+}
+
 export function nodeIdsNeedingEventReplay(
   nodes: readonly Pick<NodeInfo, "id" | "state">[],
 ): string[] {

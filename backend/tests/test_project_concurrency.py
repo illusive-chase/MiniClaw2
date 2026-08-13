@@ -35,6 +35,33 @@ class ProjectConcurrencyModelTests(unittest.TestCase):
                     Project(root_path="/tmp/project", concurrency=value)
 
 
+class NodeRevisionTests(unittest.TestCase):
+    def test_legacy_node_defaults_to_zero_revision(self) -> None:
+        node = Node(project_id="p1", model_preset_id="gpt-5.5")
+        legacy = node.model_dump(exclude={"rev", "provider", "owner_host_id"})
+        self.assertEqual(Node.model_validate(legacy).rev, 0)
+
+    def test_update_node_advances_past_persisted_revision(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(root=Path(directory) / "store")
+            project = store.create_project(Project(root_path=directory))
+            node = store.create_node(
+                Node(project_id=project.id, model_preset_id=project.model_preset_id)
+            )
+            stale = node.model_copy(deep=True)
+
+            node.state = NodeState.RUNNING
+            store.update_node(node)
+            self.assertEqual(node.rev, 1)
+
+            stale.state = NodeState.WAITING
+            store.update_node(stale)
+            self.assertEqual(stale.rev, 2)
+            persisted = store.load_node(project.id, node.id)
+            assert persisted is not None
+            self.assertEqual(persisted.rev, 2)
+
+
 class ProjectConcurrencyApiTests(unittest.TestCase):
     def setUp(self) -> None:
         self.home = tempfile.TemporaryDirectory()

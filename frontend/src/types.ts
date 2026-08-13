@@ -376,6 +376,7 @@ export type NodeInfo = {
   op_kind?: string | null;
   agent_op_kind?: string | null;
   state: NodeState;
+  rev?: number;
   parent_node_id?: string | null;
   planspace_id?: string | null;
   context_bundle_id?: string | null;

@@ -103,6 +103,7 @@ import { useSessionSocket } from "./ws";
 import {
   canResumeNode,
   nodeIdsNeedingEventReplay,
+  preferNewerNode,
   shouldAutoSelectEventNode,
   shouldOpenCreatedPlanspace,
   shouldOpenInteractionNode,
@@ -700,11 +701,11 @@ export function App() {
         const currentById = new Map(current.map((n) => [n.id, n]));
         const merged: NodeInfo[] = [];
         for (const c of current) {
-          /* Prefer the backend version when it exists (state drift correction);
-           * otherwise only keep local nodes added after this refresh began. */
+          /* Reconcile drift without letting an older HTTP snapshot replace a
+           * newer WebSocket update received while this request was in flight. */
           const refreshed = nextById.get(c.id);
           if (refreshed) {
-            merged.push(refreshed);
+            merged.push(preferNewerNode(c, refreshed));
           } else if (!refreshStartedNodeIds.has(c.id)) {
             merged.push(c);
           }
@@ -2897,7 +2898,9 @@ function upsertNode(prev: NodeInfo[], node: NodeInfo): NodeInfo[] {
   if (index < 0) {
     return [...prev, node].sort((a, b) => a.created_at - b.created_at);
   }
-  return prev.map((item, i) => (i === index ? node : item));
+  return prev.map((item, i) =>
+    i === index ? preferNewerNode(item, node) : item,
+  );
 }
 
 function mergeEventRecords(
