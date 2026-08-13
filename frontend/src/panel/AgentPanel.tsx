@@ -20,7 +20,6 @@ import type {
   EventRecord,
   InteractionRequest,
   ModelPreset,
-  NodeCategory,
   NodeDiff,
   NodeInfo,
   ReviewBrief,
@@ -41,7 +40,14 @@ import {
   PendingGateInline,
   type ResolveGatePayload,
 } from "../components/PendingGateInline";
-import { canResumeNode } from "../nodeUtil";
+import {
+  canResumeNode,
+  categoryForClassification,
+  isLibraryOpKind,
+  nodeClassification,
+  nodeClassificationLabel,
+  type NodeClassification,
+} from "../nodeUtil";
 import { GateReviewForm } from "./gateReview";
 import { InspectDrawer } from "./InspectDrawer";
 import {
@@ -295,8 +301,8 @@ export function AgentPanel({
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-1.5">
               <StatePill state={node.state} />
-              {node.agent_op_kind === "library_edit" && (
-                <span className="rounded border border-line bg-surface px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-[0.12em] text-ink-muted">
+              {isLibraryOpKind(node.agent_op_kind) && (
+                <span className="rounded border border-state-library/30 bg-state-library-soft px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-[0.12em] text-state-library">
                   librarian
                 </span>
               )}
@@ -626,7 +632,10 @@ type VirtualDraft = {
   promptDraft: string;
   motivation: string;
   modelPresetId: string;
-  category: NodeCategory;
+  /* The single source of truth for the four mutually exclusive kinds. It maps
+   * onto the wire's (category, agent_op_kind) pair at save time, so the two
+   * fields can never disagree the way separate draft state would allow. */
+  classification: NodeClassification;
   subtype: ReviewSubtype;
   brief: ReviewBrief;
   scheduledDeps: string[];
@@ -1020,9 +1029,10 @@ const EditableVirtualNodeBody = forwardRef<VirtualNodeBodyHandle, VirtualNodeBod
           <div className="space-y-3 px-3 py-3">
             <div className="inline-flex rounded-md border border-line bg-surface p-0.5">
               {([
-                ["regular", "Work"],
+                ["work", "Work"],
                 ["planning", "Plan"],
                 ["review", "Review"],
+                ["library", "Library"],
               ] as const).map(([value, label]) => (
                 <button
                   key={value}
@@ -1030,12 +1040,12 @@ const EditableVirtualNodeBody = forwardRef<VirtualNodeBodyHandle, VirtualNodeBod
                   onClick={() =>
                     setDraft((current) => ({
                       ...current,
-                      category: value,
+                      classification: value,
                     }))
                   }
                   className={
                     "rounded px-3 py-1.5 text-[12px] font-medium transition " +
-                    (draft.category === value
+                    (draft.classification === value
                       ? "bg-surface-raised text-ink-strong shadow-card"
                       : "text-ink-muted hover:text-ink")
                   }
@@ -1045,7 +1055,20 @@ const EditableVirtualNodeBody = forwardRef<VirtualNodeBodyHandle, VirtualNodeBod
               ))}
             </div>
 
-            {draft.category === "review" && (
+            {draft.classification === "library" && (
+              <div className="space-y-2 rounded-md border border-state-library/25 bg-state-library-soft/30 p-3">
+                <p className="text-[11px] leading-relaxed text-ink-muted">
+                  图书管理员节点。它会依据你的描述判断该写成 principle（预先注入的行为准则）还是
+                  Agent Skill（按需加载的工具/流程知识），然后在用户级 library 中新建或精炼
+                  <span className="font-medium text-ink"> 恰好一个</span> 条目。
+                </p>
+                <p className="text-[11px] leading-relaxed text-ink-muted">
+                  在下方 Prompt 里描述这个可复用的准则或流程即可，无需自己先分类。
+                </p>
+              </div>
+            )}
+
+            {draft.classification === "review" && (
               <div className="space-y-3 rounded-md border border-state-review/25 bg-state-review-soft/20 p-3">
                 <div className="inline-flex rounded-md border border-state-review/25 bg-surface p-0.5">
                   {([
@@ -1603,7 +1626,7 @@ function virtualDraftFromNode(node: NodeInfo): VirtualDraft {
     promptDraft: node.prompt_draft || node.prompt || "",
     motivation: node.summary || "",
     modelPresetId: node.model_preset_id || "",
-    category: node.category || "regular",
+    classification: nodeClassification(node),
     subtype: node.subtype || "agentic_review",
     brief: node.brief || {
       check_what: "",
@@ -1618,7 +1641,7 @@ function virtualDraftFromNode(node: NodeInfo): VirtualDraft {
 }
 
 function virtualDraftAfterSave(draft: VirtualDraft): VirtualDraft {
-  if (draft.category === "review") {
+  if (draft.classification === "review") {
     return {
       ...draft,
       obsoleteReason: draft.obsoleteReason.trim(),
@@ -1641,7 +1664,7 @@ function virtualDraftValidationError(
   node: NodeInfo,
 ): string | null {
   const allowsEmptyPrompt =
-    draft.category === "review" && draft.subtype === "code_review";
+    draft.classification === "review" && draft.subtype === "code_review";
   if (!allowsEmptyPrompt && !draft.promptDraft.trim()) {
     return "请先填写 Prompt draft。";
   }
@@ -1673,21 +1696,33 @@ function virtualPayloadFromDraft(
   draft: VirtualDraft,
   node: NodeInfo,
 ): UpdateVirtualPayload {
+  const isLibrary = draft.classification === "library";
   const payload: UpdateVirtualPayload = {
     prompt_draft: draft.promptDraft,
     motivation: draft.motivation,
-    category: draft.category,
+    category: categoryForClassification(draft.classification),
     scheduled_deps: draft.scheduledDeps,
     pending_extra_principles: draft.pendingExtraPrinciples,
     pending_extra_skills: draft.pendingExtraSkills,
     obsolete_reason: draft.obsoleteReason.trim() || null,
   };
+  /* Only send agent_op_kind when it actually changes. Leaving a historical
+   * principle_edit node untouched keeps it replaying under its original op
+   * kind rather than silently migrating it to library_edit. */
+  const nextOpKind = isLibrary
+    ? isLibraryOpKind(node.agent_op_kind)
+      ? node.agent_op_kind ?? "library_edit"
+      : "library_edit"
+    : null;
+  if (nextOpKind !== (node.agent_op_kind ?? null)) {
+    payload.agent_op_kind = nextOpKind;
+  }
   // Model preset is locked to the resume source for continuation virtuals;
   // omit it from the payload so the backend doesn't have to re-check equality.
   if (!node.resume_from_node_id && draft.modelPresetId !== node.model_preset_id) {
     payload.model_preset_id = draft.modelPresetId;
   }
-  if (draft.category === "review") {
+  if (draft.classification === "review") {
     payload.subtype = draft.subtype;
     payload.brief =
       draft.subtype === "code_review" &&
@@ -2320,19 +2355,7 @@ function StatePill({ state }: { state: NodeInfo["state"] }) {
 }
 
 function nodeCategoryLabel(node: NodeInfo): string {
-  return (
-    node.kind === "verifier"
-      ? "programmatic"
-      : node.category === "planning"
-      ? "planning"
-      : node.category === "review"
-        ? node.subtype === "human_interact_review"
-          ? "human review"
-          : node.subtype === "code_review"
-            ? "code review"
-            : "review"
-        : "regular"
-  );
+  return nodeClassificationLabel(node);
 }
 
 function formatTimestamp(value?: number | null): string {

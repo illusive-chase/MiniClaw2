@@ -7,7 +7,12 @@ import {
 } from "../../components/PendingGateInline";
 import type { AgentNodeData } from "../layout";
 import { stateMeta } from "./stateMeta";
-import { canResumeNode } from "../../nodeUtil";
+import {
+  canResumeNode,
+  nodeClassificationChipLabel,
+  nodeClassificationLabel,
+  nodeClassificationTone,
+} from "../../nodeUtil";
 import { modelPresetDetail, modelPresetLabel, providerLabel } from "../../modelPresets";
 import { useNodeInHoverGroup } from "../hoverStore";
 
@@ -683,32 +688,15 @@ function StateChip({ state }: { state: NodeState }) {
 }
 
 function CategoryChip({ node }: { node: NodeInfo }) {
-  const label =
-    node.agent_op_kind === "library_edit"
-      ? "librarian"
-      : node.kind === "verifier"
-      ? "verify"
-      : node.category === "planning"
-      ? "plan"
-      : node.category === "review"
-        ? node.subtype === "human_interact_review"
-          ? "human"
-          : node.subtype === "code_review"
-            ? "code"
-            : "review"
-        : "work";
-  const tone =
-    node.category === "planning"
-      ? "border-brand/30 bg-brand-soft text-brand-ink"
-      : node.category === "review"
-        ? "border-state-review/30 bg-state-review-soft text-state-review"
-        : "border-line bg-surface text-ink-muted";
   return (
     <span
-      className={"inline-flex items-center rounded border px-1 py-0.5 text-[9px] font-medium uppercase tracking-[0.12em] " + tone}
-      title={node.agent_op_kind === "library_edit" ? "librarian" : node.subtype ?? node.category ?? "regular"}
+      className={
+        "inline-flex items-center rounded border px-1 py-0.5 text-[9px] font-medium uppercase tracking-[0.12em] " +
+        nodeClassificationTone(node)
+      }
+      title={nodeClassificationLabel(node)}
     >
-      {label}
+      {nodeClassificationChipLabel(node)}
     </span>
   );
 }

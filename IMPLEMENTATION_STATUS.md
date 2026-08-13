@@ -324,9 +324,18 @@ Trunk: `backend/miniclaw2/runner.py`, `backend/miniclaw2/registry.py`.
   multiple, cross-library, or malformed changes error the node and record the
   result in `settings_snapshot.library_audit`.
 - Newly authored skills receive `authored` provenance with the creating node
-  id; refinement preserves existing provenance. Project → `+ New principle /
-  skill` creates a regular librarian virtual in the active direction, and a
-  terminal librarian refreshes both library shelves.
+  id; refinement preserves existing provenance. A terminal librarian refreshes
+  both library shelves.
+- Librarian nodes are created and edited exactly like every other virtual: any
+  virtual's Classification control offers **Work / Plan / Review / Library**,
+  and choosing Library sets `agent_op_kind="library_edit"` while holding
+  `category=regular`. The four options are mutually exclusive in the draft
+  model, and `domain.py` enforces the pairing (`AUTHORING_AGENT_OP_KINDS`
+  require `category=regular`) so a librarian can never also carry a review
+  brief. `PATCH /sessions/{sid}/virtuals/{vid}` accepts `agent_op_kind`, so the
+  classification is editable after creation rather than fixed at create time.
+  Historical `principle_edit` nodes read as Library and keep their original op
+  kind unless the user changes classification.
 
 ### Review agents — landed
 
@@ -704,9 +713,10 @@ Trunk: `frontend/src/canvas/Canvas.tsx`, `frontend/src/canvas/layout.ts`,
 - Clicking a lane header opens a lane panel with manual/auto mode
   controls; Project → Directions also shows mode and hide/show.
 - `PlanspaceFilePanel.tsx` now handles project-root `CONTEXT.md` only.
-- `ProjectPanel.tsx` has Project actions (`+ New direction`, `+ New skill`,
+- `ProjectPanel.tsx` has Project actions (`+ New direction`, skill/pack import,
   initialize/refresh project notes) and a Directions section with active
-  badges, mode labels, and hide/show controls.
+  badges, mode labels, and hide/show controls. Library *authoring* is not a
+  project action: it is the Library classification on an ordinary virtual.
 - Principle and skill context tiles are binding-driven: a tile exists only
   when an observed bundle/skill audit or a visible virtual's pending binding
   references it. Pending declarations draw dashed loads; observed principle

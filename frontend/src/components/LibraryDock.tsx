@@ -285,14 +285,14 @@ export function LibraryDock({
       total: principles.length,
       /* §7 called this out: principles is empty on a fresh install, so the
        * empty state has to carry the next step rather than just say "none". */
-      emptyLabel: "还没有 principle。可在项目面板用「New principle / skill」创建。",
+      emptyLabel: "还没有 principle。在画布上新建节点，把分类切到「Library」即可创建。",
     },
     {
       key: "skills",
       title: "Skills",
       entries: skillEntries,
       total: skills.length,
-      emptyLabel: "还没有 skill。可在项目面板导入或创建。",
+      emptyLabel: "还没有 skill。可在项目面板导入，或在画布上新建节点后把分类切到「Library」。",
     },
   ];
 

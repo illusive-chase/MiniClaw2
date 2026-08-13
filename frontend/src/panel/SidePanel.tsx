@@ -88,7 +88,6 @@ export type SidePanelProps = {
     mode: PlanspaceMode,
     modelPresetId: string,
   ) => void;
-  onNewLibraryEntry?: (userSeed: string) => Promise<void> | void;
   onImportSkill?: (source: string) => Promise<void> | void;
   onCreateContinuationVirtual: (nodeId: string) => void;
   onPromoteVirtual: (nodeId: string) => Promise<void>;
@@ -202,7 +201,6 @@ function Inner(props: SidePanelProps & { nodesById: Map<string, NodeInfo> }) {
     onSelectContextBinding,
     onNewDirection,
     onStartBlankDirection,
-    onNewLibraryEntry,
     onImportSkill,
     onCreateContinuationVirtual,
     onPromoteVirtual,
@@ -259,7 +257,6 @@ function Inner(props: SidePanelProps & { nodesById: Map<string, NodeInfo> }) {
         onConcurrencyChange={onConcurrencyChange}
         onNewDirection={onNewDirection}
         onStartBlankDirection={onStartBlankDirection}
-        onNewLibraryEntry={onNewLibraryEntry}
         onImportSkill={onImportSkill}
         onContextInit={onContextInit}
         onContextRefresh={onContextRefresh}

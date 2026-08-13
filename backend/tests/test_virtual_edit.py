@@ -107,6 +107,81 @@ class VirtualEditRegistryTests(unittest.TestCase):
         self.assertEqual(reloaded.model_preset_id, "opus-4-8")
         self.assertEqual(reloaded.provider, "claude")
 
+    def test_update_virtual_can_toggle_library_op_kind(self) -> None:
+        node = self._virtual("classify-node")
+
+        promoted = self.registry.update_virtual(
+            self.project.id,
+            node.id,
+            agent_op_kind="library_edit",
+        )
+        assert promoted is not None
+        self.assertEqual(promoted.agent_op_kind, "library_edit")
+        self.assertEqual(promoted.category, Category.REGULAR)
+        reloaded = self.store.load_node(self.project.id, node.id)
+        assert reloaded is not None
+        self.assertEqual(reloaded.agent_op_kind, "library_edit")
+
+        cleared = self.registry.update_virtual(
+            self.project.id,
+            node.id,
+            agent_op_kind=None,
+        )
+        assert cleared is not None
+        self.assertIsNone(cleared.agent_op_kind)
+
+    def test_update_virtual_rejects_unknown_agent_op_kind(self) -> None:
+        node = self._virtual("bad-op-kind")
+
+        with self.assertRaises(ValueError):
+            self.registry.update_virtual(
+                self.project.id,
+                node.id,
+                agent_op_kind="skill_edit",
+            )
+
+    def test_update_virtual_rejects_library_op_kind_with_review_category(self) -> None:
+        node = self._virtual("librarian-node")
+        self.registry.update_virtual(
+            self.project.id,
+            node.id,
+            agent_op_kind="library_edit",
+        )
+
+        with self.assertRaises(ValueError):
+            self.registry.update_virtual(
+                self.project.id,
+                node.id,
+                category="review",
+                subtype="agentic_review",
+                brief={"check_what": "c", "expected": "e", "abnormal": "a"},
+            )
+
+        unchanged = self.store.load_node(self.project.id, node.id)
+        assert unchanged is not None
+        self.assertEqual(unchanged.agent_op_kind, "library_edit")
+        self.assertEqual(unchanged.category, Category.REGULAR)
+
+    def test_switching_librarian_to_review_clears_op_kind_in_one_call(self) -> None:
+        node = self._virtual("switch-node")
+        self.registry.update_virtual(
+            self.project.id,
+            node.id,
+            agent_op_kind="library_edit",
+        )
+
+        switched = self.registry.update_virtual(
+            self.project.id,
+            node.id,
+            agent_op_kind=None,
+            category="review",
+            subtype="agentic_review",
+            brief={"check_what": "c", "expected": "e", "abnormal": "a"},
+        )
+        assert switched is not None
+        self.assertIsNone(switched.agent_op_kind)
+        self.assertEqual(switched.category, Category.REVIEW)
+
     def test_update_resume_virtual_rejects_model_preset_change(self) -> None:
         source = Node(
             id="resume-source",

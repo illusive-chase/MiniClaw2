@@ -38,6 +38,8 @@ from .git_state import (
 )
 from .skills import expand_skill_selections
 from .domain import (
+    AUTHORING_AGENT_OP_KINDS,
+    KNOWN_AGENT_OP_KINDS,
     TERMINAL_NODE_STATES,
     Category,
     Node,
@@ -2051,6 +2053,15 @@ class ProjectRegistry:
             elif next_review_target is not None:
                 raise ValueError("review_target is only valid on code_review virtuals")
 
+        if agent_op_kind is not None:
+            if agent_op_kind not in KNOWN_AGENT_OP_KINDS:
+                raise ValueError(f"unknown agent_op_kind: {agent_op_kind!r}")
+            if (
+                agent_op_kind in AUTHORING_AGENT_OP_KINDS
+                and next_category is not Category.REGULAR
+            ):
+                raise ValueError(f"{agent_op_kind} requires category=regular")
+
         node_kwargs: dict[str, Any] = {}
         if node_id is not None:
             node_kwargs["id"] = node_id
@@ -2137,6 +2148,7 @@ class ProjectRegistry:
         scheduled_deps: list[str] | None | object = _UNSET,
         pending_extra_principles: list[str] | None | object = _UNSET,
         pending_extra_skills: list[str | dict[str, Any]] | None | object = _UNSET,
+        agent_op_kind: str | None | object = _UNSET,
         provider: str | None | object = _UNSET,
         model_preset_id: str | None | object = _UNSET,
         obsolete_reason: str | None | object = _UNSET,
@@ -2255,6 +2267,25 @@ class ProjectRegistry:
                     raise ValueError(
                         "review_target is only valid on code_review virtuals"
                     )
+        next_agent_op_kind = existing.agent_op_kind
+        if agent_op_kind is not _UNSET:
+            if agent_op_kind is None or str(agent_op_kind) == "":
+                next_agent_op_kind = None
+            else:
+                next_agent_op_kind = str(agent_op_kind)
+                if next_agent_op_kind not in KNOWN_AGENT_OP_KINDS:
+                    raise ValueError(
+                        f"unknown agent_op_kind: {agent_op_kind!r}"
+                    )
+            update["agent_op_kind"] = next_agent_op_kind
+        if (
+            next_agent_op_kind in AUTHORING_AGENT_OP_KINDS
+            and next_category is not Category.REGULAR
+        ):
+            raise ValueError(
+                f"{next_agent_op_kind} requires category=regular"
+            )
+
         next_prompt_draft = update.get("prompt_draft", existing.prompt_draft or "")
         if (
             any(value is not _UNSET for value in (prompt_draft, category, subtype))

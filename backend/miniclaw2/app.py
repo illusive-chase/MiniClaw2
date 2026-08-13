@@ -224,6 +224,7 @@ class UpdateVirtualRequest(BaseModel):
     scheduled_deps: list[str] | None = None
     pending_extra_principles: list[str] | None = None
     pending_extra_skills: list[str | dict[str, Any]] | None = None
+    agent_op_kind: str | None = None
     model_preset_id: str | None = None
     obsolete_reason: str | None = None
 

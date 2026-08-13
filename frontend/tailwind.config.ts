@@ -67,6 +67,10 @@ export default {
             DEFAULT: "rgb(var(--state-review) / <alpha-value>)",
             soft: "rgb(var(--state-review-soft) / <alpha-value>)",
           },
+          library: {
+            DEFAULT: "rgb(var(--state-library) / <alpha-value>)",
+            soft: "rgb(var(--state-library-soft) / <alpha-value>)",
+          },
           done: {
             DEFAULT: "rgb(var(--state-done) / <alpha-value>)",
             soft: "rgb(var(--state-done-soft) / <alpha-value>)",

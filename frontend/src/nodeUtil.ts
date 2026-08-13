@@ -1,4 +1,4 @@
-import type { NodeInfo } from "./types";
+import type { NodeCategory, NodeInfo } from "./types";
 
 export function canResumeNode(node: NodeInfo): boolean {
   return (
@@ -52,4 +52,89 @@ export function shouldOpenInteractionNode(
 
 export function shouldOpenCreatedPlanspace(activated: boolean): boolean {
   return activated;
+}
+
+/** The four mutually exclusive kinds a virtual node can be classified as.
+ * `library` is carried by `agent_op_kind` rather than `category`, so every
+ * reader must consult both fields; this helper is the single place that does.
+ * Historical `principle_edit` nodes read as `library` too — they are the same
+ * authoring operation under an older name. */
+export type NodeClassification = "work" | "planning" | "review" | "library";
+
+export function isLibraryOpKind(opKind?: string | null): boolean {
+  return opKind === "library_edit" || opKind === "principle_edit";
+}
+
+export function nodeClassification(
+  node: Pick<NodeInfo, "category" | "agent_op_kind">,
+): NodeClassification {
+  if (isLibraryOpKind(node.agent_op_kind)) return "library";
+  if (node.category === "planning") return "planning";
+  if (node.category === "review") return "review";
+  return "work";
+}
+
+/** The wire `category` a classification maps onto. `library` and `work` share
+ * `regular`; the librarian is distinguished by `agent_op_kind`, not category. */
+export function categoryForClassification(
+  classification: NodeClassification,
+): NodeCategory {
+  switch (classification) {
+    case "planning":
+      return "planning";
+    case "review":
+      return "review";
+    default:
+      return "regular";
+  }
+}
+
+/** Short label for the canvas tile chip. */
+export function nodeClassificationChipLabel(node: NodeInfo): string {
+  if (isLibraryOpKind(node.agent_op_kind)) return "library";
+  if (node.kind === "verifier") return "verify";
+  switch (nodeClassification(node)) {
+    case "planning":
+      return "plan";
+    case "review":
+      return node.subtype === "human_interact_review"
+        ? "human"
+        : node.subtype === "code_review"
+          ? "code"
+          : "review";
+    default:
+      return "work";
+  }
+}
+
+/** Long label for panel headers and tooltips. */
+export function nodeClassificationLabel(node: NodeInfo): string {
+  if (isLibraryOpKind(node.agent_op_kind)) return "librarian";
+  if (node.kind === "verifier") return "programmatic";
+  switch (nodeClassification(node)) {
+    case "planning":
+      return "planning";
+    case "review":
+      return node.subtype === "human_interact_review"
+        ? "human review"
+        : node.subtype === "code_review"
+          ? "code review"
+          : "review";
+    default:
+      return "regular";
+  }
+}
+
+/** Tailwind classes for the classification chip, matched to the label. */
+export function nodeClassificationTone(node: NodeInfo): string {
+  switch (nodeClassification(node)) {
+    case "library":
+      return "border-state-library/30 bg-state-library-soft text-state-library";
+    case "planning":
+      return "border-brand/30 bg-brand-soft text-brand-ink";
+    case "review":
+      return "border-state-review/30 bg-state-review-soft text-state-review";
+    default:
+      return "border-line bg-surface text-ink-muted";
+  }
 }

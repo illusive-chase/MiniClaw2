@@ -140,6 +140,38 @@ class NodeInvariantTests(unittest.TestCase):
                 agent_op_kind="library_edit",
             )
 
+    def test_authoring_op_kinds_require_regular_category(self) -> None:
+        for op_kind in ("library_edit", "principle_edit"):
+            with self.subTest(op_kind=op_kind):
+                with self.assertRaises(ValidationError):
+                    Node(
+                        project_id="p1",
+                        kind=NodeKind.AGENT,
+                        model_preset_id="gpt-5.5",
+                        agent_op_kind=op_kind,
+                        category=Category.REVIEW,
+                        subtype=ReviewSubtype.AGENTIC_REVIEW,
+                        brief=ReviewBrief(
+                            check_what="c", expected="e", abnormal="a"
+                        ),
+                    )
+                with self.assertRaises(ValidationError):
+                    Node(
+                        project_id="p1",
+                        kind=NodeKind.AGENT,
+                        model_preset_id="gpt-5.5",
+                        agent_op_kind=op_kind,
+                        category=Category.PLANNING,
+                    )
+                node = Node(
+                    project_id="p1",
+                    kind=NodeKind.AGENT,
+                    model_preset_id="gpt-5.5",
+                    agent_op_kind=op_kind,
+                    category=Category.REGULAR,
+                )
+                self.assertEqual(node.category, Category.REGULAR)
+
     def test_virtual_state_rejects_timestamps(self) -> None:
         with self.assertRaises(ValidationError):
             Node(

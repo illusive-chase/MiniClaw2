@@ -624,45 +624,6 @@ export function App() {
     sessionSettingsSaving ||
     !!sessionContextSpace?.context_refresh?.running;
 
-  const handleNewLibraryEntry = useCallback(
-    async (userSeed: string) => {
-      if (!session?.id || virtualCreateDisabled) return;
-      const active = sessionContextSpace?.active_planspace_id ?? null;
-      setProjectMutationPending(true);
-      setSessionContextSpaceError(null);
-      try {
-        const result = await createVirtual(session.id, {
-          prompt_draft: userSeed,
-          category: "regular",
-          agent_op_kind: "library_edit",
-          model_preset_id: defaultModelPresetId(modelPresets, session.model_preset_id),
-          planspace_id: active,
-        });
-        setNodes((prev) => {
-          const updated = upsertNode(prev, result.node);
-          nodeCountRef.current = updated.length;
-          nodesRef.current = updated;
-          return updated;
-        });
-        selectAndOpenNode(result.node.id);
-        setFocusRequestVersion((v) => v + 1);
-      } catch (err) {
-        setSessionContextSpaceError(String(err));
-        throw err;
-      } finally {
-        setProjectMutationPending(false);
-      }
-    },
-    [
-      session?.id,
-      session?.model_preset_id,
-      modelPresets,
-      sessionContextSpace?.active_planspace_id,
-      virtualCreateDisabled,
-      selectAndOpenNode,
-    ],
-  );
-
   /* refresh node list.
    *
    * refreshNodes is called both on initial load and as a hedge from
@@ -2746,7 +2707,6 @@ export function App() {
                 onSelectContextBinding={selectContextBinding}
                 onNewDirection={startNewDirection}
                 onStartBlankDirection={startBlankDirection}
-                onNewLibraryEntry={handleNewLibraryEntry}
                 onImportSkill={handleImportSkill}
                 onCreateContinuationVirtual={createContinuationVirtual}
                 onPromoteVirtual={promoteVirtualNode}

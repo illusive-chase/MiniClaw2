@@ -99,6 +99,14 @@ KNOWN_AGENT_OP_KINDS: frozenset[str] = frozenset({
     "library_edit",
 })
 
+# Op kinds that author user-wide library entries. Their launch block replaces
+# the ordinary one, which only composes for regular agents — a review or
+# planning category would stack two mutually exclusive briefs onto one turn.
+AUTHORING_AGENT_OP_KINDS: frozenset[str] = frozenset({
+    "principle_edit",
+    "library_edit",
+})
+
 
 def normalize_planspace_mode(value: str | None) -> PlanspaceMode:
     """Return a ``PlanspaceMode`` from a string; ``None`` → ``MANUAL``."""
@@ -287,6 +295,14 @@ class Node(BaseModel):
         ):
             raise ValueError(
                 f"unknown agent_op_kind: {self.agent_op_kind!r}"
+            )
+        if (
+            self.agent_op_kind in AUTHORING_AGENT_OP_KINDS
+            and self.category is not None
+            and self.category is not Category.REGULAR
+        ):
+            raise ValueError(
+                f"{self.agent_op_kind} requires category=regular"
             )
         if self.kind is NodeKind.OP:
             if self.category is not None:

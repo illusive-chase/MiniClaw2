@@ -464,6 +464,7 @@ export type UpdateVirtualPayload = {
   scheduled_deps?: string[];
   pending_extra_principles?: string[];
   pending_extra_skills?: SkillSelection[];
+  agent_op_kind?: string | null;
   model_preset_id?: string;
   obsolete_reason?: string | null;
 };

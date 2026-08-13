@@ -38,6 +38,9 @@
   --state-review: 90 139 122;
   --state-review-soft: 220 232 226;
 
+  --state-library: 124 106 168;
+  --state-library-soft: 232 226 244;
+
   --state-done: 120 113 108;
   --state-done-soft: 232 228 222;
 
@@ -83,6 +86,9 @@ html.dark {
 
   --state-review: 130 174 158;
   --state-review-soft: 30 56 50;
+
+  --state-library: 163 148 205;
+  --state-library-soft: 45 38 62;
 
   --state-done: 130 122 113;
   --state-done-soft: 48 46 43;

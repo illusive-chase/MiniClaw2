@@ -41,7 +41,6 @@ export type ProjectPanelProps = {
     mode: PlanspaceMode,
     modelPresetId: string,
   ) => void;
-  onNewLibraryEntry?: (userSeed: string) => Promise<void> | void;
   onImportSkill?: (source: string) => Promise<void> | void;
   onContextInit: () => void;
   onContextRefresh: () => void;
@@ -73,7 +72,6 @@ export function ProjectPanel({
   onConcurrencyChange,
   onNewDirection,
   onStartBlankDirection,
-  onNewLibraryEntry,
   onImportSkill,
   onContextInit,
   onContextRefresh,
@@ -89,11 +87,6 @@ export function ProjectPanel({
   const [newDirectionModelPresetId, setNewDirectionModelPresetId] = useState("");
   const seedRef = useRef<HTMLTextAreaElement | null>(null);
   const lastRequestVersionRef = useRef(0);
-  const [libraryEntryOpen, setLibraryEntryOpen] = useState(false);
-  const [libraryEntrySeed, setLibraryEntrySeed] = useState("");
-  const [libraryEntryBusy, setLibraryEntryBusy] = useState(false);
-  const [libraryEntryError, setLibraryEntryError] = useState<string | null>(null);
-  const libraryEntrySeedRef = useRef<HTMLTextAreaElement | null>(null);
   const [skillSource, setSkillSource] = useState("");
   const [skillBusy, setSkillBusy] = useState(false);
   const [skillError, setSkillError] = useState<string | null>(null);
@@ -277,19 +270,6 @@ export function ProjectPanel({
             >
               {notesExist ? "Refresh project notes" : "Initialize project notes"}
             </button>
-            {onNewLibraryEntry && (
-              <button
-                type="button"
-                onClick={() => {
-                  setLibraryEntryOpen((v) => !v);
-                  window.setTimeout(() => libraryEntrySeedRef.current?.focus(), 30);
-                }}
-                disabled={busy}
-                className="rounded-md border border-line bg-surface-raised px-3 py-2 text-left text-[12px] text-ink transition hover:border-line-strong disabled:opacity-40"
-              >
-                + New principle / skill
-              </button>
-            )}
             {onImportSkill && (
               <form
                 className="flex gap-2"
@@ -329,62 +309,6 @@ export function ProjectPanel({
           {skillError && (
             <div className="mt-2 rounded-md border border-state-error/30 bg-state-error-soft p-2 text-[11px] text-state-error">
               {skillError}
-            </div>
-          )}
-
-          {libraryEntryOpen && onNewLibraryEntry && (
-            <div className="mt-3 rounded-md border border-line bg-surface-sunken p-3">
-              <label className="block text-[10px] font-medium uppercase tracking-[0.14em] text-ink-subtle">
-                What reusable guidance or workflow should the librarian author?
-              </label>
-              <textarea
-                ref={libraryEntrySeedRef}
-                value={libraryEntrySeed}
-                onChange={(e) => setLibraryEntrySeed(e.target.value)}
-                rows={4}
-                placeholder="e.g. review discipline, testing standards, or a release workflow…"
-                className="mt-1 w-full resize-none rounded-md border border-line bg-surface px-3 py-2 text-[13px] leading-relaxed text-ink-strong placeholder:text-ink-subtle focus:border-brand focus:outline-none"
-              />
-              {libraryEntryError && (
-                <div className="mt-2 rounded-md border border-state-error/30 bg-state-error-soft p-2 text-[11px] text-state-error">
-                  {libraryEntryError}
-                </div>
-              )}
-              <div className="mt-2 flex justify-end gap-2">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setLibraryEntryOpen(false);
-                    setLibraryEntrySeed("");
-                    setLibraryEntryError(null);
-                  }}
-                  className="rounded border border-line bg-surface px-2.5 py-1 text-[11px] text-ink-muted hover:text-ink"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="button"
-                  disabled={libraryEntryBusy || !libraryEntrySeed.trim()}
-                  onClick={async () => {
-                    const trimmed = libraryEntrySeed.trim();
-                    if (!trimmed) return;
-                    setLibraryEntryBusy(true);
-                    setLibraryEntryError(null);
-                    try {
-                      await onNewLibraryEntry(trimmed);
-                      setLibraryEntryOpen(false);
-                      setLibraryEntrySeed("");
-                    } catch (err) {
-                      setLibraryEntryError(String(err));
-                    } finally {
-                      setLibraryEntryBusy(false);
-                    }
-                  }}
-                  className="rounded-md bg-brand px-2.5 py-1 text-[11.5px] font-medium text-white disabled:opacity-40"
-                >
-                  {libraryEntryBusy ? "Creating…" : "Create library draft"}
-                </button>
-              </div>
             </div>
           )}
 
