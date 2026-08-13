@@ -35,6 +35,8 @@ import {
 } from "../transcript";
 import { ToolActivity } from "../components/ToolActivity";
 import { ZoomableText } from "../components/TextZoom";
+import { EntryPickerModal } from "../components/EntryPickerModal";
+import type { HierarchyEntry } from "../components/HierarchyTree";
 import {
   PendingGateInline,
   type ResolveGatePayload,
@@ -1381,12 +1383,23 @@ function PrinciplesAttachSection({
   onChange: (next: string[]) => void;
 }) {
   const available = principles ?? [];
+  const [pickerOpen, setPickerOpen] = useState(false);
   const attachedIds = new Set(attached);
   const attachedPrinciples = attached.map((id) => ({
     id,
     title: available.find((s) => s.id === id)?.title ?? id,
   }));
   const remaining = available.filter((s) => !attachedIds.has(s.id));
+
+  /* The tree is keyed on the hyphen-segmented slug, while the draft stores the
+   * prefixed plug id (`principles.foo`). Already-attached entries stay visible
+   * but disabled so the hierarchy does not reshuffle as items are picked. */
+  const pickerEntries: HierarchyEntry[] = available.map((principle) => ({
+    id: principle.id,
+    name: principle.slug,
+    description: principle.description,
+    disabled: attachedIds.has(principle.id),
+  }));
 
   const attach = (id: string) => {
     if (!id || attachedIds.has(id)) return;
@@ -1438,23 +1451,13 @@ function PrinciplesAttachSection({
             </div>
           )}
           {remaining.length > 0 && (
-            <div>
-              <select
-                value=""
-                onChange={(e) => {
-                  attach(e.target.value);
-                  e.currentTarget.value = "";
-                }}
-                className={inputClassName + " text-[11.5px]"}
-              >
-                <option value="">Attach a principle…</option>
-                {remaining.map((s) => (
-                  <option key={s.id} value={s.id}>
-                    {s.title} ({s.slug})
-                  </option>
-                ))}
-              </select>
-            </div>
+            <button
+              type="button"
+              onClick={() => setPickerOpen(true)}
+              className="w-full rounded-md border border-dashed border-line bg-surface px-2 py-1.5 text-[11.5px] text-ink-muted transition hover:border-brand/60 hover:text-ink"
+            >
+              + 添加 principle
+            </button>
           )}
           {available.length === 0 && (
             <div className="rounded-md border border-dashed border-line bg-surface px-3 py-2 text-[11px] text-ink-muted">
@@ -1464,6 +1467,18 @@ function PrinciplesAttachSection({
           )}
         </div>
       </div>
+      <EntryPickerModal
+        open={pickerOpen}
+        kind="principle"
+        title="选择 principle"
+        entries={pickerEntries}
+        emptyLabel="还没有 principle。可在项目面板用「New principle / skill」创建。"
+        onCancel={() => setPickerOpen(false)}
+        onPick={(entry) => {
+          attach(entry.id);
+          setPickerOpen(false);
+        }}
+      />
     </section>
   );
 }
@@ -1478,8 +1493,18 @@ function SkillsAttachSection({
   onChange: (next: SkillSelection[]) => void;
 }) {
   const available = skills ?? [];
+  const [pickerOpen, setPickerOpen] = useState(false);
   const attachedIds = new Set(attached.map((selection) => selection.id));
   const remaining = available.filter((skill) => !attachedIds.has(skill.id));
+  /* `slug` drives the hierarchy; `id` (`skills.<slug>`) is what the draft and
+   * the backend speak. Entries already in the draft — including the ones the
+   * backend auto-attached — are shown disabled rather than removed. */
+  const pickerEntries: HierarchyEntry[] = available.map((skill) => ({
+    id: skill.id,
+    name: skill.slug,
+    description: skill.description,
+    disabled: attachedIds.has(skill.id),
+  }));
   return (
     <section className="mb-5 overflow-hidden rounded-md border border-state-review/35 bg-state-review/5">
       <div className="border-b border-state-review/25 px-3 py-2">
@@ -1541,24 +1566,34 @@ function SkillsAttachSection({
           );
         })}
         {remaining.length > 0 && (
-          <select
-            value=""
-            onChange={(event) => {
-              if (!event.target.value) return;
-              onChange([...attached, { id: event.target.value, suggest: false }]);
-            }}
-            className="w-full rounded-md border border-line bg-surface px-2 py-1.5 text-[11px] text-ink"
+          <button
+            type="button"
+            onClick={() => setPickerOpen(true)}
+            className="w-full rounded-md border border-dashed border-line bg-surface px-2 py-1.5 text-[11px] text-ink-muted transition hover:border-brand/60 hover:text-ink"
           >
-            <option value="">Attach skill…</option>
-            {remaining.map((skill) => (
-              <option key={skill.id} value={skill.id}>{skill.title}</option>
-            ))}
-          </select>
+            + 添加 skill
+          </button>
         )}
         {attached.length === 0 && remaining.length === 0 && (
           <div className="text-[11px] text-ink-muted">No skills available.</div>
         )}
       </div>
+      <EntryPickerModal
+        open={pickerOpen}
+        kind="skill"
+        title="选择 skill"
+        entries={pickerEntries}
+        emptyLabel="还没有 skill。"
+        onCancel={() => setPickerOpen(false)}
+        onPick={(entry) => {
+          /* Only `{id, suggest:false}` — the backend's `expand_skill_selections`
+           * owns package members and frontmatter dependencies, and the panel's
+           * PendingLocalVirtualUpdate absorbs the wider list it returns. */
+          if (attachedIds.has(entry.id)) return;
+          onChange([...attached, { id: entry.id, suggest: false }]);
+          setPickerOpen(false);
+        }}
+      />
     </section>
   );
 }
