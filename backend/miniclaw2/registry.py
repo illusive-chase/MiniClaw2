@@ -1933,6 +1933,11 @@ class ProjectRegistry:
         parent_node_id: str | None = None,
         resume_from_node_id: str | None = None,
         _allow_compatibility_model_preset: bool = False,
+        _allow_nonterminal_resume: bool = False,
+        _proposed_by: str = "user",
+        _template_instance_id: str | None = None,
+        _defer_auto_promotion: bool = False,
+        _created_at: float | None = None,
     ) -> Node | None:
         """Create a user-authored editable virtual node.
 
@@ -1956,6 +1961,7 @@ class ProjectRegistry:
             pid,
             lane_id=lane_id,
             resume_from_node_id=resume_from_node_id,
+            allow_nonterminal=_allow_nonterminal_resume,
         )
         resume_source_for_provider: Node | None = None
         if normalized_resume_id:
@@ -2048,6 +2054,8 @@ class ProjectRegistry:
         node_kwargs: dict[str, Any] = {}
         if node_id is not None:
             node_kwargs["id"] = node_id
+        if _created_at is not None:
+            node_kwargs["created_at"] = _created_at
         node = Node(
             **node_kwargs,
             project_id=pid,
@@ -2070,7 +2078,8 @@ class ProjectRegistry:
                 store_root=self.store.root,
             ),
             resume_from_node_id=normalized_resume_id,
-            proposed_by="user",
+            proposed_by=_proposed_by,
+            template_instance_id=_template_instance_id,
             summary="" if motivation is None else str(motivation),
         )
         if self.store.load_node(pid, node.id) is not None:
@@ -2101,7 +2110,7 @@ class ProjectRegistry:
             pass
 
         active_lane = rt.project.active_planspace_id or ""
-        if active_lane == lane_id:
+        if not _defer_auto_promotion and active_lane == lane_id:
             try:
                 mode = read_planspace_mode(
                     rt.project, active_lane, store_root=self.store.root
@@ -2533,6 +2542,7 @@ class ProjectRegistry:
         *,
         lane_id: str,
         resume_from_node_id: str | None,
+        allow_nonterminal: bool = False,
     ) -> str | None:
         if resume_from_node_id is None or not str(resume_from_node_id).strip():
             return None
@@ -2544,6 +2554,8 @@ class ProjectRegistry:
             raise ValueError("resume_from_node_id must reference an agent/verifier node")
         if (source.planspace_id or "") != lane_id:
             raise ValueError(f"resume_from_node_id {source_id!r} is outside this lane")
+        if allow_nonterminal:
+            return source_id
         if source.state not in TERMINAL_NODE_STATES:
             raise ValueError("resume_from_node_id must reference a terminal node")
         if (

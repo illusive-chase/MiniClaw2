@@ -98,10 +98,10 @@ def apply_user_template(
     """Stamp ``template`` into ``project``'s active planspace.
 
     Unlike :func:`launch_template`, this does not create a project, seed a
-    workspace, or touch project settings. Callers are expected to have
-    verified that the project is not busy. When ``anchor_node_id`` is
-    provided, every root virtual (one with no in-template deps) gets an
-    implicit ``scheduled_deps=[anchor_node_id]``.
+    workspace, or touch project settings. Like ordinary virtual creation, it
+    may run while another node is active. When ``anchor_node_id`` is provided,
+    every root virtual (one with no in-template deps) gets an implicit
+    ``scheduled_deps=[anchor_node_id]``.
 
     Returns the list of newly-stamped nodes in slug order.
     """
@@ -233,25 +233,64 @@ def _stamp_lane(
     created: list[Node] = []
     try:
         for _, node in pending:
-            created.append(node)
-            registry.store.create_node(node)
-            registry.store.write_node_preview(
-                project.id,
-                node.id,
-                render_virtual_preview(node),
-            )
+            if node.kind is NodeKind.AGENT:
+                stamped = registry.create_virtual(
+                    project.id,
+                    node_id=node.id,
+                    prompt_draft=node.prompt_draft or "",
+                    category=node.category,
+                    subtype=node.subtype,
+                    brief=node.brief,
+                    motivation=node.summary,
+                    scheduled_deps=node.scheduled_deps,
+                    model_preset_id=node.model_preset_id,
+                    planspace_id=planspace_id,
+                    resume_from_node_id=node.resume_from_node_id,
+                    _allow_nonterminal_resume=True,
+                    _proposed_by=node.proposed_by or f"template:{template.name}",
+                    _template_instance_id=instance_id,
+                    _defer_auto_promotion=True,
+                    _created_at=node.created_at,
+                )
+                if stamped is None:
+                    raise TemplateError("project is unavailable")
+                created.append(stamped)
+            else:
+                created.append(node)
+                registry.store.create_node(node)
+                registry.store.write_node_preview(
+                    project.id,
+                    node.id,
+                    render_virtual_preview(node),
+                )
         append_template_instance(
             project,
             planspace_id,
             instance_record,
             store_root=registry.store.root,
         )
+    except ValueError as exc:
+        _rollback_stamped_nodes(project.id, created, registry)
+        raise TemplateError(str(exc)) from exc
     except Exception:
-        for node in reversed(created):
-            registry.store.delete_node(project.id, node.id)
+        _rollback_stamped_nodes(project.id, created, registry)
         raise
     registry.store.sync.schedule_commit(f"create template instance {instance_id}")
     return created
+
+
+def _rollback_stamped_nodes(
+    project_id: str,
+    created: list[Node],
+    registry: ProjectRegistry,
+) -> None:
+    """Undo a partial stamp through the same runtime path used to create it."""
+    for node in reversed(created):
+        if node.kind is NodeKind.AGENT:
+            deleted, _ = registry.delete_virtual(project_id, node.id)
+            if deleted:
+                continue
+        registry.store.delete_node(project_id, node.id)
 
 
 def _resolve_arguments(

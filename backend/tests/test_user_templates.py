@@ -530,13 +530,21 @@ class ApplyUserTemplateTest(unittest.TestCase):
         target_project = self.registry.get_project(target_pid)
         assert target_project is not None
 
-        created = apply_user_template(template, target_project, self.registry)
+        with patch.object(
+            self.registry,
+            "create_virtual",
+            wraps=self.registry.create_virtual,
+        ) as create_virtual:
+            created = apply_user_template(template, target_project, self.registry)
         self.assertEqual(len(created), 2)
+        self.assertEqual(create_virtual.call_count, 2)
         first, second = created
         self.assertEqual(first.state, NodeState.VIRTUAL)
         self.assertEqual(first.planspace_id, target_lane)
         self.assertEqual(second.scheduled_deps, [first.id])
         self.assertEqual(first.proposed_by, f"template:{template.name}")
+        self.assertIsNotNone(first.template_instance_id)
+        self.assertEqual(second.template_instance_id, first.template_instance_id)
 
     def test_apply_with_anchor_binds_root_deps(self) -> None:
         slug = self._build_greetings_template()
@@ -851,6 +859,27 @@ class UserTemplateHttpApiTest(unittest.TestCase):
             json={"name": "Bad", "brief": "", "node_ids": []},
         )
         self.assertEqual(res.status_code, 400)
+
+    def test_apply_succeeds_while_project_has_a_running_node(self) -> None:
+        sid, _ = _make_project_with_lane(self.registry)
+        _write_user_function_template(
+            self.store,
+            "while-running",
+            prompt="Created beside active work.",
+        )
+
+        with patch.object(self.registry, "is_running", return_value=True):
+            response = self.client.post(
+                f"/sessions/{sid}/user-templates/while-running/apply",
+                json={"anchor_node_id": None},
+            )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        stamped_id = response.json()["node_ids"][0]
+        stamped = self.store.load_node(sid, stamped_id)
+        assert stamped is not None
+        self.assertEqual(stamped.state, NodeState.VIRTUAL)
+        self.assertEqual(stamped.proposed_by, "template:while-running")
 
     def test_rewrite_round_trips_complete_editor_state(self) -> None:
         _write_user_function_template(

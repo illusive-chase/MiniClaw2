@@ -1700,8 +1700,6 @@ def create_app(registry: ProjectRegistry | None = None) -> FastAPI:
         if project is None:
             raise HTTPException(404, "session not found")
         require_native_project(sid)
-        if registry.is_running(sid):
-            raise HTTPException(409, "turn in progress")
         if _context_task_running(project.id):
             raise HTTPException(409, "context refresh in progress")
         try:
