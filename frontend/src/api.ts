@@ -24,6 +24,8 @@ import type {
   GitState,
   GitStatus,
   SkillSelection,
+  SkillSummary,
+  SkillDetail,
 } from "./types";
 import type { TemplateRewritePayload } from "./templateEditor";
 
@@ -905,10 +907,39 @@ export type PrincipleSummary = {
   exists: boolean;
 };
 
+/** A principle plus its CONTEXT.md text. `body` is null when the plug exists
+ * but has no CONTEXT.md yet — an authoring state, not a failure. */
+export type PrincipleDetail = PrincipleSummary & {
+  body: string | null;
+  body_path: string;
+};
+
 export async function listPrinciples(): Promise<PrincipleSummary[]> {
   const res = await fetch("/principles");
   if (!res.ok) throw new Error(`listPrinciples failed: ${res.status}`);
   return res.json();
+}
+
+const principleDetailRequests = new Map<string, Promise<PrincipleDetail>>();
+
+/** Read one principle with its CONTEXT.md body. Concurrent calls for the same
+ * slug share a request, so StrictMode's double effect fetches once. */
+export function getPrinciple(slug: string): Promise<PrincipleDetail> {
+  const pending = principleDetailRequests.get(slug);
+  if (pending) return pending;
+  const request = (async () => {
+    const res = await fetch(`/principles/${encodeURIComponent(slug)}`);
+    if (!res.ok) {
+      throw new ApiError("getPrinciple", res.status, await readErrorDetail(res));
+    }
+    return res.json() as Promise<PrincipleDetail>;
+  })();
+  principleDetailRequests.set(slug, request);
+  void request.then(
+    () => principleDetailRequests.delete(slug),
+    () => principleDetailRequests.delete(slug),
+  );
+  return request;
 }
 
 export async function deletePrinciple(slug: string): Promise<void> {
@@ -920,26 +951,7 @@ export async function deletePrinciple(slug: string): Promise<void> {
   }
 }
 
-export type SkillSummary = {
-  id: string;
-  kind: "skill";
-  slug: string;
-  name: string;
-  title: string;
-  description: string;
-  path: string;
-  files: string[];
-  body: string;
-  content_hash: string;
-  version?: string | null;
-  dependencies?: string[];
-  import_source?: string;
-  import_kind?: string;
-  imported_at?: number;
-  package_id?: string;
-  package_members?: string[];
-  auto_attach_package?: boolean;
-};
+export type { SkillDetail, SkillSummary } from "./types";
 
 export type SkillPackImport = {
   kind: "skill-pack";
@@ -953,6 +965,27 @@ export async function listSkills(): Promise<SkillSummary[]> {
   const res = await fetch("/skills");
   if (!res.ok) throw new Error(`listSkills failed: ${res.status}`);
   return res.json();
+}
+
+const skillDetailRequests = new Map<string, Promise<SkillDetail>>();
+
+/** Read one skill with its complete SKILL.md body. */
+export function getSkill(slug: string): Promise<SkillDetail> {
+  const pending = skillDetailRequests.get(slug);
+  if (pending) return pending;
+  const request = (async () => {
+    const res = await fetch(`/skills/${encodeURIComponent(slug)}`);
+    if (!res.ok) {
+      throw new ApiError("getSkill", res.status, await readErrorDetail(res));
+    }
+    return res.json() as Promise<SkillDetail>;
+  })();
+  skillDetailRequests.set(slug, request);
+  void request.then(
+    () => skillDetailRequests.delete(slug),
+    () => skillDetailRequests.delete(slug),
+  );
+  return request;
 }
 
 export async function importSkill(

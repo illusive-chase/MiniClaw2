@@ -182,9 +182,23 @@ def list_agent_skills(store_root: Path | None = None) -> list[dict[str, Any]]:
             summary = inspect_agent_skill(skill_dir, context_root=root)
         except SkillError:
             continue
+        summary.pop("body", None)
         summary.update(provenance.get(skill_dir.name, {}))
         result.append(summary)
     return result
+
+
+def get_agent_skill(
+    slug: str, *, store_root: Path | None = None
+) -> dict[str, Any] | None:
+    normalized = _selection_slug(slug)
+    root = contextspace_root(store_root)
+    skill_dir = root / "skills" / normalized
+    if not skill_dir.is_dir():
+        return None
+    detail = inspect_agent_skill(skill_dir, context_root=root)
+    detail.update(_read_import_metadata(root).get(normalized, {}))
+    return detail
 
 
 def inspect_agent_skill(

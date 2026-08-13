@@ -1,5 +1,10 @@
-import { useState } from "react";
-import type { PrincipleSummary, SkillSummary } from "../api";
+import { useEffect, useState } from "react";
+import {
+  getSkill,
+  type PrincipleSummary,
+  type SkillDetail,
+  type SkillSummary,
+} from "../api";
 import type { AttachedSkillDisplay } from "../canvas/layout";
 import type { ContextBundle, NodeInfo } from "../types";
 
@@ -40,10 +45,50 @@ export function ContextNodePanel({
   onDeleteSkill,
   attachedSkills,
 }: ContextNodePanelProps) {
+  const [skillDetailState, setSkillDetailState] = useState<{
+    slug: string;
+    detail: SkillDetail | null;
+    error: boolean;
+  } | null>(null);
   const source = sampleBundle?.sources.find((s) => s.path === path) ?? null;
   const kindHint = principle ? "principle" : skill ? "skill" : source?.kind;
   const description = plainLanguageDescription(source?.scope, kindHint);
   const heading = principle?.title || skill?.title || filenameOf(path);
+  const selectedSkillDetail =
+    skill && skillDetailState?.slug === skill.slug ? skillDetailState.detail : null;
+  const skillDetailLoading = Boolean(
+    skill && (!skillDetailState || skillDetailState.slug !== skill.slug),
+  );
+  const skillDetailFailed = Boolean(
+    skill && skillDetailState?.slug === skill.slug && skillDetailState.error,
+  );
+
+  useEffect(() => {
+    if (!skill) {
+      setSkillDetailState(null);
+      return;
+    }
+    if (skill.body !== undefined) {
+      setSkillDetailState({
+        slug: skill.slug,
+        detail: skill as SkillDetail,
+        error: false,
+      });
+      return;
+    }
+    const slug = skill.slug;
+    let cancelled = false;
+    void getSkill(slug)
+      .then((detail) => {
+        if (!cancelled) setSkillDetailState({ slug, detail, error: false });
+      })
+      .catch(() => {
+        if (!cancelled) setSkillDetailState({ slug, detail: null, error: true });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [skill?.body, skill?.slug]);
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
@@ -87,9 +132,19 @@ export function ContextNodePanel({
             )}
           </div>
           {skill ? (
-            <pre className="max-h-[60vh] overflow-auto whitespace-pre-wrap rounded-md border border-line bg-surface-sunken px-3 py-2 font-mono text-[11px] leading-relaxed text-ink">
-              {skill.body}
-            </pre>
+            selectedSkillDetail ? (
+              <pre className="max-h-[60vh] overflow-auto whitespace-pre-wrap rounded-md border border-line bg-surface-sunken px-3 py-2 font-mono text-[11px] leading-relaxed text-ink">
+                {selectedSkillDetail.body}
+              </pre>
+            ) : (
+              <div className="rounded-md border border-line bg-surface-sunken px-3 py-3 text-[12px] text-ink-muted">
+                {skillDetailLoading
+                  ? "正在加载 skill 正文..."
+                  : skillDetailFailed
+                    ? "无法加载 skill 正文。"
+                    : "正在加载 skill 正文..."}
+              </div>
+            )
           ) : (
             <ContextFileContent path={path} bundle={sampleBundle} />
           )}

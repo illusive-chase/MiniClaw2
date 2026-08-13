@@ -88,6 +88,7 @@ class AgentSkillLibraryTests(unittest.TestCase):
         self.assertIn("references/notes.md", imported["files"])
         listed = list_agent_skills(self.store_root)
         self.assertEqual([item["id"] for item in listed], ["skills.alpha"])
+        self.assertNotIn("body", listed[0])
         destination = contextspace_root(self.store_root) / "skills" / "alpha"
         before = skill_content_hash(destination)
         (destination / "references" / "notes.md").write_text("changed\n", encoding="utf-8")
@@ -354,7 +355,14 @@ class AgentSkillApiTests(unittest.TestCase):
                     response = client.post("/skills/import", json={"source": str(source)})
                     self.assertEqual(response.status_code, 200)
                     self.assertEqual(response.json()["id"], "skills.alpha")
-                    self.assertEqual(client.get("/skills").json()[0]["name"], "Alpha")
+                    listed = client.get("/skills").json()[0]
+                    self.assertEqual(listed["name"], "Alpha")
+                    self.assertNotIn("body", listed)
+                    detail = client.get("/skills/alpha")
+                    self.assertEqual(detail.status_code, 200)
+                    self.assertIn("# Instructions", detail.json()["body"])
+                    self.assertEqual(client.get("/skills/missing").status_code, 404)
+                    self.assertEqual(client.get("/skills/not_valid").status_code, 400)
                     self.assertEqual(client.delete("/skills/alpha").status_code, 204)
                     self.assertEqual(client.get("/skills").json(), [])
             finally:

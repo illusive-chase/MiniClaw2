@@ -543,3 +543,28 @@ export type ArtifactFile = {
   sha256: string;
   truncated: boolean;
 };
+
+export type SkillSummary = {
+  id: string;
+  kind: "skill";
+  slug: string;
+  name: string;
+  title: string;
+  description: string;
+  path: string;
+  files: string[];
+  body?: string;
+  content_hash: string;
+  version?: string | null;
+  dependencies?: string[];
+  import_source?: string;
+  import_kind?: string;
+  imported_at?: number;
+  package_id?: string;
+  package_members?: string[];
+  auto_attach_package?: boolean;
+};
+
+export type SkillDetail = SkillSummary & {
+  body: string;
+};

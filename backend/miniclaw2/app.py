@@ -25,6 +25,7 @@ from .artifacts import INLINE_TEXT_CAP, stored_artifact_path
 from .contextspace import (
     delete_principle,
     describe_project_contextspace,
+    get_principle,
     list_principles,
     load_context_bundle_for_node,
     read_project_context,
@@ -57,6 +58,7 @@ from .replay import LiveReplayBuffer
 from .skills import (
     SkillError,
     delete_agent_skill,
+    get_agent_skill,
     import_agent_skill,
     list_agent_skills,
 )
@@ -319,6 +321,31 @@ class TemplateDetail(BaseModel):
     arguments: list[TemplateArgumentMeta] = Field(default_factory=list)
     inputs: list[TemplateInputMeta] = Field(default_factory=list)
     warnings: list[TemplateWarningMeta] = Field(default_factory=list)
+
+
+class SkillSummary(BaseModel):
+    id: str
+    kind: Literal["skill"]
+    slug: str
+    name: str
+    title: str
+    description: str
+    path: str
+    files: list[str]
+    body: str | None = None
+    content_hash: str
+    version: str | None = None
+    dependencies: list[str] = Field(default_factory=list)
+    import_source: str | None = None
+    import_kind: str | None = None
+    imported_at: float | None = None
+    package_id: str | None = None
+    package_members: list[str] | None = None
+    auto_attach_package: bool | None = None
+
+
+class SkillDetail(SkillSummary):
+    body: str
 
 
 class TemplateRunRequest(BaseModel):
@@ -1531,6 +1558,16 @@ def create_app(registry: ProjectRegistry | None = None) -> FastAPI:
     def list_principles_endpoint() -> list[dict[str, Any]]:
         return list_principles(store_root=registry.store.root)
 
+    @app.get("/principles/{slug}", response_model=dict[str, Any])
+    def get_principle_endpoint(slug: str) -> dict[str, Any]:
+        try:
+            principle = get_principle(slug, store_root=registry.store.root)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        if principle is None:
+            raise HTTPException(404, f"未找到 principle: {slug}")
+        return principle
+
     @app.delete("/principles/{slug}", status_code=204)
     def delete_principle_endpoint(slug: str) -> Response:
         registry.store.assert_writable()
@@ -1543,9 +1580,27 @@ def create_app(registry: ProjectRegistry | None = None) -> FastAPI:
         registry.store.sync.schedule_commit(f"delete principle {slug}")
         return Response(status_code=204)
 
-    @app.get("/skills", response_model=list[dict[str, Any]])
+    @app.get(
+        "/skills",
+        response_model=list[SkillSummary],
+        response_model_exclude_none=True,
+    )
     def list_agent_skills_endpoint() -> list[dict[str, Any]]:
         return list_agent_skills(store_root=registry.store.root)
+
+    @app.get(
+        "/skills/{slug}",
+        response_model=SkillDetail,
+        response_model_exclude_none=True,
+    )
+    def get_agent_skill_endpoint(slug: str) -> dict[str, Any]:
+        try:
+            skill = get_agent_skill(slug, store_root=registry.store.root)
+        except SkillError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        if skill is None:
+            raise HTTPException(404, f"未找到 skill: {slug}")
+        return skill
 
     @app.post("/skills/import", response_model=dict[str, Any])
     def import_agent_skill_endpoint(req: ImportSkillRequest) -> dict[str, Any]:

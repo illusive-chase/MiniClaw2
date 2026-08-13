@@ -792,6 +792,33 @@ def require_resolvable_active_planspace(
     )
 
 
+def _principle_summary(root: Path, plug_dir: Path) -> dict[str, Any] | None:
+    """Shelf summary for one principle plug, or None when it has no manifest."""
+    slug = plug_dir.name
+    plug_id = f"principles.{slug}"
+    manifest = _plug_manifest(root, plug_id)
+    if not manifest:
+        return None
+    title = (
+        _string_value(manifest.get("title"))
+        or _string_value(manifest.get("name"))
+        or slug
+    )
+    injection = manifest.get("injection")
+    max_chars = manifest.get("max_chars")
+    return {
+        "id": plug_id,
+        "kind": "principle",
+        "slug": slug,
+        "title": title,
+        "description": _string_value(manifest.get("description")),
+        "injection": injection if isinstance(injection, (str, dict)) else None,
+        "max_chars": max_chars if isinstance(max_chars, (int, dict)) else None,
+        "path": _display_path(plug_dir, root),
+        "exists": plug_dir.exists(),
+    }
+
+
 def list_principles(store_root: Path | None = None) -> list[dict[str, Any]]:
     """Enumerate user-wide principle plugs for the shelf.
 
@@ -807,30 +834,37 @@ def list_principles(store_root: Path | None = None) -> list[dict[str, Any]]:
     for plug_dir in sorted(principles_root.iterdir()):
         if not plug_dir.is_dir():
             continue
-        slug = plug_dir.name
-        plug_id = f"principles.{slug}"
-        manifest = _plug_manifest(root, plug_id)
-        if not manifest:
-            continue
-        title = (
-            _string_value(manifest.get("title"))
-            or _string_value(manifest.get("name"))
-            or slug
-        )
-        injection = manifest.get("injection")
-        max_chars = manifest.get("max_chars")
-        out.append({
-            "id": plug_id,
-            "kind": "principle",
-            "slug": slug,
-            "title": title,
-            "description": _string_value(manifest.get("description")),
-            "injection": injection if isinstance(injection, (str, dict)) else None,
-            "max_chars": max_chars if isinstance(max_chars, (int, dict)) else None,
-            "path": _display_path(plug_dir, root),
-            "exists": plug_dir.exists(),
-        })
+        summary = _principle_summary(root, plug_dir)
+        if summary is not None:
+            out.append(summary)
     return out
+
+
+def get_principle(slug: str, *, store_root: Path | None = None) -> dict[str, Any] | None:
+    """One principle plug with its ``CONTEXT.md`` body, or None if absent.
+
+    The body is the whole point of this endpoint — the list response omits it,
+    as the preview modal is the only caller that needs the full text (§3.3).
+    ``body`` is None when the plug directory exists but ``CONTEXT.md`` does not,
+    which is a real authoring state and not an error.
+    """
+    root = contextspace_root(store_root)
+    plug_dir = _resolve_principle_dir(root, slug)
+    if not plug_dir.is_dir():
+        return None
+    summary = _principle_summary(root, plug_dir)
+    if summary is None:
+        return None
+    context_md = plug_dir / "CONTEXT.md"
+    try:
+        body: str | None = context_md.read_text(encoding="utf-8")
+    except OSError:
+        body = None
+    return {
+        **summary,
+        "body": body,
+        "body_path": _display_path(context_md, root),
+    }
 
 
 def delete_principle(slug: str, *, store_root: Path | None = None) -> bool:
@@ -863,6 +897,21 @@ def delete_principle(slug: str, *, store_root: Path | None = None) -> bool:
 
 
 _PRINCIPLE_SLUG_RE = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
+
+
+def _resolve_principle_dir(root: Path, value: str) -> Path:
+    """Normalize a principle slug/id and keep reads inside its library root."""
+    if not isinstance(value, str):
+        raise ValueError(f"invalid principle slug: {value!r}")
+    prefix = "principles."
+    slug = value[len(prefix) :] if value.startswith(prefix) else value
+    if not _PRINCIPLE_SLUG_RE.fullmatch(slug):
+        raise ValueError(f"invalid principle slug: {value!r}")
+    principles_root = (root / "plugs" / "principles").resolve()
+    plug_dir = (principles_root / slug).resolve()
+    if plug_dir.parent != principles_root:
+        raise ValueError(f"invalid principle slug: {value!r}")
+    return plug_dir
 
 
 def normalize_principle_ids(raw: Any) -> list[str]:
