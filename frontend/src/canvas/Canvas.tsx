@@ -30,6 +30,7 @@ import {
   classifyPlanspaceLaneResizes,
   resolveCommitPositionTransfer,
   resolveGitChangesAppearancePosition,
+  resolveSyncedNodePosition,
   resizePlanspaceLanes,
   snapPlanspaceChildPosition,
   type RFNode,
@@ -378,6 +379,7 @@ function CanvasInner({
       gitDirtyCount,
       gitHosts,
       layoutHydrationVersion,
+      nodePositionTarget,
     ],
   );
   /* Read imperatively by onNodeClick, which must not be re-created on every
@@ -485,20 +487,30 @@ function CanvasInner({
             height: runtime.height ?? n.height,
           };
         }
-        /* Same reason: a group frame is derived, never dragged, so a rebuild
-         * must be free to move it when its members move. */
-        if (!hydrateFromLayout && n.type !== "templateGroup") {
-          const existing = runtime?.position;
-          if (
-            existing &&
-            !(
-              commitPositionTransfer?.resetGhostPosition &&
-              n.id === commitPositionTransfer.fromId
-            ) &&
-            (existing.x !== n.position.x || existing.y !== n.position.y)
-          ) {
-            out = { ...out, position: existing };
-          }
+        /* Group frames are derived, never dragged. Explicit UI placement must
+         * beat an existing runtime position: a websocket refresh can expose a
+         * newly-created node at its default position before the create request
+         * returns the double-click target to App. */
+        const preserveRuntimePosition =
+          !hydrateFromLayout &&
+          n.type !== "templateGroup" &&
+          !(
+            commitPositionTransfer?.resetGhostPosition &&
+            n.id === commitPositionTransfer.fromId
+          );
+        const syncedPosition = resolveSyncedNodePosition(
+          n.position,
+          runtime?.position,
+          preserveRuntimePosition,
+          n.id === nodePositionTarget?.nodeId
+            ? nodePositionTarget.position
+            : undefined,
+        );
+        if (
+          syncedPosition.x !== out.position.x ||
+          syncedPosition.y !== out.position.y
+        ) {
+          out = { ...out, position: syncedPosition };
         }
         if (n.id === commitPositionTransfer?.toId) {
           out = { ...out, position: commitPositionTransfer.position };
@@ -547,6 +559,7 @@ function CanvasInner({
     scheduleFlushLayout,
     commitPositionTarget,
     onCommitPositionTransferHandled,
+    nodePositionTarget,
   ]);
 
   useEffect(() => {

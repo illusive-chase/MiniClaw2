@@ -254,6 +254,22 @@ export function snapPlanspaceChildPosition(
   };
 }
 
+/**
+ * Resolve a node position while synchronizing a rebuilt graph into React Flow.
+ * Explicit UI placement (for example a double-click creation target) must win
+ * even when the node already appeared at an automatic runtime position.
+ */
+export function resolveSyncedNodePosition(
+  builtPosition: { x: number; y: number },
+  runtimePosition: { x: number; y: number } | undefined,
+  preserveRuntimePosition: boolean,
+  explicitPosition?: { x: number; y: number },
+): { x: number; y: number } {
+  if (explicitPosition) return explicitPosition;
+  if (preserveRuntimePosition && runtimePosition) return runtimePosition;
+  return builtPosition;
+}
+
 export const PLANSPACE_PALETTE: PlanspaceColor[] = [
   {
     name: "indigo",

@@ -13,6 +13,7 @@ import {
   LANE,
   resolveCommitPositionTransfer,
   resolveGitChangesAppearancePosition,
+  resolveSyncedNodePosition,
   resizePlanspaceLanes,
   summarizeInstanceArguments,
   summarizeInstanceProgress,
@@ -382,6 +383,33 @@ function testPlanspaceChildPositionUsesLaneRelativeSnapGrid(): void {
     snapPlanspaceChildPosition({ x: 105, y: 211 }, { x: 100, y: 200 }),
     { x: 40, y: 40 },
     "new nodes must stay inside the planspace child extent",
+  );
+}
+
+function testExplicitCreationPositionBeatsExistingRuntimePosition(): void {
+  const automaticPosition = { x: 160, y: 112 };
+  const runtimePosition = { x: 320, y: 112 };
+  const doubleClickPosition = { x: 584, y: 304 };
+
+  assert.deepEqual(
+    resolveSyncedNodePosition(
+      automaticPosition,
+      runtimePosition,
+      true,
+      doubleClickPosition,
+    ),
+    doubleClickPosition,
+    "a late creation target must move a node that already appeared at its default position",
+  );
+  assert.deepEqual(
+    resolveSyncedNodePosition(automaticPosition, runtimePosition, true),
+    runtimePosition,
+    "ordinary status rebuilds must continue preserving runtime drag positions",
+  );
+  assert.deepEqual(
+    resolveSyncedNodePosition(automaticPosition, runtimePosition, false),
+    automaticPosition,
+    "layout hydration must continue applying the rebuilt position",
   );
 }
 
@@ -1956,6 +1984,7 @@ testPromotedNodeDoesNotUseTransientParentFallback();
 testKnownLaneOrderSurvivesNodeCreationOrder();
 testInactiveAutoLaneIsMarkedForActivation();
 testPlanspaceChildPositionUsesLaneRelativeSnapGrid();
+testExplicitCreationPositionBeatsExistingRuntimePosition();
 testProjectScopedLaneLabelShowsOnlyDirectionName();
 testVerticalCommitTrunkAndStableLaneX();
 testChangesNodePreservesSavedPosition();
