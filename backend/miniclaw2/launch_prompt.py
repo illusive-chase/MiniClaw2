@@ -13,11 +13,13 @@ the examples render verbatim. Substitution is plain ``str.replace``.
 
 from __future__ import annotations
 
+import json
 from functools import lru_cache
 from pathlib import Path
 
 from .domain import Category, Node, NodeKind, ReviewSubtype
 from .materialize import GRAPH_DIRNAME
+from .model_catalog import list_model_presets
 
 _PROMPT_DIR = Path(__file__).with_name("prompts")
 
@@ -58,6 +60,7 @@ def _substitutions(
     node: Node,
     lane_path: str | None = None,
     outputs_path: str | None = None,
+    store_root: Path | None = None,
 ) -> dict[str, str]:
     subs: dict[str, str] = {
         "lane_path": lane_path or _lane_path(node),
@@ -65,6 +68,16 @@ def _substitutions(
         "lane_id": node.planspace_id or "",
         "outputs_path": outputs_path or "",
     }
+    if node.category is Category.PLANNING:
+        subs["planning_model_preset_id"] = node.model_preset_id or ""
+        subs["active_model_presets"] = "\n".join(
+            "- "
+            f"model_preset_id={json.dumps(preset.id)}: "
+            f"provider={json.dumps(preset.provider)}, "
+            f"model={json.dumps(preset.model)}"
+            for preset in list_model_presets(store_root=store_root)
+            if preset.status == "active"
+        )
     brief = node.brief
     if brief is not None:
         subs["brief_check_what"] = brief.check_what
@@ -78,6 +91,7 @@ def build_category_launch_block(
     *,
     lane_path: str | None = None,
     outputs_path: str | None = None,
+    store_root: Path | None = None,
 ) -> str:
     """Return the category-aware launch instruction block for ``node``.
 
@@ -88,7 +102,12 @@ def build_category_launch_block(
     if template is None:
         return ""
     rendered = template
-    for token, value in _substitutions(node, lane_path, outputs_path).items():
+    for token, value in _substitutions(
+        node,
+        lane_path,
+        outputs_path,
+        store_root,
+    ).items():
         rendered = rendered.replace(f"<<{token}>>", value)
     return rendered.strip()
 

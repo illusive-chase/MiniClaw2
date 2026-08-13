@@ -80,8 +80,12 @@ class PlanningBlockTests(unittest.TestCase):
         self.assertIn("Virtual preview shape", block)
         self.assertIn("scheduled_deps", block)
         self.assertIn(f"node:{node.id}", block)
-        self.assertNotIn('"model_preset_id":', block)
-        self.assertIn("Model selection is framework-owned", block)
+        self.assertIn('"model_preset_id": "<active preset id>"', block)
+        self.assertIn("Omit it by default", block)
+        self.assertIn("inherits this planning node's preset, `gpt-5.5`", block)
+        self.assertIn('provider="claude"', block)
+        self.assertIn('provider="codex"', block)
+        self.assertIn("when the user explicitly asks", block)
 
 
 class DependencyBlockTests(unittest.TestCase):

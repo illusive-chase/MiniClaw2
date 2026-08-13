@@ -23,6 +23,7 @@ import {
   buildGraph,
   classifyPlanspaceLaneResizes,
   resolveCommitPositionTransfer,
+  resolveGitChangesAppearancePosition,
   resizePlanspaceLanes,
   snapPlanspaceChildPosition,
   type RFNode,
@@ -385,10 +386,17 @@ function CanvasInner({
       commitPositionTarget,
       commitGhostPositionRef.current,
     );
+    const gitChangesAppearancePosition = commitPositionTransfer
+      ? null
+      : resolveGitChangesAppearancePosition(
+          rfNodesRef.current as RFNode[],
+          layeredBuiltNodes,
+        );
     if (
       syncedBuiltNodesRef.current === layeredBuiltNodes &&
       !hydrateFromLayout &&
-      !commitPositionTransfer
+      !commitPositionTransfer &&
+      !gitChangesAppearancePosition
     ) {
       return;
     }
@@ -400,6 +408,12 @@ function CanvasInner({
       delete pendingHintsRef.current[commitPositionTransfer.fromId];
       pendingHintRemovalsRef.current.add(commitPositionTransfer.fromId);
       pendingHintRemovalsRef.current.delete(commitPositionTransfer.toId);
+      scheduleFlushLayout(0);
+    }
+    if (gitChangesAppearancePosition) {
+      layoutHintsRef.current["commit:ghost"] = gitChangesAppearancePosition;
+      pendingHintsRef.current["commit:ghost"] = gitChangesAppearancePosition;
+      pendingHintRemovalsRef.current.delete("commit:ghost");
       scheduleFlushLayout(0);
     }
     setRfNodes((current) => {
@@ -449,6 +463,9 @@ function CanvasInner({
           commitPositionTransfer.resetGhostPosition
         ) {
           out = { ...out, position: commitPositionTransfer.resetGhostPosition };
+        }
+        if (n.id === "commit:ghost" && gitChangesAppearancePosition) {
+          out = { ...out, position: gitChangesAppearancePosition };
         }
         const carried = selectedById.get(n.id);
         if (carried !== undefined && carried !== out.selected) {

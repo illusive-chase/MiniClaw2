@@ -24,6 +24,10 @@ from pathlib import Path
 
 from .domain import Category, Node, NodeKind, NodeState, Project, _new_id
 from .materialize import diff_lane
+from .model_catalog import (
+    normalize_active_model_preset_id,
+    normalize_model_preset_id,
+)
 from .preview import (
     ExecutedPreview,
     Preview,
@@ -51,6 +55,29 @@ class ReapResult:
 
     def ok(self) -> bool:
         return self.own_preview_ok and not self.fatal and not self.rejection_reasons
+
+
+def _resolve_planner_model_preset(
+    preview: VirtualPreview,
+    *,
+    inherited_model_preset_id: str | None,
+    store: Store,
+) -> str | None:
+    """Resolve an optional planner selection against the configured catalog."""
+    if "model_preset_id" not in preview.model_fields_set:
+        return inherited_model_preset_id
+    if preview.model_preset_id is None:
+        raise ValueError("model_preset_id is required when explicitly set")
+    selected = normalize_model_preset_id(
+        preview.model_preset_id,
+        store_root=store.root,
+    )
+    if selected != inherited_model_preset_id:
+        selected = normalize_active_model_preset_id(
+            selected,
+            store_root=store.root,
+        )
+    return selected
 
 
 def _rewrite_scheduled_deps(
@@ -174,10 +201,21 @@ def reap_lane(
         if (
             isinstance(preview, VirtualPreview)
             and "model_preset_id" in preview.model_fields_set
+            and node.category is not Category.PLANNING
         ):
             result.rejection_reasons.append(
-                f"{rel}: agent-written virtual previews must not set "
-                "model_preset_id; the framework owns model selection"
+                f"{rel}: only planning agents may set model_preset_id on "
+                "virtual previews"
+            )
+            result.fatal = True
+            return result
+        if (
+            isinstance(preview, VirtualPreview)
+            and preview.kind != NodeKind.AGENT.value
+            and "model_preset_id" in preview.model_fields_set
+        ):
+            result.rejection_reasons.append(
+                f"{rel}: model_preset_id is only valid on agent virtuals"
             )
             result.fatal = True
             return result
@@ -237,11 +275,23 @@ def reap_lane(
             return result
         canonical = _new_id()
         slug_to_canonical[slug] = canonical
+        try:
+            model_preset_id = _resolve_planner_model_preset(
+                preview,
+                inherited_model_preset_id=node.model_preset_id,
+                store=store,
+            )
+        except ValueError as exc:
+            result.rejection_reasons.append(
+                f"new virtual {slug}: invalid model_preset_id ({exc})"
+            )
+            result.fatal = True
+            return result
         draft = virtual_preview_to_node(
             preview,
             project_id=project.id,
             canonical_id=canonical,
-            model_preset_id_override=node.model_preset_id,
+            model_preset_id_override=model_preset_id,
         )
         # Provenance + lane are framework-controlled; the agent's claim is overridden.
         draft.proposed_by = f"node:{node.id}"
@@ -263,12 +313,24 @@ def reap_lane(
 
     mutated_node_updates: list[Node] = []
     for existing, preview, rel in mutated_virtuals:
+        try:
+            model_preset_id = _resolve_planner_model_preset(
+                preview,
+                inherited_model_preset_id=existing.model_preset_id,
+                store=store,
+            )
+        except ValueError as exc:
+            result.rejection_reasons.append(
+                f"{rel}: invalid model_preset_id ({exc})"
+            )
+            result.fatal = True
+            return result
         updated = virtual_preview_to_node(
             preview,
             project_id=project.id,
             canonical_id=existing.id,
             verify_script_ref=existing.verify_script_ref,
-            model_preset_id_override=existing.model_preset_id,
+            model_preset_id_override=model_preset_id,
         )
         if existing.resume_from_node_id:
             resume_source = store.load_node(project.id, existing.resume_from_node_id)

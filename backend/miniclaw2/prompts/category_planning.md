@@ -103,13 +103,21 @@ For `code_review`, use `"review_target": {"type": "uncommitted"}` (or omit
 it for that default). Its `brief` and `prompt_draft` may be empty because the
 provider-native reviewer owns the rubric; when present they are focus text.
 
-Do not include `model_preset_id`, `provider`, or concrete model fields in
-any virtual preview you write. Model selection is framework-owned: new
-virtuals automatically inherit this planning node's model preset, and
-existing virtuals keep their current preset. Any agent-written model
-selection field causes the entire batch to be rejected. When rewriting
-a framework-projected virtual, remove its existing `model_preset_id`
-field from the rewritten preview.
+`model_preset_id` is optional. Omit it by default: a new virtual then
+inherits this planning node's preset, `<<planning_model_preset_id>>`, while
+an existing virtual keeps its current preset when rewritten. Specify it only
+when the user explicitly asks for a particular preset, provider/model, or a
+heterogeneous model assignment. Do not autonomously choose a different model
+for a task. In that explicit case, add
+`"model_preset_id": "<active preset id>"` to the virtual preview. Provider and
+model are selected together through the preset; never write `provider`,
+`model`, or other concrete model-setting fields directly.
+Only active presets may be newly selected:
+
+<<active_model_presets>>
+
+Changing the preset on a continuation/resume virtual is not allowed because it
+must inherit the source node's provider session settings.
 
 ### Rewriting and obsoleting
 
@@ -117,8 +125,8 @@ To **rewrite** an existing virtual, write a new preview at its
 current path. The id and `proposed_by` field will be preserved by
 the framework — you are free to update `motivation`, `prompt_draft`,
 `category`, `scheduled_deps`, and (for reviews) `subtype`, `brief`, and
-`review_target`.
-Model preset and continuation/resume provider settings are
+`review_target`. You may also explicitly update `model_preset_id` under the
+selection rule above. Continuation/resume provider settings remain
 framework-controlled and cannot be changed from a preview.
 
 To **obsolete** a virtual, rewrite its preview with a non-null

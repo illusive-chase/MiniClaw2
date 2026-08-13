@@ -11,6 +11,7 @@ import {
   contextIdentityKey,
   LANE,
   resolveCommitPositionTransfer,
+  resolveGitChangesAppearancePosition,
   resizePlanspaceLanes,
   type BuildGraphArgs,
 } from "../src/canvas/layout";
@@ -402,6 +403,29 @@ function testChangesNodeAvoidsPostHeadRows(): void {
     graph.rfNodes.find((item) => item.id === "commit:ghost")?.position,
     { x: LANE.trunkX, y: stalePosition.y + LANE.trunkStep },
   );
+}
+
+function testAppearingChangesNodeAvoidsPostHeadRows(): void {
+  const current = buildGraph(args({
+    gitCommits: [commit("base"), commit("head"), commit("stale")],
+    gitHead: "head",
+  })).rfNodes;
+  const next = buildGraph(args({
+    gitCommits: [commit("base"), commit("head"), commit("stale")],
+    gitHead: "head",
+    gitDirtyCount: 1,
+    layoutHints: { "commit:ghost": { x: 40, y: 80 } },
+  })).rfNodes;
+  const stalePosition = next.find(
+    (item) => item.id === "commit:stale",
+  )?.position;
+
+  assert.ok(stalePosition);
+  assert.deepEqual(resolveGitChangesAppearancePosition(current, next), {
+    x: LANE.trunkX,
+    y: stalePosition.y + LANE.trunkStep,
+  });
+  assert.equal(resolveGitChangesAppearancePosition(next, next), null);
 }
 
 function testCommitLayoutResolvesShaAliases(): void {
@@ -1320,6 +1344,7 @@ testProjectScopedLaneLabelShowsOnlyDirectionName();
 testVerticalCommitTrunkAndStableLaneX();
 testChangesNodePreservesSavedPosition();
 testChangesNodeAvoidsPostHeadRows();
+testAppearingChangesNodeAvoidsPostHeadRows();
 testCommitBranchesUseParentsAndColumns();
 testPeerCommitRowsFollowVisibleParents();
 testCommitFallbackDoesNotCrossColumnsAndHintsWin();

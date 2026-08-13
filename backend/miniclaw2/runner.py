@@ -268,6 +268,7 @@ class NodeRunner:
                                         self.node.id,
                                     )
                                 ),
+                                store_root=self.store.root,
                             ),
                             _skill_suggestion_block(self._skill_materialization),
                             build_dependency_launch_block(

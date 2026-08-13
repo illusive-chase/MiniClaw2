@@ -380,6 +380,28 @@ function commitLayoutPosition(
   return defaultCommitPosition(index, column);
 }
 
+function firstUnoccupiedTrunkPositionBelowHead(
+  nodes: readonly RFNode[],
+): { x: number; y: number } | null {
+  const headNode = nodes.find(
+    (node) => node.type === "commit" && (node.data as CommitNodeData).head,
+  );
+  if (!headNode) return null;
+  const occupiedRows = new Set(
+    nodes
+      .filter(
+        (node) =>
+          node.type === "commit" &&
+          node.id !== "commit:ghost" &&
+          ((node.data as CommitNodeData).commit.column ?? 0) === 0,
+      )
+      .map((node) => node.position.y),
+  );
+  let y = headNode.position.y + LANE.trunkStep;
+  while (occupiedRows.has(y)) y += LANE.trunkStep;
+  return { x: headNode.position.x, y };
+}
+
 export function resolveCommitPositionTransfer(
   currentNodes: readonly RFNode[],
   nextNodes: readonly RFNode[],
@@ -414,6 +436,15 @@ export function resolveCommitPositionTransfer(
           }
         : null,
   };
+}
+
+export function resolveGitChangesAppearancePosition(
+  currentNodes: readonly RFNode[],
+  nextNodes: readonly RFNode[],
+): { x: number; y: number } | null {
+  if (currentNodes.some((node) => node.id === "commit:ghost")) return null;
+  if (!nextNodes.some((node) => node.id === "commit:ghost")) return null;
+  return firstUnoccupiedTrunkPositionBelowHead(nextNodes);
 }
 
 /**
@@ -592,22 +623,9 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
     const headNode = headIndex >= 0
       ? rfNodes.find((node) => node.id === `commit:${gitHead}`)
       : undefined;
-    const postHeadTrunkNodes = headNode
-      ? gitCommits
-          .slice(headIndex + 1)
-          .filter((commit) => (commit.column ?? 0) === 0)
-          .map((commit) => rfNodes.find((node) => node.id === `commit:${commit.sha}`))
-          .filter((node): node is RFNode => node !== undefined)
-      : [];
     const fallbackPosition = headNode
-      ? {
-          x: headNode.position.x,
-          y:
-            Math.max(
-              headNode.position.y,
-              ...postHeadTrunkNodes.map((node) => node.position.y),
-            ) + LANE.trunkStep,
-        }
+      ? firstUnoccupiedTrunkPositionBelowHead(rfNodes) ??
+        defaultCommitPosition(nextTrunkRow)
       : defaultCommitPosition(nextTrunkRow);
     const position = layoutHints[ghostId] ?? fallbackPosition;
     rfNodes.push({ id: ghostId, type: "commit", position, width: 76, height: 76, data: { commit: { sha: "ghost", live: false, message: "Uncommitted changes", external_count_before: 0, aliases: [], column: 0 }, head: false, ghost: true, dirtyCount: gitDirtyCount }, draggable: true, selectable: true });

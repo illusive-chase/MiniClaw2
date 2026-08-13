@@ -140,6 +140,12 @@ body {
   pointer-events: none;
 }
 
+/* Edges are display-only. React Flow adds a 20px transparent interaction path
+ * around each one by default; let canvas gestures pass through that hit area. */
+.react-flow .react-flow__edge {
+  pointer-events: none;
+}
+
 /* ───────────── animations (gated by reduced-motion) ───────────── */
 @media (prefers-reduced-motion: no-preference) {
   @keyframes git-status-popover-in {

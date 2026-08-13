@@ -266,11 +266,14 @@ Trunk: `backend/miniclaw2/runner.py`, `backend/miniclaw2/registry.py`.
   `test_principle_edit_prompt.py`.
 - Agent nodes carry their own `model_preset_id`. Project creation, direction
   creation, ordinary virtual creation, and virtual editing select active
-  presets. Agent-authored virtual previews cannot select a model: newly
-  proposed virtuals inherit the proposing planning/review node's preset, while
-  rewrites retain the existing virtual's preset. Continuation virtuals keep
-  the resume source's preset/session, and reruns may preserve a compatibility
-  preset from historical data.
+  presets. Planning agents may explicitly select an active preset for a
+  virtual only when the user asks for a particular preset/provider/model;
+  their launch block lists the configured active presets and resolved
+  provider/model pairs. By default, newly proposed virtuals inherit the
+  proposing planning/review node's preset, while rewrites retain the existing
+  virtual's preset. Review agents cannot select models. Continuation virtuals
+  keep the resume source's preset/session, and reruns may preserve a
+  compatibility preset from historical data.
 - `Project.concurrency` is persisted as a positive integer with default `1`.
   `ProjectRuntime` owns runner/task maps keyed by node id; `queued` nodes wait
   without starting providers or consuming slots, and a stable
