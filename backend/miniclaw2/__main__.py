@@ -28,6 +28,7 @@ from .sync import (
     resolve_machine_rename,
 )
 
+VITE_HOST = "127.0.0.1"
 VITE_PORT = 5173
 
 
@@ -82,9 +83,18 @@ def main() -> None:
         backend_url = f"http://{proxy_host}:{args.port}"
         print(f"backend:            http://{args.host}:{args.port}")
         frontend_mode = "Vite HMR" if args.reload else "Vite, reload off"
-        print(f"frontend ({frontend_mode}): http://127.0.0.1:{VITE_PORT}")
+        print(f"frontend ({frontend_mode}): http://{VITE_HOST}:{VITE_PORT}")
         vite_proc = subprocess.Popen(
-            ["npm", "run", "dev"],
+            [
+                "npm",
+                "run",
+                "dev",
+                "--",
+                "--host",
+                VITE_HOST,
+                "--port",
+                str(VITE_PORT),
+            ],
             cwd=str(frontend_dir),
             start_new_session=True,
             env={

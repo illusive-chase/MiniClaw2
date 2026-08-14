@@ -9,7 +9,11 @@ import miniclaw2.__main__ as cli
 
 
 class MainTest(unittest.TestCase):
-    def _run_dev(self, *, reload: bool) -> tuple[dict[str, str], bool]:
+    def _run_dev(
+        self,
+        *,
+        reload: bool,
+    ) -> tuple[list[str], dict[str, str], bool]:
         argv = ["miniclaw2", "--dev"]
         if reload:
             argv.append("--reload")
@@ -25,18 +29,32 @@ class MainTest(unittest.TestCase):
         ):
             cli.main()
 
+        vite_command = popen.call_args.args[0]
         vite_env = popen.call_args.kwargs["env"]
         backend_reload = uvicorn_run.call_args.kwargs["reload"]
-        return vite_env, backend_reload
+        return vite_command, vite_env, backend_reload
 
     def test_dev_disables_frontend_and_backend_reload_by_default(self) -> None:
-        vite_env, backend_reload = self._run_dev(reload=False)
+        vite_command, vite_env, backend_reload = self._run_dev(reload=False)
 
+        self.assertEqual(
+            vite_command,
+            [
+                "npm",
+                "run",
+                "dev",
+                "--",
+                "--host",
+                "127.0.0.1",
+                "--port",
+                "5173",
+            ],
+        )
         self.assertEqual(vite_env["MINICLAW_RELOAD"], "0")
         self.assertFalse(backend_reload)
 
     def test_reload_enables_frontend_and_backend_reload(self) -> None:
-        vite_env, backend_reload = self._run_dev(reload=True)
+        _, vite_env, backend_reload = self._run_dev(reload=True)
 
         self.assertEqual(vite_env["MINICLAW_RELOAD"], "1")
         self.assertTrue(backend_reload)
