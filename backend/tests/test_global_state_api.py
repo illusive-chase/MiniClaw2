@@ -11,6 +11,7 @@ from miniclaw2.app import create_app
 from miniclaw2.global_config import GlobalConfig, load_global_config, save_global_config
 from miniclaw2.registry import ProjectRegistry
 from miniclaw2.store import Store
+from miniclaw2.templates import user_templates_root
 
 
 class GlobalStateApiTest(unittest.TestCase):
@@ -115,6 +116,58 @@ class GlobalStateApiTest(unittest.TestCase):
 
         templates = self.client.get("/templates")
         self.assertEqual(templates.status_code, 200)
+
+    def test_legacy_user_template_matrix_does_not_block_preset_deletion(self) -> None:
+        preset = {
+            "id": "legacy-matrix-only",
+            "label": "Legacy matrix only",
+            "provider": "codex",
+            "model": "legacy-model",
+            "status": "active",
+        }
+        self.assertEqual(
+            self.client.post("/global-state/model-presets", json=preset).status_code,
+            201,
+        )
+        template_root = user_templates_root(self.root) / "legacy-matrix"
+        (template_root / "prompts").mkdir(parents=True)
+        (template_root / "template.yaml").write_text(
+            "\n".join(
+                [
+                    "schema_version: 2",
+                    "name: Legacy matrix",
+                    "brief: Compatibility fixture.",
+                    "allowed_model_preset_ids:",
+                    "  - legacy-matrix-only",
+                    "lane_mode: manual",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        (template_root / "lane.yaml").write_text(
+            "\n".join(
+                [
+                    "nodes:",
+                    "  - id: n0",
+                    "    kind: agent",
+                    "    category: regular",
+                    "    prompt_file: prompts/n0.md",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        (template_root / "prompts" / "n0.md").write_text(
+            "Run without an authored model.\n",
+            encoding="utf-8",
+        )
+
+        deleted = self.client.delete(
+            "/global-state/model-presets/legacy-matrix-only"
+        )
+
+        self.assertEqual(deleted.status_code, 204)
 
     def test_upgraded_store_missing_template_preset_remains_usable(self) -> None:
         config = load_global_config(self.root)

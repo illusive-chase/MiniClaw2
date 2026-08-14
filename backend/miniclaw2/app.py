@@ -419,6 +419,8 @@ class UserTemplateNodeWrite(BaseModel):
     motivation: str = ""
     scheduled_deps: list[str] = Field(default_factory=list)
     resume_from: str | None = None
+    #: Model this node runs on. ``None`` inherits the project preset at apply.
+    model_preset_id: str | None = None
 
 
 class RewriteUserTemplateRequest(BaseModel):
@@ -715,14 +717,21 @@ def create_app(registry: ProjectRegistry | None = None) -> FastAPI:
                 node.model_preset_id == preset_id for node in nodes
             ):
                 raise HTTPException(409, "cannot delete a model preset used by a project")
-        templates = [
-            *list_templates(registry.store.root),
-            *list_user_templates(registry.store.root),
-        ]
-        if any(
+        bundled_templates = list_templates(registry.store.root)
+        user_templates = list_user_templates(registry.store.root)
+        # Only bundled templates use the template-level list as a live run
+        # matrix. User templates may still carry a legacy list, but apply-time
+        # model resolution deliberately ignores it in favor of per-node data.
+        matrix_reference = any(
             preset_id in template.allowed_model_preset_ids
-            for template in templates
-        ):
+            for template in bundled_templates
+        )
+        node_reference = any(
+            node.model_preset_id == preset_id
+            for template in [*bundled_templates, *user_templates]
+            for node in template.nodes
+        )
+        if matrix_reference or node_reference:
             raise HTTPException(409, "cannot delete a model preset used by a template")
         save_global_config(
             config.model_copy(

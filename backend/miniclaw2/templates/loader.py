@@ -131,6 +131,10 @@ class TemplateNodeSpec:
     scheduled_deps: list[str] | None = None
     resume_from: str = ""
     summary: str = ""
+    #: Model this node runs on, captured at authoring time. ``None`` means the
+    #: node has no opinion and inherits the target project's preset at stamp
+    #: time — which is also what pre-per-node templates load as.
+    model_preset_id: str | None = None
 
     @property
     def input_deps(self) -> list[str]:
@@ -164,6 +168,7 @@ class TemplateNodeSpec:
             "resume_from": self.resume_from or None,
             "prompt_preview": self.prompt.strip().replace("\n", " ")[:160],
             "brief": self.brief.model_dump() if self.brief else None,
+            "model_preset_id": self.model_preset_id,
         }
 
 
@@ -520,18 +525,29 @@ def _parse_allowed_model_preset_ids(
     *,
     store_root: Path | None = None,
 ) -> list[str]:
+    """Parse the bundled-template model matrix.
+
+    For bundled templates this is a *matrix*, not a restriction: the Tests
+    panel renders one "run" button per entry so a single scenario can be
+    compared across models. User templates carry their model per node
+    instead (``TemplateNodeSpec.model_preset_id``); the field is accepted but
+    ignored there, so templates authored before that change keep loading.
+    """
     if "providers" in template_data:
         raise TemplateError(
             f"{name}: providers is obsolete; use allowed_model_preset_ids"
         )
     if "model_preset_id" in template_data:
         raise TemplateError(
-            f"{name}: model_preset_id is obsolete; use allowed_model_preset_ids"
+            f"{name}: template-level model_preset_id is obsolete; declare"
+            " model_preset_id on each lane node instead"
         )
     raw = template_data.get("allowed_model_preset_ids")
-    if not isinstance(raw, list) or not raw:
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
         raise TemplateError(
-            f"{name}: allowed_model_preset_ids must be a non-empty list"
+            f"{name}: allowed_model_preset_ids must be a list"
         )
     out: list[str] = []
     for item in raw:
@@ -655,6 +671,10 @@ def _parse_lane_nodes(
         if resume_from and not isinstance(resume_from, str):
             raise TemplateError(f"{name}: node {node_id} resume_from must be a string")
 
+        model_preset_id = _parse_node_model_preset_id(
+            name, node_id, kind, raw.get("model_preset_id")
+        )
+
         summary = raw.get("motivation") or raw.get("summary") or ""
         if summary and not isinstance(summary, str):
             raise TemplateError(f"{name}: node {node_id} motivation must be a string")
@@ -671,9 +691,40 @@ def _parse_lane_nodes(
                 scheduled_deps=deps,
                 resume_from=resume_from,
                 summary=summary or _default_summary(kind, brief, prompt),
+                model_preset_id=model_preset_id,
             )
         )
     return nodes
+
+
+def _parse_node_model_preset_id(
+    name: str,
+    node_id: str,
+    kind: NodeKind,
+    raw: Any,
+) -> str | None:
+    """Read one node's authored model.
+
+    Absent means "no opinion" — the stamp falls back to the target project's
+    preset. Whether the id still resolves to a usable preset is decided at
+    stamp time, not here: a template must stay loadable and editable even
+    after its model has been retired from the catalog.
+    """
+    if raw is None:
+        return None
+    if not isinstance(raw, str):
+        raise TemplateError(
+            f"{name}: node {node_id} model_preset_id must be a string"
+        )
+    model_preset_id = raw.strip()
+    if not model_preset_id:
+        return None
+    if kind is not NodeKind.AGENT:
+        raise TemplateError(
+            f"{name}: node {node_id} is kind={kind.value} and must not carry"
+            " model_preset_id"
+        )
+    return model_preset_id
 
 
 def _parse_kind(name: str, node_id: str, raw: Any) -> NodeKind:

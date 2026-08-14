@@ -97,12 +97,6 @@ def serialize_selection(
     ordered = _topological_order(nodes)
     slug_map = {node.id: f"n{idx}" for idx, node in enumerate(ordered)}
     selection_ids = set(slug_map)
-    allowed_model_preset_ids: list[str] = []
-    for node in ordered:
-        if node.model_preset_id and node.model_preset_id not in allowed_model_preset_ids:
-            allowed_model_preset_ids.append(node.model_preset_id)
-    if not allowed_model_preset_ids:
-        raise SerializerError("selection has no model preset metadata")
 
     lane_entries: list[dict[str, Any]] = []
     prompt_writes: list[tuple[str, str]] = []
@@ -113,6 +107,11 @@ def serialize_selection(
             "kind": NodeKind.AGENT.value,
             "category": (node.category or Category.REGULAR).value,
         }
+        # Each node keeps the model it was created with, so a saved template
+        # reproduces the selection rather than inheriting whatever project it
+        # is later stamped into.
+        if node.model_preset_id:
+            entry["model_preset_id"] = node.model_preset_id
         if node.subtype is not None:
             entry["subtype"] = node.subtype.value
         if node.brief is not None:
@@ -149,7 +148,6 @@ def serialize_selection(
         "schema_version": SCHEMA_VERSION,
         "name": display_name,
         "brief": brief_text or f"User template: {display_name}",
-        "allowed_model_preset_ids": allowed_model_preset_ids,
         "lane_mode": "manual",
         # Most canvas prompts are finalized text, but an intentional
         # ``{{name}}`` must obey exactly the loader's parameter semantics.
@@ -193,7 +191,10 @@ def rewrite_user_template(
     if not target_dir.is_dir() or target_dir.is_symlink():
         raise SerializerError(f"未找到用户模板: {slug}")
 
-    current = _load_from_root(target_dir, slug, store_root=store_root)
+    # Refuse to rewrite a template that does not currently load: the editor
+    # state was built from a successful load, so an unreadable target means
+    # the caller is overwriting something it never saw.
+    _load_from_root(target_dir, slug, store_root=store_root)
     lane_entries: list[dict[str, Any]] = []
     prompt_writes: list[tuple[str, str]] = []
     for index, node in enumerate(nodes):
@@ -210,6 +211,14 @@ def rewrite_user_template(
             "category": node.get("category"),
             "prompt_file": prompt_path_rel,
         }
+        model_preset_id = node.get("model_preset_id")
+        if model_preset_id is not None:
+            if not isinstance(model_preset_id, str):
+                raise SerializerError(
+                    f"模板节点 {node.get('id')!r} 的 model_preset_id 必须是字符串"
+                )
+            if model_preset_id.strip():
+                entry["model_preset_id"] = model_preset_id.strip()
         if node.get("subtype") is not None:
             entry["subtype"] = node["subtype"]
         if node.get("brief") is not None:
@@ -237,7 +246,6 @@ def rewrite_user_template(
         "schema_version": SCHEMA_VERSION,
         "name": name,
         "brief": brief,
-        "allowed_model_preset_ids": list(current.allowed_model_preset_ids),
         "lane_mode": "manual",
         "arguments": merged_arguments,
         "inputs": inputs,

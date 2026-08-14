@@ -28,6 +28,7 @@ import {
   type TemplateEditorState,
 } from "../src/templateEditor";
 import type { TemplateDetail } from "../src/types";
+import { resolvedTemplateNodeModelPresetId } from "../src/templateModels";
 
 function node(id: string, overrides: Partial<EditorNode> = {}): EditorNode {
   return {
@@ -40,6 +41,7 @@ function node(id: string, overrides: Partial<EditorNode> = {}): EditorNode {
     motivation: "",
     scheduled_deps: [],
     resume_from: null,
+    model_preset_id: null,
     ...overrides,
   };
 }
@@ -508,6 +510,7 @@ function testPayloadShapeMatchesTheWriteEndpoint() {
     "category",
     "id",
     "kind",
+    "model_preset_id",
     "motivation",
     "prompt",
     "resume_from",
@@ -585,6 +588,102 @@ function testLayoutStacksSiblingsInTheSameColumn() {
   assert.ok(positions.nodes.n2.x > positions.nodes.n0.x);
 }
 
+function testEachNodeCarriesItsOwnModelThroughASave() {
+  // Per-node models are the whole point: a template stamps each node on the
+  // model it names, so the payload must carry them independently and keep
+  // "inherit the project preset" (null) distinct from a chosen one.
+  const edited = updateNode(
+    state({
+      nodes: [
+        node("n0", { model_preset_id: "opus-4-7" }),
+        node("n1", { scheduled_deps: ["n0"] }),
+      ],
+    }),
+    "n1",
+    { model_preset_id: "gpt-5.6-x" },
+  );
+  const payload = buildRewritePayload(edited);
+  assert.deepEqual(
+    payload.nodes.map((item) => item.model_preset_id),
+    ["opus-4-7", "gpt-5.6-x"],
+  );
+
+  const inheriting = buildRewritePayload(state({ nodes: [node("n0")] }));
+  assert.equal(inheriting.nodes[0].model_preset_id, null);
+}
+
+function testModelChangeMarksTheEditorDirty() {
+  const before = state({ nodes: [node("n0", { model_preset_id: "opus-4-7" })] });
+  const saved = buildRewritePayload(before);
+  assert.equal(isDirty(before, saved), false);
+  const after = updateNode(before, "n0", { model_preset_id: "gpt-5.6-x" });
+  assert.equal(isDirty(after, saved), true);
+}
+
+function testPreviewModelResolutionFollowsResumeSource() {
+  const nodes = [
+    node("n0", { model_preset_id: "opus-4-7" }),
+    node("n1", {
+      scheduled_deps: ["n0"],
+      resume_from: "n0",
+      model_preset_id: "gpt-5.6-x",
+    }),
+    node("n2", {
+      scheduled_deps: ["n1"],
+      resume_from: "n1",
+      model_preset_id: "gpt-5.6-x",
+    }),
+  ];
+
+  assert.equal(resolvedTemplateNodeModelPresetId(nodes, nodes[0]), "opus-4-7");
+  assert.equal(resolvedTemplateNodeModelPresetId(nodes, nodes[1]), "opus-4-7");
+  assert.equal(resolvedTemplateNodeModelPresetId(nodes, nodes[2]), "opus-4-7");
+}
+
+function testPreviewModelResolutionOmitsInvalidResumeMetadata() {
+  const missingSource = node("n0", {
+    resume_from: "missing",
+    model_preset_id: "stale-model",
+  });
+  const cycle = [
+    node("n0", { resume_from: "n1", model_preset_id: "stale-a" }),
+    node("n1", { resume_from: "n0", model_preset_id: "stale-b" }),
+  ];
+
+  assert.equal(resolvedTemplateNodeModelPresetId([missingSource], missingSource), null);
+  assert.equal(resolvedTemplateNodeModelPresetId(cycle, cycle[0]), null);
+}
+
+function testDetailLoadsPerNodeModelIncludingAbsentAsInherit() {
+  const detail: TemplateDetail = {
+    slug: "mixed",
+    name: "Mixed",
+    brief: "",
+    allowed_model_preset_ids: [],
+    auto_commit: false,
+    node_count: 2,
+    schema_version: 2,
+    arguments: [],
+    inputs: [],
+    warnings: [],
+    nodes: [
+      {
+        id: "n0",
+        kind: "agent",
+        category: "regular",
+        prompt_preview: "",
+        prompt: "a",
+        model_preset_id: "opus-4-7",
+      },
+      // A template authored before per-node models omits the field entirely.
+      { id: "n1", kind: "agent", category: "regular", prompt_preview: "", prompt: "b" },
+    ],
+  };
+  const loaded = templateEditorStateFromDetail(detail);
+  assert.equal(loaded.nodes[0].model_preset_id, "opus-4-7");
+  assert.equal(loaded.nodes[1].model_preset_id, null);
+}
+
 testDetailLoadsPromptSourceNotThePreview();
 testDetailWithoutPromptLoadsEmptyRatherThanTruncated();
 testScanMirrorsTheLoaderRules();
@@ -613,6 +712,11 @@ testPayloadSortsNodesSoEveryDepComesEarlier();
 testTopologicalOrderKeepsIndependentNodesInPlace();
 testTopologicalOrderStillEmitsEveryNodeInACycle();
 testPayloadShapeMatchesTheWriteEndpoint();
+testEachNodeCarriesItsOwnModelThroughASave();
+testModelChangeMarksTheEditorDirty();
+testPreviewModelResolutionFollowsResumeSource();
+testPreviewModelResolutionOmitsInvalidResumeMetadata();
+testDetailLoadsPerNodeModelIncludingAbsentAsInherit();
 testPayloadDropsReviewOnlyFieldsFromNonReviewNodes();
 testDirtyTracksTheSerializedPayload();
 testLayoutPutsDepsLeftOfDependents();

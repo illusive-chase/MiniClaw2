@@ -74,13 +74,14 @@ def _add_virtual(
     scheduled_deps: list[str] | None = None,
     resume_from: str | None = None,
     summary: str = "",
+    model_preset_id: str = "opus-4-8",
 ) -> Node:
     node = Node(
         project_id=pid,
         kind=NodeKind.AGENT,
         state=NodeState.VIRTUAL,
         planspace_id=lane,
-        model_preset_id="opus-4-8",
+        model_preset_id=model_preset_id,
         prompt="",
         prompt_draft=prompt_draft,
         category=category,
@@ -782,6 +783,213 @@ class ApplyUserTemplateTest(unittest.TestCase):
         loaded = self.store.load_node(target_pid, node.id)
         assert loaded is not None
         self.assertIsNone(loaded.template_instance_id)
+
+    def test_each_node_keeps_its_own_model_across_a_differing_project(self) -> None:
+        """A template is not restricted to the model it was authored on.
+
+        Nodes carry their own model, so stamping into a project whose preset
+        differs keeps each node on what the author picked. This is the path
+        that used to raise "does not support model preset".
+        """
+        pid, lane = _make_project_with_lane(self.registry)
+        a = _add_virtual(
+            self.store, pid, lane, prompt_draft="Claude side.", model_preset_id="opus-4-7"
+        )
+        b = _add_virtual(
+            self.store,
+            pid,
+            lane,
+            prompt_draft="Codex side.",
+            scheduled_deps=[a.id],
+            model_preset_id="gpt-5.6-x",
+        )
+        slug = serialize_selection(
+            self.store, pid, [a.id, b.id], name="Mixed models", brief="Two providers."
+        ).root.name
+
+        stored = yaml.safe_load(
+            (user_templates_root(self.store.root) / slug / "lane.yaml").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(
+            [node["model_preset_id"] for node in stored["nodes"]],
+            ["opus-4-7", "gpt-5.6-x"],
+        )
+
+        # The target project runs on a third preset entirely.
+        target_pid, _ = _make_project_with_lane(self.registry)
+        target_project = self.registry.get_project(target_pid)
+        assert target_project is not None
+        self.assertEqual(target_project.model_preset_id, "opus-4-8")
+
+        created = apply_user_template(
+            load_user_template(slug, self.store.root), target_project, self.registry
+        )
+        self.assertEqual(
+            [node.model_preset_id for node in created], ["opus-4-7", "gpt-5.6-x"]
+        )
+
+    def test_node_without_a_model_inherits_the_target_project_preset(self) -> None:
+        """Templates authored before per-node models still apply.
+
+        Their nodes declare nothing, which means "no opinion" rather than
+        "forbidden", so they take the target project's preset.
+        """
+        slug = "legacy-template"
+        root = user_templates_root(self.store.root) / slug
+        (root / "prompts").mkdir(parents=True, exist_ok=True)
+        (root / "prompts" / "n0.md").write_text("Do the thing.\n", encoding="utf-8")
+        (root / "template.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "schema_version": 2,
+                    "name": slug,
+                    "brief": "Authored before per-node models.",
+                    # The obsolete whitelist names a preset the target project
+                    # does not use; it must no longer gate the apply.
+                    "allowed_model_preset_ids": ["gpt-5.6-x"],
+                    "lane_mode": "manual",
+                },
+                sort_keys=False,
+            ),
+            encoding="utf-8",
+        )
+        (root / "lane.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "nodes": [
+                        {
+                            "id": "n0",
+                            "kind": "agent",
+                            "category": "regular",
+                            "prompt_file": "prompts/n0.md",
+                        }
+                    ]
+                },
+                sort_keys=False,
+            ),
+            encoding="utf-8",
+        )
+
+        template = load_user_template(slug, self.store.root)
+        self.assertIsNone(template.nodes[0].model_preset_id)
+
+        target_pid, _ = _make_project_with_lane(self.registry)
+        target_project = self.registry.get_project(target_pid)
+        assert target_project is not None
+
+        created = apply_user_template(template, target_project, self.registry)
+        self.assertEqual(
+            [node.model_preset_id for node in created],
+            [target_project.model_preset_id],
+        )
+
+    def test_node_naming_an_unusable_model_is_rejected_with_the_node_id(self) -> None:
+        """A retired model must not be silently swapped for the project's.
+
+        Running on a model the author did not choose is worse than refusing,
+        so the error names the node the author has to fix.
+        """
+        pid, lane = _make_project_with_lane(self.registry)
+        node = _add_virtual(self.store, pid, lane, prompt_draft="Compat side.")
+        slug = serialize_selection(
+            self.store, pid, [node.id], name="Retired model", brief="One node."
+        ).root.name
+
+        lane_path = user_templates_root(self.store.root) / slug / "lane.yaml"
+        lane_data = yaml.safe_load(lane_path.read_text(encoding="utf-8"))
+        # gpt-5.5 exists but is compatibility-only, so it cannot be selected
+        # for new work.
+        lane_data["nodes"][0]["model_preset_id"] = "gpt-5.5"
+        lane_path.write_text(yaml.safe_dump(lane_data, sort_keys=False), encoding="utf-8")
+
+        target_pid, _ = _make_project_with_lane(self.registry)
+        target_project = self.registry.get_project(target_pid)
+        assert target_project is not None
+
+        with self.assertRaises(TemplateError) as ctx:
+            apply_user_template(
+                load_user_template(slug, self.store.root),
+                target_project,
+                self.registry,
+            )
+        self.assertIn("n0", str(ctx.exception))
+        self.assertIn("gpt-5.5", str(ctx.exception))
+        self.assertEqual(
+            [
+                item
+                for item in self.store.list_nodes(target_pid)
+                if item.template_instance_id
+            ],
+            [],
+        )
+
+    def test_resume_node_inherits_its_source_model(self) -> None:
+        """A resume node continues a session, so it cannot change model.
+
+        The runtime rejects a resume virtual whose model differs from its
+        source, so the stamp resolves the inheritance rather than trusting a
+        stale value in the template.
+        """
+        slug = "resume-template"
+        root = user_templates_root(self.store.root) / slug
+        (root / "prompts").mkdir(parents=True, exist_ok=True)
+        for node_id in ("n0", "n1"):
+            (root / "prompts" / f"{node_id}.md").write_text(
+                f"Step {node_id}.\n", encoding="utf-8"
+            )
+        (root / "template.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "schema_version": 2,
+                    "name": slug,
+                    "brief": "Resume chain.",
+                    "lane_mode": "manual",
+                },
+                sort_keys=False,
+            ),
+            encoding="utf-8",
+        )
+        (root / "lane.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "nodes": [
+                        {
+                            "id": "n0",
+                            "kind": "agent",
+                            "category": "regular",
+                            "prompt_file": "prompts/n0.md",
+                            "model_preset_id": "opus-4-7",
+                        },
+                        {
+                            "id": "n1",
+                            "kind": "agent",
+                            "category": "regular",
+                            "prompt_file": "prompts/n1.md",
+                            "scheduled_deps": ["n0"],
+                            "resume_from": "n0",
+                            # Deliberately contradicts its resume source.
+                            "model_preset_id": "gpt-5.6-x",
+                        },
+                    ]
+                },
+                sort_keys=False,
+            ),
+            encoding="utf-8",
+        )
+
+        target_pid, _ = _make_project_with_lane(self.registry)
+        target_project = self.registry.get_project(target_pid)
+        assert target_project is not None
+
+        created = apply_user_template(
+            load_user_template(slug, self.store.root), target_project, self.registry
+        )
+        self.assertEqual(
+            [node.model_preset_id for node in created], ["opus-4-7", "opus-4-7"]
+        )
+        self.assertEqual(created[1].resume_from_node_id, created[0].id)
 
 
 class UserTemplateHttpApiTest(unittest.TestCase):

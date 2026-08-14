@@ -12,6 +12,7 @@ import {
   contextIdentityKey,
   LANE,
   resolveCommitPositionTransfer,
+  resolveDisplacedGhostPosition,
   resolveGitChangesAppearancePosition,
   resolveSyncedNodePosition,
   resizePlanspaceLanes,
@@ -566,6 +567,147 @@ function testCurrentCommitLayoutWinsOverShaAliases(): void {
     graph.rfNodes.find((item) => item.id === "commit:rebased")?.position,
     currentPosition,
   );
+}
+
+/* The regression the parent-relative fallback exists for: once the trunk has
+ * been dragged off the default grid, an unhinted commit has to follow the
+ * commit it descends from rather than snapping back to its original grid row.
+ * Applies to every commit source — nothing here identifies who committed. */
+function testNewCommitFollowsDraggedParentInsteadOfTheGrid(): void {
+  const draggedHead = { x: 360, y: 900 };
+  const graph = buildGraph(args({
+    gitCommits: [
+      commit("base", 0, { parent_shas: [] }),
+      commit("head", 0, { parent_shas: ["base"] }),
+      commit("fresh", 0, { parent_shas: ["head"] }),
+    ],
+    gitHead: "fresh",
+    layoutHints: { "commit:head": draggedHead },
+  }));
+
+  assert.deepEqual(
+    graph.rfNodes.find((item) => item.id === "commit:fresh")?.position,
+    { x: draggedHead.x, y: draggedHead.y + LANE.trunkStep },
+    "an unhinted commit follows its dragged parent",
+  );
+  /* The dragged parent's own ancestor keeps its hint-free grid row: the fix
+   * places children below parents, it does not reflow what is already there. */
+  assert.deepEqual(
+    graph.rfNodes.find((item) => item.id === "commit:base")?.position,
+    { x: LANE.trunkX, y: LANE.trunkStartY },
+  );
+}
+
+/* Same guarantee where the backend omits parent_shas entirely: the column's
+ * previous commit is the anchor, matching where the trunk edge is drawn. */
+function testNewCommitFollowsDraggedPredecessorWithoutParentShas(): void {
+  const draggedHead = { x: 360, y: 900 };
+  const graph = buildGraph(args({
+    gitCommits: [commit("base"), commit("head"), commit("fresh")],
+    gitHead: "fresh",
+    layoutHints: { "commit:head": draggedHead },
+  }));
+
+  assert.deepEqual(
+    graph.rfNodes.find((item) => item.id === "commit:fresh")?.position,
+    { x: draggedHead.x, y: draggedHead.y + LANE.trunkStep },
+  );
+}
+
+/* A merge has to clear its lowest parent vertically while staying in its own
+ * column horizontally, so the two axes resolve from different commits. */
+function testMergeClearsItsLowestParentButKeepsItsColumn(): void {
+  const draggedPeer = { x: 700, y: 1200 };
+  const graph = buildGraph(args({
+    gitCommits: [
+      commit("base", 0, { column: 0, parent_shas: [] }),
+      commit("peer", 0, { column: 1, parent_shas: ["base"], availability: "peer" }),
+      commit("merge", 0, { column: 0, parent_shas: ["base", "peer"] }),
+    ],
+    layoutHints: { "commit:peer": draggedPeer },
+  }));
+
+  assert.deepEqual(
+    graph.rfNodes.find((item) => item.id === "commit:merge")?.position,
+    { x: LANE.trunkX, y: draggedPeer.y + LANE.trunkStep },
+    "y clears the lowest parent, x stays in the merge's own column",
+  );
+}
+
+/* Two children of one parent must not stack on the same slot. */
+function testSiblingCommitsDoNotShareASlot(): void {
+  const draggedBase = { x: 360, y: 900 };
+  const graph = buildGraph(args({
+    gitCommits: [
+      commit("base", 0, { parent_shas: [] }),
+      commit("child-a", 0, { parent_shas: ["base"] }),
+      commit("child-b", 0, { parent_shas: ["base"] }),
+    ],
+    layoutHints: { "commit:base": draggedBase },
+  }));
+  const a = graph.rfNodes.find((item) => item.id === "commit:child-a")?.position;
+  const b = graph.rfNodes.find((item) => item.id === "commit:child-b")?.position;
+
+  assert.deepEqual(a, { x: draggedBase.x, y: draggedBase.y + LANE.trunkStep });
+  assert.deepEqual(b, { x: draggedBase.x, y: draggedBase.y + 2 * LANE.trunkStep });
+}
+
+/* A commit landing while the tree is still dirty — the agent-commit case the
+ * ghost-to-head position transfer cannot cover, because the ghost survives. */
+function testCommitLandingOnTheGhostRowPushesTheGhostDown(): void {
+  const before = buildGraph(args({
+    gitCommits: [commit("base", 0, { parent_shas: [] })],
+    gitHead: "base",
+    gitDirtyCount: 1,
+  })).rfNodes;
+  const ghostPosition = before.find((item) => item.id === "commit:ghost")?.position;
+  assert.ok(ghostPosition);
+
+  const after = buildGraph(args({
+    gitCommits: [
+      commit("base", 0, { parent_shas: [] }),
+      commit("fresh", 0, { parent_shas: ["base"] }),
+    ],
+    gitHead: "fresh",
+    gitDirtyCount: 1,
+  })).rfNodes;
+
+  assert.deepEqual(
+    after.find((item) => item.id === "commit:fresh")?.position,
+    ghostPosition,
+    "the new commit takes the row directly below its parent",
+  );
+  assert.deepEqual(resolveDisplacedGhostPosition(before, after), {
+    x: ghostPosition.x,
+    y: ghostPosition.y + LANE.trunkStep,
+  });
+}
+
+/* The displacement must not fire on overlaps that were already on screen, nor
+ * stand in for the ghost's own first appearance. */
+function testGhostIsNotDisplacedWithoutANewlyArrivingCommit(): void {
+  const steady = buildGraph(args({
+    gitCommits: [commit("base", 0, { parent_shas: [] })],
+    gitHead: "base",
+    gitDirtyCount: 1,
+  })).rfNodes;
+  assert.equal(resolveDisplacedGhostPosition(steady, steady), null);
+
+  /* A user-dragged ghost sitting on an existing hub is left alone. */
+  const overlapping = buildGraph(args({
+    gitCommits: [commit("base", 0, { parent_shas: [] })],
+    gitHead: "base",
+    gitDirtyCount: 1,
+    layoutHints: { "commit:ghost": { x: LANE.trunkX, y: LANE.trunkStartY } },
+  })).rfNodes;
+  assert.equal(resolveDisplacedGhostPosition(overlapping, overlapping), null);
+
+  /* No ghost beforehand is the appearance path's job, not this one. */
+  const clean = buildGraph(args({
+    gitCommits: [commit("base", 0, { parent_shas: [] })],
+    gitHead: "base",
+  })).rfNodes;
+  assert.equal(resolveDisplacedGhostPosition(clean, steady), null);
 }
 
 function testCommittedGhostTransfersItsPositionToNewHead(): void {
@@ -1995,6 +2137,12 @@ testPeerCommitRowsFollowVisibleParents();
 testCommitFallbackDoesNotCrossColumnsAndHintsWin();
 testCommitLayoutResolvesShaAliases();
 testCurrentCommitLayoutWinsOverShaAliases();
+testNewCommitFollowsDraggedParentInsteadOfTheGrid();
+testNewCommitFollowsDraggedPredecessorWithoutParentShas();
+testMergeClearsItsLowestParentButKeepsItsColumn();
+testSiblingCommitsDoNotShareASlot();
+testCommitLandingOnTheGhostRowPushesTheGhostDown();
+testGhostIsNotDisplacedWithoutANewlyArrivingCommit();
 testCommittedGhostTransfersItsPositionToNewHead();
 testRemainingChangesMoveToTheNextCommitSlot();
 testAlreadyRenderedCommitUsesRetainedGhostPosition();

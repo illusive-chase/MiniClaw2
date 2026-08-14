@@ -55,6 +55,9 @@ export type EditorNode = {
   /** Internal node ids plus `in:<port>` entries. */
   scheduled_deps: string[];
   resume_from: string | null;
+  /** Model this node runs on. null means "inherit the project preset at
+   * apply time" — a distinct, legitimate state, not a missing value. */
+  model_preset_id: string | null;
 };
 
 export type EditorArgument = {
@@ -109,6 +112,7 @@ export function templateEditorStateFromDetail(
       motivation: node.motivation ?? "",
       scheduled_deps: [...(node.scheduled_deps ?? [])],
       resume_from: node.resume_from ?? null,
+      model_preset_id: node.model_preset_id ?? null,
     })),
     arguments: detail.arguments.map((argument) => ({
       name: argument.name,
@@ -439,6 +443,7 @@ export function addNode(
     motivation: "",
     scheduled_deps: [],
     resume_from: null,
+    model_preset_id: null,
     ...overrides,
   };
   return { state: { ...state, nodes: [...state.nodes, node] }, node };
@@ -760,6 +765,7 @@ export type TemplateRewriteNode = {
   motivation: string;
   scheduled_deps: string[];
   resume_from: string | null;
+  model_preset_id: string | null;
 };
 
 export type TemplateRewritePayload = {
@@ -777,8 +783,9 @@ export type TemplateRewritePayload = {
  * how a placeholder an author typed becomes a declared, documentable parameter
  * with a description and a default.
  *
- * `allowed_model_preset_ids`, `lane_mode`, and `schema_version` are absent by
- * design — the backend carries them over from the template it is replacing.
+ * `lane_mode` and `schema_version` are absent by design — the backend owns
+ * them. Each node's `model_preset_id` travels here, so editing a node's model
+ * is what changes the model it will be stamped with.
  */
 export function buildRewritePayload(
   state: TemplateEditorState,
@@ -796,6 +803,7 @@ export function buildRewritePayload(
       motivation: node.motivation,
       scheduled_deps: [...node.scheduled_deps],
       resume_from: node.resume_from,
+      model_preset_id: node.model_preset_id,
     })),
     arguments: resolveArguments(state).map((argument) => ({
       name: argument.name,

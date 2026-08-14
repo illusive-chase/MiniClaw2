@@ -11,7 +11,7 @@ import ReactFlow, {
 } from "reactflow";
 import "reactflow/dist/style.css";
 
-import { ApiError, getUserTemplate, rewriteUserTemplate } from "../api";
+import { ApiError, getUserTemplate, listModelPresets, rewriteUserTemplate } from "../api";
 import {
   DependencyEdge,
   ResumeEdge,
@@ -53,6 +53,12 @@ import {
   type TemplateEditorState,
   type TemplateRewritePayload,
 } from "../templateEditor";
+import {
+  modelPresetDetail,
+  modelPresetLabel,
+  selectableModelPresets,
+} from "../modelPresets";
+import type { ModelPreset } from "../types";
 
 const NODE_TYPES = {
   templateNode: TemplateNode,
@@ -120,6 +126,26 @@ function TemplateEditorInner({ slug, onClose, onSaved }: Props) {
   const [positions, setPositions] = useState<
     Record<string, { x: number; y: number }>
   >({});
+  const [modelPresets, setModelPresets] = useState<ModelPreset[]>([]);
+
+  /* Presets are global and immutable for the lifetime of the editor, so they
+   * load once rather than per template. A failure leaves the list empty: the
+   * model picker then shows the raw id it read from the template, which is
+   * still editable text — it must not block editing prompts or topology. */
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const presets = await listModelPresets();
+        if (!cancelled) setModelPresets(presets);
+      } catch {
+        if (!cancelled) setModelPresets([]);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     if (!slug) {
@@ -817,6 +843,7 @@ function TemplateEditorInner({ slug, onClose, onSaved }: Props) {
               <NodeInspector
                 node={selectedNode}
                 nodes={state.nodes}
+                modelPresets={modelPresets}
                 onPatch={(patch) =>
                   apply(updateNode(state, selectedNode.id, patch))
                 }
@@ -850,15 +877,25 @@ function TemplateEditorInner({ slug, onClose, onSaved }: Props) {
 function NodeInspector({
   node,
   nodes,
+  modelPresets,
   onPatch,
   onSetResume,
 }: {
   node: EditorNode;
   nodes: EditorNode[];
+  modelPresets: ModelPreset[];
   onPatch: (patch: Partial<EditorNode>) => void;
   onSetResume: (resumeFrom: string | null) => void;
 }) {
   const deps = internalDeps(node);
+  const selectablePresets = selectableModelPresets(modelPresets);
+  /* A template may name a model that has since been retired or made
+   * compatibility-only. Keeping it as an option means opening the editor never
+   * silently rewrites the node's model — the author sees what is stored and
+   * chooses whether to change it. */
+  const modelIsListed =
+    !node.model_preset_id ||
+    selectablePresets.some((preset) => preset.id === node.model_preset_id);
   return (
     <div className="space-y-2">
       <div className="flex items-center gap-2">
@@ -918,6 +955,50 @@ function NodeInspector({
           ))}
         </>
       )}
+
+      <label className="flex flex-col gap-1">
+        <span className="text-[10px] font-medium uppercase tracking-[0.14em] text-ink-subtle">
+          模型
+        </span>
+        <select
+          value={node.model_preset_id ?? ""}
+          onChange={(event) =>
+            onPatch({ model_preset_id: event.target.value || null })
+          }
+          disabled={node.resume_from !== null}
+          title={
+            node.resume_from
+              ? `恢复会话的节点沿用 ${node.resume_from} 的模型，无法单独设置`
+              : modelPresetDetail(modelPresets, node.model_preset_id) ||
+                "应用模板时，该节点将使用这里指定的模型"
+          }
+          className="w-full rounded border border-line bg-surface-sunken px-2 py-1 text-[11px] text-ink focus:border-brand focus:outline-none disabled:opacity-50"
+        >
+          <option value="">（跟随项目模型）</option>
+          {selectablePresets.map((preset) => (
+            <option key={preset.id} value={preset.id}>
+              {modelPresetLabel(modelPresets, preset.id)}
+            </option>
+          ))}
+          {!modelIsListed && node.model_preset_id && (
+            <option value={node.model_preset_id}>
+              {modelPresetLabel(modelPresets, node.model_preset_id)}（当前不可选）
+            </option>
+          )}
+        </select>
+        {node.resume_from ? (
+          <span className="text-[10px] leading-snug text-ink-subtle">
+            沿用 {node.resume_from} 的模型（恢复会话不能换模型）。
+          </span>
+        ) : (
+          !modelIsListed &&
+          node.model_preset_id && (
+            <span className="text-[10px] leading-snug text-state-error">
+              该模型已不可用于新工作，应用模板时会失败；请另选一个。
+            </span>
+          )
+        )}
+      </label>
 
       <label className="flex flex-col gap-1">
         <span className="text-[10px] font-medium uppercase tracking-[0.14em] text-ink-subtle">

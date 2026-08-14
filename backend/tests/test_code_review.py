@@ -285,6 +285,34 @@ class _ControlledRunner:
 
 
 class CodeReviewSchedulerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_spawn_assigns_review_to_active_planspace(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            repo = root / "repo"
+            repo.mkdir()
+            _init_repo(repo)
+            store = Store(root=root / "store")
+            project = Project(root_path=str(repo))
+            store.create_project(project)
+            registry = ProjectRegistry(store=store)
+            first_lane = create_planspace(
+                project, title="First", mode="manual", store_root=store.root
+            )
+            active_lane = create_planspace(
+                project, title="Active", mode="manual", store_root=store.root
+            )
+            runtime = registry._runtimes[project.id]
+            runtime.project.active_planspace_id = active_lane
+            runtime.project.planspace_selection_explicit = True
+            store.update_project(runtime.project)
+
+            with patch.object(registry, "_schedule_queued"):
+                review = await registry.spawn_code_review(project.id)
+
+            assert review is not None
+            self.assertNotEqual(review.planspace_id, first_lane)
+            self.assertEqual(review.planspace_id, active_lane)
+
     async def test_spawn_is_idempotent_while_review_is_in_flight(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)

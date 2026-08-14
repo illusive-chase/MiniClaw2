@@ -185,6 +185,99 @@ class TemplateSchemaV2Test(unittest.TestCase):
         self.assertEqual(template.inputs, [])
         self.assertEqual(template.warnings, [])
 
+    # --- per-node model -----------------------------------------------------
+
+    def test_node_model_preset_id_is_parsed_and_exposed(self) -> None:
+        root = self.write(
+            prompts={"n0.md": "a", "n1.md": "b"},
+            nodes=[
+                {
+                    "id": "n0",
+                    "kind": "agent",
+                    "category": "regular",
+                    "prompt_file": "prompts/n0.md",
+                    "model_preset_id": "opus-4-7",
+                },
+                {
+                    "id": "n1",
+                    "kind": "agent",
+                    "category": "regular",
+                    "prompt_file": "prompts/n1.md",
+                },
+            ],
+        )
+        template = _load_from_root(root, "fixture")
+        self.assertEqual(
+            [node.model_preset_id for node in template.nodes], ["opus-4-7", None]
+        )
+        self.assertEqual(
+            [node.metadata()["model_preset_id"] for node in template.nodes],
+            ["opus-4-7", None],
+        )
+
+    def test_template_without_allowed_model_preset_ids_loads(self) -> None:
+        """Per-node models made the template-level list optional.
+
+        User templates written after that change omit it entirely; requiring it
+        would make every newly saved template unloadable.
+        """
+        root = self.write(
+            prompts={"n0.md": "a"},
+            nodes=[
+                {
+                    "id": "n0",
+                    "kind": "agent",
+                    "category": "regular",
+                    "prompt_file": "prompts/n0.md",
+                }
+            ],
+            template_extra={"allowed_model_preset_ids": None},
+        )
+        template = _load_from_root(root, "fixture")
+        self.assertEqual(template.allowed_model_preset_ids, [])
+
+    def test_node_model_preset_id_must_be_a_string(self) -> None:
+        self.write(
+            prompts={"n0.md": "a"},
+            nodes=[
+                {
+                    "id": "n0",
+                    "kind": "agent",
+                    "category": "regular",
+                    "prompt_file": "prompts/n0.md",
+                    "model_preset_id": 5,
+                }
+            ],
+        )
+        with self.assertRaisesRegex(TemplateError, "model_preset_id must be a string"):
+            _load_from_root(self.root, "fixture")
+
+    def test_verifier_node_must_not_carry_a_model(self) -> None:
+        """Verifiers run a script, not an agent session, so a model is a lie."""
+        (self.root / "verify.sh").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        self.write(
+            prompts={},
+            nodes=[
+                {
+                    "id": "v0",
+                    "kind": "verifier",
+                    "script_ref": "verify.sh",
+                    "brief": {
+                        "check_what": "exit code",
+                        "expected": "0",
+                        "abnormal": "non-zero",
+                    },
+                    "model_preset_id": "opus-4-7",
+                }
+            ],
+        )
+        with self.assertRaisesRegex(TemplateError, "must not carry model_preset_id"):
+            _load_from_root(self.root, "fixture")
+
+    def test_template_level_model_preset_id_still_points_at_the_node_field(self) -> None:
+        with self.assertRaisesRegex(TemplateError, "declare model_preset_id on each"):
+            self.simple("plain prompt", template_extra={"model_preset_id": "opus-4-8"})
+
     # --- arguments (proposal §3) -------------------------------------------
 
     def test_declared_arguments_carry_description_and_default(self) -> None:

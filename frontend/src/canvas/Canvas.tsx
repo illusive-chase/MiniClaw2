@@ -29,6 +29,7 @@ import {
   buildGraph,
   classifyPlanspaceLaneResizes,
   resolveCommitPositionTransfer,
+  resolveDisplacedGhostPosition,
   resolveGitChangesAppearancePosition,
   resolveSyncedNodePosition,
   resizePlanspaceLanes,
@@ -435,11 +436,21 @@ function CanvasInner({
           rfNodesRef.current as RFNode[],
           layeredBuiltNodes,
         );
+    /* A commit that lands while the tree is still dirty takes the ghost's row;
+     * step the ghost down so pending changes stay at the end of the trunk. */
+    const displacedGhostPosition =
+      commitPositionTransfer || gitChangesAppearancePosition
+        ? null
+        : resolveDisplacedGhostPosition(
+            rfNodesRef.current as RFNode[],
+            layeredBuiltNodes,
+          );
     if (
       syncedBuiltNodesRef.current === layeredBuiltNodes &&
       !hydrateFromLayout &&
       !commitPositionTransfer &&
-      !gitChangesAppearancePosition
+      !gitChangesAppearancePosition &&
+      !displacedGhostPosition
     ) {
       return;
     }
@@ -456,6 +467,12 @@ function CanvasInner({
     if (gitChangesAppearancePosition) {
       layoutHintsRef.current["commit:ghost"] = gitChangesAppearancePosition;
       pendingHintsRef.current["commit:ghost"] = gitChangesAppearancePosition;
+      pendingHintRemovalsRef.current.delete("commit:ghost");
+      scheduleFlushLayout(0);
+    }
+    if (displacedGhostPosition) {
+      layoutHintsRef.current["commit:ghost"] = displacedGhostPosition;
+      pendingHintsRef.current["commit:ghost"] = displacedGhostPosition;
       pendingHintRemovalsRef.current.delete("commit:ghost");
       scheduleFlushLayout(0);
     }
@@ -523,6 +540,9 @@ function CanvasInner({
         }
         if (n.id === "commit:ghost" && gitChangesAppearancePosition) {
           out = { ...out, position: gitChangesAppearancePosition };
+        }
+        if (n.id === "commit:ghost" && displacedGhostPosition) {
+          out = { ...out, position: displacedGhostPosition };
         }
         const carried = selectedById.get(n.id);
         if (carried !== undefined && carried !== out.selected) {

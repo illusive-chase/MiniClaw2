@@ -1391,6 +1391,10 @@ class ProjectRegistry:
                 and existing.state in {NodeState.QUEUED, NodeState.RUNNING}
             ):
                 return existing
+        active = resolve_active_planspace(
+            rt.project, contextspace_root(self.store.root)
+        )
+        active_lane = active[1].id if active is not None else None
         node = Node(
             project_id=pid,
             kind=NodeKind.AGENT,
@@ -1398,6 +1402,7 @@ class ProjectRegistry:
             subtype=ReviewSubtype.CODE_REVIEW,
             review_target=ReviewTarget(),
             state=NodeState.QUEUED,
+            planspace_id=active_lane,
             model_preset_id=default_code_review_model_preset_id(
                 store_root=self.store.root
             ),

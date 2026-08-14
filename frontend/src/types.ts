@@ -260,6 +260,9 @@ export type TemplateSummary = {
   slug: string;
   name: string;
   brief: string;
+  /** Bundled templates only: the run matrix the Tests panel turns into one
+   * button per model. User templates carry their model per node and leave
+   * this empty — it is not an apply-time restriction. */
   allowed_model_preset_ids: string[];
   auto_commit: boolean;
   node_count: number;
@@ -304,6 +307,10 @@ export type TemplateNodeSpec = {
   prompt?: string;
   /** Stable node label/motivation. Detail responses only. */
   motivation?: string;
+  /** Model this node runs on, captured when the template was authored. null
+   * means the node has no opinion and inherits the target project's preset
+   * when the template is applied. */
+  model_preset_id?: string | null;
 };
 
 export type NodeKind = "agent" | "op" | "verifier";

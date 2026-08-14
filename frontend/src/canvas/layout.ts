@@ -476,17 +476,89 @@ function defaultCommitPosition(index: number, column = 0): { x: number; y: numbe
   };
 }
 
+function trunkSlotKey(position: { x: number; y: number }): string {
+  return `${position.x}:${position.y}`;
+}
+
+/** Step straight down until the trunk slot is free. Fallback placement only —
+ * an explicit hint is honoured verbatim even where it overlaps. */
+function firstUnoccupiedSlot(
+  position: { x: number; y: number },
+  occupied: ReadonlySet<string>,
+): { x: number; y: number } {
+  let y = position.y;
+  while (occupied.has(trunkSlotKey({ x: position.x, y }))) y += LANE.trunkStep;
+  return { x: position.x, y };
+}
+
+/** Placement state threaded through the single-pass commit loop. `resolved`,
+ * `occupied` and `previousByColumn` are grown as commits are placed; the pass
+ * relies on the backend emitting parents before children. */
+type CommitPlacementContext = {
+  layoutHints: Readonly<Record<string, { x: number; y: number }>>;
+  columnBySha: ReadonlyMap<string, number>;
+  resolved: Map<string, { x: number; y: number }>;
+  occupied: Set<string>;
+  previousByColumn: Map<number, CommitDescriptor>;
+};
+
+/**
+ * Where a commit sits relative to the commits already placed: `y` below the
+ * lowest resolved parent, `x` inherited only from a parent sharing its column.
+ * Null when nothing upstream is placed, leaving the absolute grid as the only
+ * sensible answer.
+ *
+ * The axes resolve independently on purpose. A merge whose lowest parent lives
+ * in another column still has to clear that parent vertically, but belongs in
+ * its own column horizontally.
+ */
+function resolveCommitAnchor(
+  commit: CommitDescriptor,
+  column: number,
+  ctx: CommitPlacementContext,
+): { x: number | null; y: number } | null {
+  /* `parent_shas` carries three distinct cases: a real parent list, an
+   * explicit root (empty), and "the backend did not say" (null) — the last
+   * falls back to the column's previous commit, which is also where the trunk
+   * edge below is drawn from. */
+  const parents = commit.parent_shas;
+  const previous = ctx.previousByColumn.get(column);
+  const anchorShas = parents ?? (previous ? [previous.sha] : []);
+  let y: number | null = null;
+  let x: number | null = null;
+  for (const sha of anchorShas) {
+    const position = ctx.resolved.get(sha);
+    if (!position) continue;
+    y = y === null ? position.y : Math.max(y, position.y);
+    if (ctx.columnBySha.get(sha) === column) x = position.x;
+  }
+  return y === null ? null : { x, y: y + LANE.trunkStep };
+}
+
+/**
+ * Resolve a commit hub's position: a saved hint wins, otherwise the commit
+ * lands directly below the commit it descends from.
+ *
+ * Anchoring to the parent's *resolved* position rather than to an absolute
+ * grid row is what keeps a newly appearing commit under its predecessor after
+ * the trunk has been dragged. This is independent of who created the commit,
+ * so it covers UI commits, agent commits and pulls alike.
+ */
 function commitLayoutPosition(
   commit: CommitDescriptor,
-  layoutHints: Readonly<Record<string, { x: number; y: number }>>,
   index: number,
   column: number,
+  ctx: CommitPlacementContext,
 ): { x: number; y: number } {
   for (const sha of [commit.sha, ...commit.aliases]) {
-    const position = layoutHints[`commit:${sha}`];
+    const position = ctx.layoutHints[`commit:${sha}`];
     if (position) return position;
   }
-  return defaultCommitPosition(index, column);
+  const anchor = resolveCommitAnchor(commit, column, ctx);
+  const base = anchor
+    ? { x: anchor.x ?? LANE.trunkX + column * LANE.trunkColumnStep, y: anchor.y }
+    : defaultCommitPosition(index, column);
+  return firstUnoccupiedSlot(base, ctx.occupied);
 }
 
 function firstUnoccupiedTrunkPositionBelowHead(
@@ -662,6 +734,45 @@ export function resolveGitChangesAppearancePosition(
 }
 
 /**
+ * Where the uncommitted-changes ghost moves when a newly appearing commit
+ * claims its row, keeping the trunk in reading order: commits above, pending
+ * changes last.
+ *
+ * Returns null unless a commit that was *not* previously rendered now sits
+ * exactly on the ghost's current position. An overlap already on screen —
+ * including one the user made by dragging the ghost onto a hub — is left
+ * alone, and a ghost that is only now appearing belongs to
+ * `resolveGitChangesAppearancePosition` instead.
+ *
+ * This covers the case the position transfer cannot: an agent commits while
+ * the working tree is still dirty, so the ghost survives the commit rather
+ * than becoming the new hub.
+ */
+export function resolveDisplacedGhostPosition(
+  currentNodes: readonly RFNode[],
+  nextNodes: readonly RFNode[],
+): { x: number; y: number } | null {
+  const ghost = currentNodes.find((node) => node.id === "commit:ghost");
+  if (!ghost) return null;
+  if (!nextNodes.some((node) => node.id === "commit:ghost")) return null;
+  const hubs = nextNodes.filter(
+    (node) => node.type === "commit" && node.id !== "commit:ghost",
+  );
+  const rendered = new Set(currentNodes.map((node) => node.id));
+  const claimed = hubs.some(
+    (hub) =>
+      !rendered.has(hub.id) &&
+      hub.position.x === ghost.position.x &&
+      hub.position.y === ghost.position.y,
+  );
+  if (!claimed) return null;
+  return firstUnoccupiedSlot(
+    ghost.position,
+    new Set(hubs.map((hub) => trunkSlotKey(hub.position))),
+  );
+}
+
+/**
  * Build the React Flow node + edge list from the backend NodeInfo[].
  *
  * Layout strategy is *append-don't-reflow*: each node is placed deterministically by
@@ -795,17 +906,30 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
     nextRowByColumn.set(column, row + 1);
   }
   const previousByColumn = new Map<number, CommitDescriptor>();
+  const commitColumnBySha = new Map(
+    gitCommits.map((commit) => [commit.sha, commit.column ?? 0] as const),
+  );
+  const commitPlacement: CommitPlacementContext = {
+    layoutHints,
+    columnBySha: commitColumnBySha,
+    resolved: new Map(),
+    occupied: new Set(),
+    previousByColumn,
+  };
   gitCommits.forEach((commit) => {
     const column = commit.column ?? 0;
+    const position = commitLayoutPosition(
+      commit,
+      commitRows.get(commit.sha) ?? 0,
+      column,
+      commitPlacement,
+    );
+    commitPlacement.resolved.set(commit.sha, position);
+    commitPlacement.occupied.add(trunkSlotKey(position));
     rfNodes.push({
       id: `commit:${commit.sha}`,
       type: "commit",
-      position: commitLayoutPosition(
-        commit,
-        layoutHints,
-        commitRows.get(commit.sha) ?? 0,
-        column,
-      ),
+      position,
       width: 76,
       height: 76,
       data: {

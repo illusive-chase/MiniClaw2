@@ -950,9 +950,13 @@ virtual into their subgraph.
   and `bundled/` template definitions with `template.yaml`,
   `lane.yaml`, `prompts/`, `scripts/`, and optional `seed/`.
 - Model selection metadata declares `allowed_model_preset_ids`; runtime
-  loaders reject legacy `providers` and singular `model_preset_id` fields.
-  Historical template shapes are no longer supported. `schema_version`,
-  `arguments`, and `inputs` are covered in the schema v2 section below.
+  loaders reject legacy `providers` and template-level `model_preset_id`
+  fields. For bundled templates this list is a *run matrix* — the Tests panel
+  renders one "run" button per entry so one scenario can be compared across
+  models — not an apply-time restriction. User templates leave it empty and
+  declare `model_preset_id` per lane node instead. Historical template shapes
+  are no longer supported. `schema_version`, `arguments`, and `inputs` are
+  covered in the schema v2 section below.
 - REST exposes `GET /templates`, `GET /templates/{name}`, and
   `POST /templates/{name}/run`. The old `/scenarios` and
   `/sessions/{sid}/verify` endpoints have been removed.
@@ -1004,6 +1008,16 @@ virtual into their subgraph.
   Cross-lane origins collapse into the active lane on apply. When an
   anchor tile is provided, root virtuals (those with no in-template
   deps) get an implicit `scheduled_deps=[anchor]`.
+- Model resolution on apply is per node, not per template: each agent node
+  is stamped with its own `model_preset_id`, captured from the source node at
+  save time and editable afterwards. A node that declares none inherits the
+  target project's preset, which is also how templates authored before
+  per-node models behave. A declared model that is unknown or
+  compatibility-only raises and names the node, because silently substituting
+  the project preset would run the node on a model the template did not ask
+  for. A resume node is the one exception: it continues an existing provider
+  session, so it inherits its source's model (the runtime rejects a resume
+  virtual whose model differs) and the editor disables its picker.
 - REST endpoints:
   `GET /user-templates`, `GET /user-templates/{slug}`,
   `PUT /user-templates/{slug}` (complete editor-state rewrite),
@@ -1128,10 +1142,10 @@ loader.py` owns parsing; nothing below changes stamp-time behaviour.
 ### Landed — serializer v2 与编辑器写回 API
 
 - `PUT /user-templates/{slug}` accepts the template editor's complete state:
-  name/brief, agent node definitions with full prompt source and `in:*`
-  dependencies, argument descriptions/defaults, and input declarations.
-  Verifier nodes and path-like slugs are rejected. The template keeps its
-  existing `allowed_model_preset_ids` and slug.
+  name/brief, agent node definitions with full prompt source, per-node
+  `model_preset_id`, and `in:*` dependencies, argument descriptions/defaults,
+  and input declarations. Verifier nodes and path-like slugs are rejected. The
+  template keeps its slug.
 - Missing argument `default` and explicit `default: null` both persist as
   required; `default: ""` remains an optional empty-string default. Prompt
   arguments omitted by the request are appended using the loader's own
@@ -1248,8 +1262,9 @@ input port.
   earlier entry, so drawing an edge "backwards" is a legal graph edit that must
   be normalized rather than rejected. Every resolved argument is sent,
   including scan-only ones, which is how a typed placeholder becomes a declared
-  parameter. `allowed_model_preset_ids`, `lane_mode`, and `schema_version` are
-  omitted by design; the backend carries them over.
+  parameter. Each node's `model_preset_id` travels in the payload, so editing a
+  node's model is what changes the model it will be stamped with. `lane_mode`
+  and `schema_version` are omitted by design; the backend owns them.
 - Save failures keep all editor state: the backend leaves the old template
   intact on a 400, so the detail renders in the editor and the author corrects
   in place. A successful save reloads from the response so backend-persisted

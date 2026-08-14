@@ -108,9 +108,6 @@ def apply_user_template(
     active_lane = project.active_planspace_id or ""
     if not active_lane:
         raise TemplateError("activate a direction first")
-    model_preset_id = _require_template_model_preset(
-        template, project.model_preset_id, store_root=registry.store.root
-    )
 
     if anchor_node_id and not template.inputs:
         anchor = registry.store.load_node(project.id, anchor_node_id)
@@ -124,7 +121,7 @@ def apply_user_template(
     return _stamp_lane(
         template,
         project,
-        model_preset_id,
+        None,
         active_lane,
         registry,
         anchor_node_id=anchor_node_id,
@@ -136,7 +133,7 @@ def apply_user_template(
 def _stamp_lane(
     template: Template,
     project: Project,
-    model_preset_id: str,
+    fallback_model_preset_id: str | None,
     planspace_id: str,
     registry: ProjectRegistry,
     *,
@@ -144,9 +141,12 @@ def _stamp_lane(
     arguments: dict[str, str] | None = None,
     input_bindings: dict[str, str] | None = None,
 ) -> list[Node]:
-    model_preset_id = _require_template_model_preset(
-        template, model_preset_id, store_root=registry.store.root
-    )
+    """Stamp every node of ``template`` as a virtual in ``planspace_id``.
+
+    ``fallback_model_preset_id`` applies only to agent nodes that declare no
+    model of their own; ``None`` means "use the target project's preset".
+    """
+    fallback_model_preset_id = fallback_model_preset_id or project.model_preset_id
     resolved_arguments = _resolve_arguments(template, arguments or {})
     resolved_inputs = _validate_input_bindings(
         template,
@@ -170,8 +170,28 @@ def _stamp_lane(
         instance_id = uuid4().hex[:12]
 
     slug_to_node_id: dict[str, str] = {}
+    #: Resolved model per template slug, so a resume node can inherit from its
+    #: source the way ``create_virtual`` demands.
+    model_by_slug: dict[str, str] = {}
     pending: list[tuple[TemplateNodeSpec, Node]] = []
     for spec in template.nodes:
+        node_model_preset_id: str | None = None
+        if spec.kind is NodeKind.AGENT:
+            # A resume node continues an existing provider session, so its
+            # model is not a free choice — the runtime rejects a resume
+            # virtual whose model differs from its source. The template's own
+            # value is ignored here rather than raised on: the editor may have
+            # been pointed at a new resume source after the model was set.
+            inherited = (
+                model_by_slug.get(spec.resume_from) if spec.resume_from else None
+            )
+            node_model_preset_id = inherited or _resolve_node_model_preset(
+                template,
+                spec,
+                fallback_model_preset_id,
+                store_root=registry.store.root,
+            )
+            model_by_slug[spec.id] = node_model_preset_id
         node = Node(
             project_id=project.id,
             kind=spec.kind,
@@ -180,7 +200,7 @@ def _stamp_lane(
             brief=spec.brief,
             state=NodeState.VIRTUAL,
             planspace_id=planspace_id,
-            model_preset_id=model_preset_id if spec.kind is NodeKind.AGENT else None,
+            model_preset_id=node_model_preset_id,
             prompt="",
             prompt_draft=spec.prompt if spec.kind is NodeKind.AGENT else None,
             scheduled_deps=[],
@@ -377,17 +397,55 @@ def _require_template_model_preset(
     *,
     store_root: Path | None = None,
 ) -> str:
+    """Validate the model a *bundled* template was asked to run on.
+
+    ``allowed_model_preset_ids`` is the bundled test matrix — the Tests panel
+    offers one run button per entry. User templates carry their model per node
+    and never reach this check.
+    """
     try:
         normalized = normalize_active_model_preset_id(
             model_preset_id, store_root=store_root
         )
     except ValueError as exc:
         raise TemplateError(str(exc)) from exc
-    if normalized not in template.allowed_model_preset_ids:
+    if (
+        template.allowed_model_preset_ids
+        and normalized not in template.allowed_model_preset_ids
+    ):
+        allowed = ", ".join(template.allowed_model_preset_ids)
         raise TemplateError(
-            f"template {template.name!r} does not support model preset {normalized!r}"
+            f"模板 {template.name!r} 未为模型 {normalized!r} 配置运行入口；"
+            f"该模板可运行的模型为：{allowed}"
         )
     return normalized
+
+
+def _resolve_node_model_preset(
+    template: Template,
+    spec: TemplateNodeSpec,
+    fallback_model_preset_id: str,
+    *,
+    store_root: Path | None = None,
+) -> str:
+    """Pick the model one stamped agent node runs on.
+
+    The node's authored model wins; a node that declares none inherits
+    ``fallback_model_preset_id`` (the target project's preset). A declared but
+    unusable model is an error the author must fix in the editor — silently
+    substituting the project preset would run the node on a model the template
+    did not ask for.
+    """
+    declared = spec.model_preset_id
+    if not declared:
+        return fallback_model_preset_id
+    try:
+        return normalize_active_model_preset_id(declared, store_root=store_root)
+    except ValueError as exc:
+        raise TemplateError(
+            f"模板 {template.name!r} 的节点 {spec.id!r} 指定的模型"
+            f" {declared!r} 当前不可用：{exc}；请在模板编辑器中为该节点重新选择模型"
+        ) from exc
 
 
 def _seed_workspace(template: Template, root: Path) -> None:

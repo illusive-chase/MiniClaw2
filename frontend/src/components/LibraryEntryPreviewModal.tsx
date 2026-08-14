@@ -13,6 +13,7 @@ import {
 } from "../api";
 import type { ModelPreset, TemplateDetail, TemplateSummary } from "../types";
 import { modelPresetLabel } from "../modelPresets";
+import { resolvedTemplateNodeModelPresetId } from "../templateModels";
 
 /** What the dock asks to preview. The modal owns the detail fetch. */
 export type LibraryPreviewTarget =
@@ -130,6 +131,10 @@ function TemplatePreview({
           <ol className="space-y-1.5">
             {nodes.map((node, index) => {
               const deps = node.scheduled_deps ?? [];
+              const resolvedModelPresetId = resolvedTemplateNodeModelPresetId(
+                nodes,
+                node,
+              );
               return (
                 <li
                   key={node.id}
@@ -156,6 +161,17 @@ function TemplatePreview({
                     <Chip>{node.kind}</Chip>
                     {node.category && <Chip>{node.category}</Chip>}
                     {node.subtype && <Chip>{node.subtype}</Chip>}
+                    {resolvedModelPresetId && (
+                      <Chip
+                        title={
+                          node.resume_from
+                            ? `该节点沿用 ${node.resume_from} 的模型 ${resolvedModelPresetId}`
+                            : `该节点固定在 ${resolvedModelPresetId} 上运行`
+                        }
+                      >
+                        {modelPresetLabel(modelPresets, resolvedModelPresetId)}
+                      </Chip>
+                    )}
                     {node.resume_from && (
                       <Chip title={`承接 ${node.resume_from} 的会话`}>
                         resume · {node.resume_from}
@@ -182,16 +198,6 @@ function TemplatePreview({
           </ol>
         )}
       </Section>
-
-      {detail.allowed_model_preset_ids.length > 0 && (
-        <Section title="模型">
-          <div className="flex flex-wrap gap-1">
-            {detail.allowed_model_preset_ids.map((id) => (
-              <Chip key={id}>{modelPresetLabel(modelPresets, id)}</Chip>
-            ))}
-          </div>
-        </Section>
-      )}
 
       {detail.arguments.length > 0 && (
         <Section title="参数" trailing={<span className="font-mono normal-case tracking-normal">{detail.arguments.length}</span>}>
