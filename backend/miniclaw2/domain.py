@@ -179,6 +179,7 @@ class Project(BaseModel):
     settings_override: dict[str, Any] = Field(default_factory=dict)
     temporary: bool = False
     template_id: str | None = None
+    tag_ids: list[str] = Field(default_factory=list)
     created_at: float = Field(default_factory=_now)
     layout_hints: dict[str, dict[str, float]] = Field(default_factory=dict)
     layout_viewport: dict[str, float] | None = None

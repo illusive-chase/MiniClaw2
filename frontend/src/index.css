@@ -50,6 +50,32 @@
   --state-cancelled: 168 162 158;
   --state-cancelled-soft: 240 238 236;
 
+  /* Project tags. Deliberately a separate family from --state-*: those encode
+   * node state and must never be confused with a user's arbitrary label.
+   * `main` is the dot and chip text, `soft` the chip fill. Hue per key is
+   * shared with html.dark so a tag survives a theme flip; only lightness and
+   * chroma move, because the two grounds differ. */
+  --tag-coral: 189 79 69;
+  --tag-coral-soft: 255 232 228;
+  --tag-amber: 164 118 19;
+  --tag-amber-soft: 248 235 219;
+  --tag-sage: 74 121 78;
+  --tag-sage-soft: 230 239 230;
+  --tag-teal: 0 124 139;
+  --tag-teal-soft: 225 239 242;
+  --tag-azure: 38 111 182;
+  --tag-azure-soft: 231 237 251;
+  --tag-indigo: 107 89 171;
+  --tag-indigo-soft: 239 234 250;
+  --tag-plum: 170 74 125;
+  --tag-plum-soft: 250 232 240;
+  --tag-clay: 120 89 72;
+  --tag-clay-soft: 245 235 230;
+  /* Reserved for the "未分类" bucket; never offered as a tag color. Near-zero
+   * chroma so it reads as absence of color beside the eight. */
+  --tag-neutral: 121 115 112;
+  --tag-neutral-soft: 242 237 234;
+
   --shadow: 28 25 22;
   --grid-line: 212 200 181;
   --grid-opacity: 0.18;
@@ -98,6 +124,25 @@ html.dark {
 
   --state-cancelled: 110 104 95;
   --state-cancelled-soft: 38 36 33;
+
+  --tag-coral: 240 144 130;
+  --tag-coral-soft: 61 40 36;
+  --tag-amber: 228 174 79;
+  --tag-amber-soft: 54 43 27;
+  --tag-sage: 137 180 139;
+  --tag-sage-soft: 38 47 38;
+  --tag-teal: 87 188 203;
+  --tag-teal-soft: 29 48 51;
+  --tag-azure: 119 168 237;
+  --tag-azure-soft: 37 45 60;
+  --tag-indigo: 166 146 224;
+  --tag-indigo-soft: 47 42 59;
+  --tag-plum: 234 141 187;
+  --tag-plum-soft: 59 39 49;
+  --tag-clay: 171 131 108;
+  --tag-clay-soft: 54 43 37;
+  --tag-neutral: 138 133 131;
+  --tag-neutral-soft: 50 47 45;
 
   --shadow: 0 0 0;
   --grid-line: 80 76 70;

@@ -2701,6 +2701,11 @@ export function App() {
                 onResolveReview={onResolveReview}
                 onSelectNode={onSelectNode}
                 onSelectArtifact={onSelectArtifact}
+                onSessionChange={(updated) => {
+                  setSession((current) =>
+                    current?.id === updated.id ? updated : current,
+                  );
+                }}
                 onPreferredLanguageChange={updatePreferredLanguage}
                 onConcurrencyChange={updateConcurrency}
                 onActivatePlanspace={activatePlanspace}

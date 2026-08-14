@@ -1426,6 +1426,23 @@ class NodeRunner:
         if finished:
             self.node.finished_at = now
         self.store.update_node(self.node)
+        if started or finished:
+            try:
+                activity_at = max(
+                    timestamp
+                    for timestamp in (
+                        self.node.finished_at,
+                        self.node.started_at,
+                        self.node.created_at,
+                    )
+                    if timestamp is not None
+                )
+                self.store.record_project_activity(self.project.id, activity_at)
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "failed to update project activity for %s",
+                    self.project.id,
+                )
 
     # ---- provider event handling ----
 

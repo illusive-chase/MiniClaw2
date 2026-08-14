@@ -145,7 +145,7 @@ Trunk: `backend/miniclaw2/domain.py`.
   `created_at`, `started_at`, `finished_at`.
 - `Project` fields: `root_path`, `name`, `model_preset_id`,
   `project_context_binding_id`, `active_planspace_id`, `preferred_language`,
-  `settings_override`, `temporary`, `template_id`,
+  `settings_override`, `temporary`, `template_id`, `tag_ids`,
   `machine_id`, `machine_label`,
   `layout_hints`, `layout_viewport`, `planspace_view`,
   `created_at`.
@@ -537,9 +537,11 @@ Trunk: `backend/miniclaw2/contextspace.py`.
   the whitelist to `claude --allowed-tools` on the native Claude
   provider, and forces `approvalPolicy: "never"` on Codex. Used by the
   out-of-band `context_refresh` agent; unused by `NodeRunner`.
-- `GET /principles` enumerates principle plugs and `DELETE /principles/{slug}`
-  removes one with strict slug/path validation. The frontend exposes them as
-  behavior-guidance tiles with virtual-node selection and drag attach.
+- `GET /principles` enumerates principle summaries,
+  `GET /principles/{slug}` loads one full `CONTEXT.md` body on demand, and
+  `DELETE /principles/{slug}` removes one with strict slug/path validation.
+  The frontend exposes them as behavior-guidance tiles with virtual-node
+  selection and drag attach.
 - Native Agent Skills (the `SKILL.md` standard) are stored verbatim under
   `contextspace/skills` so community skills import unmodified. Skills are
   deliberately **not plugs**: they never enter bundle composition or (v1)
@@ -548,9 +550,11 @@ Trunk: `backend/miniclaw2/contextspace.py`.
   provider's job. The library lives under the sync root and rides ordinary
   metadata-sync commits (skills are expected to be markdown plus small
   scripts; large binary payloads bloat the sync repo).
-  `GET /skills`, `POST /skills/import`, and `DELETE /skills/{slug}` provide
-  inspection, local/zip/git import, overwrite, and removal. Imports reject zip
-  traversal and symlinks; provenance is stored separately in
+  `GET /skills` returns summary metadata without downloading every `SKILL.md`
+  body; `GET /skills/{slug}` loads one full body on demand. Together with
+  `POST /skills/import` and `DELETE /skills/{slug}`, these provide inspection,
+  local/zip/git import, overwrite, and removal. Imports reject zip traversal
+  and symlinks; provenance is stored separately in
   `contextspace/skill-imports.json`.
 - Import auto-detects a source containing multiple `SKILL.md` directories when
   no slug is supplied. Every member is validated before any member is replaced,
@@ -658,6 +662,13 @@ Trunk: `frontend/src/canvas/Canvas.tsx`, `frontend/src/canvas/layout.ts`,
   model preset, attached principles/native skills, and obsoletion); continuation virtuals lock
   their inherited model preset. Verifier virtuals render as read-only
   programmatic-review steps.
+- Principle and skill attachment uses one searchable hierarchical picker.
+  Hyphenated ids form collapsible prefix trees, search returns breadcrumb
+  matches, and successful choices feed a per-kind MRU list. Empty libraries
+  render a dashed creation entry; libraries containing only single-segment ids
+  naturally render as a flat list because the hierarchy builder creates no
+  directory rows. Those two measured states close the flat-versus-tree design
+  question: there is no separate mode toggle.
 - Agent tiles show category badges for planning / regular / review /
   human-interact review nodes; verifier tiles use the review tone and
   a programmatic label.
@@ -714,20 +725,25 @@ Trunk: `frontend/src/canvas/Canvas.tsx`, `frontend/src/canvas/layout.ts`,
   controls; Project → Directions also shows mode and hide/show.
 - `PlanspaceFilePanel.tsx` now handles project-root `CONTEXT.md` only.
 - `ProjectPanel.tsx` has Project actions (`+ New direction`, skill/pack import,
-  initialize/refresh project notes) and a Directions section with active
-  badges, mode labels, and hide/show controls. Library *authoring* is not a
-  project action: it is the Library classification on an ordinary virtual.
+  initialize/refresh project notes), native-project tag assignment, and a
+  Directions section with active badges, mode labels, and hide/show controls.
+  Successful tag writes update App's owning session state as well as the open
+  panel, so navigation cannot restore and later persist a stale assignment.
+  Library *authoring* is not a project action: it is the Library classification
+  on an ordinary virtual.
 - Principle and skill context tiles are binding-driven: a tile exists only
   when an observed bundle/skill audit or a visible virtual's pending binding
   references it. Pending declarations draw dashed loads; observed principle
   use and used skills draw solid loads; available-but-unused skills remain
   dashed. Unbound user-wide entries do not appear on the canvas.
 - `LibraryDock` is the single side-panel collection for Templates,
-  Principles, and Skills. All three sections retain their drag MIME types;
-  principle/skill cards expand inline for metadata, attached count, full
-  inspection, and deletion. Completed librarian turns refresh and surface
-  newly authored entries. Persisted panel mode `templates` migrates to
-  `library` on read.
+  Principles, and Skills. Its three sections reuse the attachment hierarchy,
+  persist section/directory expansion, search all sections together, and keep
+  existing drag MIME payloads unchanged. Leaf actions open an on-demand detail
+  preview, surface the entry in the inspector, or delete it; previews can apply
+  a template or attach a principle/skill when the selected project/node permits
+  it. Completed librarian turns refresh and reveal newly authored entries.
+  Persisted panel mode `templates` migrates to `library` on read.
 - Persisted node `layout_hints` and the user-owned pan/zoom
   `layout_viewport` round-trip through `project.json` via
   `PATCH /sessions/{sid}/layout-hints`; programmatic fit-to-view does not
@@ -748,10 +764,16 @@ Trunk: `frontend/src/canvas/Canvas.tsx`, `frontend/src/canvas/layout.ts`,
 - Inline pending requests (permission / ask-user)
   also expand directly under the waiting agent tile on the canvas,
   using the same response mapping as `AgentPanel`.
-- Projects landing page (`ProjectsLanding`) with rename/delete; Tests
-  modal for bundled templates. New-project creation supports a named or
-  temporary workspace, cwd creation confirmation, preferred language, and an
-  active model preset.
+- Projects landing page (`ProjectsLanding`) with rename/delete, global project
+  tags, multi-select AND filtering, and grouped/name/activity sort modes. A
+  three-project recent-activity strip appears only when it does not mostly
+  duplicate the full list and remains global while filters are active. Group
+  order follows `tags.json` creation order, multi-tag projects appear in every
+  matching group, and untagged projects trail the tag groups. User drag reorder
+  was judged over-design for v1 and is not implemented. The Tests modal covers
+  bundled templates. New-project creation supports a named or temporary
+  workspace, cwd creation confirmation, preferred language, and an active
+  model preset.
 - Non-native (or newer-schema) projects render read-only: a badge
   (`read-only · native to <label> · as of <last sync>`) on the canvas
   header and project panel, promote/interrupt/rerun/edit controls
@@ -763,6 +785,10 @@ Trunk: `frontend/src/canvas/Canvas.tsx`, `frontend/src/canvas/layout.ts`,
   transcripts, prompts, tool output, and code; use a private remote), a
   `Sync now` / `Set up sync` button, the binary up-to-date/changed
   status, machine label, and last-sync time.
+- Deliberate exclusions from the retrieval/tagging pass: tags are flat labels,
+  template naming is unchanged, there is no project-level skill/principle
+  attachment UI, and complete modal focus trapping remains a future
+  cross-modal accessibility change rather than a one-off addition here.
 
 ### Pending
 
@@ -1349,11 +1375,41 @@ Trunk: `backend/miniclaw2/store.py`, `backend/miniclaw2/replay.py`.
   projects/<pid>/nodes/<nid>/events.jsonl
   projects/<pid>/nodes/<nid>/gates.jsonl
   projects/<pid>/nodes/<nid>/artifacts/<name>
+  tags.json                       # global ordered project tags
   contextspace/...                # see §4
   ```
 - Atomic JSON writes (tmp + rename). Each node has one event writer; different
   nodes may write their independent records concurrently, while project-wide
   virtual-DAG reconciliation is narrowly serialized.
+- The current store schema is version **10**. Version 9 was consumed by
+  `d31f7c2` for `Node.rev`; version 10 adds project `tag_ids`. The older design
+  note saying this change was 8→9 is historical. Adding any `Project` field has
+  two inseparable costs: add the defaulted field and advance the store schema in
+  the same commit. `Project` forbids extra fields, while `list_projects` skips
+  records that fail validation, so writing a new field without the version gate
+  would make an older build silently omit the whole project.
+- Global tags persist atomically in `$MINICLAW_HOME/tags.json` as an ordered v1
+  collection with stable ids, unique case-insensitive names, a bounded palette,
+  and a 32-tag limit. Project records retain ordered tag-id references; unknown
+  ids are dropped on load, and deleting a tag strips it from every project.
+  Cross-machine `tags.json` conflicts follow the same v1 policy as
+  `schema.json`: sync aborts without selecting either side, and the user must
+  resolve them manually. An id-based union is deferred unless actual use shows
+  conflicts are frequent.
+- `last_activity_at` is **not** a `Project` field and is never written to
+  `project.json`. It is a `Store` in-memory derived index over every host's
+  nodes, using the maximum of each node's `finished_at`, `started_at`, and
+  `created_at`, with project `created_at` as the no-node fallback. Store
+  construction performs one full rebuild, `NodeRunner._transition` updates it
+  on started/finished transitions, and a successful sync rebuilds it with the
+  same node scan. This expresses “whoever last touched the project” across all
+  hosts while avoiding a git-tracked cache write on every transition.
+- The persistence and migration-backfill paragraphs of design §1.5 are
+  superseded by that in-memory index. The still-valid parts are the discrete
+  transition update points rather than every `update_node`, and frontend sort
+  fallback `last_activity_at ?? created_at`. Because every value can be rebuilt
+  from node timestamps, persisting it would only add synchronization and merge
+  conflicts for a cache.
 - Registry initialization repairs persisted active nodes left by a previous
   process to cancelled terminal records, including framework stub previews,
   without blocking other projects on a malformed entry; queued nodes remain

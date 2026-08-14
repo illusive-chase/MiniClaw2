@@ -191,6 +191,11 @@ export type SessionInfo = {
   preferred_language?: string | null;
   temporary?: boolean;
   template_id?: string | null;
+  /** Global tag ids this project references; unknown ids are dropped server-side. */
+  tag_ids?: string[];
+  /** Newest node start/finish across every host, derived server-side rather
+   * than persisted — it can change after a backend restart or a sync. */
+  last_activity_at?: number | null;
   name?: string;
   machine_id: string;
   local_machine_id: string;
@@ -207,6 +212,15 @@ export type SessionInfo = {
   layout_hints?: Record<string, { x: number; y: number }>;
   /** Persisted React Flow viewport so pan/zoom survives project reopen. */
   layout_viewport?: CanvasViewport | null;
+};
+
+/** Global project tag (`$MINICLAW_HOME/tags.json`). `color` is a palette key
+ * from `tagPalette.ts`; an unknown value renders neutral rather than throwing. */
+export type Tag = {
+  id: string;
+  name: string;
+  color: string;
+  created_at: number;
 };
 
 export type SessionHost = {

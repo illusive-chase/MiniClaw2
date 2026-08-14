@@ -16,6 +16,7 @@ export default defineConfig({
       "/principles": backendUrl,
       "/sessions": backendUrl,
       "/skills": backendUrl,
+      "/tags": backendUrl,
       "/templates": backendUrl,
       "/user-templates": backendUrl,
       "/ws": {

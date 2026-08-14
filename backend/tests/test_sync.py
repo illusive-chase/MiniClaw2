@@ -398,6 +398,24 @@ class GitMetadataSyncTests(unittest.TestCase):
         reloaded = Store(self.root_a)
         self.assertEqual(reloaded.sync.status()["status"], "changed")
 
+    def test_tag_conflict_requires_manual_resolution(self) -> None:
+        tag_a = self.store_a.create_tag("Machine A", "coral")
+        self.store_a.sync.commit_now("create tag on A")
+
+        self.store_b.create_tag("Machine B", "sage")
+        self.store_b.sync.commit_now("create tag on B")
+        self.store_b.sync.sync_now()
+
+        with self.assertRaisesRegex(
+            SyncError,
+            "tags.json changed independently.*resolve it manually",
+        ):
+            self.store_a.sync.sync_now()
+
+        self.assertFalse((self.root_a / ".git" / "MERGE_HEAD").exists())
+        self.assertEqual(self.store_a.list_tags(), [tag_a])
+        self.assertEqual(self.store_a.sync.status()["status"], "changed")
+
     def test_remote_schema_upgrade_makes_live_store_read_only(self) -> None:
         schema_b = json.loads((self.root_b / "schema.json").read_text())
         schema_b["schema_version"] += 1

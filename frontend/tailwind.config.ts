@@ -84,6 +84,46 @@ export default {
             soft: "rgb(var(--state-cancelled-soft) / <alpha-value>)",
           },
         },
+        /* Project tags — a separate family from `state`, which is reserved for
+         * node state. `DEFAULT` is the dot and chip text, `soft` the fill. */
+        tag: {
+          coral: {
+            DEFAULT: "rgb(var(--tag-coral) / <alpha-value>)",
+            soft: "rgb(var(--tag-coral-soft) / <alpha-value>)",
+          },
+          amber: {
+            DEFAULT: "rgb(var(--tag-amber) / <alpha-value>)",
+            soft: "rgb(var(--tag-amber-soft) / <alpha-value>)",
+          },
+          sage: {
+            DEFAULT: "rgb(var(--tag-sage) / <alpha-value>)",
+            soft: "rgb(var(--tag-sage-soft) / <alpha-value>)",
+          },
+          teal: {
+            DEFAULT: "rgb(var(--tag-teal) / <alpha-value>)",
+            soft: "rgb(var(--tag-teal-soft) / <alpha-value>)",
+          },
+          azure: {
+            DEFAULT: "rgb(var(--tag-azure) / <alpha-value>)",
+            soft: "rgb(var(--tag-azure-soft) / <alpha-value>)",
+          },
+          indigo: {
+            DEFAULT: "rgb(var(--tag-indigo) / <alpha-value>)",
+            soft: "rgb(var(--tag-indigo-soft) / <alpha-value>)",
+          },
+          plum: {
+            DEFAULT: "rgb(var(--tag-plum) / <alpha-value>)",
+            soft: "rgb(var(--tag-plum-soft) / <alpha-value>)",
+          },
+          clay: {
+            DEFAULT: "rgb(var(--tag-clay) / <alpha-value>)",
+            soft: "rgb(var(--tag-clay-soft) / <alpha-value>)",
+          },
+          neutral: {
+            DEFAULT: "rgb(var(--tag-neutral) / <alpha-value>)",
+            soft: "rgb(var(--tag-neutral-soft) / <alpha-value>)",
+          },
+        },
       },
       boxShadow: {
         card: "0 1px 2px rgb(var(--shadow) / 0.06), 0 1px 1px rgb(var(--shadow) / 0.04)",

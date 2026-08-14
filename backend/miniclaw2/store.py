@@ -39,6 +39,13 @@ from .sync import (
     machine_hostname_mismatch,
     schema_is_newer,
 )
+from .tags import (
+    Tag,
+    create_tag as create_global_tag,
+    delete_tag as delete_global_tag,
+    load_tags,
+    update_tag as update_global_tag,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -66,7 +73,10 @@ class Store:
         ensure_global_config(self.root)
         self.sync: SyncManager = get_sync_manager(self.root, self.machine)
         self._owner_index: dict[str, dict[str, str]] = {}
+        self._last_activity_index: dict[str, float] = {}
         self.sync.add_success_callback(self.invalidate_owner_index)
+        self.sync.add_success_callback(self._refresh_last_activity_after_sync)
+        self.refresh_last_activity_index()
 
     @property
     def read_only_reason(self) -> str | None:
@@ -134,6 +144,31 @@ class Store:
     def invalidate_owner_index(self) -> None:
         """Drop path ownership cached before a sync or layout migration."""
         self._owner_index.clear()
+
+    def refresh_last_activity_index(self) -> None:
+        """Rebuild project activity timestamps from all persisted nodes."""
+        self._last_activity_index.clear()
+        for project in self.list_projects():
+            self._list_nodes_for_project(project.id, project)
+
+    def _refresh_last_activity_after_sync(self) -> None:
+        try:
+            self.refresh_last_activity_index()
+        except Exception:  # noqa: BLE001
+            logger.exception("failed to refresh project activity after sync")
+
+    def project_last_activity_at(self, pid: str) -> float | None:
+        if pid not in self._last_activity_index:
+            project = next((item for item in self.list_projects() if item.id == pid), None)
+            if project is None:
+                return None
+            self._list_nodes_for_project(project.id, project)
+        return self._last_activity_index.get(pid)
+
+    def record_project_activity(self, pid: str, activity_at: float) -> None:
+        current = self._last_activity_index.get(pid)
+        if current is None or activity_at > current:
+            self._last_activity_index[pid] = activity_at
 
     def has_host_binding(self, pid: str, machine_id: str) -> bool:
         return (self._host_dir(pid, machine_id) / "host.json").is_file()
@@ -234,6 +269,62 @@ class Store:
 
     # ---- project ----
 
+    def list_tags(self) -> list[Tag]:
+        return load_tags(self.root)
+
+    def create_tag(self, name: str, color: str | None = None) -> Tag:
+        self.assert_writable()
+        tag = create_global_tag(self.root, name, color)
+        self.sync.schedule_commit(f'create tag "{tag.name}"')
+        return tag
+
+    def update_tag(
+        self,
+        tag_id: str,
+        *,
+        name: str | None = None,
+        color: str | None = None,
+    ) -> Tag | None:
+        self.assert_writable()
+        tag = update_global_tag(self.root, tag_id, name=name, color=color)
+        if tag is not None:
+            self.sync.schedule_commit(f'update tag "{tag.name}"')
+        return tag
+
+    def delete_tag(self, tag_id: str) -> bool:
+        self.assert_writable()
+        deleted = delete_global_tag(self.root, tag_id)
+        if deleted:
+            self.sync.schedule_commit(f"delete tag {tag_id}")
+        return deleted
+
+    def remove_tag_from_projects(self, tag_id: str) -> set[str]:
+        """Remove a deleted tag reference without altering host-local metadata."""
+        self.assert_writable()
+        changed: set[str] = set()
+        projects_dir = self.root / "projects"
+        if not projects_dir.is_dir():
+            return changed
+        for project_file in sorted(projects_dir.glob("*/project.json")):
+            try:
+                payload = self._read_json(project_file)
+            except (OSError, ValueError):
+                logger.error(
+                    "failed to remove tag from project record %s",
+                    project_file,
+                    exc_info=True,
+                )
+                continue
+            tag_ids = payload.get("tag_ids")
+            if not isinstance(tag_ids, list) or tag_id not in tag_ids:
+                continue
+            payload["tag_ids"] = [existing for existing in tag_ids if existing != tag_id]
+            self._write_json(project_file, payload)
+            changed.add(project_file.parent.name)
+        if changed:
+            self.sync.schedule_commit(f"remove tag {tag_id} from projects")
+        return changed
+
     def create_project(self, project: Project) -> Project:
         self.assert_writable()
         if not project.machine_id:
@@ -279,6 +370,11 @@ class Store:
         out: list[Project] = []
         if not projects_dir.exists():
             return out
+        try:
+            known_tag_ids = {tag.id for tag in self.list_tags()}
+        except ValueError:
+            logger.error("failed to load tags while listing projects", exc_info=True)
+            known_tag_ids = set()
         for pdir in sorted(projects_dir.iterdir()):
             if not pdir.is_dir():
                 continue
@@ -308,11 +404,13 @@ class Store:
                                 ),
                             }
                         )
-                    out.append(
-                        _validate_project_record(
-                            pf, payload
-                        ).bind_model_catalog(self.root)
-                    )
+                    project = _validate_project_record(pf, payload)
+                    project.tag_ids = [
+                        tag_id
+                        for tag_id in project.tag_ids
+                        if tag_id in known_tag_ids
+                    ]
+                    out.append(project.bind_model_catalog(self.root))
                 except (OSError, ValueError, ValidationError):
                     logger.error(
                         "skipping invalid current-schema project record %s",
@@ -327,6 +425,7 @@ class Store:
         if not d.exists():
             return False
         shutil.rmtree(d)
+        self._last_activity_index.pop(pid, None)
         self.sync.schedule_commit(f"delete project {pid}")
         return True
 
@@ -393,6 +492,13 @@ class Store:
 
     def list_nodes(self, pid: str) -> list[Node]:
         project = next((item for item in self.list_projects() if item.id == pid), None)
+        return self._list_nodes_for_project(pid, project)
+
+    def _list_nodes_for_project(
+        self,
+        pid: str,
+        project: Project | None,
+    ) -> list[Node]:
         if self._is_shared(pid):
             node_files = list(self._hosts_dir(pid).glob("*/nodes/*/node.json"))
         else:
@@ -417,6 +523,20 @@ class Store:
                 )
         self._owner_index[pid] = owners
         out.sort(key=lambda n: n.created_at)
+        if project is not None:
+            self._last_activity_index[pid] = max(
+                (
+                    timestamp
+                    for node in out
+                    for timestamp in (
+                        node.finished_at,
+                        node.started_at,
+                        node.created_at,
+                    )
+                    if timestamp is not None
+                ),
+                default=project.created_at,
+            )
         return out
 
     def latest_node(self, pid: str) -> Node | None:

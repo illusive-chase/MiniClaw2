@@ -17,10 +17,12 @@ from uuid import uuid4
 
 import yaml
 
+from .tags import TAGS_FILENAME
+
 
 MACHINE_FILENAME = "machine.json"
 SCHEMA_FILENAME = "schema.json"
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 SCHEMA_NAME = "node-revision-v9"
 DEFAULT_COMMIT_DEBOUNCE_SECONDS = 30.0
 
@@ -722,6 +724,10 @@ class SyncManager:
         if SCHEMA_FILENAME in conflicts:
             raise SchemaConflictError(
                 "schema.json changed independently on both machines; resolve it manually"
+            )
+        if TAGS_FILENAME in conflicts:
+            raise SyncError(
+                "tags.json changed independently on both machines; resolve it manually"
             )
         retried = _git(
             self.root,

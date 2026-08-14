@@ -74,6 +74,7 @@ export type SidePanelProps = {
     name: string,
     ext: "md" | "json" | "html",
   ) => void;
+  onSessionChange: (session: SessionInfo) => void;
   onPreferredLanguageChange: (preferredLanguage: string | null) => void;
   onConcurrencyChange: (concurrency: number) => void;
   onActivatePlanspace: (binding_id: string, planspace_id: string) => void;
@@ -195,6 +196,7 @@ function Inner(props: SidePanelProps & { nodesById: Map<string, NodeInfo> }) {
     onResolveReview,
     onSelectNode,
     onSelectArtifact,
+    onSessionChange,
     onPreferredLanguageChange,
     onConcurrencyChange,
     onActivatePlanspace,
@@ -244,6 +246,7 @@ function Inner(props: SidePanelProps & { nodesById: Map<string, NodeInfo> }) {
     return (
       <ProjectPanel
         session={session}
+        onSessionChange={onSessionChange}
         modelPresets={modelPresets}
         contextSpace={contextSpace}
         contextSpaceLoading={contextSpaceLoading}

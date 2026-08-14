@@ -64,6 +64,7 @@ from .skills import (
 )
 from .store import StoreReadOnlyError
 from .sync import SyncError
+from .tags import Tag
 from .templates import (
     SCHEMA_VERSION as TEMPLATE_SCHEMA_VERSION,
     SerializerError,
@@ -129,6 +130,26 @@ class RenameSessionRequest(BaseModel):
     name: str
 
 
+class CreateTagRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    color: str | None = None
+
+
+class UpdateTagRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str | None = None
+    color: str | None = None
+
+
+class UpdateSessionTagsRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    tag_ids: list[str]
+
+
 class UpdateSessionPreferencesRequest(BaseModel):
     preferred_language: str | None = None
     concurrency: StrictInt | None = Field(default=None, ge=1)
@@ -151,6 +172,8 @@ class SessionInfo(BaseModel):
     preferred_language: str | None = None
     temporary: bool = False
     template_id: str | None = None
+    tag_ids: list[str] = Field(default_factory=list)
+    last_activity_at: float | None = None
     name: str = ""
     machine_id: str = ""
     local_machine_id: str = ""
@@ -801,6 +824,37 @@ def create_app(registry: ProjectRegistry | None = None) -> FastAPI:
             raise HTTPException(500, str(exc)) from exc
         return _session_info(registry, project)
 
+    @app.get("/tags", response_model=list[Tag])
+    def list_tags() -> list[Tag]:
+        return registry.store.list_tags()
+
+    @app.post("/tags", response_model=Tag)
+    def create_tag(req: CreateTagRequest) -> Tag:
+        try:
+            return registry.store.create_tag(req.name, req.color)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+    @app.patch("/tags/{tag_id}", response_model=Tag)
+    def update_tag(tag_id: str, req: UpdateTagRequest) -> Tag:
+        try:
+            tag = registry.store.update_tag(
+                tag_id,
+                name=req.name if "name" in req.model_fields_set else None,
+                color=req.color if "color" in req.model_fields_set else None,
+            )
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        if tag is None:
+            raise HTTPException(404, "tag not found")
+        return tag
+
+    @app.delete("/tags/{tag_id}", status_code=204)
+    def delete_tag(tag_id: str) -> Response:
+        if not registry.delete_tag(tag_id):
+            raise HTTPException(404, "tag not found")
+        return Response(status_code=204)
+
     @app.get("/sessions", response_model=list[SessionInfo])
     def list_sessions() -> list[SessionInfo]:
         return [_session_info(registry, p) for p in registry.list_projects()]
@@ -937,6 +991,16 @@ def create_app(registry: ProjectRegistry | None = None) -> FastAPI:
     @app.patch("/sessions/{sid}", response_model=SessionInfo)
     def rename_session(sid: str, req: RenameSessionRequest) -> SessionInfo:
         project = registry.rename_project(sid, req.name)
+        if project is None:
+            raise HTTPException(404, "session not found")
+        return _session_info(registry, project)
+
+    @app.patch("/sessions/{sid}/tags", response_model=SessionInfo)
+    def update_session_tags(
+        sid: str,
+        req: UpdateSessionTagsRequest,
+    ) -> SessionInfo:
+        project = registry.update_project_tags(sid, req.tag_ids)
         if project is None:
             raise HTTPException(404, "session not found")
         return _session_info(registry, project)
@@ -1937,6 +2001,8 @@ def _session_info(registry: ProjectRegistry, project: Any) -> SessionInfo:
         preferred_language=project_preferred_language(project),
         temporary=project.temporary,
         template_id=project.template_id,
+        tag_ids=project.tag_ids,
+        last_activity_at=registry.store.project_last_activity_at(project.id),
         name=project.name,
         machine_id=project.machine_id,
         local_machine_id=registry.store.machine.id,

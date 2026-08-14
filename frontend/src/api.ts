@@ -26,6 +26,7 @@ import type {
   SkillSelection,
   SkillSummary,
   SkillDetail,
+  Tag,
 } from "./types";
 import type { TemplateRewritePayload } from "./templateEditor";
 
@@ -205,6 +206,58 @@ export async function deleteModelPreset(presetId: string): Promise<void> {
   if (!res.ok) {
     throw new ApiError("deleteModelPreset", res.status, await readErrorDetail(res));
   }
+}
+
+export async function listTags(): Promise<Tag[]> {
+  const res = await fetch("/tags");
+  if (!res.ok) throw new ApiError("listTags", res.status, await readErrorDetail(res));
+  return res.json();
+}
+
+export async function createTag(name: string, color?: string): Promise<Tag> {
+  const res = await fetch("/tags", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(color === undefined ? { name } : { name, color }),
+  });
+  if (!res.ok) throw new ApiError("createTag", res.status, await readErrorDetail(res));
+  return res.json();
+}
+
+/* Omitted fields are left alone server-side, so a rename never resets the
+ * color and a recolor never touches the name. */
+export async function updateTag(
+  tagId: string,
+  patch: { name?: string; color?: string },
+): Promise<Tag> {
+  const res = await fetch(`/tags/${tagId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+  if (!res.ok) throw new ApiError("updateTag", res.status, await readErrorDetail(res));
+  return res.json();
+}
+
+/** Also strips the id from every project that referenced it. */
+export async function deleteTag(tagId: string): Promise<void> {
+  const res = await fetch(`/tags/${tagId}`, { method: "DELETE" });
+  if (!res.ok) throw new ApiError("deleteTag", res.status, await readErrorDetail(res));
+}
+
+export async function updateSessionTags(
+  id: string,
+  tagIds: string[],
+): Promise<SessionInfo> {
+  const res = await fetch(`/sessions/${id}/tags`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ tag_ids: tagIds }),
+  });
+  if (!res.ok) {
+    throw new ApiError("updateSessionTags", res.status, await readErrorDetail(res));
+  }
+  return res.json();
 }
 
 export async function listSessions(): Promise<SessionInfo[]> {

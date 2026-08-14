@@ -601,6 +601,35 @@ class ProjectRegistry:
         self.store.update_project(rt.project)
         return rt.project
 
+    def update_project_tags(self, pid: str, tag_ids: list[str]) -> Project | None:
+        rt = self._runtimes.get(pid)
+        if rt is None:
+            return None
+        self.require_native(pid)
+        known = {tag.id for tag in self.store.list_tags()}
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for tag_id in tag_ids:
+            if tag_id in known and tag_id not in seen:
+                normalized.append(tag_id)
+                seen.add(tag_id)
+        rt.project.tag_ids = normalized
+        self.store.update_project(rt.project)
+        return rt.project
+
+    def delete_tag(self, tag_id: str) -> bool:
+        if not self.store.delete_tag(tag_id):
+            return False
+        changed = self.store.remove_tag_from_projects(tag_id)
+        for pid in changed:
+            rt = self._runtimes.get(pid)
+            if rt is None:
+                continue
+            rt.project.tag_ids = [
+                existing for existing in rt.project.tag_ids if existing != tag_id
+            ]
+        return True
+
     def update_project_preferences(
         self,
         pid: str,

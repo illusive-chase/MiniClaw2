@@ -1,11 +1,39 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { deleteSession, listSessions, renameSession } from "../api";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  createTag,
+  deleteSession,
+  listSessions,
+  listTags,
+  renameSession,
+  updateSessionTags,
+  updateTag,
+} from "../api";
 import { languageLabel } from "../languages";
-import type { ModelPreset, SessionInfo } from "../types";
+import type { ModelPreset, SessionInfo, Tag } from "../types";
 import { modelPresetLabel } from "../modelPresets";
 import { TestsPanel } from "./TestsPanel";
 import { ThemeToggle } from "./ThemeToggle";
 import { GlobalSettingsModal } from "./GlobalSettingsModal";
+import { TagChipRow, TagFilterBar } from "./TagFilterBar";
+import { TagEditPopover } from "./TagEditPopover";
+import { tagDotClass, type TagColor } from "../tagPalette";
+import {
+  PROJECT_SORT_LABELS,
+  PROJECT_SORT_MODES,
+  readProjectSort,
+  writeProjectSort,
+  type ProjectSortMode,
+} from "../projectSort";
+import {
+  activityAt,
+  filterByTags,
+  groupByTag,
+  recentProjects,
+  resolveTags,
+  sortFlat,
+  tagCounts,
+  UNTAGGED_GROUP_ID,
+} from "../projectGrouping";
 import type { GlobalState } from "../types";
 
 type Props = {
@@ -27,15 +55,28 @@ export function ProjectsLanding({
   onTemplateLaunched,
 }: Props) {
   const [sessions, setSessions] = useState<SessionInfo[] | null>(null);
+  const [tags, setTags] = useState<Tag[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [testsOpen, setTestsOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [sortMode, setSortMode] = useState<ProjectSortMode>(readProjectSort);
+  const [selectedTagIds, setSelectedTagIds] = useState<ReadonlySet<string>>(new Set());
+  const [collapsedGroups, setCollapsedGroups] = useState<ReadonlySet<string>>(new Set());
 
   const refresh = useCallback(async () => {
     try {
       const next = await listSessions();
-      next.sort((a, b) => b.created_at - a.created_at);
       setSessions(next);
+    } catch (err) {
+      setError(String(err));
+    }
+  }, []);
+
+  /* Tags refresh on their own cadence: the 10s session poll would otherwise
+   * re-fetch a list that only changes when the user edits it. */
+  const refreshTags = useCallback(async () => {
+    try {
+      setTags(await listTags());
     } catch (err) {
       setError(String(err));
     }
@@ -43,14 +84,30 @@ export function ProjectsLanding({
 
   useEffect(() => {
     void refresh();
+    void refreshTags();
     const interval = window.setInterval(() => void refresh(), 10_000);
-    const onFocus = () => void refresh();
+    const onFocus = () => {
+      void refresh();
+      void refreshTags();
+    };
     window.addEventListener("focus", onFocus);
     return () => {
       window.clearInterval(interval);
       window.removeEventListener("focus", onFocus);
     };
-  }, [refresh]);
+  }, [refresh, refreshTags]);
+
+  /* A tag deleted on another machine (or in another tab) leaves ids behind in
+   * the filter; dropping them keeps the AND filter from matching nothing at all
+   * with no visible cause. */
+  useEffect(() => {
+    setSelectedTagIds((current) => {
+      if (current.size === 0) return current;
+      const known = new Set(tags.map((tag) => tag.id));
+      const next = new Set([...current].filter((id) => known.has(id)));
+      return next.size === current.size ? current : next;
+    });
+  }, [tags]);
 
   const onRename = useCallback(async (id: string, name: string) => {
     const trimmed = name.trim();
@@ -73,12 +130,93 @@ export function ProjectsLanding({
     [refresh],
   );
 
+  const onApplyTags = useCallback(async (id: string, tagIds: string[]) => {
+    const updated = await updateSessionTags(id, tagIds);
+    setSessions((prev) =>
+      prev ? prev.map((s) => (s.id === id ? { ...s, tag_ids: updated.tag_ids } : s)) : prev,
+    );
+  }, []);
+
+  const onCreateTag = useCallback(async (name: string, color: TagColor) => {
+    const created = await createTag(name, color);
+    setTags((prev) => [...prev, created]);
+    return created;
+  }, []);
+
+  const onRecolorTag = useCallback(async (tagId: string, color: TagColor) => {
+    const updated = await updateTag(tagId, { color });
+    setTags((prev) => prev.map((tag) => (tag.id === tagId ? updated : tag)));
+  }, []);
+
   const onSettingsChanged = useCallback(
     (next: GlobalState) => {
       onGlobalStateChanged(next);
       void refresh();
     },
     [onGlobalStateChanged, refresh],
+  );
+
+  const changeSort = useCallback((mode: ProjectSortMode) => {
+    setSortMode(mode);
+    writeProjectSort(mode);
+  }, []);
+
+  const toggleTagFilter = useCallback((tagId: string) => {
+    setSelectedTagIds((current) => {
+      const next = new Set(current);
+      if (next.has(tagId)) next.delete(tagId);
+      else next.add(tagId);
+      return next;
+    });
+  }, []);
+
+  const tagsById = useMemo(() => new Map(tags.map((tag) => [tag.id, tag])), [tags]);
+  const all = sessions ?? [];
+  const recent = useMemo(() => recentProjects(all), [all]);
+  const filtered = useMemo(() => filterByTags(all, selectedTagIds), [all, selectedTagIds]);
+  const counts = useMemo(() => tagCounts(all), [all]);
+  const groups = useMemo(
+    () => (sortMode === "grouped" ? groupByTag(filtered, tags) : []),
+    [sortMode, filtered, tags],
+  );
+  const flat = useMemo(
+    () => (sortMode === "grouped" ? [] : sortFlat(filtered, sortMode)),
+    [sortMode, filtered],
+  );
+
+  const renderCard = (session: SessionInfo, keyPrefix = "") => (
+    <ProjectCard
+      key={keyPrefix + session.id}
+      session={session}
+      tags={resolveTags(session, tagsById)}
+      allTags={tags}
+      modelPresets={modelPresets}
+      onOpen={() => onOpen(session)}
+      onRename={(name) => onRename(session.id, name)}
+      onDelete={() => onDelete(session.id)}
+      onApplyTags={(tagIds) => onApplyTags(session.id, tagIds)}
+      onCreateTag={onCreateTag}
+      onRecolorTag={onRecolorTag}
+    />
+  );
+
+  const sortControl = (
+    <label className="flex items-center gap-1.5">
+      <span className="text-[10px] font-medium uppercase tracking-[0.14em] text-ink-subtle">
+        排序
+      </span>
+      <select
+        value={sortMode}
+        onChange={(event) => changeSort(event.target.value as ProjectSortMode)}
+        className="rounded border border-line bg-surface-raised px-1.5 py-[3px] text-[11px] text-ink focus:border-brand focus:outline-none"
+      >
+        {PROJECT_SORT_MODES.map((mode) => (
+          <option key={mode} value={mode}>
+            {PROJECT_SORT_LABELS[mode]}
+          </option>
+        ))}
+      </select>
+    </label>
   );
 
   return (
@@ -156,26 +294,118 @@ export function ProjectsLanding({
 
         {sessions && sessions.length > 0 && (
           <>
-            <div className="mb-3 flex items-center justify-between">
-              <div className="text-[10px] font-medium uppercase tracking-[0.14em] text-ink-subtle">
-                {sessions.length} project{sessions.length === 1 ? "" : "s"}
+            {recent.length > 0 && (
+              <section className="mb-7">
+                <div className="mb-2 flex items-baseline gap-2">
+                  <h2 className="text-[10px] font-medium uppercase tracking-[0.14em] text-ink-subtle">
+                    最近活动
+                  </h2>
+                  {/* Only worth saying once a filter is actually active — before
+                    * that it explains a behavior the user has not seen. */}
+                  {selectedTagIds.size > 0 && (
+                    <span className="text-[10px] text-ink-subtle/70">不受筛选影响</span>
+                  )}
+                </div>
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                  {recent.map((session) => renderCard(session, "recent-"))}
+                </div>
+                <div className="mt-7 border-t border-line" />
+              </section>
+            )}
+
+            <TagFilterBar
+              tags={tags}
+              selected={selectedTagIds}
+              counts={counts}
+              onToggle={toggleTagFilter}
+              onClear={() => setSelectedTagIds(new Set())}
+              sortControl={sortControl}
+              totalLabel={
+                <>
+                  全部项目 {selectedTagIds.size > 0
+                    ? `${filtered.length} / ${all.length}`
+                    : all.length}
+                </>
+              }
+            />
+
+            {filtered.length === 0 ? (
+              <div className="rounded-lg border border-dashed border-line bg-surface-raised px-5 py-7 text-center">
+                <p className="text-[13px] text-ink">
+                  没有项目同时具备这些 tag。
+                </p>
+                <p className="mt-1 text-[11.5px] text-ink-muted">
+                  筛选是「同时具备」，选中的 tag 越多，命中越少。
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setSelectedTagIds(new Set())}
+                  className="mt-3 inline-flex h-8 items-center rounded-md border border-line bg-surface px-3 text-[12px] font-medium text-ink transition hover:border-brand hover:text-ink-strong"
+                >
+                  清除筛选
+                </button>
               </div>
-              <div className="font-mono text-[10px] text-ink-subtle">
-                sorted by recent
+            ) : sortMode === "grouped" ? (
+              <div className="space-y-5">
+                {groups.map((group) => {
+                  const collapsed = collapsedGroups.has(group.id);
+                  return (
+                    <section key={group.id}>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setCollapsedGroups((current) => {
+                            const next = new Set(current);
+                            if (next.has(group.id)) next.delete(group.id);
+                            else next.add(group.id);
+                            return next;
+                          })
+                        }
+                        aria-expanded={!collapsed}
+                        className="group mb-2 flex w-full items-center gap-2 text-left"
+                      >
+                        <span
+                          className={
+                            "text-[9px] text-ink-subtle transition-transform "
+                            + (collapsed ? "" : "rotate-90")
+                          }
+                          aria-hidden="true"
+                        >
+                          ▶
+                        </span>
+                        <span
+                          className={"h-2 w-2 flex-none rounded-full " + tagDotClass(group.color)}
+                          aria-hidden="true"
+                        />
+                        <span
+                          className={
+                            "text-[12.5px] font-medium "
+                            + (group.id === UNTAGGED_GROUP_ID
+                              ? "text-ink-muted"
+                              : "text-ink-strong")
+                          }
+                        >
+                          {group.label}
+                        </span>
+                        <span className="font-mono text-[10px] text-ink-subtle">
+                          {group.sessions.length}
+                        </span>
+                        <span className="ml-2 h-px flex-1 bg-line" aria-hidden="true" />
+                      </button>
+                      {!collapsed && (
+                        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                          {group.sessions.map((session) => renderCard(session, group.id + "-"))}
+                        </div>
+                      )}
+                    </section>
+                  );
+                })}
               </div>
-            </div>
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-              {sessions.map((s) => (
-                <ProjectCard
-                  key={s.id}
-                  session={s}
-                  modelPresets={modelPresets}
-                  onOpen={() => onOpen(s)}
-                  onRename={(name) => onRename(s.id, name)}
-                  onDelete={() => onDelete(s.id)}
-                />
-              ))}
-            </div>
+            ) : (
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                {flat.map((session) => renderCard(session))}
+              </div>
+            )}
           </>
         )}
       </div>
@@ -231,21 +461,32 @@ export function ProjectsLanding({
 
 function ProjectCard({
   session,
+  tags,
+  allTags,
   modelPresets,
   onOpen,
   onRename,
   onDelete,
+  onApplyTags,
+  onCreateTag,
+  onRecolorTag,
 }: {
   session: SessionInfo;
+  tags: Tag[];
+  allTags: Tag[];
   modelPresets: ModelPreset[];
   onOpen: () => void;
   onRename: (name: string) => Promise<void>;
   onDelete: () => Promise<void>;
+  onApplyTags: (tagIds: string[]) => Promise<void>;
+  onCreateTag: (name: string, color: TagColor) => Promise<Tag>;
+  onRecolorTag: (tagId: string, color: TagColor) => Promise<void>;
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(session.name ?? "");
   const [saving, setSaving] = useState(false);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [tagAnchor, setTagAnchor] = useState<HTMLElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
@@ -285,9 +526,14 @@ function ProjectCard({
   };
 
   const handleCardClick = () => {
-    if (editing || confirmingDelete) return;
+    if (editing || confirmingDelete || tagAnchor) return;
     onOpen();
   };
+
+  /* Read-only projects are native to another machine, so the backend rejects a
+   * tag write (`require_native`). The button stays visible but disabled and says
+   * why, rather than accepting a click that silently does nothing. */
+  const tagsLocked = !!session.read_only;
 
   return (
     <div
@@ -346,12 +592,33 @@ function ProjectCard({
         </div>
         <div
           className={
-            "flex flex-none items-center gap-1 transition " +
-            (confirmingDelete
+            "flex flex-none items-center gap-1 transition "
+            + (confirmingDelete || tagAnchor
               ? "opacity-100"
-              : "opacity-0 group-hover:opacity-100")
+              : "opacity-0 group-hover:opacity-100 focus-within:opacity-100")
           }
         >
+          {!editing && (
+            <button
+              type="button"
+              disabled={tagsLocked}
+              onClick={(e) => {
+                e.stopPropagation();
+                const trigger = e.currentTarget;
+                setTagAnchor((current) => (current ? null : trigger));
+              }}
+              title={
+                tagsLocked
+                  ? `只读项目不能改 tag —— 它属于 ${session.native_machine_label}，请在那台机器上编辑`
+                  : "编辑 tag"
+              }
+              aria-label="编辑 tag"
+              aria-expanded={!!tagAnchor}
+              className="rounded p-1 text-ink-muted transition hover:bg-surface-sunken hover:text-ink disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-ink-muted"
+            >
+              <TagIcon />
+            </button>
+          )}
           {!editing && !session.read_only && (
             <button
               type="button"
@@ -397,6 +664,8 @@ function ProjectCard({
         </div>
       )}
 
+      <TagChipRow tags={tags} />
+
       <div className="flex flex-wrap items-center gap-1.5 text-[10px]">
         {session.read_only && (
           <span className="rounded border border-state-waiting/40 bg-state-waiting-soft px-1.5 py-0.5 text-state-waiting">
@@ -424,12 +693,30 @@ function ProjectCard({
       </div>
 
       <div className="mt-auto flex items-center justify-between text-[11px] text-ink-subtle">
-        <span>
+        <span
+          title={
+            session.last_activity_at
+              ? `最近活动 ${new Date(session.last_activity_at * 1000).toLocaleString()}`
+              : `创建于 ${new Date(session.created_at * 1000).toLocaleString()}`
+          }
+        >
           {session.turns} node{session.turns === 1 ? "" : "s"} ·{" "}
-          {formatRelative(session.created_at)}
+          {formatRelative(activityAt(session))}
         </span>
         <span className="font-mono text-ink-subtle">{session.id.slice(0, 8)}</span>
       </div>
+
+      {tagAnchor && (
+        <TagEditPopover
+          anchor={tagAnchor}
+          tags={allTags}
+          selectedIds={session.tag_ids ?? []}
+          onClose={() => setTagAnchor(null)}
+          onApply={onApplyTags}
+          onCreateTag={onCreateTag}
+          onRecolorTag={onRecolorTag}
+        />
+      )}
     </div>
   );
 }
@@ -442,6 +729,21 @@ function formatRelative(ts: number): string {
   if (delta < 86400) return `${Math.floor(delta / 3600)}h ago`;
   if (delta < 86400 * 7) return `${Math.floor(delta / 86400)}d ago`;
   return new Date(ts * 1000).toLocaleDateString();
+}
+
+function TagIcon() {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      viewBox="0 0 16 16"
+      width="14"
+      height="14"
+      fill="currentColor"
+      aria-hidden="true"
+    >
+      <path d="M1 7.775V2.75C1 1.784 1.784 1 2.75 1h5.025c.464 0 .91.184 1.238.513l6.25 6.25a1.75 1.75 0 0 1 0 2.474l-5.026 5.026a1.75 1.75 0 0 1-2.474 0l-6.25-6.25A1.75 1.75 0 0 1 1 7.775Zm1.5 0c0 .066.026.13.073.177l6.25 6.25a.25.25 0 0 0 .354 0l5.025-5.025a.25.25 0 0 0 0-.354l-6.25-6.25a.25.25 0 0 0-.177-.073H2.75a.25.25 0 0 0-.25.25ZM6 5a1 1 0 1 1 0 2 1 1 0 0 1 0-2Z" />
+    </svg>
+  );
 }
 
 function PencilIcon() {
