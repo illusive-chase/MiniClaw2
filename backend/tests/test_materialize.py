@@ -92,6 +92,76 @@ class MaterializeTests(unittest.TestCase):
         self.assertEqual(v_preview["state"], "virtual")
         self.assertEqual(v_preview["prompt_draft"], "do thing")
 
+    def test_materializes_durable_artifacts_from_remote_owner(self) -> None:
+        remote = Node(
+            id="remote1",
+            project_id="p1",
+            kind=NodeKind.AGENT,
+            model_preset_id="gpt-5.5",
+            category=Category.REGULAR,
+            state=NodeState.DONE,
+            planspace_id="lane-A",
+            started_at=1.0,
+            finished_at=2.0,
+        )
+        remote_dir = (
+            self.store_root
+            / "projects"
+            / self.project.id
+            / "hosts"
+            / "remote-host"
+            / "nodes"
+            / remote.id
+        )
+        remote_dir.mkdir(parents=True)
+        (remote_dir / "node.json").write_text(
+            json.dumps(remote.model_dump(exclude={"provider", "owner_host_id"})),
+            encoding="utf-8",
+        )
+        (remote_dir / "artifacts").mkdir()
+        (remote_dir / "artifacts" / "report.md").write_text(
+            "synced report",
+            encoding="utf-8",
+        )
+
+        root = materialize_active_lane(self.project, "lane-A", self.store)
+
+        artifact = root / "nodes" / remote.id / "artifacts" / "report.md"
+        self.assertEqual(artifact.read_text(encoding="utf-8"), "synced report")
+
+    def test_durable_artifact_overlays_workspace_copy_without_dropping_scratch(self) -> None:
+        node = Node(
+            id="ex1",
+            project_id="p1",
+            kind=NodeKind.AGENT,
+            model_preset_id="gpt-5.5",
+            category=Category.REGULAR,
+            state=NodeState.DONE,
+            planspace_id="lane-A",
+            started_at=1.0,
+            finished_at=2.0,
+        )
+        self.store.create_node(node)
+        workspace = self.project_root / ".miniclaw2" / "outputs" / node.id
+        workspace.mkdir(parents=True)
+        (workspace / "report.md").write_text("stale workspace", encoding="utf-8")
+        (workspace / "scratch.txt").write_text("local scratch", encoding="utf-8")
+        durable = self.store.node_dir(self.project.id, node.id) / "artifacts"
+        durable.mkdir()
+        (durable / "report.md").write_text("published report", encoding="utf-8")
+
+        root = materialize_active_lane(self.project, "lane-A", self.store)
+
+        artifacts = root / "nodes" / node.id / "artifacts"
+        self.assertEqual(
+            (artifacts / "report.md").read_text(encoding="utf-8"),
+            "published report",
+        )
+        self.assertEqual(
+            (artifacts / "scratch.txt").read_text(encoding="utf-8"),
+            "local scratch",
+        )
+
     def test_durable_preview_overrides_stub(self) -> None:
         node = Node(
             id="ex1",

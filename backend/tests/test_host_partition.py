@@ -14,7 +14,8 @@ from fastapi.testclient import TestClient
 import miniclaw2.sync as sync_module
 from miniclaw2.app import create_app
 from miniclaw2.contextspace import ensure_project_binding
-from miniclaw2.domain import Node, NodeState, Project, UNBOUND_ROOT_PATH
+from miniclaw2.domain import ArtifactRef, Node, NodeState, Project, UNBOUND_ROOT_PATH
+from miniclaw2.materialize import materialize_active_lane
 from miniclaw2.registry import (
     NonNativeNodeError,
     NonNativeProjectError,
@@ -611,7 +612,24 @@ class HostPartitionSyncTests(unittest.TestCase):
                 Node(
                     project_id=project_a.id,
                     model_preset_id=project_b.model_preset_id,
+                    state=NodeState.DONE,
+                    planspace_id="lane-sync",
+                    artifacts=[
+                        ArtifactRef(
+                            name="report.md",
+                            bytes=13,
+                            mtime=1.0,
+                            sha256="a" * 64,
+                            status="published",
+                        )
+                    ],
                 )
+            )
+            artifact_b = store_b.node_dir(project_a.id, node_b.id) / "artifacts"
+            artifact_b.mkdir()
+            (artifact_b / "report.md").write_text(
+                "remote report",
+                encoding="utf-8",
             )
             registry_a.update_layout_hints(
                 project_a.id, {node_a.id: {"x": 10, "y": 20}}
@@ -639,8 +657,26 @@ class HostPartitionSyncTests(unittest.TestCase):
             self.assertEqual(set(nodes_b), {node_a.id, node_b.id})
             self.assertEqual(nodes_a[node_a.id].owner_host_id, store_a.machine.id)
             self.assertEqual(nodes_a[node_b.id].owner_host_id, store_b.machine.id)
+            synced_project_a = registry_a.get_project(project_a.id)
+            assert synced_project_a is not None
+            projection = materialize_active_lane(
+                synced_project_a,
+                "lane-sync",
+                store_a,
+                target_root=base / "projection-a",
+            )
             self.assertEqual(
-                registry_a.get_project(project_a.id).layout_hints[node_a.id],
+                (
+                    projection
+                    / "nodes"
+                    / node_b.id
+                    / "artifacts"
+                    / "report.md"
+                ).read_text(encoding="utf-8"),
+                "remote report",
+            )
+            self.assertEqual(
+                synced_project_a.layout_hints[node_a.id],
                 {"x": 10.0, "y": 20.0},
             )
             self.assertEqual(

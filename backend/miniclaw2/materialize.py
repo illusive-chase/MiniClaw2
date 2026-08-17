@@ -95,8 +95,12 @@ def _write_transcript(path: Path, transcript: list[dict]) -> None:
     path.write_text(json.dumps(transcript, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def _project_artifacts_dir(project: Project, node_id: str) -> Path:
+def _workspace_artifacts_dir(project: Project, node_id: str) -> Path:
     return Path(project.root_path) / ARTIFACTS_DIRNAME / node_id
+
+
+def _durable_artifacts_dir(store: Store, project_id: str, node_id: str) -> Path:
+    return store.node_dir(project_id, node_id) / "artifacts"
 
 
 def materialize_active_lane(
@@ -113,8 +117,8 @@ def materialize_active_lane(
     For each node:
         - ``preview.json`` — always (executed or virtual)
         - ``transcript.json`` — executed nodes only (from events.jsonl)
-        - ``artifacts/`` — executed nodes only, copied from project
-          ``.miniclaw2/outputs/<nid>/`` if present
+        - ``artifacts/`` — executed nodes only; local workspace files are
+          preserved and synced published files are overlaid from the store
         - ``human-review.md`` — durable copy if exists in node store
 
     Lane scoping is by ``node.planspace_id == lane_id``. Nodes without
@@ -169,11 +173,20 @@ def materialize_active_lane(
         }:
             transcript = _build_transcript(store, project.id, node.id)
             _write_transcript(ndir / "transcript.json", transcript)
-            artifacts_src = _project_artifacts_dir(project, node.id)
-            try:
-                shutil.copytree(artifacts_src, ndir / "artifacts", dirs_exist_ok=True)
-            except FileNotFoundError:
-                pass
+            artifacts_dest = ndir / "artifacts"
+            artifact_sources = (
+                _workspace_artifacts_dir(project, node.id),
+                _durable_artifacts_dir(store, project.id, node.id),
+            )
+            for artifacts_src in artifact_sources:
+                try:
+                    shutil.copytree(
+                        artifacts_src,
+                        artifacts_dest,
+                        dirs_exist_ok=True,
+                    )
+                except FileNotFoundError:
+                    pass
         durable_review = store.node_dir(project.id, node.id) / "human-review.md"
         try:
             shutil.copy(durable_review, ndir / "human-review.md")

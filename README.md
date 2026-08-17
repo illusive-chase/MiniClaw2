@@ -323,7 +323,7 @@ The active lane is materialized in the project workspace before a run:
   preview.json
   transcript.json       # terminal nodes
   human-review.md       # human-interact reviews
-  artifacts/            # copied from .miniclaw2/outputs/<nid>/ when present
+  artifacts/            # local outputs plus published artifacts from the store
 ```
 
 Files under `.miniclaw2/outputs/<nid>/` are opaque optional artifacts;

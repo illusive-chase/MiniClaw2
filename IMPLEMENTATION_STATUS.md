@@ -840,9 +840,11 @@ surface; the durable node store is the source of truth.
   under the node's own outputs directory (the `<<outputs_path>>`
   substitution resolves the absolute path) and declare the filename in
   the preview's `artifacts` field. Undeclared files are never rendered
-  or synced but keep flowing to downstream agents through the untouched
-  lane projection (`materialize.py`); publication is a parallel,
-  narrower path to the human. Verifier and op previews are
+  or synced but keep flowing to downstream agents on the originating
+  workspace. Lane materialization overlays the synced durable published
+  copies, so dependencies produced on another device expose their artifacts
+  even though that device's `.miniclaw2/outputs/` tree is absent. Publication
+  is a parallel, narrower path to the human. Verifier and op previews are
   framework-written and never publish.
 - Published artifacts are served from the store copy at
   `GET /sessions/{sid}/nodes/{nid}/artifacts/{name}` (`?raw=1` for
