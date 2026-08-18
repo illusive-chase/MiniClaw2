@@ -1656,6 +1656,29 @@ class NodeRunner:
         self._gate_records.pop(gate.id, None)
         return response
 
+    def current_gate_summary(self) -> dict[str, Any] | None:
+        """Describe the gate this node is currently blocked on, if any.
+
+        Read-only view for the cross-project active-node endpoint, which needs
+        to say *what* a waiting node wants. Only gates with a live future are
+        reported: a record whose future is gone is no longer answerable, so
+        surfacing it would offer the user a gate they cannot resolve.
+        """
+        pending = [
+            record
+            for gate_id, record in self._gate_records.items()
+            if record.state is GateState.PENDING and gate_id in self._gates
+        ]
+        if not pending:
+            return None
+        gate = max(pending, key=lambda record: record.created_at)
+        return {
+            "id": gate.id,
+            "subtype": gate.subtype.value,
+            "tool_name": gate.tool_name,
+            "summary": _gate_summary_text(gate),
+        }
+
     def _resolve_open_gates(self) -> None:
         for gate_id, fut in list(self._gates.items()):
             if not fut.done():
@@ -1668,6 +1691,36 @@ class NodeRunner:
                     self.store.append_gate(self.project.id, record, "resolved")
         self._gates.clear()
         self._gate_records.clear()
+
+
+GATE_SUMMARY_MAX_CHARS = 80
+
+
+def _gate_summary_text(gate: HumanGate) -> str:
+    """One short line describing what a blocked node is asking for."""
+    tool_input = gate.tool_input if isinstance(gate.tool_input, dict) else {}
+    if gate.subtype is GateSubtype.ASK_USER:
+        questions = tool_input.get("questions")
+        if isinstance(questions, list):
+            for item in questions:
+                if not isinstance(item, dict):
+                    continue
+                text = item.get("question") or item.get("header")
+                if isinstance(text, str) and text.strip():
+                    return _clip(text)
+        return "等待回答"
+    for key in ("command", "file_path", "path", "url", "pattern"):
+        value = tool_input.get(key)
+        if isinstance(value, str) and value.strip():
+            return _clip(value)
+    return gate.tool_name or "等待确认"
+
+
+def _clip(value: str) -> str:
+    text = " ".join(value.split())
+    if len(text) <= GATE_SUMMARY_MAX_CHARS:
+        return text
+    return text[: GATE_SUMMARY_MAX_CHARS - 1] + "…"
 
 
 def _make_provider(provider: str) -> AgentProvider:

@@ -1,4 +1,5 @@
 import type {
+  ActiveNodesResponse,
   ContextBundle,
   EventRecord,
   NodeDiff,
@@ -263,6 +264,14 @@ export async function updateSessionTags(
 export async function listSessions(): Promise<SessionInfo[]> {
   const res = await fetch("/sessions");
   if (!res.ok) throw new Error(`listSessions failed: ${res.status}`);
+  return res.json();
+}
+
+export async function listActiveNodes(): Promise<ActiveNodesResponse> {
+  const res = await fetch("/active-nodes");
+  if (!res.ok) {
+    throw new ApiError("listActiveNodes", res.status, await readErrorDetail(res));
+  }
   return res.json();
 }
 

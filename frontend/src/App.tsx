@@ -45,6 +45,7 @@ import {
 } from "./api";
 import {
   Canvas,
+  type CanvasCenterRequest,
   type CanvasNodePositionTarget,
   type CanvasSelection,
 } from "./canvas/Canvas";
@@ -78,11 +79,13 @@ import {
   templateNeedsInstantiateDialog,
 } from "./templateInstantiate";
 import { ProjectsLanding } from "./components/ProjectsLanding";
+import { ActiveNodesBar } from "./components/ActiveNodesBar";
 import { ThemeToggle } from "./components/ThemeToggle";
 import { UsageStrip } from "./components/UsageStrip";
 import { GitWorkspaceStatus } from "./components/GitWorkspaceStatus";
 import { TextZoomProvider } from "./components/TextZoom";
 import type {
+  ActiveNodeEntry,
   ContextBundle,
   EventRecord,
   InteractionRequest,
@@ -274,6 +277,23 @@ export function App() {
 
   const [focusRequestVersion, setFocusRequestVersion] = useState(0);
   const [newDirectionRequestVersion, setNewDirectionRequestVersion] = useState(0);
+
+  /* Cross-project jump (ActiveNodesBar). Selecting a node in another project
+   * cannot happen in one step: openProject() calls resetAllSessionState(),
+   * which clears selection, and the node list for the target project has not
+   * arrived yet. So the target is parked here and applied once that project's
+   * initial load completes. */
+  const [pendingJump, setPendingJump] = useState<
+    { sessionId: string; nodeId: string } | null
+  >(null);
+  const [centerOnNodeRequest, setCenterOnNodeRequest] =
+    useState<CanvasCenterRequest | null>(null);
+  /* Set when a jump lands on a node whose lane is hidden. The side panel opens
+   * normally (it reads `nodes`, not the graph), but the canvas has nothing to
+   * center on, so the user needs to be told why and offered the unhide. */
+  const [hiddenLaneNotice, setHiddenLaneNotice] = useState<
+    { planspaceId: string; nodeId: string } | null
+  >(null);
 
   const [newProjectModalOpen, setNewProjectModalOpen] = useState(false);
 
@@ -499,6 +519,8 @@ export function App() {
     setFocusRequestVersion(0);
     setActivityFocusRequestVersion(0);
     setNewDirectionRequestVersion(0);
+    setCenterOnNodeRequest(null);
+    setHiddenLaneNotice(null);
     setInitialLoadComplete(false);
     inflightBundleFetchRef.current.clear();
   }, []);
@@ -543,11 +565,107 @@ export function App() {
     [resetAllSessionState, waitForLayoutSaves],
   );
 
+  /* Assigned next to the hiddenPlanspaceIds memo far below. Declared here
+   * because revealJumpTarget reads it and must not be re-created whenever
+   * lane visibility changes. */
+  const hiddenPlanspaceIdsRef = useRef<string[]>([]);
+
+  const centerOnNode = useCallback((nodeId: string) => {
+    setCenterOnNodeRequest((current) => ({
+      nodeId,
+      version: (current?.version ?? 0) + 1,
+    }));
+  }, []);
+
+  /* Reveal a node the user jumped to. A hidden lane draws none of its nodes,
+   * so centering would silently do nothing; surface the reason and let the
+   * user unhide instead. Hiding is an explicit choice, so it is never undone
+   * automatically — same reasoning as never stealing the active lane. */
+  const revealJumpTarget = useCallback(
+    (nodeId: string) => {
+      selectAndOpenNode(nodeId);
+      const node = nodesRef.current.find((item) => item.id === nodeId);
+      const planspaceId = node?.planspace_id ?? null;
+      if (planspaceId && hiddenPlanspaceIdsRef.current.includes(planspaceId)) {
+        setHiddenLaneNotice({ planspaceId, nodeId });
+        return;
+      }
+      setHiddenLaneNotice(null);
+      centerOnNode(nodeId);
+    },
+    [centerOnNode, selectAndOpenNode],
+  );
+
+  /* Jump to a node from the cross-project bar.
+   *
+   * Same project: select directly. Calling openProject() here would reset all
+   * session state and remount the canvas for no reason.
+   *
+   * Other project: switch first, then let the pendingJump effect finish the
+   * selection once nodes have loaded — selecting now would target a node id
+   * that is not in `nodes` yet.
+   */
+  const jumpToActiveNode = useCallback(
+    (entry: ActiveNodeEntry) => {
+      if (entry.project_id === currentSessionIdRef.current) {
+        revealJumpTarget(entry.node_id);
+        return;
+      }
+      /* Claim the open sequence at click time rather than after the lookup
+       * below. Otherwise two quick jumps — or a jump plus a manual open —
+       * race, and whichever getSession happens to be slowest finishes last
+       * and overrides the project the user actually asked for. */
+      const requestId = ++openProjectRequestRef.current;
+      setPendingJump({ sessionId: entry.project_id, nodeId: entry.node_id });
+      void (async () => {
+        try {
+          const target = await getSession(entry.project_id);
+          if (requestId !== openProjectRequestRef.current) return;
+          await openProject(target);
+        } catch (err) {
+          console.warn("jump to project failed:", err);
+          /* A newer navigation owns pendingJump now; clearing it would
+           * cancel that one instead of this one. */
+          if (requestId === openProjectRequestRef.current) setPendingJump(null);
+        }
+      })();
+    },
+    [openProject, revealJumpTarget],
+  );
+
+  useEffect(() => {
+    if (!pendingJump) return;
+    if (!initialLoadComplete) return;
+    if (session?.id !== pendingJump.sessionId) {
+      /* A different project finished loading than the one we were jumping to
+       * — the user opened something else mid-flight. Abandon the jump rather
+       * than letting it fire whenever that project is next opened. */
+      if (session?.id) setPendingJump(null);
+      return;
+    }
+    /* The node may have been deleted between the poll and the jump. Leaving
+     * the panel closed is better than selecting an id that is not there. */
+    if (nodes.some((node) => node.id === pendingJump.nodeId)) {
+      revealJumpTarget(pendingJump.nodeId);
+    }
+    setPendingJump(null);
+  }, [
+    pendingJump,
+    initialLoadComplete,
+    session?.id,
+    nodes,
+    revealJumpTarget,
+  ]);
+
   const backToLanding = useCallback(() => {
     openProjectRequestRef.current += 1;
     currentRouteRef.current = "landing";
     currentSessionIdRef.current = null;
     resetAllSessionState();
+    /* Abandon any jump in flight. Left set, it would fire the next time the
+     * user opened that project on their own and select a node they never
+     * asked for. */
+    setPendingJump(null);
     setSession(null);
     setRoute("landing");
   }, [resetAllSessionState]);
@@ -1963,6 +2081,7 @@ export function App() {
     }
     return Array.from(hidden);
   }, [sessionContextSpace]);
+  hiddenPlanspaceIdsRef.current = hiddenPlanspaceIds;
 
   const interruptNode = useCallback(
     (nodeId: string) => {
@@ -2378,6 +2497,11 @@ export function App() {
   return (
     <TextZoomProvider preferredLanguage={session?.preferred_language ?? null}>
     <div className="flex h-screen flex-col bg-surface text-ink">
+      <ActiveNodesBar
+        enabled={route === "project"}
+        currentSessionId={session?.id ?? null}
+        onJump={jumpToActiveNode}
+      />
       <header className="flex items-center justify-between gap-4 border-b border-line bg-surface-raised px-6 py-2.5">
         <div className="flex min-w-0 items-center gap-3">
           <button
@@ -2540,6 +2664,7 @@ export function App() {
               templateInstances={templateInstances}
               collapsedTemplateInstanceIds={collapsedTemplateInstanceIds}
               nodePositionTarget={nodePositionTarget}
+              centerOnNodeRequest={centerOnNodeRequest}
               onNodePositionTargetApplied={(nodeId) => {
                 setNodePositionTarget((current) =>
                   current?.nodeId === nodeId ? null : current,
@@ -2582,7 +2707,7 @@ export function App() {
             />
           )}
 
-          {!readOnly && !pendingNotice && laneCreationNotice && (
+          {!readOnly && !pendingNotice && !hiddenLaneNotice && laneCreationNotice && (
             <CanvasNotice
               label={
                 laneCreationNotice.kind === "concierge"
@@ -2612,6 +2737,29 @@ export function App() {
                       },
                     ]
                   : []),
+              ]}
+            />
+          )}
+
+          {!pendingNotice && hiddenLaneNotice && (
+            <CanvasNotice
+              label="该节点所在方向已隐藏，画布上不显示"
+              panelOpen={panelState.open}
+              actions={[
+                {
+                  label: "显示此方向",
+                  onClick: () => {
+                    const { planspaceId, nodeId } = hiddenLaneNotice;
+                    setHiddenLaneNotice(null);
+                    /* Center only once the lane is actually visible. Issued
+                     * eagerly, CenterOnNode retries for ~600ms against a
+                     * still-filtered-out node and then gives up for good. */
+                    void togglePlanspaceVisibility(planspaceId, false).then(() =>
+                      centerOnNode(nodeId),
+                    );
+                  },
+                },
+                { label: "关闭", onClick: () => setHiddenLaneNotice(null) },
               ]}
             />
           )}

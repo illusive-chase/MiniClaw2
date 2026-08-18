@@ -5,7 +5,8 @@ type AskQuestion = {
   id?: string;
   question: string;
   header?: string;
-  isOther?: boolean;
+  /* Codex marks credential prompts with this; the answer must never be
+   * rendered in plain text. */
   isSecret?: boolean;
   multiSelect?: boolean;
   options: { label: string; description?: string }[] | null;
@@ -27,9 +28,8 @@ export function AskUserDialog({ request, onRespond, variant = "panel" }: Props) 
     const normalized: Record<string, { answers: string[] }> = {};
     questions.forEach((q, i) => {
       const key = questionKey(q, i);
-      const selected = answers[key] ?? [];
       const extra = other[key]?.trim();
-      normalized[key] = { answers: extra ? [...selected, extra] : selected };
+      normalized[key] = { answers: extra ? [extra] : (answers[key] ?? []) };
     });
     onRespond(normalized);
   };
@@ -47,6 +47,8 @@ export function AskUserDialog({ request, onRespond, variant = "panel" }: Props) 
       {questions.map((q, i) => {
         const key = questionKey(q, i);
         const selected = answers[key] ?? [];
+        const custom = other[key] ?? "";
+        const hasCustom = Boolean(custom.trim());
         const options = q.options ?? [];
         return (
           <div key={key} className="space-y-1">
@@ -58,18 +60,19 @@ export function AskUserDialog({ request, onRespond, variant = "panel" }: Props) 
             </div>
             <div className="flex flex-wrap gap-1">
               {options.map((opt) => {
-                const isSelected = selected.includes(opt.label);
+                const isSelected = !hasCustom && selected.includes(opt.label);
                 return (
                   <button
                     key={opt.label}
-                    onClick={() =>
+                    onClick={() => {
                       setAnswers({
                         ...answers,
                         [key]: q.multiSelect
-                          ? toggle(selected, opt.label)
+                          ? toggle(hasCustom ? [] : selected, opt.label)
                           : [opt.label],
-                      })
-                    }
+                      });
+                      setOther({ ...other, [key]: "" });
+                    }}
                     className={
                       "rounded-md border transition " +
                       (compact ? "px-1.5 py-0.5 text-[11px] " : "px-2 py-1 text-xs ") +
@@ -84,15 +87,20 @@ export function AskUserDialog({ request, onRespond, variant = "panel" }: Props) 
                 );
               })}
             </div>
-            {q.isOther && (
-              <input
-                value={other[key] ?? ""}
-                type={q.isSecret ? "password" : "text"}
-                onChange={(e) => setOther({ ...other, [key]: e.target.value })}
-                placeholder="Other"
-                className={(compact ? "text-[11px]" : "text-xs") + " mt-1 w-full rounded-md border border-line bg-surface-raised px-2 py-1 text-ink-strong placeholder:text-ink-subtle focus:border-brand focus:outline-none"}
-              />
-            )}
+            <input
+              value={custom}
+              type={q.isSecret ? "password" : "text"}
+              autoComplete={q.isSecret ? "off" : undefined}
+              onChange={(e) => setOther({ ...other, [key]: e.target.value })}
+              placeholder={
+                q.isSecret
+                  ? "输入你的回答（不会显示）"
+                  : options.length
+                    ? "其他（填写后将覆盖已选选项）"
+                    : "输入你的回答"
+              }
+              className={(compact ? "text-[11px]" : "text-xs") + " mt-1 w-full rounded-md border border-line bg-surface-raised px-2 py-1 text-ink-strong placeholder:text-ink-subtle focus:border-brand focus:outline-none"}
+            />
           </div>
         );
       })}

@@ -381,6 +381,36 @@ export type NodeState =
   | "error"
   | "cancelled";
 
+export type ActiveNodeGate = {
+  id: string;
+  subtype: string;
+  tool_name: string;
+  summary: string;
+};
+
+/* One row of the cross-project active-node view (GET /active-nodes). */
+export type ActiveNodeEntry = {
+  project_id: string;
+  project_name: string;
+  node_id: string;
+  state: NodeState;
+  category?: NodeCategory | null;
+  planspace_id?: string | null;
+  planspace_title?: string | null;
+  is_active_planspace: boolean;
+  label: string;
+  started_at?: number | null;
+  /* Terminal timestamp; only meaningful for `error` rows, which report time
+   * since failure rather than a still-growing run duration. */
+  finished_at?: number | null;
+  gate?: ActiveNodeGate | null;
+};
+
+export type ActiveNodesResponse = {
+  generated_at: number;
+  entries: ActiveNodeEntry[];
+};
+
 export type ArtifactRef = {
   name: string;
   bytes: number;

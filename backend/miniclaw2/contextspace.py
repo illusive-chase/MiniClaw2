@@ -798,6 +798,23 @@ def resolve_project_binding(project: Project, root: Path) -> ProjectBinding | No
     return _find_binding_for_project_path(root, project.root_path)
 
 
+def planspace_display_title(root: Path, planspace_id: str) -> str | None:
+    """Human-facing title for a planspace, by the same rule as _plug_summary.
+
+    Returns ``None`` for ids that do not name a planspace so callers can fall
+    back to showing nothing rather than a misleading label.
+    """
+    if _plug_kind(planspace_id) != "planspace":
+        return None
+    manifest = _plug_manifest(root, planspace_id)
+    slug = _plug_slug(planspace_id).rsplit(".", 1)[-1]
+    return (
+        _string_value(manifest.get("title"))
+        or _string_value(manifest.get("name"))
+        or slug
+    )
+
+
 def resolve_active_planspace(
     project: Project,
     root: Path,

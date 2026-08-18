@@ -11,6 +11,7 @@ export default defineConfig({
     port: 5173,
     hmr: reloadEnabled,
     proxy: {
+      "/active-nodes": backendUrl,
       "/global-state": backendUrl,
       "/model-presets": backendUrl,
       "/principles": backendUrl,

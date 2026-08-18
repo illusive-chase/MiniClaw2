@@ -34,6 +34,7 @@ import {
   resolveSyncedNodePosition,
   resizePlanspaceLanes,
   snapPlanspaceChildPosition,
+  templateInstanceBoxNodeId,
   type RFNode,
   type PrincipleEnumeration,
   type SkillEnumeration,
@@ -117,6 +118,12 @@ export type CanvasNodePositionTarget = {
   position: { x: number; y: number };
 };
 
+/** A request to bring `nodeId` into view; `version` makes repeats distinct. */
+export type CanvasCenterRequest = {
+  nodeId: string;
+  version: number;
+};
+
 export type CanvasProps = {
   nodes: NodeInfo[];
   sessionId: string;
@@ -139,6 +146,8 @@ export type CanvasProps = {
   collapsedTemplateInstanceIds?: string[];
   nodePositionTarget?: CanvasNodePositionTarget | null;
   onNodePositionTargetApplied?: (nodeId: string) => void;
+  /** Bring a node into view. Version-counted so repeat requests re-fire. */
+  centerOnNodeRequest?: CanvasCenterRequest | null;
   onCreateVirtualAt?: (
     planspaceId: string,
     position: { x: number; y: number },
@@ -223,6 +232,7 @@ function CanvasInner({
   collapsedTemplateInstanceIds,
   nodePositionTarget,
   onNodePositionTargetApplied,
+  centerOnNodeRequest,
   onCreateVirtualAt,
   principles,
   skills,
@@ -388,6 +398,20 @@ function CanvasInner({
    * the current cluster to report members and sinks. */
   const builtRef = useRef(built);
   builtRef.current = built;
+  /* A member of a collapsed instance has no node of its own on the canvas —
+   * it is drawn as part of the box. Centering on its raw id would find
+   * nothing, so resolve to the box that stands in for it. Reads through the
+   * ref so the identity stays stable across rebuilds. */
+  const resolveRenderId = useCallback((nodeId: string): string => {
+    const clusters = builtRef.current.templateInstances;
+    for (const cluster of Object.values(clusters)) {
+      if (!cluster.collapsed) continue;
+      if (cluster.memberNodeIds.includes(nodeId)) {
+        return templateInstanceBoxNodeId(cluster.instanceId);
+      }
+    }
+    return nodeId;
+  }, []);
   const layeredBuiltNodes = useMemo(
     () => decoratePendingGateLayers(built.rfNodes, pendingGateNodeIds),
     [built.rfNodes, pendingGateNodeIds],
@@ -1087,6 +1111,10 @@ function CanvasInner({
           color="rgb(var(--grid-line))"
         />
         <FitOnInit enabled={!initialViewportRef.current} />
+        <CenterOnNode
+          request={centerOnNodeRequest ?? null}
+          resolveRenderId={resolveRenderId}
+        />
         <Controls
           className="!border !border-line !bg-surface-raised !shadow-card"
           showInteractive={false}
@@ -1097,6 +1125,59 @@ function CanvasInner({
       </ReactFlow>
     </div>
   );
+}
+
+/* Bring a node into view when something outside the canvas selects it.
+ *
+ * Selection alone only draws a highlight ring; a node scrolled off-screen
+ * gives the user no visible feedback at all. Driven by a version counter
+ * rather than the node id so selecting the same node twice still recenters.
+ *
+ * The viewport change is intentionally not persisted: `onMoveEnd` ignores
+ * moves with no originating user event, which keeps saved viewports owned by
+ * the user.
+ */
+function CenterOnNode({
+  request,
+  resolveRenderId,
+}: {
+  request: CanvasCenterRequest | null;
+  resolveRenderId: (nodeId: string) => string;
+}) {
+  const { getNode, getViewport, setCenter } = useReactFlow();
+  const handledVersionRef = useRef(0);
+  useEffect(() => {
+    if (!request || request.version === 0) return;
+    if (handledVersionRef.current === request.version) return;
+    /* The node may not be in the React Flow store yet: a cross-project jump
+     * mounts the canvas and issues this request in the same commit, and lane
+     * layout runs after that. Retry a few frames before giving up, otherwise
+     * a jump that arrives marginally early silently does nothing. */
+    let attempts = 0;
+    let timer = 0;
+    const attempt = () => {
+      const node = getNode(resolveRenderId(request.nodeId));
+      if (!node) {
+        attempts += 1;
+        if (attempts > 10) return;
+        timer = window.setTimeout(attempt, 60);
+        return;
+      }
+      handledVersionRef.current = request.version;
+      const width = node.width ?? 0;
+      const height = node.height ?? 0;
+      const position = node.positionAbsolute ?? node.position;
+      /* setCenter falls back to maxZoom when `zoom` is omitted, which would
+       * slam the canvas to 2x on every jump. Panning must not change zoom. */
+      setCenter(position.x + width / 2, position.y + height / 2, {
+        duration: 200,
+        zoom: getViewport().zoom,
+      });
+    };
+    timer = window.setTimeout(attempt, 60);
+    return () => window.clearTimeout(timer);
+  }, [request, getNode, getViewport, resolveRenderId, setCenter]);
+  return null;
 }
 
 /* React Flow fitView only runs once on mount unless we re-call it. After

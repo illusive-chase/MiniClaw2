@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import asdict
 from pathlib import Path
@@ -21,6 +22,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, ValidationError
 
+from .active_nodes import ActiveNodesIndex, collect_active_entries
 from .artifacts import INLINE_TEXT_CAP, stored_artifact_path
 from .contextspace import (
     delete_principle,
@@ -188,6 +190,33 @@ class SessionInfo(BaseModel):
     project_context_binding_id: str | None = None
     layout_hints: dict[str, dict[str, float]] = Field(default_factory=dict)
     layout_viewport: dict[str, float] | None = None
+
+
+class ActiveNodeGate(BaseModel):
+    id: str
+    subtype: str
+    tool_name: str
+    summary: str
+
+
+class ActiveNodeEntry(BaseModel):
+    project_id: str
+    project_name: str
+    node_id: str
+    state: str
+    category: str | None = None
+    planspace_id: str | None = None
+    planspace_title: str | None = None
+    is_active_planspace: bool = False
+    label: str = ""
+    started_at: float | None = None
+    finished_at: float | None = None
+    gate: ActiveNodeGate | None = None
+
+
+class ActiveNodesResponse(BaseModel):
+    generated_at: float
+    entries: list[ActiveNodeEntry]
 
 
 class UpdateLayoutHintsRequest(BaseModel):
@@ -469,6 +498,9 @@ def create_app(registry: ProjectRegistry | None = None) -> FastAPI:
     from contextlib import asynccontextmanager
 
     registry = registry if registry is not None else ProjectRegistry(initialize=False)
+
+    # Per-app so tests do not inherit one another's cached node facts.
+    active_nodes_index = ActiveNodesIndex()
 
     def initialize_registry() -> None:
         initialize = getattr(registry, "initialize", None)
@@ -863,6 +895,35 @@ def create_app(registry: ProjectRegistry | None = None) -> FastAPI:
         if not registry.delete_tag(tag_id):
             raise HTTPException(404, "tag not found")
         return Response(status_code=204)
+
+    @app.get("/active-nodes", response_model=ActiveNodesResponse)
+    def list_active_nodes() -> ActiveNodesResponse:
+        """Nodes running or needing a human, across every project.
+
+        Polled by the header status bar. The per-project WebSocket cannot
+        answer this: it only carries events for the project currently open.
+        """
+        entries = collect_active_entries(registry, active_nodes_index)
+        return ActiveNodesResponse(
+            generated_at=time.time(),
+            entries=[
+                ActiveNodeEntry(
+                    project_id=entry.project_id,
+                    project_name=entry.project_name,
+                    node_id=entry.node_id,
+                    state=entry.state,
+                    category=entry.category,
+                    planspace_id=entry.planspace_id,
+                    planspace_title=entry.planspace_title,
+                    is_active_planspace=entry.is_active_planspace,
+                    label=entry.label,
+                    started_at=entry.started_at,
+                    finished_at=entry.finished_at,
+                    gate=ActiveNodeGate(**entry.gate) if entry.gate else None,
+                )
+                for entry in entries
+            ],
+        )
 
     @app.get("/sessions", response_model=list[SessionInfo])
     def list_sessions() -> list[SessionInfo]:

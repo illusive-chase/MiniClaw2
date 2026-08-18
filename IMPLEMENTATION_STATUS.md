@@ -1519,9 +1519,16 @@ Trunk: `backend/miniclaw2/store.py`, `backend/miniclaw2/replay.py`.
 
 ### Pending
 
-- SQLite migration. Deferred until cross-project queries (e.g. "list
-  all nodes in `awaiting_human_input` across the workspace") actually
-  become hot.
+- SQLite migration. The cross-project query that used to be this item's
+  trigger ("list all nodes in `awaiting_human_input` across the workspace")
+  now ships as `GET /active-nodes` on the JSON store, so it no longer
+  motivates the migration. `ActiveNodesIndex` (`backend/miniclaw2/active_nodes.py`)
+  keys a small per-node fact cache on each record's mtime and size and
+  re-parses only changed files; a full parse of every `node.json` costs
+  roughly 1ms per node, so a warm sweep of a 358-node store runs in ~12ms
+  against ~450ms for the naive version. Deferred until a query arrives that
+  this pattern cannot serve — one needing ordering or filtering across all
+  nodes rather than the small non-terminal subset.
 - Removing or replacing a shared host binding, including archival or transfer
   of its `hosts/<mid>/nodes/` ownership. Device-native projects still have no
   adopt-project ownership transfer.
