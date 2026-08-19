@@ -6,6 +6,7 @@ import argparse
 import logging
 import os
 import shutil
+import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -123,11 +124,22 @@ def main() -> None:
         )
     finally:
         if vite_proc is not None:
-            vite_proc.terminate()
+            # npm does not forward signals to the `sh -c vite` chain it
+            # spawns, so terminating npm alone leaks the node server as an
+            # orphan holding :5173. Signal the whole process group instead
+            # (start_new_session made vite_proc its leader).
+            _signal_group(vite_proc.pid, signal.SIGTERM)
             try:
                 vite_proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
-                vite_proc.kill()
+                _signal_group(vite_proc.pid, signal.SIGKILL)
+
+
+def _signal_group(pgid: int, signum: int) -> None:
+    try:
+        os.killpg(pgid, signum)
+    except ProcessLookupError:
+        pass
 
 
 def _sync_cli(argv: list[str]) -> None:

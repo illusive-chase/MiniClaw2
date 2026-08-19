@@ -9,6 +9,9 @@ export default defineConfig({
   plugins: [react()],
   server: {
     port: 5173,
+    // A stale dev server holding :5173 would otherwise shift this one to
+    // :5174+ silently, leaving the browser on the old proxy table.
+    strictPort: true,
     hmr: reloadEnabled,
     proxy: {
       "/active-nodes": backendUrl,
