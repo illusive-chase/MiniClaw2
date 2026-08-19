@@ -219,6 +219,9 @@ def _migrate_native_projects_v12(root: Path, identity: MachineIdentity) -> None:
                 # finalized. Current shared projects have no root_path here.
                 if "root_path" not in payload:
                     continue
+                aliases = project_dir / "git_aliases.json"
+                if aliases.exists():
+                    shutil.move(str(aliases), str(host_dir / "git_aliases.json"))
                 root_path = payload.get("root_path")
                 if not isinstance(root_path, str):
                     root_path = ""

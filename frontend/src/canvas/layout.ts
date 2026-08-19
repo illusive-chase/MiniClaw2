@@ -179,7 +179,6 @@ export type RFEdge = Edge;
 /* ───────── geometry ───────── */
 
 const AGENT_NODE_HEIGHT = 86;
-const RERUN_CASCADE_OFFSET = 24;
 
 export const LANE = {
   rootX: 40,
@@ -958,7 +957,6 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
   const laneColors = new Map<string, PlanspaceColor>();
   const nodeRelativePositions = new Map<string, { x: number; y: number }>();
   const branchSiblingCounts = new Map<string, number>();
-  const rerunSiblingCounts = new Map<string, number>();
 
   const shaSet = new Set(gitCommits.map((commit) => commit.sha));
   const columnIndexes = new Map<string, number>();
@@ -1328,7 +1326,12 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
       nodeRelativePositions.set(node.id, position);
       return position;
     };
-    const placeAnchoredVirtualInLane = (
+    /* Stack a node directly beneath the node it continues from: a dependency
+     * parent, a resumed session, or the failed node it reruns. One shared
+     * sibling counter across all three is what keeps them from landing on each
+     * other — a failed node can have both a dependent virtual and a rerun
+     * queued beneath it, and separate counters would give both the same slot. */
+    const placeBelowAnchorInLane = (
       anchorId: string | null,
     ): { x: number; y: number } | null => {
       if (!planspaceId || !anchorId) {
@@ -1353,30 +1356,6 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
       const position = {
         x: anchorPosition.x,
         y: anchorPosition.y + LANE.siblingYStep * (siblingIndex + 1),
-      };
-      recordChildExtent(
-        planspaceId,
-        position.x,
-        position.y,
-        LANE.agentWidth,
-        LANE.agentHeight,
-      );
-      nodeRelativePositions.set(node.id, position);
-      return position;
-    };
-    const placeRerunInLane = (
-      anchorId: string | null,
-    ): { x: number; y: number } | null => {
-      if (!planspaceId || !anchorId || stored) return null;
-      const anchorPosition = nodeRelativePositions.get(anchorId);
-      if (!anchorPosition) return null;
-      const key = `${planspaceId}:${anchorId}`;
-      const siblingIndex = rerunSiblingCounts.get(key) ?? 0;
-      rerunSiblingCounts.set(key, siblingIndex + 1);
-      const offset = RERUN_CASCADE_OFFSET * (siblingIndex + 1);
-      const position = {
-        x: anchorPosition.x + offset,
-        y: anchorPosition.y + offset,
       };
       recordChildExtent(
         planspaceId,
@@ -1414,18 +1393,22 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
       });
     } else {
       const isLastInLane = !hasDescendantById.has(node.id);
+      /* A rerun anchors on the node it replaces whatever state it has reached.
+       * Unlike a planned virtual, it is created already runnable and an auto
+       * lane promotes it to `queued` immediately, so gating on "virtual" would
+       * drop the anchor for exactly the reruns that carry no dependency. */
       const rerunAnchorId = rerunSourceId(node, nodeById);
       const branchAnchorId =
-        node.state === "virtual" ? virtualBranchAnchorId(node, nodeById) : null;
+        rerunAnchorId ??
+        (node.state === "virtual" ? virtualBranchAnchorId(node, nodeById) : null);
       const position = planspaceId
         ? (
-            placeRerunInLane(rerunAnchorId) ??
-            /* Ahead of the anchored-virtual branch: a stamped member's
-             * scheduled_deps point at its siblings, which would otherwise
-             * stack the instance diagonally instead of clustering it. Returns
-             * null for every non-member, so ordinary layout is untouched. */
+            /* Ahead of the anchored branch: a stamped member's scheduled_deps
+             * point at its siblings, which would otherwise stack the instance
+             * vertically instead of clustering it. Returns null for every
+             * non-member, so ordinary layout is untouched. */
             placeInInstanceBlock() ??
-            placeAnchoredVirtualInLane(branchAnchorId) ??
+            placeBelowAnchorInLane(branchAnchorId) ??
             placeInLane(
               LANE.agentSpacing,
               LANE.agentWidth,

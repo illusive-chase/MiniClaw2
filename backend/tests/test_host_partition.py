@@ -6,7 +6,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import PropertyMock, patch
+from unittest.mock import Mock, PropertyMock, patch
 
 import yaml
 from fastapi.testclient import TestClient
@@ -56,6 +56,29 @@ def _repo(path: Path) -> Path:
 
 
 class HostPartitionStoreTests(unittest.TestCase):
+    def test_reload_applies_shared_policy_to_a_running_runtime(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            base = Path(raw)
+            store = Store(base / "store")
+            project = store.create_project(Project(root_path=str(_repo(base / "repo"))))
+            registry = ProjectRegistry(store)
+            runtime = registry._runtimes[project.id]
+            runner_project = runtime.project
+            active_task = Mock()
+            active_task.done.return_value = False
+            runtime.runner_tasks["active"] = active_task
+            store.update_project(runtime.project.model_copy(update={"sharing": "shared"}))
+
+            registry.reload_from_store()
+
+            self.assertIs(runtime.project, runner_project)
+            self.assertEqual(runner_project.sharing, "shared")
+            remote_node = Node(
+                project_id=project.id,
+                model_preset_id=project.model_preset_id,
+            ).bind_owner_host("remote-host")
+            self.assertFalse(registry.is_native_node(runner_project, remote_node))
+
     def test_host_head_records_validate_sha_and_merge_into_host_list(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             base = Path(raw)

@@ -279,7 +279,12 @@ class ProjectRegistry:
             runtime = self._runtimes.get(project_id)
             if runtime is None:
                 self._runtimes[project_id] = ProjectRuntime(project)
-            elif not runtime.is_running():
+            elif runtime.is_running():
+                # Sharing is a monotonic policy transition and ownership checks
+                # must observe it even while runners retain this Project object.
+                if project.sharing == "shared":
+                    runtime.project.sharing = "shared"
+            else:
                 runtime.project = project
         for project_id in list(self._runtimes):
             runtime = self._runtimes[project_id]
@@ -2625,24 +2630,16 @@ class ProjectRegistry:
             planspace_id=original.planspace_id,
             parent_node_id=original.parent_node_id,
             resume_from_node_id=original.resume_from_node_id,
+            # Stamped at creation rather than patched afterwards: on an auto
+            # lane `create_virtual` promotes the node to QUEUED before it
+            # returns, and a post-hoc update guarded on VIRTUAL would silently
+            # skip exactly the reruns that need no dependency wait. The canvas
+            # reads this tag to place the new tile beneath the node it reruns.
+            _proposed_by=f"rerun:{original.id}",
         )
         if virtual is None:
             return None
-        # create_virtual stamps proposed_by="user"; re-tag with the rerun
-        # provenance so downstream previews carry the link back.
-        fresh = self.store.load_node(pid, virtual.id) or virtual
-        if fresh.state is NodeState.VIRTUAL:
-            fresh.proposed_by = f"rerun:{original.id}"
-            self.store.update_node(fresh)
-            try:
-                self.store.write_node_preview(
-                    pid, fresh.id, render_virtual_preview(fresh)
-                )
-            except Exception:  # noqa: BLE001
-                logger.exception(
-                    "failed to write rerun virtual preview for %s", fresh.id
-                )
-        return fresh
+        return self.store.load_node(pid, virtual.id) or virtual
 
     def _resolve_virtual_create_lane(
         self,

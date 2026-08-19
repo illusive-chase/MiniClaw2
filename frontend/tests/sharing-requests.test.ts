@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
-import type { SessionInfo, SharingRequestInfo, SharingRequestStatus } from "../src/types";
+import type { SharingRequestInfo, SharingRequestStatus } from "../src/types";
 import {
   SHARING_REQUEST_STATUS_LABELS,
-  canRequestSharing,
   incomingCount,
   incomingRequests,
   isOpen,
@@ -13,36 +12,6 @@ import {
 
 const LOCAL = "local-mid";
 const HOST = "host-mid";
-
-function project(
-  id: string,
-  opts: {
-    sharing?: "device-native" | "shared";
-    is_native?: boolean;
-    temporary?: boolean;
-    machine_id?: string;
-  } = {},
-): SessionInfo {
-  return {
-    id,
-    created_at: 1000,
-    turns: 0,
-    model_preset_id: "p",
-    concurrency: 1,
-    active_count: 0,
-    queued_count: 0,
-    machine_id: opts.machine_id ?? HOST,
-    local_machine_id: LOCAL,
-    native_machine_label: "there",
-    is_native: opts.is_native ?? false,
-    read_only: !(opts.is_native ?? false),
-    can_delete: false,
-    sharing: opts.sharing ?? "device-native",
-    can_join_here: false,
-    temporary: opts.temporary,
-    hosts: [],
-  };
-}
 
 function request(
   id: string,
@@ -84,57 +53,6 @@ function testOpenStatuses(): void {
   for (const status of Object.keys(SHARING_REQUEST_STATUS_LABELS)) {
     assert.ok(SHARING_REQUEST_STATUS_LABELS[status as SharingRequestStatus].length > 0);
   }
-}
-
-function testRequestEntryNeedsANonHostDeviceAndSync(): void {
-  const requests: SharingRequestInfo[] = [];
-  assert.equal(
-    canRequestSharing(project("p1"), requests, { syncConfigured: true }),
-    true,
-  );
-  /* Without a metadata remote the request has no way to reach the host, so
-   * offering the action would strand it on this device. */
-  assert.equal(
-    canRequestSharing(project("p1"), requests, { syncConfigured: false }),
-    false,
-  );
-  assert.equal(
-    canRequestSharing(project("p1", { is_native: true }), requests, {
-      syncConfigured: true,
-    }),
-    false,
-  );
-  assert.equal(
-    canRequestSharing(project("p1", { sharing: "shared" }), requests, {
-      syncConfigured: true,
-    }),
-    false,
-  );
-  assert.equal(
-    canRequestSharing(project("p1", { temporary: true }), requests, {
-      syncConfigured: true,
-    }),
-    false,
-  );
-  assert.equal(canRequestSharing(null, requests, { syncConfigured: true }), false);
-}
-
-/* One open request per device: the entry point disappears while it stands, and
- * comes back once the request reaches a terminal status. */
-function testPendingRequestHidesTheEntryPoint(): void {
-  const pending = [request("r1")];
-  assert.equal(
-    canRequestSharing(project("p1"), pending, { syncConfigured: true }),
-    false,
-  );
-  assert.equal(localOpenRequest(pending, "p1")?.id, "r1");
-
-  const rejected = [request("r1", { status: "rejected" })];
-  assert.equal(
-    canRequestSharing(project("p1"), rejected, { syncConfigured: true }),
-    true,
-  );
-  assert.equal(localOpenRequest(rejected, "p1"), null);
 }
 
 function testRequestsAreScopedByProject(): void {
@@ -180,8 +98,6 @@ function testLabelsFallBackToMachineIds(): void {
 }
 
 testOpenStatuses();
-testRequestEntryNeedsANonHostDeviceAndSync();
-testPendingRequestHidesTheEntryPoint();
 testRequestsAreScopedByProject();
 testIncomingCountsOnlyDecidableRequests();
 testLabelsFallBackToMachineIds();

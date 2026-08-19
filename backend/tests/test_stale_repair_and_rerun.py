@@ -256,3 +256,36 @@ class RerunNodeTests(unittest.TestCase):
         assert result is not None
         self.assertEqual(result.resume_from_node_id, source.id)
         self.assertEqual(result.parent_node_id, source.id)
+
+    def test_rerun_provenance_survives_immediate_auto_promotion(self) -> None:
+        """The canvas places a rerun by its ``rerun:`` tag, so the tag has to
+        outlive promotion. A rerun that declares no dependency is eligible the
+        moment it exists, so an auto lane queues it inside ``create_virtual``
+        before ``rerun_node`` returns."""
+        auto_lane = create_planspace(self.project, title="Auto", mode="auto")
+        runtime = self.registry._runtimes[self.project.id]
+        runtime.project.active_planspace_id = auto_lane
+        self.store.update_project(runtime.project)
+        failed = Node(
+            id="auto-failed",
+            project_id=self.project.id,
+            kind=NodeKind.AGENT,
+            model_preset_id="opus-4-7",
+            category=Category.REGULAR,
+            state=NodeState.ERROR,
+            planspace_id=auto_lane,
+            prompt="retry me",
+            started_at=1.0,
+            finished_at=2.0,
+            error="boom",
+        )
+        self.store.create_node(failed)
+
+        result = self.registry.rerun_node(self.project.id, failed.id)
+
+        assert result is not None
+        self.assertNotEqual(result.state, NodeState.VIRTUAL)
+        self.assertEqual(result.proposed_by, f"rerun:{failed.id}")
+        persisted = self.store.load_node(self.project.id, result.id)
+        assert persisted is not None
+        self.assertEqual(persisted.proposed_by, f"rerun:{failed.id}")

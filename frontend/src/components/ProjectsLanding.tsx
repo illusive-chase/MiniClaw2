@@ -716,7 +716,9 @@ function ProjectCard({
             共享请求已发出
           </span>
         )}
-        {session.sharing === "device-native" && !session.can_enable_sharing && !session.temporary && (
+        {session.sharing === "device-native" &&
+          session.sharing_readiness !== "ready" &&
+          !session.temporary && (
           <span
             className="rounded border border-state-waiting/40 bg-state-waiting-soft px-1.5 py-0.5 text-state-waiting"
             title={session.sharing_readiness === "waiting-for-owner-commit"

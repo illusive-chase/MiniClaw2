@@ -184,6 +184,47 @@ class StoreIdentityMigrationTests(unittest.TestCase):
             self.assertEqual(loaded.sharing, "device-native")
             self.assertEqual(loaded.root_path, str(repo))
 
+    def test_v12_recovery_moves_aliases_after_nodes_were_already_moved(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            machine_id = "local-machine"
+            (root / "machine.json").write_text(
+                json.dumps(
+                    {
+                        "id": machine_id,
+                        "hostname": current_hostname(),
+                        "label": "Local",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (root / "schema.json").write_text(
+                json.dumps({"schema": "node-revision-v9", "schema_version": 11}),
+                encoding="utf-8",
+            )
+            project = Project(
+                root_path=str(root / "repo"),
+                machine_id=machine_id,
+                machine_label="Local",
+            )
+            project_dir = root / "projects" / project.id
+            host_dir = project_dir / "hosts" / machine_id
+            (host_dir / "nodes").mkdir(parents=True)
+            (project_dir / "project.json").write_text(
+                json.dumps(project.model_dump(exclude={"provider"})),
+                encoding="utf-8",
+            )
+            aliases = {"old-commit": "new-commit"}
+            (project_dir / "git_aliases.json").write_text(
+                json.dumps(aliases),
+                encoding="utf-8",
+            )
+
+            store = Store(root)
+
+            self.assertFalse((project_dir / "git_aliases.json").exists())
+            self.assertEqual(store.read_git_aliases(project.id), aliases)
+
 
 class UserTemplateSchemaMigrationTests(unittest.TestCase):
     def _write_store_schema_v7(self, root: Path) -> None:

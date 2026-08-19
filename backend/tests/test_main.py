@@ -19,16 +19,19 @@ class MainTest(unittest.TestCase):
             argv.append("--reload")
 
         vite_proc = MagicMock()
+        vite_proc.pid = 1234
         with (
             patch.object(sys, "argv", argv),
             patch.object(cli.shutil, "which", return_value="/usr/bin/npm"),
             patch.object(cli.Path, "is_dir", return_value=True),
             patch.object(cli.subprocess, "Popen", return_value=vite_proc) as popen,
             patch.object(cli.uvicorn, "run") as uvicorn_run,
+            patch.object(cli, "_signal_group") as signal_group,
             patch.dict(os.environ, {}, clear=True),
         ):
             cli.main()
 
+        signal_group.assert_called_once_with(vite_proc.pid, cli.signal.SIGTERM)
         vite_command = popen.call_args.args[0]
         vite_env = popen.call_args.kwargs["env"]
         backend_reload = uvicorn_run.call_args.kwargs["reload"]

@@ -1358,7 +1358,7 @@ function testAlreadyPlacedNodeIsNeverRepositioned(): void {
   );
 }
 
-function testRerunNodeCascadesNearOriginal(): void {
+function testRerunNodeStacksBelowOriginal(): void {
   const planspaceId = "planspaces.alpha";
   const originalPosition = { x: 320, y: 480 };
   const graph = buildGraph(args({
@@ -1382,9 +1382,11 @@ function testRerunNodeCascadesNearOriginal(): void {
     layoutHints: { failed: originalPosition },
   }));
 
+  /* Directly beneath the node it reruns, sharing its column — the same rule a
+   * dependent virtual follows, rather than a placement of its own. */
   assert.deepEqual(
     graph.rfNodes.find((item) => item.id === "rerun")?.position,
-    { x: originalPosition.x + 24, y: originalPosition.y + 24 },
+    { x: originalPosition.x, y: originalPosition.y + LANE.siblingYStep },
   );
 
   const draggedPosition = { x: 960, y: 240 };
@@ -1399,6 +1401,109 @@ function testRerunNodeCascadesNearOriginal(): void {
     dragged.rfNodes.find((item) => item.id === "rerun")?.position,
     draggedPosition,
   );
+}
+
+/* A rerun of a node that declared no dependencies is created already runnable,
+ * so an auto lane promotes it to `queued` before the canvas ever sees it. It
+ * must still anchor on the node it reruns rather than falling through to the
+ * lane's horizontal cursor, which parks it on the top row far to the right. */
+function testRerunWithoutDependenciesStillAnchors(): void {
+  const planspaceId = "planspaces.alpha";
+  const failedPosition = { x: 40, y: 612 };
+  const graph = buildGraph(args({
+    nodes: [
+      node("a", { planspace_id: planspaceId, created_at: 1 }),
+      node("failed", { planspace_id: planspaceId, state: "error", created_at: 2 }),
+      node("rerun", {
+        planspace_id: planspaceId,
+        state: "queued",
+        proposed_by: "rerun:failed",
+        created_at: 3,
+      }),
+    ],
+    knownPlanspaceIds: [planspaceId],
+    layoutHints: { a: { x: 40, y: 156 }, failed: failedPosition },
+  }));
+
+  assert.deepEqual(
+    graph.rfNodes.find((item) => item.id === "rerun")?.position,
+    { x: failedPosition.x, y: failedPosition.y + LANE.siblingYStep },
+  );
+}
+
+/* A failed node can carry both a rerun and a planned dependent at once. They
+ * anchor on the same node, so they must claim successive slots beneath it
+ * instead of both taking the first one. */
+function testRerunAndDependentVirtualDoNotShareASlot(): void {
+  const planspaceId = "planspaces.alpha";
+  const failedPosition = { x: 40, y: 156 };
+  const graph = buildGraph(args({
+    nodes: [
+      node("failed", { planspace_id: planspaceId, state: "error", created_at: 1 }),
+      node("rerun", {
+        planspace_id: planspaceId,
+        state: "queued",
+        proposed_by: "rerun:failed",
+        created_at: 2,
+      }),
+      node("dependent", {
+        planspace_id: planspaceId,
+        state: "virtual",
+        scheduled_deps: ["failed"],
+        created_at: 3,
+      }),
+    ],
+    knownPlanspaceIds: [planspaceId],
+    layoutHints: { failed: failedPosition },
+  }));
+
+  const positionOf = (id: string) =>
+    graph.rfNodes.find((item) => item.id === id)?.position;
+  assert.deepEqual(positionOf("rerun"), {
+    x: failedPosition.x,
+    y: failedPosition.y + LANE.siblingYStep,
+  });
+  assert.deepEqual(positionOf("dependent"), {
+    x: failedPosition.x,
+    y: failedPosition.y + LANE.siblingYStep * 2,
+  });
+}
+
+/* Rerunning a rerun walks one further step down the column rather than
+ * accumulating on the original's slot. */
+function testSuccessiveRerunsStackDownward(): void {
+  const planspaceId = "planspaces.alpha";
+  const failedPosition = { x: 40, y: 156 };
+  const graph = buildGraph(args({
+    nodes: [
+      node("failed", { planspace_id: planspaceId, state: "error", created_at: 1 }),
+      node("rerun1", {
+        planspace_id: planspaceId,
+        state: "error",
+        proposed_by: "rerun:failed",
+        created_at: 2,
+      }),
+      node("rerun2", {
+        planspace_id: planspaceId,
+        state: "queued",
+        proposed_by: "rerun:rerun1",
+        created_at: 3,
+      }),
+    ],
+    knownPlanspaceIds: [planspaceId],
+    layoutHints: { failed: failedPosition },
+  }));
+
+  const positionOf = (id: string) =>
+    graph.rfNodes.find((item) => item.id === id)?.position;
+  assert.deepEqual(positionOf("rerun1"), {
+    x: failedPosition.x,
+    y: failedPosition.y + LANE.siblingYStep,
+  });
+  assert.deepEqual(positionOf("rerun2"), {
+    x: failedPosition.x,
+    y: failedPosition.y + LANE.siblingYStep * 2,
+  });
 }
 
 function testPlanspaceLaneMinimumDoesNotExceedAgentHeight(): void {
@@ -2467,7 +2572,10 @@ testAppendedPositionSurvivesAsALayoutHint();
 testAlreadyPlacedNodeIsNeverRepositioned();
 testLastActiveNodeInLanePicksTheLatestActivity();
 testLaneAnchorUsesTheNewestRenderedCandidate();
-testRerunNodeCascadesNearOriginal();
+testRerunNodeStacksBelowOriginal();
+testRerunWithoutDependenciesStillAnchors();
+testRerunAndDependentVirtualDoNotShareASlot();
+testSuccessiveRerunsStackDownward();
 testPlanspaceLaneMinimumDoesNotExceedAgentHeight();
 testPlanspaceLaneBuildAndDropShareBottomFit();
 testPlanspaceLaneLiveGrowthAndDropFit();
