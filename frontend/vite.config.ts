@@ -15,6 +15,7 @@ export default defineConfig({
       "/global-state": backendUrl,
       "/model-presets": backendUrl,
       "/principles": backendUrl,
+      "/sharing-requests": backendUrl,
       "/sessions": backendUrl,
       "/skills": backendUrl,
       "/tags": backendUrl,

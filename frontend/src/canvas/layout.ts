@@ -255,6 +255,79 @@ export function snapPlanspaceChildPosition(
 }
 
 /**
+ * Lane-relative placement for a node the user just asked for — the lane header
+ * "+" button and the Git "Review" button — as opposed to one the layout is
+ * merely re-deriving.
+ *
+ * The automatic default (`nextLanePosition`) appends along a horizontal cursor
+ * on the agent row, which walks a busy lane far off to the right while leaving
+ * the new tile pinned to the top row. A node created by an explicit click
+ * should instead land where the user is already looking: under the work that
+ * lane is currently doing.
+ *
+ * `x` follows `anchorNodeId` — the lane's most recently *active* node, chosen by
+ * the caller from node timestamps rather than from geometry, so the new tile
+ * lines up with the branch actually in play. `y` clears every existing child of
+ * the lane, so the tile cannot land on top of one regardless of how the lane
+ * has been rearranged by hand.
+ *
+ * Returns null when the lane has no children yet; the caller then has nothing
+ * to append to and the ordinary default is already correct. Also returns null
+ * when `forNodeId` is already a child of the lane: a node that is on the canvas
+ * has a position the user may have chosen, and moving it would yank a tile they
+ * are already looking at.
+ */
+export function appendBelowLanePosition(
+  laneNodeId: string,
+  nodes: readonly RFNode[],
+  anchorNodeId: string | null,
+  forNodeId?: string,
+): { x: number; y: number } | null {
+  let maxBottom: number | null = null;
+  let anchorX: number | null = null;
+  for (const node of nodes) {
+    if (node.parentNode !== laneNodeId) continue;
+    if (forNodeId !== undefined && node.id === forNodeId) return null;
+    /* Derived frames enclose their members rather than occupying the lane
+     * themselves, so counting them would leave a redundant gap. */
+    if (node.type === "templateGroup") continue;
+    const height = node.height ?? AGENT_NODE_HEIGHT;
+    const bottom = node.position.y + height;
+    if (maxBottom === null || bottom > maxBottom) maxBottom = bottom;
+    if (node.id === anchorNodeId) anchorX = node.position.x;
+  }
+  if (maxBottom === null) return null;
+  return {
+    x: Math.max(LANE.planspaceLanePaddingX, anchorX ?? LANE.planspaceLanePaddingX),
+    y: Math.max(
+      LANE.planspaceLaneAgentRowY,
+      maxBottom + LANE.siblingYStep - AGENT_NODE_HEIGHT,
+    ),
+  };
+}
+
+/** Pick the newest candidate that has live geometry in this lane. The mapper
+ * translates durable IDs hidden by a collapsed template to the box rendered
+ * in their place. */
+export function resolveRenderedLaneAnchorId(
+  laneNodeId: string,
+  nodes: readonly RFNode[],
+  candidateNodeIds: readonly string[],
+  renderIdFor: (nodeId: string) => string = (nodeId) => nodeId,
+): string | null {
+  const renderedChildren = new Set(
+    nodes
+      .filter((node) => node.parentNode === laneNodeId)
+      .map((node) => node.id),
+  );
+  for (const candidateId of candidateNodeIds) {
+    const renderedId = renderIdFor(candidateId);
+    if (renderedChildren.has(renderedId)) return renderedId;
+  }
+  return null;
+}
+
+/**
  * Resolve a node position while synchronizing a rebuilt graph into React Flow.
  * Explicit UI placement (for example a double-click creation target) must win
  * even when the node already appeared at an automatic runtime position.

@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type Dispatch,
+  type SetStateAction,
+} from "react";
 import {
   createTag,
   deleteSession,
@@ -9,8 +17,9 @@ import {
   updateTag,
 } from "../api";
 import { languageLabel } from "../languages";
-import type { ModelPreset, SessionInfo, Tag } from "../types";
+import type { ModelPreset, SessionInfo, SharingRequestInfo, Tag } from "../types";
 import { modelPresetLabel } from "../modelPresets";
+import { incomingCount, localOpenRequest } from "../sharingRequests";
 import { TestsPanel } from "./TestsPanel";
 import { ThemeToggle } from "./ThemeToggle";
 import { GlobalSettingsModal } from "./GlobalSettingsModal";
@@ -39,6 +48,12 @@ import type { GlobalState } from "../types";
 type Props = {
   onOpen: (session: SessionInfo) => void;
   onCreate: () => void;
+  sessions: SessionInfo[] | null;
+  setSessions: Dispatch<SetStateAction<SessionInfo[] | null>>;
+  tags: Tag[];
+  setTags: Dispatch<SetStateAction<Tag[]>>;
+  /** Requests this device raised or hosts; drives the per-card badge. */
+  sharingRequests: readonly SharingRequestInfo[];
   modelPresets: ModelPreset[];
   globalState: GlobalState | null;
   onGlobalStateChanged: (state: GlobalState) => void;
@@ -49,13 +64,16 @@ type Props = {
 export function ProjectsLanding({
   onOpen,
   onCreate,
+  sessions,
+  setSessions,
+  tags,
+  setTags,
+  sharingRequests,
   modelPresets,
   globalState,
   onGlobalStateChanged,
   onTemplateLaunched,
 }: Props) {
-  const [sessions, setSessions] = useState<SessionInfo[] | null>(null);
-  const [tags, setTags] = useState<Tag[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [testsOpen, setTestsOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -70,7 +88,7 @@ export function ProjectsLanding({
     } catch (err) {
       setError(String(err));
     }
-  }, []);
+  }, [setSessions]);
 
   /* Tags refresh on their own cadence: the 10s session poll would otherwise
    * re-fetch a list that only changes when the user edits it. */
@@ -80,7 +98,7 @@ export function ProjectsLanding({
     } catch (err) {
       setError(String(err));
     }
-  }, []);
+  }, [setTags]);
 
   useEffect(() => {
     void refresh();
@@ -191,6 +209,15 @@ export function ProjectsLanding({
       tags={resolveTags(session, tagsById)}
       allTags={tags}
       modelPresets={modelPresets}
+      pendingRequestCount={incomingCount(
+        sharingRequests,
+        session.id,
+        session.sharing,
+      )}
+      hasLocalRequest={
+        session.sharing === "device-native" &&
+        !!localOpenRequest(sharingRequests, session.id)
+      }
       onOpen={() => onOpen(session)}
       onRename={(name) => onRename(session.id, name)}
       onDelete={() => onDelete(session.id)}
@@ -464,6 +491,8 @@ function ProjectCard({
   tags,
   allTags,
   modelPresets,
+  pendingRequestCount,
+  hasLocalRequest,
   onOpen,
   onRename,
   onDelete,
@@ -475,6 +504,8 @@ function ProjectCard({
   tags: Tag[];
   allTags: Tag[];
   modelPresets: ModelPreset[];
+  pendingRequestCount: number;
+  hasLocalRequest: boolean;
   onOpen: () => void;
   onRename: (name: string) => Promise<void>;
   onDelete: () => Promise<void>;
@@ -667,6 +698,24 @@ function ProjectCard({
       <TagChipRow tags={tags} />
 
       <div className="flex flex-wrap items-center gap-1.5 text-[10px]">
+        {/* Surfaced on the card so the host does not have to open each project
+          * to discover another device is waiting on a decision. */}
+        {pendingRequestCount > 0 && (
+          <span
+            className="rounded border border-brand/40 bg-brand-soft px-1.5 py-0.5 text-brand-ink dark:text-brand"
+            title="其他设备请求把这个项目转为共享；打开项目后可以接受或拒绝"
+          >
+            {pendingRequestCount} 个共享请求待确认
+          </span>
+        )}
+        {hasLocalRequest && (
+          <span
+            className="rounded border border-state-waiting/40 bg-state-waiting-soft px-1.5 py-0.5 text-state-waiting"
+            title="本机已请求开启共享，等待该项目所属设备确认"
+          >
+            共享请求已发出
+          </span>
+        )}
         {session.read_only && (
           <span className="rounded border border-state-waiting/40 bg-state-waiting-soft px-1.5 py-0.5 text-state-waiting">
             read-only · native to {session.native_machine_label}

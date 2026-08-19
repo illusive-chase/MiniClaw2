@@ -390,14 +390,17 @@ class ProjectActivityIndexTests(unittest.TestCase):
 
 class TagSchemaVersionTests(unittest.TestCase):
     def test_schema_version_advances_and_older_build_sees_newer_store(self) -> None:
-        self.assertEqual(SCHEMA_VERSION, 10)
+        # Tags shipped at schema 10; later features may advance it further.
+        self.assertGreaterEqual(SCHEMA_VERSION, 10)
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
             (root / "schema.json").write_text(
-                json.dumps({"schema": "node-revision-v9", "schema_version": 10}),
+                json.dumps(
+                    {"schema": "node-revision-v9", "schema_version": SCHEMA_VERSION}
+                ),
                 encoding="utf-8",
             )
-            with patch.object(sync_module, "SCHEMA_VERSION", 9):
+            with patch.object(sync_module, "SCHEMA_VERSION", SCHEMA_VERSION - 1):
                 self.assertTrue(schema_is_newer(root))
 
 

@@ -30,6 +30,7 @@ _CODEX_REQUEST_TIMEOUT_SECONDS = 60.0
 _CODEX_STDERR_TAIL_LINES = 20
 _CODEX_STDIO_BUFFER_LIMIT_BYTES = 16 * 1024 * 1024
 _MIN_REVIEW_VERSION = (0, 144, 1)
+_MIN_DYNAMIC_TOOLS_VERSION = (0, 146, 0)
 
 
 class CodexRpcError(RuntimeError):
@@ -61,10 +62,18 @@ class CodexProvider:
         ) as client:
             self._client = client
             try:
-                await client.initialize()
+                initialized = await client.initialize()
                 await _configure_skill_roots(client, context)
                 thread_id = context.node.provider_session_id
                 fresh_thread = not thread_id
+                if (
+                    fresh_thread
+                    and not getattr(context, "minimal_mode", False)
+                    and not _codex_dynamic_tools_capable(initialized)
+                ):
+                    raise RuntimeError(
+                        "inline ask-user requires codex-cli 0.146.0 or newer"
+                    )
                 if not thread_id:
                     start = await client.request(
                         "thread/start",
@@ -157,6 +166,12 @@ class CodexProvider:
                     return
                 await _configure_skill_roots(client, context)
                 thread_id = context.node.provider_session_id
+                if not thread_id and not _codex_dynamic_tools_capable(initialized):
+                    yield AgentProviderEvent(
+                        kind="error",
+                        error="inline ask-user requires codex-cli 0.146.0 or newer",
+                    )
+                    return
                 if not thread_id:
                     thread_base: dict[str, Any] = {
                         "cwd": context.project.root_path,
@@ -465,15 +480,11 @@ class CodexProvider:
             }
 
         if method == "item/tool/call":
-            return {
-                "contentItems": [
-                    {
-                        "type": "inputText",
-                        "text": "MiniClaw2 does not support dynamic client tools yet.",
-                    }
-                ],
-                "success": False,
-            }
+            if params.get("namespace") is None and params.get("tool") == "ask_user":
+                return await _handle_dynamic_ask_user(params, request_id, context)
+            return _dynamic_tool_error(
+                f"不支持的动态工具：{params.get('tool') or '<unknown>'}"
+            )
 
         response = await context.request_gate(
             GateRequest(
@@ -741,7 +752,55 @@ def _thread_params(
     _set_if_present(params, "config", settings.get("codex_config"))
     if "threadId" not in params:
         params["serviceName"] = "MiniClaw2"
+        if not getattr(context, "minimal_mode", False):
+            params["dynamicTools"] = [_ask_user_dynamic_tool()]
     return params
+
+
+def _ask_user_dynamic_tool() -> dict[str, Any]:
+    return {
+        "type": "function",
+        "name": "ask_user",
+        "description": (
+            "Ask the user one to three short blocking questions and wait for "
+            "the answers. Use this whenever user input is required before continuing."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["questions"],
+            "properties": {
+                "questions": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 3,
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": ["id", "header", "question", "options"],
+                        "properties": {
+                            "id": {"type": "string"},
+                            "header": {"type": "string"},
+                            "question": {"type": "string"},
+                            "multiSelect": {"type": "boolean"},
+                            "options": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "additionalProperties": False,
+                                    "required": ["label", "description"],
+                                    "properties": {
+                                        "label": {"type": "string"},
+                                        "description": {"type": "string"},
+                                    },
+                                },
+                            },
+                        },
+                    },
+                }
+            },
+        },
+    }
 
 
 def _turn_params(
@@ -803,6 +862,158 @@ def _codex_user_input_response(response: dict[str, Any]) -> dict[str, Any]:
             if isinstance(value, dict) and isinstance(value.get("answers"), list):
                 normalized[str(key)] = {"answers": [str(v) for v in value["answers"]]}
     return {"answers": normalized}
+
+
+async def _handle_dynamic_ask_user(
+    params: dict[str, Any],
+    request_id: str,
+    context: AgentProviderContext,
+) -> dict[str, Any]:
+    questions, error = _normalize_dynamic_questions(params.get("arguments"))
+    if error is not None:
+        return _dynamic_tool_error(error)
+
+    response = await context.request_gate(
+        GateRequest(
+            subtype=GateSubtype.ASK_USER,
+            tool_name="ask_user",
+            tool_input={"questions": questions},
+            provider_request_id=request_id,
+            response_hint={
+                "codex_method": "item/tool/call",
+                "codex_call_id": params.get("callId"),
+                "dynamic_tool": "ask_user",
+            },
+        )
+    )
+    answers = _normalize_dynamic_answers(response, questions)
+    if answers is None:
+        message = response.get("message")
+        detail = f"：{message}" if isinstance(message, str) and message else ""
+        return _dynamic_tool_error(f"用户未返回有效回答{detail}")
+    return {
+        "contentItems": [
+            {
+                "type": "inputText",
+                "text": json.dumps(
+                    {"answers": answers},
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ),
+            }
+        ],
+        "success": True,
+    }
+
+
+def _normalize_dynamic_questions(
+    arguments: Any,
+) -> tuple[list[dict[str, Any]], str | None]:
+    if not isinstance(arguments, dict):
+        return [], "ask_user 参数必须是对象"
+    if set(arguments) != {"questions"}:
+        return [], "ask_user 参数只能包含 questions"
+    raw_questions = arguments.get("questions")
+    if not isinstance(raw_questions, list) or not 1 <= len(raw_questions) <= 3:
+        return [], "ask_user 必须包含 1 到 3 个问题"
+
+    questions: list[dict[str, Any]] = []
+    question_ids: set[str] = set()
+    allowed_question_keys = {"id", "header", "question", "options", "multiSelect"}
+    for index, raw_question in enumerate(raw_questions, start=1):
+        if not isinstance(raw_question, dict):
+            return [], f"ask_user 的第 {index} 个问题必须是对象"
+        if not {"id", "header", "question", "options"}.issubset(raw_question):
+            return [], f"ask_user 的第 {index} 个问题缺少必填字段"
+        if not set(raw_question).issubset(allowed_question_keys):
+            return [], f"ask_user 的第 {index} 个问题包含未知字段"
+
+        question_id = raw_question.get("id")
+        header = raw_question.get("header")
+        question = raw_question.get("question")
+        if not isinstance(question_id, str) or not question_id.strip():
+            return [], f"ask_user 的第 {index} 个问题 id 无效"
+        question_id = question_id.strip()
+        if question_id in question_ids:
+            return [], f"ask_user 的问题 id 重复：{question_id}"
+        if not isinstance(header, str) or not header.strip():
+            return [], f"ask_user 的第 {index} 个问题 header 无效"
+        if not isinstance(question, str) or not question.strip():
+            return [], f"ask_user 的第 {index} 个问题正文无效"
+
+        raw_options = raw_question.get("options")
+        if not isinstance(raw_options, list):
+            return [], f"ask_user 的第 {index} 个问题 options 必须是数组"
+        options: list[dict[str, str]] = []
+        for option_index, raw_option in enumerate(raw_options, start=1):
+            if not isinstance(raw_option, dict) or set(raw_option) != {
+                "label",
+                "description",
+            }:
+                return [], (
+                    f"ask_user 的第 {index} 个问题中第 {option_index} 个选项无效"
+                )
+            label = raw_option.get("label")
+            description = raw_option.get("description")
+            if not isinstance(label, str) or not label.strip():
+                return [], (
+                    f"ask_user 的第 {index} 个问题中第 {option_index} 个标签无效"
+                )
+            if not isinstance(description, str):
+                return [], (
+                    f"ask_user 的第 {index} 个问题中第 {option_index} 个说明无效"
+                )
+            options.append(
+                {"label": label.strip(), "description": description.strip()}
+            )
+
+        normalized: dict[str, Any] = {
+            "id": question_id,
+            "header": header.strip(),
+            "question": question.strip(),
+            "options": options,
+        }
+        if "multiSelect" in raw_question:
+            multi_select = raw_question.get("multiSelect")
+            if not isinstance(multi_select, bool):
+                return [], f"ask_user 的第 {index} 个问题 multiSelect 无效"
+            normalized["multiSelect"] = multi_select
+        question_ids.add(question_id)
+        questions.append(normalized)
+    return questions, None
+
+
+def _normalize_dynamic_answers(
+    response: dict[str, Any],
+    questions: list[dict[str, Any]],
+) -> dict[str, dict[str, list[str]]] | None:
+    raw_response = response.get("response")
+    raw_answers = raw_response.get("answers") if isinstance(raw_response, dict) else None
+    expected_ids = [str(question["id"]) for question in questions]
+    if not isinstance(raw_answers, dict) or set(raw_answers) != set(expected_ids):
+        return None
+
+    normalized: dict[str, dict[str, list[str]]] = {}
+    for question_id in expected_ids:
+        raw_answer = raw_answers.get(question_id)
+        values = raw_answer.get("answers") if isinstance(raw_answer, dict) else None
+        if (
+            not isinstance(values, list)
+            or not values
+            or not all(isinstance(value, str) and value.strip() for value in values)
+        ):
+            return None
+        normalized[question_id] = {
+            "answers": [value.strip() for value in values],
+        }
+    return normalized
+
+
+def _dynamic_tool_error(message: str) -> dict[str, Any]:
+    return {
+        "contentItems": [{"type": "inputText", "text": message}],
+        "success": False,
+    }
 
 
 def _codex_decision(
@@ -948,6 +1159,16 @@ def _usage_from_token_usage(token_usage: Any) -> Usage:
 
 
 def _codex_review_capable(initialized: dict[str, Any]) -> bool:
+    return _codex_version_at_least(initialized, _MIN_REVIEW_VERSION)
+
+
+def _codex_dynamic_tools_capable(initialized: dict[str, Any]) -> bool:
+    return _codex_version_at_least(initialized, _MIN_DYNAMIC_TOOLS_VERSION)
+
+
+def _codex_version_at_least(
+    initialized: dict[str, Any], minimum: tuple[int, int, int]
+) -> bool:
     server = initialized.get("serverInfo") or initialized.get("server_info") or {}
     raw = server.get("version") if isinstance(server, dict) else None
     if not isinstance(raw, str) or not raw:
@@ -960,7 +1181,7 @@ def _codex_review_capable(initialized: dict[str, Any]) -> bool:
         numbers.append(int(digits))
     while len(numbers) < 3:
         numbers.append(0)
-    return tuple(numbers) >= _MIN_REVIEW_VERSION
+    return tuple(numbers) >= minimum
 
 
 async def _configure_skill_roots(

@@ -202,8 +202,14 @@ Trunk: `backend/miniclaw2/providers/` (`base.py`, `claude.py`, `codex.py`).
   `CONTEXT.md` prepended to `turn/start` input on fresh threads
   (resumed threads keep the context they were started with). Maps
   Codex `requestUserInput`, command-execution, file-change, and
-  permission approvals onto the same wire envelopes. Already streams
-  per-delta.
+  permission approvals onto the same wire envelopes. Fresh non-minimal
+  threads also register a host `ask_user` dynamic function tool, allowing
+  writable Default-mode agents to pause on the same `ASK_USER` gate and
+  continue the current turn after the answer. This experimental protocol is
+  pinned to codex-cli >= 0.146.0. Resumed threads do not resend
+  `dynamicTools`: post-upgrade threads restore the tool from their rollout,
+  while older historical threads retain conversation continuity without
+  claiming inline ask-user support. Already streams per-delta.
 - `NodeRunner` owns the state machine and persistence; providers do
   IO only. Cleanup resolves any open `HumanGate` as denied when the
   node ends.
@@ -902,13 +908,18 @@ UI affordances and features MiniClaw2 does not expose on top of it.
   through MiniClaw2's `ASK_USER` gate.
 - Codex `requestUserInput`, command/file/permission approvals mapped
   onto the same gate envelope; session-scoped allow via
-  `acceptForSession`.
+  `acceptForSession`. Fresh non-minimal threads register the host
+  `ask_user` dynamic tool so Default-mode agents can use that envelope without
+  entering Plan mode; malformed calls, unknown dynamic tools, cancelled gates,
+  and malformed answers return `success: false` without opening a permission
+  gate.
 - The Codex adapter accepts both current
   `item/commandExecution/requestApproval` / `item/fileChange/requestApproval`
   requests and the older `execCommandApproval` / `applyPatchApproval` methods.
   The older methods return their historical decision strings
-  (`approved`, `approved_for_session`, `denied`, `abort`). They remain until
-  the minimum supported Codex app-server version is defined.
+  (`approved`, `approved_for_session`, `denied`, `abort`). They remain for
+  compatibility with historical threads and older event recordings even
+  though fresh interactive threads now require codex-cli >= 0.146.0.
 
 ### Pending
 
@@ -1473,6 +1484,30 @@ Trunk: `backend/miniclaw2/store.py`, `backend/miniclaw2/replay.py`.
   and disabling sharing remain deferred because ownership of that host's node
   subtree needs an explicit archival or transfer policy. All devices using the
   same synced store must upgrade together for schema v7.
+- A non-host device can ask for sharing without writing into the project tree.
+  Requests live at `sharing-requests/<pid>/<rid>/`, where `request.json` and
+  `cancellation.json` are requester-owned and `decision.json` is written only
+  by the project's current `machine_id`. This is the sole exception to
+  device-native single-writer ownership, and it is a top-level requester-owned
+  file rather than a write under `projects/<pid>/`, so a request and a
+  concurrent host-side project edit merge with no conflict fallback.
+  `request_project_sharing()` is the only project write that skips
+  `require_native()`; it still requires a non-owner device, a non-temporary
+  `device-native` project, a writable store, and configured metadata sync.
+  Accepting delegates entirely to `enable_sharing()` and writes the `accepted`
+  record only after the migration succeeds, so an active runner (409) or a
+  repository without commits (400) leaves the request pending and retryable.
+  Status is derived on read, never stored: a `shared` project reads
+  `fulfilled` even over an earlier rejection, and an `accepted` record whose
+  project never migrated reads `invalid` rather than claiming success. A
+  request is a project-level conversion intent, not a per-device ACL —
+  accepting any request converts the whole project, and rejecting one does not
+  bar that device from binding later. Creating, accepting, rejecting, and
+  cancelling only persist locally; the remote exchange stays a separate
+  explicit **Sync now**, and a failed sync never reverses the local write, so
+  the UI reports "local done, not yet synced" with a sync-only retry. Schema
+  v11 gates the new records so an older build goes read-only instead of
+  silently ignoring them.
 - `$MINICLAW_HOME` can be initialized as a Git repository and exchanged with
   a user-provided remote only through `miniclaw2 sync init <git-url>` or the
   Global settings **Sync now** action. Local durable writes are committed on a
@@ -1532,6 +1567,9 @@ Trunk: `backend/miniclaw2/store.py`, `backend/miniclaw2/replay.py`.
 - Removing or replacing a shared host binding, including archival or transfer
   of its `hosts/<mid>/nodes/` ownership. Device-native projects still have no
   adopt-project ownership transfer.
+- Compaction of terminal sharing-request records. They stay on disk as history
+  and, once their project is gone, as `orphaned` entries; no retention policy
+  removes them yet.
 - Sync retention/compaction — `events.jsonl` transcripts grow the store
   repo monotonically; archiving, compaction, or LFS is deferred until
   repo size hurts.

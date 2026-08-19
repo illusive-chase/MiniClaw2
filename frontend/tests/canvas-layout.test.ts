@@ -5,6 +5,7 @@ import {
   PENDING_GATE_NODE_Z_INDEX,
 } from "../src/canvas/nodeLayers";
 import {
+  appendBelowLanePosition,
   buildGraph,
   clusterTemplateInstances,
   snapPlanspaceChildPosition,
@@ -14,6 +15,7 @@ import {
   resolveCommitPositionTransfer,
   resolveDisplacedGhostPosition,
   resolveGitChangesAppearancePosition,
+  resolveRenderedLaneAnchorId,
   resolveSyncedNodePosition,
   resizePlanspaceLanes,
   summarizeInstanceArguments,
@@ -28,6 +30,8 @@ import type {
   NodeInfo,
 } from "../src/types";
 import {
+  lastActiveNodeInLane,
+  nodeIdsByRecentActivityInLane,
   nodeIdsNeedingEventReplay,
   preferNewerNode,
   shouldAutoSelectEventNode,
@@ -1050,6 +1054,307 @@ function testNewLaneNodeFollowsActualLayout(): void {
   assert.deepEqual(
     graph.rfNodes.find((item) => item.id === "new")?.position,
     { x: 600, y: LANE.planspaceLaneAgentRowY },
+  );
+}
+
+function testExplicitlyCreatedNodeAppendsBelowTheLane(): void {
+  const planspaceId = "planspaces.alpha";
+  const laneId = `planspace:${planspaceId}`;
+  /* The default layout walks the agent row rightwards, so "old-4" is both the
+   * rightmost tile and the one the user last worked in. A node created by the
+   * lane "+" button must clear every tile vertically while lining up under the
+   * anchor horizontally — not extend the row further right. */
+  const built = buildGraph(args({
+    nodes: [
+      node("old-1", { planspace_id: planspaceId, created_at: 1 }),
+      node("old-2", { planspace_id: planspaceId, created_at: 2 }),
+      node("old-3", { planspace_id: planspaceId, created_at: 3 }),
+      node("old-4", { planspace_id: planspaceId, created_at: 4 }),
+    ],
+    knownPlanspaceIds: [planspaceId],
+  }));
+
+  const anchor = built.rfNodes.find((item) => item.id === "old-4");
+  assert.ok(anchor, "the anchor tile must be laid out");
+  const appended = appendBelowLanePosition(laneId, built.rfNodes, "old-4");
+  assert.ok(appended, "a lane with children must yield an append position");
+
+  assert.equal(
+    appended.x,
+    anchor.position.x,
+    "x follows the lane's last active node so the new tile joins that branch",
+  );
+  for (const existing of built.rfNodes) {
+    if (existing.parentNode !== laneId) continue;
+    assert.ok(
+      appended.y >= existing.position.y + (existing.height ?? 0),
+      `appended node must clear ${existing.id} instead of overlapping it`,
+    );
+  }
+}
+
+function testAppendedNodeClearsAHandPlacedBottomNode(): void {
+  const planspaceId = "planspaces.alpha";
+  const laneId = `planspace:${planspaceId}`;
+  /* A tile dragged far down still owns the lane's bottom edge, so the appended
+   * position must be derived from live geometry rather than the default row. */
+  const draggedY = LANE.planspaceLaneAgentRowY + LANE.siblingYStep * 4;
+  const built = buildGraph(args({
+    nodes: [
+      node("top", { planspace_id: planspaceId, created_at: 1 }),
+      node("dragged-low", { planspace_id: planspaceId, created_at: 2 }),
+    ],
+    knownPlanspaceIds: [planspaceId],
+    layoutHints: {
+      top: { x: 40, y: LANE.planspaceLaneAgentRowY },
+      "dragged-low": { x: 320, y: draggedY },
+    },
+  }));
+
+  const appended = appendBelowLanePosition(laneId, built.rfNodes, "top");
+  assert.ok(appended, "a lane with children must yield an append position");
+  assert.ok(
+    appended.y > draggedY,
+    "the append position must sit below the lowest tile, wherever it was dragged",
+  );
+  assert.equal(
+    appended.x,
+    40,
+    "x still follows the named anchor, not the bottom-most tile",
+  );
+}
+
+function testAppendedNodeFallsBackToLanePaddingWithoutAnAnchor(): void {
+  const planspaceId = "planspaces.alpha";
+  const laneId = `planspace:${planspaceId}`;
+  const built = buildGraph(args({
+    nodes: [node("only", { planspace_id: planspaceId, created_at: 1 })],
+    knownPlanspaceIds: [planspaceId],
+  }));
+
+  assert.equal(
+    appendBelowLanePosition(laneId, built.rfNodes, null)?.x,
+    LANE.planspaceLanePaddingX,
+    "an unknown anchor falls back to the lane's left padding",
+  );
+  assert.equal(
+    appendBelowLanePosition(laneId, built.rfNodes, "not-in-this-lane")?.x,
+    LANE.planspaceLanePaddingX,
+    "an anchor outside the lane is ignored rather than trusted",
+  );
+}
+
+function testEmptyLaneHasNothingToAppendBelow(): void {
+  const planspaceId = "planspaces.empty";
+  const built = buildGraph(args({
+    nodes: [],
+    knownPlanspaceIds: [planspaceId],
+  }));
+
+  assert.equal(
+    appendBelowLanePosition(`planspace:${planspaceId}`, built.rfNodes, null),
+    null,
+    "an empty lane yields no position so the ordinary first-slot default applies",
+  );
+}
+
+function testAppendedPositionSurvivesAsALayoutHint(): void {
+  const planspaceId = "planspaces.alpha";
+  const laneId = `planspace:${planspaceId}`;
+  const existing = [
+    node("old-1", { planspace_id: planspaceId, created_at: 1 }),
+    node("old-2", { planspace_id: planspaceId, created_at: 2 }),
+  ];
+  const before = buildGraph(args({
+    nodes: existing,
+    knownPlanspaceIds: [planspaceId],
+  }));
+  const appended = appendBelowLanePosition(laneId, before.rfNodes, "old-2");
+  assert.ok(appended, "a lane with children must yield an append position");
+
+  /* The position reaches the layout as a hint (via nodePositionTarget), so the
+   * rebuilt graph must honour it verbatim and grow the lane to contain it. */
+  const after = buildGraph(args({
+    nodes: [
+      ...existing,
+      node("fresh", { planspace_id: planspaceId, state: "virtual", created_at: 3 }),
+    ],
+    knownPlanspaceIds: [planspaceId],
+    layoutHints: { fresh: appended },
+  }));
+
+  const fresh = after.rfNodes.find((item) => item.id === "fresh");
+  assert.deepEqual(fresh?.position, appended);
+  assert.equal(fresh?.parentNode, laneId);
+  const lane = after.rfNodes.find((item) => item.id === laneId);
+  const laneHeight = (lane?.data as { height: number }).height;
+  assert.ok(
+    laneHeight >= appended.y + (fresh?.height ?? 0),
+    "the lane must grow to contain a node appended below its previous bottom",
+  );
+}
+
+function testLastActiveNodeInLanePicksTheLatestActivity(): void {
+  const planspaceId = "planspaces.alpha";
+  const other = "planspaces.beta";
+
+  /* Activity, not creation order: the node created first but finished last is
+   * the one the user was most recently working in. */
+  assert.equal(
+    lastActiveNodeInLane(
+      [
+        node("early-created-late-finished", {
+          planspace_id: planspaceId,
+          created_at: 1,
+          started_at: 5,
+          finished_at: 900,
+        }),
+        node("late-created-never-ran", {
+          planspace_id: planspaceId,
+          created_at: 100,
+        }),
+      ],
+      planspaceId,
+    )?.id,
+    "early-created-late-finished",
+  );
+
+  /* A running node reports started_at with no finished_at yet. */
+  assert.equal(
+    lastActiveNodeInLane(
+      [
+        node("done-earlier", {
+          planspace_id: planspaceId,
+          created_at: 1,
+          finished_at: 50,
+        }),
+        node("running-now", {
+          planspace_id: planspaceId,
+          state: "running",
+          created_at: 2,
+          started_at: 80,
+        }),
+      ],
+      planspaceId,
+    )?.id,
+    "running-now",
+  );
+
+  /* A never-run virtual ranks by creation, which is all it carries. */
+  assert.equal(
+    lastActiveNodeInLane(
+      [
+        node("older-virtual", {
+          planspace_id: planspaceId,
+          state: "virtual",
+          created_at: 10,
+        }),
+        node("newer-virtual", {
+          planspace_id: planspaceId,
+          state: "virtual",
+          created_at: 20,
+        }),
+      ],
+      planspaceId,
+    )?.id,
+    "newer-virtual",
+  );
+
+  assert.equal(
+    lastActiveNodeInLane(
+      [
+        node("mine", { planspace_id: planspaceId, created_at: 1 }),
+        node("theirs", { planspace_id: other, created_at: 999, finished_at: 999 }),
+      ],
+      planspaceId,
+    )?.id,
+    "mine",
+    "another lane's activity must never be chosen as this lane's anchor",
+  );
+
+  assert.equal(
+    lastActiveNodeInLane([node("elsewhere", { planspace_id: other })], planspaceId),
+    null,
+    "a lane with no nodes has no anchor",
+  );
+}
+
+function testLaneAnchorUsesTheNewestRenderedCandidate(): void {
+  const planspaceId = "planspaces.alpha";
+  const laneId = `planspace:${planspaceId}`;
+  const durableNodes = [
+    node("visible", { planspace_id: planspaceId, created_at: 1 }),
+    node("completed-op", {
+      planspace_id: planspaceId,
+      kind: "op",
+      state: "done",
+      created_at: 2,
+    }),
+  ];
+  const built = buildGraph(args({
+    nodes: durableNodes,
+    knownPlanspaceIds: [planspaceId],
+  }));
+  const candidates = nodeIdsByRecentActivityInLane(durableNodes, planspaceId);
+
+  assert.deepEqual(candidates, ["completed-op", "visible"]);
+  assert.equal(
+    resolveRenderedLaneAnchorId(laneId, built.rfNodes, candidates),
+    "visible",
+    "a completed op omitted by buildGraph must not force left-padding placement",
+  );
+
+  const instanceId = "collapsed-anchor-instance";
+  const collapsed = buildGraph(args({
+    nodes: [
+      node("collapsed-member", {
+        planspace_id: planspaceId,
+        template_instance_id: instanceId,
+      }),
+    ],
+    knownPlanspaceIds: [planspaceId],
+    collapsedTemplateInstanceIds: [instanceId],
+  }));
+  assert.equal(
+    resolveRenderedLaneAnchorId(
+      laneId,
+      collapsed.rfNodes,
+      ["collapsed-member"],
+      () => templateInstanceBoxNodeId(instanceId),
+    ),
+    templateInstanceBoxNodeId(instanceId),
+    "a collapsed member must anchor to the instance box rendered in its place",
+  );
+}
+
+function testAlreadyPlacedNodeIsNeverRepositioned(): void {
+  const planspaceId = "planspaces.alpha";
+  const laneId = `planspace:${planspaceId}`;
+  /* The Git review node is created server-side and can reach the canvas over
+   * the WebSocket before the POST returns. Whatever the reason it is already
+   * placed, a visible tile must not be moved out from under the user. */
+  const built = buildGraph(args({
+    nodes: [
+      node("old", { planspace_id: planspaceId, created_at: 1 }),
+      node("review", {
+        planspace_id: planspaceId,
+        category: "review",
+        subtype: "code_review",
+        state: "queued",
+        created_at: 2,
+      }),
+    ],
+    knownPlanspaceIds: [planspaceId],
+  }));
+
+  assert.equal(
+    appendBelowLanePosition(laneId, built.rfNodes, "old", "review"),
+    null,
+    "a node already rendered in the lane yields no reposition",
+  );
+  assert.ok(
+    appendBelowLanePosition(laneId, built.rfNodes, "old", "not-yet-rendered"),
+    "a node absent from the lane still gets an append position",
   );
 }
 
@@ -2154,6 +2459,14 @@ testBindingDrivenContextTiles();
 testFloatingContextDoesNotOverlapFirstLane();
 testPlanspaceChildrenHaveOneSidedExtent();
 testNewLaneNodeFollowsActualLayout();
+testExplicitlyCreatedNodeAppendsBelowTheLane();
+testAppendedNodeClearsAHandPlacedBottomNode();
+testAppendedNodeFallsBackToLanePaddingWithoutAnAnchor();
+testEmptyLaneHasNothingToAppendBelow();
+testAppendedPositionSurvivesAsALayoutHint();
+testAlreadyPlacedNodeIsNeverRepositioned();
+testLastActiveNodeInLanePicksTheLatestActivity();
+testLaneAnchorUsesTheNewestRenderedCandidate();
 testRerunNodeCascadesNearOriginal();
 testPlanspaceLaneMinimumDoesNotExceedAgentHeight();
 testPlanspaceLaneBuildAndDropShareBottomFit();

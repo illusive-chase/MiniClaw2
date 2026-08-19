@@ -26,9 +26,11 @@ import type {
 } from "../types";
 import { artifactRawUrl } from "../api";
 import {
+  appendBelowLanePosition,
   buildGraph,
   classifyPlanspaceLaneResizes,
   resolveCommitPositionTransfer,
+  resolveRenderedLaneAnchorId,
   resolveDisplacedGhostPosition,
   resolveGitChangesAppearancePosition,
   resolveSyncedNodePosition,
@@ -58,6 +60,7 @@ import { ArtifactNode } from "./nodes/ArtifactNode";
 import { CommitNode } from "./nodes/CommitNode";
 import { CommitColumnHeaderNode } from "./nodes/CommitColumnHeaderNode";
 import { setHoverGroup } from "./hoverStore";
+import { setLaneAppendResolver } from "./lanePlacement";
 import { decorateEdges, resolveHoverGroup } from "./edgeVisibility";
 import { decoratePendingGateLayers } from "./nodeLayers";
 
@@ -428,6 +431,30 @@ function CanvasInner({
   );
   const rfNodesRef = useRef(rfNodes);
   rfNodesRef.current = rfNodes;
+  /* Publish "where would a new node go in this lane" to the App-level handlers
+   * behind the lane "+" and Git Review buttons. Those run outside the canvas but
+   * need its live child geometry, which drag can move away from the built
+   * layout. Registered as an effect so the resolver is torn down with the
+   * canvas rather than outliving it. */
+  useEffect(() => {
+    setLaneAppendResolver((planspaceId, anchorNodeIds, forNodeId) => {
+      const laneNodeId = `planspace:${planspaceId}`;
+      const liveNodes = rfNodesRef.current as RFNode[];
+      const anchorNodeId = resolveRenderedLaneAnchorId(
+        laneNodeId,
+        liveNodes,
+        anchorNodeIds,
+        resolveRenderId,
+      );
+      return appendBelowLanePosition(
+        laneNodeId,
+        liveNodes,
+        anchorNodeId,
+        forNodeId,
+      );
+    });
+    return () => setLaneAppendResolver(null);
+  }, [resolveRenderId]);
   const commitGhostPositionRef = useRef<{ x: number; y: number } | null>(
     layoutHintsRef.current["commit:ghost"] ?? null,
   );

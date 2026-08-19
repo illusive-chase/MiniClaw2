@@ -22,7 +22,7 @@ from .tags import TAGS_FILENAME
 
 MACHINE_FILENAME = "machine.json"
 SCHEMA_FILENAME = "schema.json"
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 SCHEMA_NAME = "node-revision-v9"
 DEFAULT_COMMIT_DEBOUNCE_SECONDS = 30.0
 

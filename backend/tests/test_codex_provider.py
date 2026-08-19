@@ -17,6 +17,7 @@ from miniclaw2.providers.codex import (
     _CodexJsonRpcClient,
     _CODEX_STDIO_BUFFER_LIMIT_BYTES,
     _configure_skill_roots,
+    _codex_dynamic_tools_capable,
     _codex_user_input_response,
     _activity_from_item,
     _thread_params,
@@ -378,6 +379,7 @@ class CodexProviderTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(thread_params["model"], "gpt-5.6-sol")
         self.assertNotIn("modelProvider", thread_params)
         self.assertEqual(thread_params["reasoningEffort"], "high")
+        self.assertNotIn("dynamicTools", thread_params)
         self.assertEqual(turn_params["approvalPolicy"], "never")
         expected_project_root = str(Path("/tmp/workspace").resolve(strict=False))
         self.assertEqual(
@@ -402,6 +404,17 @@ class CodexProviderTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(thread_params["model"], "gpt-5.6-sol")
         self.assertNotIn("modelProvider", thread_params)
         self.assertEqual(thread_params["reasoningEffort"], "high")
+        dynamic_tools = thread_params["dynamicTools"]
+        self.assertEqual(len(dynamic_tools), 1)
+        self.assertEqual(dynamic_tools[0]["type"], "function")
+        self.assertEqual(dynamic_tools[0]["name"], "ask_user")
+        question_schema = dynamic_tools[0]["inputSchema"]["properties"]["questions"]
+        self.assertEqual(question_schema["minItems"], 1)
+        self.assertEqual(question_schema["maxItems"], 3)
+        self.assertEqual(
+            question_schema["items"]["required"],
+            ["id", "header", "question", "options"],
+        )
         self.assertEqual(
             turn_params["sandboxPolicy"],
             {
@@ -409,6 +422,29 @@ class CodexProviderTest(unittest.IsolatedAsyncioTestCase):
                 "writableRoots": [expected_project_root],
                 "networkAccess": False,
             },
+        )
+
+    def test_resumed_thread_does_not_repeat_dynamic_tools(self) -> None:
+        ctx = _FakeProviderContext()
+
+        params = _thread_params(  # type: ignore[arg-type]
+            ctx,
+            {"threadId": "thread-1", "cwd": "/tmp/workspace"},
+        )
+
+        self.assertNotIn("dynamicTools", params)
+        self.assertNotIn("serviceName", params)
+
+    def test_dynamic_tools_require_codex_0146(self) -> None:
+        self.assertFalse(
+            _codex_dynamic_tools_capable(
+                {"serverInfo": {"version": "0.145.0"}}
+            )
+        )
+        self.assertTrue(
+            _codex_dynamic_tools_capable(
+                {"serverInfo": {"version": "0.146.0"}}
+            )
         )
 
     def test_explicit_read_only_sandbox_is_preserved(self) -> None:
@@ -635,6 +671,153 @@ class CodexProviderTest(unittest.IsolatedAsyncioTestCase):
             },
         )
         self.assertEqual(ctx.requests, [])
+
+    async def test_dynamic_ask_user_maps_gate_and_returns_answers(self) -> None:
+        provider = CodexProvider()
+        ctx = _FakeGateContext(
+            {
+                "response": {
+                    "answers": {
+                        "framework": {"answers": [" React "]},
+                        "checks": {"answers": ["types", "tests"]},
+                    }
+                }
+            }
+        )
+        result = await provider._handle_server_request(
+            {
+                "id": 41,
+                "method": "item/tool/call",
+                "params": {
+                    "threadId": "thread-1",
+                    "turnId": "turn-1",
+                    "callId": "call-1",
+                    "namespace": None,
+                    "tool": "ask_user",
+                    "arguments": {
+                        "questions": [
+                            {
+                                "id": "framework",
+                                "header": "Framework",
+                                "question": "Which framework?",
+                                "options": [
+                                    {
+                                        "label": "React",
+                                        "description": "Use React.",
+                                    }
+                                ],
+                            },
+                            {
+                                "id": "checks",
+                                "header": "Checks",
+                                "question": "Which checks?",
+                                "multiSelect": True,
+                                "options": [],
+                            },
+                        ]
+                    },
+                },
+            },
+            ctx,  # type: ignore[arg-type]
+        )
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["contentItems"][0]["type"], "inputText")
+        self.assertEqual(
+            json.loads(result["contentItems"][0]["text"]),
+            {
+                "answers": {
+                    "framework": {"answers": ["React"]},
+                    "checks": {"answers": ["types", "tests"]},
+                }
+            },
+        )
+        self.assertEqual(len(ctx.requests), 1)
+        gate = ctx.requests[0]
+        self.assertEqual(gate.subtype, GateSubtype.ASK_USER)
+        self.assertEqual(gate.tool_name, "ask_user")
+        self.assertEqual(gate.provider_request_id, "41")
+        self.assertEqual(gate.tool_input["questions"][1]["multiSelect"], True)
+        self.assertEqual(
+            gate.response_hint,
+            {
+                "codex_method": "item/tool/call",
+                "codex_call_id": "call-1",
+                "dynamic_tool": "ask_user",
+            },
+        )
+
+    async def test_dynamic_ask_user_rejects_invalid_arguments_without_gate(self) -> None:
+        provider = CodexProvider()
+        ctx = _FakeGateContext({"response": {"answers": {}}})
+
+        result = await provider._handle_server_request(
+            {
+                "id": 42,
+                "method": "item/tool/call",
+                "params": {
+                    "namespace": None,
+                    "tool": "ask_user",
+                    "arguments": {"questions": []},
+                },
+            },
+            ctx,  # type: ignore[arg-type]
+        )
+
+        self.assertFalse(result["success"])
+        self.assertIn("1 到 3 个问题", result["contentItems"][0]["text"])
+        self.assertEqual(ctx.requests, [])
+
+    async def test_unknown_dynamic_tool_fails_without_permission_gate(self) -> None:
+        provider = CodexProvider()
+        ctx = _FakeGateContext({"allow": True})
+
+        result = await provider._handle_server_request(
+            {
+                "id": 43,
+                "method": "item/tool/call",
+                "params": {
+                    "namespace": None,
+                    "tool": "other_tool",
+                    "arguments": {},
+                },
+            },
+            ctx,  # type: ignore[arg-type]
+        )
+
+        self.assertFalse(result["success"])
+        self.assertIn("other_tool", result["contentItems"][0]["text"])
+        self.assertEqual(ctx.requests, [])
+
+    async def test_dynamic_ask_user_fails_when_gate_has_no_answers(self) -> None:
+        provider = CodexProvider()
+        ctx = _FakeGateContext({"allow": False, "message": "node ended"})
+
+        result = await provider._handle_server_request(
+            {
+                "id": 44,
+                "method": "item/tool/call",
+                "params": {
+                    "namespace": None,
+                    "tool": "ask_user",
+                    "arguments": {
+                        "questions": [
+                            {
+                                "id": "confirm",
+                                "header": "Confirm",
+                                "question": "Continue?",
+                                "options": [],
+                            }
+                        ]
+                    },
+                },
+            },
+            ctx,  # type: ignore[arg-type]
+        )
+
+        self.assertFalse(result["success"])
+        self.assertIn("node ended", result["contentItems"][0]["text"])
+        self.assertEqual(len(ctx.requests), 1)
 
     async def test_token_usage_keeps_last_context_and_cumulative_output(self) -> None:
         provider = CodexProvider()

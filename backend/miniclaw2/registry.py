@@ -62,6 +62,7 @@ from .model_catalog import (
 )
 from .preview import render_executed_preview, render_virtual_preview
 from .runner import NodeRunner
+from .sharing_requests import SharingRequestRecord
 from .store import Store
 from .virtual_graph import has_cycle
 from .workspace import create_temporary_root, remove_temporary_root
@@ -90,6 +91,13 @@ class VirtualPromotionResult:
 class PlanspaceCreationResult:
     node: Node
     activated: bool
+
+
+@dataclass(frozen=True)
+class ProjectNodeSummary:
+    turns: int
+    queued_count: int
+    last_activity_at: float
 
 
 class NonNativeProjectError(PermissionError):
@@ -504,6 +512,141 @@ class ProjectRegistry:
         self.store.invalidate_owner_index()
         self.store.update_project(project)
         self.store.sync.schedule_commit(f'enable sharing for project "{project.name or pid}"')
+        return project
+
+    def sharing_requests(self, pid: str) -> list[SharingRequestRecord]:
+        """Requests against one project, newest status first computed on read."""
+        project = self.get_project(pid)
+        if project is None:
+            return []
+        return self.store.sharing_requests_for_project(project)
+
+    def visible_sharing_requests(self) -> list[SharingRequestRecord]:
+        """Requests this device either raised or is the host for.
+
+        Every other device's request against a project we do not own is
+        someone else's business, and listing it would imply we could act.
+        """
+        local = self.store.machine.id
+        owned = {
+            project.id
+            for project in self.list_projects()
+            if project.machine_id == local
+        }
+        return [
+            record
+            for record in self.store.list_sharing_requests()
+            if record.request.requester_machine_id == local
+            or record.project_id in owned
+        ]
+
+    def request_project_sharing(self, pid: str) -> SharingRequestRecord | None:
+        """Ask the native host to convert a device-native project to shared.
+
+        This is the only write a non-native device may make for a project,
+        and it lands outside the project tree so the host stays single-writer.
+        """
+        self.store.assert_writable()
+        project = self.get_project(pid)
+        if project is None:
+            return None
+        if project.machine_id == self.store.machine.id:
+            raise ValueError("this device is the native host; enable sharing directly")
+        if project.sharing == "shared":
+            raise ValueError("project is already shared")
+        if project.temporary:
+            raise ValueError("temporary projects cannot be shared")
+        if not self.store.sync.configured:
+            raise ValueError(
+                "metadata sync must be configured before requesting sharing"
+            )
+        return self.store.create_sharing_request(project)
+
+    def accept_project_sharing_request(
+        self,
+        pid: str,
+        rid: str,
+    ) -> tuple[Project, SharingRequestRecord] | None:
+        """Enable sharing on the host's terms, then record the acceptance.
+
+        The decision record is written only after the migration succeeds, so a
+        failed or blocked migration leaves the request pending and retryable
+        rather than telling the requester sharing is done.
+        """
+        project = self._require_decidable_request(pid, rid)
+        shared = self.enable_sharing(pid)
+        if shared is None:
+            return None
+        self.store.write_sharing_decision(shared, rid, "accepted")
+        record = next(
+            (item for item in self.sharing_requests(pid) if item.id == rid),
+            None,
+        )
+        if record is None:
+            return None
+        return shared, record
+
+    def reject_project_sharing_request(
+        self,
+        pid: str,
+        rid: str,
+    ) -> SharingRequestRecord | None:
+        """Close one request without changing the project.
+
+        Rejection is not a device ACL: the host may still enable sharing later,
+        and this device may then bind like any other.
+        """
+        project = self._require_decidable_request(pid, rid)
+        if not self.store.write_sharing_decision(project, rid, "rejected"):
+            return None
+        return next(
+            (item for item in self.sharing_requests(pid) if item.id == rid),
+            None,
+        )
+
+    def cancel_project_sharing_request(
+        self,
+        pid: str,
+        rid: str,
+    ) -> SharingRequestRecord | None:
+        """Withdraw a request this device raised."""
+        self.store.assert_writable()
+        project = self.get_project(pid)
+        if project is None:
+            return None
+        if project.sharing == "shared":
+            raise ValueError("project is already shared; nothing to cancel")
+        record = next(
+            (item for item in self.sharing_requests(pid) if item.id == rid),
+            None,
+        )
+        if record is None:
+            return None
+        if not record.is_open:
+            raise ValueError(f"sharing request is already {record.status}")
+        if not self.store.cancel_sharing_request(pid, rid):
+            return None
+        return next(
+            (item for item in self.sharing_requests(pid) if item.id == rid),
+            None,
+        )
+
+    def _require_decidable_request(self, pid: str, rid: str) -> Project:
+        """Guard host-side decisions: local owner, and an open request."""
+        self.store.assert_writable()
+        project = self.get_project(pid)
+        if project is None:
+            raise KeyError(pid)
+        if project.machine_id != self.store.machine.id:
+            raise NonNativeProjectError(project)
+        record = next(
+            (item for item in self.sharing_requests(pid) if item.id == rid),
+            None,
+        )
+        if record is None:
+            raise KeyError(rid)
+        if not record.is_open:
+            raise ValueError(f"sharing request is already {record.status}")
         return project
 
     def join_shared_project(self, pid: str, root_path: str) -> Project | None:
@@ -970,6 +1113,32 @@ class ProjectRegistry:
 
     def turn_count(self, pid: str) -> int:
         return len(self.store.list_nodes(pid))
+
+    def node_summary(self, project: Project) -> ProjectNodeSummary:
+        nodes = self.store.list_nodes(project.id)
+        last_activity_at = max(
+            (
+                timestamp
+                for node in nodes
+                for timestamp in (
+                    node.finished_at,
+                    node.started_at,
+                    node.created_at,
+                )
+                if timestamp is not None
+            ),
+            default=project.created_at,
+        )
+        return ProjectNodeSummary(
+            turns=len(nodes),
+            queued_count=sum(
+                1
+                for node in nodes
+                if node.state is NodeState.QUEUED
+                and self.is_native_node(project, node)
+            ),
+            last_activity_at=last_activity_at,
+        )
 
     def is_running(self, pid: str) -> bool:
         rt = self._runtimes.get(pid)

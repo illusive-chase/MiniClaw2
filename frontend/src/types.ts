@@ -233,6 +233,42 @@ export type SessionHost = {
   dirty?: boolean;
 };
 
+/** Status of a non-host device's request that a project's native host enable
+ * sharing. `pending`/`invalid` are the open states the UI can still act on;
+ * `fulfilled` means the project actually migrated, however that happened. */
+export type SharingRequestStatus =
+  | "pending"
+  | "fulfilled"
+  | "rejected"
+  | "cancelled"
+  | "orphaned"
+  | "invalid";
+
+/** One sharing request. `can_*` drive rendering only — the backend re-checks
+ * every capability, so a stale card cannot act on an outdated one. */
+export type SharingRequestInfo = {
+  id: string;
+  project_id: string;
+  project_name?: string;
+  status: SharingRequestStatus;
+  requester_machine_id: string;
+  requester_machine_label?: string;
+  owner_machine_id: string;
+  owner_machine_label?: string;
+  requested_at: number;
+  decided_at?: number | null;
+  cancelled_at?: number | null;
+  is_local_request?: boolean;
+  can_accept?: boolean;
+  can_reject?: boolean;
+  can_cancel?: boolean;
+};
+
+export type SharingRequestResult = {
+  request: SharingRequestInfo;
+  session: SessionInfo;
+};
+
 export type TemplateArgumentMeta = {
   name: string;
   description: string;

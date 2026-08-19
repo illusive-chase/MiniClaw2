@@ -54,6 +54,7 @@ import {
   templateGroupNodeId,
   templateInstanceBoxNodeId,
 } from "./canvas/layout";
+import { resolveLaneAppendPosition } from "./canvas/lanePlacement";
 import { setAgentNodeContext } from "./canvas/nodes/AgentNode";
 import { setPlanspaceLaneContext } from "./canvas/nodes/PlanspaceLaneNode";
 import { setTemplateGroupContext } from "./canvas/nodes/TemplateGroupNode";
@@ -80,6 +81,8 @@ import {
 } from "./templateInstantiate";
 import { ProjectsLanding } from "./components/ProjectsLanding";
 import { ActiveNodesBar } from "./components/ActiveNodesBar";
+import { SharingRequestControls } from "./components/SharingRequestControls";
+import { useSharingRequests } from "./useSharingRequests";
 import { ThemeToggle } from "./components/ThemeToggle";
 import { UsageStrip } from "./components/UsageStrip";
 import { GitWorkspaceStatus } from "./components/GitWorkspaceStatus";
@@ -102,10 +105,12 @@ import type {
   CommitDescriptor,
   TemplateSummary,
   TemplateInstanceRecord,
+  Tag,
 } from "./types";
 import { useSessionSocket } from "./ws";
 import {
   canResumeNode,
+  nodeIdsByRecentActivityInLane,
   nodeIdsNeedingEventReplay,
   preferNewerNode,
   shouldAutoSelectEventNode,
@@ -137,6 +142,16 @@ const INTERRUPTIBLE_STATES = new Set<NodeInfo["state"]>([
   "awaiting_human_input",
 ]);
 
+function upsertSession(
+  sessions: SessionInfo[] | null,
+  next: SessionInfo,
+): SessionInfo[] {
+  if (!sessions) return [next];
+  const index = sessions.findIndex((session) => session.id === next.id);
+  if (index < 0) return [...sessions, next];
+  return sessions.map((session, current) => (current === index ? next : session));
+}
+
 /** Prefer the backend's `detail` over the generic wrapper message. */
 function apiErrorText(err: unknown): string {
   if (err instanceof ApiError) return err.detail ?? err.message;
@@ -144,6 +159,8 @@ function apiErrorText(err: unknown): string {
 }
 export function App() {
   const [route, setRoute] = useState<Route>("landing");
+  const [landingSessions, setLandingSessions] = useState<SessionInfo[] | null>(null);
+  const [landingTags, setLandingTags] = useState<Tag[]>([]);
   const [session, setSession] = useState<SessionInfo | null>(null);
   const [joiningHost, setJoiningHost] = useState(false);
   const [nodes, setNodes] = useState<NodeInfo[]>([]);
@@ -471,6 +488,32 @@ export function App() {
   useEffect(() => {
     currentSessionIdRef.current = session?.id ?? null;
   }, [session?.id]);
+
+  /* Sharing requests live outside project records and only change on a sync,
+   * so they poll on their own slow cadence rather than riding session state. */
+  const sharing = useSharingRequests(true, {
+    onGlobalState: (next) => {
+      setGlobalState(next);
+      setModelPresets(next.model_presets);
+    },
+    onSession: (next) => {
+      setSession((current) => (current && current.id === next.id ? next : current));
+      setLandingSessions((current) => (current ? upsertSession(current, next) : current));
+    },
+    /* A sync can be the moment the host's acceptance arrives, which is what
+     * turns on `can_join_here` here. Re-read the session rather than deriving
+     * project state from the request record. */
+    onSynced: () => {
+      const openId = currentSessionIdRef.current;
+      if (!openId) return;
+      void getSession(openId)
+        .then((next) => {
+          setSession((current) => (current && current.id === next.id ? next : current));
+          setLandingSessions((current) => (current ? upsertSession(current, next) : current));
+        })
+        .catch((err: unknown) => console.warn("refresh session after sync failed:", err));
+    },
+  });
 
   useEffect(() => {
     nodeCountRef.current = nodes.length;
@@ -1464,10 +1507,21 @@ export function App() {
         return n.created_at < acc.created_at ? n : acc;
       }, null);
       const modelPresetId = laneAnchor?.model_preset_id ?? session?.model_preset_id ?? null;
+      /* Without an explicit position (the lane header "+" button, as opposed to
+       * a double-click that names a spot), append under the lane's existing
+       * work instead of letting the default cursor put the tile on the top row
+       * far off to the right. */
+      const resolvedPosition =
+        position ??
+        resolveLaneAppendPosition(
+          planspaceId,
+          nodeIdsByRecentActivityInLane(nodes, planspaceId),
+        ) ??
+        undefined;
       void createVirtualNode({
         planspace_id: planspaceId,
         model_preset_id: modelPresetId,
-        position,
+        position: resolvedPosition,
       });
     },
     [createVirtualNode, nodes, session?.model_preset_id],
@@ -2399,13 +2453,21 @@ export function App() {
         <ProjectsLanding
           onOpen={openProject}
           onCreate={() => setNewProjectModalOpen(true)}
+          sessions={landingSessions}
+          setSessions={setLandingSessions}
+          tags={landingTags}
+          setTags={setLandingTags}
+          sharingRequests={sharing.requests}
           modelPresets={modelPresets}
           globalState={globalState}
           onGlobalStateChanged={(next) => {
             setGlobalState(next);
             setModelPresets(next.model_presets);
           }}
-          onTemplateLaunched={(s) => openProject(s)}
+          onTemplateLaunched={(s) => {
+            setLandingSessions((current) => upsertSession(current, s));
+            openProject(s);
+          }}
         />
         <NewProjectModal
           open={newProjectModalOpen}
@@ -2414,6 +2476,7 @@ export function App() {
           onCancel={() => setNewProjectModalOpen(false)}
           onCreated={(next) => {
             setNewProjectModalOpen(false);
+            setLandingSessions((current) => upsertSession(current, next));
             openProject(next);
           }}
         />
@@ -2471,6 +2534,25 @@ export function App() {
         pendingUiCommitNodeIdsRef.current.add(result.node.id);
       } else if (action === "review") {
         const result = await gitReview(session.id);
+        /* The review node is created server-side into the active planspace, so
+         * it arrives with no position of its own and would otherwise take the
+         * lane's default top-row slot. Place it under the lane's current work,
+         * the same way the lane "+" button does. Passing the node id makes this
+         * a no-op when the tile is already on the canvas — `spawn_code_review`
+         * returns an in-flight review rather than creating one, and a WebSocket
+         * refresh can render a genuinely new node before this point. Either way
+         * a tile the user can already see must not jump. */
+        const laneId = result.node.planspace_id;
+        if (laneId) {
+          const position = resolveLaneAppendPosition(
+            laneId,
+            nodeIdsByRecentActivityInLane(nodesRef.current, laneId),
+            result.node.id,
+          );
+          if (position) {
+            setNodePositionTarget({ nodeId: result.node.id, position });
+          }
+        }
         selectAndOpenNode(result.node.id);
       } else if (action === "pull") {
         await gitPull(session.id);
@@ -2588,6 +2670,31 @@ export function App() {
                   className="rounded border border-line bg-surface px-1.5 py-0.5 font-sans text-ink-muted transition hover:border-line-strong hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   开启共享
+                </button>
+              )}
+              {session && (
+                <SharingRequestControls
+                  session={session}
+                  requests={sharing.requests}
+                  syncConfigured={!!globalState?.sync.configured}
+                  busy={sharing.busy}
+                  pendingSync={sharing.pendingSync}
+                  onRequest={() => void sharing.request(session.id)}
+                  onAccept={(requestId) => void sharing.accept(session.id, requestId)}
+                  onReject={(requestId) => void sharing.reject(session.id, requestId)}
+                  onCancel={(requestId) => void sharing.cancel(session.id, requestId)}
+                  onCheckForUpdates={() => void sharing.checkForUpdates()}
+                  onRetrySync={() => void sharing.retrySync()}
+                />
+              )}
+              {sharing.error && (
+                <button
+                  type="button"
+                  onClick={sharing.clearError}
+                  className="max-w-[18rem] truncate font-sans text-state-error"
+                  title={`${sharing.error}（点击隐藏）`}
+                >
+                  {sharing.error}
                 </button>
               )}
             </div>

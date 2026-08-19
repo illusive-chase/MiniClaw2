@@ -27,6 +27,8 @@ import type {
   SkillSelection,
   SkillSummary,
   SkillDetail,
+  SharingRequestInfo,
+  SharingRequestResult,
   Tag,
 } from "./types";
 import type { TemplateRewritePayload } from "./templateEditor";
@@ -261,10 +263,22 @@ export async function updateSessionTags(
   return res.json();
 }
 
-export async function listSessions(): Promise<SessionInfo[]> {
-  const res = await fetch("/sessions");
-  if (!res.ok) throw new Error(`listSessions failed: ${res.status}`);
-  return res.json();
+let listSessionsInFlight: Promise<SessionInfo[]> | null = null;
+
+export function listSessions(): Promise<SessionInfo[]> {
+  if (listSessionsInFlight) return listSessionsInFlight;
+
+  const request = (async () => {
+    const res = await fetch("/sessions");
+    if (!res.ok) throw new Error(`listSessions failed: ${res.status}`);
+    return res.json() as Promise<SessionInfo[]>;
+  })();
+  listSessionsInFlight = request;
+  const clear = () => {
+    if (listSessionsInFlight === request) listSessionsInFlight = null;
+  };
+  void request.then(clear, clear);
+  return request;
 }
 
 export async function listActiveNodes(): Promise<ActiveNodesResponse> {
@@ -709,6 +723,68 @@ export async function joinSessionHost(
     throw new Error(detail?.detail || `joinSessionHost failed: ${res.status}`);
   }
   return res.json();
+}
+
+/** Requests this device raised or hosts. One global read: the landing page
+ * renders every project, so a per-session field would scan the request tree
+ * once per card. */
+export async function listSharingRequests(): Promise<SharingRequestInfo[]> {
+  const res = await fetch("/sharing-requests");
+  if (!res.ok) {
+    throw new ApiError("listSharingRequests", res.status, await readErrorDetail(res));
+  }
+  const body = await res.json() as { requests?: SharingRequestInfo[] };
+  return body.requests ?? [];
+}
+
+async function sharingRequestMutation(
+  operation: string,
+  path: string,
+): Promise<SharingRequestResult> {
+  const res = await fetch(path, { method: "POST" });
+  if (!res.ok) {
+    throw new ApiError(operation, res.status, await readErrorDetail(res));
+  }
+  return res.json();
+}
+
+export function createSharingRequest(
+  sessionId: string,
+): Promise<SharingRequestResult> {
+  return sharingRequestMutation(
+    "createSharingRequest",
+    `/sessions/${sessionId}/sharing-requests`,
+  );
+}
+
+export function acceptSharingRequest(
+  sessionId: string,
+  requestId: string,
+): Promise<SharingRequestResult> {
+  return sharingRequestMutation(
+    "acceptSharingRequest",
+    `/sessions/${sessionId}/sharing-requests/${requestId}/accept`,
+  );
+}
+
+export function rejectSharingRequest(
+  sessionId: string,
+  requestId: string,
+): Promise<SharingRequestResult> {
+  return sharingRequestMutation(
+    "rejectSharingRequest",
+    `/sessions/${sessionId}/sharing-requests/${requestId}/reject`,
+  );
+}
+
+export function cancelSharingRequest(
+  sessionId: string,
+  requestId: string,
+): Promise<SharingRequestResult> {
+  return sharingRequestMutation(
+    "cancelSharingRequest",
+    `/sessions/${sessionId}/sharing-requests/${requestId}/cancel`,
+  );
 }
 
 export async function updateSessionPreferences(

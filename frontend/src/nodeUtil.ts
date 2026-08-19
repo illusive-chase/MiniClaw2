@@ -54,6 +54,39 @@ export function shouldOpenCreatedPlanspace(activated: boolean): boolean {
   return activated;
 }
 
+/** Lane nodes ordered from most to least recently active. Canvas placement
+ * consumes the full list because the newest durable node is not necessarily
+ * rendered: completed op nodes are omitted and collapsed template members are
+ * represented by their instance box. */
+export function nodeIdsByRecentActivityInLane(
+  nodes: readonly NodeInfo[],
+  planspaceId: string,
+): string[] {
+  const activityOf = (node: NodeInfo): number =>
+    Math.max(
+      node.finished_at ?? 0,
+      node.started_at ?? 0,
+      node.created_at,
+    );
+  return nodes
+    .filter((node) => node.planspace_id === planspaceId)
+    .sort((left, right) => {
+      const activityDelta = activityOf(right) - activityOf(left);
+      if (activityDelta !== 0) return activityDelta;
+      return right.created_at - left.created_at;
+    })
+    .map((node) => node.id);
+}
+
+/** The lane's most recently active durable node, independent of rendering. */
+export function lastActiveNodeInLane(
+  nodes: readonly NodeInfo[],
+  planspaceId: string,
+): NodeInfo | null {
+  const id = nodeIdsByRecentActivityInLane(nodes, planspaceId)[0];
+  return id ? nodes.find((node) => node.id === id) ?? null : null;
+}
+
 /** The four mutually exclusive kinds a virtual node can be classified as.
  * `library` is carried by `agent_op_kind` rather than `category`, so every
  * reader must consult both fields; this helper is the single place that does.
