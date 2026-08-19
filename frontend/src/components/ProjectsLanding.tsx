@@ -716,6 +716,18 @@ function ProjectCard({
             共享请求已发出
           </span>
         )}
+        {session.sharing === "device-native" && !session.can_enable_sharing && !session.temporary && (
+          <span
+            className="rounded border border-state-waiting/40 bg-state-waiting-soft px-1.5 py-0.5 text-state-waiting"
+            title={session.sharing_readiness === "waiting-for-owner-commit"
+              ? `${session.native_machine_label} 的仓库需要至少一个提交`
+              : `项目所属设备升级后会自动完成存储迁移`}
+          >
+            {session.sharing_readiness === "waiting-for-owner-commit"
+              ? `${session.native_machine_label} 的仓库尚无提交`
+              : `等待 ${session.native_machine_label} 升级`}
+          </span>
+        )}
         {session.read_only && (
           <span className="rounded border border-state-waiting/40 bg-state-waiting-soft px-1.5 py-0.5 text-state-waiting">
             read-only · native to {session.native_machine_label}

@@ -140,7 +140,9 @@ class ProjectTagRegistryTests(unittest.TestCase):
                 (self.root / "projects" / project.id / "project.json").read_text()
             )
             self.assertEqual(payload["tag_ids"], [self.second_tag.id])
-        self.assertFalse((remote_hosts / self.store.machine.id).exists())
+        local_host = remote_hosts / self.store.machine.id
+        self.assertTrue(local_host.is_dir())
+        self.assertFalse((local_host / "tags.json").exists())
         self.assertEqual(
             [tag.id for tag in self.store.list_tags()],
             [self.second_tag.id],

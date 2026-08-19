@@ -2,7 +2,6 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   acceptSharingRequest,
   cancelSharingRequest,
-  createSharingRequest,
   listSharingRequests,
   rejectSharingRequest,
   syncNow,
@@ -21,13 +20,12 @@ import type {
  * particular is one-way — so the UI has to be able to say "done here, not yet
  * synced" instead of reporting the whole action as failed. */
 export type PendingSync = {
-  action: "request" | "accept" | "reject" | "cancel";
+  action: "accept" | "reject" | "cancel";
   sessionId: string;
   error: string;
 };
 
 const SYNC_FAILURE_MESSAGES: Record<PendingSync["action"], string> = {
-  request: "请求已保存在本机，尚未同步到远端。",
   accept: "共享已在本机开启，尚未同步到远端。",
   reject: "拒绝已保存在本机，尚未同步到远端。",
   cancel: "取消已保存在本机，尚未同步到远端。",
@@ -131,12 +129,6 @@ export function useSharingRequests(enabled: boolean, options: Options = {}) {
     [publish, refresh],
   );
 
-  const request = useCallback(
-    (sessionId: string) =>
-      run("request", sessionId, () => createSharingRequest(sessionId)),
-    [run],
-  );
-
   const accept = useCallback(
     (sessionId: string, requestId: string) =>
       run("accept", sessionId, () => acceptSharingRequest(sessionId, requestId)),
@@ -191,7 +183,6 @@ export function useSharingRequests(enabled: boolean, options: Options = {}) {
     pendingSync,
     clearError: useCallback(() => setError(null), []),
     refresh,
-    request,
     accept,
     reject,
     cancel,

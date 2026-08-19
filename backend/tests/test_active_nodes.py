@@ -252,7 +252,7 @@ class ActiveNodesCollectionTests(unittest.TestCase):
             collect_active_entries(registry, index)
             self.assertEqual(len(index._cache[project.id]), 1)
 
-            node_dir = store.root / "projects" / project.id / "nodes" / node.id
+            node_dir = store.node_dir(project.id, node.id)
             for path in node_dir.rglob("*"):
                 if path.is_file():
                     path.unlink()
@@ -314,7 +314,7 @@ class ActiveNodesCollectionTests(unittest.TestCase):
             project = _add_project(store, registry, base / "p", name="p")
             good = _add_node(store, project, state=NodeState.RUNNING, summary="好的")
             broken = _add_node(store, project, state=NodeState.RUNNING, summary="坏的")
-            path = store.root / "projects" / project.id / "nodes" / broken.id / "node.json"
+            path = store.node_dir(project.id, broken.id) / "node.json"
             path.write_text("{ not json", encoding="utf-8")
 
             entries = collect_active_entries(registry, ActiveNodesIndex())

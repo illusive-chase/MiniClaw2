@@ -22,7 +22,7 @@ from .tags import TAGS_FILENAME
 
 MACHINE_FILENAME = "machine.json"
 SCHEMA_FILENAME = "schema.json"
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 SCHEMA_NAME = "node-revision-v9"
 DEFAULT_COMMIT_DEBOUNCE_SECONDS = 30.0
 
@@ -188,12 +188,124 @@ def ensure_store_metadata(root: Path, identity: MachineIdentity) -> None:
             project_payload["machine_label"] = identity.label
             _write_json(project_file, project_payload)
 
+    # Keep this repair active after the schema bump so a per-project failure
+    # can be retried on the next launch without holding the whole store back.
+    _migrate_native_projects_v12(root, identity)
+
     _write_json(
         schema_path,
         {"schema": SCHEMA_NAME, "schema_version": SCHEMA_VERSION},
     )
     _drop_nested_git_expectation(root)
     ensure_store_gitignore(root)
+
+
+def _migrate_native_projects_v12(root: Path, identity: MachineIdentity) -> None:
+    """Move this machine's durable projects into host-partitioned storage."""
+    from .git_state import normalized_origin_url, root_commits
+
+    for project_file in sorted((root / "projects").glob("*/project.json")):
+        try:
+            payload = json.loads(project_file.read_text(encoding="utf-8"))
+            if not isinstance(payload, dict):
+                raise ValueError("expected object")
+            if payload.get("machine_id") != identity.id or payload.get("temporary"):
+                continue
+
+            project_dir = project_file.parent
+            host_dir = project_dir / "hosts" / identity.id
+            if (host_dir / "nodes").is_dir():
+                # A prior attempt may have moved nodes before project.json was
+                # finalized. Current shared projects have no root_path here.
+                if "root_path" not in payload:
+                    continue
+                root_path = payload.get("root_path")
+                if not isinstance(root_path, str):
+                    root_path = ""
+                _write_json(host_dir / "local.json", {"root_path": root_path})
+                _write_json(
+                    host_dir / "layout.json",
+                    {
+                        "layout_hints": payload.get("layout_hints", {}),
+                        "layout_viewport": payload.get("layout_viewport"),
+                    },
+                )
+                roots = root_commits(root_path) if root_path else []
+                repo: dict[str, Any] = {}
+                if roots:
+                    repo.update(
+                        {
+                            "root_commit": roots[0],
+                            "root_commits": roots,
+                            "origin_url": normalized_origin_url(root_path),
+                        }
+                    )
+                _write_json(
+                    host_dir / "host.json",
+                    {
+                        "label": payload.get("machine_label") or identity.label,
+                        "bound_at": time.time(),
+                        "repo": repo,
+                    },
+                )
+                for key in ("root_path", "layout_hints", "layout_viewport"):
+                    payload.pop(key, None)
+                _write_json(project_file, payload)
+                continue
+
+            backup = (
+                root
+                / "migration-backups"
+                / f"native-prepartition-v12-{int(time.time())}-{project_dir.name}"
+            )
+            if backup.exists():
+                backup = backup.with_name(f"{backup.name}-{uuid4().hex[:8]}")
+            shutil.copytree(project_dir, backup / "projects" / project_dir.name)
+
+            host_dir.mkdir(parents=True, exist_ok=True)
+            nodes_dir = project_dir / "nodes"
+            if nodes_dir.exists():
+                shutil.move(str(nodes_dir), str(host_dir / "nodes"))
+            else:
+                (host_dir / "nodes").mkdir(parents=True, exist_ok=True)
+            aliases = project_dir / "git_aliases.json"
+            if aliases.exists():
+                shutil.move(str(aliases), str(host_dir / "git_aliases.json"))
+
+            root_path = payload.get("root_path")
+            if not isinstance(root_path, str):
+                root_path = ""
+            _write_json(host_dir / "local.json", {"root_path": root_path})
+            _write_json(
+                host_dir / "layout.json",
+                {
+                    "layout_hints": payload.get("layout_hints", {}),
+                    "layout_viewport": payload.get("layout_viewport"),
+                },
+            )
+            roots = root_commits(root_path) if root_path else []
+            repo: dict[str, Any] = {}
+            if roots:
+                repo.update(
+                    {
+                        "root_commit": roots[0],
+                        "root_commits": roots,
+                        "origin_url": normalized_origin_url(root_path),
+                    }
+                )
+            _write_json(
+                host_dir / "host.json",
+                {
+                    "label": payload.get("machine_label") or identity.label,
+                    "bound_at": time.time(),
+                    "repo": repo,
+                },
+            )
+            for key in ("root_path", "layout_hints", "layout_viewport"):
+                payload.pop(key, None)
+            _write_json(project_file, payload)
+        except Exception:  # noqa: BLE001
+            logger.exception("failed to prepartition native project %s", project_file)
 
 
 def _configured_contextspace_root(root: Path) -> Path:

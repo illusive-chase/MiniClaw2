@@ -185,6 +185,8 @@ class SessionInfo(BaseModel):
     read_only: bool = False
     can_delete: bool = True
     sharing: str = "device-native"
+    sharing_readiness: str = "ready"
+    can_enable_sharing: bool = False
     can_join_here: bool = False
     hosts: list[dict[str, Any]] = Field(default_factory=list)
     last_sync_at: float | None = None
@@ -979,9 +981,6 @@ def create_app(registry: ProjectRegistry | None = None) -> FastAPI:
         project = registry.get_project(sid)
         if project is None:
             raise HTTPException(404, "session not found")
-        require_native_project(sid)
-        if registry.is_running(sid):
-            raise HTTPException(409, "project must be idle before enabling sharing")
         try:
             project = registry.enable_sharing(sid)
         except ValueError as exc:
@@ -1021,23 +1020,6 @@ def create_app(registry: ProjectRegistry | None = None) -> FastAPI:
                 for record in registry.visible_sharing_requests()
             ]
         )
-
-    @app.post(
-        "/sessions/{sid}/sharing-requests",
-        response_model=SharingRequestResult,
-        status_code=201,
-    )
-    def create_session_sharing_request(sid: str) -> SharingRequestResult:
-        project = registry.get_project(sid)
-        if project is None:
-            raise HTTPException(404, "session not found")
-        try:
-            record = registry.request_project_sharing(sid)
-        except ValueError as exc:
-            raise HTTPException(400, str(exc)) from exc
-        if record is None:
-            raise HTTPException(404, "session not found")
-        return _sharing_request_result(registry, sid, record)
 
     @app.post(
         "/sessions/{sid}/sharing-requests/{rid}/accept",
@@ -2179,6 +2161,7 @@ def _global_state_payload(store_root: Path) -> dict[str, Any]:
 def _session_info(registry: ProjectRegistry, project: Any) -> SessionInfo:
     is_native = registry.is_native_project(project)
     node_summary = registry.node_summary(project)
+    sharing_readiness = registry.store.sharing_readiness(project)
     return SessionInfo(
         id=project.id,
         created_at=project.created_at,
@@ -2208,6 +2191,13 @@ def _session_info(registry: ProjectRegistry, project: Any) -> SessionInfo:
             )
         ),
         sharing=project.sharing,
+        sharing_readiness=sharing_readiness,
+        can_enable_sharing=(
+            registry.store.read_only_reason is None
+            and project.sharing == "device-native"
+            and not project.temporary
+            and sharing_readiness == "ready"
+        ),
         can_join_here=project.sharing == "shared" and not is_native,
         hosts=registry.store.list_hosts(project.id),
         last_sync_at=registry.store.sync.identity.last_sync_at,

@@ -17,8 +17,8 @@ if [[ -z "${MINICLAW_PROJECT_ID:-}" ]]; then
 fi
 
 project_dir="$MINICLAW_HOME/projects/$MINICLAW_PROJECT_ID"
-if [[ ! -d "$project_dir/nodes" ]]; then
-  echo "no nodes directory: $project_dir/nodes" >&2
+if [[ ! -d "$project_dir/nodes" && ! -d "$project_dir/hosts" ]]; then
+  echo "no node storage under: $project_dir" >&2
   exit 3
 fi
 
@@ -29,7 +29,7 @@ fi
 
 # (1) transcript marker check — concatenate text_delta across all nodes
 transcript=$(
-  for f in "$project_dir"/nodes/*/events.jsonl; do
+  for f in "$project_dir"/nodes/*/events.jsonl "$project_dir"/hosts/*/nodes/*/events.jsonl; do
     [[ -f "$f" ]] || continue
     python3 -c '
 import json, sys
@@ -66,7 +66,9 @@ project_dir = pathlib.Path(sys.argv[1])
 expected = pathlib.Path(sys.argv[2]).read_text(encoding="utf-8")
 
 found = False
-for node_json in sorted((project_dir / "nodes").glob("*/node.json")):
+node_files = list((project_dir / "nodes").glob("*/node.json"))
+node_files += list((project_dir / "hosts").glob("*/nodes/*/node.json"))
+for node_json in sorted(node_files):
     try:
         data = json.loads(node_json.read_text(encoding="utf-8"))
     except json.JSONDecodeError:

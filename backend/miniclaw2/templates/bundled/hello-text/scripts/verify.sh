@@ -21,15 +21,15 @@ if [[ -z "${MINICLAW_PROJECT_ID:-}" ]]; then
 fi
 
 project_dir="$MINICLAW_HOME/projects/$MINICLAW_PROJECT_ID"
-if [[ ! -d "$project_dir/nodes" ]]; then
-  echo "no nodes directory: $project_dir/nodes" >&2
+if [[ ! -d "$project_dir/nodes" && ! -d "$project_dir/hosts" ]]; then
+  echo "no node storage under: $project_dir" >&2
   exit 3
 fi
 
 # Concatenate every text_delta across every node — there is only one
 # in hello-text, but glob keeps the script symmetrical with other templates.
 transcript=$(
-  for f in "$project_dir"/nodes/*/events.jsonl; do
+  for f in "$project_dir"/nodes/*/events.jsonl "$project_dir"/hosts/*/nodes/*/events.jsonl; do
     [[ -f "$f" ]] || continue
     python3 -c '
 import json, sys

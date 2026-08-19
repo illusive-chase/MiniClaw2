@@ -247,6 +247,8 @@ class ProjectRegistry:
         """Stamp each shared project's local repository state before sync."""
         for runtime in list(self._runtimes.values()):
             project = runtime.project
+            if project.machine_id == self.store.machine.id:
+                self.store.update_owner_fingerprint(project)
             if project.sharing != "shared" or not self.is_native_project(project):
                 continue
             status = git_status(project.root_path)
@@ -464,52 +466,21 @@ class ProjectRegistry:
         rt = self._runtimes.get(pid)
         if rt is None:
             return None
-        project = self.require_native(pid)
+        self.store.assert_writable()
+        project = rt.project
         if project.sharing == "shared":
             return project
         if project.temporary:
             raise ValueError("temporary projects cannot be shared")
-        if self.is_running(pid):
-            raise RuntimeError("project must be idle before enabling sharing")
-        roots = root_commits(project.root_path)
-        if not roots:
-            raise ValueError("project must be a Git repository with at least one commit")
-
-        project_dir = self.store.root / "projects" / pid
-        backup = (
-            self.store.root
-            / "migration-backups"
-            / f"host-partition-v7-{int(time.time())}-{pid}-{uuid4().hex[:8]}"
-            / "projects"
-            / pid
-        )
-        shutil.copytree(project_dir, backup)
-
-        host_dir = project_dir / "hosts" / self.store.machine.id
-        host_dir.mkdir(parents=True, exist_ok=True)
-        nodes_dir = project_dir / "nodes"
-        if nodes_dir.exists():
-            shutil.move(str(nodes_dir), str(host_dir / "nodes"))
-        else:
-            (host_dir / "nodes").mkdir(parents=True, exist_ok=True)
-        aliases = project_dir / "git_aliases.json"
-        if aliases.exists():
-            shutil.move(str(aliases), str(host_dir / "git_aliases.json"))
-        self.store._write_json(
-            host_dir / "host.json",
-            {
-                "label": self.store.machine.label,
-                "bound_at": time.time(),
-                "repo": {
-                    "root_commit": roots[0],
-                    "root_commits": roots,
-                    "origin_url": normalized_origin_url(project.root_path),
-                },
-            },
-        )
+        if project.machine_id == self.store.machine.id:
+            self.store.update_owner_fingerprint(project)
+        readiness = self.store.sharing_readiness(project)
+        if readiness == "waiting-for-owner-upgrade":
+            raise ValueError("project owner must upgrade MiniClaw2 before sharing")
+        if readiness == "waiting-for-owner-commit":
+            raise ValueError("project owner repository must have at least one commit")
         project.sharing = "shared"
         clear_owned_binding_local_paths(project, store_root=self.store.root)
-        self.store.invalidate_owner_index()
         self.store.update_project(project)
         self.store.sync.schedule_commit(f'enable sharing for project "{project.name or pid}"')
         return project
@@ -539,28 +510,6 @@ class ProjectRegistry:
             if record.request.requester_machine_id == local
             or record.project_id in owned
         ]
-
-    def request_project_sharing(self, pid: str) -> SharingRequestRecord | None:
-        """Ask the native host to convert a device-native project to shared.
-
-        This is the only write a non-native device may make for a project,
-        and it lands outside the project tree so the host stays single-writer.
-        """
-        self.store.assert_writable()
-        project = self.get_project(pid)
-        if project is None:
-            return None
-        if project.machine_id == self.store.machine.id:
-            raise ValueError("this device is the native host; enable sharing directly")
-        if project.sharing == "shared":
-            raise ValueError("project is already shared")
-        if project.temporary:
-            raise ValueError("temporary projects cannot be shared")
-        if not self.store.sync.configured:
-            raise ValueError(
-                "metadata sync must be configured before requesting sharing"
-            )
-        return self.store.create_sharing_request(project)
 
     def accept_project_sharing_request(
         self,

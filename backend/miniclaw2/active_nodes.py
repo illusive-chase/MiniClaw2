@@ -154,11 +154,9 @@ class ActiveNodesIndex:
     def _node_files(self, store_root: Path, project: Project) -> list[tuple[Path, str]]:
         """Return ``(node.json path, owning machine id)`` for one project.
 
-        Mirrors ``Store._list_nodes_for_project``'s layout split: shared
-        projects partition nodes per host, device-native ones do not. The
-        check is on the directory rather than ``project.sharing`` for the
-        same reason the store does it that way — the two can disagree while
-        a project is being migrated to shared.
+        Mirrors ``Store._list_nodes_for_project``'s layout split. Durable
+        projects use per-host storage independently of sharing policy; legacy
+        and temporary projects may still use the flat nodes directory.
         """
         project_dir = store_root / "projects" / project.id
         hosts_dir = project_dir / "hosts"

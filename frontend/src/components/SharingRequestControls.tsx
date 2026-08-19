@@ -1,7 +1,6 @@
 import { useState } from "react";
 import type { SessionInfo, SharingRequestInfo } from "../types";
 import {
-  canRequestSharing,
   incomingRequests,
   localOpenRequest,
   ownerLabel,
@@ -12,10 +11,8 @@ import { pendingSyncMessage, type PendingSync } from "../useSharingRequests";
 type Props = {
   session: SessionInfo;
   requests: readonly SharingRequestInfo[];
-  syncConfigured: boolean;
   busy: boolean;
   pendingSync: PendingSync | null;
-  onRequest: () => void;
   onAccept: (requestId: string) => void;
   onReject: (requestId: string) => void;
   onCancel: (requestId: string) => void;
@@ -35,10 +32,8 @@ const QUIET = `${CHIP} border-line bg-surface text-ink-muted hover:border-line-s
 export function SharingRequestControls({
   session,
   requests,
-  syncConfigured,
   busy,
   pendingSync,
-  onRequest,
   onAccept,
   onReject,
   onCancel,
@@ -49,35 +44,12 @@ export function SharingRequestControls({
   const requestStateIsCurrent = session.sharing === "device-native";
   const mine = requestStateIsCurrent ? localOpenRequest(requests, session.id) : null;
   const incoming = incomingRequests(requests, session.id, session.sharing);
-  const canRequest = canRequestSharing(session, requests, { syncConfigured });
   const stalled = pendingSync?.sessionId === session.id ? pendingSync : null;
 
-  if (!canRequest && !mine && incoming.length === 0 && !stalled) return null;
+  if (!mine && incoming.length === 0 && !stalled) return null;
 
   return (
     <>
-      {canRequest && (
-        <button
-          type="button"
-          disabled={busy}
-          onClick={() => {
-            if (
-              !window.confirm(
-                "将向该项目所属设备发送开启共享的请求，并立即执行一次元数据同步。\n\n"
-                  + "对方确认后，项目会整体转为共享，同一元数据远端上持有匹配仓库的设备都可以申请在本地启用，"
-                  + "而不只是当前这台设备。继续吗？",
-              )
-            ) {
-              return;
-            }
-            onRequest();
-          }}
-          className={ACTION}
-        >
-          {busy ? "正在请求..." : "请求开启共享"}
-        </button>
-      )}
-
       {mine && (
         <span className="inline-flex items-center gap-1.5">
           <span className="rounded border border-state-waiting/40 bg-state-waiting-soft px-1.5 py-0.5 font-sans text-state-waiting">

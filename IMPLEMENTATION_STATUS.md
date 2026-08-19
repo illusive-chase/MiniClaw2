@@ -1478,36 +1478,29 @@ Trunk: `backend/miniclaw2/store.py`, `backend/miniclaw2/replay.py`.
   cannot provide a truthful cross-host lock. Dependency launch guidance marks
   foreign-host previews and warns that their absolute paths and environment
   details belong to that host.
-- Enabling sharing is a one-way migration and is unavailable for temporary
-  projects. A second device must explicitly bind a Git checkout whose root
-  commit matches the recorded repository fingerprint. Removing a host binding
-  and disabling sharing remain deferred because ownership of that host's node
-  subtree needs an explicit archival or transfer policy. All devices using the
-  same synced store must upgrade together for schema v7.
-- A non-host device can ask for sharing without writing into the project tree.
-  Requests live at `sharing-requests/<pid>/<rid>/`, where `request.json` and
-  `cancellation.json` are requester-owned and `decision.json` is written only
-  by the project's current `machine_id`. This is the sole exception to
-  device-native single-writer ownership, and it is a top-level requester-owned
-  file rather than a write under `projects/<pid>/`, so a request and a
-  concurrent host-side project edit merge with no conflict fallback.
-  `request_project_sharing()` is the only project write that skips
-  `require_native()`; it still requires a non-owner device, a non-temporary
-  `device-native` project, a writable store, and configured metadata sync.
-  Accepting delegates entirely to `enable_sharing()` and writes the `accepted`
-  record only after the migration succeeds, so an active runner (409) or a
-  repository without commits (400) leaves the request pending and retryable.
-  Status is derived on read, never stored: a `shared` project reads
-  `fulfilled` even over an earlier rejection, and an `accepted` record whose
-  project never migrated reads `invalid` rather than claiming success. A
-  request is a project-level conversion intent, not a per-device ACL —
-  accepting any request converts the whole project, and rejecting one does not
-  bar that device from binding later. Creating, accepting, rejecting, and
-  cancelling only persist locally; the remote exchange stays a separate
-  explicit **Sync now**, and a failed sync never reverses the local write, so
-  the UI reports "local done, not yet synced" with a sync-only retry. Schema
-  v11 gates the new records so an older build goes read-only instead of
-  silently ignoring them.
+- Schema v12 prepartitions every durable project owned by the current machine:
+  nodes and Git aliases live under `hosts/<owner-mid>/`, while checkout paths
+  and canvas layout move into gitignored `local.json` and host-local
+  `layout.json`. `project.json.sharing` is now only a policy flag; directory
+  shape determines storage layout. This also prevents a device-native
+  project's absolute checkout path from syncing to another machine. Foreign
+  projects and temporary projects are not migrated by the local device.
+- The owner partition records the repository root fingerprint during migration
+  or project creation. A repository with no commit remains partitioned but not
+  shareable; the existing pre-sync callback fills the fingerprint after its
+  first commit. Once ready, enabling sharing is a project-level flag flip that
+  any device may perform, including a non-owner device. It no longer requires
+  the owner process, an idle runner, or a live owner checkout. A second device
+  still must explicitly bind a checkout whose root commit matches the recorded
+  fingerprint. Temporary projects remain ineligible. Removing a host binding,
+  disabling sharing, and ownership transfer remain deferred.
+- Creation of sharing requests has been retired: the Registry method, HTTP
+  endpoint, frontend API, and request button are absent. During the transition,
+  v11 records under `sharing-requests/<pid>/<rid>/` remain readable and their
+  existing accept/reject/cancel endpoints remain available. Status is derived
+  on read, so any historical pending or rejected request becomes `fulfilled`
+  once another device directly enables sharing. This compatibility path can be
+  removed after synchronized stores no longer contain open request records.
 - `$MINICLAW_HOME` can be initialized as a Git repository and exchanged with
   a user-provided remote only through `miniclaw2 sync init <git-url>` or the
   Global settings **Sync now** action. Local durable writes are committed on a

@@ -58,24 +58,6 @@ export function incomingCount(
   return incomingRequests(requests, projectId, sharing).length;
 }
 
-/** Whether this device may raise a request for a project.
- *
- * Sharing is a project-level conversion the native host performs, so the
- * entry point only appears on a device-native project owned elsewhere, and
- * only once metadata sync exists to carry the request there. */
-export function canRequestSharing(
-  session: SessionInfo | null,
-  requests: readonly SharingRequestInfo[],
-  options: { syncConfigured: boolean },
-): boolean {
-  if (!session) return false;
-  if (session.sharing !== "device-native") return false;
-  if (session.is_native) return false;
-  if (session.temporary) return false;
-  if (!options.syncConfigured) return false;
-  return !localOpenRequest(requests, session.id);
-}
-
 export function requesterLabel(request: SharingRequestInfo): string {
   return request.requester_machine_label || request.requester_machine_id;
 }

@@ -92,6 +92,12 @@ class _Fixture:
     def pid(self) -> str:
         return self.project.id
 
+    def create_historical_request(self):
+        """Seed a v11 request record now that the creation API is retired."""
+        project = self.peer.get_project(self.pid)
+        assert project is not None
+        return self.peer_store.create_sharing_request(project)
+
     def mirror_to_host(self) -> None:
         """Copy the peer's request tree over, standing in for a metadata sync."""
         source = self.peer_store.root / "sharing-requests"
@@ -127,7 +133,7 @@ class SharingRequestStoreTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as raw:
             fixture = _Fixture(Path(raw))
 
-            record = fixture.peer.request_project_sharing(fixture.pid)
+            record = fixture.create_historical_request()
 
             assert record is not None
             path = request_dir(fixture.peer_store.root, fixture.pid, record.id)
@@ -146,8 +152,8 @@ class SharingRequestStoreTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as raw:
             fixture = _Fixture(Path(raw))
 
-            first = fixture.peer.request_project_sharing(fixture.pid)
-            second = fixture.peer.request_project_sharing(fixture.pid)
+            first = fixture.create_historical_request()
+            second = fixture.create_historical_request()
 
             assert first is not None and second is not None
             self.assertEqual(first.id, second.id)
@@ -159,12 +165,10 @@ class SharingRequestStoreTests(unittest.TestCase):
     def test_owner_cannot_request_and_non_owner_cannot_decide(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             fixture = _Fixture(Path(raw))
-            record = fixture.peer.request_project_sharing(fixture.pid)
+            record = fixture.create_historical_request()
             assert record is not None
             fixture.mirror_to_host()
 
-            with self.assertRaisesRegex(ValueError, "native host"):
-                fixture.host.request_project_sharing(fixture.pid)
             with self.assertRaises(NonNativeProjectError):
                 fixture.peer.accept_project_sharing_request(fixture.pid, record.id)
             with self.assertRaises(NonNativeProjectError):
@@ -173,32 +177,12 @@ class SharingRequestStoreTests(unittest.TestCase):
     def test_host_cannot_cancel_a_request_it_did_not_raise(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             fixture = _Fixture(Path(raw))
-            record = fixture.peer.request_project_sharing(fixture.pid)
+            record = fixture.create_historical_request()
             assert record is not None
             fixture.mirror_to_host()
 
             with self.assertRaises(PermissionError):
                 fixture.host.cancel_project_sharing_request(fixture.pid, record.id)
-
-    def test_temporary_and_shared_and_unconfigured_sync_are_refused(self) -> None:
-        with tempfile.TemporaryDirectory() as raw:
-            base = Path(raw)
-            fixture = _Fixture(base, configure_sync=False)
-
-            with self.assertRaisesRegex(ValueError, "metadata sync"):
-                fixture.peer.request_project_sharing(fixture.pid)
-
-            fixture.peer_store.sync.setup_existing_store(str(_bare(base / "late.git")))
-            peer_project = fixture.peer.get_project(fixture.pid)
-            assert peer_project is not None
-            peer_project.temporary = True
-            with self.assertRaisesRegex(ValueError, "temporary"):
-                fixture.peer.request_project_sharing(fixture.pid)
-
-            peer_project.temporary = False
-            peer_project.sharing = "shared"
-            with self.assertRaisesRegex(ValueError, "already shared"):
-                fixture.peer.request_project_sharing(fixture.pid)
 
     def test_read_only_store_refuses_to_record_a_request(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -210,12 +194,12 @@ class SharingRequestStoreTests(unittest.TestCase):
                 return_value="newer schema",
             ):
                 with self.assertRaises(StoreReadOnlyError):
-                    fixture.peer.request_project_sharing(fixture.pid)
+                    fixture.create_historical_request()
 
     def test_accept_migrates_the_project_and_marks_every_request_fulfilled(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             fixture = _Fixture(Path(raw))
-            record = fixture.peer.request_project_sharing(fixture.pid)
+            record = fixture.create_historical_request()
             assert record is not None
             fixture.mirror_to_host()
 
@@ -241,36 +225,45 @@ class SharingRequestStoreTests(unittest.TestCase):
                 _git(fixture.repo, "rev-list", "--max-parents=0", "HEAD"),
             )
 
-    def test_accept_leaves_the_request_pending_when_migration_is_blocked(self) -> None:
+    def test_accept_is_not_blocked_by_a_running_project(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             fixture = _Fixture(Path(raw))
-            record = fixture.peer.request_project_sharing(fixture.pid)
+            record = fixture.create_historical_request()
             assert record is not None
             fixture.mirror_to_host()
 
             with patch.object(ProjectRegistry, "is_running", return_value=True):
-                with self.assertRaises(RuntimeError):
-                    fixture.host.accept_project_sharing_request(fixture.pid, record.id)
+                accepted = fixture.host.accept_project_sharing_request(
+                    fixture.pid, record.id
+                )
 
+            assert accepted is not None
             host_project = fixture.host.get_project(fixture.pid)
             assert host_project is not None
-            self.assertEqual(host_project.sharing, "device-native")
+            self.assertEqual(host_project.sharing, "shared")
             still = fixture.host.sharing_requests(fixture.pid)[0]
-            self.assertEqual(still.status, "pending")
-            self.assertIsNone(still.decision)
+            self.assertEqual(still.status, "fulfilled")
 
     def test_accept_on_a_repository_without_commits_keeps_the_request_open(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             base = Path(raw)
             fixture = _Fixture(base)
-            record = fixture.peer.request_project_sharing(fixture.pid)
+            record = fixture.create_historical_request()
             assert record is not None
             fixture.mirror_to_host()
-            bare_dir = base / "not-a-repo"
-            bare_dir.mkdir()
+            host_file = (
+                fixture.host_store.root / "projects" / fixture.pid / "hosts"
+                / fixture.host_store.machine.id / "host.json"
+            )
+            payload = json.loads(host_file.read_text(encoding="utf-8"))
+            payload["repo"] = {}
+            host_file.write_text(json.dumps(payload), encoding="utf-8")
+            empty_repo = base / "empty-repo"
+            empty_repo.mkdir()
+            _git(empty_repo, "init", "-q", "--initial-branch=main")
             host_project = fixture.host.get_project(fixture.pid)
             assert host_project is not None
-            host_project.root_path = str(bare_dir)
+            host_project.root_path = str(empty_repo)
 
             with self.assertRaisesRegex(ValueError, "at least one commit"):
                 fixture.host.accept_project_sharing_request(fixture.pid, record.id)
@@ -282,7 +275,7 @@ class SharingRequestStoreTests(unittest.TestCase):
     def test_reject_closes_only_that_request(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             fixture = _Fixture(Path(raw))
-            record = fixture.peer.request_project_sharing(fixture.pid)
+            record = fixture.create_historical_request()
             assert record is not None
             fixture.mirror_to_host()
 
@@ -301,7 +294,7 @@ class SharingRequestStoreTests(unittest.TestCase):
     def test_rejected_request_becomes_fulfilled_when_the_host_shares_later(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             fixture = _Fixture(Path(raw))
-            record = fixture.peer.request_project_sharing(fixture.pid)
+            record = fixture.create_historical_request()
             assert record is not None
             fixture.mirror_to_host()
             fixture.host.reject_project_sharing_request(fixture.pid, record.id)
@@ -315,7 +308,7 @@ class SharingRequestStoreTests(unittest.TestCase):
     def test_cancelled_request_is_closed_for_the_host_too(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             fixture = _Fixture(Path(raw))
-            record = fixture.peer.request_project_sharing(fixture.pid)
+            record = fixture.create_historical_request()
             assert record is not None
 
             cancelled = fixture.peer.cancel_project_sharing_request(
@@ -331,7 +324,7 @@ class SharingRequestStoreTests(unittest.TestCase):
     def test_deleted_project_leaves_the_request_orphaned(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             fixture = _Fixture(Path(raw))
-            record = fixture.peer.request_project_sharing(fixture.pid)
+            record = fixture.create_historical_request()
             assert record is not None
 
             fixture.peer_store.delete_project(fixture.pid)
@@ -344,7 +337,7 @@ class SharingRequestStoreTests(unittest.TestCase):
     def test_accepted_record_without_migration_reads_as_invalid(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             fixture = _Fixture(Path(raw))
-            record = fixture.peer.request_project_sharing(fixture.pid)
+            record = fixture.create_historical_request()
             assert record is not None
             fixture.mirror_to_host()
             write_record(
@@ -367,7 +360,7 @@ class SharingRequestStoreTests(unittest.TestCase):
     def test_forged_decision_from_another_machine_is_ignored(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             fixture = _Fixture(Path(raw))
-            record = fixture.peer.request_project_sharing(fixture.pid)
+            record = fixture.create_historical_request()
             assert record is not None
             write_record(
                 request_dir(fixture.peer_store.root, fixture.pid, record.id)
@@ -389,7 +382,7 @@ class SharingRequestStoreTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as raw:
             base = Path(raw)
             fixture = _Fixture(base)
-            first = fixture.peer.request_project_sharing(fixture.pid)
+            first = fixture.create_historical_request()
             assert first is not None
             fixture.mirror_to_host()
 
@@ -399,8 +392,10 @@ class SharingRequestStoreTests(unittest.TestCase):
                 third_store.root / "projects" / fixture.pid,
             )
             third_store.sync.setup_existing_store(str(_bare(base / "third.git")))
-            second = ProjectRegistry(third_store).request_project_sharing(fixture.pid)
-            assert second is not None
+            third_registry = ProjectRegistry(third_store)
+            third_project = third_registry.get_project(fixture.pid)
+            assert third_project is not None
+            second = third_store.create_sharing_request(third_project)
             shutil.copytree(
                 third_store.root / "sharing-requests",
                 fixture.host_store.root / "sharing-requests",
@@ -421,7 +416,7 @@ class SharingRequestStoreTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as raw:
             base = Path(raw)
             fixture = _Fixture(base)
-            record = fixture.peer.request_project_sharing(fixture.pid)
+            record = fixture.create_historical_request()
             assert record is not None
             foreign = fixture.peer_store.create_project(
                 Project(root_path=str(_repo(base / "foreign-repo")), machine_id="elsewhere")
@@ -449,7 +444,7 @@ class SharingRequestStoreTests(unittest.TestCase):
 
 
 class SharingRequestApiTests(unittest.TestCase):
-    def test_request_accept_and_join_round_trip_over_a_real_remote(self) -> None:
+    def test_remote_device_can_enable_and_join_over_a_real_remote(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             base = Path(raw)
             remote = _bare(base / "metadata.git")
@@ -463,7 +458,7 @@ class SharingRequestApiTests(unittest.TestCase):
                     state=NodeState.DONE,
                 )
             )
-            registry_a = ProjectRegistry(store_a)
+            ProjectRegistry(store_a)
             store_a.sync.setup_existing_store(str(remote))
 
             root_b = base / "store-b"
@@ -474,42 +469,16 @@ class SharingRequestApiTests(unittest.TestCase):
             subprocess.run(["git", "clone", "-q", str(repo_a), str(repo_b)], check=True)
 
             with TestClient(create_app(registry_b)) as client_b:
-                created = client_b.post(f"/sessions/{project.id}/sharing-requests")
-                self.assertEqual(created.status_code, 201, created.text)
-                payload = created.json()["request"]
-                self.assertEqual(payload["status"], "pending")
-                self.assertTrue(payload["can_cancel"])
-                self.assertFalse(payload["can_accept"])
-                rid = payload["id"]
-                self.assertEqual(
-                    client_b.post("/global-state/sync").status_code, 200
+                before = client_b.get(f"/sessions/{project.id}")
+                self.assertEqual(before.status_code, 200, before.text)
+                self.assertTrue(before.json()["can_enable_sharing"])
+                enabled = client_b.post(
+                    f"/sessions/{project.id}/sharing",
+                    json={"sharing": "shared"},
                 )
-
-            with TestClient(create_app(registry_a)) as client_a:
-                self.assertEqual(client_a.post("/global-state/sync").status_code, 200)
-                listed = client_a.get("/sharing-requests")
-                self.assertEqual(listed.status_code, 200, listed.text)
-                host_view = listed.json()["requests"][0]
-                self.assertEqual(host_view["id"], rid)
-                self.assertTrue(host_view["can_accept"])
-                self.assertFalse(host_view["can_cancel"])
-                self.assertEqual(
-                    host_view["requester_machine_label"], store_b.machine.label
-                )
-
-                accepted = client_a.post(
-                    f"/sessions/{project.id}/sharing-requests/{rid}/accept"
-                )
-                self.assertEqual(accepted.status_code, 200, accepted.text)
-                self.assertEqual(accepted.json()["session"]["sharing"], "shared")
-                self.assertEqual(accepted.json()["request"]["status"], "fulfilled")
-                self.assertEqual(client_a.post("/global-state/sync").status_code, 200)
-
-            with TestClient(create_app(registry_b)) as client_b:
-                self.assertEqual(client_b.post("/global-state/sync").status_code, 200)
-                session = client_b.get(f"/sessions/{project.id}")
-                self.assertEqual(session.status_code, 200, session.text)
-                self.assertTrue(session.json()["can_join_here"])
+                self.assertEqual(enabled.status_code, 200, enabled.text)
+                self.assertEqual(enabled.json()["sharing"], "shared")
+                self.assertTrue(enabled.json()["can_join_here"])
 
                 joined = client_b.post(
                     f"/sessions/{project.id}/hosts",
@@ -517,46 +486,11 @@ class SharingRequestApiTests(unittest.TestCase):
                 )
                 self.assertEqual(joined.status_code, 200, joined.text)
                 self.assertFalse(joined.json()["read_only"])
-                self.assertEqual(
-                    client_b.get("/sharing-requests").json()["requests"][0]["status"],
-                    "fulfilled",
-                )
 
-    def test_request_and_host_edits_merge_without_conflict_fallback(self) -> None:
-        with tempfile.TemporaryDirectory() as raw:
-            base = Path(raw)
-            remote = _bare(base / "metadata.git")
-            repo_a = _repo(base / "repo-a")
-            store_a = Store(base / "store-a")
-            project = store_a.create_project(Project(root_path=str(repo_a), name="before"))
-            registry_a = ProjectRegistry(store_a)
-            store_a.sync.setup_existing_store(str(remote))
-
-            root_b = base / "store-b"
-            bootstrap_store(root_b, str(remote))
-            store_b = Store(root_b)
-            registry_b = ProjectRegistry(store_b)
-
-            record = registry_b.request_project_sharing(project.id)
-            assert record is not None
-            registry_a.rename_project(project.id, "renamed-by-host")
-
-            store_b.sync.sync_now()
-            store_a.sync.sync_now()
-            registry_a.reload_from_store()
-
-            host_project = registry_a.get_project(project.id)
-            assert host_project is not None
-            self.assertEqual(host_project.name, "renamed-by-host")
-            self.assertEqual(
-                [item.id for item in registry_a.sharing_requests(project.id)],
-                [record.id],
-            )
-
-    def test_accept_conflicts_with_a_busy_project(self) -> None:
+    def test_historical_accept_is_not_blocked_by_a_busy_project(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             fixture = _Fixture(Path(raw))
-            record = fixture.peer.request_project_sharing(fixture.pid)
+            record = fixture.create_historical_request()
             assert record is not None
             fixture.mirror_to_host()
 
@@ -566,15 +500,15 @@ class SharingRequestApiTests(unittest.TestCase):
                         f"/sessions/{fixture.pid}/sharing-requests/{record.id}/accept"
                     )
 
-            self.assertEqual(response.status_code, 409, response.text)
+            self.assertEqual(response.status_code, 200, response.text)
             self.assertEqual(
-                fixture.host.sharing_requests(fixture.pid)[0].status, "pending"
+                fixture.host.sharing_requests(fixture.pid)[0].status, "fulfilled"
             )
 
     def test_unknown_request_and_non_owner_decision_are_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             fixture = _Fixture(Path(raw))
-            record = fixture.peer.request_project_sharing(fixture.pid)
+            record = fixture.create_historical_request()
             assert record is not None
             fixture.mirror_to_host()
 
@@ -590,25 +524,24 @@ class SharingRequestApiTests(unittest.TestCase):
                 )
                 self.assertEqual(forbidden.status_code, 403, forbidden.text)
 
-    def test_owner_request_endpoint_is_a_client_error(self) -> None:
+    def test_request_creation_endpoint_is_removed(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             fixture = _Fixture(Path(raw))
             with TestClient(create_app(fixture.host)) as client:
                 response = client.post(f"/sessions/{fixture.pid}/sharing-requests")
-            self.assertEqual(response.status_code, 400, response.text)
-            self.assertIn("native host", response.json()["detail"])
+            self.assertEqual(response.status_code, 404, response.text)
 
 
 class SharingRequestSchemaTests(unittest.TestCase):
     def test_schema_gate_advances_so_older_builds_stay_read_only(self) -> None:
-        self.assertEqual(SCHEMA_VERSION, 11)
+        self.assertEqual(SCHEMA_VERSION, 12)
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
             (root / "schema.json").write_text(
-                json.dumps({"schema": "node-revision-v9", "schema_version": 11}),
+                json.dumps({"schema": "node-revision-v9", "schema_version": 12}),
                 encoding="utf-8",
             )
-            with patch.object(sync_module, "SCHEMA_VERSION", 10):
+            with patch.object(sync_module, "SCHEMA_VERSION", 11):
                 self.assertTrue(schema_is_newer(root))
 
 

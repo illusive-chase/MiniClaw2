@@ -34,6 +34,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from .domain import HumanGate, Node, Project, UNBOUND_ROOT_PATH
+from .git_state import normalized_origin_url, root_commits
 from .replay import EVENT_SCHEMA_VERSION, upgrade_event_record
 from .sharing_requests import (
     CANCELLATION_FILENAME,
@@ -122,11 +123,17 @@ class Store:
     def _host_dir(self, pid: str, machine_id: str) -> Path:
         return self._hosts_dir(pid) / machine_id
 
-    def _is_shared(self, pid: str) -> bool:
+    def _is_partitioned(self, pid: str) -> bool:
         return self._hosts_dir(pid).is_dir()
 
+    def _sharing_enabled(self, pid: str) -> bool:
+        try:
+            return self._read_json(self._project_file(pid)).get("sharing") == "shared"
+        except (OSError, ValueError):
+            return False
+
     def _owner_mid(self, pid: str, nid: str) -> str | None:
-        if not self._is_shared(pid):
+        if not self._is_partitioned(pid):
             return None
         return self._owner_index.get(pid, {}).get(nid, self.machine.id)
 
@@ -149,7 +156,7 @@ class Store:
         return self.node_dir(pid, nid) / "preview.json"
 
     def _git_aliases_file(self, pid: str) -> Path:
-        if self._is_shared(pid):
+        if self._is_partitioned(pid):
             return self._host_dir(pid, self.machine.id) / "git_aliases.json"
         return self._project_dir(pid) / "git_aliases.json"
 
@@ -193,6 +200,40 @@ class Store:
     def has_host_binding(self, pid: str, machine_id: str) -> bool:
         return (self._host_dir(pid, machine_id) / "host.json").is_file()
 
+    def sharing_readiness(self, project: Project) -> str:
+        owner_dir = self._host_dir(project.id, project.machine_id)
+        if not (owner_dir / "nodes").is_dir():
+            return "waiting-for-owner-upgrade"
+        try:
+            repo = self._read_json(owner_dir / "host.json").get("repo")
+        except (OSError, ValueError):
+            repo = None
+        if not isinstance(repo, dict) or not repo.get("root_commit"):
+            return "waiting-for-owner-commit"
+        return "ready"
+
+    def update_owner_fingerprint(self, project: Project) -> bool:
+        if project.machine_id != self.machine.id or not self._is_partitioned(project.id):
+            return False
+        roots = root_commits(project.root_path)
+        if not roots:
+            return False
+        path = self._host_dir(project.id, self.machine.id) / "host.json"
+        try:
+            payload = self._read_json(path)
+        except (OSError, ValueError):
+            payload = {"label": self.machine.label, "bound_at": time.time()}
+        repo = payload.get("repo")
+        if isinstance(repo, dict) and repo.get("root_commit") == roots[0]:
+            return False
+        payload["repo"] = {
+            "root_commit": roots[0],
+            "root_commits": roots,
+            "origin_url": normalized_origin_url(project.root_path),
+        }
+        self._write_json(path, payload)
+        return True
+
     def list_hosts(self, pid: str) -> list[dict[str, Any]]:
         hosts_dir = self._hosts_dir(pid)
         if not hosts_dir.is_dir():
@@ -215,7 +256,7 @@ class Store:
         return hosts
 
     def write_host_head(self, pid: str, payload: dict[str, Any]) -> None:
-        if self.read_only_reason is not None or not self._is_shared(pid):
+        if self.read_only_reason is not None or not self._sharing_enabled(pid):
             return
         self._write_json(self._head_file(pid, self.machine.id), payload)
 
@@ -237,7 +278,7 @@ class Store:
 
     def write_claim(self, pid: str, vid: str, payload: dict[str, Any]) -> None:
         self.assert_writable()
-        if not self._is_shared(pid):
+        if not self._sharing_enabled(pid):
             raise ValueError("claims require a shared project")
         claim = dict(payload)
         claim["claimed_by"] = self.machine.id
@@ -245,6 +286,8 @@ class Store:
         self.sync.schedule_commit(f"claim virtual node {vid}")
 
     def list_claims(self, pid: str) -> dict[str, list[dict[str, Any]]]:
+        if not self._sharing_enabled(pid):
+            return {}
         hosts_dir = self._hosts_dir(pid)
         if not hosts_dir.is_dir():
             return {}
@@ -458,19 +501,12 @@ class Store:
             project.machine_label = self.machine.label
         project.bind_model_catalog(self.root)
         d = self._project_dir(project.id)
-        (d / "nodes").mkdir(parents=True, exist_ok=True)
-        self._write_json(
-            self._project_file(project.id),
-            project.model_dump(exclude={"provider"}),
-        )
-        self.sync.schedule_commit(f'create project "{project.name or project.id}"')
-        return project
-
-    def update_project(self, project: Project) -> None:
-        self.assert_writable()
-        project.bind_model_catalog(self.root)
-        if project.sharing == "shared" or self._is_shared(project.id):
+        if project.temporary:
+            (d / "nodes").mkdir(parents=True, exist_ok=True)
+            payload = project.model_dump(exclude={"provider"})
+        else:
             host_dir = self._host_dir(project.id, self.machine.id)
+            (host_dir / "nodes").mkdir(parents=True, exist_ok=True)
             self._write_json(host_dir / "local.json", {"root_path": project.root_path})
             self._write_json(
                 host_dir / "layout.json",
@@ -479,6 +515,45 @@ class Store:
                     "layout_viewport": project.layout_viewport,
                 },
             )
+            roots = root_commits(project.root_path)
+            repo: dict[str, Any] = {}
+            if roots:
+                repo.update(
+                    {
+                        "root_commit": roots[0],
+                        "root_commits": roots,
+                        "origin_url": normalized_origin_url(project.root_path),
+                    }
+                )
+            self._write_json(
+                host_dir / "host.json",
+                {
+                    "label": self.machine.label,
+                    "bound_at": time.time(),
+                    "repo": repo,
+                },
+            )
+            payload = project.model_dump(
+                exclude={"provider", "root_path", "layout_hints", "layout_viewport"}
+            )
+        self._write_json(self._project_file(project.id), payload)
+        self.sync.schedule_commit(f'create project "{project.name or project.id}"')
+        return project
+
+    def update_project(self, project: Project) -> None:
+        self.assert_writable()
+        project.bind_model_catalog(self.root)
+        if self._is_partitioned(project.id):
+            host_dir = self._host_dir(project.id, self.machine.id)
+            if (host_dir / "host.json").is_file():
+                self._write_json(host_dir / "local.json", {"root_path": project.root_path})
+                self._write_json(
+                    host_dir / "layout.json",
+                    {
+                        "layout_hints": project.layout_hints,
+                        "layout_viewport": project.layout_viewport,
+                    },
+                )
             payload = project.model_dump(
                 exclude={"provider", "root_path", "layout_hints", "layout_viewport"}
             )
@@ -517,7 +592,6 @@ class Store:
                             layout_payload = self._read_json(local_dir / "layout.json")
                         payload.update(
                             {
-                                "sharing": "shared",
                                 "root_path": local_payload.get(
                                     "root_path", UNBOUND_ROOT_PATH
                                 ),
@@ -567,7 +641,7 @@ class Store:
             self._node_file(node.project_id, node.id),
             node.model_dump(exclude={"provider", "owner_host_id"}),
         )
-        if self._is_shared(node.project_id):
+        if self._is_partitioned(node.project_id):
             self._owner_index.setdefault(node.project_id, {})[node.id] = self.machine.id
             node.bind_owner_host(self.machine.id)
         self.sync.schedule_commit(f"create node {node.id}")
@@ -575,7 +649,7 @@ class Store:
 
     def load_node(self, pid: str, nid: str) -> Node | None:
         path = self._node_file(pid, nid)
-        if not path.exists() and self._is_shared(pid):
+        if not path.exists() and self._is_partitioned(pid):
             matches = list(self._hosts_dir(pid).glob(f"*/nodes/{nid}/node.json"))
             if matches:
                 path = matches[0]
@@ -624,7 +698,7 @@ class Store:
         pid: str,
         project: Project | None,
     ) -> list[Node]:
-        if self._is_shared(pid):
+        if self._is_partitioned(pid):
             node_files = list(self._hosts_dir(pid).glob("*/nodes/*/node.json"))
         else:
             node_files = list((self._project_dir(pid) / "nodes").glob("*/node.json"))
@@ -635,7 +709,7 @@ class Store:
                 node = Node.model_validate(self._read_json(nf)).bind_model_catalog(
                     self.root
                 )
-                owner = nf.parents[2].name if self._is_shared(pid) else (
+                owner = nf.parents[2].name if self._is_partitioned(pid) else (
                     project.machine_id if project is not None else ""
                 )
                 owners[node.id] = owner

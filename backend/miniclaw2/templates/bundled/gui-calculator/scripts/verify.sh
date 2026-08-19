@@ -88,17 +88,18 @@ if (( commit_count < 2 )); then
 fi
 
 project_dir="$MINICLAW_HOME/projects/$MINICLAW_PROJECT_ID"
-if [[ ! -d "$project_dir/nodes" ]]; then
-  echo "no nodes directory: $project_dir/nodes" >&2
+if [[ ! -d "$project_dir/nodes" && ! -d "$project_dir/hosts" ]]; then
+  echo "no node storage under: $project_dir" >&2
   exit 10
 fi
 
 python3 - "$project_dir" <<'PY'
-import json, os, sys
+import glob, json, os, sys
 project_dir = sys.argv[1]
 agents = []
-for entry in os.listdir(os.path.join(project_dir, "nodes")):
-    nf = os.path.join(project_dir, "nodes", entry, "node.json")
+node_files = glob.glob(os.path.join(project_dir, "nodes", "*", "node.json"))
+node_files += glob.glob(os.path.join(project_dir, "hosts", "*", "nodes", "*", "node.json"))
+for nf in node_files:
     if not os.path.isfile(nf):
         continue
     try:
@@ -111,7 +112,7 @@ for entry in os.listdir(os.path.join(project_dir, "nodes")):
 agents.sort(key=lambda item: item.get("created_at") or 0)
 build_node = agents[0] if agents else None
 if build_node is None:
-    print("could not find template build node in nodes/", file=sys.stderr)
+    print("could not find template build node", file=sys.stderr)
     sys.exit(11)
 before = build_node.get("commit_before")
 after = build_node.get("commit_after")

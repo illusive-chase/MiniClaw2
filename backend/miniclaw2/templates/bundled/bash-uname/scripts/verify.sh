@@ -14,17 +14,19 @@ if [[ -z "${MINICLAW_PROJECT_ID:-}" ]]; then
 fi
 
 project_dir="$MINICLAW_HOME/projects/$MINICLAW_PROJECT_ID"
-if [[ ! -d "$project_dir/nodes" ]]; then
-  echo "no nodes directory: $project_dir/nodes" >&2
+if [[ ! -d "$project_dir/nodes" && ! -d "$project_dir/hosts" ]]; then
+  echo "no node storage under: $project_dir" >&2
   exit 3
 fi
 
 python3 - "$project_dir" <<'PY'
-import json, os, sys
+import glob, json, os, sys
 project_dir = sys.argv[1]
 text = []
 stdout_hits = []
-for root, _, files in os.walk(os.path.join(project_dir, "nodes")):
+node_roots = [os.path.join(project_dir, "nodes"), *glob.glob(os.path.join(project_dir, "hosts", "*", "nodes"))]
+for node_root in node_roots:
+  for root, _, files in os.walk(node_root):
     if "events.jsonl" not in files:
         continue
     with open(os.path.join(root, "events.jsonl"), encoding="utf-8") as f:

@@ -748,15 +748,6 @@ async function sharingRequestMutation(
   return res.json();
 }
 
-export function createSharingRequest(
-  sessionId: string,
-): Promise<SharingRequestResult> {
-  return sharingRequestMutation(
-    "createSharingRequest",
-    `/sessions/${sessionId}/sharing-requests`,
-  );
-}
-
 export function acceptSharingRequest(
   sessionId: string,
   requestId: string,

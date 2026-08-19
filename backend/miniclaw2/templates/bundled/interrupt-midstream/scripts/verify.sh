@@ -16,22 +16,22 @@ if [[ -z "${MINICLAW_PROJECT_ID:-}" ]]; then
 fi
 
 project_dir="$MINICLAW_HOME/projects/$MINICLAW_PROJECT_ID"
-if [[ ! -d "$project_dir/nodes" ]]; then
-  echo "no nodes directory: $project_dir/nodes" >&2
+if [[ ! -d "$project_dir/nodes" && ! -d "$project_dir/hosts" ]]; then
+  echo "no node storage under: $project_dir" >&2
   exit 3
 fi
 
 python3 - "$project_dir" <<'PY'
-import json, os, sys
+import glob, json, os, sys
 project_dir = sys.argv[1]
-nodes_dir = os.path.join(project_dir, "nodes")
 
 # Templates pre-create all lane entries as virtual nodes, so the newest
 # node is usually a later verify/accept virtual. Select the template's
 # first regular agent node instead.
 candidates = []
-for entry in os.listdir(nodes_dir):
-    nf = os.path.join(nodes_dir, entry, "node.json")
+node_files = glob.glob(os.path.join(project_dir, "nodes", "*", "node.json"))
+node_files += glob.glob(os.path.join(project_dir, "hosts", "*", "nodes", "*", "node.json"))
+for nf in node_files:
     if not os.path.isfile(nf):
         continue
     try:
@@ -47,18 +47,19 @@ for entry in os.listdir(nodes_dir):
         continue
     if data.get("scheduled_deps") not in (None, []):
         continue
-    candidates.append((data.get("created_at") or 0, entry, data))
+    candidates.append((data.get("created_at") or 0, nf, data))
 if not candidates:
     print("could not find interrupt-midstream turn1 node on disk", file=sys.stderr)
     sys.exit(4)
 candidates.sort(key=lambda x: x[0])
-_, nid, node = candidates[0]
+_, node_file, node = candidates[0]
+nid = node["id"]
 
 if node.get("state") != "cancelled":
     print(f"turn1 node {nid} state is {node.get('state')!r}, expected 'cancelled'", file=sys.stderr)
     sys.exit(5)
 
-events_path = os.path.join(nodes_dir, nid, "events.jsonl")
+events_path = os.path.join(os.path.dirname(node_file), "events.jsonl")
 saw_partial = False
 saw_done = False
 if os.path.isfile(events_path):

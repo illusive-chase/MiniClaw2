@@ -16,6 +16,7 @@ from miniclaw2.global_config import load_global_config, save_global_config
 from miniclaw2.registry import ProjectRegistry
 from miniclaw2.store import Store, StoreReadOnlyError
 from miniclaw2.sync import SCHEMA_VERSION, SchemaConflictError, SyncError, bootstrap_store
+from miniclaw2.sync import current_hostname
 from miniclaw2.templates import load_user_template
 
 
@@ -86,6 +87,102 @@ class StoreIdentityMigrationTests(unittest.TestCase):
             self.assertIn("machine.json", ignore)
             self.assertIn("migration-backups/", ignore)
             self.assertIn("*.tmp", ignore)
+
+    def test_v12_prepartitions_only_owned_durable_projects_idempotently(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            root.mkdir(parents=True, exist_ok=True)
+            machine_id = "local-machine"
+            (root / "machine.json").write_text(
+                json.dumps(
+                    {
+                        "id": machine_id,
+                        "hostname": current_hostname(),
+                        "label": "Local",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (root / "schema.json").write_text(
+                json.dumps({"schema": "node-revision-v9", "schema_version": 11}),
+                encoding="utf-8",
+            )
+            repo = root / "repo"
+            repo.mkdir()
+            _git("init", "-q", "--initial-branch=main", cwd=repo)
+            (repo / "seed.txt").write_text("seed\n", encoding="utf-8")
+            _git("add", "seed.txt", cwd=repo)
+            _git(
+                "-c", "user.name=Test", "-c", "user.email=test@example.com",
+                "commit", "-q", "-m", "seed", cwd=repo,
+            )
+
+            owned = Project(
+                root_path=str(repo),
+                machine_id=machine_id,
+                machine_label="Local",
+                layout_hints={"node-a": {"x": 1, "y": 2}},
+            )
+            foreign = Project(
+                root_path="/remote/checkout",
+                machine_id="remote-machine",
+                machine_label="Remote",
+            )
+            temporary = Project(
+                root_path=str(root / "temporary"),
+                machine_id=machine_id,
+                machine_label="Local",
+                temporary=True,
+            )
+            for project in (owned, foreign, temporary):
+                project_dir = root / "projects" / project.id
+                (project_dir / "nodes").mkdir(parents=True)
+                (project_dir / "project.json").write_text(
+                    json.dumps(project.model_dump(exclude={"provider"})),
+                    encoding="utf-8",
+                )
+            owned_node = Node(
+                id="node-a",
+                project_id=owned.id,
+                model_preset_id=owned.model_preset_id,
+            )
+            owned_node_file = root / "projects" / owned.id / "nodes" / owned_node.id / "node.json"
+            owned_node_file.parent.mkdir(parents=True)
+            owned_node_file.write_text(
+                json.dumps(owned_node.model_dump(exclude={"provider", "owner_host_id"})),
+                encoding="utf-8",
+            )
+
+            store = Store(root)
+
+            owned_dir = root / "projects" / owned.id
+            host_dir = owned_dir / "hosts" / machine_id
+            payload = json.loads((owned_dir / "project.json").read_text(encoding="utf-8"))
+            self.assertEqual(payload["sharing"], "device-native")
+            self.assertNotIn("root_path", payload)
+            self.assertNotIn("layout_hints", payload)
+            self.assertFalse((owned_dir / "nodes").exists())
+            self.assertTrue((host_dir / "nodes" / "node-a" / "node.json").is_file())
+            self.assertEqual(
+                json.loads((host_dir / "local.json").read_text(encoding="utf-8"))["root_path"],
+                str(repo),
+            )
+            self.assertTrue(
+                json.loads((host_dir / "host.json").read_text(encoding="utf-8"))["repo"]["root_commit"]
+            )
+            self.assertTrue((root / "projects" / foreign.id / "nodes").is_dir())
+            self.assertTrue((root / "projects" / temporary.id / "nodes").is_dir())
+            backups = sorted((root / "migration-backups").glob("native-prepartition-v12-*"))
+            self.assertEqual(len(backups), 1)
+
+            Store(root)
+            self.assertEqual(
+                sorted((root / "migration-backups").glob("native-prepartition-v12-*")),
+                backups,
+            )
+            loaded = next(project for project in store.list_projects() if project.id == owned.id)
+            self.assertEqual(loaded.sharing, "device-native")
+            self.assertEqual(loaded.root_path, str(repo))
 
 
 class UserTemplateSchemaMigrationTests(unittest.TestCase):

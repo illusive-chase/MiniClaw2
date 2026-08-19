@@ -32,7 +32,9 @@ import json, pathlib, sys
 
 project_dir = pathlib.Path(sys.argv[1])
 nodes = []
-for node_json in sorted((project_dir / "nodes").glob("*/node.json")):
+node_files = list((project_dir / "nodes").glob("*/node.json"))
+node_files += list((project_dir / "hosts").glob("*/nodes/*/node.json"))
+for node_json in sorted(node_files):
     try:
         data = json.loads(node_json.read_text(encoding="utf-8"))
     except json.JSONDecodeError:

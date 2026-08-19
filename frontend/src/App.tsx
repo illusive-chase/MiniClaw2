@@ -2655,10 +2655,10 @@ export function App() {
                   设备 {session.hosts.map((host) => host.label || host.mid).join("、")}
                 </span>
               )}
-              {session?.sharing === "device-native" && session.is_native && !session.temporary && (
+              {session?.can_enable_sharing && (
                 <button
                   type="button"
-                  disabled={projectMutationPending || session.active_count > 0}
+                  disabled={projectMutationPending}
                   onClick={() => {
                     if (!window.confirm("开启后项目可由多台设备共同写入，且目前不支持关闭共享。继续吗？")) return;
                     setProjectMutationPending(true);
@@ -2672,14 +2672,19 @@ export function App() {
                   开启共享
                 </button>
               )}
+              {session?.sharing === "device-native" && !session.can_enable_sharing && !session.temporary && (
+                <span className="rounded border border-state-waiting/40 bg-state-waiting-soft px-1.5 py-0.5 font-sans text-state-waiting">
+                  {session.sharing_readiness === "waiting-for-owner-commit"
+                    ? `${session.native_machine_label} 的仓库尚无提交`
+                    : `等待 ${session.native_machine_label} 升级`}
+                </span>
+              )}
               {session && (
                 <SharingRequestControls
                   session={session}
                   requests={sharing.requests}
-                  syncConfigured={!!globalState?.sync.configured}
                   busy={sharing.busy}
                   pendingSync={sharing.pendingSync}
-                  onRequest={() => void sharing.request(session.id)}
                   onAccept={(requestId) => void sharing.accept(session.id, requestId)}
                   onReject={(requestId) => void sharing.reject(session.id, requestId)}
                   onCancel={(requestId) => void sharing.cancel(session.id, requestId)}

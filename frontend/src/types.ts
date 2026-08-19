@@ -204,6 +204,11 @@ export type SessionInfo = {
   read_only: boolean;
   can_delete: boolean;
   sharing: "device-native" | "shared";
+  sharing_readiness:
+    | "ready"
+    | "waiting-for-owner-upgrade"
+    | "waiting-for-owner-commit";
+  can_enable_sharing: boolean;
   can_join_here: boolean;
   hosts: SessionHost[];
   last_sync_at?: number | null;

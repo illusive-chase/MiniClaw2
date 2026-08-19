@@ -85,7 +85,7 @@ class HostPartitionStoreTests(unittest.TestCase):
             invalid.write_text(json.dumps({"head": "not-a-sha"}), encoding="utf-8")
             self.assertNotIn("invalid", store.read_host_heads(project.id))
 
-    def test_device_native_sync_callback_does_not_create_hosts_directory(self) -> None:
+    def test_device_native_sync_callback_does_not_write_shared_head(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             base = Path(raw)
             store = Store(base / "store")
@@ -94,9 +94,13 @@ class HostPartitionStoreTests(unittest.TestCase):
 
             registry._record_host_heads()
 
-            self.assertFalse((store.root / "projects" / project.id / "hosts").exists())
+            host_dir = (
+                store.root / "projects" / project.id / "hosts" / store.machine.id
+            )
+            self.assertTrue((host_dir / "host.json").is_file())
+            self.assertFalse((host_dir / "head.json").exists())
 
-    def test_enable_sharing_migrates_and_aggregates_nodes_by_host(self) -> None:
+    def test_enable_sharing_flips_policy_and_aggregates_nodes_by_host(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             base = Path(raw)
             store = Store(base / "store")
@@ -127,13 +131,7 @@ class HostPartitionStoreTests(unittest.TestCase):
             self.assertNotIn("layout_hints", shared_payload)
             binding_payload = yaml.safe_load(binding.path.read_text(encoding="utf-8"))
             self.assertEqual(binding_payload["project"]["local_paths"], [])
-            self.assertTrue(
-                list(
-                    (store.root / "migration-backups").glob(
-                        "host-partition-v7-*/projects/*/project.json"
-                    )
-                )
-            )
+            self.assertFalse((store.root / "migration-backups").exists())
 
             remote_id = "remote-host"
             remote = Node(
@@ -192,6 +190,62 @@ class HostPartitionStoreTests(unittest.TestCase):
             self.assertEqual(loaded[0].sharing, "shared")
             self.assertEqual(loaded[0].root_path, UNBOUND_ROOT_PATH)
             self.assertFalse(loaded[0].is_bound)
+
+    def test_partitioned_native_project_is_unbound_on_non_owner_device(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            base = Path(raw)
+            source = Store(base / "source-store")
+            project = source.create_project(
+                Project(root_path=str(_repo(base / "repo")))
+            )
+            destination = Store(base / "destination-store")
+            shutil.copytree(
+                source.root / "projects" / project.id,
+                destination.root / "projects" / project.id,
+            )
+
+            loaded = destination.list_projects()
+
+            self.assertEqual(len(loaded), 1)
+            self.assertEqual(loaded[0].sharing, "device-native")
+            self.assertEqual(loaded[0].root_path, UNBOUND_ROOT_PATH)
+            self.assertFalse(loaded[0].is_bound)
+
+    def test_owner_fingerprint_becomes_ready_after_first_commit(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            base = Path(raw)
+            repo = base / "repo"
+            repo.mkdir()
+            _git(repo, "init", "-q", "--initial-branch=main")
+            store = Store(base / "store")
+            project = store.create_project(Project(root_path=str(repo)))
+            registry = ProjectRegistry(store)
+            self.assertEqual(
+                store.sharing_readiness(project), "waiting-for-owner-commit"
+            )
+
+            (repo / "seed.txt").write_text("seed\n", encoding="utf-8")
+            _git(repo, "add", "seed.txt")
+            _git(
+                repo,
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.com",
+                "commit",
+                "-q",
+                "-m",
+                "seed",
+            )
+            registry._record_host_heads()
+
+            self.assertEqual(store.sharing_readiness(project), "ready")
+            self.assertFalse(
+                (
+                    store.root / "projects" / project.id / "hosts"
+                    / store.machine.id / "head.json"
+                ).exists()
+            )
 
     def test_remote_host_node_cannot_be_edited(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
