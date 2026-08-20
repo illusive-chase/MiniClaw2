@@ -420,7 +420,6 @@ class ProjectRegistry:
                 {
                     "head": status.head,
                     "branch": status.branch or "",
-                    "recorded_at": time.time(),
                     "dirty": status.dirty_count > 0,
                 },
             )

@@ -1509,9 +1509,10 @@ Trunk: `backend/miniclaw2/store.py`, `backend/miniclaw2/replay.py`.
   detection, rollback, cross-host concurrency locking, code review, or commit
   views, and the acknowledgement cannot bypass Git fingerprint mismatches.
 - A shared host records `hosts/<mid>/head.json` immediately before an explicit
-  sync commit. The synchronized snapshot contains HEAD, branch, capture time,
-  and a dirty boolean; peer displays always retain the capture time rather than
-  presenting it as live state. The Git surface classifies referenced commits as
+  sync commit. The synchronized snapshot contains HEAD, branch, and a dirty
+  boolean. Its capture time is derived from the snapshot file's latest Git
+  commit, so peer displays retain the published time without storing a second
+  source of truth. The Git surface classifies referenced commits as
   `live`, `peer`, `unfetched`, `stale`, or `unverified`, returns stable host
   columns and nearest referenced parent SHAs, and the canvas renders those
   columns without fabricating peer worktree ghosts. Default peer rows are
@@ -1552,8 +1553,11 @@ Trunk: `backend/miniclaw2/store.py`, `backend/miniclaw2/replay.py`.
   removed after synchronized stores no longer contain open request records.
 - `$MINICLAW_HOME` can be initialized as a Git repository and exchanged with
   a user-provided remote only through `miniclaw2 sync init <git-url>` or the
-  Global settings **Sync now** action. Local durable writes are committed on a
-  coalescing timer; no startup, shutdown, or periodic remote I/O occurs.
+  Global settings **Sync now** action. Global settings also provides an explicit
+  **Check remote** action that fetches with a bounded timeout and reports
+  ahead/behind against the locally updated remote-tracking ref without merging
+  or pushing. Local durable writes are committed on a coalescing timer; no
+  startup, shutdown, or periodic remote I/O occurs.
 - `machine.json` is gitignored and carries a generated UUID, hostname/label,
   and the last successful sync checkpoint. Project records persist the native
   machine UUID and label. Registry and API guards reject every project
@@ -1664,7 +1668,8 @@ Quick reference; the on-disk shape is authoritative.
   compatibility.
 - REST: `GET /model-presets`; `GET /global-state`,
   `PATCH /global-state/code-review`,
-  `POST /global-state/sync/setup`, `POST /global-state/sync`; project CRUD, preferences, node/event
+  `POST /global-state/sync/setup`, `POST /global-state/sync`,
+  `POST /global-state/sync/check`; project CRUD, preferences, node/event
   introspection, failed-node rerun, per-node diff/preview/context-bundle reads,
   published artifact JSON/raw reads,
   `GET /sessions/{sid}/git` (status + derived commit descriptors),

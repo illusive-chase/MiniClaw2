@@ -635,6 +635,14 @@ def create_app(
             raise HTTPException(409, str(exc)) from exc
         return _global_state_payload(registry.store.root)
 
+    @app.post("/global-state/sync/check", response_model=dict[str, Any])
+    def check_sync_remote() -> dict[str, Any]:
+        try:
+            registry.store.sync.check_remote()
+        except SyncError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        return _global_state_payload(registry.store.root)
+
     @app.patch("/global-state/defaults", response_model=dict[str, Any])
     def update_global_defaults(
         req: UpdateGlobalDefaultsRequest,

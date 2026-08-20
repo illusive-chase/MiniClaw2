@@ -45,6 +45,16 @@ class GlobalStateApiTest(unittest.TestCase):
             [item["id"] for item in persisted["model_presets"]],
             [item["id"] for item in body["model_presets"]],
         )
+        self.assertEqual(
+            body["sync"]["remote"],
+            {"ahead": 0, "behind": 0, "ref_at": None, "error": None},
+        )
+
+    def test_remote_check_requires_configured_sync(self) -> None:
+        response = self.client.post("/global-state/sync/check")
+
+        self.assertEqual(response.status_code, 409)
+        self.assertIn("not configured", response.json()["detail"])
 
     def test_update_startup_preference_is_persisted(self) -> None:
         response = self.client.patch(

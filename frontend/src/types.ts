@@ -359,6 +359,12 @@ export type CodeReviewSettings = {
 export type UpdateSettings = {
   check_on_startup: boolean;
 };
+export type SyncRemoteState = {
+  ahead: number;
+  behind: number;
+  ref_at?: number | null;
+  error?: string | null;
+};
 export type GlobalState = {
   config_path: string;
   defaults: GlobalDefaults;
@@ -376,6 +382,7 @@ export type GlobalState = {
     machine_label: string;
     hostname_mismatch: boolean;
     privacy_notice: string;
+    remote?: SyncRemoteState;
   };
 };
 export type IncomingCommit = {

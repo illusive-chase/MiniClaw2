@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import {
   createModelPreset,
   applySelfUpdate,
+  checkSyncRemote,
   checkSelfUpdate,
   getSelfUpdate,
   deleteModelPreset,
@@ -57,10 +58,12 @@ export function GlobalSettingsModal({ open, state, onClose, onChanged }: Props) 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [syncing, setSyncing] = useState(false);
+  const [checkingRemote, setCheckingRemote] = useState(false);
   const [checkingUpdate, setCheckingUpdate] = useState(false);
   const [applyingUpdate, setApplyingUpdate] = useState(false);
   const [remoteUrl, setRemoteUrl] = useState("");
   const [privacyAcknowledged, setPrivacyAcknowledged] = useState(false);
+  const [syncError, setSyncError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -74,6 +77,7 @@ export function GlobalSettingsModal({ open, state, onClose, onChanged }: Props) 
     setEditingId(null);
     setRemoteUrl(state?.sync.remote_url ?? "");
     setPrivacyAcknowledged(state?.sync.configured ?? false);
+    setSyncError(null);
     setError(null);
     if (!state) {
       getGlobalState().then(onChanged).catch((err) => setError(String(err)));
@@ -213,6 +217,7 @@ export function GlobalSettingsModal({ open, state, onClose, onChanged }: Props) 
 
   const runSync = async () => {
     setSyncing(true);
+    setSyncError(null);
     setError(null);
     try {
       const next = state?.sync.configured
@@ -221,9 +226,21 @@ export function GlobalSettingsModal({ open, state, onClose, onChanged }: Props) 
       onChanged(next);
       setRemoteUrl(next.sync.remote_url ?? remoteUrl);
     } catch (err) {
-      setError(String(err));
+      setSyncError(String(err));
     } finally {
       setSyncing(false);
+    }
+  };
+
+  const runRemoteCheck = async () => {
+    setCheckingRemote(true);
+    setSyncError(null);
+    try {
+      onChanged(await checkSyncRemote());
+    } catch (err) {
+      setSyncError(String(err));
+    } finally {
+      setCheckingRemote(false);
     }
   };
 
@@ -267,14 +284,41 @@ export function GlobalSettingsModal({ open, state, onClose, onChanged }: Props) 
               </div>
             )}
             {state?.sync.configured && (
-              <div className="mt-3 space-y-1 font-mono text-[10px] text-ink-muted">
-                <div className="truncate">{state.sync.remote_url}</div>
-                <div>Machine: {state.sync.machine_label}</div>
-                <div>Last sync: {state.sync.last_sync_at ? new Date(state.sync.last_sync_at * 1000).toLocaleString() : "never"}</div>
+              <div className="mt-3 space-y-3">
+                <div className="space-y-1 font-mono text-[10px] text-ink-muted">
+                  <div className="truncate">{state.sync.remote_url}</div>
+                  <div>Machine: {state.sync.machine_label}</div>
+                  <div>Last sync: {state.sync.last_sync_at ? new Date(state.sync.last_sync_at * 1000).toLocaleString() : "never"}</div>
+                </div>
+                <div className="border-t border-line pt-3">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                      <div className="text-[11px] font-medium text-ink">远端状态</div>
+                      <div className="mt-0.5 font-mono text-[10px] text-ink-muted">
+                        本地领先 {state.sync.remote?.ahead ?? 0} · 远端领先 {state.sync.remote?.behind ?? 0}
+                        {state.sync.remote?.ref_at
+                          ? ` · 引用更新于 ${new Date(state.sync.remote.ref_at * 1000).toLocaleString()}`
+                          : " · 引用时间未知"}
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      disabled={checkingRemote || syncing}
+                      onClick={() => void runRemoteCheck()}
+                      className={secondaryButton}
+                    >
+                      {checkingRemote ? "检查中…" : "检查远端"}
+                    </button>
+                  </div>
+                  {state.sync.remote?.error ? (
+                    <div className="mt-2 text-[11px] text-state-error">{state.sync.remote.error}</div>
+                  ) : null}
+                </div>
               </div>
             )}
+            {syncError ? <div className="mt-2 text-[11px] text-state-error">{syncError}</div> : null}
             <div className="mt-3 flex justify-end">
-              <button type="button" disabled={syncing || (!state?.sync.configured && (!remoteUrl.trim() || !privacyAcknowledged))} onClick={() => void runSync()} className={primaryButton}>
+              <button type="button" disabled={syncing || checkingRemote || (!state?.sync.configured && (!remoteUrl.trim() || !privacyAcknowledged))} onClick={() => void runSync()} className={primaryButton}>
                 {syncing ? "Syncing…" : state?.sync.configured ? "Sync now" : "Set up sync"}
               </button>
             </div>

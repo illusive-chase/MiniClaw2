@@ -15,7 +15,7 @@ export function CommitColumnHeaderNode({ data }: NodeProps<CommitColumnHeaderDat
         {host?.label || host?.mid || "其他设备"}
       </div>
       <div className="mt-0.5 truncate font-mono text-[9px] text-ink-muted">
-        HEAD {head.slice(0, 7)} · 同步于 {recorded}
+        HEAD {head.slice(0, 7)} · 快照于 {recorded}
       </div>
       {host?.dirty && (
         <div className="mt-0.5 text-[9px] text-state-waiting">有未提交变更</div>

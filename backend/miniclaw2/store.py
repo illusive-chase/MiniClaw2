@@ -33,6 +33,7 @@ from .git_state import is_git_repo, normalized_origin_url, root_commits
 from .replay import EVENT_SCHEMA_VERSION, upgrade_event_record
 from .sync import (
     MachineIdentity,
+    SyncError,
     SyncManager,
     ensure_machine_identity,
     ensure_store_metadata,
@@ -288,7 +289,12 @@ class Store:
         if not hosts_dir.is_dir():
             return {}
         heads: dict[str, dict[str, Any]] = {}
-        for path in sorted(hosts_dir.glob("*/head.json")):
+        paths = sorted(hosts_dir.glob("*/head.json"))
+        try:
+            committed_at = self.sync.file_commit_times(paths)
+        except SyncError:
+            committed_at = {}
+        for path in paths:
             try:
                 payload = self._read_json(path)
             except (OSError, ValueError):
@@ -296,6 +302,10 @@ class Store:
             head = payload.get("head")
             if not isinstance(head, str) or re.fullmatch(r"[0-9a-fA-F]{40}", head) is None:
                 continue
+            payload.pop("recorded_at", None)
+            relative_path = path.relative_to(self.root)
+            if relative_path in committed_at:
+                payload["recorded_at"] = committed_at[relative_path]
             heads[path.parent.name] = payload
         return heads
 

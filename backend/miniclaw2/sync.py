@@ -25,6 +25,7 @@ SCHEMA_FILENAME = "schema.json"
 SCHEMA_VERSION = 13
 SCHEMA_NAME = "node-revision-v9"
 DEFAULT_COMMIT_DEBOUNCE_SECONDS = 30.0
+REMOTE_CHECK_TIMEOUT_SECONDS = 30.0
 
 
 logger = logging.getLogger(__name__)
@@ -687,6 +688,8 @@ class SyncManager:
         self._pending_messages: list[str] = []
         self._pre_commit_callbacks: list[Callable[[], None]] = []
         self._success_callbacks: list[Callable[[], None]] = []
+        self._file_commit_time_cache_head: str | None = None
+        self._file_commit_time_cache: dict[Path, float | None] = {}
 
     def add_pre_commit_callback(self, callback: Callable[[], None]) -> None:
         if callback not in self._pre_commit_callbacks:
@@ -792,15 +795,23 @@ class SyncManager:
     def status(self) -> dict[str, Any]:
         configured = self.configured
         changed = False
+        remote = {
+            "ahead": 0,
+            "behind": 0,
+            "ref_at": None,
+            "error": None,
+        }
         if configured:
             dirty = _git(self.root, "status", "--porcelain", check=False)
             head = self._head()
             changed = bool(dirty.stdout.strip()) or (
                 head is not None and head != self.identity.last_synced_commit
             ) or self.identity.sync_pending
+            remote = self._remote_status(self._branch())
         return {
             "configured": configured,
             "remote_url": self.remote_url(),
+            "remote": remote,
             "status": "changed" if changed else "up-to-date",
             "changed": changed,
             "last_sync_at": self.identity.last_sync_at,
@@ -808,6 +819,76 @@ class SyncManager:
             "machine_label": self.identity.label,
             "hostname_mismatch": machine_hostname_mismatch(self.identity),
         }
+
+    def check_remote(self) -> dict[str, Any]:
+        if not self.configured:
+            raise SyncError("metadata sync is not configured")
+        with self._lock:
+            branch = self._branch()
+            fetched = _git(
+                self.root,
+                "fetch",
+                "origin",
+                branch,
+                check=False,
+                timeout=REMOTE_CHECK_TIMEOUT_SECONDS,
+            )
+            if fetched.returncode != 0:
+                raise SyncError(_command_error("fetch failed", fetched))
+            return self.status()
+
+    def file_commit_times(self, paths: list[Path]) -> dict[Path, float]:
+        """Return each path's newest committed timestamp with bounded queries."""
+        if not paths or not (self.root / ".git").exists():
+            return {}
+        relative_paths: list[Path] = []
+        for path in paths:
+            try:
+                relative_path = path.resolve().relative_to(self.root)
+            except ValueError:
+                continue
+            if relative_path not in relative_paths:
+                relative_paths.append(relative_path)
+        if not relative_paths:
+            return {}
+
+        with self._lock:
+            try:
+                head = self._head()
+            except SyncError:
+                return {}
+            if head != self._file_commit_time_cache_head:
+                self._file_commit_time_cache_head = head
+                self._file_commit_time_cache.clear()
+
+            for path in relative_paths:
+                if path in self._file_commit_time_cache:
+                    continue
+                try:
+                    result = _git(
+                        self.root,
+                        "log",
+                        "-1",
+                        "--format=%ct",
+                        "--",
+                        path.as_posix(),
+                        check=False,
+                    )
+                except SyncError:
+                    return {}
+                timestamp: float | None = None
+                if result.returncode == 0 and result.stdout.strip():
+                    try:
+                        timestamp = float(result.stdout.strip())
+                    except ValueError:
+                        pass
+                self._file_commit_time_cache[path] = timestamp
+
+            return {
+                path: timestamp
+                for path in relative_paths
+                if (timestamp := self._file_commit_time_cache[path]) is not None
+            }
 
     def sync_now(self) -> dict[str, Any]:
         if not self.configured:
@@ -886,6 +967,59 @@ class SyncManager:
         if retried.returncode != 0:
             _git(self.root, "merge", "--abort", check=False)
             raise SyncError(_command_error("merge failed", retried))
+
+    def _remote_status(self, branch: str) -> dict[str, Any]:
+        remote_ref = f"origin/{branch}"
+        exists = _git(
+            self.root, "rev-parse", "--verify", remote_ref, check=False
+        )
+        if exists.returncode != 0 or self._head() is None:
+            return {"ahead": 0, "behind": 0, "ref_at": None, "error": None}
+
+        counts = _git(
+            self.root,
+            "rev-list",
+            "--left-right",
+            "--count",
+            f"HEAD...{remote_ref}",
+            check=False,
+        )
+        if counts.returncode != 0:
+            return {
+                "ahead": 0,
+                "behind": 0,
+                "ref_at": None,
+                "error": _command_error("cannot compare remote", counts),
+            }
+        try:
+            ahead, behind = (int(value) for value in counts.stdout.split())
+        except (TypeError, ValueError):
+            return {
+                "ahead": 0,
+                "behind": 0,
+                "ref_at": None,
+                "error": "cannot compare remote: invalid git rev-list output",
+            }
+
+        reflog = _git(
+            self.root,
+            "reflog",
+            "show",
+            "-1",
+            "--format=%ct",
+            remote_ref,
+            check=False,
+        )
+        try:
+            ref_at = float(reflog.stdout.strip()) if reflog.returncode == 0 else None
+        except ValueError:
+            ref_at = None
+        return {
+            "ahead": ahead,
+            "behind": behind,
+            "ref_at": ref_at,
+            "error": None,
+        }
 
     def _record_success(self) -> None:
         self.identity = MachineIdentity(
@@ -976,8 +1110,11 @@ def _git(
     root: Path,
     *args: str,
     check: bool = True,
+    timeout: float | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    result = _run_raw(["git", "-C", str(root), *args], check=False)
+    result = _run_raw(
+        ["git", "-C", str(root), *args], check=False, timeout=timeout
+    )
     if check and result.returncode != 0:
         raise SyncError(_command_error(f"git {' '.join(args)} failed", result))
     return result
@@ -991,7 +1128,7 @@ def _git_init(root: Path) -> None:
 
 
 def _run_raw(
-    command: list[str], *, check: bool = True
+    command: list[str], *, check: bool = True, timeout: float | None = None
 ) -> subprocess.CompletedProcess[str]:
     try:
         return subprocess.run(
@@ -999,12 +1136,16 @@ def _run_raw(
             check=check,
             capture_output=True,
             text=True,
+            timeout=timeout,
             env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
         )
     except FileNotFoundError as exc:
         raise SyncError("git is not installed or not available on PATH") from exc
     except subprocess.CalledProcessError as exc:
         raise SyncError(_command_error("git command failed", exc)) from exc
+    except subprocess.TimeoutExpired as exc:
+        detail = f" after {timeout:g} seconds" if timeout is not None else ""
+        raise SyncError(f"git command timed out{detail}") from exc
 
 
 def _command_error(prefix: str, result: subprocess.CompletedProcess[str]) -> str:

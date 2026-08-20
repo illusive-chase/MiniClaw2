@@ -128,6 +128,14 @@ export async function syncNow(): Promise<GlobalState> {
   return res.json();
 }
 
+export async function checkSyncRemote(): Promise<GlobalState> {
+  const res = await fetch("/global-state/sync/check", { method: "POST" });
+  if (!res.ok) {
+    throw new ApiError("checkSyncRemote", res.status, await readErrorDetail(res));
+  }
+  return res.json();
+}
+
 export async function updateGlobalDefaults(
   body: Partial<GlobalDefaults>,
 ): Promise<GlobalState> {

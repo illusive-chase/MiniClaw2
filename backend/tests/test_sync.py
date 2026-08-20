@@ -543,6 +543,80 @@ class GitMetadataSyncTests(unittest.TestCase):
         self.assertFalse(registry_a.is_native_project(synced_b))
         self.assertTrue(registry_a.is_native_project(registry_a.get_project(self.project_a.id)))  # type: ignore[arg-type]
 
+    def test_remote_status_is_derived_and_check_fetches_without_mutating_local_state(self) -> None:
+        self.store_b.create_project(
+            Project(root_path="/machine-b/remote-change", name="Remote change")
+        )
+        self.store_b.sync.sync_now()
+        starting_head = _git("rev-parse", "HEAD", cwd=self.root_a).stdout.strip()
+        machine_before = (self.root_a / "machine.json").read_text(encoding="utf-8")
+
+        self.assertEqual(self.store_a.sync.status()["remote"]["behind"], 0)
+
+        checked = self.store_a.sync.check_remote()
+
+        self.assertEqual(checked["remote"]["ahead"], 0)
+        self.assertGreater(checked["remote"]["behind"], 0)
+        self.assertIsNotNone(checked["remote"]["ref_at"])
+        self.assertIsNone(checked["remote"]["error"])
+        self.assertEqual(
+            _git("rev-parse", "HEAD", cwd=self.root_a).stdout.strip(),
+            starting_head,
+        )
+        self.assertEqual(
+            (self.root_a / "machine.json").read_text(encoding="utf-8"),
+            machine_before,
+        )
+
+    def test_remote_status_reports_divergence(self) -> None:
+        self.store_b.create_project(
+            Project(root_path="/machine-b/remote-change", name="Remote change")
+        )
+        self.store_b.sync.sync_now()
+        self.store_a.create_project(
+            Project(root_path="/machine-a/local-change", name="Local change")
+        )
+        self.store_a.sync.commit_now("local metadata change")
+
+        checked = self.store_a.sync.check_remote()
+
+        self.assertGreater(checked["remote"]["ahead"], 0)
+        self.assertGreater(checked["remote"]["behind"], 0)
+
+    def test_remote_check_timeout_releases_the_manager_lock(self) -> None:
+        manager = self.store_a.sync
+        original_git = sync_module._git
+
+        def timeout_fetch(root: Path, *args: str, **kwargs: object):
+            if args and args[0] == "fetch":
+                raise SyncError("git command timed out after 30 seconds")
+            return original_git(root, *args, **kwargs)
+
+        with patch.object(sync_module, "_git", side_effect=timeout_fetch):
+            with self.assertRaisesRegex(SyncError, "timed out"):
+                manager.check_remote()
+
+        self.assertTrue(manager._lock.acquire(blocking=False))
+        manager._lock.release()
+        self.assertIn("remote", manager.status())
+
+    def test_remote_check_endpoint_does_not_reload_the_registry(self) -> None:
+        registry = ProjectRegistry(self.store_a)
+        client = TestClient(create_app(registry))
+
+        with patch.object(registry, "reload_from_store") as reload_from_store:
+            response = client.post("/global-state/sync/check")
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertIn("remote", response.json()["sync"])
+        reload_from_store.assert_not_called()
+
+    def test_run_raw_normalizes_timeout_as_sync_error(self) -> None:
+        timeout = subprocess.TimeoutExpired(["git", "fetch"], 0.01)
+        with patch.object(sync_module.subprocess, "run", side_effect=timeout):
+            with self.assertRaisesRegex(SyncError, "timed out after 0.01 seconds"):
+                sync_module._run_raw(["git", "fetch"], timeout=0.01)
+
     def test_global_conflict_uses_local_hunks_then_converges(self) -> None:
         config_a = load_global_config(self.root_a)
         save_global_config(

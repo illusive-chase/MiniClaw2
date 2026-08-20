@@ -662,6 +662,15 @@ cross-host collaboration can be:
 
 Every design below follows from that one sentence.
 
+Git is also the fact source for the metadata repository itself. If Git already
+records a fact losslessly, MiniClaw2 derives it when needed instead of storing
+a second field that can disagree with history or create commits merely by
+describing them. Custom fields remain appropriate for facts Git cannot express,
+including host-local sync checkpoints, the identity of a separate project
+repository, and the time at which a local binding was made. The test is whether
+the fact describes the metadata repository's own content or history: if it
+does, derive it from Git; if it does not, persist it in the owning domain.
+
 ### 11.1 Sharing is the default, not a state
 
 There is no "enable sharing" transition and no per-project sharing flag.

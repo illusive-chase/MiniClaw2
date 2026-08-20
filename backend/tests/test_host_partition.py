@@ -89,7 +89,6 @@ class HostPartitionStoreTests(unittest.TestCase):
             payload = {
                 "head": "a" * 40,
                 "branch": "main",
-                "recorded_at": 123.0,
                 "dirty": True,
             }
 
@@ -107,6 +106,117 @@ class HostPartitionStoreTests(unittest.TestCase):
             invalid.parent.mkdir(parents=True)
             invalid.write_text(json.dumps({"head": "not-a-sha"}), encoding="utf-8")
             self.assertNotIn("invalid", store.read_host_heads(project.id))
+
+    def test_host_head_times_are_derived_from_each_files_latest_commit(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw) / "store"
+            store = Store(root)
+            subprocess.run(
+                ["git", "init", "-q", "--initial-branch=main", str(root)],
+                check=True,
+            )
+            project_id = "project"
+            paths = {
+                host: root / "projects" / project_id / "hosts" / host / "head.json"
+                for host in ("host-a", "host-b")
+            }
+            for index, (host, path) in enumerate(paths.items()):
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(
+                    json.dumps(
+                        {
+                            "head": str(index + 1) * 40,
+                            "branch": "main",
+                            "dirty": False,
+                            "recorded_at": 1,
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                store.sync.commit_now(f"publish {host}")
+
+            expected = {
+                host: float(
+                    _git(
+                        root,
+                        "log",
+                        "-1",
+                        "--format=%ct",
+                        "--",
+                        str(path.relative_to(root)),
+                    )
+                )
+                for host, path in paths.items()
+            }
+            paths["host-a"].write_text(
+                json.dumps(
+                    {"head": "f" * 40, "branch": "main", "dirty": True}
+                ),
+                encoding="utf-8",
+            )
+
+            heads = store.read_host_heads(project_id)
+
+            self.assertEqual(heads["host-a"]["recorded_at"], expected["host-a"])
+            self.assertEqual(heads["host-b"]["recorded_at"], expected["host-b"])
+            self.assertEqual(heads["host-a"]["head"], "f" * 40)
+
+    def test_host_head_time_query_failure_degrades_to_unknown(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            store = Store(Path(raw) / "store")
+            path = (
+                store.root / "projects" / "project" / "hosts" / "host" / "head.json"
+            )
+            path.parent.mkdir(parents=True)
+            path.write_text(
+                json.dumps(
+                    {"head": "a" * 40, "recorded_at": 123, "dirty": False}
+                ),
+                encoding="utf-8",
+            )
+
+            with patch.object(
+                store.sync,
+                "file_commit_times",
+                side_effect=sync_module.SyncError("git unavailable"),
+            ):
+                head = store.read_host_heads("project")["host"]
+
+            self.assertNotIn("recorded_at", head)
+
+    def test_host_head_time_queries_are_bounded_and_cached_per_head(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw) / "store"
+            store = Store(root)
+            subprocess.run(
+                ["git", "init", "-q", "--initial-branch=main", str(root)],
+                check=True,
+            )
+            paths = []
+            for host in ("host-a", "host-b"):
+                path = root / "projects" / "project" / "hosts" / host / "head.json"
+                path.parent.mkdir(parents=True)
+                path.write_text(
+                    json.dumps({"head": "a" * 40, "dirty": False}),
+                    encoding="utf-8",
+                )
+                paths.append(path)
+            store.sync.commit_now("publish host heads")
+
+            with patch.object(sync_module, "_git", wraps=sync_module._git) as git:
+                first = store.sync.file_commit_times(paths)
+                second = store.sync.file_commit_times(paths)
+
+            log_calls = [
+                call.args[1:]
+                for call in git.call_args_list
+                if len(call.args) > 1 and call.args[1] == "log"
+            ]
+            self.assertEqual(first, second)
+            self.assertEqual(len(log_calls), len(paths))
+            self.assertTrue(
+                all(args[:3] == ("log", "-1", "--format=%ct") for args in log_calls)
+            )
 
     def test_device_native_sync_callback_does_not_write_shared_head(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -888,6 +998,30 @@ class HostPartitionSyncTests(unittest.TestCase):
             payload = store.read_host_heads(project.id)[store.machine.id]
             self.assertEqual(payload["head"], expected_head)
             self.assertTrue(payload["dirty"])
+            self.assertNotIn(
+                "recorded_at",
+                json.loads(
+                    (
+                        store.root
+                        / "projects"
+                        / project.id
+                        / "hosts"
+                        / store.machine.id
+                        / "head.json"
+                    ).read_text(encoding="utf-8")
+                ),
+            )
+            expected_recorded_at = float(
+                _git(
+                    store.root,
+                    "log",
+                    "-1",
+                    "--format=%ct",
+                    "--",
+                    f"projects/{project.id}/hosts/{store.machine.id}/head.json",
+                )
+            )
+            self.assertEqual(payload["recorded_at"], expected_recorded_at)
             changed = _git(
                 store.root,
                 "show",
@@ -898,6 +1032,14 @@ class HostPartitionSyncTests(unittest.TestCase):
             self.assertIn(
                 f"projects/{project.id}/hosts/{store.machine.id}/head.json",
                 changed,
+            )
+            commit_count = _git(store.root, "rev-list", "--count", "HEAD")
+
+            store.sync.sync_now()
+
+            self.assertEqual(
+                _git(store.root, "rev-list", "--count", "HEAD"),
+                commit_count,
             )
 
     def test_host_owned_state_syncs_without_conflict_fallback(self) -> None:

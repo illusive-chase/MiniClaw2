@@ -197,6 +197,13 @@ export function ProjectsLanding({
     () => (sortMode === "grouped" ? [] : sortFlat(filtered, sortMode)),
     [sortMode, filtered],
   );
+  const remoteBehind = globalState?.sync.remote?.behind ?? 0;
+  const remoteRefAt = globalState?.sync.remote?.ref_at;
+  const remoteStatusTitle = remoteBehind > 0
+    ? `元数据远端引用落后 ${remoteBehind} 个提交；引用更新于 ${remoteRefAt
+      ? new Date(remoteRefAt * 1000).toLocaleString()
+      : "未知时间"}`
+    : undefined;
 
   const renderCard = (session: SessionInfo, keyPrefix = "") => (
     <ProjectCard
@@ -252,9 +259,16 @@ export function ProjectsLanding({
           <button
             type="button"
             onClick={() => setSettingsOpen(true)}
-            className="inline-flex h-9 items-center rounded-md border border-line bg-surface-raised px-3 text-[12.5px] font-medium text-ink-muted shadow-card transition hover:border-line-strong hover:text-ink"
+            className="relative inline-flex h-9 items-center rounded-md border border-line bg-surface-raised px-3 text-[12.5px] font-medium text-ink-muted shadow-card transition hover:border-line-strong hover:text-ink"
+            title={remoteStatusTitle}
           >
             Global settings
+            {remoteBehind > 0 ? (
+              <span
+                className="absolute -right-1 -top-1 h-2.5 w-2.5 rounded-full border-2 border-surface-raised bg-state-waiting"
+                aria-label={remoteStatusTitle}
+              />
+            ) : null}
           </button>
           <button
             type="button"
