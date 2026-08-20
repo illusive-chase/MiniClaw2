@@ -444,6 +444,51 @@ class SharingRequestStoreTests(unittest.TestCase):
 
 
 class SharingRequestApiTests(unittest.TestCase):
+    def test_non_git_historical_accept_requires_ack(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            base = Path(raw)
+            fixture = _Fixture(base)
+            workspace = base / "workspace"
+            workspace.mkdir()
+            fixture.project.root_path = str(workspace)
+            fixture.host_store.update_project(fixture.project)
+            fixture.host_store.update_owner_fingerprint(fixture.project)
+            host_file = (
+                fixture.host_store.root / "projects" / fixture.pid / "hosts"
+                / fixture.host_store.machine.id / "host.json"
+            )
+            host_payload = json.loads(host_file.read_text(encoding="utf-8"))
+            host_payload["repo"] = {}
+            host_payload["is_repo"] = False
+            host_file.write_text(json.dumps(host_payload), encoding="utf-8")
+            fixture.host.reload_from_store()
+            fixture.mirror_to_peer()
+            record = fixture.create_historical_request()
+            assert record is not None
+            fixture.mirror_to_host()
+
+            with TestClient(create_app(fixture.host)) as client:
+                rejected = client.post(
+                    f"/sessions/{fixture.pid}/sharing-requests/{record.id}/accept"
+                )
+                self.assertEqual(rejected.status_code, 400, rejected.text)
+                accepted = client.post(
+                    f"/sessions/{fixture.pid}/sharing-requests/{record.id}/accept",
+                    json={
+                        "unverified_identity_acknowledged": True,
+                        "topology": "replicated",
+                    },
+                )
+
+            self.assertEqual(accepted.status_code, 200, accepted.text)
+            self.assertEqual(
+                accepted.json()["session"]["identity"], "environment-attested"
+            )
+            self.assertEqual(
+                fixture.host_store.list_hosts(fixture.pid)[0]["attestation"]["topology"],
+                "replicated",
+            )
+
     def test_remote_device_can_enable_and_join_over_a_real_remote(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             base = Path(raw)
@@ -534,14 +579,14 @@ class SharingRequestApiTests(unittest.TestCase):
 
 class SharingRequestSchemaTests(unittest.TestCase):
     def test_schema_gate_advances_so_older_builds_stay_read_only(self) -> None:
-        self.assertEqual(SCHEMA_VERSION, 12)
+        self.assertEqual(SCHEMA_VERSION, 13)
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
             (root / "schema.json").write_text(
-                json.dumps({"schema": "node-revision-v9", "schema_version": 12}),
+                json.dumps({"schema": "node-revision-v9", "schema_version": 13}),
                 encoding="utf-8",
             )
-            with patch.object(sync_module, "SCHEMA_VERSION", 11):
+            with patch.object(sync_module, "SCHEMA_VERSION", 12):
                 self.assertTrue(schema_is_newer(root))
 
 

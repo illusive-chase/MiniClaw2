@@ -1,4 +1,5 @@
 import { useState } from "react";
+import type { SharingTopology } from "../api";
 import type { SessionInfo, SharingRequestInfo } from "../types";
 import {
   incomingRequests,
@@ -7,13 +8,20 @@ import {
   requesterLabel,
 } from "../sharingRequests";
 import { pendingSyncMessage, type PendingSync } from "../useSharingRequests";
+import { UnverifiedSharingDialog } from "./UnverifiedSharingDialog";
 
 type Props = {
   session: SessionInfo;
   requests: readonly SharingRequestInfo[];
   busy: boolean;
   pendingSync: PendingSync | null;
-  onAccept: (requestId: string) => void;
+  onAccept: (
+    requestId: string,
+    options?: {
+      unverifiedIdentityAcknowledged?: boolean;
+      topology?: SharingTopology;
+    },
+  ) => void;
   onReject: (requestId: string) => void;
   onCancel: (requestId: string) => void;
   onCheckForUpdates: () => void;
@@ -41,6 +49,7 @@ export function SharingRequestControls({
   onRetrySync,
 }: Props) {
   const [confirmingAccept, setConfirmingAccept] = useState<string | null>(null);
+  const [unverifiedAccept, setUnverifiedAccept] = useState<string | null>(null);
   const requestStateIsCurrent = session.sharing === "device-native";
   const mine = requestStateIsCurrent ? localOpenRequest(requests, session.id) : null;
   const incoming = incomingRequests(requests, session.id, session.sharing);
@@ -81,6 +90,10 @@ export function SharingRequestControls({
                 disabled={busy}
                 onClick={() => {
                   setConfirmingAccept(null);
+                  if (session.sharing_readiness === "ready-unverified") {
+                    setUnverifiedAccept(request.id);
+                    return;
+                  }
                   onAccept(request.id);
                 }}
                 className={ACTION}
@@ -137,6 +150,20 @@ export function SharingRequestControls({
           </button>
         </span>
       )}
+      <UnverifiedSharingDialog
+        open={unverifiedAccept !== null}
+        mode="enable"
+        pending={busy}
+        onCancel={() => setUnverifiedAccept(null)}
+        onConfirm={(topology) => {
+          if (!unverifiedAccept) return;
+          onAccept(unverifiedAccept, {
+            unverifiedIdentityAcknowledged: true,
+            topology,
+          });
+          setUnverifiedAccept(null);
+        }}
+      />
     </>
   );
 }

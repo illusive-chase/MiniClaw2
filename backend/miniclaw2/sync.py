@@ -22,7 +22,7 @@ from .tags import TAGS_FILENAME
 
 MACHINE_FILENAME = "machine.json"
 SCHEMA_FILENAME = "schema.json"
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 SCHEMA_NAME = "node-revision-v9"
 DEFAULT_COMMIT_DEBOUNCE_SECONDS = 30.0
 
@@ -191,6 +191,10 @@ def ensure_store_metadata(root: Path, identity: MachineIdentity) -> None:
     # Keep this repair active after the schema bump so a per-project failure
     # can be retried on the next launch without holding the whole store back.
     _migrate_native_projects_v12(root, identity)
+    # schema.json is synchronized, but local.json is host-local.  A peer may
+    # therefore receive schema v13 before its upgraded process can inspect its
+    # own checkout, so this repair must remain active after the global bump.
+    _backfill_host_repo_observation_v13(root, identity)
 
     _write_json(
         schema_path,
@@ -202,7 +206,7 @@ def ensure_store_metadata(root: Path, identity: MachineIdentity) -> None:
 
 def _migrate_native_projects_v12(root: Path, identity: MachineIdentity) -> None:
     """Move this machine's durable projects into host-partitioned storage."""
-    from .git_state import normalized_origin_url, root_commits
+    from .git_state import is_git_repo, normalized_origin_url, root_commits
 
     for project_file in sorted((root / "projects").glob("*/project.json")):
         try:
@@ -249,6 +253,7 @@ def _migrate_native_projects_v12(root: Path, identity: MachineIdentity) -> None:
                         "label": payload.get("machine_label") or identity.label,
                         "bound_at": time.time(),
                         "repo": repo,
+                        "is_repo": is_git_repo(root_path),
                     },
                 )
                 for key in ("root_path", "layout_hints", "layout_viewport"):
@@ -302,6 +307,7 @@ def _migrate_native_projects_v12(root: Path, identity: MachineIdentity) -> None:
                     "label": payload.get("machine_label") or identity.label,
                     "bound_at": time.time(),
                     "repo": repo,
+                    "is_repo": is_git_repo(root_path),
                 },
             )
             for key in ("root_path", "layout_hints", "layout_viewport"):
@@ -309,6 +315,28 @@ def _migrate_native_projects_v12(root: Path, identity: MachineIdentity) -> None:
             _write_json(project_file, payload)
         except Exception:  # noqa: BLE001
             logger.exception("failed to prepartition native project %s", project_file)
+
+
+def _backfill_host_repo_observation_v13(root: Path, identity: MachineIdentity) -> None:
+    """Distinguish a non-repository binding from an empty Git repository."""
+    from .git_state import is_git_repo
+
+    for host_file in sorted(
+        (root / "projects").glob(f"*/hosts/{identity.id}/host.json")
+    ):
+        try:
+            payload = json.loads(host_file.read_text(encoding="utf-8"))
+            if not isinstance(payload, dict) or isinstance(payload.get("is_repo"), bool):
+                continue
+            local_file = host_file.with_name("local.json")
+            local_payload = json.loads(local_file.read_text(encoding="utf-8"))
+            root_path = local_payload.get("root_path")
+            if not isinstance(root_path, str) or not root_path:
+                continue
+            payload["is_repo"] = is_git_repo(root_path)
+            _write_json(host_file, payload)
+        except (OSError, ValueError, TypeError):
+            logger.exception("failed to backfill repository observation for %s", host_file)
 
 
 def _configured_contextspace_root(root: Path) -> Path:

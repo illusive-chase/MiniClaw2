@@ -270,6 +270,118 @@ class HostPartitionStoreTests(unittest.TestCase):
                 ).exists()
             )
 
+    def test_non_git_project_is_ready_unverified_but_requires_attestation(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            base = Path(raw)
+            workspace = base / "workspace"
+            workspace.mkdir()
+            store = Store(base / "store")
+            project = store.create_project(Project(root_path=str(workspace)))
+            registry = ProjectRegistry(store)
+
+            self.assertEqual(store.sharing_readiness(project), "ready-unverified")
+            with self.assertRaisesRegex(ValueError, "无法发现设备间文件分歧"):
+                registry.enable_sharing(project.id)
+
+            shared = registry.enable_sharing(
+                project.id,
+                unverified_identity_acknowledged=True,
+                topology="shared-filesystem",
+            )
+
+            assert shared is not None
+            self.assertEqual(shared.identity, "environment-attested")
+            host = store.list_hosts(project.id)[0]
+            self.assertFalse(host["is_repo"])
+            self.assertEqual(host["identity"], "environment-attested")
+            self.assertEqual(
+                Path(host["attestation"]["root_path_declared"]).resolve(),
+                workspace.resolve(),
+            )
+            self.assertEqual(host["attestation"]["topology"], "shared-filesystem")
+
+    def test_non_owner_can_enable_non_git_project_from_owner_observation(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            base = Path(raw)
+            workspace = base / "workspace"
+            workspace.mkdir()
+            source = Store(base / "source-store")
+            project = source.create_project(Project(root_path=str(workspace)))
+            destination = Store(base / "destination-store")
+            shutil.copytree(
+                source.root / "projects" / project.id,
+                destination.root / "projects" / project.id,
+            )
+            registry = ProjectRegistry(destination)
+            remote = registry.get_project(project.id)
+            assert remote is not None
+
+            self.assertEqual(
+                destination.sharing_readiness(remote), "ready-unverified"
+            )
+            shared = registry.enable_sharing(
+                project.id,
+                unverified_identity_acknowledged=True,
+            )
+
+            assert shared is not None
+            self.assertEqual(shared.identity, "environment-attested")
+            self.assertEqual(shared.sharing, "shared")
+            self.assertFalse(
+                destination.has_host_binding(project.id, destination.machine.id)
+            )
+
+    def test_empty_git_repository_is_not_ready_unverified(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            base = Path(raw)
+            repo = base / "repo"
+            repo.mkdir()
+            _git(repo, "init", "-q", "--initial-branch=main")
+            store = Store(base / "store")
+            project = store.create_project(Project(root_path=str(repo)))
+
+            self.assertEqual(
+                store.sharing_readiness(project), "waiting-for-owner-commit"
+            )
+            self.assertTrue(store.list_hosts(project.id)[0]["is_repo"])
+
+    def test_fingerprint_refresh_preserves_attestation(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            base = Path(raw)
+            workspace = base / "workspace"
+            workspace.mkdir()
+            store = Store(base / "store")
+            project = store.create_project(Project(root_path=str(workspace)))
+            registry = ProjectRegistry(store)
+            shared = registry.enable_sharing(
+                project.id,
+                unverified_identity_acknowledged=True,
+            )
+            _git(workspace, "init", "-q", "--initial-branch=main")
+            (workspace / "seed.txt").write_text("seed\n", encoding="utf-8")
+            _git(workspace, "add", "seed.txt")
+            _git(
+                workspace,
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.com",
+                "commit",
+                "-q",
+                "-m",
+                "seed",
+            )
+
+            self.assertTrue(store.update_owner_fingerprint(project))
+            host = store.list_hosts(project.id)[0]
+            self.assertEqual(host["identity"], "environment-attested")
+            self.assertEqual(
+                Path(host["attestation"]["root_path_declared"]).resolve(),
+                workspace.resolve(),
+            )
+            assert shared is not None
+            self.assertEqual(store.sharing_readiness(shared), "ready-unverified")
+
     def test_remote_host_node_cannot_be_edited(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             base = Path(raw)
@@ -455,6 +567,97 @@ class HostPartitionStoreTests(unittest.TestCase):
 
 
 class HostPartitionApiTests(unittest.TestCase):
+
+    def test_non_git_enable_and_join_require_ack_and_record_each_path(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            base = Path(raw)
+            owner_workspace = base / "owner-workspace"
+            owner_workspace.mkdir()
+            source = Store(base / "source-store")
+            project = source.create_project(
+                Project(root_path=str(owner_workspace), name="no-git")
+            )
+            with TestClient(create_app(ProjectRegistry(source))) as client:
+                before = client.get(f"/sessions/{project.id}")
+                self.assertEqual(before.status_code, 200, before.text)
+                self.assertTrue(before.json()["can_enable_sharing"])
+                self.assertEqual(
+                    before.json()["sharing_readiness"], "ready-unverified"
+                )
+                rejected = client.post(
+                    f"/sessions/{project.id}/sharing",
+                    json={"sharing": "shared"},
+                )
+                self.assertEqual(rejected.status_code, 400, rejected.text)
+                self.assertIn("无法发现设备间文件分歧", rejected.json()["detail"])
+                enabled = client.post(
+                    f"/sessions/{project.id}/sharing",
+                    json={
+                        "sharing": "shared",
+                        "unverified_identity_acknowledged": True,
+                        "topology": "replicated",
+                    },
+                )
+                self.assertEqual(enabled.status_code, 200, enabled.text)
+                self.assertEqual(
+                    enabled.json()["identity"], "environment-attested"
+                )
+
+            destination = Store(base / "destination-store")
+            shutil.copytree(
+                source.root / "projects" / project.id,
+                destination.root / "projects" / project.id,
+            )
+            peer_workspace = base / "peer-workspace"
+            peer_workspace.mkdir()
+            with TestClient(create_app(ProjectRegistry(destination))) as client:
+                rejected = client.post(
+                    f"/sessions/{project.id}/hosts",
+                    json={"root_path": str(peer_workspace)},
+                )
+                self.assertEqual(rejected.status_code, 400, rejected.text)
+                joined = client.post(
+                    f"/sessions/{project.id}/hosts",
+                    json={
+                        "root_path": str(peer_workspace),
+                        "unverified_identity_acknowledged": True,
+                    },
+                )
+                self.assertEqual(joined.status_code, 200, joined.text)
+                self.assertFalse(joined.json()["read_only"])
+                paths = {
+                    host["attestation"]["root_path_declared"]
+                    for host in joined.json()["hosts"]
+                }
+                self.assertEqual(len(paths), 2)
+                self.assertEqual(
+                    {Path(path).resolve() for path in paths},
+                    {owner_workspace.resolve(), peer_workspace.resolve()},
+                )
+
+    def test_git_identity_ack_does_not_bypass_fingerprint(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            base = Path(raw)
+            source = Store(base / "source-store")
+            project = source.create_project(
+                Project(root_path=str(_repo(base / "source-repo")))
+            )
+            ProjectRegistry(source).enable_sharing(project.id)
+            destination = Store(base / "destination-store")
+            shutil.copytree(
+                source.root / "projects" / project.id,
+                destination.root / "projects" / project.id,
+            )
+            with TestClient(create_app(ProjectRegistry(destination))) as client:
+                response = client.post(
+                    f"/sessions/{project.id}/hosts",
+                    json={
+                        "root_path": str(_repo(base / "other-repo")),
+                        "unverified_identity_acknowledged": True,
+                    },
+                )
+            self.assertEqual(response.status_code, 400, response.text)
+            self.assertIn("fingerprint", response.json()["detail"])
     def test_nodes_response_includes_claims_for_foreign_virtual(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             base = Path(raw)

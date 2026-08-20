@@ -1493,8 +1493,18 @@ Trunk: `backend/miniclaw2/store.py`, `backend/miniclaw2/replay.py`.
   `projects/<pid>/hosts/<mid>/`. Nodes, layout, and git aliases are written only
   by their owning host, while shared `project.json` retains cross-device
   identity and planspace visibility. `hosts/<mid>/local.json` is gitignored and
-  is the only place a shared project stores that device's absolute root path.
+  is the runtime source for that device's absolute root path. An explicitly
+  accepted non-Git binding also records the declared path in synchronized
+  `host.json.attestation` for audit and cross-host mismatch display.
   `planspace_view` intentionally remains shared; canvas layout is host-local.
+- Store schema v13 adds an explicit project identity policy. Git projects keep
+  root-commit fingerprint enforcement. A non-Git project can use
+  `environment-attested` only after a per-operation warning acknowledgement;
+  each actual host binding persists device, hostname, declared path, topology,
+  and timestamp in `host.json`. The UI keeps an `身份未校验` marker visible and
+  warns when declared paths differ. This policy does not add divergence
+  detection, rollback, cross-host concurrency locking, code review, or commit
+  views, and the acknowledgement cannot bypass Git fingerprint mismatches.
 - A shared host records `hosts/<mid>/head.json` immediately before an explicit
   sync commit. The synchronized snapshot contains HEAD, branch, capture time,
   and a dirty boolean; peer displays always retain the capture time rather than

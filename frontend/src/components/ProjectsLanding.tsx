@@ -717,7 +717,7 @@ function ProjectCard({
           </span>
         )}
         {session.sharing === "device-native" &&
-          session.sharing_readiness !== "ready" &&
+          !["ready", "ready-unverified"].includes(session.sharing_readiness) &&
           !session.temporary && (
           <span
             className="rounded border border-state-waiting/40 bg-state-waiting-soft px-1.5 py-0.5 text-state-waiting"
@@ -730,6 +730,29 @@ function ProjectCard({
               : `等待 ${session.native_machine_label} 升级`}
           </span>
         )}
+        {session.identity === "environment-attested" && (
+          <span
+            className="rounded border border-state-waiting/40 bg-state-waiting-soft px-1.5 py-0.5 text-state-waiting"
+            title="项目身份由人工声明建立；系统无法验证设备间目录等价性或发现文件分歧"
+          >
+            身份未校验
+          </span>
+        )}
+        {session.identity === "environment-attested" && (() => {
+          const declaredPaths = new Set(
+            session.hosts
+              .map((host) => host.attestation?.root_path_declared)
+              .filter((path): path is string => !!path),
+          );
+          return declaredPaths.size > 1 ? (
+            <span
+              className="rounded border border-state-error/40 bg-state-error-soft px-1.5 py-0.5 text-state-error"
+              title={Array.from(declaredPaths).join("\n")}
+            >
+              声明路径不一致
+            </span>
+          ) : null;
+        })()}
         {session.read_only && (
           <span className="rounded border border-state-waiting/40 bg-state-waiting-soft px-1.5 py-0.5 text-state-waiting">
             read-only · native to {session.native_machine_label}

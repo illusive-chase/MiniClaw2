@@ -731,11 +731,24 @@ export async function renameSession(id: string, name: string): Promise<SessionIn
   return res.json();
 }
 
-export async function enableSessionSharing(id: string): Promise<SessionInfo> {
+export type SharingTopology = "shared-filesystem" | "replicated" | "unknown";
+
+export async function enableSessionSharing(
+  id: string,
+  options: {
+    unverifiedIdentityAcknowledged?: boolean;
+    topology?: SharingTopology;
+  } = {},
+): Promise<SessionInfo> {
   const res = await fetch(`/sessions/${id}/sharing`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ sharing: "shared" }),
+    body: JSON.stringify({
+      sharing: "shared",
+      unverified_identity_acknowledged:
+        options.unverifiedIdentityAcknowledged ?? false,
+      topology: options.topology ?? "unknown",
+    }),
   });
   if (!res.ok) {
     const detail = await res.json().catch(() => null) as { detail?: string } | null;
@@ -747,11 +760,20 @@ export async function enableSessionSharing(id: string): Promise<SessionInfo> {
 export async function joinSessionHost(
   id: string,
   rootPath: string,
+  options: {
+    unverifiedIdentityAcknowledged?: boolean;
+    topology?: SharingTopology;
+  } = {},
 ): Promise<SessionInfo> {
   const res = await fetch(`/sessions/${id}/hosts`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ root_path: rootPath }),
+    body: JSON.stringify({
+      root_path: rootPath,
+      unverified_identity_acknowledged:
+        options.unverifiedIdentityAcknowledged ?? false,
+      topology: options.topology ?? "unknown",
+    }),
   });
   if (!res.ok) {
     const detail = await res.json().catch(() => null) as { detail?: string } | null;
@@ -775,8 +797,17 @@ export async function listSharingRequests(): Promise<SharingRequestInfo[]> {
 async function sharingRequestMutation(
   operation: string,
   path: string,
+  body?: Record<string, unknown>,
 ): Promise<SharingRequestResult> {
-  const res = await fetch(path, { method: "POST" });
+  const res = await fetch(path, {
+    method: "POST",
+    ...(body
+      ? {
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        }
+      : {}),
+  });
   if (!res.ok) {
     throw new ApiError(operation, res.status, await readErrorDetail(res));
   }
@@ -786,10 +817,19 @@ async function sharingRequestMutation(
 export function acceptSharingRequest(
   sessionId: string,
   requestId: string,
+  options: {
+    unverifiedIdentityAcknowledged?: boolean;
+    topology?: SharingTopology;
+  } = {},
 ): Promise<SharingRequestResult> {
   return sharingRequestMutation(
     "acceptSharingRequest",
     `/sessions/${sessionId}/sharing-requests/${requestId}/accept`,
+    {
+      unverified_identity_acknowledged:
+        options.unverifiedIdentityAcknowledged ?? false,
+      topology: options.topology ?? "unknown",
+    },
   );
 }
 

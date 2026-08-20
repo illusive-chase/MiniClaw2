@@ -648,7 +648,124 @@ carries a clear "active" badge or palette emphasis so the user knows
 which direction the next agent launch will run against.
 
 
-## 11. Why we keep these constraints
+## 11. Distribution
+
+MiniClaw2 persists its metadata in a Git repository. That choice is not
+a backup strategy — it is the distribution model, and it fixes what
+cross-host collaboration can be:
+
+> **Git-persisted metadata makes collaboration asynchronous.** A host
+> learns what other hosts did by reading files that arrived on the last
+> sync. Nothing else is knowable. Therefore no mechanism may require one
+> host to wait on another host's action, and no state may need to be
+> agreed upon across hosts to be correct.
+
+Every design below follows from that one sentence.
+
+### 11.1 Sharing is the default, not a state
+
+There is no "enable sharing" transition and no per-project sharing flag.
+A project's metadata is in the store; the store syncs; therefore every
+project is visible on every host that has synced. Distribution is a
+property of the substrate, not a decision the user makes per project.
+
+This removes an entire class of design problem. A flag that must mean the
+same thing on every host is a **consensus variable**, and consensus is
+exactly what an asynchronous substrate cannot provide. Its transitions
+have to be monotonic, propagated into running processes, and preserved by
+every writer — which is not a difficulty of implementation but the
+substrate refusing the requirement.
+
+Privacy is not what such a flag bought: a non-shared project's metadata
+synced to the remote anyway. If a project must not reach the remote, the
+honest mechanism is excluding its subtree from Git, not a policy field
+inside the data that is being pushed.
+
+### 11.2 Binding is the unit of authority
+
+The one question a host must answer is *may I write here?*, and it is
+answered locally:
+
+> **A host may write to a project if and only if that host has bound a
+> local path for it.** Bound means this device has a checkout it can act
+> in. Unbound means the project is visible and readable but has no
+> workspace here.
+
+Binding is a **host-local fact** — it lives in a gitignored file and is
+never synced, so it needs no agreement and can never conflict. Two
+statements that were previously fused now come apart:
+
+- *Who created this project* — provenance, useful for display.
+- *May I write to it* — authority, decided by local binding alone.
+
+Fusing them made "authority" a synced value, and therefore a consensus
+variable. Separating them makes the read-only surface honest: not
+"this project belongs to another device," but "this device has no path
+configured for it."
+
+Binding is symmetric and repeatable. Every host binds the same way; no
+host's binding is privileged; and **unbinding is deleting the local
+path**, which is why an incorrect bind is a recoverable mistake rather
+than a permanent one. History written under a host's partition survives
+unbinding — the work happened.
+
+### 11.3 Identity is verified per binding, locally
+
+When a host binds a path, it must satisfy itself that the path holds the
+same project the metadata describes. That check uses only locally
+available information:
+
+- **A Git checkout is machine-verifiable.** The root commit is an
+  unforgeable content identity. If the synced metadata records a
+  fingerprint, the binding path's root commit must match it.
+- **A non-Git directory is not.** There is no equivalent proof — path
+  equality has no discriminating power precisely in the mirrored-cluster
+  case, content hashes change as agents work, and mtimes differ under
+  replication. So the system does not invent a weak check. It warns,
+  the operator confirms, and the binding proceeds.
+
+The warning **is** the substitute for the fingerprint: the operator
+accepts a responsibility the machine cannot discharge.
+
+Crucially this is a **judgment, not a policy**. It is made independently
+at each binding, from what that host can observe, and it is not recorded
+as a project-level field that all hosts must agree on. A per-project
+identity policy would be another consensus variable, with the same
+propagation and preservation obligations §11.1 rejects.
+
+### 11.4 Detect after the fact; never lock
+
+Synced metadata cannot express a truthful lock — a lock a peer learns
+about only at the next sync is not a lock. So MiniClaw2 does not claim
+mutual exclusion it cannot deliver. Two hosts may claim equivalent
+virtual work; the duplicate is **detected and shown afterwards**, not
+prevented. Cross-host concurrency limits are not enforced, and this is
+stated to the operator rather than implied by an interface that looks
+authoritative.
+
+The same rule applies to peer state generally: what a host publishes
+about itself (its HEAD, its dirty flag) is a **snapshot with a capture
+time**, and every surface presents it as of that time. A stale value
+shown honestly is useful; a stale value shown as live is a lie.
+
+### 11.5 What this rules out
+
+Stated negatively, so it stays testable:
+
+- **No cross-host request/approval.** No host asks another host for
+  permission and waits. If an operation is legitimate, the host performs
+  it locally and publishes the result.
+- **No "waiting for another host" states.** A readiness value that
+  reports what some other host has not yet done couples this host's
+  capability to a remote process. What a host can do depends on what it
+  can observe locally, now.
+- **No consensus fields.** No project-level value whose correctness
+  requires that all hosts hold the same version of it.
+- **No synchronous cross-host anything.** There is no channel; the
+  substrate is a Git remote reached only when the user asks.
+
+
+## 12. Why we keep these constraints
 
 The non-obvious commitments, restated as one-liners:
 

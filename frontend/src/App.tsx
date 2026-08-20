@@ -83,6 +83,7 @@ import { ProjectsLanding } from "./components/ProjectsLanding";
 import { ActiveNodesBar } from "./components/ActiveNodesBar";
 import { UpdateBanner } from "./components/UpdateBanner";
 import { SharingRequestControls } from "./components/SharingRequestControls";
+import { UnverifiedSharingDialog } from "./components/UnverifiedSharingDialog";
 import { useSharingRequests } from "./useSharingRequests";
 import { useSelfUpdate } from "./selfUpdate";
 import { ThemeToggle } from "./components/ThemeToggle";
@@ -123,6 +124,9 @@ import {
 import { defaultModelPresetId } from "./modelPresets";
 
 type Route = "landing" | "project";
+type UnverifiedSharingIntent =
+  | { mode: "enable" }
+  | { mode: "join"; rootPath: string };
 type PendingGateState = {
   request: InteractionRequest;
   nodeId: string;
@@ -167,6 +171,8 @@ export function App() {
   const [landingTags, setLandingTags] = useState<Tag[]>([]);
   const [session, setSession] = useState<SessionInfo | null>(null);
   const [joiningHost, setJoiningHost] = useState(false);
+  const [unverifiedSharingIntent, setUnverifiedSharingIntent] =
+    useState<UnverifiedSharingIntent | null>(null);
   const [nodes, setNodes] = useState<NodeInfo[]>([]);
   const [modelPresets, setModelPresets] = useState<ModelPreset[]>([]);
   const [globalState, setGlobalState] = useState<GlobalState | null>(null);
@@ -2502,6 +2508,13 @@ export function App() {
   const projectTitle =
     session?.name?.trim() ||
     (session ? `Project ${session.id.slice(0, 8)}` : "Project");
+  const declaredAttestationPaths = Array.from(
+    new Set(
+      (session?.hosts ?? [])
+        .map((host) => host.attestation?.root_path_declared)
+        .filter((path): path is string => !!path),
+    ),
+  );
   const pendingControlsNodeId =
     panelState.open &&
     panelState.mode === "details" &&
@@ -2653,13 +2666,37 @@ export function App() {
                     : `read-only · native to ${session.native_machine_label} · as of ${session.last_sync_at ? new Date(session.last_sync_at * 1000).toLocaleString() : "never synced"}`}
                 </span>
               )}
+              {session?.identity === "environment-attested" && (
+                <span
+                  className="rounded border border-state-waiting/40 bg-state-waiting-soft px-1.5 py-0.5 font-sans text-state-waiting"
+                  title="各设备的项目身份由人工声明建立；系统无法验证目录等价性或发现文件分歧"
+                >
+                  身份未校验
+                </span>
+              )}
+              {session?.identity === "environment-attested" && declaredAttestationPaths.length > 1 && (
+                <span
+                  className="rounded border border-state-error/40 bg-state-error-soft px-1.5 py-0.5 font-sans text-state-error"
+                  title={declaredAttestationPaths.join("\n")}
+                >
+                  声明路径不一致
+                </span>
+              )}
               {session?.can_join_here && (
                 <button
                   type="button"
                   disabled={joiningHost}
                   onClick={() => {
-                    const rootPath = window.prompt("请输入此设备上的 Git 仓库绝对路径");
+                    const rootPath = window.prompt(
+                      session.identity === "environment-attested"
+                        ? "请输入此设备上的项目目录绝对路径"
+                        : "请输入此设备上的 Git 仓库绝对路径",
+                    );
                     if (!rootPath?.trim()) return;
+                    if (session.identity === "environment-attested") {
+                      setUnverifiedSharingIntent({ mode: "join", rootPath: rootPath.trim() });
+                      return;
+                    }
                     setJoiningHost(true);
                     void joinSessionHost(session.id, rootPath.trim())
                       .then(setSession)
@@ -2684,6 +2721,10 @@ export function App() {
                   type="button"
                   disabled={projectMutationPending}
                   onClick={() => {
+                    if (session.sharing_readiness === "ready-unverified") {
+                      setUnverifiedSharingIntent({ mode: "enable" });
+                      return;
+                    }
                     if (!window.confirm("开启后项目可由多台设备共同写入，且目前不支持关闭共享。继续吗？")) return;
                     setProjectMutationPending(true);
                     void enableSessionSharing(session.id)
@@ -2697,7 +2738,7 @@ export function App() {
                 </button>
               )}
               {session?.sharing === "device-native" &&
-                session.sharing_readiness !== "ready" &&
+                !["ready", "ready-unverified"].includes(session.sharing_readiness) &&
                 !session.temporary && (
                 <span className="rounded border border-state-waiting/40 bg-state-waiting-soft px-1.5 py-0.5 font-sans text-state-waiting">
                   {session.sharing_readiness === "waiting-for-owner-commit"
@@ -2711,7 +2752,7 @@ export function App() {
                   requests={sharing.requests}
                   busy={sharing.busy}
                   pendingSync={sharing.pendingSync}
-                  onAccept={(requestId) => void sharing.accept(session.id, requestId)}
+                  onAccept={(requestId, options) => void sharing.accept(session.id, requestId, options)}
                   onReject={(requestId) => void sharing.reject(session.id, requestId)}
                   onCancel={(requestId) => void sharing.cancel(session.id, requestId)}
                   onCheckForUpdates={() => void sharing.checkForUpdates()}
@@ -3088,6 +3129,40 @@ export function App() {
         toggleTemplateInstanceCollapsed(result.instanceId, true);
         // Manual-lane stamps do not emit node_updated events.
         void refreshNodes();
+      }}
+    />
+    <UnverifiedSharingDialog
+      open={unverifiedSharingIntent !== null}
+      mode={unverifiedSharingIntent?.mode ?? "enable"}
+      pending={projectMutationPending || joiningHost}
+      onCancel={() => setUnverifiedSharingIntent(null)}
+      onConfirm={(topology) => {
+        if (!session || !unverifiedSharingIntent) return;
+        if (unverifiedSharingIntent.mode === "enable") {
+          setProjectMutationPending(true);
+          void enableSessionSharing(session.id, {
+            unverifiedIdentityAcknowledged: true,
+            topology,
+          })
+            .then((next) => {
+              setSession(next);
+              setUnverifiedSharingIntent(null);
+            })
+            .catch((error: unknown) => window.alert(error instanceof Error ? error.message : String(error)))
+            .finally(() => setProjectMutationPending(false));
+          return;
+        }
+        setJoiningHost(true);
+        void joinSessionHost(session.id, unverifiedSharingIntent.rootPath, {
+          unverifiedIdentityAcknowledged: true,
+          topology,
+        })
+          .then((next) => {
+            setSession(next);
+            setUnverifiedSharingIntent(null);
+          })
+          .catch((error: unknown) => window.alert(error instanceof Error ? error.message : String(error)))
+          .finally(() => setJoiningHost(false));
       }}
     />
     </TextZoomProvider>

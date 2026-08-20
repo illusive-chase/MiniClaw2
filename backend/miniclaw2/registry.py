@@ -72,6 +72,14 @@ _STARTUP_INTERRUPT_REASON = "interrupted by backend restart"
 logger = logging.getLogger(__name__)
 
 
+UNVERIFIED_IDENTITY_WARNING = (
+    "此项目没有可验证的 Git 身份。请确认各设备路径指向等价目录树，且依赖、数据和配置严格对齐。"
+    "MiniClaw2 无法发现设备间文件分歧，也无法提供回滚、code review 或提交视图；"
+    "共享挂载上的并发额度不跨主机生效，可能有多个 agent 同时写入；"
+    "当前版本也无法解除主机绑定或关闭共享。"
+)
+
+
 _UNSET: object = object()
 
 
@@ -496,7 +504,13 @@ class ProjectRegistry:
     def list_projects(self) -> list[Project]:
         return [rt.project for rt in self._runtimes.values()]
 
-    def enable_sharing(self, pid: str) -> Project | None:
+    def enable_sharing(
+        self,
+        pid: str,
+        *,
+        unverified_identity_acknowledged: bool = False,
+        topology: str = "unknown",
+    ) -> Project | None:
         rt = self._runtimes.get(pid)
         if rt is None:
             return None
@@ -513,6 +527,16 @@ class ProjectRegistry:
             raise ValueError("project owner must upgrade MiniClaw2 before sharing")
         if readiness == "waiting-for-owner-commit":
             raise ValueError("project owner repository must have at least one commit")
+        if readiness == "ready-unverified":
+            if not unverified_identity_acknowledged:
+                raise ValueError(UNVERIFIED_IDENTITY_WARNING)
+            project.identity = "environment-attested"
+            if project.machine_id == self.store.machine.id:
+                self.store.record_identity_attestation(
+                    project.id,
+                    str(Path(project.root_path).expanduser().resolve()),
+                    topology=topology,
+                )
         project.sharing = "shared"
         clear_owned_binding_local_paths(project, store_root=self.store.root)
         self.store.update_project(project)
@@ -549,6 +573,9 @@ class ProjectRegistry:
         self,
         pid: str,
         rid: str,
+        *,
+        unverified_identity_acknowledged: bool = False,
+        topology: str = "unknown",
     ) -> tuple[Project, SharingRequestRecord] | None:
         """Enable sharing on the host's terms, then record the acceptance.
 
@@ -557,7 +584,11 @@ class ProjectRegistry:
         rather than telling the requester sharing is done.
         """
         project = self._require_decidable_request(pid, rid)
-        shared = self.enable_sharing(pid)
+        shared = self.enable_sharing(
+            pid,
+            unverified_identity_acknowledged=unverified_identity_acknowledged,
+            topology=topology,
+        )
         if shared is None:
             return None
         self.store.write_sharing_decision(shared, rid, "accepted")
@@ -632,7 +663,14 @@ class ProjectRegistry:
             raise ValueError(f"sharing request is already {record.status}")
         return project
 
-    def join_shared_project(self, pid: str, root_path: str) -> Project | None:
+    def join_shared_project(
+        self,
+        pid: str,
+        root_path: str,
+        *,
+        unverified_identity_acknowledged: bool = False,
+        topology: str = "unknown",
+    ) -> Project | None:
         self.store.assert_writable()
         rt = self._runtimes.get(pid)
         if rt is None:
@@ -648,48 +686,66 @@ class ProjectRegistry:
         if not root.is_dir():
             raise ValueError(f"path is not a directory: {root}")
         resolved = str(root.resolve())
-        if not is_git_repo(resolved):
-            raise ValueError("path is not a Git repository")
-        roots = root_commits(resolved)
-        if not roots:
-            raise ValueError("repository has no root commit")
-        hosts = self.store.list_hosts(pid)
-        expected = next(
-            (
-                host.get("repo", {}).get("root_commit")
-                for host in hosts
-                if isinstance(host.get("repo"), dict)
-                and host.get("repo", {}).get("root_commit")
-            ),
-            None,
-        )
-        if expected is None:
-            raise ValueError("shared project has no repository fingerprint")
-        if roots[0] != expected:
-            raise ValueError("repository fingerprint does not match the shared project")
-
-        exclude_error = ensure_miniclaw_git_excluded(resolved)
-        if exclude_error:
-            logger.warning(
-                "failed to exclude MiniClaw2 generated paths in %s: %s",
-                resolved,
-                exclude_error,
+        roots: list[str] = []
+        if project.identity == "environment-attested":
+            if not unverified_identity_acknowledged:
+                raise ValueError(UNVERIFIED_IDENTITY_WARNING)
+            observed_is_repo = is_git_repo(resolved)
+        else:
+            observed_is_repo = is_git_repo(resolved)
+            if not observed_is_repo:
+                raise ValueError("path is not a Git repository")
+            roots = root_commits(resolved)
+            if not roots:
+                raise ValueError("repository has no root commit")
+            hosts = self.store.list_hosts(pid)
+            expected = next(
+                (
+                    host.get("repo", {}).get("root_commit")
+                    for host in hosts
+                    if isinstance(host.get("repo"), dict)
+                    and host.get("repo", {}).get("root_commit")
+                ),
+                None,
             )
+            if expected is None:
+                raise ValueError("shared project has no repository fingerprint")
+            if roots[0] != expected:
+                raise ValueError("repository fingerprint does not match the shared project")
+
+        if observed_is_repo:
+            exclude_error = ensure_miniclaw_git_excluded(resolved)
+            if exclude_error:
+                logger.warning(
+                    "failed to exclude MiniClaw2 generated paths in %s: %s",
+                    resolved,
+                    exclude_error,
+                )
 
         host_dir = self.store.root / "projects" / pid / "hosts" / self.store.machine.id
         source_layout = self._shared_layout_seed(pid, project.machine_id)
+        repo: dict[str, Any] = {}
+        if roots:
+            repo = {
+                "root_commit": roots[0],
+                "root_commits": roots,
+                "origin_url": normalized_origin_url(resolved),
+            }
         self.store._write_json(
             host_dir / "host.json",
             {
                 "label": self.store.machine.label,
                 "bound_at": time.time(),
-                "repo": {
-                    "root_commit": roots[0],
-                    "root_commits": roots,
-                    "origin_url": normalized_origin_url(resolved),
-                },
+                "repo": repo,
+                "is_repo": observed_is_repo,
             },
         )
+        if project.identity == "environment-attested":
+            self.store.record_identity_attestation(
+                pid,
+                resolved,
+                topology=topology,
+            )
         self.store._write_json(host_dir / "local.json", {"root_path": resolved})
         self.store._write_json(host_dir / "layout.json", source_layout)
         (host_dir / "nodes").mkdir(parents=True, exist_ok=True)

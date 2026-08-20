@@ -225,6 +225,57 @@ class StoreIdentityMigrationTests(unittest.TestCase):
             self.assertFalse((project_dir / "git_aliases.json").exists())
             self.assertEqual(store.read_git_aliases(project.id), aliases)
 
+    def test_v13_backfills_non_git_host_observation_after_schema_was_synced(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            machine_id = "local-machine"
+            (root / "machine.json").write_text(
+                json.dumps(
+                    {
+                        "id": machine_id,
+                        "hostname": current_hostname(),
+                        "label": "Local",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (root / "schema.json").write_text(
+                json.dumps({"schema": "node-revision-v9", "schema_version": 13}),
+                encoding="utf-8",
+            )
+            workspace = root / "workspace"
+            workspace.mkdir()
+            project = Project(
+                root_path=str(workspace),
+                machine_id=machine_id,
+                machine_label="Local",
+            )
+            project_dir = root / "projects" / project.id
+            host_dir = project_dir / "hosts" / machine_id
+            (host_dir / "nodes").mkdir(parents=True)
+            (host_dir / "local.json").write_text(
+                json.dumps({"root_path": str(workspace)}),
+                encoding="utf-8",
+            )
+            (host_dir / "host.json").write_text(
+                json.dumps({"label": "Local", "bound_at": 1, "repo": {}}),
+                encoding="utf-8",
+            )
+            (project_dir / "project.json").write_text(
+                json.dumps(
+                    project.model_dump(
+                        exclude={"provider", "root_path", "layout_hints", "layout_viewport"}
+                    )
+                ),
+                encoding="utf-8",
+            )
+
+            store = Store(root)
+
+            self.assertFalse(store.list_hosts(project.id)[0]["is_repo"])
+            loaded = store.list_projects()[0]
+            self.assertEqual(store.sharing_readiness(loaded), "ready-unverified")
+
 
 class UserTemplateSchemaMigrationTests(unittest.TestCase):
     def _write_store_schema_v7(self, root: Path) -> None:

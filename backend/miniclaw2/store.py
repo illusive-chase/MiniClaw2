@@ -34,7 +34,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from .domain import HumanGate, Node, Project, UNBOUND_ROOT_PATH
-from .git_state import normalized_origin_url, root_commits
+from .git_state import is_git_repo, normalized_origin_url, root_commits
 from .replay import EVENT_SCHEMA_VERSION, upgrade_event_record
 from .sharing_requests import (
     CANCELLATION_FILENAME,
@@ -205,27 +205,44 @@ class Store:
         if not (owner_dir / "nodes").is_dir():
             return "waiting-for-owner-upgrade"
         try:
-            repo = self._read_json(owner_dir / "host.json").get("repo")
+            payload = self._read_json(owner_dir / "host.json")
         except (OSError, ValueError):
-            repo = None
-        if not isinstance(repo, dict) or not repo.get("root_commit"):
-            return "waiting-for-owner-commit"
-        return "ready"
+            payload = {}
+        if project.identity == "environment-attested":
+            return "ready-unverified"
+        repo = payload.get("repo")
+        if isinstance(repo, dict) and repo.get("root_commit"):
+            return "ready"
+        if payload.get("is_repo") is False:
+            return "ready-unverified"
+        return "waiting-for-owner-commit"
 
     def update_owner_fingerprint(self, project: Project) -> bool:
         if project.machine_id != self.machine.id or not self._is_partitioned(project.id):
             return False
         roots = root_commits(project.root_path)
-        if not roots:
-            return False
         path = self._host_dir(project.id, self.machine.id) / "host.json"
         try:
             payload = self._read_json(path)
         except (OSError, ValueError):
             payload = {"label": self.machine.label, "bound_at": time.time()}
+        observed_is_repo = is_git_repo(project.root_path)
         repo = payload.get("repo")
-        if isinstance(repo, dict) and repo.get("root_commit") == roots[0]:
+        if not roots:
+            changed = payload.get("is_repo") is not observed_is_repo or repo != {}
+            if not changed:
+                return False
+            payload["is_repo"] = observed_is_repo
+            payload["repo"] = {}
+            self._write_json(path, payload)
+            return True
+        if (
+            payload.get("is_repo") is True
+            and isinstance(repo, dict)
+            and repo.get("root_commit") == roots[0]
+        ):
             return False
+        payload["is_repo"] = True
         payload["repo"] = {
             "root_commit": roots[0],
             "root_commits": roots,
@@ -233,6 +250,32 @@ class Store:
         }
         self._write_json(path, payload)
         return True
+
+    def record_identity_attestation(
+        self,
+        pid: str,
+        root_path: str,
+        *,
+        topology: str = "unknown",
+    ) -> None:
+        path = self._host_dir(pid, self.machine.id) / "host.json"
+        try:
+            payload = self._read_json(path)
+        except (OSError, ValueError):
+            payload = {"label": self.machine.label, "bound_at": time.time()}
+        payload.update(
+            {
+                "identity": "environment-attested",
+                "attestation": {
+                    "attested_at": time.time(),
+                    "machine_label": self.machine.label,
+                    "hostname": self.machine.hostname,
+                    "root_path_declared": root_path,
+                    "topology": topology,
+                },
+            }
+        )
+        self._write_json(path, payload)
 
     def list_hosts(self, pid: str) -> list[dict[str, Any]]:
         hosts_dir = self._hosts_dir(pid)
@@ -516,6 +559,7 @@ class Store:
                 },
             )
             roots = root_commits(project.root_path)
+            observed_is_repo = is_git_repo(project.root_path)
             repo: dict[str, Any] = {}
             if roots:
                 repo.update(
@@ -531,6 +575,7 @@ class Store:
                     "label": self.machine.label,
                     "bound_at": time.time(),
                     "repo": repo,
+                    "is_repo": observed_is_repo,
                 },
             )
             payload = project.model_dump(

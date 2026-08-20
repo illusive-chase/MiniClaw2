@@ -12,6 +12,7 @@ import type {
   SharingRequestInfo,
   SharingRequestResult,
 } from "./types";
+import type { SharingTopology } from "./api";
 
 /** What a completed local mutation is still waiting to publish.
  *
@@ -130,8 +131,17 @@ export function useSharingRequests(enabled: boolean, options: Options = {}) {
   );
 
   const accept = useCallback(
-    (sessionId: string, requestId: string) =>
-      run("accept", sessionId, () => acceptSharingRequest(sessionId, requestId)),
+    (
+      sessionId: string,
+      requestId: string,
+      options: {
+        unverifiedIdentityAcknowledged?: boolean;
+        topology?: SharingTopology;
+      } = {},
+    ) =>
+      run("accept", sessionId, () =>
+        acceptSharingRequest(sessionId, requestId, options),
+      ),
     [run],
   );
 

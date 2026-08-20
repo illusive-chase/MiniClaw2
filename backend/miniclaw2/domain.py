@@ -169,6 +169,7 @@ class Project(BaseModel):
     machine_id: str = ""
     machine_label: str = ""
     sharing: str = "device-native"
+    identity: Literal["git-root-commit", "environment-attested"] = "git-root-commit"
     name: str = ""
     model_preset_id: str = Field(default_factory=default_model_preset_id)
     concurrency: StrictInt = Field(default=1, ge=1)

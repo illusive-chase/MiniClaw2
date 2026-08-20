@@ -204,8 +204,10 @@ export type SessionInfo = {
   read_only: boolean;
   can_delete: boolean;
   sharing: "device-native" | "shared";
+  identity: "git-root-commit" | "environment-attested";
   sharing_readiness:
     | "ready"
+    | "ready-unverified"
     | "waiting-for-owner-upgrade"
     | "waiting-for-owner-commit";
   can_enable_sharing: boolean;
@@ -236,6 +238,15 @@ export type SessionHost = {
   branch?: string;
   recorded_at?: number;
   dirty?: boolean;
+  is_repo?: boolean;
+  identity?: "git-root-commit" | "environment-attested";
+  attestation?: {
+    attested_at: number;
+    machine_label: string;
+    hostname: string;
+    root_path_declared: string;
+    topology: "shared-filesystem" | "replicated" | "unknown";
+  };
 };
 
 /** Status of a non-host device's request that a project's native host enable

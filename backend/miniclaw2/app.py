@@ -197,6 +197,7 @@ class SessionInfo(BaseModel):
     read_only: bool = False
     can_delete: bool = True
     sharing: str = "device-native"
+    identity: Literal["git-root-commit", "environment-attested"] = "git-root-commit"
     sharing_readiness: str = "ready"
     can_enable_sharing: bool = False
     can_join_here: bool = False
@@ -244,12 +245,23 @@ class EnableSharingRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     sharing: Literal["shared"]
+    unverified_identity_acknowledged: bool = False
+    topology: Literal["shared-filesystem", "replicated", "unknown"] = "unknown"
 
 
 class JoinHostRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     root_path: str
+    unverified_identity_acknowledged: bool = False
+    topology: Literal["shared-filesystem", "replicated", "unknown"] = "unknown"
+
+
+class UnverifiedIdentityRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    unverified_identity_acknowledged: bool = False
+    topology: Literal["shared-filesystem", "replicated", "unknown"] = "unknown"
 
 
 class SharingRequestInfo(BaseModel):
@@ -1101,7 +1113,11 @@ def create_app(
         if project is None:
             raise HTTPException(404, "session not found")
         try:
-            project = registry.enable_sharing(sid)
+            project = registry.enable_sharing(
+                sid,
+                unverified_identity_acknowledged=req.unverified_identity_acknowledged,
+                topology=req.topology,
+            )
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
         except RuntimeError as exc:
@@ -1118,7 +1134,12 @@ def create_app(
         # This is the sole mutation allowed before the local host owns a binding.
         # Registry constrains every write to hosts/<local-machine-id>/.
         try:
-            project = registry.join_shared_project(sid, req.root_path)
+            project = registry.join_shared_project(
+                sid,
+                req.root_path,
+                unverified_identity_acknowledged=req.unverified_identity_acknowledged,
+                topology=req.topology,
+            )
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
         if project is None:
@@ -1144,9 +1165,20 @@ def create_app(
         "/sessions/{sid}/sharing-requests/{rid}/accept",
         response_model=SharingRequestResult,
     )
-    def accept_session_sharing_request(sid: str, rid: str) -> SharingRequestResult:
+    def accept_session_sharing_request(
+        sid: str,
+        rid: str,
+        req: UnverifiedIdentityRequest | None = None,
+    ) -> SharingRequestResult:
         try:
-            accepted = registry.accept_project_sharing_request(sid, rid)
+            accepted = registry.accept_project_sharing_request(
+                sid,
+                rid,
+                unverified_identity_acknowledged=(
+                    req.unverified_identity_acknowledged if req else False
+                ),
+                topology=req.topology if req else "unknown",
+            )
         except KeyError as exc:
             raise HTTPException(404, "sharing request not found") from exc
         except ValueError as exc:
@@ -2311,12 +2343,13 @@ def _session_info(registry: ProjectRegistry, project: Any) -> SessionInfo:
             )
         ),
         sharing=project.sharing,
+        identity=project.identity,
         sharing_readiness=sharing_readiness,
         can_enable_sharing=(
             registry.store.read_only_reason is None
             and project.sharing == "device-native"
             and not project.temporary
-            and sharing_readiness == "ready"
+            and sharing_readiness in {"ready", "ready-unverified"}
         ),
         can_join_here=project.sharing == "shared" and not is_native,
         hosts=registry.store.list_hosts(project.id),
