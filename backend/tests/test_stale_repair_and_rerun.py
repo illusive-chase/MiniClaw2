@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import json
 import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from miniclaw2.contextspace import create_planspace
 from miniclaw2.domain import (
@@ -116,6 +118,99 @@ class StaleNodeRepairTests(unittest.TestCase):
         assert preview is not None
         self.assertIn("cancelled", preview)
         self.assertIn("interrupted by backend restart", preview)
+
+    def test_live_owner_keeps_its_running_nodes(self) -> None:
+        """A second process must not cancel a live process's nodes.
+
+        The sweep blames a restart, so running it while the previous owner is
+        still driving those nodes both corrupts their state and misattributes
+        the cause.
+        """
+        stale = self._make_stale("owned-running", NodeState.RUNNING)
+        (self.store.root / ".runtime-owner.json").write_text(
+            json.dumps(
+                {
+                    "pid": os.getpid(),
+                    "process_start": "same-incarnation",
+                    "claimed_at": 1.0,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with (
+            patch("miniclaw2.registry._process_is_alive", return_value=True),
+            patch(
+                "miniclaw2.registry._process_start_identity",
+                return_value="same-incarnation",
+            ),
+        ):
+            ProjectRegistry(store=self.store)
+
+        loaded = self.store.load_node(self.project.id, stale.id)
+        assert loaded is not None
+        self.assertEqual(loaded.state, NodeState.RUNNING)
+        self.assertIsNone(loaded.error)
+
+    def test_dead_owner_does_not_block_the_sweep(self) -> None:
+        stale = self._make_stale("orphan-running", NodeState.RUNNING)
+        (self.store.root / ".runtime-owner.json").write_text(
+            json.dumps(
+                {
+                    "pid": 999999,
+                    "process_start": "dead-incarnation",
+                    "claimed_at": 1.0,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with patch("miniclaw2.registry._process_is_alive", return_value=False):
+            ProjectRegistry(store=self.store)
+
+        loaded = self.store.load_node(self.project.id, stale.id)
+        assert loaded is not None
+        self.assertEqual(loaded.state, NodeState.CANCELLED)
+
+    def test_reused_pid_does_not_block_the_sweep(self) -> None:
+        """A container restart can give both backend incarnations PID 1."""
+        stale = self._make_stale("reused-pid", NodeState.RUNNING)
+        (self.store.root / ".runtime-owner.json").write_text(
+            json.dumps(
+                {
+                    "pid": os.getpid(),
+                    "process_start": "previous-incarnation",
+                    "claimed_at": 1.0,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with (
+            patch("miniclaw2.registry._process_is_alive", return_value=True),
+            patch(
+                "miniclaw2.registry._process_start_identity",
+                return_value="current-incarnation",
+            ),
+        ):
+            ProjectRegistry(store=self.store)
+
+        loaded = self.store.load_node(self.project.id, stale.id)
+        assert loaded is not None
+        self.assertEqual(loaded.state, NodeState.CANCELLED)
+
+    def test_ownership_is_recorded_for_the_next_process(self) -> None:
+        with patch(
+            "miniclaw2.registry._process_start_identity",
+            return_value="current-incarnation",
+        ):
+            ProjectRegistry(store=self.store)
+
+        payload = json.loads(
+            (self.store.root / ".runtime-owner.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(payload["pid"], os.getpid())
+        self.assertEqual(payload["process_start"], "current-incarnation")
 
 
 class RerunNodeTests(unittest.TestCase):

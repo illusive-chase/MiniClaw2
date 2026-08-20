@@ -22,7 +22,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, ValidationError
 
-from .active_nodes import ActiveNodesIndex, collect_active_entries
+from .active_nodes import ACTIVE_STATES, ActiveNodesIndex, collect_active_entries
 from .artifacts import INLINE_TEXT_CAP, stored_artifact_path
 from .contextspace import (
     delete_principle,
@@ -945,9 +945,9 @@ def create_app(
 
     @app.get("/active-nodes", response_model=ActiveNodesResponse)
     def list_active_nodes() -> ActiveNodesResponse:
-        """Nodes running or needing a human, across every project.
+        """Nodes running, needing a human, or recently finished, workspace-wide.
 
-        Polled by the header status bar. The per-project WebSocket cannot
+        Polled by the notification bell. The per-project WebSocket cannot
         answer this: it only carries events for the project currently open.
         """
         entries = collect_active_entries(registry, active_nodes_index)
@@ -973,6 +973,9 @@ def create_app(
         )
 
     def self_update_blockers() -> list[dict[str, str]]:
+        # Only genuinely-busy nodes block an update. The sweep also reports
+        # recently-finished nodes so the notification bell can list them, and
+        # a done node must not hold the update back.
         blockers = {
             (entry.project_id, entry.node_id): {
                 "project_id": entry.project_id,
@@ -981,7 +984,7 @@ def create_app(
                 "state": entry.state,
             }
             for entry in collect_active_entries(registry, active_nodes_index)
-            if entry.state != "error"
+            if entry.state in ACTIVE_STATES
         }
         for project, node_id in registry.finalizing_runner_nodes():
             blockers.setdefault(

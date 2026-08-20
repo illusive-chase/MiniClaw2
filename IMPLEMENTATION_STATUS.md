@@ -1474,8 +1474,11 @@ Trunk: `backend/miniclaw2/store.py`, `backend/miniclaw2/replay.py`.
   fallback `last_activity_at ?? created_at`. Because every value can be rebuilt
   from node timestamps, persisting it would only add synchronization and merge
   conflicts for a cache.
-- Registry initialization repairs persisted active nodes left by a previous
-  process to cancelled terminal records, including framework stub previews,
+- Registry initialization records a PID plus OS process-start identity for the
+  store's runtime owner. It repairs persisted active nodes only after that
+  exact process incarnation is gone, preventing a second live registry from
+  cancelling owned work while still handling reused container PIDs correctly.
+  Repair writes cancelled terminal records, including framework stub previews,
   without blocking other projects on a malformed entry; queued nodes remain
   pending and resume scheduling after startup.
 - Store schema v7 writes one canonical shape: only `model_preset_id`
@@ -1602,7 +1605,7 @@ Trunk: `backend/miniclaw2/store.py`, `backend/miniclaw2/replay.py`.
   roughly 1ms per node, so a warm sweep of a 358-node store runs in ~12ms
   against ~450ms for the naive version. Deferred until a query arrives that
   this pattern cannot serve — one needing ordering or filtering across all
-  nodes rather than the small non-terminal subset.
+  nodes rather than the active subset plus a bounded recent-terminal window.
 - Removing or replacing a shared host binding, including archival or transfer
   of its `hosts/<mid>/nodes/` ownership. Device-native projects still have no
   adopt-project ownership transfer.

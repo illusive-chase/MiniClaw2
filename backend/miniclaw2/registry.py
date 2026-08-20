@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import ctypes
 import json
 import logging
 import math
+import os
 import shutil
+import subprocess
+import sys
 import time
 from dataclasses import asdict, dataclass
 from collections.abc import Awaitable, Callable
@@ -67,6 +71,103 @@ from .virtual_graph import has_cycle
 from .workspace import create_temporary_root, remove_temporary_root
 
 _STARTUP_INTERRUPT_REASON = "interrupted by backend restart"
+
+_RUNTIME_OWNER_FILENAME = ".runtime-owner.json"
+
+
+def _process_is_alive(pid: int) -> bool:
+    """Whether ``pid`` still names a live process owned by this user."""
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        # Existing process owned by somebody else — alive as far as we care.
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def _process_start_identity(pid: int) -> str | None:
+    """Return an identity that changes when ``pid`` is reused.
+
+    Linux exposes both a boot id and the process start tick directly. macOS
+    has no ``/proc`` filesystem, so query ``proc_bsdinfo`` through libproc.
+    This runs only while claiming a store at backend startup.
+    """
+    if pid <= 0:
+        return None
+    if sys.platform == "linux":
+        try:
+            raw = Path(f"/proc/{pid}/stat").read_text(
+                encoding="utf-8", errors="ignore"
+            )
+            boot_id = Path("/proc/sys/kernel/random/boot_id").read_text(
+                encoding="utf-8"
+            ).strip()
+        except OSError:
+            return None
+        close = raw.rfind(")")
+        if close < 0:
+            return None
+        tail = raw[close + 1 :].split()
+        if len(tail) < 20 or not boot_id:
+            return None
+        return f"linux:{boot_id}:{tail[19]}"
+
+    if sys.platform == "darwin":
+        # `proc_bsdinfo` is 136 bytes on every supported 64-bit macOS target;
+        # its final two uint64 fields are start time seconds and microseconds.
+        size = 136
+        buffer = ctypes.create_string_buffer(size)
+        try:
+            libproc = ctypes.CDLL("/usr/lib/libproc.dylib")
+            proc_pidinfo = libproc.proc_pidinfo
+            proc_pidinfo.argtypes = [
+                ctypes.c_int,
+                ctypes.c_int,
+                ctypes.c_uint64,
+                ctypes.c_void_p,
+                ctypes.c_int,
+            ]
+            proc_pidinfo.restype = ctypes.c_int
+            written = proc_pidinfo(pid, 3, 0, buffer, size)
+        except (AttributeError, OSError):
+            return None
+        if written != size:
+            return None
+        seconds = int.from_bytes(buffer.raw[120:128], sys.byteorder)
+        microseconds = int.from_bytes(buffer.raw[128:136], sys.byteorder)
+        if seconds <= 0:
+            return None
+        return f"darwin:{seconds}:{microseconds}"
+
+    try:
+        completed = subprocess.run(
+            ["ps", "-o", "lstart=", "-p", str(pid)],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    started = " ".join(completed.stdout.split())
+    if completed.returncode != 0 or not started:
+        return None
+    return f"ps:{started}"
+
+
+def _process_matches_owner(pid: int, process_start: object) -> bool:
+    """Whether a live process is the exact incarnation in an owner record."""
+    if not isinstance(process_start, str) or not process_start:
+        return False
+    if not _process_is_alive(pid):
+        return False
+    return _process_start_identity(pid) == process_start
 
 logger = logging.getLogger(__name__)
 
@@ -246,10 +347,62 @@ class ProjectRegistry:
         self._store = store
         self._initialized = True
         store.sync.add_pre_commit_callback(self._record_host_heads)
+        sweep = self._claim_runtime_ownership()
         for project in store.list_projects():
             self._runtimes[project.id] = ProjectRuntime(project)
-            if self.is_native_project(project) and store.read_only_reason is None:
+            if sweep and self.is_native_project(project) and store.read_only_reason is None:
                 self._repair_stale_nodes(project.id)
+
+    def _claim_runtime_ownership(self) -> bool:
+        """Record this process as the store's runtime owner; may we sweep?
+
+        ``_repair_stale_nodes`` assumes the previous owner is gone, but nothing
+        used to verify that. A second registry opening the same store — another
+        process, or a helper inside this one that constructed a bare ``Store()``
+        — would rewrite the live owner's RUNNING nodes to CANCELLED and blame a
+        restart that never happened. Sweeping is therefore allowed only when no
+        recorded owner process incarnation is still alive; the surviving
+        runners keep owning their nodes and write their real results on
+        completion. PID alone is insufficient because a restarted container
+        commonly gives both backend incarnations PID 1. Our own matching
+        pid/start identity counts as a live owner: whichever registry claimed
+        the store already swept it, and its runners now own whatever is still
+        running.
+        """
+        path = self.store.root / _RUNTIME_OWNER_FILENAME
+        holder: int | None = None
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            candidate = int(payload.get("pid", 0))
+            if _process_matches_owner(candidate, payload.get("process_start")):
+                holder = candidate
+        except (OSError, ValueError, TypeError):
+            holder = None
+
+        if holder is not None:
+            logger.warning(
+                "store %s is already served by pid %s; skipping stale-node "
+                "repair so that process keeps ownership of its live nodes",
+                self.store.root,
+                holder,
+            )
+            return False
+
+        try:
+            process_start = _process_start_identity(os.getpid())
+            path.write_text(
+                json.dumps(
+                    {
+                        "pid": os.getpid(),
+                        "process_start": process_start,
+                        "claimed_at": time.time(),
+                    }
+                ),
+                encoding="utf-8",
+            )
+        except OSError:
+            logger.exception("failed to record runtime ownership at %s", path)
+        return True
 
     def _record_host_heads(self) -> None:
         """Stamp each shared project's local repository state before sync."""

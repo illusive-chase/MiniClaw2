@@ -11,7 +11,7 @@ from unittest.mock import PropertyMock, patch
 from fastapi.testclient import TestClient
 
 from miniclaw2.active_nodes import (
-    ERROR_RECENCY_SECONDS,
+    TERMINAL_RECENCY_SECONDS,
     ActiveNodesIndex,
     collect_active_entries,
 )
@@ -97,14 +97,75 @@ class ActiveNodesCollectionTests(unittest.TestCase):
 
             running = _add_node(store, alpha, state=NodeState.RUNNING, summary="跑着")
             waiting = _add_node(store, beta, state=NodeState.WAITING, summary="等人")
-            _add_node(store, beta, state=NodeState.DONE, summary="完成")
+            stale = _add_node(
+                store,
+                beta,
+                state=NodeState.DONE,
+                summary="很久以前完成",
+                finished_at=time.time() - TERMINAL_RECENCY_SECONDS - 60,
+            )
 
             entries = collect_active_entries(registry, ActiveNodesIndex())
             by_id = {entry.node_id: entry for entry in entries}
 
             self.assertEqual(set(by_id), {running.id, waiting.id})
+            self.assertNotIn(stale.id, by_id)
             self.assertEqual(by_id[running.id].project_name, "alpha")
             self.assertEqual(by_id[waiting.id].state, "waiting")
+
+    def test_recently_finished_nodes_are_listed(self) -> None:
+        """The bell answers "what finished while I was elsewhere", not only
+        "what is still going"."""
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            store, registry = _registry(base)
+            project = _add_project(store, registry, base / "p", name="p")
+            now = time.time()
+            done = _add_node(
+                store,
+                project,
+                state=NodeState.DONE,
+                summary="刚完成",
+                finished_at=now - 60,
+            )
+            cancelled = _add_node(
+                store,
+                project,
+                state=NodeState.CANCELLED,
+                summary="刚取消",
+                finished_at=now - 120,
+            )
+
+            entries = collect_active_entries(registry, ActiveNodesIndex(), now=now)
+            by_id = {entry.node_id: entry for entry in entries}
+            self.assertEqual(set(by_id), {done.id, cancelled.id})
+            self.assertEqual(by_id[done.id].finished_at, now - 60)
+            self.assertIsNone(by_id[cancelled.id].gate)
+
+    def test_terminal_nodes_leave_the_window_but_active_ones_never_do(self) -> None:
+        """The window bounds how far back the panel looks. A node still running
+        after two days is the user's problem *now* and must never age out."""
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            store, registry = _registry(base)
+            project = _add_project(store, registry, base / "p", name="p")
+            now = time.time()
+            long_running = _add_node(
+                store, project, state=NodeState.RUNNING, summary="跑了两天"
+            )
+            long_running.started_at = now - 48 * 3600
+            store.update_node(long_running)
+            for state in (NodeState.DONE, NodeState.ERROR, NodeState.CANCELLED):
+                _add_node(
+                    store,
+                    project,
+                    state=state,
+                    summary=f"超窗 {state.value}",
+                    finished_at=now - TERMINAL_RECENCY_SECONDS - 60,
+                )
+
+            entries = collect_active_entries(registry, ActiveNodesIndex(), now=now)
+            self.assertEqual([entry.node_id for entry in entries], [long_running.id])
 
     def test_virtual_nodes_are_excluded(self) -> None:
         """Proposals outnumber executed nodes and would drown the signal."""
@@ -136,7 +197,7 @@ class ActiveNodesCollectionTests(unittest.TestCase):
                 project,
                 state=NodeState.ERROR,
                 summary="很久以前失败",
-                finished_at=now - ERROR_RECENCY_SECONDS - 60,
+                finished_at=now - TERMINAL_RECENCY_SECONDS - 60,
             )
 
             entries = collect_active_entries(registry, ActiveNodesIndex(), now=now)
@@ -417,11 +478,44 @@ class ActiveNodesEndpointTests(unittest.TestCase):
             base = Path(directory)
             store, registry = _registry(base)
             project = _add_project(store, registry, base / "p", name="p")
-            _add_node(store, project, state=NodeState.DONE, summary="完成")
+            _add_node(
+                store,
+                project,
+                state=NodeState.DONE,
+                summary="很久以前完成",
+                finished_at=time.time() - TERMINAL_RECENCY_SECONDS - 60,
+            )
 
             with TestClient(create_app(registry)) as client:
                 body = client.get("/active-nodes").json()
             self.assertEqual(body["entries"], [])
+
+    def test_recently_finished_nodes_do_not_block_a_self_update(self) -> None:
+        """The sweep lists them for the bell; only busy nodes hold an update."""
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            store, registry = _registry(base)
+            project = _add_project(store, registry, base / "p", name="p")
+            now = time.time()
+            for state in (NodeState.DONE, NodeState.ERROR, NodeState.CANCELLED):
+                _add_node(
+                    store,
+                    project,
+                    state=state,
+                    summary=f"刚 {state.value}",
+                    finished_at=now - 60,
+                )
+
+            with TestClient(create_app(registry)) as client:
+                self.assertEqual(len(client.get("/active-nodes").json()["entries"]), 3)
+                self.assertEqual(client.get("/self-update").json()["blockers"], [])
+
+                waiting = _add_node(
+                    store, project, state=NodeState.WAITING, summary="等我"
+                )
+                blockers = client.get("/self-update").json()["blockers"]
+
+            self.assertEqual([item["node_id"] for item in blockers], [waiting.id])
 
 
 if __name__ == "__main__":

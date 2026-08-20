@@ -596,6 +596,7 @@ def ensure_store_gitignore(root: Path) -> None:
         "machine.json",
         "migration-backups/",
         ".update-exit-pending",
+        ".runtime-owner.json",
         "*.tmp",
         "projects/*/hosts/*/local.json",
     ]

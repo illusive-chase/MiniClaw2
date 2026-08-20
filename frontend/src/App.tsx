@@ -80,7 +80,7 @@ import {
   templateNeedsInstantiateDialog,
 } from "./templateInstantiate";
 import { ProjectsLanding } from "./components/ProjectsLanding";
-import { ActiveNodesBar } from "./components/ActiveNodesBar";
+import { NotificationBell } from "./components/NotificationBell";
 import { UpdateBanner } from "./components/UpdateBanner";
 import { UnverifiedSharingDialog } from "./components/UnverifiedSharingDialog";
 import { useSelfUpdate } from "./selfUpdate";
@@ -303,7 +303,7 @@ export function App() {
   const [focusRequestVersion, setFocusRequestVersion] = useState(0);
   const [newDirectionRequestVersion, setNewDirectionRequestVersion] = useState(0);
 
-  /* Cross-project jump (ActiveNodesBar). Selecting a node in another project
+  /* Cross-project jump (NotificationBell). Selecting a node in another project
    * cannot happen in one step: openProject() calls resetAllSessionState(),
    * which clears selection, and the node list for the target project has not
    * arrived yet. So the target is parked here and applied once that project's
@@ -2587,11 +2587,6 @@ export function App() {
         onDismiss={selfUpdate.dismiss}
         onJump={(blocker) => jumpToActiveNode(blocker)}
       />
-      <ActiveNodesBar
-        enabled={route === "project"}
-        currentSessionId={session?.id ?? null}
-        onJump={jumpToActiveNode}
-      />
       <header className="flex items-center justify-between gap-4 border-b border-line bg-surface-raised px-6 py-2.5">
         <div className="flex min-w-0 items-center gap-3">
           <button
@@ -2729,6 +2724,12 @@ export function App() {
               Awaiting response on a node
             </span>
           )}
+
+          <NotificationBell
+            enabled={route === "project"}
+            currentSessionId={session?.id ?? null}
+            onJump={jumpToActiveNode}
+          />
 
           <button
             type="button"

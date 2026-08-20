@@ -1,11 +1,17 @@
-"""Cross-project view of nodes that are running or need a human.
+"""Cross-project view of nodes that are running, need a human, or just ended.
 
 The UI is structurally single-project: the WebSocket is per-project
 (``/ws/{sid}``) and pending gates live only in frontend memory, cleared on
 every project switch. A node blocked on a human in project A is therefore
-invisible while the user is looking at project B. This module answers one
-question for the whole workspace at once: where is something running, and
-where is something waiting for me?
+invisible while the user is looking at project B. This module answers two
+questions for the whole workspace at once: where is something running or
+waiting for me, and what recently finished while I was elsewhere?
+
+Terminal nodes are listed for a bounded window (``TERMINAL_RECENCY_SECONDS``)
+so the second question has an answer. Deciding whether the user still *needs*
+to see one is not this module's job — the frontend tracks that per device with
+a read set, because "have I looked at this" is a property of the person at
+this screen, not of the project.
 
 Cost matters here because the endpoint is polled. ``Store.list_nodes``
 re-reads and re-validates every ``node.json`` in a project (~1.1ms per node
@@ -13,7 +19,8 @@ measured on a 358-node store), so a naive full sweep costs ~400ms and would
 burn that every few seconds forever. Instead we keep an mtime/size-keyed
 cache of the handful of fields this view needs and re-read only the files
 that actually changed, which keeps a steady-state sweep at roughly the cost
-of a glob plus stat.
+of a glob plus stat. Admitting terminal nodes costs no extra I/O: their
+records were already read into that cache and merely discarded here.
 """
 
 from __future__ import annotations
@@ -42,10 +49,22 @@ ACTIVE_STATES: frozenset[str] = frozenset(
     }
 )
 
-#: ``error`` is included in the view, but only while it is still news. Errors
-#: are terminal and never cleaned up, so an unbounded window means a node that
-#: failed weeks ago lights the bar forever and teaches the user to ignore it.
-ERROR_RECENCY_SECONDS = 24 * 3600
+#: Terminal states. Included in the view so "what finished while I was away"
+#: is answerable, not just "what is still going".
+TERMINAL_STATES: frozenset[str] = frozenset(
+    {
+        NodeState.DONE.value,
+        NodeState.ERROR.value,
+        NodeState.CANCELLED.value,
+    }
+)
+
+#: How far back the panel looks, *not* how long a node keeps nagging. Whether
+#: the user still needs to see something is answered client-side by a read set
+#: keyed on (node_id, state); this window only bounds the list's depth so it
+#: stays scannable. Eight hours covers one work session — leave for lunch and
+#: everything that finished meanwhile is still listed.
+TERMINAL_RECENCY_SECONDS = 8 * 3600
 
 #: Node prompts can be arbitrarily long; the row shows one line.
 LABEL_MAX_CHARS = 120
@@ -84,9 +103,9 @@ class ActiveEntry:
     is_active_planspace: bool
     label: str
     started_at: float | None
-    #: When the node reached its terminal state. Only meaningful for errors,
-    #: where "how long since it failed" is the honest reading — an error is
-    #: not still running, so ``started_at`` alone would grow forever.
+    #: When the node reached its terminal state. Only set for terminal rows,
+    #: which read as "finished 12m ago" — ``started_at`` alone would render a
+    #: node that is no longer running as having run continuously since.
     finished_at: float | None
     gate: dict[str, Any] | None
 
@@ -208,9 +227,9 @@ class ActiveNodesIndex:
 def _is_visible(facts: NodeFacts, *, now: float) -> bool:
     if facts.state in ACTIVE_STATES:
         return True
-    if facts.state == NodeState.ERROR.value:
+    if facts.state in TERMINAL_STATES:
         stamp = facts.finished_at or facts.started_at or facts.created_at
-        return bool(stamp) and (now - stamp) <= ERROR_RECENCY_SECONDS
+        return bool(stamp) and (now - stamp) <= TERMINAL_RECENCY_SECONDS
     return False
 
 
