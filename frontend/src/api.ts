@@ -30,8 +30,6 @@ import type {
   SkillSelection,
   SkillSummary,
   SkillDetail,
-  SharingRequestInfo,
-  SharingRequestResult,
   Tag,
 } from "./types";
 import type { TemplateRewritePayload } from "./templateEditor";
@@ -780,77 +778,6 @@ export async function joinSessionHost(
     throw new Error(detail?.detail || `joinSessionHost failed: ${res.status}`);
   }
   return res.json();
-}
-
-/** Requests this device raised or hosts. One global read: the landing page
- * renders every project, so a per-session field would scan the request tree
- * once per card. */
-export async function listSharingRequests(): Promise<SharingRequestInfo[]> {
-  const res = await fetch("/sharing-requests");
-  if (!res.ok) {
-    throw new ApiError("listSharingRequests", res.status, await readErrorDetail(res));
-  }
-  const body = await res.json() as { requests?: SharingRequestInfo[] };
-  return body.requests ?? [];
-}
-
-async function sharingRequestMutation(
-  operation: string,
-  path: string,
-  body?: Record<string, unknown>,
-): Promise<SharingRequestResult> {
-  const res = await fetch(path, {
-    method: "POST",
-    ...(body
-      ? {
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
-        }
-      : {}),
-  });
-  if (!res.ok) {
-    throw new ApiError(operation, res.status, await readErrorDetail(res));
-  }
-  return res.json();
-}
-
-export function acceptSharingRequest(
-  sessionId: string,
-  requestId: string,
-  options: {
-    unverifiedIdentityAcknowledged?: boolean;
-    topology?: SharingTopology;
-  } = {},
-): Promise<SharingRequestResult> {
-  return sharingRequestMutation(
-    "acceptSharingRequest",
-    `/sessions/${sessionId}/sharing-requests/${requestId}/accept`,
-    {
-      unverified_identity_acknowledged:
-        options.unverifiedIdentityAcknowledged ?? false,
-      topology: options.topology ?? "unknown",
-    },
-  );
-}
-
-export function rejectSharingRequest(
-  sessionId: string,
-  requestId: string,
-): Promise<SharingRequestResult> {
-  return sharingRequestMutation(
-    "rejectSharingRequest",
-    `/sessions/${sessionId}/sharing-requests/${requestId}/reject`,
-  );
-}
-
-export function cancelSharingRequest(
-  sessionId: string,
-  requestId: string,
-): Promise<SharingRequestResult> {
-  return sharingRequestMutation(
-    "cancelSharingRequest",
-    `/sessions/${sessionId}/sharing-requests/${requestId}/cancel`,
-  );
 }
 
 export async function updateSessionPreferences(

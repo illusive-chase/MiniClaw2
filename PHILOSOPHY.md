@@ -805,3 +805,20 @@ The non-obvious commitments, restated as one-liners:
   `declared_produces` retire — reads and writes are observed via
   the transcript at reap, not pre-declared. Planning visibility
   comes from prompt_draft and motivation prose.
+- **Git-persisted metadata means asynchronous collaboration.** No
+  mechanism may make one host wait on another host's action, and no
+  value may require cross-host agreement to be correct.
+- **Sharing is the default, not a state.** Every project in the store
+  is visible on every synced host. A per-project sharing flag would be
+  a consensus variable the substrate cannot maintain, and it never
+  bought privacy anyway.
+- **Binding decides authority.** A host may write where it has bound a
+  local path — a gitignored, host-local, unconflictable fact. Creator
+  provenance is display, not permission. Unbinding is deleting that
+  path, so a wrong bind is recoverable.
+- **Identity is judged per binding, locally.** Git checkouts verify by
+  root commit; non-Git directories warn and let the operator accept the
+  responsibility. It is not a project-level policy all hosts must share.
+- **Detect after the fact; never lock.** Synced metadata cannot express
+  a truthful cross-host lock, so duplicates are shown rather than
+  prevented, and peer state is always presented with its capture time.

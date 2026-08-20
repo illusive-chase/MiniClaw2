@@ -82,9 +82,7 @@ import {
 import { ProjectsLanding } from "./components/ProjectsLanding";
 import { ActiveNodesBar } from "./components/ActiveNodesBar";
 import { UpdateBanner } from "./components/UpdateBanner";
-import { SharingRequestControls } from "./components/SharingRequestControls";
 import { UnverifiedSharingDialog } from "./components/UnverifiedSharingDialog";
-import { useSharingRequests } from "./useSharingRequests";
 import { useSelfUpdate } from "./selfUpdate";
 import { ThemeToggle } from "./components/ThemeToggle";
 import { UsageStrip } from "./components/UsageStrip";
@@ -498,32 +496,6 @@ export function App() {
   useEffect(() => {
     currentSessionIdRef.current = session?.id ?? null;
   }, [session?.id]);
-
-  /* Sharing requests live outside project records and only change on a sync,
-   * so they poll on their own slow cadence rather than riding session state. */
-  const sharing = useSharingRequests(true, {
-    onGlobalState: (next) => {
-      setGlobalState(next);
-      setModelPresets(next.model_presets);
-    },
-    onSession: (next) => {
-      setSession((current) => (current && current.id === next.id ? next : current));
-      setLandingSessions((current) => (current ? upsertSession(current, next) : current));
-    },
-    /* A sync can be the moment the host's acceptance arrives, which is what
-     * turns on `can_join_here` here. Re-read the session rather than deriving
-     * project state from the request record. */
-    onSynced: () => {
-      const openId = currentSessionIdRef.current;
-      if (!openId) return;
-      void getSession(openId)
-        .then((next) => {
-          setSession((current) => (current && current.id === next.id ? next : current));
-          setLandingSessions((current) => (current ? upsertSession(current, next) : current));
-        })
-        .catch((err: unknown) => console.warn("refresh session after sync failed:", err));
-    },
-  });
 
   useEffect(() => {
     nodeCountRef.current = nodes.length;
@@ -2477,7 +2449,6 @@ export function App() {
           setSessions={setLandingSessions}
           tags={landingTags}
           setTags={setLandingTags}
-          sharingRequests={sharing.requests}
           modelPresets={modelPresets}
           globalState={globalState}
           onGlobalStateChanged={(next) => {
@@ -2745,29 +2716,6 @@ export function App() {
                     ? `${session.native_machine_label} 的仓库尚无提交`
                     : `等待 ${session.native_machine_label} 升级`}
                 </span>
-              )}
-              {session && (
-                <SharingRequestControls
-                  session={session}
-                  requests={sharing.requests}
-                  busy={sharing.busy}
-                  pendingSync={sharing.pendingSync}
-                  onAccept={(requestId, options) => void sharing.accept(session.id, requestId, options)}
-                  onReject={(requestId) => void sharing.reject(session.id, requestId)}
-                  onCancel={(requestId) => void sharing.cancel(session.id, requestId)}
-                  onCheckForUpdates={() => void sharing.checkForUpdates()}
-                  onRetrySync={() => void sharing.retrySync()}
-                />
-              )}
-              {sharing.error && (
-                <button
-                  type="button"
-                  onClick={sharing.clearError}
-                  className="max-w-[18rem] truncate font-sans text-state-error"
-                  title={`${sharing.error}（点击隐藏）`}
-                >
-                  {sharing.error}
-                </button>
               )}
             </div>
           </div>

@@ -635,6 +635,63 @@ class HostPartitionApiTests(unittest.TestCase):
                     {owner_workspace.resolve(), peer_workspace.resolve()},
                 )
 
+    def test_remote_device_can_enable_and_join_over_a_real_remote(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            base = Path(raw)
+            remote = base / "metadata.git"
+            subprocess.run(["git", "init", "--bare", "-q", str(remote)], check=True)
+            subprocess.run(
+                [
+                    "git",
+                    "--git-dir",
+                    str(remote),
+                    "symbolic-ref",
+                    "HEAD",
+                    "refs/heads/main",
+                ],
+                check=True,
+            )
+            repo_a = _repo(base / "repo-a")
+            store_a = Store(base / "store-a")
+            project = store_a.create_project(
+                Project(root_path=str(repo_a), name="round-trip")
+            )
+            store_a.create_node(
+                Node(
+                    project_id=project.id,
+                    model_preset_id=project.model_preset_id,
+                    state=NodeState.DONE,
+                )
+            )
+            ProjectRegistry(store_a)
+            store_a.sync.setup_existing_store(str(remote))
+
+            root_b = base / "store-b"
+            bootstrap_store(root_b, str(remote))
+            store_b = Store(root_b)
+            registry_b = ProjectRegistry(store_b)
+            repo_b = base / "repo-b"
+            subprocess.run(["git", "clone", "-q", str(repo_a), str(repo_b)], check=True)
+
+            with TestClient(create_app(registry_b)) as client_b:
+                before = client_b.get(f"/sessions/{project.id}")
+                self.assertEqual(before.status_code, 200, before.text)
+                self.assertTrue(before.json()["can_enable_sharing"])
+                enabled = client_b.post(
+                    f"/sessions/{project.id}/sharing",
+                    json={"sharing": "shared"},
+                )
+                self.assertEqual(enabled.status_code, 200, enabled.text)
+                self.assertEqual(enabled.json()["sharing"], "shared")
+                self.assertTrue(enabled.json()["can_join_here"])
+
+                joined = client_b.post(
+                    f"/sessions/{project.id}/hosts",
+                    json={"root_path": str(repo_b)},
+                )
+                self.assertEqual(joined.status_code, 200, joined.text)
+                self.assertFalse(joined.json()["read_only"])
+
     def test_git_identity_ack_does_not_bypass_fingerprint(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             base = Path(raw)

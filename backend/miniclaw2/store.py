@@ -10,11 +10,6 @@ Layout under ``$MINICLAW_HOME`` (default ``~/.miniclaw2``)::
             node.json
             events.jsonl
             gates.jsonl
-    sharing-requests/
-      <pid>/
-        <rid>/
-          request.json
-
 Each node has a single runner and therefore a single event writer. Different
 nodes in one project may run concurrently; project-wide graph reconciliation
 is serialized by ``ProjectRuntime`` while per-node records remain independent.
@@ -36,21 +31,6 @@ from pydantic import ValidationError
 from .domain import HumanGate, Node, Project, UNBOUND_ROOT_PATH
 from .git_state import is_git_repo, normalized_origin_url, root_commits
 from .replay import EVENT_SCHEMA_VERSION, upgrade_event_record
-from .sharing_requests import (
-    CANCELLATION_FILENAME,
-    DECISION_FILENAME,
-    REQUEST_FILENAME,
-    SharingCancellation,
-    SharingDecision,
-    SharingDecisionValue,
-    SharingRequest,
-    SharingRequestRecord,
-    load_records,
-    load_request,
-    new_request_id,
-    request_dir,
-    write_record,
-)
 from .sync import (
     MachineIdentity,
     SyncManager,
@@ -372,111 +352,6 @@ class Store:
         self.assert_writable()
         self._write_json(self._git_aliases_file(pid), dict(aliases))
         self.sync.schedule_commit(f"update git aliases for project {pid}")
-
-    # ---- sharing requests ----
-
-    def list_sharing_requests(self) -> list[SharingRequestRecord]:
-        """Every request on disk, with status normalized against projects."""
-        projects = {project.id: project for project in self.list_projects()}
-        return load_records(self.root, projects)
-
-    def sharing_requests_for_project(
-        self,
-        project: Project,
-    ) -> list[SharingRequestRecord]:
-        return load_records(
-            self.root,
-            {project.id: project},
-            only_project_id=project.id,
-        )
-
-    def create_sharing_request(self, project: Project) -> SharingRequestRecord:
-        """Record this device's request that ``project``'s host enable sharing.
-
-        Idempotent per device: an open request from this machine is returned
-        as-is rather than accumulating duplicates the host has to triage.
-        """
-        self.assert_writable()
-        existing = next(
-            (
-                record
-                for record in self.sharing_requests_for_project(project)
-                if record.request.requester_machine_id == self.machine.id
-                and record.is_open
-            ),
-            None,
-        )
-        if existing is not None:
-            return existing
-        request = SharingRequest(
-            id=new_request_id(),
-            project_id=project.id,
-            observed_owner_machine_id=project.machine_id,
-            requester_machine_id=self.machine.id,
-            requester_machine_label=self.machine.label,
-            requested_at=time.time(),
-        )
-        write_record(
-            request_dir(self.root, project.id, request.id) / REQUEST_FILENAME,
-            request,
-        )
-        self.sync.schedule_commit(
-            f'request sharing for project "{project.name or project.id}"'
-        )
-        return next(
-            record
-            for record in self.sharing_requests_for_project(project)
-            if record.id == request.id
-        )
-
-    def cancel_sharing_request(self, pid: str, rid: str) -> bool:
-        """Withdraw a request this device created."""
-        self.assert_writable()
-        request = load_request(self.root, pid, rid)
-        if request is None:
-            return False
-        if request.requester_machine_id != self.machine.id:
-            raise PermissionError("only the requesting device can cancel this request")
-        write_record(
-            request_dir(self.root, pid, rid) / CANCELLATION_FILENAME,
-            SharingCancellation(
-                request_id=rid,
-                cancelled_by_machine_id=self.machine.id,
-                cancelled_at=time.time(),
-            ),
-        )
-        self.sync.schedule_commit(f"cancel sharing request {rid}")
-        return True
-
-    def write_sharing_decision(
-        self,
-        project: Project,
-        rid: str,
-        decision: SharingDecisionValue,
-    ) -> bool:
-        """Record the native host's answer to a request.
-
-        Ownership is checked against the project record rather than the
-        request's ``observed_owner_machine_id``: the request only reports what
-        the requester last synced, while the project names the current host.
-        """
-        self.assert_writable()
-        request = load_request(self.root, project.id, rid)
-        if request is None:
-            return False
-        if project.machine_id != self.machine.id:
-            raise PermissionError("only the native host can decide this request")
-        write_record(
-            request_dir(self.root, project.id, rid) / DECISION_FILENAME,
-            SharingDecision(
-                request_id=rid,
-                decision=decision,
-                decided_by_machine_id=self.machine.id,
-                decided_at=time.time(),
-            ),
-        )
-        self.sync.schedule_commit(f"{decision} sharing request {rid}")
-        return True
 
     # ---- project ----
 

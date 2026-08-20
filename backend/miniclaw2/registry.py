@@ -62,7 +62,6 @@ from .model_catalog import (
 )
 from .preview import render_executed_preview, render_virtual_preview
 from .runner import NodeRunner
-from .sharing_requests import SharingRequestRecord
 from .store import Store
 from .virtual_graph import has_cycle
 from .workspace import create_temporary_root, remove_temporary_root
@@ -541,126 +540,6 @@ class ProjectRegistry:
         clear_owned_binding_local_paths(project, store_root=self.store.root)
         self.store.update_project(project)
         self.store.sync.schedule_commit(f'enable sharing for project "{project.name or pid}"')
-        return project
-
-    def sharing_requests(self, pid: str) -> list[SharingRequestRecord]:
-        """Requests against one project, newest status first computed on read."""
-        project = self.get_project(pid)
-        if project is None:
-            return []
-        return self.store.sharing_requests_for_project(project)
-
-    def visible_sharing_requests(self) -> list[SharingRequestRecord]:
-        """Requests this device either raised or is the host for.
-
-        Every other device's request against a project we do not own is
-        someone else's business, and listing it would imply we could act.
-        """
-        local = self.store.machine.id
-        owned = {
-            project.id
-            for project in self.list_projects()
-            if project.machine_id == local
-        }
-        return [
-            record
-            for record in self.store.list_sharing_requests()
-            if record.request.requester_machine_id == local
-            or record.project_id in owned
-        ]
-
-    def accept_project_sharing_request(
-        self,
-        pid: str,
-        rid: str,
-        *,
-        unverified_identity_acknowledged: bool = False,
-        topology: str = "unknown",
-    ) -> tuple[Project, SharingRequestRecord] | None:
-        """Enable sharing on the host's terms, then record the acceptance.
-
-        The decision record is written only after the migration succeeds, so a
-        failed or blocked migration leaves the request pending and retryable
-        rather than telling the requester sharing is done.
-        """
-        project = self._require_decidable_request(pid, rid)
-        shared = self.enable_sharing(
-            pid,
-            unverified_identity_acknowledged=unverified_identity_acknowledged,
-            topology=topology,
-        )
-        if shared is None:
-            return None
-        self.store.write_sharing_decision(shared, rid, "accepted")
-        record = next(
-            (item for item in self.sharing_requests(pid) if item.id == rid),
-            None,
-        )
-        if record is None:
-            return None
-        return shared, record
-
-    def reject_project_sharing_request(
-        self,
-        pid: str,
-        rid: str,
-    ) -> SharingRequestRecord | None:
-        """Close one request without changing the project.
-
-        Rejection is not a device ACL: the host may still enable sharing later,
-        and this device may then bind like any other.
-        """
-        project = self._require_decidable_request(pid, rid)
-        if not self.store.write_sharing_decision(project, rid, "rejected"):
-            return None
-        return next(
-            (item for item in self.sharing_requests(pid) if item.id == rid),
-            None,
-        )
-
-    def cancel_project_sharing_request(
-        self,
-        pid: str,
-        rid: str,
-    ) -> SharingRequestRecord | None:
-        """Withdraw a request this device raised."""
-        self.store.assert_writable()
-        project = self.get_project(pid)
-        if project is None:
-            return None
-        if project.sharing == "shared":
-            raise ValueError("project is already shared; nothing to cancel")
-        record = next(
-            (item for item in self.sharing_requests(pid) if item.id == rid),
-            None,
-        )
-        if record is None:
-            return None
-        if not record.is_open:
-            raise ValueError(f"sharing request is already {record.status}")
-        if not self.store.cancel_sharing_request(pid, rid):
-            return None
-        return next(
-            (item for item in self.sharing_requests(pid) if item.id == rid),
-            None,
-        )
-
-    def _require_decidable_request(self, pid: str, rid: str) -> Project:
-        """Guard host-side decisions: local owner, and an open request."""
-        self.store.assert_writable()
-        project = self.get_project(pid)
-        if project is None:
-            raise KeyError(pid)
-        if project.machine_id != self.store.machine.id:
-            raise NonNativeProjectError(project)
-        record = next(
-            (item for item in self.sharing_requests(pid) if item.id == rid),
-            None,
-        )
-        if record is None:
-            raise KeyError(rid)
-        if not record.is_open:
-            raise ValueError(f"sharing request is already {record.status}")
         return project
 
     def join_shared_project(

@@ -65,7 +65,6 @@ from .skills import (
     import_agent_skill,
     list_agent_skills,
 )
-from .sharing_requests import SharingRequestRecord
 from .store import StoreReadOnlyError
 from .self_update import (
     UpdateChecker,
@@ -255,48 +254,6 @@ class JoinHostRequest(BaseModel):
     root_path: str
     unverified_identity_acknowledged: bool = False
     topology: Literal["shared-filesystem", "replicated", "unknown"] = "unknown"
-
-
-class UnverifiedIdentityRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    unverified_identity_acknowledged: bool = False
-    topology: Literal["shared-filesystem", "replicated", "unknown"] = "unknown"
-
-
-class SharingRequestInfo(BaseModel):
-    """One sharing request as the UI sees it.
-
-    `can_*` are conveniences for rendering; every mutation endpoint
-    re-derives them, so a stale client cannot act on an outdated capability.
-    """
-
-    id: str
-    project_id: str
-    project_name: str = ""
-    status: str
-    requester_machine_id: str
-    requester_machine_label: str = ""
-    owner_machine_id: str
-    owner_machine_label: str = ""
-    requested_at: float
-    decided_at: float | None = None
-    cancelled_at: float | None = None
-    is_local_request: bool = False
-    can_accept: bool = False
-    can_reject: bool = False
-    can_cancel: bool = False
-
-
-class SharingRequestsResponse(BaseModel):
-    requests: list[SharingRequestInfo] = Field(default_factory=list)
-
-
-class SharingRequestResult(BaseModel):
-    """A mutation's outcome plus the project state it may have changed."""
-
-    request: SharingRequestInfo
-    session: SessionInfo
 
 
 class UpdatePlanspaceViewRequest(BaseModel):
@@ -1145,83 +1102,6 @@ def create_app(
         if project is None:
             raise HTTPException(404, "session not found")
         return _session_info(registry, project)
-
-    @app.get("/sharing-requests", response_model=SharingRequestsResponse)
-    def list_sharing_requests() -> SharingRequestsResponse:
-        """Requests this device raised or hosts.
-
-        One global read rather than a per-project field: `_session_info()` runs
-        for every project on the landing page, and scanning the request tree
-        there would multiply the cost by the project count.
-        """
-        return SharingRequestsResponse(
-            requests=[
-                _sharing_request_info(registry, record)
-                for record in registry.visible_sharing_requests()
-            ]
-        )
-
-    @app.post(
-        "/sessions/{sid}/sharing-requests/{rid}/accept",
-        response_model=SharingRequestResult,
-    )
-    def accept_session_sharing_request(
-        sid: str,
-        rid: str,
-        req: UnverifiedIdentityRequest | None = None,
-    ) -> SharingRequestResult:
-        try:
-            accepted = registry.accept_project_sharing_request(
-                sid,
-                rid,
-                unverified_identity_acknowledged=(
-                    req.unverified_identity_acknowledged if req else False
-                ),
-                topology=req.topology if req else "unknown",
-            )
-        except KeyError as exc:
-            raise HTTPException(404, "sharing request not found") from exc
-        except ValueError as exc:
-            raise HTTPException(400, str(exc)) from exc
-        except RuntimeError as exc:
-            raise HTTPException(409, str(exc)) from exc
-        if accepted is None:
-            raise HTTPException(404, "sharing request not found")
-        project, record = accepted
-        return SharingRequestResult(
-            request=_sharing_request_info(registry, record),
-            session=_session_info(registry, project),
-        )
-
-    @app.post(
-        "/sessions/{sid}/sharing-requests/{rid}/reject",
-        response_model=SharingRequestResult,
-    )
-    def reject_session_sharing_request(sid: str, rid: str) -> SharingRequestResult:
-        try:
-            record = registry.reject_project_sharing_request(sid, rid)
-        except KeyError as exc:
-            raise HTTPException(404, "sharing request not found") from exc
-        except ValueError as exc:
-            raise HTTPException(400, str(exc)) from exc
-        if record is None:
-            raise HTTPException(404, "sharing request not found")
-        return _sharing_request_result(registry, sid, record)
-
-    @app.post(
-        "/sessions/{sid}/sharing-requests/{rid}/cancel",
-        response_model=SharingRequestResult,
-    )
-    def cancel_session_sharing_request(sid: str, rid: str) -> SharingRequestResult:
-        try:
-            record = registry.cancel_project_sharing_request(sid, rid)
-        except PermissionError as exc:
-            raise HTTPException(403, str(exc)) from exc
-        except ValueError as exc:
-            raise HTTPException(400, str(exc)) from exc
-        if record is None:
-            raise HTTPException(404, "sharing request not found")
-        return _sharing_request_result(registry, sid, record)
 
     @app.get("/sessions/{sid}/git", response_model=dict[str, Any])
     def get_git_state(sid: str) -> dict[str, Any]:
@@ -2357,56 +2237,6 @@ def _session_info(registry: ProjectRegistry, project: Any) -> SessionInfo:
         project_context_binding_id=project.project_context_binding_id,
         layout_hints=project.layout_hints,
         layout_viewport=project.layout_viewport,
-    )
-
-
-def _sharing_request_info(
-    registry: ProjectRegistry,
-    record: SharingRequestRecord,
-) -> SharingRequestInfo:
-    project = registry.get_project(record.project_id)
-    local = registry.store.machine.id
-    is_owner = project is not None and project.machine_id == local
-    is_requester = record.request.requester_machine_id == local
-    writable = registry.store.read_only_reason is None
-    decidable = writable and is_owner and record.is_open
-    return SharingRequestInfo(
-        id=record.id,
-        project_id=record.project_id,
-        project_name=record.project_name,
-        status=record.status,
-        requester_machine_id=record.request.requester_machine_id,
-        requester_machine_label=(
-            record.request.requester_machine_label
-            or record.request.requester_machine_id
-        ),
-        owner_machine_id=(
-            project.machine_id
-            if project is not None
-            else record.request.observed_owner_machine_id
-        ),
-        owner_machine_label=record.owner_machine_label,
-        requested_at=record.request.requested_at,
-        decided_at=record.decision.decided_at if record.decision else None,
-        cancelled_at=record.cancellation.cancelled_at if record.cancellation else None,
-        is_local_request=is_requester,
-        can_accept=decidable,
-        can_reject=decidable,
-        can_cancel=writable and is_requester and record.is_open,
-    )
-
-
-def _sharing_request_result(
-    registry: ProjectRegistry,
-    sid: str,
-    record: SharingRequestRecord,
-) -> SharingRequestResult:
-    project = registry.get_project(sid)
-    if project is None:
-        raise HTTPException(404, "session not found")
-    return SharingRequestResult(
-        request=_sharing_request_info(registry, record),
-        session=_session_info(registry, project),
     )
 
 

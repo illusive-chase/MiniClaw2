@@ -19,7 +19,6 @@ export default defineConfig({
       "/model-presets": backendUrl,
       "/principles": backendUrl,
       "/self-update": backendUrl,
-      "/sharing-requests": backendUrl,
       "/sessions": backendUrl,
       "/skills": backendUrl,
       "/tags": backendUrl,

@@ -10,12 +10,19 @@ from unittest.mock import patch
 import yaml
 from fastapi.testclient import TestClient
 
+import miniclaw2.sync as sync_module
 from miniclaw2.app import create_app
 from miniclaw2.domain import Node, NodeState, Project
 from miniclaw2.global_config import load_global_config, save_global_config
 from miniclaw2.registry import ProjectRegistry
 from miniclaw2.store import Store, StoreReadOnlyError
-from miniclaw2.sync import SCHEMA_VERSION, SchemaConflictError, SyncError, bootstrap_store
+from miniclaw2.sync import (
+    SCHEMA_VERSION,
+    SchemaConflictError,
+    SyncError,
+    bootstrap_store,
+    schema_is_newer,
+)
 from miniclaw2.sync import current_hostname
 from miniclaw2.templates import load_user_template
 
@@ -61,6 +68,17 @@ def _write_user_template(
 
 
 class StoreIdentityMigrationTests(unittest.TestCase):
+    def test_schema_gate_advances_so_older_builds_stay_read_only(self) -> None:
+        self.assertEqual(SCHEMA_VERSION, 13)
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (root / "schema.json").write_text(
+                json.dumps({"schema": "node-revision-v9", "schema_version": 13}),
+                encoding="utf-8",
+            )
+            with patch.object(sync_module, "SCHEMA_VERSION", 12):
+                self.assertTrue(schema_is_newer(root))
+
     def test_legacy_projects_are_stamped_and_backed_up(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
