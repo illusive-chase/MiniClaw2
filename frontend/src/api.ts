@@ -9,6 +9,9 @@ import type {
   CodeReviewSettings,
   GlobalState,
   ToolRequestSettings,
+  UpdateSettings,
+  SelfUpdateApplyResult,
+  SelfUpdateState,
   ReviewBrief,
   NodeCategory,
   ReviewSubtype,
@@ -174,6 +177,38 @@ export async function updateToolRequestSettings(
       await readErrorDetail(res),
     );
   }
+  return res.json();
+}
+
+export async function updateUpdateSettings(
+  body: UpdateSettings,
+): Promise<GlobalState> {
+  const res = await fetch("/global-state/updates", {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    throw new ApiError("updateUpdateSettings", res.status, await readErrorDetail(res));
+  }
+  return res.json();
+}
+
+export async function getSelfUpdate(): Promise<SelfUpdateState> {
+  const res = await fetch("/self-update");
+  if (!res.ok) throw new ApiError("getSelfUpdate", res.status, await readErrorDetail(res));
+  return res.json();
+}
+
+export async function checkSelfUpdate(): Promise<SelfUpdateState> {
+  const res = await fetch("/self-update/check", { method: "POST" });
+  if (!res.ok) throw new ApiError("checkSelfUpdate", res.status, await readErrorDetail(res));
+  return res.json();
+}
+
+export async function applySelfUpdate(): Promise<SelfUpdateApplyResult> {
+  const res = await fetch("/self-update/apply", { method: "POST" });
+  if (!res.ok) throw new ApiError("applySelfUpdate", res.status, await readErrorDetail(res));
   return res.json();
 }
 

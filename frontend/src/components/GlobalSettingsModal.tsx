@@ -1,6 +1,9 @@
 import { useEffect, useState } from "react";
 import {
   createModelPreset,
+  applySelfUpdate,
+  checkSelfUpdate,
+  getSelfUpdate,
   deleteModelPreset,
   getGlobalState,
   replaceModelPreset,
@@ -9,14 +12,19 @@ import {
   updateCodeReviewSettings,
   updateGlobalDefaults,
   updateToolRequestSettings,
+  updateUpdateSettings,
 } from "../api";
+import { canApplyUpdate } from "../selfUpdate";
 import { LANGUAGE_OPTIONS } from "../languages";
 import type {
   CodeReviewSettings,
   GlobalDefaults,
   GlobalState,
   ModelPreset,
+  SelfUpdateApplyResult,
+  SelfUpdateState,
   ToolRequestSettings,
+  UpdateSettings,
 } from "../types";
 
 type Props = {
@@ -42,10 +50,15 @@ export function GlobalSettingsModal({ open, state, onClose, onChanged }: Props) 
   const [defaults, setDefaults] = useState<GlobalDefaults | null>(null);
   const [codeReview, setCodeReview] = useState<CodeReviewSettings | null>(null);
   const [toolRequests, setToolRequests] = useState<ToolRequestSettings | null>(null);
+  const [updates, setUpdates] = useState<UpdateSettings | null>(null);
+  const [selfUpdate, setSelfUpdate] = useState<SelfUpdateState | null>(null);
+  const [selfUpdateResult, setSelfUpdateResult] = useState<SelfUpdateApplyResult | null>(null);
   const [draft, setDraft] = useState<ModelPreset | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [syncing, setSyncing] = useState(false);
+  const [checkingUpdate, setCheckingUpdate] = useState(false);
+  const [applyingUpdate, setApplyingUpdate] = useState(false);
   const [remoteUrl, setRemoteUrl] = useState("");
   const [privacyAcknowledged, setPrivacyAcknowledged] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -55,6 +68,8 @@ export function GlobalSettingsModal({ open, state, onClose, onChanged }: Props) 
     setDefaults(state?.defaults ?? null);
     setCodeReview(state?.code_review ?? null);
     setToolRequests(state?.tool_requests ?? null);
+    setUpdates(state?.updates ?? null);
+    setSelfUpdateResult(null);
     setDraft(null);
     setEditingId(null);
     setRemoteUrl(state?.sync.remote_url ?? "");
@@ -63,7 +78,16 @@ export function GlobalSettingsModal({ open, state, onClose, onChanged }: Props) 
     if (!state) {
       getGlobalState().then(onChanged).catch((err) => setError(String(err)));
     }
+    getSelfUpdate().then(setSelfUpdate).catch((err) => setError(String(err)));
   }, [open, state, onChanged]);
+
+  useEffect(() => {
+    if (!open || !selfUpdate?.checking) return;
+    const timer = window.setInterval(() => {
+      getSelfUpdate().then(setSelfUpdate).catch((err) => setError(String(err)));
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [open, selfUpdate?.checking]);
 
   if (!open) return null;
   const presets = state?.model_presets ?? [];
@@ -132,6 +156,44 @@ export function GlobalSettingsModal({ open, state, onClose, onChanged }: Props) 
       setError(String(err));
     } finally {
       setSaving(false);
+    }
+  };
+
+  const saveUpdates = async () => {
+    if (!updates) return;
+    setSaving(true);
+    setError(null);
+    try {
+      onChanged(await updateUpdateSettings(updates));
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const runUpdateCheck = async (preserveError = false) => {
+    setCheckingUpdate(true);
+    if (!preserveError) setError(null);
+    try {
+      setSelfUpdate(await checkSelfUpdate());
+    } catch (err) {
+      if (!preserveError) setError(String(err));
+    } finally {
+      setCheckingUpdate(false);
+    }
+  };
+
+  const runUpdateApply = async () => {
+    setApplyingUpdate(true);
+    setError(null);
+    try {
+      setSelfUpdateResult(await applySelfUpdate());
+    } catch (err) {
+      setError(String(err));
+      void runUpdateCheck(true);
+    } finally {
+      setApplyingUpdate(false);
     }
   };
 
@@ -217,6 +279,62 @@ export function GlobalSettingsModal({ open, state, onClose, onChanged }: Props) 
               </button>
             </div>
           </section>
+
+          {selfUpdate?.is_repo && updates ? (
+            <section className="rounded-lg border border-line bg-surface-raised p-4 shadow-card">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <div className="font-display text-sm font-semibold text-ink-strong">版本</div>
+                  <div className="mt-1 font-mono text-[10px] text-ink-muted">
+                    {selfUpdate.head?.slice(0, 8) ?? "未知"} · {selfUpdate.branch ?? "未知分支"}
+                  </div>
+                </div>
+                <span className={`rounded border px-2 py-1 text-[10px] font-medium ${selfUpdate.behind > 0 || selfUpdate.error ? "border-state-waiting/40 bg-state-waiting-soft text-state-waiting" : "border-state-done/40 bg-state-done-soft text-state-done"}`}>
+                  {selfUpdate.checking || checkingUpdate
+                    ? "检查中"
+                    : selfUpdate.behind > 0
+                      ? `落后 ${selfUpdate.behind} 个提交${selfUpdate.fast_forward ? "" : "，不可快进"}`
+                      : selfUpdate.error
+                        ? "检查失败"
+                      : "已是最新"}
+                </span>
+              </div>
+              <div className="mt-3 grid grid-cols-1 gap-2 font-mono text-[10px] text-ink-muted sm:grid-cols-2">
+                <div>远端：{selfUpdate.upstream ?? "未配置"}</div>
+                <div>快进：{selfUpdate.fast_forward ? "可以" : "不可以"}</div>
+                <div>工作区：{selfUpdate.dirty ? "有未提交改动" : "干净"}</div>
+                <div>活跃节点：{selfUpdate.blockers.length}</div>
+                <div className="sm:col-span-2">
+                  上次检查：{selfUpdate.last_checked_at ? new Date(selfUpdate.last_checked_at * 1000).toLocaleString() : "尚未检查"}
+                </div>
+              </div>
+              {selfUpdate.error ? <div className="mt-2 text-[11px] text-state-error">{selfUpdate.error}</div> : null}
+              {selfUpdateResult ? (
+                <div className="mt-2 rounded-md border border-state-done/30 bg-state-done-soft px-3 py-2 text-[11px] text-state-done">
+                  {selfUpdateResult.message}
+                  {selfUpdateResult.restart_commands.map((command) => (
+                    <div key={command} className="mt-1 font-mono text-[10px]">{command}</div>
+                  ))}
+                </div>
+              ) : null}
+              <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
+                <label className="flex items-center gap-2 text-xs text-ink">
+                  <input
+                    type="checkbox"
+                    checked={updates.check_on_startup}
+                    onChange={(event) => setUpdates({ check_on_startup: event.target.checked })}
+                    className="accent-brand"
+                  />
+                  启动时检查更新
+                </label>
+                <div className="flex gap-2">
+                  <button type="button" disabled={saving} onClick={() => void saveUpdates()} className={secondaryButton}>保存偏好</button>
+                  <button type="button" disabled={checkingUpdate} onClick={() => void runUpdateCheck(false)} className={secondaryButton}>{checkingUpdate ? "检查中…" : "检查更新"}</button>
+                  <button type="button" disabled={!canApplyUpdate(selfUpdate) || applyingUpdate} onClick={() => void runUpdateApply()} className={primaryButton}>{applyingUpdate ? "正在更新…" : "更新并退出"}</button>
+                </div>
+              </div>
+            </section>
+          ) : null}
 
           {defaults && (
             <section className="rounded-lg border border-line bg-surface-raised p-4 shadow-card">

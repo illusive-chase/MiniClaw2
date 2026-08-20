@@ -381,11 +381,15 @@ export type ToolRequestSettings = {
 export type CodeReviewSettings = {
   model_preset_id: string;
 };
+export type UpdateSettings = {
+  check_on_startup: boolean;
+};
 export type GlobalState = {
   config_path: string;
   defaults: GlobalDefaults;
   code_review: CodeReviewSettings;
   tool_requests: ToolRequestSettings;
+  updates: UpdateSettings;
   model_presets: ModelPreset[];
   sync: {
     configured: boolean;
@@ -398,6 +402,42 @@ export type GlobalState = {
     hostname_mismatch: boolean;
     privacy_notice: string;
   };
+};
+export type IncomingCommit = {
+  sha: string;
+  title: string;
+  author: string;
+  authored_at: number;
+};
+export type SelfUpdateBlocker = {
+  project_id: string;
+  project_name: string;
+  node_id: string;
+  state: NodeState | "finalizing";
+};
+export type SelfUpdateState = {
+  is_repo: boolean;
+  available: boolean;
+  fast_forward: boolean;
+  dirty: boolean;
+  head: string | null;
+  branch: string | null;
+  upstream: string | null;
+  ahead: number;
+  behind: number;
+  commits: IncomingCommit[];
+  last_checked_at: number | null;
+  checking: boolean;
+  error: string | null;
+  blockers: SelfUpdateBlocker[];
+};
+export type SelfUpdateApplyResult = {
+  ok: boolean;
+  old_head: string;
+  new_head: string;
+  changed_paths: string[];
+  restart_commands: string[];
+  message: string;
 };
 export type NodeCategory = "planning" | "regular" | "review";
 export type ReviewSubtype =

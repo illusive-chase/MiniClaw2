@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "test": "node tests/run-canvas-layout.mjs && node tests/run-template-instantiate.mjs && node tests/run-template-editor.mjs && node tests/run-hierarchy.mjs && node tests/run-library-tree.mjs && node tests/run-project-tags.mjs && node tests/run-active-nodes.mjs && node tests/run-sharing-requests.mjs",
+    "test": "node tests/run-canvas-layout.mjs && node tests/run-template-instantiate.mjs && node tests/run-template-editor.mjs && node tests/run-hierarchy.mjs && node tests/run-library-tree.mjs && node tests/run-project-tags.mjs && node tests/run-active-nodes.mjs && node tests/run-sharing-requests.mjs && node tests/run-self-update.mjs",
     "preview": "vite preview"
   },
   "dependencies": {

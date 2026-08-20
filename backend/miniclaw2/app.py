@@ -47,6 +47,7 @@ from .global_config import (
     ModelPreset,
     SyncSettings,
     ToolRequestSettings,
+    UpdateSettings,
     global_config_path,
     load_global_config,
     save_global_config,
@@ -66,6 +67,11 @@ from .skills import (
 )
 from .sharing_requests import SharingRequestRecord
 from .store import StoreReadOnlyError
+from .self_update import (
+    UpdateChecker,
+    UpdateError,
+    consume_pending_exit,
+)
 from .sync import SyncError
 from .tags import Tag
 from .templates import (
@@ -120,6 +126,12 @@ class UpdateToolRequestSettingsRequest(BaseModel):
 
     timeout_seconds: StrictInt | None = Field(default=None, ge=1)
     timeout_action: Literal["accept", "reject"] | None = None
+
+
+class UpdateSettingsRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    check_on_startup: bool | None = None
 
 
 class SetupSyncRequest(BaseModel):
@@ -532,10 +544,14 @@ def _template_detail_payload(template: Template) -> dict[str, Any]:
     return payload
 
 
-def create_app(registry: ProjectRegistry | None = None) -> FastAPI:
+def create_app(
+    registry: ProjectRegistry | None = None,
+    update_checker: UpdateChecker | None = None,
+) -> FastAPI:
     from contextlib import asynccontextmanager
 
     registry = registry if registry is not None else ProjectRegistry(initialize=False)
+    update_checker = update_checker if update_checker is not None else UpdateChecker()
 
     # Per-app so tests do not inherit one another's cached node facts.
     active_nodes_index = ActiveNodesIndex()
@@ -557,6 +573,9 @@ def create_app(registry: ProjectRegistry | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
         initialize_registry()
+        if consume_pending_exit(registry.store.root):
+            yield
+            return
         schedule_all = getattr(registry, "schedule_all", None)
         if schedule_all is not None:
             schedule_all()
@@ -569,9 +588,15 @@ def create_app(registry: ProjectRegistry | None = None) -> FastAPI:
             install_hooks()
         except Exception:  # noqa: BLE001
             logger.exception("failed to install claude hooks")
+        if (
+            update_checker.enabled
+            and load_global_config(registry.store.root).updates.check_on_startup
+        ):
+            asyncio.create_task(update_checker.refresh_async())
         yield
 
     app = FastAPI(title="MiniClaw2", lifespan=lifespan)
+    app.state.update_checker = update_checker
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
@@ -723,6 +748,21 @@ def create_app(registry: ProjectRegistry | None = None) -> FastAPI:
             registry.store.sync.schedule_commit("update tool request settings")
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
+        return _global_state_payload(registry.store.root)
+
+    @app.patch("/global-state/updates", response_model=dict[str, Any])
+    def update_update_settings(req: UpdateSettingsRequest) -> dict[str, Any]:
+        registry.store.assert_writable()
+        if req.check_on_startup is None:
+            raise HTTPException(422, "check_on_startup cannot be null")
+        config = load_global_config(registry.store.root)
+        save_global_config(
+            config.model_copy(
+                update={"updates": UpdateSettings(check_on_startup=req.check_on_startup)}
+            ),
+            registry.store.root,
+        )
+        registry.store.sync.schedule_commit("update self-update settings")
         return _global_state_payload(registry.store.root)
 
     @app.post("/global-state/model-presets", response_model=dict[str, Any], status_code=201)
@@ -962,6 +1002,85 @@ def create_app(registry: ProjectRegistry | None = None) -> FastAPI:
                 for entry in entries
             ],
         )
+
+    def self_update_blockers() -> list[dict[str, str]]:
+        blockers = {
+            (entry.project_id, entry.node_id): {
+                "project_id": entry.project_id,
+                "project_name": entry.project_name,
+                "node_id": entry.node_id,
+                "state": entry.state,
+            }
+            for entry in collect_active_entries(registry, active_nodes_index)
+            if entry.state != "error"
+        }
+        for project, node_id in registry.finalizing_runner_nodes():
+            blockers.setdefault(
+                (project.id, node_id),
+                {
+                    "project_id": project.id,
+                    "project_name": project.name,
+                    "node_id": node_id,
+                    "state": "finalizing",
+                },
+            )
+        return list(blockers.values())
+
+    def self_update_payload() -> dict[str, Any]:
+        return {
+            **asdict(update_checker.state()),
+            "blockers": self_update_blockers(),
+        }
+
+    @app.get("/self-update", response_model=dict[str, Any])
+    def get_self_update() -> dict[str, Any]:
+        return self_update_payload()
+
+    @app.post("/self-update/check", response_model=dict[str, Any])
+    async def check_self_update() -> dict[str, Any]:
+        await update_checker.refresh_async()
+        return await asyncio.to_thread(self_update_payload)
+
+    @app.post("/self-update/apply", response_model=dict[str, Any])
+    async def apply_self_update() -> dict[str, Any]:
+        if not registry.prepare_self_update():
+            raise HTTPException(409, "已有自更新正在进行")
+        applied = False
+        try:
+            blockers = await asyncio.to_thread(self_update_blockers)
+            if blockers:
+                names = ", ".join(
+                    f"{entry['project_name']}/{entry['node_id'][:8]} "
+                    f"({entry['state']})"
+                    for entry in blockers
+                )
+                raise HTTPException(409, f"仍有活跃节点，无法更新：{names}")
+            try:
+                result = await asyncio.to_thread(
+                    update_checker.apply, registry.store.root
+                )
+            except UpdateError as exc:
+                raise HTTPException(409, str(exc)) from exc
+            applied = True
+        finally:
+            if not applied:
+                registry.cancel_self_update()
+        print("MiniClaw2 已快进更新，将退出进程。", flush=True)
+        if result.restart_commands:
+            print("重启前请执行：", flush=True)
+            for command in result.restart_commands:
+                print(f"  {command}", flush=True)
+        else:
+            print("无需额外安装或构建步骤，可直接重启。", flush=True)
+        update_checker.schedule_exit(registry.store.root)
+        return {
+            "ok": True,
+            "old_head": result.old_head,
+            "new_head": result.new_head,
+            "changed_paths": result.changed_paths,
+            "restart_commands": result.restart_commands,
+            "message": "更新已完成，MiniClaw2 即将退出",
+        }
 
     @app.get("/sessions", response_model=list[SessionInfo])
     def list_sessions() -> list[SessionInfo]:
@@ -2141,6 +2260,7 @@ def _global_state_payload(store_root: Path) -> dict[str, Any]:
         "defaults": config.defaults.model_dump(),
         "code_review": config.code_review.model_dump(),
         "tool_requests": config.tool_requests.model_dump(),
+        "updates": config.updates.model_dump(),
         "model_presets": [
             preset.model_copy(
                 update={"is_default": preset.id == default_id}

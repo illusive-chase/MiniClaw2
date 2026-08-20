@@ -121,6 +121,42 @@ itself rebases.
   scope.
 
 
+## 3b. MiniClaw2 source self-update
+
+Trunk: `backend/miniclaw2/self_update.py`, `frontend/src/selfUpdate.ts`,
+`frontend/src/components/UpdateBanner.tsx`.
+
+### Landed
+
+- An app-owned `UpdateChecker` discovers the source checkout, inspects the
+  current branch/upstream, fetches non-interactively on startup when enabled,
+  and exposes cached state plus explicit check/apply actions at
+  `/self-update`. Fetch runs off the event loop and concurrent checks share
+  one operation.
+- Automatic application is intentionally fast-forward only. The backend
+  revalidates ahead/behind/ancestry, rejects dirty worktrees and live runner
+  tasks (including terminal nodes still finalizing), and closes the scheduler
+  to new launches before merging the already-fetched upstream ref with
+  `--ff-only`. It then exits for a user-controlled restart and never stashes,
+  rebases, rebuilds, installs, or restarts itself.
+- Exit handling targets uvicorn's reloader parent when present and uses an
+  ignored `$MINICLAW_HOME/.update-exit-pending` sentinel so source-triggered
+  reload cannot swallow the delayed termination. Changed paths produce
+  explicit `pip install -e backend` / frontend install-build instructions in
+  both the HTTP response and stdout, anchored to the discovered checkout.
+- The frontend polls cached state every 30 seconds. A dismissible,
+  target-SHA-scoped banner spans both landing and project views; active-node
+  blockers link to their projects. Global settings shows repository status,
+  manual check/update controls, and the persisted `check_on_startup` toggle.
+
+### Pending
+
+- Multiple MiniClaw2 processes sharing the same source checkout are not
+  detected or coordinated.
+- Frontend and dependency rebuilds remain explicit terminal steps after the
+  backend exits; the updater only computes and prints the required commands.
+
+
 ## 1. Backend domain model
 
 Trunk: `backend/miniclaw2/domain.py`.

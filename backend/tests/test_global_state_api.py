@@ -38,12 +38,22 @@ class GlobalStateApiTest(unittest.TestCase):
             body["tool_requests"],
             {"timeout_seconds": 120, "timeout_action": "accept"},
         )
+        self.assertEqual(body["updates"], {"check_on_startup": True})
         self.assertTrue((self.root / "config.json").is_file())
         persisted = json.loads((self.root / "config.json").read_text())
         self.assertEqual(
             [item["id"] for item in persisted["model_presets"]],
             [item["id"] for item in body["model_presets"]],
         )
+
+    def test_update_startup_preference_is_persisted(self) -> None:
+        response = self.client.patch(
+            "/global-state/updates", json={"check_on_startup": False}
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["updates"], {"check_on_startup": False})
+        self.assertFalse(load_global_config(self.root).updates.check_on_startup)
 
     def test_presets_are_created_replaced_and_deleted_from_config(self) -> None:
         preset = {

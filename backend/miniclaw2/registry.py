@@ -222,6 +222,7 @@ class ProjectRegistry:
         self._store = store
         self._runtimes: dict[str, ProjectRuntime] = {}
         self._initialized = False
+        self._self_update_pending = False
         if initialize:
             self.initialize()
 
@@ -266,11 +267,39 @@ class ProjectRegistry:
 
     def schedule_all(self) -> None:
         """Fill execution slots for durable queued work after startup."""
-        if self.store.read_only_reason is not None:
+        if self.store.read_only_reason is not None or self._self_update_pending:
             return
         for runtime in self._runtimes.values():
             if self.is_native_project(runtime.project):
                 self._schedule_queued(runtime)
+
+    def prepare_self_update(self) -> bool:
+        """Stop runner launches before the updater inspects blockers.
+
+        Registry lifecycle mutations run on the app event-loop thread, so this
+        flag transition and the subsequent blocker snapshot are serialized
+        with all launch paths.
+        """
+        if self._self_update_pending:
+            return False
+        self._self_update_pending = True
+        return True
+
+    def cancel_self_update(self) -> None:
+        """Re-enable scheduling after an update attempt was rejected or failed."""
+        if not self._self_update_pending:
+            return
+        self._self_update_pending = False
+        self.schedule_all()
+
+    def finalizing_runner_nodes(self) -> list[tuple[Project, str]]:
+        """Return tasks still owned by runtimes, including terminal finalizers."""
+        return [
+            (runtime.project, node_id)
+            for runtime in list(self._runtimes.values())
+            for node_id, task in list(runtime.runner_tasks.items())
+            if not task.done()
+        ]
 
     def reload_from_store(self) -> None:
         """Refresh project metadata after a successful manual merge."""
@@ -1269,7 +1298,11 @@ class ProjectRegistry:
         *,
         coro: Awaitable[None] | None = None,
     ) -> Node | None:
-        if node.id in rt.runner_tasks or not rt.has_capacity():
+        if (
+            self._self_update_pending
+            or node.id in rt.runner_tasks
+            or not rt.has_capacity()
+        ):
             return None
         try:
             asyncio.get_running_loop()
@@ -1294,7 +1327,7 @@ class ProjectRegistry:
         return runner
 
     def _schedule_queued(self, rt: ProjectRuntime) -> None:
-        if not self.is_native_project(rt.project):
+        if self._self_update_pending or not self.is_native_project(rt.project):
             return
         if not rt.is_running():
             rt.deferred_until_idle_node_ids.clear()

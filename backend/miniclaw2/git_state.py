@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import hashlib
+import os
 import re
 import subprocess
 from collections import deque
@@ -719,7 +720,13 @@ def _diff_result(kind: str, result: subprocess.CompletedProcess[str]) -> GitDiff
     return GitDiff(kind=kind, text=result.stdout)
 
 
-def _git(cwd: str, args: list[str], *, timeout: float = 10) -> subprocess.CompletedProcess[str]:
+def _git(
+    cwd: str,
+    args: list[str],
+    *,
+    timeout: float = 10,
+    env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
     try:
         return subprocess.run(
             ["git", *args],
@@ -728,6 +735,7 @@ def _git(cwd: str, args: list[str], *, timeout: float = 10) -> subprocess.Comple
             capture_output=True,
             text=True,
             timeout=timeout,
+            env={**os.environ, **env} if env is not None else None,
         )
     except Exception as exc:  # noqa: BLE001
         return subprocess.CompletedProcess(
