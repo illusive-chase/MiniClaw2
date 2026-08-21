@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 
 import {
+  ACTIVE_NODES_POLL_MS,
   READ_KEYS_STORAGE_KEY,
   UNREAD_ONLY_STORAGE_KEY,
   badgeCountLabel,
@@ -23,6 +24,8 @@ import {
   writeUnreadOnly,
 } from "../src/activeNodes";
 import type { ActiveNodeEntry, NodeState } from "../src/types";
+
+assert.equal(ACTIVE_NODES_POLL_MS, 15_000);
 
 function entry(
   nodeId: string,

@@ -28,6 +28,8 @@ from .contextspace import (
     delete_project_contextspace,
     normalize_principle_ids,
     read_planspace_mode,
+    read_template_instances,
+    remove_template_instance,
     resolve_project_binding,
     resolve_active_planspace,
     set_planspace_mode,
@@ -2713,6 +2715,120 @@ class ProjectRegistry:
         except RuntimeError:
             pass
         return True, []
+
+    def delete_template_instance(
+        self,
+        pid: str,
+        planspace_id: str,
+        instance_id: str,
+    ) -> tuple[bool, list[str], list[str]]:
+        """Delete every still-virtual node belonging to a template instance.
+
+        Returns ``(deleted, blockers, removed_node_ids)``. Internal dependency
+        edges do not block deleting the instance as a unit; live nodes outside
+        the instance do.
+        """
+        rt = self._runtimes.get(pid)
+        if rt is None:
+            return False, [], []
+        self.require_native(pid)
+        lane_id = planspace_id.strip()
+        iid = instance_id.strip()
+        if not lane_id:
+            raise ValueError("planspace id is required")
+        if not iid:
+            raise ValueError("template instance_id is required")
+
+        records = read_template_instances(
+            rt.project,
+            lane_id,
+            store_root=self.store.root,
+        )
+        if not any(record.get("instance_id") == iid for record in records):
+            return False, [], []
+
+        nodes = self.store.list_nodes(pid)
+        members = [
+            node
+            for node in nodes
+            if node.template_instance_id == iid
+            and (node.planspace_id or "") == lane_id
+        ]
+        for member in members:
+            self.require_native_node(rt.project, member)
+        non_virtual = [
+            member.id for member in members if member.state is not NodeState.VIRTUAL
+        ]
+        if non_virtual:
+            raise ValueError(
+                "template instance can only be deleted while all members are virtual: "
+                + ", ".join(non_virtual)
+            )
+
+        doomed = {member.id for member in members}
+        blockers = [
+            other.id
+            for other in nodes
+            if other.id not in doomed
+            and not other.obsolete_reason
+            and any(dep in doomed for dep in (other.scheduled_deps or []))
+        ]
+        if blockers:
+            return False, blockers, []
+
+        for other in nodes:
+            if other.id in doomed or not (other.scheduled_deps or []):
+                continue
+            cleaned = [dep for dep in other.scheduled_deps if dep not in doomed]
+            if cleaned == other.scheduled_deps or not self.is_native_node(
+                rt.project, other
+            ):
+                continue
+            other.scheduled_deps = cleaned
+            self.store.update_node(other)
+            if other.state is NodeState.VIRTUAL:
+                try:
+                    self.store.write_node_preview(
+                        pid, other.id, render_virtual_preview(other)
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.exception(
+                        "failed to write virtual preview after template instance delete"
+                    )
+
+        removed: list[str] = []
+        for member in members:
+            if self.store.delete_node(pid, member.id):
+                removed.append(member.id)
+            self._remove_workspace_artifacts(rt.project, member.id)
+            rt.deferred_until_idle_node_ids.discard(member.id)
+        rt.priority_node_ids = [
+            node_id for node_id in rt.priority_node_ids if node_id not in doomed
+        ]
+        remove_template_instance(
+            rt.project,
+            lane_id,
+            iid,
+            store_root=self.store.root,
+        )
+
+        hints = dict(rt.project.layout_hints)
+        hints.pop(f"tplbox:{iid}", None)
+        hints.pop(f"tplgroup:{iid}", None)
+        for node_id in removed:
+            hints.pop(node_id, None)
+        rt.project.layout_hints = hints
+        self.store.update_project(rt.project)
+        self.store.sync.schedule_commit(f"delete template instance {iid}")
+
+        for node_id in removed:
+            try:
+                asyncio.get_running_loop().create_task(
+                    rt.broadcast(NodeRemoved(id=node_id).model_dump())
+                )
+            except RuntimeError:
+                break
+        return True, [], removed
 
     def rerun_node(self, pid: str, nid: str) -> Node | None:
         """Create a fresh virtual carrying the same prompt as a failed node.

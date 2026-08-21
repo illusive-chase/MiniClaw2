@@ -638,6 +638,43 @@ def append_template_instance(
     _write_yaml(manifest_path, raw)
 
 
+def remove_template_instance(
+    project: Project,
+    lane_id: str,
+    instance_id: str,
+    *,
+    store_root: Path | None = None,
+) -> bool:
+    """Remove one template-instance record from a planspace manifest."""
+    if not instance_id:
+        raise ValueError("template instance_id is required")
+    manifest_path, raw = _project_planspace_manifest(
+        project,
+        lane_id,
+        store_root=store_root,
+    )
+    records = raw.get("template_instances", [])
+    if records is None:
+        records = []
+    if not isinstance(records, list) or any(
+        not isinstance(existing, dict) for existing in records
+    ):
+        raise ValueError(f"invalid template instances in planspace: {lane_id}")
+    kept = [
+        existing
+        for existing in records
+        if existing.get("instance_id") != instance_id
+    ]
+    if len(kept) == len(records):
+        return False
+    if kept:
+        raw["template_instances"] = kept
+    else:
+        raw.pop("template_instances", None)
+    _write_yaml(manifest_path, raw)
+    return True
+
+
 def _project_planspace_manifest(
     project: Project,
     lane_id: str,

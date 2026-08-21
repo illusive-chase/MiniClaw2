@@ -46,6 +46,21 @@ function TemplateGroupNodeImpl({ data, selected }: NodeProps<TemplateGroupData>)
           argumentSummary={data.argumentSummary}
           progress={data.progress}
         />
+        {templateGroupContext.canDelete(data.instanceId) && (
+          <button
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation();
+              void templateGroupContext.onDelete(data.instanceId);
+            }}
+            onMouseDown={(event) => event.stopPropagation()}
+            className="nodrag ml-auto inline-flex h-5 w-5 flex-none items-center justify-center rounded border border-state-error/45 bg-surface-raised/80 text-[12px] leading-none text-state-error transition hover:border-state-error hover:bg-state-error-soft"
+            title="删除这组 virtual 模板节点"
+            aria-label="删除这组 virtual 模板节点"
+          >
+            ×
+          </button>
+        )}
       </div>
     </div>
   );
@@ -55,10 +70,14 @@ export const TemplateGroupNode = memo(TemplateGroupNodeImpl);
 
 export type TemplateGroupContext = {
   onToggleCollapsed: (instanceId: string, collapsed: boolean) => void;
+  canDelete: (instanceId: string) => boolean;
+  onDelete: (instanceId: string) => Promise<void>;
 };
 
 let templateGroupContext: TemplateGroupContext = {
   onToggleCollapsed: () => {},
+  canDelete: () => false,
+  onDelete: async () => {},
 };
 
 export function setTemplateGroupContext(ctx: TemplateGroupContext): void {

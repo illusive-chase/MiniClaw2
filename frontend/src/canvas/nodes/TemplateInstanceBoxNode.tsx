@@ -66,6 +66,21 @@ function TemplateInstanceBoxNodeImpl({
         >
           ⌃
         </button>
+        {templateInstanceBoxContext.canDelete(data.instanceId) && (
+          <button
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation();
+              void templateInstanceBoxContext.onDelete(data.instanceId);
+            }}
+            onMouseDown={(event) => event.stopPropagation()}
+            className="nodrag inline-flex h-4 w-4 flex-none items-center justify-center rounded border border-state-error/45 bg-surface/70 text-[11px] leading-none text-state-error transition hover:border-state-error hover:bg-state-error-soft"
+            title="删除这组 virtual 模板节点"
+            aria-label="删除这组 virtual 模板节点"
+          >
+            ×
+          </button>
+        )}
       </div>
       <TemplateInstanceSummary
         label={data.label}
@@ -117,11 +132,15 @@ export type TemplateInstanceBoxContext = {
   onToggleCollapsed: (instanceId: string, collapsed: boolean) => void;
   /** Creates a virtual depending on every sink of the instance (§4.3). */
   onCreateDownstream: (sinkNodeIds: string[]) => void;
+  canDelete: (instanceId: string) => boolean;
+  onDelete: (instanceId: string) => Promise<void>;
 };
 
 let templateInstanceBoxContext: TemplateInstanceBoxContext = {
   onToggleCollapsed: () => {},
   onCreateDownstream: () => {},
+  canDelete: () => false,
+  onDelete: async () => {},
 };
 
 export function setTemplateInstanceBoxContext(

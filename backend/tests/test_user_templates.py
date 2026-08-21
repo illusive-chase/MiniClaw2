@@ -682,6 +682,67 @@ class ApplyUserTemplateTest(unittest.TestCase):
             [],
         )
 
+    def test_delete_template_instance_removes_internal_virtual_chain(self) -> None:
+        target_pid, target_lane = _make_project_with_lane(self.registry)
+        target_project = self.registry.get_project(target_pid)
+        assert target_project is not None
+        template = _function_template(
+            Path("/templates/removable"),
+            prompts=["First.", "Second."],
+            deps=[None, ["n0"]],
+        )
+        created = apply_user_template(template, target_project, self.registry)
+        instance_id = created[0].template_instance_id
+        assert instance_id is not None
+
+        deleted, blockers, removed = self.registry.delete_template_instance(
+            target_pid,
+            target_lane,
+            instance_id,
+        )
+
+        self.assertTrue(deleted)
+        self.assertEqual(blockers, [])
+        self.assertEqual(set(removed), {node.id for node in created})
+        self.assertTrue(
+            all(self.store.load_node(target_pid, node.id) is None for node in created)
+        )
+        self.assertEqual(
+            read_template_instances(
+                target_project,
+                target_lane,
+                store_root=self.store.root,
+            ),
+            [],
+        )
+
+    def test_delete_template_instance_reports_external_dependency(self) -> None:
+        target_pid, target_lane = _make_project_with_lane(self.registry)
+        target_project = self.registry.get_project(target_pid)
+        assert target_project is not None
+        template = _function_template(Path("/templates/blocked"), prompts=["First."])
+        created = apply_user_template(template, target_project, self.registry)
+        instance_id = created[0].template_instance_id
+        assert instance_id is not None
+        child = _add_virtual(
+            self.store,
+            target_pid,
+            target_lane,
+            prompt_draft="Outside.",
+            scheduled_deps=[created[0].id],
+        )
+
+        deleted, blockers, removed = self.registry.delete_template_instance(
+            target_pid,
+            target_lane,
+            instance_id,
+        )
+
+        self.assertFalse(deleted)
+        self.assertEqual(blockers, [child.id])
+        self.assertEqual(removed, [])
+        self.assertIsNotNone(self.store.load_node(target_pid, created[0].id))
+
     def test_default_empty_string_is_optional_but_required_argument_is_not(self) -> None:
         target_pid, _ = _make_project_with_lane(self.registry)
         target_project = self.registry.get_project(target_pid)
@@ -1055,6 +1116,36 @@ class UserTemplateHttpApiTest(unittest.TestCase):
         self.assertEqual(del_res.status_code, 204, del_res.text)
         lst_after = self.client.get("/user-templates")
         self.assertEqual(lst_after.json(), [])
+
+    def test_delete_virtual_template_instance_endpoint(self) -> None:
+        sid, lane = _make_project_with_lane(self.registry)
+        _write_user_function_template(
+            self.store,
+            "disposable",
+            prompt="Disposable work.",
+        )
+        applied = self.client.post(
+            f"/sessions/{sid}/user-templates/disposable/apply",
+            json={},
+        )
+        self.assertEqual(applied.status_code, 200, applied.text)
+        body = applied.json()
+
+        deleted = self.client.delete(
+            f"/sessions/{sid}/planspaces/{lane}/template-instances/"
+            f"{body['instance_id']}"
+        )
+
+        self.assertEqual(deleted.status_code, 200, deleted.text)
+        self.assertEqual(deleted.json()["removed_node_ids"], body["node_ids"])
+        listed = self.client.get(f"/sessions/{sid}/nodes")
+        self.assertTrue(
+            set(body["node_ids"]).isdisjoint(node["id"] for node in listed.json())
+        )
+        records = self.client.get(
+            f"/sessions/{sid}/planspaces/{lane}/template-instances"
+        )
+        self.assertEqual(records.json(), [])
 
     def test_save_returns_400_on_invalid_selection(self) -> None:
         launched = self.client.post(

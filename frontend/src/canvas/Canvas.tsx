@@ -7,6 +7,7 @@ import ReactFlow, {
   ReactFlowProvider,
   applyNodeChanges,
   useOnSelectionChange,
+  useStoreApi,
   type Node,
   type NodeChange,
   type NodeMouseHandler,
@@ -27,9 +28,13 @@ import type {
 import { artifactRawUrl } from "../api";
 import {
   appendBelowLanePosition,
+  availableLaneJumps,
   buildGraph,
   classifyPlanspaceLaneResizes,
+  laneNeedsVerticalJump,
   resolveCommitPositionTransfer,
+  resolveLaneJumpLeftOffset,
+  resolveLaneVerticalSpan,
   resolveRenderedLaneAnchorId,
   resolveDisplacedGhostPosition,
   resolveGitChangesAppearancePosition,
@@ -37,6 +42,7 @@ import {
   resizePlanspaceLanes,
   snapPlanspaceChildPosition,
   templateInstanceBoxNodeId,
+  type LaneVerticalSpan,
   type RFNode,
   type PrincipleEnumeration,
   type SkillEnumeration,
@@ -1084,7 +1090,7 @@ function CanvasInner({
   return (
     <div
       ref={wrapperRef}
-      className="relative h-full w-full"
+      className="group/canvas relative h-full w-full"
       onWheelCapture={onWheelCapture}
       onDoubleClick={onCanvasDoubleClick}
       onDragOver={onCanvasDragOver}
@@ -1150,6 +1156,13 @@ function CanvasInner({
           onFitView={persistCurrentViewport}
         />
       </ReactFlow>
+      <LaneVerticalJumpControls
+        activePlanspaceId={activePlanspaceId}
+        wrapperRef={wrapperRef}
+        liveViewportRef={liveViewportRef}
+        nodesRef={rfNodesRef as React.MutableRefObject<RFNode[]>}
+        nodesVersion={rfNodes}
+      />
     </div>
   );
 }
@@ -1222,6 +1235,220 @@ function FitOnInit({ enabled }: { enabled: boolean }) {
     return () => window.clearTimeout(id);
   }, [enabled, fitView]);
   return null;
+}
+
+/* Jump to the top or bottom of the active lane.
+ *
+ * A lane grows downward as work is appended, and the tall ones reach well past
+ * ten thousand flow pixels — far enough that panning back to the header is a
+ * chore and `fitView` is not a substitute, since it reframes every lane at a
+ * zoom where nothing is readable. These two buttons pan vertically only,
+ * holding X and zoom, so the branch the user was reading stays in frame.
+ *
+ * Fixed to the canvas viewport rather than drawn inside the lane: a button
+ * anchored to a twelve-thousand-pixel-tall lane's own corner is itself off
+ * screen exactly when it is needed. Bottom-left, beside React Flow's own
+ * `Controls`: the bottom-right belongs to the node details panel, which is
+ * 380px wide at z-20 and would bury these whenever it is open.
+ *
+ * Only mounted for the active lane. It is where new work lands, and "current
+ * lane" cannot be derived from a viewport-fixed button's position — a pointer
+ * hovering the canvas may be over any lane, or none.
+ */
+function LaneVerticalJumpControls({
+  activePlanspaceId,
+  wrapperRef,
+  liveViewportRef,
+  nodesRef,
+  nodesVersion,
+}: {
+  activePlanspaceId: string | null;
+  wrapperRef: React.RefObject<HTMLDivElement>;
+  liveViewportRef: React.MutableRefObject<Viewport>;
+  nodesRef: React.MutableRefObject<RFNode[]>;
+  /** Bumped whenever lane geometry may have changed, so growth past the
+   * two-screen threshold is noticed without polling the node array. */
+  nodesVersion: unknown;
+}) {
+  const { setCenter, getViewport } = useReactFlow();
+  const store = useStoreApi();
+  const [visible, setVisible] = useState(false);
+  const [leftOffset, setLeftOffset] = useState(() =>
+    resolveLaneJumpLeftOffset(null),
+  );
+  const [jumps, setJumps] = useState({
+    canJumpToTop: false,
+    canJumpToBottom: false,
+  });
+  const spanRef = useRef<LaneVerticalSpan | null>(null);
+
+  const measure = useCallback(() => {
+    const wrapper = wrapperRef.current;
+    const span = resolveLaneVerticalSpan(nodesRef.current, activePlanspaceId);
+    spanRef.current = span;
+    if (!wrapper || !span) {
+      setVisible(false);
+      return;
+    }
+    const height = wrapper.clientHeight;
+    const viewport = liveViewportRef.current;
+    const nextVisible = laneNeedsVerticalJump(span, height, viewport.zoom);
+    setVisible(nextVisible);
+    if (!nextVisible) return;
+    /* Re-measure the Controls column here rather than once on mount: it renders
+     * a frame after the canvas (it self-gates on an effect) and its width
+     * changes with the button count. */
+    setLeftOffset(
+      resolveLaneJumpLeftOffset(
+        wrapper.querySelector<HTMLElement>(".react-flow__controls"),
+      ),
+    );
+    /* Flow coordinates of the visible band: screen 0..height mapped back
+     * through the viewport transform. */
+    const flowTop = -viewport.y / viewport.zoom;
+    setJumps(
+      availableLaneJumps(span, flowTop, flowTop + height / viewport.zoom),
+    );
+  }, [activePlanspaceId, liveViewportRef, nodesRef, wrapperRef]);
+
+  /* One debounced recompute drives both the visibility test and the two
+   * enabled states. Viewport transforms fire continuously during pans, zooms,
+   * and animations, so measuring on every event would re-render the overlay
+   * throughout a move. A trailing timer collapses each gesture into a single
+   * measurement after it settles. */
+  const timerRef = useRef<number | null>(null);
+  const schedule = useCallback(
+    (delayMs = 120) => {
+      if (timerRef.current !== null) window.clearTimeout(timerRef.current);
+      timerRef.current = window.setTimeout(() => {
+        timerRef.current = null;
+        measure();
+      }, delayMs);
+    },
+    [measure],
+  );
+
+  /* Subscribe to React Flow's transform store instead of DOM gestures. This
+   * covers every viewport path, including `fitView`, `setCenter`, and Controls
+   * actions whose animated moves have no originating pointer/wheel event. The
+   * subscription also keeps the shared live ref current without re-rendering
+   * this component on every animation frame. */
+  useEffect(() => {
+    const syncViewport = (transform: readonly [number, number, number]) => {
+      const [x, y, zoom] = transform;
+      liveViewportRef.current = { x, y, zoom };
+      schedule();
+    };
+    syncViewport(store.getState().transform);
+    return store.subscribe((state, previousState) => {
+      const [x, y, zoom] = state.transform;
+      const [previousX, previousY, previousZoom] = previousState.transform;
+      if (x === previousX && y === previousY && zoom === previousZoom) return;
+      syncViewport(state.transform);
+    });
+  }, [liveViewportRef, schedule, store]);
+
+  useEffect(() => {
+    const wrapper = wrapperRef.current;
+    if (!wrapper) return;
+    const onResize = () => schedule();
+    const observer = new ResizeObserver(onResize);
+    observer.observe(wrapper);
+    return () => {
+      observer.disconnect();
+    };
+  }, [schedule, wrapperRef]);
+
+  useEffect(() => {
+    schedule();
+  }, [schedule, nodesVersion]);
+
+  useEffect(
+    () => () => {
+      if (timerRef.current !== null) window.clearTimeout(timerRef.current);
+    },
+    [],
+  );
+
+  const jumpTo = useCallback(
+    (edge: "top" | "bottom") => {
+      const span = spanRef.current;
+      const wrapper = wrapperRef.current;
+      if (!span || !wrapper) return;
+      const viewport = getViewport();
+      const halfFlowHeight = wrapper.clientHeight / viewport.zoom / 2;
+      /* Hold X and zoom: this is a vertical scroll, not a reframe. Offsetting
+       * by half the visible height puts the lane edge at the top (or bottom)
+       * of the viewport rather than in its middle, which is what "back to the
+       * top" means to the user. */
+      const centerX = (-viewport.x + wrapper.clientWidth / 2) / viewport.zoom;
+      const targetY =
+        edge === "top"
+          ? span.topY + halfFlowHeight
+          : span.bottomY - halfFlowHeight;
+      setCenter(centerX, targetY, { zoom: viewport.zoom, duration: 320 });
+    },
+    [getViewport, setCenter, wrapperRef],
+  );
+
+  if (!visible) return null;
+
+  return (
+    <div
+      /* `pointer-events-none` on the column with `auto` on the buttons keeps
+       * the gap between them from swallowing pans over the canvas.
+       *
+       * Placed just right of React Flow's `Controls` and sharing its 15px
+       * bottom margin, so the two read as one cluster without covering the
+       * zoom / fit-view buttons. The offset is measured from that column, not
+       * assumed, since its width comes from React Flow's own stylesheet. */
+      className="pointer-events-none absolute bottom-[15px] z-10 flex flex-col gap-1.5 opacity-0 transition-opacity duration-150 focus-within:opacity-100 group-hover/canvas:opacity-100"
+      style={{ left: leftOffset }}
+    >
+      <LaneJumpButton
+        label="回到本方向顶部"
+        disabled={!jumps.canJumpToTop}
+        onClick={() => jumpTo("top")}
+      >
+        ↑
+      </LaneJumpButton>
+      <LaneJumpButton
+        label="到本方向底部"
+        disabled={!jumps.canJumpToBottom}
+        onClick={() => jumpTo("bottom")}
+      >
+        ↓
+      </LaneJumpButton>
+    </div>
+  );
+}
+
+function LaneJumpButton({
+  label,
+  disabled,
+  onClick,
+  children,
+}: {
+  label: string;
+  disabled: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      title={label}
+      aria-label={label}
+      /* Clickable only once actually shown. Keyboard focus is unaffected by
+       * `pointer-events`, so the focus-within reveal on the column still works;
+       * this only stops a pointer from hitting a fully transparent button. */
+      className="nodrag pointer-events-none inline-flex h-7 w-7 items-center justify-center rounded border border-line bg-surface-raised/95 text-[13px] leading-none text-ink-muted shadow-card transition hover:border-line-strong hover:text-ink-strong focus-visible:pointer-events-auto disabled:cursor-not-allowed disabled:opacity-35 disabled:hover:border-line disabled:hover:text-ink-muted group-hover/canvas:pointer-events-auto"
+    >
+      {children}
+    </button>
+  );
 }
 
 /**

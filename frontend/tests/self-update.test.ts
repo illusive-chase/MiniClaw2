@@ -2,12 +2,15 @@ import assert from "node:assert/strict";
 
 import {
   DISMISSED_UPDATE_STORAGE_KEY,
+  SELF_UPDATE_POLL_MS,
   canApplyUpdate,
   readDismissedUpdate,
   targetSha,
   writeDismissedUpdate,
 } from "../src/selfUpdate";
 import type { SelfUpdateState } from "../src/types";
+
+assert.equal(SELF_UPDATE_POLL_MS, 10 * 60_000);
 
 function state(overrides: Partial<SelfUpdateState> = {}): SelfUpdateState {
   return {

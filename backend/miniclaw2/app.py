@@ -1473,6 +1473,36 @@ def create_app(
         except ValueError as exc:
             raise HTTPException(404, str(exc)) from exc
 
+    @app.delete(
+        "/sessions/{sid}/planspaces/{planspace_id}/template-instances/{instance_id}",
+        response_model=dict[str, Any],
+    )
+    async def delete_template_instance_endpoint(
+        sid: str,
+        planspace_id: str,
+        instance_id: str,
+    ) -> dict[str, Any]:
+        project = registry.get_project(sid)
+        if project is None:
+            raise HTTPException(404, "session not found")
+        if _context_task_running(project.id):
+            raise HTTPException(409, "context refresh in progress")
+        try:
+            deleted, blockers, removed = registry.delete_template_instance(
+                sid,
+                planspace_id,
+                instance_id,
+            )
+        except RuntimeError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        if blockers:
+            raise HTTPException(409, {"blockers": blockers})
+        if not deleted:
+            raise HTTPException(404, "template instance not found")
+        return {"ok": True, "removed_node_ids": removed}
+
     @app.post("/sessions/{sid}/virtuals", response_model=dict[str, Any])
     async def create_virtual(
         sid: str,

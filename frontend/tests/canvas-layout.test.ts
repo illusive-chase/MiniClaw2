@@ -6,15 +6,19 @@ import {
 } from "../src/canvas/nodeLayers";
 import {
   appendBelowLanePosition,
+  availableLaneJumps,
   buildGraph,
   clusterTemplateInstances,
   snapPlanspaceChildPosition,
   classifyPlanspaceLaneResizes,
   contextIdentityKey,
   LANE,
+  laneNeedsVerticalJump,
   resolveCommitPositionTransfer,
   resolveDisplacedGhostPosition,
   resolveGitChangesAppearancePosition,
+  resolveLaneJumpLeftOffset,
+  resolveLaneVerticalSpan,
   resolveRenderedLaneAnchorId,
   resolveSyncedNodePosition,
   resizePlanspaceLanes,
@@ -2463,6 +2467,135 @@ function testNonTemplateLayoutIsUnchangedByGroupSupport(): void {
   );
 }
 
+function testLaneVerticalSpanReadsLiveGeometry(): void {
+  const laneId = "planspace:planspaces.alpha";
+  const graph = buildGraph(args({
+    nodes: [node("work", { planspace_id: "planspaces.alpha" })],
+    knownPlanspaceIds: ["planspaces.alpha"],
+    layoutHints: { work: { x: 40, y: 4000 } },
+  }));
+  const span = resolveLaneVerticalSpan(graph.rfNodes, "planspaces.alpha");
+  const lane = graph.rfNodes.find((item) => item.id === laneId);
+  assert.ok(span);
+  assert.ok(lane);
+  assert.equal(span.laneNodeId, laneId);
+  assert.equal(span.topY, lane.position.y, "the top is the lane's own edge");
+  assert.equal(span.bottomY, lane.position.y + (lane.height ?? 0));
+
+  assert.equal(
+    resolveLaneVerticalSpan(graph.rfNodes, "planspaces.absent"),
+    null,
+    "a planspace with no lane on the canvas yields no span",
+  );
+  assert.equal(resolveLaneVerticalSpan(graph.rfNodes, null), null);
+
+  /* A drag can grow a lane before the next rebuild refreshes `data`, so the
+   * measured node height must win over the built dimensions. */
+  const grown = graph.rfNodes.map((item) =>
+    item.id === laneId ? { ...item, height: 9000 } : item,
+  );
+  assert.equal(
+    resolveLaneVerticalSpan(grown, "planspaces.alpha")?.bottomY,
+    (lane.position.y ?? 0) + 9000,
+  );
+}
+
+function testLaneJumpVisibilityFollowsScreenHeight(): void {
+  const span = { laneNodeId: "planspace:x", topY: 0, bottomY: 3000 };
+
+  assert.equal(
+    laneNeedsVerticalJump(span, 800, 1),
+    true,
+    "3000 flow px is well past two 800 px screens",
+  );
+  assert.equal(
+    laneNeedsVerticalJump(span, 2000, 1),
+    false,
+    "the same lane inside two screens needs no jump",
+  );
+  /* The threshold is measured in screen pixels, so zoom decides it: zooming
+   * out until the lane fits retires the buttons. */
+  assert.equal(laneNeedsVerticalJump(span, 800, 0.5), false);
+  assert.equal(laneNeedsVerticalJump(span, 800, 1.6), true);
+  assert.equal(
+    laneNeedsVerticalJump(span, 1500, 1),
+    false,
+    "exactly two screens does not qualify",
+  );
+
+  assert.equal(laneNeedsVerticalJump(null, 800, 1), false);
+  assert.equal(
+    laneNeedsVerticalJump(span, 0, 1),
+    false,
+    "an unmeasured wrapper must not flash the buttons on",
+  );
+  assert.equal(laneNeedsVerticalJump(span, 800, 0), false);
+}
+
+/* The whole point of the bottom-left placement is to sit *beside* React Flow's
+ * zoom / fit-view column, never on top of it. That is geometry we cannot eyeball
+ * from a unit test, so pin the contract: the buttons start after the column's
+ * right edge, whatever width upstream gives it. */
+function testLaneJumpOffsetClearsTheControlsColumn(): void {
+  assert.equal(
+    resolveLaneJumpLeftOffset({ offsetLeft: 15, offsetWidth: 28 }),
+    51,
+    "current upstream geometry: 15px margin + 28px column + 8px gap",
+  );
+  /* A restyled or taller/wider column must push the buttons further right
+   * rather than letting them drift underneath it. */
+  assert.equal(
+    resolveLaneJumpLeftOffset({ offsetLeft: 15, offsetWidth: 40 }),
+    63,
+  );
+  assert.equal(
+    resolveLaneJumpLeftOffset({ offsetLeft: 24, offsetWidth: 28 }),
+    60,
+  );
+  assert.equal(
+    resolveLaneJumpLeftOffset({ offsetLeft: 15, offsetWidth: 28 }, 0),
+    43,
+    "the gap is the only slack; without it the buttons abut the column",
+  );
+
+  /* Not mounted, or measured before layout: fall back rather than pinning the
+   * buttons to x=0, which would put them squarely over the column. */
+  const fallback = resolveLaneJumpLeftOffset(null);
+  assert.equal(fallback, 51);
+  assert.equal(
+    resolveLaneJumpLeftOffset({ offsetLeft: 0, offsetWidth: 0 }),
+    fallback,
+    "a zero-sized panel must not collapse the offset to the canvas edge",
+  );
+}
+
+function testLaneJumpAvailabilityMatchesViewportPosition(): void {
+  const span = { laneNodeId: "planspace:x", topY: 100, bottomY: 5000 };
+
+  assert.deepEqual(
+    availableLaneJumps(span, 100, 900),
+    { canJumpToTop: false, canJumpToBottom: true },
+    "already at the top: only the bottom jump does anything",
+  );
+  assert.deepEqual(
+    availableLaneJumps(span, 4200, 5000),
+    { canJumpToTop: true, canJumpToBottom: false },
+    "already at the bottom: only the top jump does anything",
+  );
+  assert.deepEqual(availableLaneJumps(span, 2000, 2800), {
+    canJumpToTop: true,
+    canJumpToBottom: true,
+  });
+  /* Sub-pixel drift left by an animated pan must not re-enable the button the
+   * user just pressed. */
+  assert.equal(availableLaneJumps(span, 103, 900).canJumpToTop, false);
+  assert.equal(availableLaneJumps(span, 4200, 4997).canJumpToBottom, false);
+  assert.deepEqual(availableLaneJumps(null, 0, 800), {
+    canJumpToTop: false,
+    canJumpToBottom: false,
+  });
+}
+
 function testInstanceSummaryHelpers(): void {
   assert.deepEqual(summarizeInstanceArguments(undefined), []);
   assert.deepEqual(
@@ -2597,5 +2730,9 @@ testCollapsedInstanceErrorAndProgressRollup();
 testCollapsedInstanceKeepsItsLaneAndHonoursHints();
 testCollapsingKeepsTheInstanceInPlace();
 testNonTemplateLayoutIsUnchangedByGroupSupport();
+testLaneVerticalSpanReadsLiveGeometry();
+testLaneJumpVisibilityFollowsScreenHeight();
+testLaneJumpAvailabilityMatchesViewportPosition();
+testLaneJumpOffsetClearsTheControlsColumn();
 testInstanceSummaryHelpers();
 console.log("canvas layout tests passed");

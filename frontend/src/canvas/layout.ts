@@ -326,6 +326,115 @@ export function resolveRenderedLaneAnchorId(
   return null;
 }
 
+/** Vertical span of one lane in flow coordinates, plus the flow Y a jump should
+ * land the viewport on at each end. `topY` is the lane's own top edge — the
+ * header band, which is the landmark the user recognizes — while `bottomY`
+ * clears the lowest child so the last tile is fully above the bottom edge. */
+export type LaneVerticalSpan = {
+  laneNodeId: string;
+  topY: number;
+  bottomY: number;
+};
+
+/** Vertical span of the lane a jump should target, or null when the lane is
+ * absent from the live canvas (an empty planspace has no lane node yet, and a
+ * hidden one is filtered out before layout).
+ *
+ * Height comes from the live React Flow node when it has been measured and
+ * falls back to the built `data` dimensions, matching `resizePlanspaceLanes`:
+ * a lane whose children were just dragged reports its new height through the
+ * node before the next rebuild refreshes `data`.
+ */
+export function resolveLaneVerticalSpan(
+  nodes: readonly RFNode[],
+  planspaceId: string | null,
+): LaneVerticalSpan | null {
+  if (!planspaceId) return null;
+  const laneNodeId = `planspace:${planspaceId}`;
+  const lane = nodes.find((node) => node.id === laneNodeId);
+  if (!lane || lane.type !== "planspaceLane") return null;
+  const data = lane.data as PlanspaceLaneData;
+  const height = lane.height ?? data.height;
+  return {
+    laneNodeId,
+    topY: lane.position.y,
+    bottomY: lane.position.y + height,
+  };
+}
+
+/**
+ * Whether a lane is long enough for the top/bottom jump affordance to be worth
+ * offering, expressed as "the lane does not fit in `viewportHeight` screens".
+ *
+ * Measured in screen pixels rather than flow units so the test matches what the
+ * user can actually see: zooming out until the whole lane fits should retire the
+ * buttons, and the same lane at 1.6x zoom should keep them.
+ *
+ * `screens` is the multiple of the viewport height a lane must exceed. Below
+ * that, scrolling is short enough that the buttons would be noise.
+ */
+export function laneNeedsVerticalJump(
+  span: LaneVerticalSpan | null,
+  viewportHeight: number,
+  zoom: number,
+  screens = 2,
+): boolean {
+  if (!span) return false;
+  if (!Number.isFinite(viewportHeight) || viewportHeight <= 0) return false;
+  if (!Number.isFinite(zoom) || zoom <= 0) return false;
+  return (span.bottomY - span.topY) * zoom > viewportHeight * screens;
+}
+
+/**
+ * Which end of the lane a jump would actually move the viewport to, given where
+ * the viewport currently sits — so the button that would do nothing can be
+ * disabled instead of silently no-opping.
+ *
+ * `viewportFlowTop`/`viewportFlowBottom` are the visible band in flow
+ * coordinates. The tolerance absorbs the sub-pixel drift left by an animated
+ * pan, which would otherwise leave a button enabled immediately after using it.
+ */
+export function availableLaneJumps(
+  span: LaneVerticalSpan | null,
+  viewportFlowTop: number,
+  viewportFlowBottom: number,
+  toleranceFlowPx = 8,
+): { canJumpToTop: boolean; canJumpToBottom: boolean } {
+  if (!span) return { canJumpToTop: false, canJumpToBottom: false };
+  return {
+    canJumpToTop: viewportFlowTop > span.topY + toleranceFlowPx,
+    canJumpToBottom: viewportFlowBottom < span.bottomY - toleranceFlowPx,
+  };
+}
+
+/**
+ * Left offset, in screen pixels, that clears React Flow's `Controls` column so
+ * the lane-jump buttons sit beside the zoom / fit-view stack instead of over it.
+ *
+ * Measured from the live element rather than hardcoded: the column's width comes
+ * from React Flow's own stylesheet (`.react-flow__panel` margin plus a
+ * content-box button), so an upstream restyle would silently move it out from
+ * under a constant. Falls back to the current upstream geometry — 15px margin +
+ * 26px button + 2px of our border ring — when the element is not mounted yet.
+ *
+ * `offsetLeft` is measured against the nearest positioned ancestor. That is the
+ * `.react-flow` root, which upstream styles `position: relative` at 100% of our
+ * own wrapper with no offset of its own, so the value is directly comparable to
+ * the wrapper-relative `left` these buttons are placed with.
+ */
+export function resolveLaneJumpLeftOffset(
+  controls: Pick<HTMLElement, "offsetLeft" | "offsetWidth"> | null,
+  gapPx = 8,
+): number {
+  const fallback = 43;
+  if (!controls) return fallback + gapPx;
+  const right = controls.offsetLeft + controls.offsetWidth;
+  /* A hidden or not-yet-laid-out panel measures zero; the constant is closer to
+   * the truth than pinning the buttons to the canvas edge. */
+  if (!Number.isFinite(right) || right <= 0) return fallback + gapPx;
+  return right + gapPx;
+}
+
 /**
  * Resolve a node position while synchronizing a rebuilt graph into React Flow.
  * Explicit UI placement (for example a double-click creation target) must win

@@ -2,7 +2,7 @@
  *
  * The WebSocket is per-project, so a node blocked on a human — or one that
  * simply finished — in another project produces no event here. This polls a
- * workspace-wide endpoint instead. Cadence is a few seconds rather than
+ * workspace-wide endpoint instead. Cadence is measured in seconds rather than
  * instant on purpose: the signal is "something happened somewhere", and a
  * human's reaction time dwarfs the delay.
  *
@@ -15,7 +15,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { listActiveNodes } from "./api";
 import type { ActiveNodeEntry, NodeCategory, NodeState } from "./types";
 
-export const ACTIVE_NODES_POLL_MS = 2500;
+export const ACTIVE_NODES_POLL_MS = 15_000;
 
 /* A fresh key: the old `activeNodes.waitingOnly` value means a different
  * filter. Reusing it would hand long-time users a filter they never set. */

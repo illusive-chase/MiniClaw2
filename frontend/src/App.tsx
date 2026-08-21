@@ -5,6 +5,7 @@ import {
   createPlanspace,
   createVirtual,
   dequeueNode,
+  deleteTemplateInstance,
   deleteVirtual,
   getSession,
   getNodeContextBundle,
@@ -1591,6 +1592,88 @@ export function App() {
     [session?.id, virtualCreateDisabled, inspectNode],
   );
 
+  const canDeleteVirtualTemplateInstance = useCallback(
+    (instanceId: string) => {
+      if (virtualCreateDisabled) return false;
+      const members = nodesRef.current.filter(
+        (node) => node.template_instance_id === instanceId,
+      );
+      return (
+        members.length > 0 &&
+        members.every(
+          (node) => node.state === "virtual" && isNodeNative(node),
+        )
+      );
+    },
+    [isNodeNative, virtualCreateDisabled],
+  );
+
+  const deleteVirtualTemplateInstance = useCallback(
+    async (instanceId: string) => {
+      const sessionId = session?.id;
+      if (!sessionId) return;
+      const members = nodesRef.current.filter(
+        (node) => node.template_instance_id === instanceId,
+      );
+      const planspaceIds = new Set(
+        members.map((node) => node.planspace_id).filter((id): id is string => !!id),
+      );
+      if (
+        members.length === 0 ||
+        planspaceIds.size !== 1 ||
+        !members.every((node) => node.state === "virtual" && isNodeNative(node))
+      ) {
+        window.alert("只有成员全部仍为 virtual 的模板实例才能整组删除。");
+        return;
+      }
+      if (!window.confirm(`删除这组 ${members.length} 个 virtual 模板节点？`)) {
+        return;
+      }
+
+      try {
+        const result = await deleteTemplateInstance(
+          sessionId,
+          [...planspaceIds][0],
+          instanceId,
+        );
+        const removed = new Set(result.removed_node_ids);
+        setNodes((current) => {
+          const updated = current.filter((node) => !removed.has(node.id));
+          nodeCountRef.current = updated.length;
+          nodesRef.current = updated;
+          return updated;
+        });
+        for (const nodeId of removed) {
+          setPendingGates((current) => withoutPendingNode(current, nodeId));
+          setPendingReviews((current) => withoutPendingNode(current, nodeId));
+        }
+        setTemplateInstances((current) =>
+          current.filter((record) => record.instance_id !== instanceId),
+        );
+        setCollapsedTemplateInstancesBySession((current) => ({
+          ...current,
+          [sessionId]: (current[sessionId] ?? []).filter((id) => id !== instanceId),
+        }));
+        if (
+          selectionRef.current.kind === "templateInstance" &&
+          selectionRef.current.instanceId === instanceId
+        ) {
+          setSelection({ kind: "none" });
+          inspectNode(null);
+        } else if (
+          inspectedNodeIdRef.current &&
+          removed.has(inspectedNodeIdRef.current)
+        ) {
+          setSelection({ kind: "none" });
+          inspectNode(null);
+        }
+      } catch (err) {
+        window.alert(`无法删除这组模板节点：${apiErrorText(err)}`);
+      }
+    },
+    [inspectNode, isNodeNative, session?.id],
+  );
+
   const rerunFailedNode = useCallback(
     async (nodeId: string) => {
       if (!session?.id || projectMutationPending) return;
@@ -2174,12 +2257,23 @@ export function App() {
   /* Wire both instance views' collapse toggles. Collapsing is view-only, so it
    * touches no node state and issues no request. */
   useEffect(() => {
-    setTemplateGroupContext({ onToggleCollapsed: toggleTemplateInstanceCollapsed });
+    setTemplateGroupContext({
+      onToggleCollapsed: toggleTemplateInstanceCollapsed,
+      canDelete: canDeleteVirtualTemplateInstance,
+      onDelete: deleteVirtualTemplateInstance,
+    });
     setTemplateInstanceBoxContext({
       onToggleCollapsed: toggleTemplateInstanceCollapsed,
       onCreateDownstream: createDownstreamOfTemplateInstance,
+      canDelete: canDeleteVirtualTemplateInstance,
+      onDelete: deleteVirtualTemplateInstance,
     });
-  }, [createDownstreamOfTemplateInstance, toggleTemplateInstanceCollapsed]);
+  }, [
+    canDeleteVirtualTemplateInstance,
+    createDownstreamOfTemplateInstance,
+    deleteVirtualTemplateInstance,
+    toggleTemplateInstanceCollapsed,
+  ]);
 
   const onResolveGate = useCallback(
     (
@@ -2934,6 +3028,12 @@ export function App() {
                 templateInstances={templateInstances}
                 onCreateDownstreamOfTemplateInstance={
                   virtualCreateDisabled ? undefined : createDownstreamOfTemplateInstance
+                }
+                onDeleteTemplateInstance={
+                  selection.kind === "templateInstance" &&
+                  canDeleteVirtualTemplateInstance(selection.instanceId)
+                    ? deleteVirtualTemplateInstance
+                    : undefined
                 }
                 events={selectedEvents}
                 eventsLoading={selectedEventsLoading}

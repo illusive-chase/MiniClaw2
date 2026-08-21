@@ -129,6 +129,8 @@ export type SidePanelProps = {
   templateInstances?: TemplateInstanceRecord[];
   /** Creates a virtual depending on every sink of the selected instance. */
   onCreateDownstreamOfTemplateInstance?: (sinkNodeIds: string[]) => void;
+  /** Deletes the selected instance when all of its members are virtual. */
+  onDeleteTemplateInstance?: (instanceId: string) => Promise<void>;
 
   onClose: () => void;
   gitCommits?: CommitDescriptor[];
@@ -460,6 +462,7 @@ function Inner(props: SidePanelProps & { nodesById: Map<string, NodeInfo> }) {
         nodesById={props.nodesById}
         onSelectNode={onSelectNode}
         onCreateDownstream={props.onCreateDownstreamOfTemplateInstance}
+        onDelete={props.onDeleteTemplateInstance}
       />
     );
   }
@@ -640,12 +643,14 @@ function TemplateInstancePanel({
   nodesById,
   onSelectNode,
   onCreateDownstream,
+  onDelete,
 }: {
   selection: Extract<CanvasSelection, { kind: "templateInstance" }>;
   record: TemplateInstanceRecord | undefined;
   nodesById: Map<string, NodeInfo>;
   onSelectNode: (nodeId: string) => void;
   onCreateDownstream?: (sinkNodeIds: string[]) => void;
+  onDelete?: (instanceId: string) => Promise<void>;
 }) {
   const sinks = new Set(selection.sinkNodeIds);
   return (
@@ -748,6 +753,17 @@ function TemplateInstancePanel({
             })}
           </ul>
         </section>
+        {onDelete && (
+          <section className="mt-5 border-t border-line pt-4">
+            <button
+              type="button"
+              onClick={() => void onDelete(selection.instanceId)}
+              className="inline-flex h-8 items-center rounded border border-state-error/50 bg-surface px-2.5 text-xs font-medium text-state-error transition hover:border-state-error hover:bg-state-error-soft"
+            >
+              删除这组 virtual 模板节点
+            </button>
+          </section>
+        )}
       </div>
     </div>
   );

@@ -699,6 +699,10 @@ Trunk: `frontend/src/canvas/Canvas.tsx`, `frontend/src/canvas/layout.ts`,
   draft prompt text, ready/obsolete/dependency footer state, and a
   hover right-edge action stack for promote, continuation virtual,
   dependency virtual, and remove.
+- Stamped template instances can be deleted as a unit while every member is
+  still virtual. The collapsed tile, expanded group header, and instance panel
+  expose the action; the backend removes all members plus the planspace
+  instance record, while preserving dependency safety against outside nodes.
 - Virtual agent nodes can be edited from the side panel
   (`prompt_draft`, category/subtype/brief, motivation, dependencies,
   model preset, attached principles/native skills, and obsoletion); continuation virtuals lock

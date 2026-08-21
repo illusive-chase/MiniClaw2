@@ -1072,6 +1072,25 @@ export async function listTemplateInstances(
   return res.json();
 }
 
+export async function deleteTemplateInstance(
+  sessionId: string,
+  planspaceId: string,
+  instanceId: string,
+): Promise<{ ok: boolean; removed_node_ids: string[] }> {
+  const res = await fetch(
+    `/sessions/${encodeURIComponent(sessionId)}/planspaces/${encodeURIComponent(planspaceId)}/template-instances/${encodeURIComponent(instanceId)}`,
+    { method: "DELETE" },
+  );
+  if (!res.ok) {
+    throw new ApiError(
+      "deleteTemplateInstance",
+      res.status,
+      await readErrorDetail(res),
+    );
+  }
+  return res.json();
+}
+
 export type PrincipleSummary = {
   id: string;
   kind: "principle";

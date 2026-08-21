@@ -3,7 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { applySelfUpdate, checkSelfUpdate, getSelfUpdate } from "./api";
 import type { SelfUpdateApplyResult, SelfUpdateState } from "./types";
 
-export const SELF_UPDATE_POLL_MS = 30_000;
+export const SELF_UPDATE_POLL_MS = 10 * 60_000;
 export const DISMISSED_UPDATE_STORAGE_KEY = "miniclaw.selfUpdate.dismissed";
 
 export function targetSha(state: SelfUpdateState | null): string | null {
