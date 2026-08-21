@@ -128,6 +128,30 @@ def line_matches_fingerprint(line: str, fingerprint: str) -> bool:
     return fingerprint in " ".join(content.split())
 
 
+def _is_api_error_record(record: dict[str, Any]) -> bool:
+    return record.get("isApiErrorMessage") is True or bool(record.get("error"))
+
+
+def _api_error_text(record: dict[str, Any]) -> str:
+    message = record.get("message")
+    content = message.get("content") if isinstance(message, dict) else None
+    text = "\n".join(
+        str(block.get("text") or "").strip()
+        for block in content or []
+        if isinstance(block, dict)
+        and block.get("type") == "text"
+        and str(block.get("text") or "").strip()
+    )
+    if text:
+        return text
+    error = record.get("error")
+    if isinstance(error, str) and error.strip():
+        return error.strip()
+    if error:
+        return json.dumps(error, ensure_ascii=False)
+    return "Claude API 错误"
+
+
 class TranscriptTranslator:
     """Stateful translator: JSONL records → ``AgentProviderEvent`` stream.
 
@@ -151,7 +175,11 @@ class TranscriptTranslator:
             self._session_id_emitted = True
             out.append(AgentProviderEvent(kind="session", session_id=sid))
 
-        if rtype == "assistant":
+        if rtype == "assistant" and _is_api_error_record(record):
+            out.append(
+                AgentProviderEvent(kind="error", error=_api_error_text(record))
+            )
+        elif rtype == "assistant":
             out.extend(self._assistant(record))
         elif rtype == "user":
             out.extend(self._user(record))

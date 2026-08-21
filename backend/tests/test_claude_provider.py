@@ -298,6 +298,29 @@ class AskPayloadRoundtripTest(unittest.TestCase):
 
 
 class JsonlDrainTest(unittest.TestCase):
+    def test_api_error_message_emits_terminal_error_instead_of_text(self) -> None:
+        from miniclaw2.providers.claude_native.transcript import TranscriptTranslator
+
+        events = TranscriptTranslator().translate({
+            "type": "assistant",
+            "sessionId": "session-error",
+            "isApiErrorMessage": True,
+            "error": "server_error",
+            "message": {
+                "content": [{
+                    "type": "text",
+                    "text": (
+                        "API Error: Connection lost mid-response. "
+                        "The response above may be incomplete."
+                    ),
+                }],
+            },
+        })
+
+        self.assertEqual([event.kind for event in events], ["session", "error"])
+        self.assertIn("Connection lost mid-response", events[-1].error or "")
+        self.assertFalse(any(event.kind == "event" for event in events))
+
     def test_report_capture_prefers_longest_non_sidechain_assistant_text(self) -> None:
         from miniclaw2.providers.claude_native.transcript import TranscriptTranslator
 
@@ -852,6 +875,95 @@ class ClaudeNativeStreamTerminalTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(usage_event.event.output_tokens, 3)
         self.assertEqual(usage_event.event.cache_read_tokens, 5)
         self.assertEqual(usage_event.event.cache_creation_tokens, 7)
+        self.assertTrue(usage_event.event.final)
+
+    async def test_api_error_record_ends_stream_while_pty_remains_alive(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            session = _stream_session(raw, _FakePty(alive=True))
+            session._turn_complete_event = asyncio.Event()
+            _write_jsonl(
+                session._jsonl_path,
+                {
+                    "type": "assistant",
+                    "isApiErrorMessage": True,
+                    "error": "server_error",
+                    "message": {
+                        "content": [{
+                            "type": "text",
+                            "text": "API Error: Connection lost mid-response.",
+                        }],
+                    },
+                },
+            )
+
+            events = await asyncio.wait_for(
+                _collect(session.stream_events()), timeout=1
+            )
+
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].kind, "error")
+        self.assertIn("Connection lost", events[0].error or "")
+
+    async def test_api_error_emits_accumulated_usage_before_error(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            session = _stream_session(raw, _FakePty(alive=True))
+            session._turn_complete_event = asyncio.Event()
+            _write_jsonl(
+                session._jsonl_path,
+                {
+                    "type": "assistant",
+                    "message": {
+                        "id": "successful-round",
+                        "content": [{
+                            "type": "tool_use",
+                            "id": "tool-1",
+                            "name": "Read",
+                            "input": {"file_path": "notes.txt"},
+                        }],
+                        "usage": {
+                            "input_tokens": 11,
+                            "output_tokens": 13,
+                            "cache_read_input_tokens": 17,
+                            "cache_creation_input_tokens": 19,
+                        },
+                    },
+                },
+                {
+                    "type": "user",
+                    "message": {
+                        "content": [{
+                            "type": "tool_result",
+                            "tool_use_id": "tool-1",
+                            "content": "loaded",
+                        }],
+                    },
+                },
+                {
+                    "type": "assistant",
+                    "isApiErrorMessage": True,
+                    "error": "server_error",
+                    "message": {
+                        "content": [{
+                            "type": "text",
+                            "text": "API Error: Connection lost mid-response.",
+                        }],
+                    },
+                },
+            )
+
+            events = await asyncio.wait_for(
+                _collect(session.stream_events()), timeout=1
+            )
+
+        self.assertEqual(events[-1].kind, "error")
+        usage_event = events[-2]
+        self.assertEqual(usage_event.kind, "event")
+        assert usage_event.event is not None
+        self.assertEqual(usage_event.event.type, "usage")
+        self.assertEqual(usage_event.event.input_tokens, 11)
+        self.assertEqual(usage_event.event.output_tokens, 13)
+        self.assertEqual(usage_event.event.cache_read_tokens, 17)
+        self.assertEqual(usage_event.event.cache_creation_tokens, 19)
         self.assertTrue(usage_event.event.final)
 
     async def test_pending_tool_is_not_killed_by_stall_watchdog(self) -> None:

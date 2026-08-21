@@ -255,6 +255,12 @@ class ClaudeNativeSession:
                     yield AgentProviderEvent(kind="session", session_id=sid)
 
                 for ev in self._translator.translate(record):
+                    if ev.kind == "error":
+                        usage_event = self._final_usage_event()
+                        if usage_event is not None:
+                            yield usage_event
+                        yield ev
+                        return
                     yield ev
 
             if (

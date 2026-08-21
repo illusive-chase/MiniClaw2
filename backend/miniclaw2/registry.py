@@ -1642,14 +1642,46 @@ class ProjectRegistry:
         if rt.closed:
             return
         finished_node = runner.node
-        if task is not None and task.cancelled() and finished_node.state is NodeState.QUEUED:
+        task_error: BaseException | None = None
+        if task is not None and task.done() and not task.cancelled():
+            task_error = task.exception()
+        if task_error is not None:
+            logger.error(
+                "runner task failed for node %s",
+                node_id,
+                exc_info=(type(task_error), task_error, task_error.__traceback__),
+            )
+        if (
+            task is not None
+            and task.cancelled()
+            and finished_node.state is NodeState.QUEUED
+        ):
             previous_state = finished_node.state
             finished_node.state = NodeState.CANCELLED
-            finished_node.error = "cancelled before runner start"
+            finished_node.error = "runner 启动前已取消"
             finished_node.started_at = finished_node.created_at
             finished_node.finished_at = time.time()
             self.store.update_node(finished_node)
             self._schedule_workspace_node(rt.project, finished_node, previous_state)
+        elif (
+            task is not None
+            and task.done()
+            and finished_node.state not in TERMINAL_NODE_STATES
+        ):
+            previous_state = finished_node.state
+            cancelled = task.cancelled()
+            finished_node.state = (
+                NodeState.CANCELLED if cancelled else NodeState.ERROR
+            )
+            if cancelled:
+                reason = "runner task 在进入终态前被取消"
+            elif task_error is not None:
+                reason = f"runner task 在进入终态前失败：{task_error}"
+            else:
+                reason = "runner task 已结束但节点未进入终态"
+            self._persist_unexpected_runner_terminal(
+                rt, finished_node, previous_state, reason
+            )
         if (
             finished_node.kind is NodeKind.OP
             and finished_node.op_kind == "commit"
@@ -1689,6 +1721,42 @@ class ProjectRegistry:
         if not spawned_op:
             self._broadcast_git_status(rt)
         self._schedule_queued(rt)
+
+    def _persist_unexpected_runner_terminal(
+        self,
+        rt: ProjectRuntime,
+        node: Node,
+        previous_state: NodeState,
+        reason: str,
+    ) -> None:
+        node.error = (node.error + "\n" if node.error else "") + reason
+        if node.started_at is None:
+            node.started_at = node.created_at
+        node.finished_at = time.time()
+        self.store.update_node(node)
+        try:
+            self.store.write_node_preview(
+                rt.project.id,
+                node.id,
+                render_executed_preview(
+                    node,
+                    motivation=node.prompt[:200] or "（未记录运行目的）",
+                    summary=reason,
+                    next_implications="检查错误原因后重新运行该节点",
+                ),
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("failed to write runner-failure preview for %s", node.id)
+        self._schedule_workspace_node(rt.project, node, previous_state)
+        try:
+            asyncio.get_running_loop().create_task(rt.broadcast({
+                "type": "node_updated",
+                "node_id": node.id,
+                "node": node.model_dump(),
+                "seq": 0,
+            }))
+        except RuntimeError:
+            pass
 
     def _broadcast_git_status(self, rt: ProjectRuntime) -> None:
         """Schedule a node-less, ephemeral Git status event."""

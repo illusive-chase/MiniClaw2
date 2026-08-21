@@ -27,6 +27,7 @@ from .base import (
 logger = logging.getLogger(__name__)
 
 _CODEX_REQUEST_TIMEOUT_SECONDS = 60.0
+_CODEX_RETRY_STALL_TIMEOUT_SECONDS = 15 * 60.0
 _CODEX_STDERR_TAIL_LINES = 20
 _CODEX_STDIO_BUFFER_LIMIT_BYTES = 16 * 1024 * 1024
 _MIN_REVIEW_VERSION = (0, 144, 1)
@@ -49,9 +50,11 @@ class CodexProvider:
         self._thread_id: str | None = None
         self._turn_id: str | None = None
         self._stop = False
+        self._retry_deadline: float | None = None
 
     async def run(self, context: AgentProviderContext) -> AsyncIterator[AgentProviderEvent]:
         self._stop = False
+        self._retry_deadline = None
         async with _CodexJsonRpcClient(
             cwd=context.project.root_path,
             env_overrides=getattr(
@@ -121,7 +124,7 @@ class CodexProvider:
                 yield AgentProviderEvent(kind="turn", turn_id=turn_id)
 
                 while not self._stop:
-                    message = await client.receive()
+                    message = await self._receive_turn_message(client)
                     async for ev in self._handle_message(message, context, client):
                         yield ev
                         if ev.kind in {"done", "error"}:
@@ -137,11 +140,13 @@ class CodexProvider:
                 yield AgentProviderEvent(kind="error", error=text)
             finally:
                 self._client = None
+                self._retry_deadline = None
 
     async def run_review(
         self, context: AgentProviderContext, spec: ReviewSpec
     ) -> AsyncIterator[AgentProviderEvent]:
         self._stop = False
+        self._retry_deadline = None
         if spec.target.type != "uncommitted":
             yield AgentProviderEvent(
                 kind="error", error=f"unsupported Codex review target: {spec.target.type}"
@@ -224,7 +229,7 @@ class CodexProvider:
                 self._turn_id = turn_id
                 yield AgentProviderEvent(kind="turn", turn_id=turn_id)
                 while not self._stop:
-                    message = await client.receive()
+                    message = await self._receive_turn_message(client)
                     async for event in self._handle_message(message, context, client):
                         yield event
                         if event.kind in {"done", "error"}:
@@ -241,6 +246,7 @@ class CodexProvider:
                 )
             finally:
                 self._client = None
+                self._retry_deadline = None
 
     async def interrupt(self) -> None:
         client = self._client
@@ -255,6 +261,22 @@ class CodexProvider:
         except Exception:  # noqa: BLE001
             logger.debug("Codex turn/interrupt failed", exc_info=True)
 
+    async def _receive_turn_message(
+        self,
+        client: "_CodexJsonRpcClient",
+    ) -> dict[str, Any]:
+        deadline = self._retry_deadline
+        if deadline is None:
+            return await client.receive()
+        loop = asyncio.get_running_loop()
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            raise TimeoutError(_codex_retry_stall_message())
+        try:
+            return await asyncio.wait_for(client.receive(), timeout=remaining)
+        except TimeoutError as exc:
+            raise TimeoutError(_codex_retry_stall_message()) from exc
+
     async def _handle_message(
         self,
         message: dict[str, Any],
@@ -266,6 +288,20 @@ class CodexProvider:
 
         method = message.get("method")
         params = message.get("params") or {}
+
+        if method != "error" and method in {
+            "turn/started",
+            "turn/completed",
+            "item/started",
+            "item/completed",
+            "item/agentMessage/delta",
+            "item/reasoning/textDelta",
+            "item/reasoning/summaryTextDelta",
+            "item/plan/delta",
+            "item/commandExecution/outputDelta",
+            "item/fileChange/patchUpdated",
+        }:
+            self._retry_deadline = None
 
         if "id" in message:
             response = await self._handle_server_request(message, context)
@@ -374,6 +410,11 @@ class CodexProvider:
             text = error.get("message") or json.dumps(error, ensure_ascii=False)
             if params.get("willRetry") is True:
                 logger.warning("Codex turn error is being retried: %s", text)
+                if self._retry_deadline is None:
+                    self._retry_deadline = (
+                        asyncio.get_running_loop().time()
+                        + _codex_retry_stall_timeout_seconds()
+                    )
                 return
             yield AgentProviderEvent(kind="error", error=text)
             return
@@ -722,6 +763,22 @@ def _codex_legacy_decision(response: dict[str, Any]) -> Any:
     if response.get("interrupt", False):
         return "abort"
     return "denied"
+
+
+def _codex_retry_stall_timeout_seconds() -> float:
+    raw = os.environ.get("MINICLAW_CODEX_RETRY_STALL_SECONDS")
+    if raw is None:
+        return _CODEX_RETRY_STALL_TIMEOUT_SECONDS
+    try:
+        value = float(raw)
+    except ValueError:
+        return _CODEX_RETRY_STALL_TIMEOUT_SECONDS
+    return value if value > 0 else _CODEX_RETRY_STALL_TIMEOUT_SECONDS
+
+
+def _codex_retry_stall_message() -> str:
+    timeout = _codex_retry_stall_timeout_seconds()
+    return f"Codex 重试后连续 {timeout:g} 秒没有回合进展"
 
 
 def _thread_params(

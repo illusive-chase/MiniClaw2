@@ -377,6 +377,42 @@ class ProjectConcurrencySchedulerTests(unittest.IsolatedAsyncioTestCase):
         await self._settle()
         self.assertTrue(all(task.cancelled() or task.done() for task in tasks))
 
+    async def test_failed_runner_task_cannot_leave_node_running(self) -> None:
+        node = self.store.create_node(Node(
+            id="failed-runner",
+            project_id=self.project.id,
+            state=NodeState.RUNNING,
+            prompt="trigger an unexpected runner exception",
+            model_preset_id="gpt-5.5",
+        ))
+        runtime = self.registry._runtimes[self.project.id]
+        runner = _ControlledRunner(
+            node,
+            self.project,
+            self.store,
+            runtime.broadcast,
+        )
+
+        async def fail() -> None:
+            raise RuntimeError("runner exploded")
+
+        task = asyncio.create_task(fail())
+        runtime.runners[node.id] = runner  # type: ignore[assignment]
+        runtime.runner_tasks[node.id] = task
+        await asyncio.gather(task, return_exceptions=True)
+
+        self.registry._on_runner_done(runtime, node.id, task)
+
+        persisted = self.store.load_node(self.project.id, node.id)
+        assert persisted is not None
+        self.assertEqual(persisted.state, NodeState.ERROR)
+        self.assertIn("runner exploded", persisted.error or "")
+        self.assertIsNotNone(persisted.finished_at)
+        preview = json.loads(
+            self.store.read_node_preview(self.project.id, node.id) or ""
+        )
+        self.assertEqual(preview["state"], "error")
+
     async def test_auto_commit_op_takes_freed_slot_before_queued_work(self) -> None:
         self.registry.update_project_preferences(self.project.id, concurrency=1)
         runtime = self.registry._runtimes[self.project.id]

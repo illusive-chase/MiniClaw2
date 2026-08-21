@@ -901,6 +901,84 @@ class CodexProviderTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(events[0].kind, "error")
         self.assertEqual(events[0].error, "connection failed")
 
+    async def test_retryable_error_without_followup_times_out(self) -> None:
+        provider = CodexProvider()
+
+        class _ClientStub:
+            async def initialize(self) -> dict[str, Any]:
+                return {"serverInfo": {"version": "0.200.0"}}
+
+            async def request(
+                self, method: str, _params: dict[str, Any], **_kwargs: Any
+            ) -> dict[str, Any]:
+                if method == "thread/start":
+                    return {"thread": {"id": "thread-1"}}
+                if method == "turn/start":
+                    return {"turn": {"id": "turn-1"}}
+                raise AssertionError(method)
+
+            async def receive(self) -> dict[str, Any]:
+                if not hasattr(self, "sent_retry"):
+                    self.sent_retry = True
+                    return {
+                        "method": "error",
+                        "params": {
+                            "error": {"message": "Reconnecting... 1/5"},
+                            "willRetry": True,
+                        },
+                    }
+                await asyncio.Event().wait()
+                raise AssertionError("unreachable")
+
+            async def respond(self, *_args: Any, **_kwargs: Any) -> None:
+                return None
+
+        class _ClientCtx:
+            async def __aenter__(self) -> Any:
+                return _ClientStub()
+
+            async def __aexit__(self, *_exc: object) -> None:
+                return None
+
+        with (
+            patch(
+                "miniclaw2.providers.codex._CodexJsonRpcClient",
+                return_value=_ClientCtx(),
+            ),
+            patch(
+                "miniclaw2.providers.codex._CODEX_RETRY_STALL_TIMEOUT_SECONDS",
+                0.01,
+            ),
+        ):
+            events = [
+                event
+                async for event in provider.run(
+                    _FakeProviderContext()  # type: ignore[arg-type]
+                )
+            ]
+
+        self.assertEqual(events[-1].kind, "error")
+        self.assertIn("没有回合进展", events[-1].error or "")
+
+    async def test_turn_progress_clears_retry_watchdog(self) -> None:
+        provider = CodexProvider()
+        provider._retry_deadline = asyncio.get_running_loop().time() + 10
+
+        events = [
+            event
+            async for event in provider._handle_message(
+                {
+                    "method": "item/agentMessage/delta",
+                    "params": {"delta": "recovered"},
+                },
+                _FakeProviderContext(),  # type: ignore[arg-type]
+                object(),  # type: ignore[arg-type]
+            )
+        ]
+
+        self.assertIsNone(provider._retry_deadline)
+        self.assertEqual(events[0].event.text, "recovered")  # type: ignore[union-attr]
+
     async def test_thread_start_uses_project_sandbox_override(self) -> None:
         provider = CodexProvider()
         ctx = _FakeProviderContext(
