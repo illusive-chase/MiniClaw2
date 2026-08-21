@@ -3,15 +3,25 @@ import type { ClientMessage, ServerEvent, WorkspaceEvent } from "./types";
 
 export type WSStatus = "connecting" | "open" | "closed";
 
+/**
+ * @param onReconnect Runs when a *re*connection opens, not on the first one.
+ *   Ephemeral events (seq 0) are never replayed, so any state whose only live
+ *   channel is such an event has no other way to heal after a drop — the
+ *   caller re-fetches it here. Deliberately not fired on the initial open:
+ *   session bootstrap already fetches that state.
+ */
 export function useSessionSocket(
   sessionId: string | null,
   onEvent: (ev: ServerEvent) => void,
   replayNodeIds: string[] = [],
+  onReconnect?: () => void,
 ) {
   const [status, setStatus] = useState<WSStatus>("closed");
   const wsRef = useRef<WebSocket | null>(null);
   const onEventRef = useRef(onEvent);
   onEventRef.current = onEvent;
+  const onReconnectRef = useRef(onReconnect);
+  onReconnectRef.current = onReconnect;
 
   const activeNodeIdsRef = useRef<Set<string>>(new Set());
   const lastSeqByNodeRef = useRef<Map<string, number>>(new Map());
@@ -45,6 +55,7 @@ export function useSessionSocket(
       ws.onopen = () => {
         setStatus("open");
         if (ws?.readyState !== WebSocket.OPEN) return;
+        if (isReconnect) onReconnectRef.current?.();
         requestedReplayNodeIdsRef.current.clear();
         const replayNodeIds = Array.from(new Set([
           ...replayNodeIdsRefFromApp.current,

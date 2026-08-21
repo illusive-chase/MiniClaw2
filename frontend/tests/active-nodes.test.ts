@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 
 import {
   READ_KEYS_STORAGE_KEY,
+  TERMINAL_RECENCY_SECONDS,
   UNREAD_ONLY_STORAGE_KEY,
   badgeCountLabel,
   badgeTone,
@@ -9,6 +10,7 @@ import {
   isHumanBlocked,
   isTerminal,
   isVerticallyVisible,
+  isWithinTerminalWindow,
   notificationKey,
   pruneReadKeys,
   readReadKeys,
@@ -19,6 +21,7 @@ import {
   sortFeed,
   summarize,
   unreadEntries,
+  withinTerminalWindow,
   writeReadKeys,
   writeUnreadOnly,
   applyWorkspaceEvent,
@@ -173,6 +176,66 @@ function withStorage(): Map<string, string> {
   assert.equal(isTerminal(entry("1", "running")), false);
   assert.equal(isTerminal(entry("1", "waiting")), false);
   assert.equal(isTerminal(entry("1", "queued")), false);
+}
+
+/* ---- terminal recency: the client re-applies the server's window ---- */
+
+{
+  /* `now` is ms; `finished_at` is seconds. */
+  const now = 100_000 * 1000;
+  const fresh = entry("fresh", "done", { finished_at: now / 1000 - 60 });
+  const expired = entry("expired", "done", {
+    finished_at: now / 1000 - TERMINAL_RECENCY_SECONDS - 60,
+  });
+  const edge = entry("edge", "done", {
+    finished_at: now / 1000 - TERMINAL_RECENCY_SECONDS,
+  });
+
+  assert.equal(isWithinTerminalWindow(fresh, now), true);
+  assert.equal(isWithinTerminalWindow(expired, now), false);
+  assert.equal(
+    isWithinTerminalWindow(edge, now),
+    true,
+    "the window boundary is inclusive, matching the backend's <=",
+  );
+
+  assert.deepEqual(
+    withinTerminalWindow([fresh, expired, edge], now).map((item) => item.node_id),
+    ["fresh", "edge"],
+  );
+}
+
+{
+  /* Live rows never age out: a node running for longer than the window is
+   * exactly what the feed exists to surface. */
+  const now = 100_000 * 1000;
+  const old = now / 1000 - TERMINAL_RECENCY_SECONDS * 2;
+  for (const state of ["running", "waiting", "queued", "awaiting_human_input"] as const) {
+    assert.equal(
+      isWithinTerminalWindow(entry("n", state, { started_at: old }), now),
+      true,
+      `${state} is live and must be kept regardless of age`,
+    );
+  }
+}
+
+{
+  /* A terminal row with no finish stamp has nothing to measure against, so it
+   * is kept rather than silently dropped. */
+  const now = 100_000 * 1000;
+  assert.equal(
+    isWithinTerminalWindow(entry("n", "done", { finished_at: null }), now),
+    true,
+  );
+}
+
+{
+  const input = [
+    entry("a", "done", { finished_at: 1 }),
+    entry("b", "running"),
+  ];
+  withinTerminalWindow(input, 100_000 * 1000);
+  assert.deepEqual(input.map((item) => item.node_id), ["a", "b"], "input not mutated");
 }
 
 /* ---- viewport visibility: only rows the panel could show become read ---- */

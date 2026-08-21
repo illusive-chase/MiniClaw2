@@ -981,25 +981,42 @@ export function App() {
   }, []);
 
   /* context space */
-  const refreshContextSpace = useCallback(async () => {
-    if (!session?.id) return;
-    setSessionContextSpaceLoading(true);
-    setSessionContextSpaceError(null);
-    try {
-      const next = await getSessionContextSpace(session.id);
-      setSessionContextSpace(next);
-      setSession((current) =>
-        current && current.id === session.id
-          ? { ...current, project_context_binding_id: next.project_context_binding_id ?? null }
-          : current,
-      );
-    } catch (err) {
-      setSessionContextSpaceError(String(err));
-      setSessionContextSpace(null);
-    } finally {
-      setSessionContextSpaceLoading(false);
-    }
-  }, [session?.id]);
+  /* `quiet` is for reconciliation rather than a user-initiated read: it skips
+   * the loading spinner and, on failure, keeps the last-known snapshot instead
+   * of clearing it. The reconnect path needs this — it fires exactly when the
+   * network is unreliable, and dropping the snapshot there would replace a
+   * stale `context_refresh` with no contextspace at all. */
+  const refreshContextSpace = useCallback(
+    async (opts?: { quiet?: boolean }) => {
+      if (!session?.id) return;
+      const quiet = opts?.quiet === true;
+      if (!quiet) {
+        setSessionContextSpaceLoading(true);
+        setSessionContextSpaceError(null);
+      }
+      try {
+        const next = await getSessionContextSpace(session.id);
+        setSessionContextSpace(next);
+        setSession((current) =>
+          current && current.id === session.id
+            ? { ...current, project_context_binding_id: next.project_context_binding_id ?? null }
+            : current,
+        );
+      } catch (err) {
+        if (!quiet) {
+          setSessionContextSpaceError(String(err));
+          setSessionContextSpace(null);
+        }
+      } finally {
+        if (!quiet) setSessionContextSpaceLoading(false);
+      }
+    },
+    [session?.id],
+  );
+
+  const reconcileContextSpace = useCallback(() => {
+    void refreshContextSpace({ quiet: true });
+  }, [refreshContextSpace]);
 
   /* Coordinated bootstrap: fetch nodes and contextspace in parallel and hold
    * the canvas off-screen until BOTH resolve. Otherwise the faster of the two
@@ -2129,6 +2146,12 @@ export function App() {
     route === "project" ? (session?.id ?? null) : null,
     handleEvent,
     socketReplayNodeIds,
+    /* `context_refresh_updated` is ephemeral (seq 0, never persisted, never
+     * replayed) and is the only live channel that clears `running`. A drop
+     * between the start and finish of a refresh would otherwise leave
+     * `virtualCreateDisabled` stuck true until a full page reload, so a
+     * reconnect re-reads the authoritative server-side status. */
+    reconcileContextSpace,
   );
   const canInterruptRunner = status === "open" && hasInterruptibleNode;
   /* Planspace ids available for cross-lane loads, sourced from the

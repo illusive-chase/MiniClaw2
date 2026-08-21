@@ -119,6 +119,40 @@ export function sortFeed(entries: ActiveNodeEntry[]): ActiveNodeEntry[] {
   return [...sortActiveEntries(live), ...terminal];
 }
 
+/**
+ * How far back terminal rows stay in the feed. Mirrors the backend's
+ * `TERMINAL_RECENCY_SECONDS` (`active_nodes.py`) and must change with it.
+ *
+ * The server remains the source of truth: it applies this window when building
+ * a snapshot. The client re-applies it at render time because a snapshot is
+ * only re-fetched on reconnect or tab focus — a tab held in the foreground for
+ * longer than the window would otherwise keep displaying rows the server has
+ * already stopped listing.
+ */
+export const TERMINAL_RECENCY_SECONDS = 8 * 3600;
+
+/**
+ * Whether a terminal row is still inside the recency window.
+ *
+ * Live rows are always kept: they are current regardless of age, and a
+ * long-running node is the case the feed exists to surface. A terminal row
+ * with no `finished_at` is also kept rather than hidden — there is nothing to
+ * measure it against, and dropping it would silently lose work that ended.
+ */
+export function isWithinTerminalWindow(entry: ActiveNodeEntry, now: number): boolean {
+  if (!isTerminal(entry)) return true;
+  if (!entry.finished_at) return true;
+  return now / 1000 - entry.finished_at <= TERMINAL_RECENCY_SECONDS;
+}
+
+/** Drop terminal rows the server would no longer include in a snapshot. */
+export function withinTerminalWindow(
+  entries: ActiveNodeEntry[],
+  now: number,
+): ActiveNodeEntry[] {
+  return entries.filter((entry) => isWithinTerminalWindow(entry, now));
+}
+
 export type ActiveNodesSummary = {
   waiting: number;
   running: number;

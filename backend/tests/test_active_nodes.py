@@ -587,6 +587,47 @@ class WorkspaceNodeEventTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(events[0]["deleted"])
             self.assertEqual(events[0]["previous_state"], "virtual")
 
+    async def test_deleting_a_project_retracts_its_feed_rows(self) -> None:
+        """A deleted project must not leave rows that only fail when clicked.
+
+        The feed's sole removal channel is ``workspace_node_removed``; without
+        one per node the row survives until a re-fetch, and jumping to it hits
+        a session that no longer exists.
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            store, registry = _registry(base)
+            project = _add_project(store, registry, base / "p", name="p")
+            done = _add_node(
+                store,
+                project,
+                state=NodeState.DONE,
+                summary="完成",
+                finished_at=time.time(),
+            )
+            waiting = _add_node(store, project, state=NodeState.WAITING, summary="等我")
+            events: list[dict[str, object]] = []
+
+            async def collect(event: dict[str, object]) -> None:
+                events.append(event)
+
+            registry.attach_workspace_observer(collect)
+            self.assertTrue(registry.delete_project(project.id))
+            # _schedule_workspace_removed defers to the running loop.
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+
+            self.assertEqual(
+                {event["type"] for event in events}, {"workspace_node_removed"}
+            )
+            self.assertEqual(
+                {event["node_id"] for event in events}, {done.id, waiting.id}
+            )
+            self.assertTrue(all(event["deleted"] for event in events))
+            self.assertTrue(
+                all(event["project_id"] == project.id for event in events)
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

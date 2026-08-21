@@ -38,6 +38,7 @@ import {
   sortFeed,
   summarize,
   unreadEntries,
+  withinTerminalWindow,
   type ActiveNodesFeed,
   writeReadKeys,
   writeUnreadOnly,
@@ -95,22 +96,39 @@ export function NotificationBell({ enabled, feed, currentSessionId, onJump }: Pr
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     if (!open) return;
+    setNow(Date.now());
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(timer);
   }, [open]);
 
-  const unread = useMemo(() => unreadEntries(entries, readKeys), [entries, readKeys]);
+  /* The server applies the same window when it builds a snapshot, but a
+   * snapshot is only re-fetched on reconnect or tab focus. Re-applying it here
+   * stops a long-lived foreground tab from accumulating rows the server has
+   * already aged out.
+   *
+   * The clock is sampled here rather than read from the ticking `now` above,
+   * which is frozen while the panel is closed and would leave the badge
+   * counting an expired row. Sampling in the memo re-reads it on open and on
+   * every feed change — a pushed transition or a re-fetch — so the only stale
+   * case left is a tab where nothing at all has happened for eight hours, and
+   * opening the panel corrects that. No timer runs while closed for this. */
+  const visibleEntries = useMemo(
+    () => withinTerminalWindow(entries, Date.now()),
+    [entries, open],
+  );
+
+  const unread = useMemo(() => unreadEntries(visibleEntries, readKeys), [visibleEntries, readKeys]);
   const tone = badgeTone(unread);
-  const summary = useMemo(() => summarize(entries), [entries]);
+  const summary = useMemo(() => summarize(visibleEntries), [visibleEntries]);
   const unreadSummary = useMemo(() => summarize(unread), [unread]);
   const runningCount = summary.running + summary.queued;
 
   const rows = useMemo(() => {
     const filtered = unreadOnly
-      ? entries.filter((entry) => isUnread(entry, readKeys))
-      : entries;
+      ? visibleEntries.filter((entry) => isUnread(entry, readKeys))
+      : visibleEntries;
     return sortFeed(filtered);
-  }, [entries, readKeys, unreadOnly]);
+  }, [visibleEntries, readKeys, unreadOnly]);
 
   /* Accumulate only rows that actually intersected the scrolling viewport.
    * The feed can be taller than 50vh, and it keeps polling while open, so the

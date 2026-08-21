@@ -1143,9 +1143,27 @@ class ProjectRegistry:
         delete_project_contextspace(rt.project, store_root=self.store.root)
         if rt.project.temporary:
             remove_temporary_root(rt.project.root_path)
+        self._publish_project_nodes_removed(rt.project)
         self.store.delete_project(pid)
         self._runtimes.pop(pid, None)
         return True
+
+    def _publish_project_nodes_removed(self, project: Project) -> None:
+        """Retract this project's rows from the workspace notification feed.
+
+        Without this a deleted project leaves rows behind that only fail when
+        clicked: the feed's sole removal channel is ``workspace_node_removed``,
+        and the lane-delete path (see ``delete_planspace``) is where that gets
+        emitted per node. Read the nodes *before* the store delete — afterwards
+        there is nothing left to enumerate.
+        """
+        try:
+            nodes = self.store.list_nodes(project.id)
+        except Exception:  # noqa: BLE001
+            logger.exception("failed to list nodes before deleting %s", project.id)
+            return
+        for node in nodes:
+            self._schedule_workspace_removed(project, node)
 
     def _finalize_deleted_project(self, rt: ProjectRuntime) -> None:
         if any(not task.done() for task in rt.runner_tasks.values()):
