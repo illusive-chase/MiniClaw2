@@ -98,8 +98,9 @@ not what it currently supports. Read the code for behavior.
   ports, stamp it into a planspace. Bundled templates are the test
   catalogue; user templates live in ContextSpace.
 - **Distribution** — the metadata store is a Git repository exchanged with
-  a user-provided remote on explicit sync. See `FUTURES.md` §1.1: the
-  sharing model in code has not yet caught up to `PHILOSOPHY.md` §12.
+  a user-provided remote on explicit sync. A durable project's write
+  authority comes from a host-local path binding; its creator machine is
+  provenance only.
 - **Frontend** — one React Flow canvas per project, a polymorphic side
   panel keyed on selection, and a library dock. Layout hints and viewport
   round-trip through the project record; collapse state is local.

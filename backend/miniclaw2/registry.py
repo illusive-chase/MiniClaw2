@@ -21,7 +21,6 @@ from uuid import uuid4
 
 from .artifacts import workspace_artifacts_dir
 from .contextspace import (
-    clear_owned_binding_local_paths,
     contextspace_root,
     create_planspace,
     delete_planspace,
@@ -56,6 +55,7 @@ from .domain import (
     ReviewBrief,
     ReviewSubtype,
     ReviewTarget,
+    UNBOUND_ROOT_PATH,
     normalize_planspace_mode,
 )
 from .language import normalize_preferred_language
@@ -174,11 +174,14 @@ def _process_matches_owner(pid: int, process_start: object) -> bool:
 logger = logging.getLogger(__name__)
 
 
-UNVERIFIED_IDENTITY_WARNING = (
-    "此项目没有可验证的 Git 身份。请确认各设备路径指向等价目录树，且依赖、数据和配置严格对齐。"
-    "MiniClaw2 无法发现设备间文件分歧，也无法提供回滚、code review 或提交视图；"
-    "共享挂载上的并发额度不跨主机生效，可能有多个 agent 同时写入；"
-    "当前版本也无法解除主机绑定或关闭共享。"
+UNVERIFIED_BINDING_WARNING = (
+    "无法校验此目录与其他设备是同一份代码。分歧不会被发现，且没有 code review 与提交视图。"
+    "确认绑定？"
+)
+
+UNREFERENCED_BINDING_WARNING = (
+    "无法校验此仓库是否就是该项目：其他设备都没有记录可比对的 Git 身份。"
+    "绑定错误的仓库不会被发现。确认绑定？"
 )
 
 
@@ -212,8 +215,7 @@ class ProjectNodeSummary:
 
 class NonNativeProjectError(PermissionError):
     def __init__(self, project: Project) -> None:
-        label = project.machine_label or project.machine_id or "another machine"
-        super().__init__(f'project is read-only here; it is native to "{label}"')
+        super().__init__("project is read-only here; configure its path on this device")
         self.project = project
 
 
@@ -407,13 +409,12 @@ class ProjectRegistry:
         return True
 
     def _record_host_heads(self) -> None:
-        """Stamp each shared project's local repository state before sync."""
+        """Stamp each bound project's local repository state before sync."""
         for runtime in list(self._runtimes.values()):
             project = runtime.project
-            if project.machine_id == self.store.machine.id:
-                self.store.update_owner_fingerprint(project)
-            if project.sharing != "shared" or not self.is_native_project(project):
+            if project.temporary or not self.store.is_bound_here(project.id):
                 continue
+            self.store.refresh_local_fingerprint(project)
             status = git_status(project.root_path)
             if not status.is_repo or not status.head:
                 continue
@@ -469,12 +470,7 @@ class ProjectRegistry:
             runtime = self._runtimes.get(project_id)
             if runtime is None:
                 self._runtimes[project_id] = ProjectRuntime(project)
-            elif runtime.is_running():
-                # Sharing is a monotonic policy transition and ownership checks
-                # must observe it even while runners retain this Project object.
-                if project.sharing == "shared":
-                    runtime.project.sharing = "shared"
-            else:
+            elif not runtime.is_running():
                 runtime.project = project
         for project_id in list(self._runtimes):
             runtime = self._runtimes[project_id]
@@ -482,13 +478,9 @@ class ProjectRegistry:
                 self._runtimes.pop(project_id, None)
 
     def is_native_project(self, project: Project) -> bool:
-        if project.sharing == "shared":
-            return self.store.has_host_binding(project.id, self.store.machine.id)
-        return bool(project.machine_id) and project.machine_id == self.store.machine.id
+        return self.store.is_bound_here(project.id)
 
     def is_native_node(self, project: Project, node: Node) -> bool:
-        if project.sharing != "shared":
-            return self.is_native_project(project)
         return node.owner_host_id == self.store.machine.id
 
     def _can_resume_provider_session(self, node: Node) -> bool:
@@ -515,15 +507,6 @@ class ProjectRegistry:
         if not self.is_native_node(project, node):
             raise NonNativeNodeError(node)
         return node
-
-    def require_project_owner(self, pid: str) -> Project:
-        project = self.require_native(pid)
-        if (
-            project.sharing == "shared"
-            and project.machine_id != self.store.machine.id
-        ):
-            raise NonNativeProjectError(project)
-        return project
 
     def _repair_stale_nodes(self, pid: str) -> None:
         """Mark nodes stuck in non-terminal states as cancelled on load.
@@ -657,103 +640,53 @@ class ProjectRegistry:
     def list_projects(self) -> list[Project]:
         return [rt.project for rt in self._runtimes.values()]
 
-    def enable_sharing(
-        self,
-        pid: str,
-        *,
-        unverified_identity_acknowledged: bool = False,
-        topology: str = "unknown",
-    ) -> Project | None:
-        rt = self._runtimes.get(pid)
-        if rt is None:
-            return None
-        self.store.assert_writable()
-        project = rt.project
-        if project.sharing == "shared":
-            return project
-        if project.temporary:
-            raise ValueError("temporary projects cannot be shared")
-        if project.machine_id == self.store.machine.id:
-            self.store.update_owner_fingerprint(project)
-        owner_host = next(
-            (
-                host
-                for host in self.store.list_hosts(project.id)
-                if host.get("mid") == project.machine_id
-            ),
-            {},
-        )
-        owner_repo = owner_host.get("repo")
-        if owner_host.get("is_repo") is True and (
-            not isinstance(owner_repo, dict) or not owner_repo.get("root_commit")
-        ):
-            raise ValueError("project owner repository must have at least one commit")
-        readiness = self.store.sharing_readiness(project)
-        if readiness == "ready-unverified":
-            if not unverified_identity_acknowledged:
-                raise ValueError(UNVERIFIED_IDENTITY_WARNING)
-            project.identity = "environment-attested"
-            if project.machine_id == self.store.machine.id:
-                self.store.record_identity_attestation(
-                    project.id,
-                    str(Path(project.root_path).expanduser().resolve()),
-                    topology=topology,
-                )
-        project.sharing = "shared"
-        clear_owned_binding_local_paths(project, store_root=self.store.root)
-        self.store.update_project(project)
-        self.store.sync.schedule_commit(f'enable sharing for project "{project.name or pid}"')
-        return project
-
-    def join_shared_project(
+    def bind_project_here(
         self,
         pid: str,
         root_path: str,
         *,
-        unverified_identity_acknowledged: bool = False,
-        topology: str = "unknown",
+        unverified_acknowledged: bool = False,
     ) -> Project | None:
         self.store.assert_writable()
         rt = self._runtimes.get(pid)
         if rt is None:
             return None
         project = rt.project
-        if project.sharing != "shared":
-            raise ValueError("project is not shared")
+        if project.temporary:
+            raise ValueError("temporary projects cannot be rebound")
         if self.is_native_project(project):
-            raise ValueError("project is already enabled on this device")
+            raise ValueError("project is already bound on this device")
         root = Path(root_path).expanduser()
         if not root.exists():
             raise ValueError(f"path does not exist: {root}")
         if not root.is_dir():
             raise ValueError(f"path is not a directory: {root}")
         resolved = str(root.resolve())
-        roots: list[str] = []
-        if project.identity == "environment-attested":
-            if not unverified_identity_acknowledged:
-                raise ValueError(UNVERIFIED_IDENTITY_WARNING)
-            observed_is_repo = is_git_repo(resolved)
-        else:
-            observed_is_repo = is_git_repo(resolved)
+        observed_is_repo = is_git_repo(resolved)
+        roots = root_commits(resolved) if observed_is_repo else []
+        expected = self._recorded_fingerprint(pid)
+        # A binding may only *define* the project's Git identity when another
+        # host already recorded one to compare against.  The first host to bind
+        # an unreferenced project records `is_repo` but no root commit: claiming
+        # one here would synchronize an unverified identity that later rejects
+        # the device holding the real tree, and unbinding does not retract it.
+        adopt_fingerprint = expected is not None
+        if expected is not None:
             if not observed_is_repo:
-                raise ValueError("path is not a Git repository")
-            roots = root_commits(resolved)
+                raise ValueError(
+                    "other devices recorded a Git repository; this path is not one"
+                )
             if not roots:
                 raise ValueError("repository has no root commit")
-            hosts = self.store.list_hosts(pid)
-            expected = next(
-                (
-                    host.get("repo", {}).get("root_commit")
-                    for host in hosts
-                    if isinstance(host.get("repo"), dict)
-                    and host.get("repo", {}).get("root_commit")
-                ),
-                None,
-            )
-            if expected is None:
-                raise ValueError("shared project has no repository fingerprint")
             if roots[0] != expected:
-                raise ValueError("repository fingerprint does not match the shared project")
+                raise ValueError("repository fingerprint does not match")
+        elif observed_is_repo:
+            if not roots:
+                raise ValueError("repository has no root commit")
+            if not unverified_acknowledged:
+                raise ValueError(UNREFERENCED_BINDING_WARNING)
+        elif not unverified_acknowledged:
+            raise ValueError(UNVERIFIED_BINDING_WARNING)
 
         if observed_is_repo:
             exclude_error = ensure_miniclaw_git_excluded(resolved)
@@ -765,29 +698,25 @@ class ProjectRegistry:
                 )
 
         host_dir = self.store.root / "projects" / pid / "hosts" / self.store.machine.id
-        source_layout = self._shared_layout_seed(pid, project.machine_id)
+        source_layout = self._binding_layout_seed(pid, self.store.machine.id)
         repo: dict[str, Any] = {}
-        if roots:
+        if roots and adopt_fingerprint:
             repo = {
                 "root_commit": roots[0],
                 "root_commits": roots,
                 "origin_url": normalized_origin_url(resolved),
             }
-        self.store._write_json(
-            host_dir / "host.json",
-            {
-                "label": self.store.machine.label,
-                "bound_at": time.time(),
-                "repo": repo,
-                "is_repo": observed_is_repo,
-            },
-        )
-        if project.identity == "environment-attested":
-            self.store.record_identity_attestation(
-                pid,
-                resolved,
-                topology=topology,
-            )
+        host_payload: dict[str, Any] = {
+            "label": self.store.machine.label,
+            "bound_at": time.time(),
+            "repo": repo,
+            "is_repo": observed_is_repo,
+        }
+        if not adopt_fingerprint:
+            # Persisted so the pre-sync fingerprint refresh does not later
+            # record what this binding was not allowed to claim.
+            host_payload["unverified_binding"] = True
+        self.store._write_json(host_dir / "host.json", host_payload)
         self.store._write_json(host_dir / "local.json", {"root_path": resolved})
         self.store._write_json(host_dir / "layout.json", source_layout)
         (host_dir / "nodes").mkdir(parents=True, exist_ok=True)
@@ -795,10 +724,46 @@ class ProjectRegistry:
         project.layout_hints = dict(source_layout.get("layout_hints", {}))
         project.layout_viewport = source_layout.get("layout_viewport")
         self.store.invalidate_owner_index()
-        self.store.sync.schedule_commit(f'join shared project "{project.name or pid}"')
+        self.store.sync.schedule_commit(
+            f'bind project "{project.name or pid}" on this device'
+        )
         return project
 
-    def _shared_layout_seed(self, pid: str, preferred_mid: str) -> dict[str, Any]:
+    def _recorded_fingerprint(self, pid: str) -> str | None:
+        return next(
+            (
+                root_commit
+                for host in self.store.list_hosts(pid)
+                for repo in [host.get("repo")]
+                if isinstance(repo, dict)
+                for root_commit in [repo.get("root_commit")]
+                if isinstance(root_commit, str) and root_commit
+            ),
+            None,
+        )
+
+    def unbind_project_here(self, pid: str) -> Project | None:
+        project = self.require_native(pid)
+        if project.temporary:
+            raise ValueError("temporary projects cannot be unbound")
+        if not self.quiescent(pid):
+            raise RuntimeError("project has active or queued nodes")
+        local_file = (
+            self.store.root
+            / "projects"
+            / pid
+            / "hosts"
+            / self.store.machine.id
+            / "local.json"
+        )
+        local_file.unlink(missing_ok=True)
+        project.root_path = UNBOUND_ROOT_PATH
+        self.store.sync.schedule_commit(
+            f'unbind project "{project.name or pid}" on this device'
+        )
+        return project
+
+    def _binding_layout_seed(self, pid: str, preferred_mid: str) -> dict[str, Any]:
         hosts_dir = self.store.root / "projects" / pid / "hosts"
         candidates = [hosts_dir / preferred_mid / "layout.json"]
         candidates.extend(sorted(hosts_dir.glob("*/layout.json")))
@@ -1149,7 +1114,7 @@ class ProjectRegistry:
         rt = self._runtimes.get(pid)
         if rt is None:
             return False
-        self.require_project_owner(pid)
+        self.require_native(pid)
         rt.closed = True
         for runner in list(rt.runners.values()):
             try:
@@ -1904,78 +1869,6 @@ class ProjectRegistry:
         result = self.promote_virtual_result(pid, vid)
         return result.node if result.code is None else None
 
-    def claim_foreign_virtual(self, pid: str, vid: str) -> Node:
-        """Copy a foreign virtual into this host without mutating its source."""
-        rt = self._runtimes.get(pid)
-        if rt is None:
-            raise KeyError(pid)
-        project = self.require_native(pid)
-        source = self.store.load_node(pid, vid)
-        if source is None:
-            raise KeyError(vid)
-        if source.state is not NodeState.VIRTUAL:
-            raise ValueError("only virtual nodes can be claimed")
-        if self.is_native_node(project, source):
-            raise ValueError("local virtual nodes must use promote")
-        if source.obsolete_reason:
-            raise ValueError("obsolete virtual nodes cannot be claimed")
-
-        local_claim = next(
-            (
-                claim
-                for claim in self.store.list_claims(pid).get(source.id, [])
-                if claim.get("claimed_by") == self.store.machine.id
-            ),
-            None,
-        )
-        if local_claim is not None:
-            existing = self.store.load_node(pid, str(local_claim["as_node"]))
-            if (
-                existing is not None
-                and self.is_native_node(project, existing)
-                and existing.promoted_from == source.id
-            ):
-                return existing
-
-        settings_snapshot: dict[str, Any] = {}
-        if source.pending_extra_principles:
-            settings_snapshot["extra_principles"] = list(
-                source.pending_extra_principles
-            )
-        if source.pending_extra_skills:
-            settings_snapshot["extra_skills"] = [
-                dict(item) for item in source.pending_extra_skills
-            ]
-        claimed = Node(
-            project_id=pid,
-            kind=source.kind,
-            agent_op_kind=source.agent_op_kind,
-            state=NodeState.QUEUED,
-            planspace_id=source.planspace_id,
-            model_preset_id=source.model_preset_id,
-            prompt=source.prompt_draft or source.prompt,
-            prompt_draft=source.prompt_draft,
-            category=source.category,
-            subtype=source.subtype,
-            brief=source.brief,
-            review_target=source.review_target,
-            scheduled_deps=list(source.scheduled_deps),
-            settings_snapshot=settings_snapshot,
-            verify_script_ref=source.verify_script_ref,
-            promoted_from=source.id,
-        )
-        self.store.create_node(claimed)
-        self.store.write_claim(
-            pid,
-            source.id,
-            {
-                "as_node": claimed.id,
-                "claimed_at": time.time(),
-            },
-        )
-        self._schedule_queued(rt)
-        return self.store.load_node(pid, claimed.id) or claimed
-
     def promote_virtual_result(self, pid: str, vid: str) -> VirtualPromotionResult:
         """Promote a virtual and preserve a machine-readable conflict reason.
 
@@ -2178,7 +2071,6 @@ class ProjectRegistry:
                 "provider_turn_id": None,
                 "settings_snapshot": snapshot,
                 "proposed_by": node.proposed_by or "user",
-                "promoted_from": None,
                 "started_at": None,
                 "finished_at": None,
             }

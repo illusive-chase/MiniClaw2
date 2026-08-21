@@ -107,11 +107,9 @@ class Store:
     def _is_partitioned(self, pid: str) -> bool:
         return self._hosts_dir(pid).is_dir()
 
-    def _sharing_enabled(self, pid: str) -> bool:
-        try:
-            return self._read_json(self._project_file(pid)).get("sharing") == "shared"
-        except (OSError, ValueError):
-            return False
+    def is_bound_here(self, pid: str) -> bool:
+        """Whether this host has a local checkout path for the project."""
+        return (self._host_dir(pid, self.machine.id) / "local.json").is_file()
 
     def _owner_mid(self, pid: str, nid: str) -> str | None:
         if not self._is_partitioned(pid):
@@ -144,11 +142,6 @@ class Store:
     def _head_file(self, pid: str, machine_id: str) -> Path:
         return self._host_dir(pid, machine_id) / "head.json"
 
-    def _claim_file(self, pid: str, machine_id: str, vid: str) -> Path:
-        if not vid or Path(vid).name != vid:
-            raise ValueError("invalid virtual node id")
-        return self._host_dir(pid, machine_id) / "claims" / f"{vid}.json"
-
     def invalidate_owner_index(self) -> None:
         """Drop path ownership cached before a sync or layout migration."""
         self._owner_index.clear()
@@ -178,23 +171,8 @@ class Store:
         if current is None or activity_at > current:
             self._last_activity_index[pid] = activity_at
 
-    def has_host_binding(self, pid: str, machine_id: str) -> bool:
-        return (self._host_dir(pid, machine_id) / "host.json").is_file()
-
-    def sharing_readiness(self, project: Project) -> str:
-        owner_dir = self._host_dir(project.id, project.machine_id)
-        try:
-            payload = self._read_json(owner_dir / "host.json")
-        except (OSError, ValueError):
-            payload = {}
-        if project.identity == "environment-attested":
-            return "ready-unverified"
-        if payload.get("is_repo") is False:
-            return "ready-unverified"
-        return "ready"
-
-    def update_owner_fingerprint(self, project: Project) -> bool:
-        if project.machine_id != self.machine.id or not self._is_partitioned(project.id):
+    def refresh_local_fingerprint(self, project: Project) -> bool:
+        if not self.is_bound_here(project.id) or not self._is_partitioned(project.id):
             return False
         roots = root_commits(project.root_path)
         path = self._host_dir(project.id, self.machine.id) / "host.json"
@@ -204,7 +182,11 @@ class Store:
             payload = {"label": self.machine.label, "bound_at": time.time()}
         observed_is_repo = is_git_repo(project.root_path)
         repo = payload.get("repo")
-        if not roots:
+        # A binding that no other host could vouch for must not acquire a Git
+        # identity later: the refresh would publish exactly the unverified
+        # fingerprint the binding declined to claim.
+        unverified = payload.get("unverified_binding") is True
+        if not roots or unverified:
             changed = payload.get("is_repo") is not observed_is_repo or repo != {}
             if not changed:
                 return False
@@ -226,32 +208,6 @@ class Store:
         }
         self._write_json(path, payload)
         return True
-
-    def record_identity_attestation(
-        self,
-        pid: str,
-        root_path: str,
-        *,
-        topology: str = "unknown",
-    ) -> None:
-        path = self._host_dir(pid, self.machine.id) / "host.json"
-        try:
-            payload = self._read_json(path)
-        except (OSError, ValueError):
-            payload = {"label": self.machine.label, "bound_at": time.time()}
-        payload.update(
-            {
-                "identity": "environment-attested",
-                "attestation": {
-                    "attested_at": time.time(),
-                    "machine_label": self.machine.label,
-                    "hostname": self.machine.hostname,
-                    "root_path_declared": root_path,
-                    "topology": topology,
-                },
-            }
-        )
-        self._write_json(path, payload)
 
     def list_hosts(self, pid: str) -> list[dict[str, Any]]:
         hosts_dir = self._hosts_dir(pid)
@@ -275,7 +231,7 @@ class Store:
         return hosts
 
     def write_host_head(self, pid: str, payload: dict[str, Any]) -> None:
-        if self.read_only_reason is not None or not self._sharing_enabled(pid):
+        if self.read_only_reason is not None or not self.is_bound_here(pid):
             return
         self._write_json(self._head_file(pid, self.machine.id), payload)
 
@@ -303,41 +259,6 @@ class Store:
                 payload["recorded_at"] = committed_at[relative_path]
             heads[path.parent.name] = payload
         return heads
-
-    def write_claim(self, pid: str, vid: str, payload: dict[str, Any]) -> None:
-        self.assert_writable()
-        if not self._sharing_enabled(pid):
-            raise ValueError("claims require a shared project")
-        claim = dict(payload)
-        claim["claimed_by"] = self.machine.id
-        self._write_json(self._claim_file(pid, self.machine.id, vid), claim)
-        self.sync.schedule_commit(f"claim virtual node {vid}")
-
-    def list_claims(self, pid: str) -> dict[str, list[dict[str, Any]]]:
-        if not self._sharing_enabled(pid):
-            return {}
-        hosts_dir = self._hosts_dir(pid)
-        if not hosts_dir.is_dir():
-            return {}
-        claims: dict[str, list[dict[str, Any]]] = {}
-        for path in sorted(hosts_dir.glob("*/claims/*.json")):
-            try:
-                payload = self._read_json(path)
-            except (OSError, ValueError):
-                continue
-            claimed_by = payload.get("claimed_by")
-            as_node = payload.get("as_node")
-            claimed_at = payload.get("claimed_at")
-            if (
-                not isinstance(claimed_by, str)
-                or claimed_by != path.parents[1].name
-                or not isinstance(as_node, str)
-                or not as_node
-                or not isinstance(claimed_at, (int, float))
-            ):
-                continue
-            claims.setdefault(path.stem, []).append(payload)
-        return claims
 
     def read_git_aliases(self, pid: str) -> dict[str, str]:
         path = self._git_aliases_file(pid)
@@ -424,43 +345,39 @@ class Store:
             project.machine_label = self.machine.label
         project.bind_model_catalog(self.root)
         d = self._project_dir(project.id)
-        if project.temporary:
-            (d / "nodes").mkdir(parents=True, exist_ok=True)
-            payload = project.model_dump(exclude={"provider"})
-        else:
-            host_dir = self._host_dir(project.id, self.machine.id)
-            (host_dir / "nodes").mkdir(parents=True, exist_ok=True)
-            self._write_json(host_dir / "local.json", {"root_path": project.root_path})
-            self._write_json(
-                host_dir / "layout.json",
+        host_dir = self._host_dir(project.id, self.machine.id)
+        (host_dir / "nodes").mkdir(parents=True, exist_ok=True)
+        self._write_json(host_dir / "local.json", {"root_path": project.root_path})
+        self._write_json(
+            host_dir / "layout.json",
+            {
+                "layout_hints": project.layout_hints,
+                "layout_viewport": project.layout_viewport,
+            },
+        )
+        roots = root_commits(project.root_path)
+        observed_is_repo = is_git_repo(project.root_path)
+        repo: dict[str, Any] = {}
+        if roots:
+            repo.update(
                 {
-                    "layout_hints": project.layout_hints,
-                    "layout_viewport": project.layout_viewport,
-                },
+                    "root_commit": roots[0],
+                    "root_commits": roots,
+                    "origin_url": normalized_origin_url(project.root_path),
+                }
             )
-            roots = root_commits(project.root_path)
-            observed_is_repo = is_git_repo(project.root_path)
-            repo: dict[str, Any] = {}
-            if roots:
-                repo.update(
-                    {
-                        "root_commit": roots[0],
-                        "root_commits": roots,
-                        "origin_url": normalized_origin_url(project.root_path),
-                    }
-                )
-            self._write_json(
-                host_dir / "host.json",
-                {
-                    "label": self.machine.label,
-                    "bound_at": time.time(),
-                    "repo": repo,
-                    "is_repo": observed_is_repo,
-                },
-            )
-            payload = project.model_dump(
-                exclude={"provider", "root_path", "layout_hints", "layout_viewport"}
-            )
+        self._write_json(
+            host_dir / "host.json",
+            {
+                "label": self.machine.label,
+                "bound_at": time.time(),
+                "repo": repo,
+                "is_repo": observed_is_repo,
+            },
+        )
+        payload = project.model_dump(
+            exclude={"provider", "root_path", "layout_hints", "layout_viewport"}
+        )
         self._write_json(self._project_file(project.id), payload)
         self.sync.schedule_commit(f'create project "{project.name or project.id}"')
         return project
@@ -470,7 +387,7 @@ class Store:
         project.bind_model_catalog(self.root)
         if self._is_partitioned(project.id):
             host_dir = self._host_dir(project.id, self.machine.id)
-            if (host_dir / "host.json").is_file():
+            if self.is_bound_here(project.id):
                 self._write_json(host_dir / "local.json", {"root_path": project.root_path})
                 self._write_json(
                     host_dir / "layout.json",

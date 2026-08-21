@@ -1390,9 +1390,14 @@ class UserTemplateHttpApiTest(unittest.TestCase):
 
         project = self.registry.get_project(sid)
         assert project is not None
-        project.machine_id = "remote-machine-id"
-        project.machine_label = "remote-host"
-        self.store.update_project(project)
+        (
+            self.store.root
+            / "projects"
+            / sid
+            / "hosts"
+            / self.store.machine.id
+            / "local.json"
+        ).unlink()
         node_ids_before = [node.id for node in self.store.list_nodes(sid)]
 
         response = self.client.post(
@@ -1401,7 +1406,7 @@ class UserTemplateHttpApiTest(unittest.TestCase):
         )
 
         self.assertEqual(response.status_code, 403, response.text)
-        self.assertIn("remote-host", response.json()["detail"])
+        self.assertIn("configure its path", response.json()["detail"])
         self.assertEqual(
             [node.id for node in self.store.list_nodes(sid)],
             node_ids_before,

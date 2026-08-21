@@ -172,7 +172,6 @@ class ConciergeBootstrapTests(unittest.IsolatedAsyncioTestCase):
                 pass
 
     async def test_busy_first_concierge_stays_inactive_and_persists_binding(self) -> None:
-        self.registry.enable_sharing(self.pid)
         rt = self.registry._runtimes[self.pid]
 
         async def _hold() -> None:

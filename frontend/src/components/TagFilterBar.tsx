@@ -1,5 +1,6 @@
 import type { Tag } from "../types";
 import { tagChipClass, tagDotClass } from "../tagPalette";
+import type { BindingFilter } from "../projectGrouping";
 
 /* A tag chip is a rounded pill with a color dot; the card's other badges are
  * square-cornered and colorless. That keeps a tag from reading as node state,
@@ -59,6 +60,9 @@ export function TagFilterBar({
   onClear,
   sortControl,
   totalLabel,
+  bindingFilter,
+  bindingCounts,
+  onBindingFilterChange,
 }: {
   tags: Tag[];
   selected: ReadonlySet<string>;
@@ -67,11 +71,37 @@ export function TagFilterBar({
   onClear: () => void;
   sortControl: React.ReactNode;
   totalLabel: React.ReactNode;
+  bindingFilter: BindingFilter;
+  bindingCounts: Record<BindingFilter, number>;
+  onBindingFilterChange: (mode: BindingFilter) => void;
 }) {
   return (
     <div className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-2">
       <div className="text-[10px] font-medium uppercase tracking-[0.14em] text-ink-subtle">
         {totalLabel}
+      </div>
+
+      <div className="inline-flex overflow-hidden rounded-md border border-line bg-surface-raised">
+        {([
+          ["all", "全部"],
+          ["bound", "已绑定"],
+          ["unbound", "未绑定"],
+        ] as const).map(([mode, label]) => (
+          <button
+            key={mode}
+            type="button"
+            onClick={() => onBindingFilterChange(mode)}
+            aria-pressed={bindingFilter === mode}
+            className={
+              "border-r border-line px-2 py-[3px] text-[10.5px] font-medium transition last:border-r-0 " +
+              (bindingFilter === mode
+                ? "bg-brand-soft text-brand-ink"
+                : "text-ink-muted hover:bg-surface-sunken hover:text-ink")
+            }
+          >
+            {label} {bindingCounts[mode]}
+          </button>
+        ))}
       </div>
 
       {tags.length > 0 && (

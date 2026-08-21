@@ -240,7 +240,7 @@ export function ProjectPanel({
         </div>
         {session.read_only && (
           <div className="mt-2 inline-flex rounded border border-state-waiting/40 bg-state-waiting-soft px-2 py-1 text-[10.5px] text-state-waiting">
-            read-only · native to {session.native_machine_label} · as of {session.last_sync_at ? new Date(session.last_sync_at * 1000).toLocaleString() : "never synced"}
+            只读 · 此设备尚未配置项目路径
           </div>
         )}
       </div>
@@ -304,7 +304,7 @@ export function ProjectPanel({
                 }}
                 title={
                   tagsLocked
-                    ? `只读项目不能改 tag —— 它属于 ${session.native_machine_label}，请在那台机器上编辑`
+                    ? "此设备尚未配置项目路径，绑定后才能编辑 tag"
                     : "编辑 tag"
                 }
                 aria-expanded={!!tagAnchor}
@@ -326,7 +326,7 @@ export function ProjectPanel({
             )}
             {tagsLocked && (
               <div className="mt-1.5 text-[10.5px] text-ink-subtle">
-                只读项目由 {session.native_machine_label} 持有，tag 需在该机器上修改。
+                此设备绑定项目路径后才能修改 tag。
               </div>
             )}
             {tagError && (
@@ -557,7 +557,6 @@ export function ProjectPanel({
                       </div>
                       <div className="mt-0.5 font-mono text-[10.5px] text-ink-muted">
                         {binding.id}
-                        {binding.matches_project_path ? " · matches path" : ""}
                       </div>
                     </button>
                   </li>

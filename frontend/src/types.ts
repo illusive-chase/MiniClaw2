@@ -199,15 +199,11 @@ export type SessionInfo = {
   name?: string;
   machine_id: string;
   local_machine_id: string;
-  native_machine_label: string;
-  is_native: boolean;
+  created_on_machine_label: string;
+  bound_here: boolean;
   read_only: boolean;
   can_delete: boolean;
-  sharing: "device-native" | "shared";
-  identity: "git-root-commit" | "environment-attested";
-  sharing_readiness: "ready" | "ready-unverified";
-  can_enable_sharing: boolean;
-  can_join_here: boolean;
+  can_bind_here: boolean;
   hosts: SessionHost[];
   last_sync_at?: number | null;
   project_context_binding_id?: string | null;
@@ -235,14 +231,6 @@ export type SessionHost = {
   recorded_at?: number;
   dirty?: boolean;
   is_repo?: boolean;
-  identity?: "git-root-commit" | "environment-attested";
-  attestation?: {
-    attested_at: number;
-    machine_label: string;
-    hostname: string;
-    root_path_declared: string;
-    topology: "shared-filesystem" | "replicated" | "unknown";
-  };
 };
 
 export type TemplateArgumentMeta = {
@@ -492,11 +480,9 @@ export type NodeInfo = {
   provider_turn_id?: string | null;
   origin_machine_id?: string;
   owner_host_id?: string;
-  promoted_from?: string | null;
   /** Shared by every node one template stamp created. Absent on nodes that
    * predate templating and on hand-made virtuals. */
   template_instance_id?: string | null;
-  claims?: Array<{ claimed_by: string; as_node: string; claimed_at: number }>;
   commit_before?: string | null;
   commit_after?: string | null;
   prompt: string;
@@ -583,8 +569,6 @@ export type ContextSpaceBindingSummary = {
   path: string;
   title: string;
   project_name?: string | null;
-  local_paths: string[];
-  matches_project_path: boolean;
   active_planspace_id?: string | null;
   plugs: ContextSpacePlugSummary[];
 };

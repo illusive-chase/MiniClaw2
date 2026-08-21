@@ -301,8 +301,6 @@ class PlanspaceApiTest(unittest.TestCase):
                                 "id": "project.project",
                                 "path": "bindings/projects/project.project.yaml",
                                 "title": "Project",
-                                "local_paths": [raw],
-                                "matches_project_path": True,
                                 "active_planspace_id": "planspaces.auth",
                                 "plugs": [
                                     {

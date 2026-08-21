@@ -103,6 +103,20 @@ class PlanspaceCreationTests(unittest.TestCase):
         plug_ids = [ref.id for ref in reloaded.plugs]
         self.assertEqual(plug_ids.count("planspaces.foo"), 1)
 
+    def test_binding_owner_id_prevents_duplicate_when_project_link_is_missing(self) -> None:
+        root = Path(os.environ["MINICLAW_CONTEXT_HOME"])
+        original = ensure_project_binding(self.project)
+        self.project.project_context_binding_id = None
+
+        resolved = ensure_project_binding(self.project)
+
+        self.assertEqual(resolved.id, original.id)
+        self.assertEqual(self.project.project_context_binding_id, original.id)
+        self.assertEqual(
+            len(list((root / "bindings" / "projects").glob("*.yaml"))),
+            1,
+        )
+
 
 class ReadPlanspaceModeTests(unittest.TestCase):
     def setUp(self) -> None:

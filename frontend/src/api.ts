@@ -507,20 +507,6 @@ export async function promoteVirtual(
   return res.json();
 }
 
-export async function claimVirtual(
-  sessionId: string,
-  nodeId: string,
-): Promise<{ ok: boolean; node_id: string; node: NodeInfo }> {
-  const res = await fetch(
-    `/sessions/${sessionId}/nodes/${encodeURIComponent(nodeId)}/claim`,
-    { method: "POST" },
-  );
-  if (!res.ok) {
-    throw new ApiError("claimVirtual", res.status, await readErrorDetail(res));
-  }
-  return res.json();
-}
-
 export async function dequeueNode(
   sessionId: string,
   nodeId: string,
@@ -722,38 +708,11 @@ export async function renameSession(id: string, name: string): Promise<SessionIn
   return res.json();
 }
 
-export type SharingTopology = "shared-filesystem" | "replicated" | "unknown";
-
-export async function enableSessionSharing(
-  id: string,
-  options: {
-    unverifiedIdentityAcknowledged?: boolean;
-    topology?: SharingTopology;
-  } = {},
-): Promise<SessionInfo> {
-  const res = await fetch(`/sessions/${id}/sharing`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      sharing: "shared",
-      unverified_identity_acknowledged:
-        options.unverifiedIdentityAcknowledged ?? false,
-      topology: options.topology ?? "unknown",
-    }),
-  });
-  if (!res.ok) {
-    const detail = await res.json().catch(() => null) as { detail?: string } | null;
-    throw new Error(detail?.detail || `enableSessionSharing failed: ${res.status}`);
-  }
-  return res.json();
-}
-
-export async function joinSessionHost(
+export async function bindProjectHere(
   id: string,
   rootPath: string,
   options: {
-    unverifiedIdentityAcknowledged?: boolean;
-    topology?: SharingTopology;
+    unverifiedAcknowledged?: boolean;
   } = {},
 ): Promise<SessionInfo> {
   const res = await fetch(`/sessions/${id}/hosts`, {
@@ -761,14 +720,27 @@ export async function joinSessionHost(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       root_path: rootPath,
-      unverified_identity_acknowledged:
-        options.unverifiedIdentityAcknowledged ?? false,
-      topology: options.topology ?? "unknown",
+      unverified_acknowledged: options.unverifiedAcknowledged ?? false,
     }),
   });
   if (!res.ok) {
     const detail = await res.json().catch(() => null) as { detail?: string } | null;
-    throw new Error(detail?.detail || `joinSessionHost failed: ${res.status}`);
+    throw new Error(detail?.detail || `bindProjectHere failed: ${res.status}`);
+  }
+  return res.json();
+}
+
+export async function unbindProjectHere(
+  id: string,
+  machineId: string,
+): Promise<SessionInfo> {
+  const res = await fetch(
+    `/sessions/${id}/hosts/${encodeURIComponent(machineId)}`,
+    { method: "DELETE" },
+  );
+  if (!res.ok) {
+    const detail = await res.json().catch(() => null) as { detail?: string } | null;
+    throw new Error(detail?.detail || `unbindProjectHere failed: ${res.status}`);
   }
   return res.json();
 }

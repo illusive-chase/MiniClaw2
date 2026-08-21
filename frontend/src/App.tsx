@@ -16,7 +16,6 @@ import {
   listNodeEvents,
   listNodes,
   promoteVirtual,
-  claimVirtual,
   refreshProjectContext,
   rerunNode,
   updateLayoutHints,
@@ -37,8 +36,8 @@ import {
   gitReview,
   gitPull,
   gitPush,
-  enableSessionSharing,
-  joinSessionHost,
+  bindProjectHere,
+  unbindProjectHere,
   artifactRawUrl,
   type PrincipleSummary,
   type SkillSummary,
@@ -82,7 +81,6 @@ import {
 } from "./templateInstantiate";
 import { ProjectsLanding } from "./components/ProjectsLanding";
 import { NotificationBell } from "./components/NotificationBell";
-import { UnverifiedSharingDialog } from "./components/UnverifiedSharingDialog";
 import { ThemeToggle } from "./components/ThemeToggle";
 import { UsageStrip } from "./components/UsageStrip";
 import { GitWorkspaceStatus } from "./components/GitWorkspaceStatus";
@@ -120,9 +118,6 @@ import {
 import { defaultModelPresetId } from "./modelPresets";
 
 type Route = "landing" | "project";
-type UnverifiedSharingIntent =
-  | { mode: "enable" }
-  | { mode: "join"; rootPath: string };
 type PendingGateState = {
   request: InteractionRequest;
   nodeId: string;
@@ -165,9 +160,6 @@ export function App() {
   const [landingSessions, setLandingSessions] = useState<SessionInfo[] | null>(null);
   const [landingTags, setLandingTags] = useState<Tag[]>([]);
   const [session, setSession] = useState<SessionInfo | null>(null);
-  const [joiningHost, setJoiningHost] = useState(false);
-  const [unverifiedSharingIntent, setUnverifiedSharingIntent] =
-    useState<UnverifiedSharingIntent | null>(null);
   const [nodes, setNodes] = useState<NodeInfo[]>([]);
   const [modelPresets, setModelPresets] = useState<ModelPreset[]>([]);
   const [globalState, setGlobalState] = useState<GlobalState | null>(null);
@@ -698,10 +690,8 @@ export function App() {
     [nodes, inspectedNodeId],
   );
   const isNodeNative = useCallback(
-    (node: NodeInfo) =>
-      session?.sharing !== "shared" ||
-      node.owner_host_id === session.local_machine_id,
-    [session?.local_machine_id, session?.sharing],
+    (node: NodeInfo) => node.owner_host_id === session?.local_machine_id,
+    [session?.local_machine_id],
   );
   const sessionWithRuntimeCounts = useMemo(
     () =>
@@ -1266,31 +1256,6 @@ export function App() {
       setSessionContextSpaceError(null);
       try {
         const result = await promoteVirtual(session.id, nodeId);
-        setNodes((prev) => {
-          const updated = upsertNode(prev, result.node);
-          nodeCountRef.current = updated.length;
-          nodesRef.current = updated;
-          return updated;
-        });
-        selectAndOpenNode(result.node.id);
-        await refreshNodes();
-      } catch (err) {
-        await refreshNodes().catch(() => {});
-        setSessionContextSpaceError(String(err));
-      } finally {
-        setProjectMutationPending(false);
-      }
-    },
-    [session?.id, projectMutationPending, refreshNodes, selectAndOpenNode],
-  );
-
-  const claimForeignVirtualNode = useCallback(
-    async (nodeId: string) => {
-      if (!session?.id || projectMutationPending) return;
-      setProjectMutationPending(true);
-      setSessionContextSpaceError(null);
-      try {
-        const result = await claimVirtual(session.id, nodeId);
         setNodes((prev) => {
           const updated = upsertNode(prev, result.node);
           nodeCountRef.current = updated.length;
@@ -2421,7 +2386,6 @@ export function App() {
   useEffect(() => {
     setAgentNodeContext({
       onPromoteVirtual: promoteVirtualNode,
-      onClaimVirtual: claimForeignVirtualNode,
       onDequeueNode: dequeueQueuedNode,
       onCreateContinuationVirtual: createContinuationVirtual,
       onCreateDependencyVirtual: createDependencyVirtual,
@@ -2437,8 +2401,6 @@ export function App() {
         return !!node && isNodeNative(node);
       },
       canPromoteVirtual: !projectMutationPending && !readOnly,
-      canClaimVirtual:
-        !projectMutationPending && !readOnly && !!session?.is_native,
       canDequeue: !projectMutationPending && !readOnly,
       manualPromotionPlanspaceId,
       isManualPlanspace,
@@ -2458,7 +2420,6 @@ export function App() {
     validPendingGates,
     onResolveGate,
     promoteVirtualNode,
-    claimForeignVirtualNode,
     dequeueQueuedNode,
     createContinuationVirtual,
     createDependencyVirtual,
@@ -2560,13 +2521,6 @@ export function App() {
   const projectTitle =
     session?.name?.trim() ||
     (session ? `Project ${session.id.slice(0, 8)}` : "Project");
-  const declaredAttestationPaths = Array.from(
-    new Set(
-      (session?.hosts ?? [])
-        .map((host) => host.attestation?.root_path_declared)
-        .filter((path): path is string => !!path),
-    ),
-  );
   const pendingControlsNodeId =
     panelState.open &&
     panelState.mode === "details" &&
@@ -2699,54 +2653,43 @@ export function App() {
               {gitError && <span className="max-w-[18rem] truncate text-state-error" title={gitError}>{gitError}</span>}
               {session?.read_only && (
                 <span className="rounded border border-state-waiting/40 bg-state-waiting-soft px-1.5 py-0.5 font-sans text-state-waiting">
-                  {session.sharing === "shared"
-                    ? "只读 · 此设备尚未启用"
-                    : `read-only · native to ${session.native_machine_label} · as of ${session.last_sync_at ? new Date(session.last_sync_at * 1000).toLocaleString() : "never synced"}`}
+                  只读 · 此设备尚未配置项目路径
                 </span>
               )}
-              {session?.identity === "environment-attested" && (
-                <span
-                  className="rounded border border-state-waiting/40 bg-state-waiting-soft px-1.5 py-0.5 font-sans text-state-waiting"
-                  title="各设备的项目身份由人工声明建立；系统无法验证目录等价性或发现文件分歧"
-                >
-                  身份未校验
-                </span>
-              )}
-              {session?.identity === "environment-attested" && declaredAttestationPaths.length > 1 && (
-                <span
-                  className="rounded border border-state-error/40 bg-state-error-soft px-1.5 py-0.5 font-sans text-state-error"
-                  title={declaredAttestationPaths.join("\n")}
-                >
-                  声明路径不一致
-                </span>
-              )}
-              {session?.can_join_here && (
+              {session?.can_bind_here && (
                 <button
                   type="button"
-                  disabled={joiningHost}
+                  disabled={projectMutationPending}
                   onClick={() => {
                     const rootPath = window.prompt(
-                      session.identity === "environment-attested"
-                        ? "请输入此设备上的项目目录绝对路径"
-                        : "请输入此设备上的 Git 仓库绝对路径",
+                      "请输入此设备上的项目目录绝对路径",
                     );
                     if (!rootPath?.trim()) return;
-                    if (session.identity === "environment-attested") {
-                      setUnverifiedSharingIntent({ mode: "join", rootPath: rootPath.trim() });
-                      return;
-                    }
-                    setJoiningHost(true);
-                    void joinSessionHost(session.id, rootPath.trim())
+                    setProjectMutationPending(true);
+                    void bindProjectHere(session.id, rootPath.trim())
                       .then(setSession)
-                      .catch((error: unknown) => window.alert(error instanceof Error ? error.message : String(error)))
-                      .finally(() => setJoiningHost(false));
+                      .catch(async (error: unknown) => {
+                        const message = error instanceof Error ? error.message : String(error);
+                        if (!message.includes("无法校验") || !window.confirm(message)) {
+                          if (!message.includes("无法校验")) window.alert(message);
+                          return;
+                        }
+                        try {
+                          setSession(await bindProjectHere(session.id, rootPath.trim(), {
+                            unverifiedAcknowledged: true,
+                          }));
+                        } catch (retryError) {
+                          window.alert(retryError instanceof Error ? retryError.message : String(retryError));
+                        }
+                      })
+                      .finally(() => setProjectMutationPending(false));
                   }}
                   className="rounded border border-brand/50 bg-brand-soft px-1.5 py-0.5 font-sans text-brand-ink transition hover:border-brand disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  {joiningHost ? "正在启用..." : "在本设备启用"}
+                  {projectMutationPending ? "正在配置..." : "配置路径"}
                 </button>
               )}
-              {session?.sharing === "shared" && session.is_native && session.hosts.length > 0 && (
+              {session?.bound_here && session.hosts.length > 0 && (
                 <span
                   className="max-w-[16rem] truncate font-sans text-ink-muted"
                   title={session.hosts.map((host) => host.label || host.mid).join("、")}
@@ -2754,25 +2697,21 @@ export function App() {
                   设备 {session.hosts.map((host) => host.label || host.mid).join("、")}
                 </span>
               )}
-              {session?.can_enable_sharing && (
+              {session?.bound_here && !session.temporary && (
                 <button
                   type="button"
                   disabled={projectMutationPending}
                   onClick={() => {
-                    if (session.sharing_readiness === "ready-unverified") {
-                      setUnverifiedSharingIntent({ mode: "enable" });
-                      return;
-                    }
-                    if (!window.confirm("开启后项目可由多台设备共同写入，且目前不支持关闭共享。继续吗？")) return;
+                    if (!window.confirm("解除此设备的项目路径绑定？项目记录与历史仍会保留，可稍后重新绑定。")) return;
                     setProjectMutationPending(true);
-                    void enableSessionSharing(session.id)
+                    void unbindProjectHere(session.id, session.local_machine_id)
                       .then(setSession)
                       .catch((error: unknown) => window.alert(error instanceof Error ? error.message : String(error)))
                       .finally(() => setProjectMutationPending(false));
                   }}
                   className="rounded border border-line bg-surface px-1.5 py-0.5 font-sans text-ink-muted transition hover:border-line-strong hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  开启共享
+                  解除绑定
                 </button>
               )}
             </div>
@@ -3060,7 +2999,6 @@ export function App() {
                 onImportSkill={handleImportSkill}
                 onCreateContinuationVirtual={createContinuationVirtual}
                 onPromoteVirtual={promoteVirtualNode}
-                onClaimVirtual={claimForeignVirtualNode}
                 onDequeueNode={dequeueQueuedNode}
                 onUpdateVirtual={updateVirtualNode}
                 onInterruptNode={interruptNode}
@@ -3147,40 +3085,6 @@ export function App() {
         toggleTemplateInstanceCollapsed(result.instanceId, true);
         // Manual-lane stamps do not emit node_updated events.
         void refreshNodes();
-      }}
-    />
-    <UnverifiedSharingDialog
-      open={unverifiedSharingIntent !== null}
-      mode={unverifiedSharingIntent?.mode ?? "enable"}
-      pending={projectMutationPending || joiningHost}
-      onCancel={() => setUnverifiedSharingIntent(null)}
-      onConfirm={(topology) => {
-        if (!session || !unverifiedSharingIntent) return;
-        if (unverifiedSharingIntent.mode === "enable") {
-          setProjectMutationPending(true);
-          void enableSessionSharing(session.id, {
-            unverifiedIdentityAcknowledged: true,
-            topology,
-          })
-            .then((next) => {
-              setSession(next);
-              setUnverifiedSharingIntent(null);
-            })
-            .catch((error: unknown) => window.alert(error instanceof Error ? error.message : String(error)))
-            .finally(() => setProjectMutationPending(false));
-          return;
-        }
-        setJoiningHost(true);
-        void joinSessionHost(session.id, unverifiedSharingIntent.rootPath, {
-          unverifiedIdentityAcknowledged: true,
-          topology,
-        })
-          .then((next) => {
-            setSession(next);
-            setUnverifiedSharingIntent(null);
-          })
-          .catch((error: unknown) => window.alert(error instanceof Error ? error.message : String(error)))
-          .finally(() => setJoiningHost(false));
       }}
     />
     </TextZoomProvider>

@@ -92,7 +92,6 @@ export type SidePanelProps = {
   onImportSkill?: (source: string) => Promise<void> | void;
   onCreateContinuationVirtual: (nodeId: string) => void;
   onPromoteVirtual: (nodeId: string) => Promise<void>;
-  onClaimVirtual: (nodeId: string) => Promise<void>;
   onDequeueNode: (nodeId: string) => Promise<void>;
   onUpdateVirtual: (
     nodeId: string,
@@ -208,7 +207,6 @@ function Inner(props: SidePanelProps & { nodesById: Map<string, NodeInfo> }) {
     onImportSkill,
     onCreateContinuationVirtual,
     onPromoteVirtual,
-    onClaimVirtual,
     onDequeueNode,
     onUpdateVirtual,
     onInterruptNode,
@@ -360,8 +358,7 @@ function Inner(props: SidePanelProps & { nodesById: Map<string, NodeInfo> }) {
     if (!session) return <Missing />;
     const canMutateNode =
       !session.read_only &&
-      (session.sharing !== "shared" ||
-        node.owner_host_id === session.local_machine_id);
+      node.owner_host_id === session.local_machine_id;
     return (
       <AgentPanel
         sessionId={session.id}
@@ -382,7 +379,6 @@ function Inner(props: SidePanelProps & { nodesById: Map<string, NodeInfo> }) {
         onResolveReview={onResolveReview}
         onCreateContinuationVirtual={onCreateContinuationVirtual}
         onPromoteVirtual={onPromoteVirtual}
-        onClaimVirtual={onClaimVirtual}
         onDequeueNode={onDequeueNode}
         onUpdateVirtual={onUpdateVirtual}
         onInterruptNode={onInterruptNode}
@@ -390,12 +386,6 @@ function Inner(props: SidePanelProps & { nodesById: Map<string, NodeInfo> }) {
         canInterrupt={canInterrupt && canMutateNode}
         canRerun={canRerun && canMutateNode}
         canMutate={canMutateNode}
-        canClaim={
-          !session.read_only &&
-          session.is_native &&
-          session.sharing === "shared" &&
-          !canMutateNode
-        }
         manualPromotionPlanspaceId={manualPromotionPlanspaceId}
         activePlanspaceId={contextSpace?.active_planspace_id ?? null}
         knownPlanspaceIds={

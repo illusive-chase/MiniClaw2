@@ -16,6 +16,7 @@ export const RECENT_PROJECT_COUNT = 3;
 export const RECENT_HIDDEN_AT_OR_BELOW = 4;
 
 export const UNTAGGED_GROUP_ID = "__untagged__";
+export type BindingFilter = "all" | "bound" | "unbound";
 
 export type ProjectGroup = {
   /** Tag id, or `UNTAGGED_GROUP_ID` for the trailing bucket. */
@@ -72,6 +73,16 @@ export function filterByTags(
     for (const id of selected) if (!owned.has(id)) return false;
     return true;
   });
+}
+
+export function filterByBinding(
+  sessions: SessionInfo[],
+  mode: BindingFilter,
+): SessionInfo[] {
+  if (mode === "all") return sessions;
+  return sessions.filter((session) =>
+    mode === "bound" ? session.bound_here : !session.bound_here,
+  );
 }
 
 /** How many projects carry each tag, ignoring the active filter. */

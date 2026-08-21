@@ -69,14 +69,14 @@ def _write_user_template(
 
 class StoreIdentityMigrationTests(unittest.TestCase):
     def test_schema_gate_advances_so_older_builds_stay_read_only(self) -> None:
-        self.assertEqual(SCHEMA_VERSION, 13)
+        self.assertEqual(SCHEMA_VERSION, 14)
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
             (root / "schema.json").write_text(
-                json.dumps({"schema": "node-revision-v9", "schema_version": 13}),
+                json.dumps({"schema": "node-revision-v9", "schema_version": 14}),
                 encoding="utf-8",
             )
-            with patch.object(sync_module, "SCHEMA_VERSION", 12):
+            with patch.object(sync_module, "SCHEMA_VERSION", 13):
                 self.assertTrue(schema_is_newer(root))
 
     def test_legacy_projects_are_stamped_and_backed_up(self) -> None:
@@ -106,7 +106,7 @@ class StoreIdentityMigrationTests(unittest.TestCase):
             self.assertIn("migration-backups/", ignore)
             self.assertIn("*.tmp", ignore)
 
-    def test_v12_prepartitions_only_owned_durable_projects_idempotently(self) -> None:
+    def test_v12_prepartitions_owned_projects_idempotently(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             root.mkdir(parents=True, exist_ok=True)
@@ -176,7 +176,7 @@ class StoreIdentityMigrationTests(unittest.TestCase):
             owned_dir = root / "projects" / owned.id
             host_dir = owned_dir / "hosts" / machine_id
             payload = json.loads((owned_dir / "project.json").read_text(encoding="utf-8"))
-            self.assertEqual(payload["sharing"], "device-native")
+            self.assertNotIn("sharing", payload)
             self.assertNotIn("root_path", payload)
             self.assertNotIn("layout_hints", payload)
             self.assertFalse((owned_dir / "nodes").exists())
@@ -189,9 +189,18 @@ class StoreIdentityMigrationTests(unittest.TestCase):
                 json.loads((host_dir / "host.json").read_text(encoding="utf-8"))["repo"]["root_commit"]
             )
             self.assertTrue((root / "projects" / foreign.id / "nodes").is_dir())
-            self.assertTrue((root / "projects" / temporary.id / "nodes").is_dir())
+            self.assertTrue(
+                (
+                    root
+                    / "projects"
+                    / temporary.id
+                    / "hosts"
+                    / machine_id
+                    / "nodes"
+                ).is_dir()
+            )
             backups = sorted((root / "migration-backups").glob("native-prepartition-v12-*"))
-            self.assertEqual(len(backups), 1)
+            self.assertEqual(len(backups), 2)
 
             Store(root)
             self.assertEqual(
@@ -199,7 +208,6 @@ class StoreIdentityMigrationTests(unittest.TestCase):
                 backups,
             )
             loaded = next(project for project in store.list_projects() if project.id == owned.id)
-            self.assertEqual(loaded.sharing, "device-native")
             self.assertEqual(loaded.root_path, str(repo))
 
     def test_v12_recovery_moves_aliases_after_nodes_were_already_moved(self) -> None:
@@ -292,7 +300,84 @@ class StoreIdentityMigrationTests(unittest.TestCase):
 
             self.assertFalse(store.list_hosts(project.id)[0]["is_repo"])
             loaded = store.list_projects()[0]
-            self.assertEqual(store.sharing_readiness(loaded), "ready-unverified")
+            self.assertTrue(store.is_bound_here(loaded.id))
+
+    def test_v14_removes_policy_and_promotion_fields_without_losing_nodes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = Store(root)
+            workspace = root / "workspace"
+            workspace.mkdir()
+            project = store.create_project(Project(root_path=str(workspace)))
+            node = store.create_node(
+                Node(project_id=project.id, model_preset_id=project.model_preset_id)
+            )
+            project_file = root / "projects" / project.id / "project.json"
+            project_payload = json.loads(project_file.read_text(encoding="utf-8"))
+            project_payload.update(
+                {"sharing": "shared", "identity": "environment-attested"}
+            )
+            project_file.write_text(json.dumps(project_payload), encoding="utf-8")
+            node_file = store.node_dir(project.id, node.id) / "node.json"
+            node_payload = json.loads(node_file.read_text(encoding="utf-8"))
+            node_payload["promoted_from"] = None
+            node_file.write_text(json.dumps(node_payload), encoding="utf-8")
+            host_file = (
+                root / "projects" / project.id / "hosts" / store.machine.id / "host.json"
+            )
+            host_payload = json.loads(host_file.read_text(encoding="utf-8"))
+            host_payload.update(
+                {"identity": "environment-attested", "attestation": {"legacy": True}}
+            )
+            host_file.write_text(json.dumps(host_payload), encoding="utf-8")
+            claim_file = host_file.parent / "claims" / "old-virtual.json"
+            claim_file.parent.mkdir()
+            claim_file.write_text(
+                json.dumps(
+                    {"claimed_by": store.machine.id, "as_node": node.id, "claimed_at": 1}
+                ),
+                encoding="utf-8",
+            )
+            binding_file = (
+                root
+                / "contextspace"
+                / "bindings"
+                / "projects"
+                / "project.legacy.yaml"
+            )
+            binding_file.parent.mkdir(parents=True, exist_ok=True)
+            binding_file.write_text(
+                yaml.safe_dump(
+                    {
+                        "version": 1,
+                        "id": "project.legacy",
+                        "project": {
+                            "miniclaw_project_id": project.id,
+                            "local_paths": [str(workspace)],
+                        },
+                        "plugs": [],
+                    },
+                    sort_keys=False,
+                ),
+                encoding="utf-8",
+            )
+            (root / "schema.json").write_text(
+                json.dumps({"schema": "node-revision-v9", "schema_version": 13}),
+                encoding="utf-8",
+            )
+
+            migrated = Store(root)
+
+            self.assertIsNotNone(migrated.load_node(project.id, node.id))
+            self.assertNotIn("promoted_from", json.loads(node_file.read_text()))
+            self.assertNotIn("sharing", json.loads(project_file.read_text()))
+            self.assertNotIn("identity", json.loads(project_file.read_text()))
+            migrated_host = json.loads(host_file.read_text())
+            self.assertNotIn("identity", migrated_host)
+            self.assertNotIn("attestation", migrated_host)
+            self.assertFalse(claim_file.parent.exists())
+            migrated_binding = yaml.safe_load(binding_file.read_text(encoding="utf-8"))
+            self.assertNotIn("local_paths", migrated_binding["project"])
 
 
 class UserTemplateSchemaMigrationTests(unittest.TestCase):
@@ -455,6 +540,14 @@ class NonNativeProjectApiTests(unittest.TestCase):
                 prompt="stale remote state",
             )
         )
+        (
+            self.store.root
+            / "projects"
+            / self.project.id
+            / "hosts"
+            / self.store.machine.id
+            / "local.json"
+        ).unlink()
         self.registry = ProjectRegistry(self.store)
         self.client = TestClient(create_app(self.registry))
 
@@ -466,7 +559,8 @@ class NonNativeProjectApiTests(unittest.TestCase):
         response = self.client.get(f"/sessions/{self.project.id}")
         self.assertEqual(response.status_code, 200, response.text)
         self.assertTrue(response.json()["read_only"])
-        self.assertEqual(response.json()["native_machine_label"], "alice-mbp")
+        self.assertFalse(response.json()["bound_here"])
+        self.assertEqual(response.json()["created_on_machine_label"], "alice-mbp")
 
         nodes = self.client.get(f"/sessions/{self.project.id}/nodes")
         self.assertEqual(nodes.status_code, 200, nodes.text)
@@ -488,7 +582,7 @@ class NonNativeProjectApiTests(unittest.TestCase):
         ]
         for mutation in mutations:
             self.assertEqual(mutation.status_code, 403, mutation.text)
-            self.assertIn("alice-mbp", mutation.json()["detail"])
+            self.assertIn("configure its path", mutation.json()["detail"])
 
 
 class GitMetadataSyncTests(unittest.TestCase):

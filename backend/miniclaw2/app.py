@@ -184,15 +184,11 @@ class SessionInfo(BaseModel):
     name: str = ""
     machine_id: str = ""
     local_machine_id: str = ""
-    native_machine_label: str = ""
-    is_native: bool = True
+    created_on_machine_label: str = ""
+    bound_here: bool = True
     read_only: bool = False
     can_delete: bool = True
-    sharing: str = "device-native"
-    identity: Literal["git-root-commit", "environment-attested"] = "git-root-commit"
-    sharing_readiness: Literal["ready", "ready-unverified"] = "ready"
-    can_enable_sharing: bool = False
-    can_join_here: bool = False
+    can_bind_here: bool = False
     hosts: list[dict[str, Any]] = Field(default_factory=list)
     last_sync_at: float | None = None
     project_context_binding_id: str | None = None
@@ -233,20 +229,11 @@ class UpdateLayoutHintsRequest(BaseModel):
     layout_viewport: dict[str, float] | None = None
 
 
-class EnableSharingRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    sharing: Literal["shared"]
-    unverified_identity_acknowledged: bool = False
-    topology: Literal["shared-filesystem", "replicated", "unknown"] = "unknown"
-
-
-class JoinHostRequest(BaseModel):
+class BindProjectRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     root_path: str
-    unverified_identity_acknowledged: bool = False
-    topology: Literal["shared-filesystem", "replicated", "unknown"] = "unknown"
+    unverified_acknowledged: bool = False
 
 
 class UpdatePlanspaceViewRequest(BaseModel):
@@ -1050,43 +1037,37 @@ def create_app(
             raise HTTPException(404, "session not found")
         return _session_info(registry, project)
 
-    @app.post("/sessions/{sid}/sharing", response_model=SessionInfo)
-    def enable_session_sharing(
-        sid: str, req: EnableSharingRequest
-    ) -> SessionInfo:
+    @app.post("/sessions/{sid}/hosts", response_model=SessionInfo)
+    def bind_session_host(sid: str, req: BindProjectRequest) -> SessionInfo:
         project = registry.get_project(sid)
         if project is None:
             raise HTTPException(404, "session not found")
+        # This is the sole mutation allowed before this host has a local path.
         try:
-            project = registry.enable_sharing(
+            project = registry.bind_project_here(
                 sid,
-                unverified_identity_acknowledged=req.unverified_identity_acknowledged,
-                topology=req.topology,
+                req.root_path,
+                unverified_acknowledged=req.unverified_acknowledged,
             )
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
-        except RuntimeError as exc:
-            raise HTTPException(409, str(exc)) from exc
         if project is None:
             raise HTTPException(404, "session not found")
         return _session_info(registry, project)
 
-    @app.post("/sessions/{sid}/hosts", response_model=SessionInfo)
-    def join_session_host(sid: str, req: JoinHostRequest) -> SessionInfo:
+    @app.delete("/sessions/{sid}/hosts/{mid}", response_model=SessionInfo)
+    def unbind_session_host(sid: str, mid: str) -> SessionInfo:
         project = registry.get_project(sid)
         if project is None:
             raise HTTPException(404, "session not found")
-        # This is the sole mutation allowed before the local host owns a binding.
-        # Registry constrains every write to hosts/<local-machine-id>/.
+        if mid != registry.store.machine.id:
+            raise HTTPException(400, "only this device's binding can be removed")
         try:
-            project = registry.join_shared_project(
-                sid,
-                req.root_path,
-                unverified_identity_acknowledged=req.unverified_identity_acknowledged,
-                topology=req.topology,
-            )
+            project = registry.unbind_project_here(sid)
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(409, str(exc)) from exc
         if project is None:
             raise HTTPException(404, "session not found")
         return _session_info(registry, project)
@@ -1559,22 +1540,6 @@ def create_app(
             "already_promoted": result.code == "already_promoted",
         }
 
-    @app.post(
-        "/sessions/{sid}/nodes/{nid}/claim", response_model=dict[str, Any]
-    )
-    async def claim_foreign_virtual(sid: str, nid: str) -> dict[str, Any]:
-        if registry.get_project(sid) is None:
-            raise HTTPException(404, "session not found")
-        # Unlike ordinary node mutations, claiming intentionally targets a
-        # foreign node while constraining every write to the local host tree.
-        try:
-            node = registry.claim_foreign_virtual(sid, nid)
-        except KeyError as exc:
-            raise HTTPException(404, "virtual not found") from exc
-        except ValueError as exc:
-            raise HTTPException(400, str(exc)) from exc
-        return {"ok": True, "node_id": node.id, "node": node.model_dump()}
-
     @app.patch(
         "/sessions/{sid}/virtuals/{vid}", response_model=dict[str, Any]
     )
@@ -1615,14 +1580,7 @@ def create_app(
         nodes = registry.list_nodes(sid)
         if nodes is None:
             raise HTTPException(404, "session not found")
-        claims = registry.store.list_claims(sid)
-        return [
-            {
-                **node.model_dump(),
-                **({"claims": claims.get(node.id, [])} if node.state.value == "virtual" else {}),
-            }
-            for node in nodes
-        ]
+        return [node.model_dump() for node in nodes]
 
     @app.get("/sessions/{sid}/nodes/{nid}", response_model=dict[str, Any])
     def get_node(sid: str, nid: str) -> dict[str, Any]:
@@ -1631,10 +1589,7 @@ def create_app(
         node = registry.get_node(sid, nid)
         if node is None:
             raise HTTPException(404, "node not found")
-        payload = node.model_dump()
-        if node.state.value == "virtual":
-            payload["claims"] = registry.store.list_claims(sid).get(node.id, [])
-        return payload
+        return node.model_dump()
 
     @app.get("/sessions/{sid}/nodes/{nid}/events", response_model=list[EventRecord])
     def get_node_events(sid: str, nid: str, since_seq: int = 0) -> list[EventRecord]:
@@ -2208,9 +2163,8 @@ def _global_state_payload(store_root: Path) -> dict[str, Any]:
 
 
 def _session_info(registry: ProjectRegistry, project: Any) -> SessionInfo:
-    is_native = registry.is_native_project(project)
+    bound_here = registry.is_native_project(project)
     node_summary = registry.node_summary(project)
-    sharing_readiness = registry.store.sharing_readiness(project)
     return SessionInfo(
         id=project.id,
         created_at=project.created_at,
@@ -2228,26 +2182,18 @@ def _session_info(registry: ProjectRegistry, project: Any) -> SessionInfo:
         name=project.name,
         machine_id=project.machine_id,
         local_machine_id=registry.store.machine.id,
-        native_machine_label=project.machine_label or project.machine_id,
-        is_native=is_native,
-        read_only=not is_native or registry.store.read_only_reason is not None,
+        created_on_machine_label=project.machine_label or project.machine_id,
+        bound_here=bound_here,
+        read_only=not bound_here or registry.store.read_only_reason is not None,
         can_delete=(
             registry.store.read_only_reason is None
-            and is_native
-            and (
-                project.sharing != "shared"
-                or project.machine_id == registry.store.machine.id
-            )
+            and bound_here
         ),
-        sharing=project.sharing,
-        identity=project.identity,
-        sharing_readiness=sharing_readiness,
-        can_enable_sharing=(
-            registry.store.read_only_reason is None
-            and project.sharing == "device-native"
+        can_bind_here=(
+            not bound_here
             and not project.temporary
+            and registry.store.read_only_reason is None
         ),
-        can_join_here=project.sharing == "shared" and not is_native,
         hosts=registry.store.list_hosts(project.id),
         last_sync_at=registry.store.sync.identity.last_sync_at,
         project_context_binding_id=project.project_context_binding_id,

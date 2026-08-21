@@ -168,8 +168,6 @@ class Project(BaseModel):
     root_path: str
     machine_id: str = ""
     machine_label: str = ""
-    sharing: str = "device-native"
-    identity: Literal["git-root-commit", "environment-attested"] = "git-root-commit"
     name: str = ""
     model_preset_id: str = Field(default_factory=default_model_preset_id)
     concurrency: StrictInt = Field(default=1, ge=1)
@@ -192,8 +190,6 @@ class Project(BaseModel):
         if not preset_id:
             raise ValueError("model_preset_id is required")
         object.__setattr__(self, "model_preset_id", preset_id)
-        if self.sharing not in {"device-native", "shared"}:
-            raise ValueError(f"unknown project sharing mode: {self.sharing!r}")
         return self
 
     def bind_model_catalog(self, store_root: Path) -> "Project":
@@ -240,7 +236,6 @@ class Node(BaseModel):
     provider_session_id: str | None = None
     provider_turn_id: str | None = None
     origin_machine_id: str = ""
-    promoted_from: str | None = None
     template_instance_id: str | None = None
     commit_before: str | None = None
     commit_after: str | None = None
@@ -373,8 +368,6 @@ class Node(BaseModel):
             if self.verify_script_ref is not None:
                 raise ValueError("agent nodes must not carry verify_script_ref")
         if self.state is NodeState.VIRTUAL:
-            if self.promoted_from is not None:
-                raise ValueError("virtual nodes must not carry promoted_from")
             if self.started_at is not None or self.finished_at is not None:
                 raise ValueError("virtual nodes must not carry started_at/finished_at")
         return self

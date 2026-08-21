@@ -317,9 +317,6 @@ def ensure_project_binding(
             "root_fingerprint": {
                 "root_name": Path(project.root_path).name,
             },
-            "local_paths": (
-                [] if project.sharing == "shared" else [project.root_path]
-            ),
         },
         "plugs": [],
     }
@@ -341,27 +338,6 @@ def list_project_bindings(root: Path) -> list[ProjectBinding]:
         if binding is not None:
             out.append(binding)
     return out
-
-
-def clear_owned_binding_local_paths(
-    project: Project,
-    *,
-    store_root: Path | None = None,
-) -> bool:
-    """Remove checkout-local paths from bindings owned by a shared project."""
-    root = contextspace_root(store_root)
-    changed = False
-    for binding in list_project_bindings(root):
-        if _binding_project_owner_id(binding) != project.id:
-            continue
-        project_raw = binding.raw.get("project")
-        if not isinstance(project_raw, dict) or not project_raw.get("local_paths"):
-            continue
-        raw = dict(binding.raw)
-        raw["project"] = {**project_raw, "local_paths": []}
-        _write_yaml(binding.path, raw)
-        changed = True
-    return changed
 
 
 def delete_project_contextspace(
@@ -830,9 +806,14 @@ def resolve_project_binding(project: Project, root: Path) -> ProjectBinding | No
     explicit = project.project_context_binding_id
     if explicit:
         return _load_binding_by_id(root, explicit)
-    if project.sharing == "shared":
-        return None
-    return _find_binding_for_project_path(root, project.root_path)
+    return next(
+        (
+            binding
+            for binding in list_project_bindings(root)
+            if _binding_project_owner_id(binding) == project.id
+        ),
+        None,
+    )
 
 
 def planspace_display_title(root: Path, planspace_id: str) -> str | None:
@@ -1092,13 +1073,6 @@ def _load_binding_by_id(root: Path, binding_id: str) -> ProjectBinding | None:
     return None
 
 
-def _find_binding_for_project_path(root: Path, root_path: str) -> ProjectBinding | None:
-    for binding in list_project_bindings(root):
-        if _binding_matches_project_path(binding, root_path):
-            return binding
-    return None
-
-
 def _load_binding_file(path: Path) -> ProjectBinding | None:
     raw = _read_yaml(path)
     if not isinstance(raw, dict):
@@ -1128,15 +1102,7 @@ def _bindings_for_project_contextspace_delete(
             continue
         if binding.id in explicit_ids and owner_id is None:
             out.append(binding)
-    if out:
-        return out
-    return [
-        binding
-        for binding in bindings
-        if project.sharing != "shared"
-        and _binding_project_owner_id(binding) is None
-        and _binding_matches_project_path(binding, project.root_path)
-    ]
+    return out
 
 
 def _project_context_binding_ids(project: Project) -> set[str]:
@@ -1152,27 +1118,6 @@ def _binding_project_owner_id(binding: ProjectBinding) -> str | None:
     if not isinstance(project_raw, dict):
         return None
     return _string_value(project_raw.get("miniclaw_project_id"))
-
-
-def _binding_matches_project_path(binding: ProjectBinding, root_path: str) -> bool:
-    try:
-        project_root = Path(root_path).resolve()
-    except OSError:
-        project_root = Path(root_path)
-    project = binding.raw.get("project") or {}
-    if not isinstance(project, dict):
-        return False
-    local_paths = project.get("local_paths") or []
-    for candidate in local_paths:
-        if not isinstance(candidate, str):
-            continue
-        try:
-            if Path(candidate).expanduser().resolve() == project_root:
-                return True
-        except OSError:
-            if Path(candidate).expanduser() == project_root:
-                return True
-    return False
 
 
 def _plug_ref(item: Any) -> PlugRef | None:
@@ -1270,10 +1215,6 @@ def _binding_summary(
     project_raw = binding.raw.get("project")
     if not isinstance(project_raw, dict):
         project_raw = {}
-    local_paths = [
-        value for value in (project_raw.get("local_paths") or [])
-        if isinstance(value, str)
-    ]
     is_resolved = binding.id == resolved_binding_id
     active_for_binding = active_planspace_id if is_resolved else None
     plug_refs = _expand_required_plugs(root, binding.plugs)
@@ -1286,11 +1227,6 @@ def _binding_summary(
             or binding.id
         ),
         "project_name": _string_value(project_raw.get("name")),
-        "local_paths": local_paths,
-        "matches_project_path": (
-            project.sharing != "shared"
-            and _binding_matches_project_path(binding, project.root_path)
-        ),
         "active_planspace_id": active_for_binding,
         "plugs": [
             _plug_summary(

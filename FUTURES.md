@@ -25,36 +25,7 @@ Three kinds of entry, kept separate because they age differently:
 
 ## 1. Where the code contradicts the philosophy
 
-### 1.1 Distribution: the code still has a sharing flag
-
-`PHILOSOPHY.md` §12 states the destination reached after the sharing
-design was reconsidered: sharing is a property of the substrate rather
-than a per-project decision, write authority comes from a host-local
-binding, and no project-level value may require cross-host agreement.
-
-**The backend still implements the older model it replaced.** The
-divergence is not cosmetic; it is the exact consensus-variable design
-§12.1 rejects:
-
-| §12 requires | Code does |
-|---|---|
-| No per-project sharing flag | `Project.sharing ∈ {device-native, shared}`, read in ~20 places and synced inside `project.json` |
-| No "enable sharing" transition | An explicit, one-way, enable-only flag flip, exposed as its own endpoint; the UI says sharing cannot be turned off |
-| Authority = local binding alone | Only for already-shared projects. A `device-native` project decides authority by comparing the *synced* creator machine id against the local one |
-| Unbinding = delete the local path | No unbind path exists; the product warns that host bindings cannot be released |
-| Provenance ≠ authority | Fused. The read-only message says the project "is native to *other device*" rather than "this device has no path configured for it" |
-| No readiness reporting another host's state | Sharing readiness is derived from the *owner's* partition, i.e. from a value another host must have written |
-
-What already matches §12: the binding files exist and are gitignored,
-identity is verified per binding from the root commit, cross-host
-request/approval records are gone, and peer state carries a capture
-time.
-
-The load-bearing consequence for whoever changes this: `Project.sharing`
-and the per-project identity policy are **synced fields**. Removing them
-is a store-schema change, not a refactor, and the read path must keep
-deserializing stores that still contain them.
-
+No known divergences are currently recorded.
 
 ## 2. Latent hazards
 
@@ -293,10 +264,6 @@ should sit.
 
 Kept because the reason, not the absence, is the content:
 
-- **Cross-host binding lifecycle** — removing or replacing a host
-  binding, archiving or transferring the work recorded under it, and
-  ownership transfer for device-native projects. §1.1 is the precondition:
-  unbinding is only simple once authority is local.
 - **Store compaction and retention** — transcripts grow the metadata repo
   monotonically. Deferred until repo size actually hurts, at which point
   archiving, compaction, or large-file storage are the options.

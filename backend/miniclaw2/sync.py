@@ -22,7 +22,7 @@ from .tags import TAGS_FILENAME
 
 MACHINE_FILENAME = "machine.json"
 SCHEMA_FILENAME = "schema.json"
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 14
 SCHEMA_NAME = "node-revision-v9"
 DEFAULT_COMMIT_DEBOUNCE_SECONDS = 30.0
 REMOTE_CHECK_TIMEOUT_SECONDS = 30.0
@@ -196,6 +196,10 @@ def ensure_store_metadata(root: Path, identity: MachineIdentity) -> None:
     # therefore receive schema v13 before its upgraded process can inspect its
     # own checkout, so this repair must remain active after the global bump.
     _backfill_host_repo_observation_v13(root, identity)
+    # Project policy fields were synchronized while bindings are host-local.
+    # Keep this repair active because a peer can receive schema v14 before its
+    # upgraded process has stripped records in its own host partition.
+    _migrate_binding_authority_v14(root, identity, context_root=context_root)
 
     _write_json(
         schema_path,
@@ -206,7 +210,7 @@ def ensure_store_metadata(root: Path, identity: MachineIdentity) -> None:
 
 
 def _migrate_native_projects_v12(root: Path, identity: MachineIdentity) -> None:
-    """Move this machine's durable projects into host-partitioned storage."""
+    """Move this machine's projects into host-partitioned storage."""
     from .git_state import is_git_repo, normalized_origin_url, root_commits
 
     for project_file in sorted((root / "projects").glob("*/project.json")):
@@ -214,7 +218,7 @@ def _migrate_native_projects_v12(root: Path, identity: MachineIdentity) -> None:
             payload = json.loads(project_file.read_text(encoding="utf-8"))
             if not isinstance(payload, dict):
                 raise ValueError("expected object")
-            if payload.get("machine_id") != identity.id or payload.get("temporary"):
+            if payload.get("machine_id") != identity.id:
                 continue
 
             project_dir = project_file.parent
@@ -338,6 +342,111 @@ def _backfill_host_repo_observation_v13(root: Path, identity: MachineIdentity) -
             _write_json(host_file, payload)
         except (OSError, ValueError, TypeError):
             logger.exception("failed to backfill repository observation for %s", host_file)
+
+
+def _migrate_binding_authority_v14(
+    root: Path,
+    identity: MachineIdentity,
+    *,
+    context_root: Path,
+) -> None:
+    """Remove synchronized policy fields and checkout-local binding paths."""
+    backup_root: Path | None = None
+
+    def backup(path: Path, *, contextspace: bool = False) -> None:
+        nonlocal backup_root
+        if backup_root is None:
+            backup_root = (
+                root
+                / "migration-backups"
+                / f"binding-authority-v14-{int(time.time())}-{uuid4().hex[:8]}"
+            )
+        if contextspace:
+            relative = Path("contextspace") / path.relative_to(context_root)
+        else:
+            relative = path.relative_to(root)
+        destination = backup_root / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(path, destination)
+
+    for project_file in sorted((root / "projects").glob("*/project.json")):
+        try:
+            payload = json.loads(project_file.read_text(encoding="utf-8"))
+            if not isinstance(payload, dict):
+                raise ValueError("expected object")
+            original = dict(payload)
+            payload.pop("sharing", None)
+            payload.pop("identity", None)
+            if payload != original:
+                backup(project_file)
+                _write_json(project_file, payload)
+
+            if (
+                payload.get("machine_id") == identity.id
+                and payload.get("temporary") is not True
+            ):
+                local_file = project_file.parent / "hosts" / identity.id / "local.json"
+                root_path = payload.get("root_path")
+                if (
+                    not local_file.is_file()
+                    and isinstance(root_path, str)
+                    and root_path
+                ):
+                    _write_json(local_file, {"root_path": root_path})
+        except (OSError, ValueError, TypeError):
+            logger.exception("failed to migrate project authority record %s", project_file)
+
+    for host_file in sorted((root / "projects").glob("*/hosts/*/host.json")):
+        try:
+            payload = json.loads(host_file.read_text(encoding="utf-8"))
+            if not isinstance(payload, dict):
+                raise ValueError("expected object")
+            original = dict(payload)
+            payload.pop("identity", None)
+            payload.pop("attestation", None)
+            if payload != original:
+                backup(host_file)
+                _write_json(host_file, payload)
+        except (OSError, ValueError, TypeError):
+            logger.exception("failed to migrate host observation %s", host_file)
+
+    for node_file in sorted((root / "projects").glob("*/**/node.json")):
+        try:
+            payload = json.loads(node_file.read_text(encoding="utf-8"))
+            if not isinstance(payload, dict):
+                raise ValueError("expected object")
+            if "promoted_from" not in payload:
+                continue
+            backup(node_file)
+            payload.pop("promoted_from", None)
+            _write_json(node_file, payload)
+        except (OSError, ValueError, TypeError):
+            logger.exception("failed to migrate node promotion record %s", node_file)
+
+    for claims_dir in sorted((root / "projects").glob("*/hosts/*/claims")):
+        try:
+            for claim_file in sorted(path for path in claims_dir.rglob("*") if path.is_file()):
+                backup(claim_file)
+            shutil.rmtree(claims_dir)
+        except OSError:
+            logger.exception("failed to remove legacy claim records %s", claims_dir)
+
+    bindings_dir = context_root / "bindings" / "projects"
+    for binding_file in sorted(bindings_dir.glob("*.yaml")):
+        try:
+            payload = yaml.safe_load(binding_file.read_text(encoding="utf-8"))
+            if not isinstance(payload, dict):
+                continue
+            project_payload = payload.get("project")
+            if not isinstance(project_payload, dict) or "local_paths" not in project_payload:
+                continue
+            backup(binding_file, contextspace=True)
+            updated_project = dict(project_payload)
+            updated_project.pop("local_paths", None)
+            payload["project"] = updated_project
+            _write_yaml_mapping(binding_file, payload)
+        except (OSError, ValueError, TypeError, yaml.YAMLError):
+            logger.exception("failed to migrate project binding %s", binding_file)
 
 
 def _configured_contextspace_root(root: Path) -> Path:

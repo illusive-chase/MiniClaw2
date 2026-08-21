@@ -5,6 +5,7 @@ import {
   RECENT_PROJECT_COUNT,
   UNTAGGED_GROUP_ID,
   activityAt,
+  filterByBinding,
   filterByTags,
   groupByTag,
   recentProjects,
@@ -32,6 +33,7 @@ function project(
     created_at?: number;
     last_activity_at?: number | null;
     tag_ids?: string[];
+    bound_here?: boolean;
   } = {},
 ): SessionInfo {
   return {
@@ -47,12 +49,11 @@ function project(
     last_activity_at: opts.last_activity_at,
     machine_id: "m",
     local_machine_id: "m",
-    native_machine_label: "here",
-    is_native: true,
+    created_on_machine_label: "here",
+    bound_here: opts.bound_here ?? true,
     read_only: false,
     can_delete: true,
-    sharing: "device-native",
-    can_join_here: false,
+    can_bind_here: false,
     hosts: [],
   };
 }
@@ -152,6 +153,15 @@ function testFilterIsMultiSelectAnd(): void {
   );
   /* Empty result is a real state the UI has to render, not an error. */
   assert.deepEqual(filterByTags([project("none", {})], new Set([WORK.id])), []);
+}
+
+function testBindingFilterIsOrthogonal(): void {
+  const bound = project("bound", { bound_here: true, tag_ids: [WORK.id] });
+  const unbound = project("unbound", { bound_here: false, tag_ids: [WORK.id] });
+  assert.deepEqual(filterByBinding([bound, unbound], "all"), [bound, unbound]);
+  assert.deepEqual(filterByBinding([bound, unbound], "bound"), [bound]);
+  assert.deepEqual(filterByBinding([bound, unbound], "unbound"), [unbound]);
+  assert.deepEqual(filterByTags(filterByBinding([bound, unbound], "bound"), new Set([WORK.id])), [bound]);
 }
 
 /* Counts are per-tag over all projects, so they stay meaningful while a filter
@@ -310,6 +320,7 @@ testActivityFallsBackToCreatedAt();
 testRecentIsGlobalNewestFirst();
 testRecentIgnoresTagFilter();
 testFilterIsMultiSelectAnd();
+testBindingFilterIsOrthogonal();
 testTagCountsIgnoreFilter();
 testGroupsFollowTagOrderAndRepeatMembers();
 testUnknownTagIdsFallIntoUntagged();

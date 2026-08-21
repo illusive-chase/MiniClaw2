@@ -242,7 +242,6 @@ class ActiveNodesCollectionTests(unittest.TestCase):
                     root_path=str(root_path),
                     name="shared",
                     machine_id=store.machine.id,
-                    sharing="shared",
                 )
             )
             registry._runtimes[project.id] = ProjectRuntime(project)

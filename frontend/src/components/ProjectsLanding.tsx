@@ -35,6 +35,7 @@ import {
 } from "../projectSort";
 import {
   activityAt,
+  filterByBinding,
   filterByTags,
   groupByTag,
   recentProjects,
@@ -42,6 +43,7 @@ import {
   sortFlat,
   tagCounts,
   UNTAGGED_GROUP_ID,
+  type BindingFilter,
 } from "../projectGrouping";
 import type { GlobalState } from "../types";
 
@@ -76,6 +78,7 @@ export function ProjectsLanding({
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [selfUpdate, setSelfUpdate] = useState<SelfUpdateState | null>(null);
   const [sortMode, setSortMode] = useState<ProjectSortMode>(readProjectSort);
+  const [bindingFilter, setBindingFilter] = useState<BindingFilter>("bound");
   const [selectedTagIds, setSelectedTagIds] = useState<ReadonlySet<string>>(new Set());
   const [collapsedGroups, setCollapsedGroups] = useState<ReadonlySet<string>>(new Set());
 
@@ -207,8 +210,23 @@ export function ProjectsLanding({
   const tagsById = useMemo(() => new Map(tags.map((tag) => [tag.id, tag])), [tags]);
   const all = sessions ?? [];
   const recent = useMemo(() => recentProjects(all), [all]);
-  const filtered = useMemo(() => filterByTags(all, selectedTagIds), [all, selectedTagIds]);
+  const bindingFiltered = useMemo(
+    () => filterByBinding(all, bindingFilter),
+    [all, bindingFilter],
+  );
+  const filtered = useMemo(
+    () => filterByTags(bindingFiltered, selectedTagIds),
+    [bindingFiltered, selectedTagIds],
+  );
   const counts = useMemo(() => tagCounts(all), [all]);
+  const bindingCounts = useMemo(
+    () => ({
+      all: all.length,
+      bound: all.filter((session) => session.bound_here).length,
+      unbound: all.filter((session) => !session.bound_here).length,
+    }),
+    [all],
+  );
   const groups = useMemo(
     () => (sortMode === "grouped" ? groupByTag(filtered, tags) : []),
     [sortMode, filtered, tags],
@@ -378,9 +396,13 @@ export function ProjectsLanding({
               onToggle={toggleTagFilter}
               onClear={() => setSelectedTagIds(new Set())}
               sortControl={sortControl}
+              bindingFilter={bindingFilter}
+              bindingCounts={bindingCounts}
+              onBindingFilterChange={setBindingFilter}
               totalLabel={
                 <>
                   全部项目 {selectedTagIds.size > 0
+                    || bindingFilter !== "all"
                     ? `${filtered.length} / ${all.length}`
                     : all.length}
                 </>
@@ -390,14 +412,17 @@ export function ProjectsLanding({
             {filtered.length === 0 ? (
               <div className="rounded-lg border border-dashed border-line bg-surface-raised px-5 py-7 text-center">
                 <p className="text-[13px] text-ink">
-                  没有项目同时具备这些 tag。
+                  当前筛选条件下没有项目。
                 </p>
                 <p className="mt-1 text-[11.5px] text-ink-muted">
-                  筛选是「同时具备」，选中的 tag 越多，命中越少。
+                  可切换绑定状态，或减少选中的 tag。
                 </p>
                 <button
                   type="button"
-                  onClick={() => setSelectedTagIds(new Set())}
+                  onClick={() => {
+                    setBindingFilter("all");
+                    setSelectedTagIds(new Set());
+                  }}
                   className="mt-3 inline-flex h-8 items-center rounded-md border border-line bg-surface px-3 text-[12px] font-medium text-ink transition hover:border-brand hover:text-ink-strong"
                 >
                   清除筛选
@@ -588,9 +613,7 @@ function ProjectCard({
     onOpen();
   };
 
-  /* Read-only projects are native to another machine, so the backend rejects a
-   * tag write (`require_native`). The button stays visible but disabled and says
-   * why, rather than accepting a click that silently does nothing. */
+  /* Unbound projects reject metadata writes until this device has a path. */
   const tagsLocked = !!session.read_only;
 
   return (
@@ -667,7 +690,7 @@ function ProjectCard({
               }}
               title={
                 tagsLocked
-                  ? `只读项目不能改 tag —— 它属于 ${session.native_machine_label}，请在那台机器上编辑`
+                  ? "此设备尚未配置项目路径，绑定后才能编辑 tag"
                   : "编辑 tag"
               }
               aria-label="编辑 tag"
@@ -717,42 +740,23 @@ function ProjectCard({
 
       {confirmingDelete && (
         <div className="rounded-md border border-state-error/30 bg-state-error-soft px-2.5 py-2 text-[11px] leading-snug text-state-error">
-          Click delete again to remove this project, its nodes, and all
-          associated planspaces.
+          再点一次删除项目「{session.name?.trim() || session.id.slice(0, 8)}」。这会移除所有设备上的项目记录与历史，不影响磁盘上的代码仓库。
         </div>
       )}
 
       <TagChipRow tags={tags} />
 
       <div className="flex flex-wrap items-center gap-1.5 text-[10px]">
-        {session.identity === "environment-attested" && (
-          <span
-            className="rounded border border-state-waiting/40 bg-state-waiting-soft px-1.5 py-0.5 text-state-waiting"
-            title="项目身份由人工声明建立；系统无法验证设备间目录等价性或发现文件分歧"
-          >
-            身份未校验
-          </span>
-        )}
-        {session.identity === "environment-attested" && (() => {
-          const declaredPaths = new Set(
-            session.hosts
-              .map((host) => host.attestation?.root_path_declared)
-              .filter((path): path is string => !!path),
-          );
-          return declaredPaths.size > 1 ? (
-            <span
-              className="rounded border border-state-error/40 bg-state-error-soft px-1.5 py-0.5 text-state-error"
-              title={Array.from(declaredPaths).join("\n")}
-            >
-              声明路径不一致
-            </span>
-          ) : null;
-        })()}
-        {session.read_only && (
-          <span className="rounded border border-state-waiting/40 bg-state-waiting-soft px-1.5 py-0.5 text-state-waiting">
-            read-only · native to {session.native_machine_label}
-          </span>
-        )}
+        <span
+          className={
+            "rounded border px-1.5 py-0.5 " +
+            (session.bound_here
+              ? "border-state-done/30 bg-state-done-soft text-state-done"
+              : "border-state-waiting/40 bg-state-waiting-soft text-state-waiting")
+          }
+        >
+          {session.bound_here ? "● 已绑定" : "○ 配置路径"}
+        </span>
         {session.preferred_language && (
           <span className="rounded border border-line bg-surface-sunken px-1.5 py-0.5 text-ink-muted">
             {languageLabel(session.preferred_language)}

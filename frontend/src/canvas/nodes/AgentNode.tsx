@@ -89,7 +89,7 @@ function AgentNodeImpl({ data, selected }: NodeProps<AgentNodeData>) {
 
   const actionItems = useMemo(() => {
     const items: Array<{
-      key: "promote" | "claim" | "dequeue" | "continuation" | "dependency" | "remove" | "interrupt" | "rerun";
+      key: "promote" | "dequeue" | "continuation" | "dependency" | "remove" | "interrupt" | "rerun";
       icon: ReactNode;
       title: string;
       disabled: boolean;
@@ -130,20 +130,16 @@ function AgentNodeImpl({ data, selected }: NodeProps<AgentNodeData>) {
       isVirtual &&
       readyToPromote &&
       !node.obsolete_reason &&
-      node.planspace_id === agentNodeContext.manualPromotionPlanspaceId
+      node.planspace_id === agentNodeContext.manualPromotionPlanspaceId &&
+      agentNodeContext.canMutateNode(node.id)
     ) {
-      const native = agentNodeContext.canMutateNode(node.id);
       items.push({
-        key: native ? "promote" : "claim",
+        key: "promote",
         icon: <PromoteActionIcon />,
-        title: native ? "Promote - run this virtual" : "在本设备认领",
-        disabled: native
-          ? !agentNodeContext.canPromoteVirtual
-          : !agentNodeContext.canClaimVirtual,
+        title: "Promote - run this virtual",
+        disabled: !agentNodeContext.canPromoteVirtual,
         tone: "brand",
-        onClick: () => native
-          ? agentNodeContext.onPromoteVirtual(node.id)
-          : agentNodeContext.onClaimVirtual(node.id),
+        onClick: () => agentNodeContext.onPromoteVirtual(node.id),
       });
     }
     /* Dequeue follows the node's own lane mode, mirroring the backend: a
@@ -287,11 +283,6 @@ function AgentNodeImpl({ data, selected }: NodeProps<AgentNodeData>) {
         <div className="flex min-w-0 items-center gap-1">
           <StateChip state={node.state} />
           <CategoryChip node={node} />
-          {(node.claims?.length ?? 0) > 0 && (
-            <span className="rounded border border-line bg-surface/70 px-1 py-0.5 text-[8px] font-medium text-ink-muted">
-              {node.claims?.length} claims
-            </span>
-          )}
         </div>
         <span className="font-mono text-[10px] text-ink-subtle" title={node.id}>
           {node.id.slice(0, 6)}
@@ -496,7 +487,6 @@ export const AgentNode = memo(AgentNodeImpl);
  * memoized AgentNode always reads the latest handlers without stale closures. */
 export type AgentNodeContext = {
   onPromoteVirtual: (nodeId: string) => void;
-  onClaimVirtual: (nodeId: string) => void;
   onDequeueNode: (nodeId: string) => void;
   onCreateContinuationVirtual: (nodeId: string) => void;
   onCreateDependencyVirtual: (nodeId: string) => void;
@@ -507,7 +497,6 @@ export type AgentNodeContext = {
   canCreateVirtual: boolean;
   canMutateNode: (nodeId: string) => boolean;
   canPromoteVirtual: boolean;
-  canClaimVirtual: boolean;
   canDequeue: boolean;
   manualPromotionPlanspaceId: string | null;
   isManualPlanspace: (planspaceId: string | null | undefined) => boolean;
@@ -520,7 +509,6 @@ export type AgentNodeContext = {
 
 let agentNodeContext: AgentNodeContext = {
   onPromoteVirtual: () => {},
-  onClaimVirtual: () => {},
   onDequeueNode: () => {},
   onCreateContinuationVirtual: () => {},
   onCreateDependencyVirtual: () => {},
@@ -531,7 +519,6 @@ let agentNodeContext: AgentNodeContext = {
   canCreateVirtual: false,
   canMutateNode: () => false,
   canPromoteVirtual: false,
-  canClaimVirtual: false,
   canDequeue: false,
   manualPromotionPlanspaceId: null,
   isManualPlanspace: () => false,
