@@ -10,6 +10,7 @@ import {
 import {
   createTag,
   deleteSession,
+  getSelfUpdate,
   listSessions,
   listTags,
   renameSession,
@@ -17,7 +18,7 @@ import {
   updateTag,
 } from "../api";
 import { languageLabel } from "../languages";
-import type { ModelPreset, SessionInfo, Tag } from "../types";
+import type { ModelPreset, SelfUpdateState, SessionInfo, Tag } from "../types";
 import { modelPresetLabel } from "../modelPresets";
 import { TestsPanel } from "./TestsPanel";
 import { ThemeToggle } from "./ThemeToggle";
@@ -73,6 +74,7 @@ export function ProjectsLanding({
   const [error, setError] = useState<string | null>(null);
   const [testsOpen, setTestsOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [selfUpdate, setSelfUpdate] = useState<SelfUpdateState | null>(null);
   const [sortMode, setSortMode] = useState<ProjectSortMode>(readProjectSort);
   const [selectedTagIds, setSelectedTagIds] = useState<ReadonlySet<string>>(new Set());
   const [collapsedGroups, setCollapsedGroups] = useState<ReadonlySet<string>>(new Set());
@@ -110,6 +112,24 @@ export function ProjectsLanding({
       window.removeEventListener("focus", onFocus);
     };
   }, [refresh, refreshTags]);
+
+  /* Source-checkout state is derived from local refs, so this is a cheap local
+   * read rather than a poll. Re-derived when settings closes because that is
+   * where an explicit remote check can have moved the upstream ref. */
+  useEffect(() => {
+    if (settingsOpen) return;
+    let cancelled = false;
+    getSelfUpdate()
+      .then((next) => {
+        if (!cancelled) setSelfUpdate(next);
+      })
+      .catch(() => {
+        /* The settings panel surfaces the actionable error. */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [settingsOpen]);
 
   /* A tag deleted on another machine (or in another tab) leaves ids behind in
    * the filter; dropping them keeps the AND filter from matching nothing at all
@@ -199,11 +219,21 @@ export function ProjectsLanding({
   );
   const remoteBehind = globalState?.sync.remote?.behind ?? 0;
   const remoteRefAt = globalState?.sync.remote?.ref_at;
-  const remoteStatusTitle = remoteBehind > 0
-    ? `元数据远端引用落后 ${remoteBehind} 个提交；引用更新于 ${remoteRefAt
-      ? new Date(remoteRefAt * 1000).toLocaleString()
-      : "未知时间"}`
-    : undefined;
+  const sourceBehind = selfUpdate?.behind ?? 0;
+  const sourceRefAt = selfUpdate?.ref_at;
+  const describeRef = (at: number | null | undefined) =>
+    at ? new Date(at * 1000).toLocaleString() : "未知时间";
+  const remoteStatusTitle = [
+    remoteBehind > 0
+      ? `元数据远端引用落后 ${remoteBehind} 个提交；引用更新于 ${describeRef(remoteRefAt)}`
+      : null,
+    sourceBehind > 0
+      ? `源码远端引用落后 ${sourceBehind} 个提交；引用更新于 ${describeRef(sourceRefAt)}`
+      : null,
+  ]
+    .filter(Boolean)
+    .join("\n") || undefined;
+  const behindRemote = remoteBehind > 0 || sourceBehind > 0;
 
   const renderCard = (session: SessionInfo, keyPrefix = "") => (
     <ProjectCard
@@ -263,7 +293,7 @@ export function ProjectsLanding({
             title={remoteStatusTitle}
           >
             Global settings
-            {remoteBehind > 0 ? (
+            {behindRemote ? (
               <span
                 className="absolute -right-1 -top-1 h-2.5 w-2.5 rounded-full border-2 border-surface-raised bg-state-waiting"
                 aria-label={remoteStatusTitle}

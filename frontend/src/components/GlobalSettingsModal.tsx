@@ -13,7 +13,6 @@ import {
   updateCodeReviewSettings,
   updateGlobalDefaults,
   updateToolRequestSettings,
-  updateUpdateSettings,
 } from "../api";
 import { canApplyUpdate } from "../selfUpdate";
 import { LANGUAGE_OPTIONS } from "../languages";
@@ -25,7 +24,6 @@ import type {
   SelfUpdateApplyResult,
   SelfUpdateState,
   ToolRequestSettings,
-  UpdateSettings,
 } from "../types";
 
 type Props = {
@@ -51,7 +49,6 @@ export function GlobalSettingsModal({ open, state, onClose, onChanged }: Props) 
   const [defaults, setDefaults] = useState<GlobalDefaults | null>(null);
   const [codeReview, setCodeReview] = useState<CodeReviewSettings | null>(null);
   const [toolRequests, setToolRequests] = useState<ToolRequestSettings | null>(null);
-  const [updates, setUpdates] = useState<UpdateSettings | null>(null);
   const [selfUpdate, setSelfUpdate] = useState<SelfUpdateState | null>(null);
   const [selfUpdateResult, setSelfUpdateResult] = useState<SelfUpdateApplyResult | null>(null);
   const [draft, setDraft] = useState<ModelPreset | null>(null);
@@ -64,6 +61,7 @@ export function GlobalSettingsModal({ open, state, onClose, onChanged }: Props) 
   const [remoteUrl, setRemoteUrl] = useState("");
   const [privacyAcknowledged, setPrivacyAcknowledged] = useState(false);
   const [syncError, setSyncError] = useState<string | null>(null);
+  const [updateError, setUpdateError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -71,27 +69,20 @@ export function GlobalSettingsModal({ open, state, onClose, onChanged }: Props) 
     setDefaults(state?.defaults ?? null);
     setCodeReview(state?.code_review ?? null);
     setToolRequests(state?.tool_requests ?? null);
-    setUpdates(state?.updates ?? null);
     setSelfUpdateResult(null);
     setDraft(null);
     setEditingId(null);
     setRemoteUrl(state?.sync.remote_url ?? "");
     setPrivacyAcknowledged(state?.sync.configured ?? false);
     setSyncError(null);
+    setUpdateError(null);
     setError(null);
     if (!state) {
       getGlobalState().then(onChanged).catch((err) => setError(String(err)));
     }
+    // Derived from local refs only; opening this panel contacts no remote.
     getSelfUpdate().then(setSelfUpdate).catch((err) => setError(String(err)));
   }, [open, state, onChanged]);
-
-  useEffect(() => {
-    if (!open || !selfUpdate?.checking) return;
-    const timer = window.setInterval(() => {
-      getSelfUpdate().then(setSelfUpdate).catch((err) => setError(String(err)));
-    }, 1000);
-    return () => window.clearInterval(timer);
-  }, [open, selfUpdate?.checking]);
 
   if (!open) return null;
   const presets = state?.model_presets ?? [];
@@ -163,26 +154,13 @@ export function GlobalSettingsModal({ open, state, onClose, onChanged }: Props) 
     }
   };
 
-  const saveUpdates = async () => {
-    if (!updates) return;
-    setSaving(true);
-    setError(null);
-    try {
-      onChanged(await updateUpdateSettings(updates));
-    } catch (err) {
-      setError(String(err));
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const runUpdateCheck = async (preserveError = false) => {
+  const runUpdateCheck = async () => {
     setCheckingUpdate(true);
-    if (!preserveError) setError(null);
+    setUpdateError(null);
     try {
       setSelfUpdate(await checkSelfUpdate());
     } catch (err) {
-      if (!preserveError) setError(String(err));
+      setUpdateError(String(err));
     } finally {
       setCheckingUpdate(false);
     }
@@ -190,12 +168,17 @@ export function GlobalSettingsModal({ open, state, onClose, onChanged }: Props) 
 
   const runUpdateApply = async () => {
     setApplyingUpdate(true);
-    setError(null);
+    setUpdateError(null);
     try {
       setSelfUpdateResult(await applySelfUpdate());
     } catch (err) {
-      setError(String(err));
-      void runUpdateCheck(true);
+      setUpdateError(String(err));
+      // Re-derive from local refs; a failed apply must not reach the remote.
+      try {
+        setSelfUpdate(await getSelfUpdate());
+      } catch {
+        /* The actionable error is already shown. */
+      }
     } finally {
       setApplyingUpdate(false);
     }
@@ -324,35 +307,57 @@ export function GlobalSettingsModal({ open, state, onClose, onChanged }: Props) 
             </div>
           </section>
 
-          {selfUpdate?.is_repo && updates ? (
+          {selfUpdate?.is_repo ? (
             <section className="rounded-lg border border-line bg-surface-raised p-4 shadow-card">
               <div className="flex items-start justify-between gap-4">
                 <div>
-                  <div className="font-display text-sm font-semibold text-ink-strong">版本</div>
-                  <div className="mt-1 font-mono text-[10px] text-ink-muted">
-                    {selfUpdate.head?.slice(0, 8) ?? "未知"} · {selfUpdate.branch ?? "未知分支"}
+                  <div className="font-display text-sm font-semibold text-ink-strong">源码版本</div>
+                  <div className="mt-1 text-[11px] leading-relaxed text-ink-muted">
+                    只在你点击「检查远端」时访问源码远端。
                   </div>
                 </div>
-                <span className={`rounded border px-2 py-1 text-[10px] font-medium ${selfUpdate.behind > 0 || selfUpdate.error ? "border-state-waiting/40 bg-state-waiting-soft text-state-waiting" : "border-state-done/40 bg-state-done-soft text-state-done"}`}>
-                  {selfUpdate.checking || checkingUpdate
-                    ? "检查中"
+                <span className={`rounded border px-2 py-1 text-[10px] font-medium ${selfUpdate.behind > 0 || selfUpdate.error ? "border-state-waiting/40 bg-state-waiting-soft text-state-waiting" : "border-line bg-surface-sunken text-ink-muted"}`}>
+                  {selfUpdate.error
+                    ? "无法比较"
                     : selfUpdate.behind > 0
                       ? `落后 ${selfUpdate.behind} 个提交${selfUpdate.fast_forward ? "" : "，不可快进"}`
-                      : selfUpdate.error
-                        ? "检查失败"
-                      : "已是最新"}
+                      : "本地无已知更新"}
                 </span>
               </div>
-              <div className="mt-3 grid grid-cols-1 gap-2 font-mono text-[10px] text-ink-muted sm:grid-cols-2">
-                <div>远端：{selfUpdate.upstream ?? "未配置"}</div>
-                <div>快进：{selfUpdate.fast_forward ? "可以" : "不可以"}</div>
-                <div>工作区：{selfUpdate.dirty ? "有未提交改动" : "干净"}</div>
-                <div>活跃节点：{selfUpdate.blockers.length}</div>
-                <div className="sm:col-span-2">
-                  上次检查：{selfUpdate.last_checked_at ? new Date(selfUpdate.last_checked_at * 1000).toLocaleString() : "尚未检查"}
+              <div className="mt-3 space-y-3">
+                <div className="space-y-1 font-mono text-[10px] text-ink-muted">
+                  <div className="truncate">{selfUpdate.upstream ?? "未配置 upstream"}</div>
+                  <div>本地：{selfUpdate.head?.slice(0, 8) ?? "未知"} · {selfUpdate.branch ?? "未知分支"}</div>
+                  <div>
+                    工作区：{selfUpdate.dirty ? "有未提交改动" : "干净"} · 活跃节点：{selfUpdate.blockers.length}
+                  </div>
+                </div>
+                <div className="border-t border-line pt-3">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                      <div className="text-[11px] font-medium text-ink">远端状态</div>
+                      <div className="mt-0.5 font-mono text-[10px] text-ink-muted">
+                        本地领先 {selfUpdate.ahead} · 远端领先 {selfUpdate.behind}
+                        {selfUpdate.ref_at
+                          ? ` · 引用更新于 ${new Date(selfUpdate.ref_at * 1000).toLocaleString()}`
+                          : " · 引用时间未知"}
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      disabled={checkingUpdate || applyingUpdate}
+                      onClick={() => void runUpdateCheck()}
+                      className={secondaryButton}
+                    >
+                      {checkingUpdate ? "检查中…" : "检查远端"}
+                    </button>
+                  </div>
+                  {selfUpdate.error ? (
+                    <div className="mt-2 text-[11px] text-state-error">{selfUpdate.error}</div>
+                  ) : null}
                 </div>
               </div>
-              {selfUpdate.error ? <div className="mt-2 text-[11px] text-state-error">{selfUpdate.error}</div> : null}
+              {updateError ? <div className="mt-2 text-[11px] text-state-error">{updateError}</div> : null}
               {selfUpdateResult ? (
                 <div className="mt-2 rounded-md border border-state-done/30 bg-state-done-soft px-3 py-2 text-[11px] text-state-done">
                   {selfUpdateResult.message}
@@ -361,21 +366,15 @@ export function GlobalSettingsModal({ open, state, onClose, onChanged }: Props) 
                   ))}
                 </div>
               ) : null}
-              <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
-                <label className="flex items-center gap-2 text-xs text-ink">
-                  <input
-                    type="checkbox"
-                    checked={updates.check_on_startup}
-                    onChange={(event) => setUpdates({ check_on_startup: event.target.checked })}
-                    className="accent-brand"
-                  />
-                  启动时检查更新
-                </label>
-                <div className="flex gap-2">
-                  <button type="button" disabled={saving} onClick={() => void saveUpdates()} className={secondaryButton}>保存偏好</button>
-                  <button type="button" disabled={checkingUpdate} onClick={() => void runUpdateCheck(false)} className={secondaryButton}>{checkingUpdate ? "检查中…" : "检查更新"}</button>
-                  <button type="button" disabled={!canApplyUpdate(selfUpdate) || applyingUpdate} onClick={() => void runUpdateApply()} className={primaryButton}>{applyingUpdate ? "正在更新…" : "更新并退出"}</button>
-                </div>
+              <div className="mt-3 flex justify-end">
+                <button
+                  type="button"
+                  disabled={!canApplyUpdate(selfUpdate) || applyingUpdate || checkingUpdate}
+                  onClick={() => void runUpdateApply()}
+                  className={primaryButton}
+                >
+                  {applyingUpdate ? "正在更新…" : "更新并退出"}
+                </button>
               </div>
             </section>
           ) : null}

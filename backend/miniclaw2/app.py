@@ -47,7 +47,6 @@ from .global_config import (
     ModelPreset,
     SyncSettings,
     ToolRequestSettings,
-    UpdateSettings,
     global_config_path,
     load_global_config,
     save_global_config,
@@ -125,12 +124,6 @@ class UpdateToolRequestSettingsRequest(BaseModel):
 
     timeout_seconds: StrictInt | None = Field(default=None, ge=1)
     timeout_action: Literal["accept", "reject"] | None = None
-
-
-class UpdateSettingsRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    check_on_startup: bool | None = None
 
 
 class SetupSyncRequest(BaseModel):
@@ -557,11 +550,6 @@ def create_app(
             install_hooks()
         except Exception:  # noqa: BLE001
             logger.exception("failed to install claude hooks")
-        if (
-            update_checker.enabled
-            and load_global_config(registry.store.root).updates.check_on_startup
-        ):
-            asyncio.create_task(update_checker.refresh_async())
         yield
 
     app = FastAPI(title="MiniClaw2", lifespan=lifespan)
@@ -725,21 +713,6 @@ def create_app(
             registry.store.sync.schedule_commit("update tool request settings")
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
-        return _global_state_payload(registry.store.root)
-
-    @app.patch("/global-state/updates", response_model=dict[str, Any])
-    def update_update_settings(req: UpdateSettingsRequest) -> dict[str, Any]:
-        registry.store.assert_writable()
-        if req.check_on_startup is None:
-            raise HTTPException(422, "check_on_startup cannot be null")
-        config = load_global_config(registry.store.root)
-        save_global_config(
-            config.model_copy(
-                update={"updates": UpdateSettings(check_on_startup=req.check_on_startup)}
-            ),
-            registry.store.root,
-        )
-        registry.store.sync.schedule_commit("update self-update settings")
         return _global_state_payload(registry.store.root)
 
     @app.post("/global-state/model-presets", response_model=dict[str, Any], status_code=201)
@@ -1018,7 +991,11 @@ def create_app(
 
     @app.post("/self-update/check", response_model=dict[str, Any])
     async def check_self_update() -> dict[str, Any]:
-        await update_checker.refresh_async()
+        """Fetch the source remote. Only ever reached by an explicit user action."""
+        try:
+            await asyncio.to_thread(update_checker.check_remote)
+        except UpdateError as exc:
+            raise HTTPException(409, str(exc)) from exc
         return await asyncio.to_thread(self_update_payload)
 
     @app.post("/self-update/apply", response_model=dict[str, Any])
@@ -2213,7 +2190,6 @@ def _global_state_payload(store_root: Path) -> dict[str, Any]:
         "defaults": config.defaults.model_dump(),
         "code_review": config.code_review.model_dump(),
         "tool_requests": config.tool_requests.model_dump(),
-        "updates": config.updates.model_dump(),
         "model_presets": [
             preset.model_copy(
                 update={"is_default": preset.id == default_id}

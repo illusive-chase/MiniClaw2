@@ -153,6 +153,31 @@ mirror. Agents commit mid-run, users commit in terminals, rebases rewrite
 hashes. Derivation turns every drift scenario into a rendering case
 instead of a corruption case.
 
+### 2.9 Neither remote is contacted unless the user asks
+
+Two independent Git remotes back MiniClaw2 — the metadata store's and the
+source checkout's — and both obey the same rule: a read derives from local
+refs, and only an explicit user action fetches. `GET /global-state` and
+`GET /self-update` perform no network IO; `POST /global-state/sync/check`
+and `POST /self-update/check` are the sole fetch paths, one per remote.
+
+This is invisible where it would be broken. Both surfaces look like
+ordinary status reads, so a poll, a startup fetch, or a "refresh while the
+panel is open" timer reads as a harmless freshness improvement — and each
+would silently convert an explicit-consent design into ambient network
+access. §12.5 forbids that for metadata; the source remote is held to it
+because the operator's expectation is about MiniClaw2, not about which
+repository happens to be behind a given number.
+
+The cost is accepted knowingly: **"when was the remote last successfully
+checked" is not answered anywhere.** It is the one fact here that Git
+cannot express — `.git/FETCH_HEAD`'s mtime advances even when a fetch
+fails, so it cannot stand in — and rather than persist a custom field for
+it, the product declines the question. A never-checked checkout and one
+checked a second ago with no new commits are therefore indistinguishable,
+and both surfaces show the ref's own update time instead, which is a
+different and honest fact.
+
 
 ## 3. Open directions
 

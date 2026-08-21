@@ -4,6 +4,7 @@ import os
 import shlex
 import subprocess
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -75,12 +76,12 @@ class SelfUpdateTest(unittest.TestCase):
         _git(self.source, "push")
         return head
 
-    def test_refresh_finds_and_applies_fast_forward(self) -> None:
+    def test_check_remote_finds_and_applies_fast_forward(self) -> None:
         target = self.push_update()
         exits: list[Path] = []
         checker = UpdateChecker(self.checkout, exit_scheduler=exits.append)
 
-        state = checker.refresh()
+        state = checker.check_remote()
         self.assertTrue(state.available)
         self.assertTrue(state.fast_forward)
         self.assertEqual(state.behind, 1)
@@ -93,12 +94,56 @@ class SelfUpdateTest(unittest.TestCase):
         checker.schedule_exit(store_root)
         self.assertEqual(exits, [store_root])
 
+    def test_state_reads_local_refs_without_contacting_remote(self) -> None:
+        """A new upstream commit stays invisible until the user checks."""
+        self.push_update()
+        checker = UpdateChecker(self.checkout, exit_scheduler=Mock())
+
+        local = checker.state()
+        self.assertTrue(local.is_repo)
+        self.assertEqual(local.behind, 0)
+        self.assertFalse(local.available)
+        self.assertIsNone(local.error)
+
+        # Breaking the remote must not change what the local derivation reports.
+        _git(self.checkout, "remote", "set-url", "origin", str(self.root / "missing.git"))
+        self.assertEqual(checker.state().behind, 0)
+        self.assertIsNone(checker.state().error)
+
+    def test_ref_at_reports_when_the_upstream_ref_last_moved(self) -> None:
+        old_commit_at = 946684800
+        with patch.dict(
+            os.environ,
+            {
+                "GIT_AUTHOR_DATE": f"@{old_commit_at} +0000",
+                "GIT_COMMITTER_DATE": f"@{old_commit_at} +0000",
+            },
+        ):
+            self.push_update()
+        checker = UpdateChecker(self.checkout, exit_scheduler=Mock())
+        before_fetch = time.time()
+
+        ref_at = checker.check_remote().ref_at
+
+        self.assertIsNotNone(ref_at)
+        self.assertGreaterEqual(ref_at or 0, before_fetch - 2)
+        self.assertLessEqual(ref_at or 0, time.time() + 2)
+        self.assertNotEqual(ref_at, old_commit_at)
+
+    def test_apply_without_a_prior_check_refuses(self) -> None:
+        """Apply derives locally too, so it cannot fast-forward to unfetched work."""
+        self.push_update()
+        checker = UpdateChecker(self.checkout, exit_scheduler=Mock())
+
+        with self.assertRaisesRegex(UpdateError, "请先检查远端"):
+            checker.apply(self.root / "home")
+
     def test_dirty_worktree_reports_update_but_blocks_apply(self) -> None:
         self.push_update()
         (self.checkout / "local.txt").write_text("dirty\n")
         checker = UpdateChecker(self.checkout, exit_scheduler=Mock())
 
-        state = checker.refresh()
+        state = checker.check_remote()
         self.assertTrue(state.available)
         self.assertTrue(state.dirty)
         with self.assertRaisesRegex(UpdateError, "未提交改动"):
@@ -108,7 +153,7 @@ class SelfUpdateTest(unittest.TestCase):
         _commit(self.checkout, "local")
         checker = UpdateChecker(self.checkout, exit_scheduler=Mock())
 
-        state = checker.refresh()
+        state = checker.check_remote()
         self.assertEqual(state.ahead, 1)
         self.assertFalse(state.available)
         self.assertFalse(state.fast_forward)
@@ -125,17 +170,20 @@ class SelfUpdateTest(unittest.TestCase):
         self.assertFalse(state.available)
         self.assertIn("upstream", state.error or "")
 
-    def test_fetch_failure_keeps_previous_update_result(self) -> None:
+    def test_fetch_failure_surfaces_and_leaves_local_state_readable(self) -> None:
         self.push_update()
         checker = UpdateChecker(self.checkout, exit_scheduler=Mock())
-        previous = checker.refresh()
+        previous = checker.check_remote()
         _git(self.checkout, "remote", "set-url", "origin", str(self.root / "missing.git"))
 
-        failed = checker.refresh()
-        self.assertEqual(failed.head, previous.head)
-        self.assertEqual(failed.behind, previous.behind)
-        self.assertTrue(failed.available)
-        self.assertIn("获取远端更新失败", failed.error or "")
+        with self.assertRaisesRegex(UpdateError, "获取远端更新失败"):
+            checker.check_remote()
+
+        # The already-fetched ref still describes what this host knows.
+        current = checker.state()
+        self.assertEqual(current.head, previous.head)
+        self.assertEqual(current.behind, previous.behind)
+        self.assertTrue(current.available)
 
     def test_http_check_and_apply_return_update_instructions(self) -> None:
         self.push_update("frontend update")
@@ -146,6 +194,9 @@ class SelfUpdateTest(unittest.TestCase):
         store_root = self.root / "store"
         registry = ProjectRegistry(Store(store_root))
         client = TestClient(create_app(registry, checker))
+
+        # Before an explicit check the source remote has not been contacted.
+        self.assertEqual(client.get("/self-update").json()["behind"], 0)
 
         checked = client.post("/self-update/check")
         self.assertEqual(checked.status_code, 200)
@@ -162,6 +213,27 @@ class SelfUpdateTest(unittest.TestCase):
             ],
         )
         self.assertEqual(exits, [store_root])
+
+    def test_http_check_reports_fetch_failure(self) -> None:
+        checker = UpdateChecker(self.checkout, exit_scheduler=Mock())
+        _git(self.checkout, "remote", "set-url", "origin", str(self.root / "missing.git"))
+        registry = ProjectRegistry(Store(self.root / "store"))
+        client = TestClient(create_app(registry, checker))
+
+        response = client.post("/self-update/check")
+        self.assertEqual(response.status_code, 409)
+        self.assertIn("获取远端更新失败", response.json()["detail"])
+
+    def test_startup_does_not_contact_the_source_remote(self) -> None:
+        self.push_update()
+        checker = UpdateChecker(self.checkout, exit_scheduler=Mock())
+        registry = ProjectRegistry(Store(self.root / "store"))
+
+        with patch.object(
+            UpdateChecker, "check_remote", side_effect=AssertionError("fetched")
+        ):
+            with TestClient(create_app(registry, checker)) as client:
+                self.assertEqual(client.get("/self-update").json()["behind"], 0)
 
     def test_terminal_runner_finalization_blocks_apply(self) -> None:
         self.push_update()

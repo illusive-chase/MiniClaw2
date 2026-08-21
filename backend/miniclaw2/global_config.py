@@ -87,12 +87,6 @@ class ToolRequestSettings(BaseModel):
     timeout_action: Literal["accept", "reject"] = "accept"
 
 
-class UpdateSettings(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    check_on_startup: bool = True
-
-
 class CodeReviewSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -107,8 +101,15 @@ class GlobalConfig(BaseModel):
     model_presets: list[ModelPreset]
     code_review: CodeReviewSettings
     tool_requests: ToolRequestSettings = Field(default_factory=ToolRequestSettings)
-    updates: UpdateSettings = Field(default_factory=UpdateSettings)
     sync: SyncSettings = Field(default_factory=SyncSettings)
+
+    @model_validator(mode="before")
+    @classmethod
+    def drop_retired_update_settings(cls, value: Any) -> Any:
+        """Self-update never contacts the remote unprompted, so it has no settings."""
+        if isinstance(value, dict) and "updates" in value:
+            return {key: item for key, item in value.items() if key != "updates"}
+        return value
 
     @model_validator(mode="before")
     @classmethod

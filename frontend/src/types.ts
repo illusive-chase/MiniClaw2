@@ -352,9 +352,6 @@ export type ToolRequestSettings = {
 export type CodeReviewSettings = {
   model_preset_id: string;
 };
-export type UpdateSettings = {
-  check_on_startup: boolean;
-};
 export type SyncRemoteState = {
   ahead: number;
   behind: number;
@@ -366,7 +363,6 @@ export type GlobalState = {
   defaults: GlobalDefaults;
   code_review: CodeReviewSettings;
   tool_requests: ToolRequestSettings;
-  updates: UpdateSettings;
   model_presets: ModelPreset[];
   sync: {
     configured: boolean;
@@ -404,8 +400,7 @@ export type SelfUpdateState = {
   ahead: number;
   behind: number;
   commits: IncomingCommit[];
-  last_checked_at: number | null;
-  checking: boolean;
+  ref_at: number | null;
   error: string | null;
   blockers: SelfUpdateBlocker[];
 };

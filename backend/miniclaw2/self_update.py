@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-import asyncio
 import multiprocessing
 import os
+import re
 import shlex
 import signal
 import threading
-import time
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
@@ -17,6 +16,7 @@ from .git_state import _git, is_git_repo
 
 
 UPDATE_EXIT_SENTINEL = ".update-exit-pending"
+REMOTE_FETCH_TIMEOUT_SECONDS = 120.0
 
 
 @dataclass(frozen=True)
@@ -39,8 +39,7 @@ class UpdateState:
     ahead: int = 0
     behind: int = 0
     commits: tuple[IncomingCommit, ...] = ()
-    last_checked_at: float | None = None
-    checking: bool = False
+    ref_at: float | None = None
     error: str | None = None
 
 
@@ -135,7 +134,7 @@ def _restart_commands(repo_root: Path, paths: tuple[str, ...]) -> tuple[str, ...
 
 
 class UpdateChecker:
-    """Thread-safe cached view of the source checkout's update state."""
+    """Derives the source checkout's state from local refs; fetches on demand."""
 
     def __init__(
         self,
@@ -145,18 +144,11 @@ class UpdateChecker:
     ) -> None:
         self.repo_root = repo_root if repo_root is not None else discover_repo_root()
         self._exit_scheduler = exit_scheduler
-        self._lock = threading.RLock()
         self._operation_lock = threading.Lock()
-        self._checking = False
-        self._state = self._inspect(last_checked_at=None)
 
     @property
     def enabled(self) -> bool:
-        return self.repo_root is not None and self._state.is_repo
-
-    def state(self) -> UpdateState:
-        with self._lock:
-            return replace(self._state, checking=self._checking)
+        return self.repo_root is not None and is_git_repo(str(self.repo_root))
 
     def _run(self, args: list[str], *, timeout: float = 10):
         if self.repo_root is None:
@@ -168,7 +160,8 @@ class UpdateChecker:
             env=_git_env(),
         )
 
-    def _inspect(self, *, last_checked_at: float | None) -> UpdateState:
+    def state(self) -> UpdateState:
+        """Read local refs only. Never contacts the remote."""
         if self.repo_root is None or not is_git_repo(str(self.repo_root)):
             return UpdateState()
 
@@ -183,7 +176,6 @@ class UpdateChecker:
             return UpdateState(
                 is_repo=True,
                 head=head,
-                last_checked_at=last_checked_at,
                 error="当前处于 detached HEAD，无法自动更新",
             )
         if upstream_result.returncode != 0:
@@ -191,7 +183,6 @@ class UpdateChecker:
                 is_repo=True,
                 head=head,
                 branch=branch,
-                last_checked_at=last_checked_at,
                 error="当前分支未配置 upstream，无法检查更新",
             )
         upstream = upstream_result.stdout.strip()
@@ -202,7 +193,6 @@ class UpdateChecker:
                 head=head,
                 branch=branch,
                 upstream=upstream,
-                last_checked_at=last_checked_at,
                 error=_failure("比较本地与远端版本", counts.stderr),
             )
         try:
@@ -225,8 +215,18 @@ class UpdateChecker:
             ahead=ahead,
             behind=behind,
             commits=commits,
-            last_checked_at=last_checked_at,
+            ref_at=self._upstream_ref_at(upstream),
         )
+
+    def _upstream_ref_at(self, upstream: str) -> float | None:
+        """When the local upstream ref last moved, derived from its reflog."""
+        reflog = self._run(
+            ["reflog", "show", "-1", "--date=unix", "--format=%gD", upstream]
+        )
+        if reflog.returncode != 0:
+            return None
+        selector = re.search(r"@\{(\d+)\}$", reflog.stdout.strip())
+        return float(selector.group(1)) if selector else None
 
     def _incoming_commits(self) -> tuple[IncomingCommit, ...]:
         result = self._run(
@@ -246,61 +246,29 @@ class UpdateChecker:
             commits.append(IncomingCommit(parts[0], parts[1], parts[2], authored_at))
         return tuple(commits)
 
-    def refresh(self, *, fetch: bool = True) -> UpdateState:
-        with self._lock:
-            if self._checking:
-                return replace(self._state, checking=True)
-            self._checking = True
-        return self._refresh_started(fetch=fetch)
-
-    def _refresh_started(self, *, fetch: bool) -> UpdateState:
+    def check_remote(self) -> UpdateState:
+        """Fetch the upstream remote, then re-derive. Only the user calls this."""
         with self._operation_lock:
-            with self._lock:
-                previous = self._state
-            try:
-                if fetch:
-                    upstream = previous.upstream
-                    if upstream is None:
-                        local = self._inspect(last_checked_at=previous.last_checked_at)
-                        upstream = local.upstream
-                    if upstream is None:
-                        with self._lock:
-                            self._state = local
-                        return local
-                    remote = upstream.split("/", 1)[0]
-                    fetched = self._run(["fetch", "--quiet", remote], timeout=120)
-                    if fetched.returncode != 0:
-                        error = _failure("获取远端更新", fetched.stderr, fetched.stdout)
-                        with self._lock:
-                            self._state = replace(previous, error=error)
-                        return self._state
-                next_state = self._inspect(last_checked_at=time.time())
-                with self._lock:
-                    self._state = next_state
-                return next_state
-            finally:
-                with self._lock:
-                    self._checking = False
-
-    async def refresh_async(self) -> UpdateState:
-        with self._lock:
-            owner = not self._checking
-            if owner:
-                self._checking = True
-        if not owner:
-            while True:
-                with self._lock:
-                    if not self._checking:
-                        return self._state
-                await asyncio.sleep(0.05)
-        return await asyncio.to_thread(self._refresh_started, fetch=True)
+            current = self.state()
+            if not current.is_repo:
+                raise UpdateError("当前安装不是 Git 工作区")
+            if current.upstream is None:
+                return current
+            remote = current.upstream.split("/", 1)[0]
+            fetched = self._run(
+                ["fetch", "--quiet", remote], timeout=REMOTE_FETCH_TIMEOUT_SECONDS
+            )
+            if fetched.returncode != 0:
+                raise UpdateError(
+                    _failure("获取远端更新", fetched.stderr, fetched.stdout)
+                )
+            return self.state()
 
     def apply(self, store_root: Path) -> ApplyResult:
-        with self._operation_lock, self._lock:
-            current = self._inspect(last_checked_at=self._state.last_checked_at)
-            self._state = current
+        with self._operation_lock:
+            current = self.state()
             if current.behind <= 0:
-                raise UpdateError("当前没有可快进应用的更新，请先重新检查")
+                raise UpdateError("当前没有可快进应用的更新，请先检查远端")
             if current.ahead > 0:
                 raise UpdateError("本地存在尚未推送的提交，无法自动更新")
             if not current.fast_forward:
@@ -315,8 +283,7 @@ class UpdateChecker:
             if merged.returncode != 0:
                 path.unlink(missing_ok=True)
                 raise UpdateError(_failure("快进更新", merged.stderr, merged.stdout))
-            next_state = self._inspect(last_checked_at=time.time())
-            self._state = next_state
+            next_state = self.state()
             if next_state.head is None:
                 path.unlink(missing_ok=True)
                 raise UpdateError("更新完成后无法读取新的版本号")

@@ -9,7 +9,6 @@ import type {
   CodeReviewSettings,
   GlobalState,
   ToolRequestSettings,
-  UpdateSettings,
   SelfUpdateApplyResult,
   SelfUpdateState,
   ReviewBrief,
@@ -182,20 +181,6 @@ export async function updateToolRequestSettings(
       res.status,
       await readErrorDetail(res),
     );
-  }
-  return res.json();
-}
-
-export async function updateUpdateSettings(
-  body: UpdateSettings,
-): Promise<GlobalState> {
-  const res = await fetch("/global-state/updates", {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) {
-    throw new ApiError("updateUpdateSettings", res.status, await readErrorDetail(res));
   }
   return res.json();
 }

@@ -82,9 +82,7 @@ import {
 } from "./templateInstantiate";
 import { ProjectsLanding } from "./components/ProjectsLanding";
 import { NotificationBell } from "./components/NotificationBell";
-import { UpdateBanner } from "./components/UpdateBanner";
 import { UnverifiedSharingDialog } from "./components/UnverifiedSharingDialog";
-import { useSelfUpdate } from "./selfUpdate";
 import { ThemeToggle } from "./components/ThemeToggle";
 import { UsageStrip } from "./components/UsageStrip";
 import { GitWorkspaceStatus } from "./components/GitWorkspaceStatus";
@@ -108,7 +106,6 @@ import type {
   TemplateSummary,
   TemplateInstanceRecord,
   Tag,
-  SelfUpdateBlocker,
 } from "./types";
 import { useSessionSocket } from "./ws";
 import {
@@ -164,7 +161,6 @@ function apiErrorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 export function App() {
-  const selfUpdate = useSelfUpdate();
   const [route, setRoute] = useState<Route>("landing");
   const [landingSessions, setLandingSessions] = useState<SessionInfo[] | null>(null);
   const [landingTags, setLandingTags] = useState<Tag[]>([]);
@@ -2526,15 +2522,6 @@ export function App() {
   if (route === "landing") {
     return (
       <div className="flex h-screen flex-col bg-surface text-ink">
-        <UpdateBanner
-          state={selfUpdate.state}
-          visible={selfUpdate.visible}
-          applying={selfUpdate.applying}
-          error={selfUpdate.error}
-          onApply={selfUpdate.apply}
-          onDismiss={selfUpdate.dismiss}
-          onJump={(blocker: SelfUpdateBlocker) => jumpToActiveNode(blocker)}
-        />
         <div className="min-h-0 flex-1">
           <ProjectsLanding
           onOpen={openProject}
@@ -2672,15 +2659,6 @@ export function App() {
   return (
     <TextZoomProvider preferredLanguage={session?.preferred_language ?? null}>
     <div className="flex h-screen flex-col bg-surface text-ink">
-      <UpdateBanner
-        state={selfUpdate.state}
-        visible={selfUpdate.visible}
-        applying={selfUpdate.applying}
-        error={selfUpdate.error}
-        onApply={selfUpdate.apply}
-        onDismiss={selfUpdate.dismiss}
-        onJump={(blocker) => jumpToActiveNode(blocker)}
-      />
       <header className="flex items-center justify-between gap-4 border-b border-line bg-surface-raised px-6 py-2.5">
         <div className="flex min-w-0 items-center gap-3">
           <button
