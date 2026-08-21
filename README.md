@@ -87,9 +87,8 @@ context (`CLAUDE.md`, `.claude/settings.json`, `.claude/agents`,
 `.mcp.json`) is now applied by the native `claude` binary itself when
 MiniClaw2 spawns it in the project cwd.
 
-See [`IMPLEMENTATION_STATUS.md`](IMPLEMENTATION_STATUS.md) for the
-single source of truth on what has landed, and
-[`PHILOSOPHY.md`](PHILOSOPHY.md) for the design position.
+See [`PHILOSOPHY.md`](PHILOSOPHY.md) for the design position and
+[`FUTURES.md`](FUTURES.md) for the gap between it and the code.
 
 ## Run It
 
@@ -397,35 +396,10 @@ and [`frontend/src/types.ts`](frontend/src/types.ts).
 
 ## Status
 
-The current code has moved beyond the original chat-wrapper plan:
+The code is the ledger of what has landed — this file does not enumerate
+it, because such a list goes stale in a way code cannot.
 
-- Domain model on disk: `Project` / `Node` / `HumanGate` survive a
-  process restart via JSON/JSONL. SQLite from `DESIGN.md` remains
-  deferred.
-- Provider layer is split out of the state machine. Projects and agents
-  select a model preset; its provider and concrete model are derived from
-  the central catalog. The default preset is `gpt-5.6` via Codex;
-  compatibility presets remain available only for existing data.
-- New nodes start fresh by default. Resume edges are explicit and copy
-  the parent's provider session/thread id into the child node.
-- The graph UI redesign is partially landed: persistent projects,
-  React Flow canvas, context and error-terminal nodes, virtual-node actions,
-  polymorphic side panel, project-root ContextSpace controls, and
-  template test modal are current. Some PRD polish remains.
-- `CONTEXT.md` plus ContextSpace bundle snapshots are in. Vendor-
-  specific config (`CLAUDE.md` walk, `.claude/settings.json`,
-  `.claude/agents`, `.mcp.json`) is now applied by the native `claude`
-  binary itself when MiniClaw2 spawns it in the project cwd.
-- `commit` op nodes are in. With `auto_commit:true`, a commit op is
-  appended after each successful agent node and rewrites the
-  preceding node's `commit_after`.
-- The bundled template catalogue contains 7 templates:
-  `hello-text`, `bash-uname`, `write-readme`, `interrupt-midstream`,
-  `context-md-respected`, `resume-fix-after-reject`, and
-  `gui-calculator`. `permission-approve` and `plan-mode-approval` were
-  dropped when the native-CLI Claude provider disabled per-tool gating
-  and plan mode; `reconnect-replay` was dropped because it required a
-  test-only UI hook.
-
-Remaining near-term work is graph UI polish and fork/worktree graph
-ops.
+For the design position, read [`PHILOSOPHY.md`](PHILOSOPHY.md). For the
+gap between that position and the code — known divergences, latent
+hazards that are invisible where they matter, and directions argued
+through but not built — read [`FUTURES.md`](FUTURES.md).

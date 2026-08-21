@@ -1,9 +1,9 @@
 # MiniClaw2 Philosophy
 
 This document is the source of truth for *what MiniClaw2 is trying to
-be*. It describes the destination, not the distance to it.
-`IMPLEMENTATION_STATUS.md` is the companion ledger of how far the
-current code has travelled.
+be*. It describes the destination, not the distance to it. The code
+states the present; `FUTURES.md` holds the gap between the two —
+divergences, latent hazards, and design directions not yet built.
 
 When this document and the code disagree, the document is the position
 to argue from — the code is the position to fix toward. Where past
@@ -310,22 +310,31 @@ durable resources connected to projects through editable bindings —
 not as files baked into a repo.
 
 ContextSpace lives in its own git-maintained repo, separate from any
-code project. Its layout (project-level details are in
-`IMPLEMENTATION_STATUS.md`):
+code project. Its layout:
 
-- **Plugs** — reusable context objects. Four types:
+- **Plugs** — reusable context objects that participate in bundle
+  composition. Three types:
   - `global` — user-wide behavior and conventions.
-  - `skill` — reusable tool/workflow knowledge.
+  - `principle` — a named piece of durable behavior guidance.
   - `planspace` — a single direction's DAG of nodes (executed and
     virtual). The LLM-facing form is a real filesystem materialized
     under `.miniclaw2/graph/runs/<node-id>/lanes/<active-lane>/` per launch; there
     is no STATUS.md or PLAN.md on disk.
-  - `protocol` — reusable execution loop or output contract.
 - **Bindings** — many-to-many connections between projects and plugs.
   One project can bind several planspaces (parallel directions); one
   plug can bind many projects.
 - **Snapshots** — every node launch persists exactly which sources were
   included, with hashes and injection modes, for audit.
+
+**Skills are deliberately not plugs.** A skill is reusable tool and
+workflow knowledge in the native `SKILL.md` form, stored verbatim so
+community skills import unmodified. It never enters bundle composition,
+and no skill body is ever injected into a model's context: attaching one
+makes it *available*, and lazy loading from its description is the
+provider's job. The distinction is the eager/lazy boundary — a principle
+shapes behavior on every turn and must be present; a skill is consulted
+only when the task calls for it, and injecting it would spend context on
+knowledge the model may not need.
 
 **At each node launch, exactly one active planspace is selected.** The
 project may have multiple planspaces bound, but only one contributes
@@ -648,7 +657,46 @@ carries a clear "active" badge or palette emphasis so the user knows
 which direction the next agent launch will run against.
 
 
-## 11. Distribution
+## 11. Templates are functions
+
+A template is a **captured subgraph with a declared interface**. The user
+selects tiles that worked, names them, and gets back something they can
+apply again — cherry-pick for plan-space, and the one place where a past
+graph becomes a reusable tool rather than history.
+
+The interface is what makes it a function rather than a snapshot. A
+template declares **arguments** (string parameters substituted into prompt
+drafts) and **inputs** (named ports for upstream nodes it must be wired
+to). Applying one resolves both and stamps ordinary virtual nodes into the
+active planspace — nothing about a stamped node is special afterwards.
+
+Four commitments, each of which was tempting to violate:
+
+- **The interface is authored, not inferred.** External dependencies of a
+  captured selection are dropped rather than auto-converted into ports.
+  Runtime node ids carry no stable, meaningful interface, so a generated
+  port would be a name the author never chose and cannot rely on. The
+  author names ports explicitly; the cost is one editing step, and the
+  payoff is that a template's signature means something.
+- **No nesting.** A template stamps nodes, not templates. Nesting would
+  make the stamped graph's provenance recursive and the blast radius of
+  editing a template unbounded.
+- **The editor has no run affordance.** A template is a static
+  definition; trying it out means instantiating it into a real project
+  where the run has a home, a worktree, and a lane. A private run surface
+  would be a second execution path with no graph to write into.
+- **Editor layout is not persisted.** A template has no canvas of its
+  own, and inventing one would push view state into the on-disk schema.
+  Positions are editor-local and disposable.
+
+Adaptation beyond parameters is not a template feature. An author who
+needs the stamped graph to reshape itself against the target project bakes
+a **planning virtual** into the subgraph and lets an agent do it — which
+is §3's concierge rule applied to templates: the schema-shaped work
+belongs to an agent, not to a form the author fills in.
+
+
+## 12. Distribution
 
 MiniClaw2 persists its metadata in a Git repository. That choice is not
 a backup strategy — it is the distribution model, and it fixes what
@@ -671,7 +719,7 @@ repository, and the time at which a local binding was made. The test is whether
 the fact describes the metadata repository's own content or history: if it
 does, derive it from Git; if it does not, persist it in the owning domain.
 
-### 11.1 Sharing is the default, not a state
+### 12.1 Sharing is the default, not a state
 
 There is no "enable sharing" transition and no per-project sharing flag.
 A project's metadata is in the store; the store syncs; therefore every
@@ -690,7 +738,7 @@ synced to the remote anyway. If a project must not reach the remote, the
 honest mechanism is excluding its subtree from Git, not a policy field
 inside the data that is being pushed.
 
-### 11.2 Binding is the unit of authority
+### 12.2 Binding is the unit of authority
 
 The one question a host must answer is *may I write here?*, and it is
 answered locally:
@@ -718,7 +766,7 @@ path**, which is why an incorrect bind is a recoverable mistake rather
 than a permanent one. History written under a host's partition survives
 unbinding — the work happened.
 
-### 11.3 Identity is verified per binding, locally
+### 12.3 Identity is verified per binding, locally
 
 When a host binds a path, it must satisfy itself that the path holds the
 same project the metadata describes. That check uses only locally
@@ -740,9 +788,9 @@ Crucially this is a **judgment, not a policy**. It is made independently
 at each binding, from what that host can observe, and it is not recorded
 as a project-level field that all hosts must agree on. A per-project
 identity policy would be another consensus variable, with the same
-propagation and preservation obligations §11.1 rejects.
+propagation and preservation obligations §12.1 rejects.
 
-### 11.4 Detect after the fact; never lock
+### 12.4 Detect after the fact; never lock
 
 Synced metadata cannot express a truthful lock — a lock a peer learns
 about only at the next sync is not a lock. So MiniClaw2 does not claim
@@ -757,7 +805,7 @@ about itself (its HEAD, its dirty flag) is a **snapshot with a capture
 time**, and every surface presents it as of that time. A stale value
 shown honestly is useful; a stale value shown as live is a lie.
 
-### 11.5 What this rules out
+### 12.5 What this rules out
 
 Stated negatively, so it stays testable:
 
@@ -774,7 +822,7 @@ Stated negatively, so it stays testable:
   substrate is a Git remote reached only when the user asks.
 
 
-## 12. Why we keep these constraints
+## 13. Why we keep these constraints
 
 The non-obvious commitments, restated as one-liners:
 
@@ -814,10 +862,13 @@ The non-obvious commitments, restated as one-liners:
   `declared_produces` retire — reads and writes are observed via
   the transcript at reap, not pre-declared. Planning visibility
   comes from prompt_draft and motivation prose.
+- **Templates are functions, with authored interfaces.** A captured
+  subgraph declares its arguments and input ports explicitly; ports are
+  never inferred from runtime node ids. No nesting, no run affordance in
+  the editor, no persisted editor layout.
 - **Git-persisted metadata means asynchronous collaboration.** No
   mechanism may make one host wait on another host's action, and no
-  value may require cross-host agreement to be correct.
-- **Sharing is the default, not a state.** Every project in the store
+  value may require cross-host agreement to be correct.- **Sharing is the default, not a state.** Every project in the store
   is visible on every synced host. A per-project sharing flag would be
   a consensus variable the substrate cannot maintain, and it never
   bought privacy anyway.

@@ -18,8 +18,10 @@ turns that state into an interactive project canvas.
   `components/` contains shared workflows.
 - `backend/pyproject.toml` and `frontend/package.json`: runtime dependencies
   and build commands.
-- `PHILOSOPHY.md`: product and architecture destination.
-  `IMPLEMENTATION_STATUS.md`: source-backed ledger of what exists now.
+- `PHILOSOPHY.md`: product and architecture destination — the position to
+  argue from. `FUTURES.md`: the gap between that destination and the code
+  (known divergences, latent hazards, unbuilt directions). Neither
+  enumerates what has landed; the code is the ledger of that.
 
 ## Working Rules
 
@@ -40,12 +42,12 @@ turns that state into an interactive project canvas.
   ContextSpace uses `$MINICLAW_CONTEXT_HOME` or
   `$MINICLAW_HOME/contextspace`.
 - `ProjectRegistry`/`NodeRunner` own lifecycle and persistence; providers only
-  translate external agent I/O. A project executes one node at a time, and a
+  translate external agent I/O. Concurrency is bounded per project and a
   fresh agent session is the default unless `resume_from_node_id` is explicit.
 - Root `CONTEXT.md` is stable, provider-neutral launch guidance resolved and
   snapshotted for ordinary agent launches. Keep plans, current work, blockers,
-  and detailed feature status out of it; those belong in planspaces or
-  `IMPLEMENTATION_STATUS.md`.
+  and detailed feature status out of it; those belong in planspaces, or in
+  `FUTURES.md` when they are durable design gaps rather than current work.
 
 ## Entry Points
 
@@ -67,3 +69,37 @@ turns that state into an interactive project canvas.
 - Frontend graph flow: `frontend/src/App.tsx`, `frontend/src/api.ts`,
   `frontend/src/ws.ts`, `frontend/src/canvas/Canvas.tsx`, and
   `frontend/src/canvas/layout.ts`.
+
+## Subsystem Skeleton
+
+An orientation map, deliberately coarse: it names what each subsystem owns,
+not what it currently supports. Read the code for behavior.
+
+- **Domain and persistence** — `Node` and `Project` records as JSON, plus
+  per-node JSONL event and gate logs, under `$MINICLAW_HOME`. A node is
+  either an agent session, a fast `op` state transition, or a script
+  `verifier`; its `category` decides whether it may reshape the plan. The
+  store carries a schema version and migrations, and per-host durable state
+  is partitioned by machine id.
+- **Providers** — one adapter per external agent CLI, translating its I/O
+  onto a shared event and gate vocabulary. Model and provider selection is
+  centralized in a preset catalog rather than chosen field by field.
+- **Execution** — the runner owns the state machine, launch-prompt
+  composition, the preview contract with its inline repair retries, and
+  artifact publication. The registry owns project lifecycle, the bounded
+  scheduler, and Git operations.
+- **ContextSpace** — user-wide reusable context (global, principles,
+  planspace manifests) plus the native skill library, connected to projects
+  through editable bindings and snapshotted per launch for audit.
+- **Graph projection** — each launch materializes the active planspace as a
+  real filesystem subtree the agent reads and writes; reap validates what
+  came back and folds it into durable state.
+- **Templates** — capture a subgraph, declare its arguments and input
+  ports, stamp it into a planspace. Bundled templates are the test
+  catalogue; user templates live in ContextSpace.
+- **Distribution** — the metadata store is a Git repository exchanged with
+  a user-provided remote on explicit sync. See `FUTURES.md` §1.1: the
+  sharing model in code has not yet caught up to `PHILOSOPHY.md` §12.
+- **Frontend** — one React Flow canvas per project, a polymorphic side
+  panel keyed on selection, and a library dock. Layout hints and viewport
+  round-trip through the project record; collapse state is local.
