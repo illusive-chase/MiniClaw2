@@ -2703,15 +2703,6 @@ export function App() {
                   开启共享
                 </button>
               )}
-              {session?.sharing === "device-native" &&
-                !["ready", "ready-unverified"].includes(session.sharing_readiness) &&
-                !session.temporary && (
-                <span className="rounded border border-state-waiting/40 bg-state-waiting-soft px-1.5 py-0.5 font-sans text-state-waiting">
-                  {session.sharing_readiness === "waiting-for-owner-commit"
-                    ? `${session.native_machine_label} 的仓库尚无提交`
-                    : `等待 ${session.native_machine_label} 升级`}
-                </span>
-              )}
             </div>
           </div>
         </div>

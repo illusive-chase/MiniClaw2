@@ -183,20 +183,15 @@ class Store:
 
     def sharing_readiness(self, project: Project) -> str:
         owner_dir = self._host_dir(project.id, project.machine_id)
-        if not (owner_dir / "nodes").is_dir():
-            return "waiting-for-owner-upgrade"
         try:
             payload = self._read_json(owner_dir / "host.json")
         except (OSError, ValueError):
             payload = {}
         if project.identity == "environment-attested":
             return "ready-unverified"
-        repo = payload.get("repo")
-        if isinstance(repo, dict) and repo.get("root_commit"):
-            return "ready"
         if payload.get("is_repo") is False:
             return "ready-unverified"
-        return "waiting-for-owner-commit"
+        return "ready"
 
     def update_owner_fingerprint(self, project: Project) -> bool:
         if project.machine_id != self.machine.id or not self._is_partitioned(project.id):

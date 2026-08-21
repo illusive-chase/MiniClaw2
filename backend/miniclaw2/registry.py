@@ -673,11 +673,20 @@ class ProjectRegistry:
             raise ValueError("temporary projects cannot be shared")
         if project.machine_id == self.store.machine.id:
             self.store.update_owner_fingerprint(project)
-        readiness = self.store.sharing_readiness(project)
-        if readiness == "waiting-for-owner-upgrade":
-            raise ValueError("project owner must upgrade MiniClaw2 before sharing")
-        if readiness == "waiting-for-owner-commit":
+        owner_host = next(
+            (
+                host
+                for host in self.store.list_hosts(project.id)
+                if host.get("mid") == project.machine_id
+            ),
+            {},
+        )
+        owner_repo = owner_host.get("repo")
+        if owner_host.get("is_repo") is True and (
+            not isinstance(owner_repo, dict) or not owner_repo.get("root_commit")
+        ):
             raise ValueError("project owner repository must have at least one commit")
+        readiness = self.store.sharing_readiness(project)
         if readiness == "ready-unverified":
             if not unverified_identity_acknowledged:
                 raise ValueError(UNVERIFIED_IDENTITY_WARNING)

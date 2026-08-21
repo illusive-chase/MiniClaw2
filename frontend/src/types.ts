@@ -205,11 +205,7 @@ export type SessionInfo = {
   can_delete: boolean;
   sharing: "device-native" | "shared";
   identity: "git-root-commit" | "environment-attested";
-  sharing_readiness:
-    | "ready"
-    | "ready-unverified"
-    | "waiting-for-owner-upgrade"
-    | "waiting-for-owner-commit";
+  sharing_readiness: "ready" | "ready-unverified";
   can_enable_sharing: boolean;
   can_join_here: boolean;
   hosts: SessionHost[];

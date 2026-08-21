@@ -353,9 +353,12 @@ class HostPartitionStoreTests(unittest.TestCase):
             store = Store(base / "store")
             project = store.create_project(Project(root_path=str(repo)))
             registry = ProjectRegistry(store)
-            self.assertEqual(
-                store.sharing_readiness(project), "waiting-for-owner-commit"
-            )
+            self.assertEqual(store.sharing_readiness(project), "ready")
+            with self.assertRaisesRegex(
+                ValueError,
+                "project owner repository must have at least one commit",
+            ):
+                registry.enable_sharing(project.id)
 
             (repo / "seed.txt").write_text("seed\n", encoding="utf-8")
             _git(repo, "add", "seed.txt")
@@ -373,6 +376,9 @@ class HostPartitionStoreTests(unittest.TestCase):
             registry._record_host_heads()
 
             self.assertEqual(store.sharing_readiness(project), "ready")
+            shared = registry.enable_sharing(project.id)
+            assert shared is not None
+            self.assertEqual(shared.sharing, "shared")
             self.assertFalse(
                 (
                     store.root / "projects" / project.id / "hosts"
@@ -449,10 +455,14 @@ class HostPartitionStoreTests(unittest.TestCase):
             _git(repo, "init", "-q", "--initial-branch=main")
             store = Store(base / "store")
             project = store.create_project(Project(root_path=str(repo)))
+            registry = ProjectRegistry(store)
 
-            self.assertEqual(
-                store.sharing_readiness(project), "waiting-for-owner-commit"
-            )
+            self.assertNotEqual(store.sharing_readiness(project), "ready-unverified")
+            with self.assertRaisesRegex(
+                ValueError,
+                "project owner repository must have at least one commit",
+            ):
+                registry.enable_sharing(project.id)
             self.assertTrue(store.list_hosts(project.id)[0]["is_repo"])
 
     def test_fingerprint_refresh_preserves_attestation(self) -> None:
@@ -677,6 +687,35 @@ class HostPartitionStoreTests(unittest.TestCase):
 
 
 class HostPartitionApiTests(unittest.TestCase):
+
+    def test_empty_git_repo_exposes_sharing_action_but_rejects_enable(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            base = Path(raw)
+            repo = base / "repo"
+            repo.mkdir()
+            _git(repo, "init", "-q", "--initial-branch=main")
+            store = Store(base / "store")
+            project = store.create_project(Project(root_path=str(repo)))
+
+            with TestClient(create_app(ProjectRegistry(store))) as client:
+                before = client.get(f"/sessions/{project.id}")
+                self.assertEqual(before.status_code, 200, before.text)
+                self.assertEqual(before.json()["sharing_readiness"], "ready")
+                self.assertTrue(before.json()["can_enable_sharing"])
+
+                rejected = client.post(
+                    f"/sessions/{project.id}/sharing",
+                    json={"sharing": "shared"},
+                )
+                self.assertEqual(rejected.status_code, 400, rejected.text)
+                self.assertIn(
+                    "project owner repository must have at least one commit",
+                    rejected.json()["detail"],
+                )
+
+                after = client.get(f"/sessions/{project.id}")
+                self.assertEqual(after.status_code, 200, after.text)
+                self.assertEqual(after.json()["sharing"], "device-native")
 
     def test_non_git_enable_and_join_require_ack_and_record_each_path(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

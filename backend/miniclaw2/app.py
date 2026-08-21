@@ -197,7 +197,7 @@ class SessionInfo(BaseModel):
     can_delete: bool = True
     sharing: str = "device-native"
     identity: Literal["git-root-commit", "environment-attested"] = "git-root-commit"
-    sharing_readiness: str = "ready"
+    sharing_readiness: Literal["ready", "ready-unverified"] = "ready"
     can_enable_sharing: bool = False
     can_join_here: bool = False
     hosts: list[dict[str, Any]] = Field(default_factory=list)
@@ -2240,7 +2240,6 @@ def _session_info(registry: ProjectRegistry, project: Any) -> SessionInfo:
             registry.store.read_only_reason is None
             and project.sharing == "device-native"
             and not project.temporary
-            and sharing_readiness in {"ready", "ready-unverified"}
         ),
         can_join_here=project.sharing == "shared" and not is_native,
         hosts=registry.store.list_hosts(project.id),
