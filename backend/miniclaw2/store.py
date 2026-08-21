@@ -5,11 +5,13 @@ Layout under ``$MINICLAW_HOME`` (default ``~/.miniclaw2``)::
     projects/
       <pid>/
         project.json
-        nodes/
-          <nid>/
-            node.json
-            events.jsonl
-            gates.jsonl
+        hosts/
+          <machine-id>/
+            nodes/
+              <nid>/
+                node.json
+                events.jsonl
+                gates.jsonl
 Each node has a single runner and therefore a single event writer. Different
 nodes in one project may run concurrently; project-wide graph reconciliation
 is serialized by ``ProjectRuntime`` while per-node records remain independent.
@@ -104,22 +106,15 @@ class Store:
     def _host_dir(self, pid: str, machine_id: str) -> Path:
         return self._hosts_dir(pid) / machine_id
 
-    def _is_partitioned(self, pid: str) -> bool:
-        return self._hosts_dir(pid).is_dir()
-
     def is_bound_here(self, pid: str) -> bool:
         """Whether this host has a local checkout path for the project."""
         return (self._host_dir(pid, self.machine.id) / "local.json").is_file()
 
-    def _owner_mid(self, pid: str, nid: str) -> str | None:
-        if not self._is_partitioned(pid):
-            return None
+    def _owner_mid(self, pid: str, nid: str) -> str:
         return self._owner_index.get(pid, {}).get(nid, self.machine.id)
 
     def node_dir(self, pid: str, nid: str) -> Path:
         owner = self._owner_mid(pid, nid)
-        if owner is None:
-            return self._project_dir(pid) / "nodes" / nid
         return self._host_dir(pid, owner) / "nodes" / nid
 
     def _node_file(self, pid: str, nid: str) -> Path:
@@ -135,9 +130,7 @@ class Store:
         return self.node_dir(pid, nid) / "preview.json"
 
     def _git_aliases_file(self, pid: str) -> Path:
-        if self._is_partitioned(pid):
-            return self._host_dir(pid, self.machine.id) / "git_aliases.json"
-        return self._project_dir(pid) / "git_aliases.json"
+        return self._host_dir(pid, self.machine.id) / "git_aliases.json"
 
     def _head_file(self, pid: str, machine_id: str) -> Path:
         return self._host_dir(pid, machine_id) / "head.json"
@@ -172,7 +165,7 @@ class Store:
             self._last_activity_index[pid] = activity_at
 
     def refresh_local_fingerprint(self, project: Project) -> bool:
-        if not self.is_bound_here(project.id) or not self._is_partitioned(project.id):
+        if not self.is_bound_here(project.id):
             return False
         roots = root_commits(project.root_path)
         path = self._host_dir(project.id, self.machine.id) / "host.json"
@@ -385,22 +378,19 @@ class Store:
     def update_project(self, project: Project) -> None:
         self.assert_writable()
         project.bind_model_catalog(self.root)
-        if self._is_partitioned(project.id):
-            host_dir = self._host_dir(project.id, self.machine.id)
-            if self.is_bound_here(project.id):
-                self._write_json(host_dir / "local.json", {"root_path": project.root_path})
-                self._write_json(
-                    host_dir / "layout.json",
-                    {
-                        "layout_hints": project.layout_hints,
-                        "layout_viewport": project.layout_viewport,
-                    },
-                )
-            payload = project.model_dump(
-                exclude={"provider", "root_path", "layout_hints", "layout_viewport"}
+        host_dir = self._host_dir(project.id, self.machine.id)
+        if self.is_bound_here(project.id):
+            self._write_json(host_dir / "local.json", {"root_path": project.root_path})
+            self._write_json(
+                host_dir / "layout.json",
+                {
+                    "layout_hints": project.layout_hints,
+                    "layout_viewport": project.layout_viewport,
+                },
             )
-        else:
-            payload = project.model_dump(exclude={"provider"})
+        payload = project.model_dump(
+            exclude={"provider", "root_path", "layout_hints", "layout_viewport"}
+        )
         self._write_json(
             self._project_file(project.id),
             payload,
@@ -421,30 +411,32 @@ class Store:
             if not pdir.is_dir():
                 continue
             pf = pdir / "project.json"
-            if pf.exists():
+            # Host partitions are the authority boundary. A flat project can
+            # only have arrived from a pre-partition peer and is not part of
+            # the current store contract.
+            if pf.exists() and (pdir / "hosts").is_dir():
                 try:
                     payload = self._read_json(pf)
-                    if (pdir / "hosts").is_dir():
-                        local_dir = pdir / "hosts" / self.machine.id
-                        local_payload: dict[str, Any] = {}
-                        layout_payload: dict[str, Any] = {}
-                        if (local_dir / "local.json").is_file():
-                            local_payload = self._read_json(local_dir / "local.json")
-                        if (local_dir / "layout.json").is_file():
-                            layout_payload = self._read_json(local_dir / "layout.json")
-                        payload.update(
-                            {
-                                "root_path": local_payload.get(
-                                    "root_path", UNBOUND_ROOT_PATH
-                                ),
-                                "layout_hints": layout_payload.get(
-                                    "layout_hints", {}
-                                ),
-                                "layout_viewport": layout_payload.get(
-                                    "layout_viewport"
-                                ),
-                            }
-                        )
+                    local_dir = pdir / "hosts" / self.machine.id
+                    local_payload: dict[str, Any] = {}
+                    layout_payload: dict[str, Any] = {}
+                    if (local_dir / "local.json").is_file():
+                        local_payload = self._read_json(local_dir / "local.json")
+                    if (local_dir / "layout.json").is_file():
+                        layout_payload = self._read_json(local_dir / "layout.json")
+                    payload.update(
+                        {
+                            "root_path": local_payload.get(
+                                "root_path", UNBOUND_ROOT_PATH
+                            ),
+                            "layout_hints": layout_payload.get(
+                                "layout_hints", {}
+                            ),
+                            "layout_viewport": layout_payload.get(
+                                "layout_viewport"
+                            ),
+                        }
+                    )
                     project = _validate_project_record(pf, payload)
                     project.tag_ids = [
                         tag_id
@@ -483,27 +475,25 @@ class Store:
             self._node_file(node.project_id, node.id),
             node.model_dump(exclude={"provider", "owner_host_id"}),
         )
-        if self._is_partitioned(node.project_id):
-            self._owner_index.setdefault(node.project_id, {})[node.id] = self.machine.id
-            node.bind_owner_host(self.machine.id)
+        self._owner_index.setdefault(node.project_id, {})[node.id] = self.machine.id
+        node.bind_owner_host(self.machine.id)
         self.sync.schedule_commit(f"create node {node.id}")
         return node
 
     def load_node(self, pid: str, nid: str) -> Node | None:
         path = self._node_file(pid, nid)
-        if not path.exists() and self._is_partitioned(pid):
+        if not path.exists():
             matches = list(self._hosts_dir(pid).glob(f"*/nodes/{nid}/node.json"))
             if matches:
                 path = matches[0]
-                owner = path.parents[2].name
-                self._owner_index.setdefault(pid, {})[nid] = owner
         if not path.exists():
             return None
         node = Node.model_validate(self._read_json(path)).bind_model_catalog(self.root)
-        owner = self._owner_index.get(pid, {}).get(nid)
-        if owner is None:
-            project = next((item for item in self.list_projects() if item.id == pid), None)
-            owner = project.machine_id if project is not None else ""
+        # The partition a record physically lives in is the only thing that
+        # decides who may rewrite it. Deriving the owner from the loaded path
+        # keeps synchronized provenance fields out of local write authority.
+        owner = path.parents[2].name
+        self._owner_index.setdefault(pid, {})[nid] = owner
         return node.bind_owner_host(owner)
 
     def update_node(self, node: Node) -> None:
@@ -540,10 +530,7 @@ class Store:
         pid: str,
         project: Project | None,
     ) -> list[Node]:
-        if self._is_partitioned(pid):
-            node_files = list(self._hosts_dir(pid).glob("*/nodes/*/node.json"))
-        else:
-            node_files = list((self._project_dir(pid) / "nodes").glob("*/node.json"))
+        node_files = list(self._hosts_dir(pid).glob("*/nodes/*/node.json"))
         out: list[Node] = []
         owners: dict[str, str] = {}
         for nf in node_files:
@@ -551,9 +538,7 @@ class Store:
                 node = Node.model_validate(self._read_json(nf)).bind_model_catalog(
                     self.root
                 )
-                owner = nf.parents[2].name if self._is_partitioned(pid) else (
-                    project.machine_id if project is not None else ""
-                )
+                owner = nf.parents[2].name
                 owners[node.id] = owner
                 out.append(node.bind_owner_host(owner))
             except (ValueError, ValidationError):

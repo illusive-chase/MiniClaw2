@@ -173,20 +173,14 @@ class ActiveNodesIndex:
     def _node_files(self, store_root: Path, project: Project) -> list[tuple[Path, str]]:
         """Return ``(node.json path, owning machine id)`` for one project.
 
-        Mirrors ``Store._list_nodes_for_project``'s layout split. Current
-        projects use per-host storage; legacy projects may still use the flat
-        nodes directory.
+        Mirrors ``Store._list_nodes_for_project``: the containing host
+        partition is the node's authority source.
         """
         project_dir = store_root / "projects" / project.id
         hosts_dir = project_dir / "hosts"
-        if hosts_dir.is_dir():
-            return [
-                (path, path.parents[2].name)
-                for path in hosts_dir.glob("*/nodes/*/node.json")
-            ]
         return [
-            (path, project.machine_id)
-            for path in (project_dir / "nodes").glob("*/node.json")
+            (path, path.parents[2].name)
+            for path in hosts_dir.glob("*/nodes/*/node.json")
         ]
 
     def facts_for_project(self, store_root: Path, project: Project) -> list[NodeFacts]:

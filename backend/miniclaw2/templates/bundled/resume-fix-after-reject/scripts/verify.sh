@@ -32,8 +32,7 @@ import json, pathlib, sys
 
 project_dir = pathlib.Path(sys.argv[1])
 nodes = []
-node_files = list((project_dir / "nodes").glob("*/node.json"))
-node_files += list((project_dir / "hosts").glob("*/nodes/*/node.json"))
+node_files = list((project_dir / "hosts").glob("*/nodes/*/node.json"))
 for node_json in sorted(node_files):
     try:
         data = json.loads(node_json.read_text(encoding="utf-8"))

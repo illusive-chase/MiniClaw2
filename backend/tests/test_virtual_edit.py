@@ -63,6 +63,30 @@ class VirtualEditRegistryTests(unittest.TestCase):
         self.store.create_node(node)
         return node
 
+    def test_update_virtual_preserves_owner_host_so_edits_stay_repeatable(
+        self,
+    ) -> None:
+        """The updated node is revalidated from a dump, which drops private
+        attributes. The owner host must be rebound, or the edited node reports
+        belonging to no host and every ownership check reads that as foreign —
+        locking the node the user just edited."""
+        child = self._virtual("child")
+
+        updated = self.registry.update_virtual(
+            self.project.id, child.id, prompt_draft="new draft"
+        )
+
+        assert updated is not None
+        self.assertEqual(updated.owner_host_id, self.store.machine.id)
+        self.assertTrue(self.registry.is_native_node(self.project, updated))
+
+        # The node the panel now holds must still accept a second edit.
+        again = self.registry.update_virtual(
+            self.project.id, child.id, prompt_draft="newer draft"
+        )
+        assert again is not None
+        self.assertEqual(again.owner_host_id, self.store.machine.id)
+
     def test_update_virtual_edits_prompt_motivation_deps_and_obsolete_reason(self) -> None:
         parent = self._virtual("parent")
         child = self._virtual("child")

@@ -15,6 +15,7 @@ import type {
   TemplateInstanceRecord,
 } from "../types";
 import type { PrincipleSummary, SkillSummary, UpdateVirtualPayload } from "../api";
+import { nodeMutationLock } from "../nodeUtil";
 import {
   coerceSkillAuditEntries,
   splitSkillAttachments,
@@ -356,9 +357,8 @@ function Inner(props: SidePanelProps & { nodesById: Map<string, NodeInfo> }) {
     const node = nodesById.get(selection.nodeId);
     if (!node) return <Missing />;
     if (!session) return <Missing />;
-    const canMutateNode =
-      !session.read_only &&
-      node.owner_host_id === session.local_machine_id;
+    const mutationLock = nodeMutationLock(node, session);
+    const canMutateNode = mutationLock === null;
     return (
       <AgentPanel
         sessionId={session.id}
@@ -386,6 +386,7 @@ function Inner(props: SidePanelProps & { nodesById: Map<string, NodeInfo> }) {
         canInterrupt={canInterrupt && canMutateNode}
         canRerun={canRerun && canMutateNode}
         canMutate={canMutateNode}
+        mutationLock={mutationLock}
         manualPromotionPlanspaceId={manualPromotionPlanspaceId}
         activePlanspaceId={contextSpace?.active_planspace_id ?? null}
         knownPlanspaceIds={

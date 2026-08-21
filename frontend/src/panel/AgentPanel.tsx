@@ -47,6 +47,7 @@ import {
   nodeClassification,
   nodeClassificationLabel,
   type NodeClassification,
+  type NodeMutationLock,
 } from "../nodeUtil";
 import { GateReviewForm } from "./gateReview";
 import { InspectDrawer } from "./InspectDrawer";
@@ -86,6 +87,7 @@ export type AgentPanelProps = {
   canInterrupt: boolean;
   canRerun: boolean;
   canMutate: boolean;
+  mutationLock: NodeMutationLock;
   manualPromotionPlanspaceId: string | null;
   activePlanspaceId: string | null;
   knownPlanspaceIds: string[];
@@ -126,6 +128,7 @@ export function AgentPanel({
   canInterrupt,
   canRerun,
   canMutate,
+  mutationLock,
   manualPromotionPlanspaceId,
   activePlanspaceId,
   knownPlanspaceIds,
@@ -369,9 +372,19 @@ export function AgentPanel({
         ref={panelScrollRef}
         className="flex-1 overflow-y-auto bg-surface px-4 py-3 text-sm"
       >
-        {!canMutate && (
+        {mutationLock === "project_unbound" && (
           <div className="mb-3 rounded-md border border-state-waiting/30 bg-state-waiting-soft px-3 py-2 text-[11px] text-state-waiting">
-            此节点属于另一台设备，本机仅可查看。
+            只读 · 此设备尚未配置项目路径。配置后可在本机创建新节点。
+          </div>
+        )}
+        {mutationLock === "store_read_only" && (
+          <div className="mb-3 rounded-md border border-state-waiting/30 bg-state-waiting-soft px-3 py-2 text-[11px] text-state-waiting">
+            只读 · 当前项目存储在本机不可写。
+          </div>
+        )}
+        {mutationLock === "foreign_host" && (
+          <div className="mb-3 rounded-md border border-state-waiting/30 bg-state-waiting-soft px-3 py-2 text-[11px] text-state-waiting">
+            此节点的记录保存在另一台设备的分区中，本机仅可查看。
           </div>
         )}
         {canMutate && inactiveKnownPlanspace && node.planspace_id && (

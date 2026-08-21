@@ -296,6 +296,43 @@ class HostPartitionStoreTests(unittest.TestCase):
                 NodeState.RUNNING,
             )
 
+    def test_locally_stored_node_stays_native_when_another_host_created_it(
+        self,
+    ) -> None:
+        """Authority follows the partition a record lives in, not provenance.
+
+        A project created elsewhere and then bound here keeps its creator
+        machine id in synced ``project.json``. Nodes this host writes live in
+        this host's partition and must stay writable — including on a cold
+        owner index, which is the state after every sync.
+        """
+        with tempfile.TemporaryDirectory() as raw:
+            base = Path(raw)
+            store = Store(base / "store")
+            project = store.create_project(
+                Project(root_path=str(_repo(base / "repo")))
+            )
+            local = store.create_node(
+                Node(
+                    project_id=project.id,
+                    model_preset_id=project.model_preset_id,
+                )
+            )
+
+            # Provenance says another device; the local binding is unchanged.
+            project.machine_id = "creator-host"
+            store.update_project(project)
+            store.invalidate_owner_index()
+
+            self.assertTrue(store.is_bound_here(project.id))
+            self.assertEqual(
+                store.load_node(project.id, local.id).owner_host_id,
+                store.machine.id,
+            )
+            registry = ProjectRegistry(store)
+            reloaded = store.load_node(project.id, local.id)
+            self.assertTrue(registry.is_native_node(project, reloaded))
+
     def test_project_without_local_binding_remains_visible(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             base = Path(raw)
@@ -313,6 +350,46 @@ class HostPartitionStoreTests(unittest.TestCase):
             self.assertEqual(len(loaded), 1)
             self.assertEqual(loaded[0].root_path, UNBOUND_ROOT_PATH)
             self.assertFalse(loaded[0].is_bound)
+
+    def test_flat_project_from_legacy_peer_is_ignored(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            base = Path(raw)
+            store = Store(base / "store")
+            project = Project(
+                root_path="/remote/checkout",
+                machine_id="legacy-peer",
+                machine_label="Legacy peer",
+            )
+            node = Node(
+                id="flat-node",
+                project_id=project.id,
+                model_preset_id=project.model_preset_id,
+                state=NodeState.RUNNING,
+            )
+            project_dir = store.root / "projects" / project.id
+            node_file = project_dir / "nodes" / node.id / "node.json"
+            node_file.parent.mkdir(parents=True)
+            (project_dir / "project.json").write_text(
+                json.dumps(project.model_dump(exclude={"provider"})),
+                encoding="utf-8",
+            )
+            node_file.write_text(
+                json.dumps(node.model_dump(exclude={"provider", "owner_host_id"})),
+                encoding="utf-8",
+            )
+            (project_dir / "git_aliases.json").write_text(
+                json.dumps({"old": "new"}),
+                encoding="utf-8",
+            )
+
+            self.assertEqual(store.list_projects(), [])
+            self.assertEqual(store.list_nodes(project.id), [])
+            self.assertIsNone(store.load_node(project.id, node.id))
+            self.assertEqual(store.read_git_aliases(project.id), {})
+            self.assertEqual(
+                store.node_dir(project.id, node.id),
+                project_dir / "hosts" / store.machine.id / "nodes" / node.id,
+            )
 
     def test_partitioned_native_project_is_unbound_on_non_owner_device(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

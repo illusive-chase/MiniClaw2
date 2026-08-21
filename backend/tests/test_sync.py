@@ -209,6 +209,7 @@ class StoreIdentityMigrationTests(unittest.TestCase):
             )
             loaded = next(project for project in store.list_projects() if project.id == owned.id)
             self.assertEqual(loaded.root_path, str(repo))
+            self.assertNotIn(foreign.id, {project.id for project in store.list_projects()})
 
     def test_v12_recovery_moves_aliases_after_nodes_were_already_moved(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

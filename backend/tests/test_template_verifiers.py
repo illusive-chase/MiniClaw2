@@ -12,7 +12,7 @@ BACKEND_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _write_node(project_dir: Path, node_id: str, payload: dict) -> None:
-    node_dir = project_dir / "nodes" / node_id
+    node_dir = project_dir / "hosts" / "test-host" / "nodes" / node_id
     node_dir.mkdir(parents=True, exist_ok=True)
     (node_dir / "node.json").write_text(
         json.dumps(payload, indent=2),
@@ -54,7 +54,14 @@ class TemplateVerifierTests(unittest.TestCase):
                     "finished_at": 2.0,
                 },
             )
-            events_path = project_dir / "nodes" / "turn1-node" / "events.jsonl"
+            events_path = (
+                project_dir
+                / "hosts"
+                / "test-host"
+                / "nodes"
+                / "turn1-node"
+                / "events.jsonl"
+            )
             events_path.write_text(
                 json.dumps({"seq": 1, "event": {"type": "text_delta"}}) + "\n",
                 encoding="utf-8",

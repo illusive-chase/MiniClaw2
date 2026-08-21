@@ -16,7 +16,7 @@ if [[ -z "${MINICLAW_PROJECT_ID:-}" ]]; then
 fi
 
 project_dir="$MINICLAW_HOME/projects/$MINICLAW_PROJECT_ID"
-if [[ ! -d "$project_dir/nodes" && ! -d "$project_dir/hosts" ]]; then
+if [[ ! -d "$project_dir/hosts" ]]; then
   echo "no node storage under: $project_dir" >&2
   exit 3
 fi
@@ -29,8 +29,7 @@ project_dir = sys.argv[1]
 # node is usually a later verify/accept virtual. Select the template's
 # first regular agent node instead.
 candidates = []
-node_files = glob.glob(os.path.join(project_dir, "nodes", "*", "node.json"))
-node_files += glob.glob(os.path.join(project_dir, "hosts", "*", "nodes", "*", "node.json"))
+node_files = glob.glob(os.path.join(project_dir, "hosts", "*", "nodes", "*", "node.json"))
 for nf in node_files:
     if not os.path.isfile(nf):
         continue

@@ -749,16 +749,11 @@ function ProjectCard({
       <TagChipRow tags={tags} />
 
       <div className="flex flex-wrap items-center gap-1.5 text-[10px]">
-        <span
-          className={
-            "rounded border px-1.5 py-0.5 " +
-            (session.bound_here
-              ? "border-state-done/30 bg-state-done-soft text-state-done"
-              : "border-state-waiting/40 bg-state-waiting-soft text-state-waiting")
-          }
-        >
-          {session.bound_here ? "● 已绑定" : "○ 配置路径"}
-        </span>
+        {!session.bound_here && (
+          <span className="rounded border border-state-waiting/40 bg-state-waiting-soft px-1.5 py-0.5 text-state-waiting">
+            ○ 需要配置
+          </span>
+        )}
         {session.preferred_language && (
           <span className="rounded border border-line bg-surface-sunken px-1.5 py-0.5 text-ink-muted">
             {languageLabel(session.preferred_language)}

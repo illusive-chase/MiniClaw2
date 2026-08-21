@@ -240,7 +240,9 @@ export function ProjectPanel({
         </div>
         {session.read_only && (
           <div className="mt-2 inline-flex rounded border border-state-waiting/40 bg-state-waiting-soft px-2 py-1 text-[10.5px] text-state-waiting">
-            只读 · 此设备尚未配置项目路径
+            {session.bound_here
+              ? "只读 · 当前项目存储在本机不可写"
+              : "只读 · 此设备尚未配置项目路径"}
           </div>
         )}
       </div>

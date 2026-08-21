@@ -2687,9 +2687,13 @@ class ProjectRegistry:
                 )
             update["model_preset_id"] = next_model_preset_id
         updated = existing.model_copy(update=update)
+        # Revalidating from a dump drops private attributes, so the owner host
+        # must be rebound before this node is persisted, broadcast, or returned.
+        # Without it an edited virtual reports itself as belonging to no host,
+        # and every ownership check downstream reads that as "not mine".
         updated = Node.model_validate(
             updated.model_dump(exclude={"provider", "owner_host_id"})
-        )
+        ).bind_owner_host(existing.owner_host_id)
         lane_id = updated.planspace_id or ""
         if has_cycle(self._lane_nodes_with(pid, lane_id, updated)):
             raise ValueError("scheduled_deps would introduce a cycle in the lane DAG")

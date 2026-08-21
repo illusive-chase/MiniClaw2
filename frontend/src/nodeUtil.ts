@@ -13,6 +13,37 @@ export function preferNewerNode(current: NodeInfo, incoming: NodeInfo): NodeInfo
   return (incoming.rev ?? 0) >= (current.rev ?? 0) ? incoming : current;
 }
 
+/** Whether a node's record lives in this host's store partition.
+ *
+ * An absent `owner_host_id` is not evidence of foreign ownership — it means the
+ * server did not report one — so it counts as local rather than locking the
+ * node out. Provenance (which device created the project) is deliberately not
+ * consulted: it is a synced value and must never decide local authority.
+ */
+export function nodeBelongsToHost(
+  node: Pick<NodeInfo, "owner_host_id">,
+  localMachineId: string | undefined,
+): boolean {
+  const owner = node.owner_host_id;
+  return !owner || owner === localMachineId;
+}
+
+/** Why this device cannot rewrite a node, or null when it can. */
+export type NodeMutationLock =
+  | "project_unbound"
+  | "store_read_only"
+  | "foreign_host"
+  | null;
+
+export function nodeMutationLock(
+  node: Pick<NodeInfo, "owner_host_id">,
+  session: { bound_here: boolean; read_only: boolean; local_machine_id: string },
+): NodeMutationLock {
+  if (!nodeBelongsToHost(node, session.local_machine_id)) return "foreign_host";
+  if (!session.read_only) return null;
+  return session.bound_here ? "store_read_only" : "project_unbound";
+}
+
 export function nodeIdsNeedingEventReplay(
   nodes: readonly Pick<NodeInfo, "id" | "state">[],
 ): string[] {

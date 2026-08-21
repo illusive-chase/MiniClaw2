@@ -110,6 +110,7 @@ import { useSessionSocket } from "./ws";
 import { useActiveNodes } from "./activeNodes";
 import {
   canResumeNode,
+  nodeBelongsToHost,
   nodeIdsByRecentActivityInLane,
   nodeIdsNeedingEventReplay,
   preferNewerNode,
@@ -738,7 +739,7 @@ export function App() {
     [nodes, inspectedNodeId],
   );
   const isNodeNative = useCallback(
-    (node: NodeInfo) => node.owner_host_id === session?.local_machine_id,
+    (node: NodeInfo) => nodeBelongsToHost(node, session?.local_machine_id),
     [session?.local_machine_id],
   );
   const sessionWithRuntimeCounts = useMemo(
@@ -2738,7 +2739,9 @@ export function App() {
               {gitError && <span className="max-w-[18rem] truncate text-state-error" title={gitError}>{gitError}</span>}
               {session?.read_only && (
                 <span className="rounded border border-state-waiting/40 bg-state-waiting-soft px-1.5 py-0.5 font-sans text-state-waiting">
-                  只读 · 此设备尚未配置项目路径
+                  {session.bound_here
+                    ? "只读 · 当前项目存储在本机不可写"
+                    : "只读 · 此设备尚未配置项目路径"}
                 </span>
               )}
               {session?.can_bind_here && (

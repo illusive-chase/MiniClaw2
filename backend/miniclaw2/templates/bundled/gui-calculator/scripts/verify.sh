@@ -88,7 +88,7 @@ if (( commit_count < 2 )); then
 fi
 
 project_dir="$MINICLAW_HOME/projects/$MINICLAW_PROJECT_ID"
-if [[ ! -d "$project_dir/nodes" && ! -d "$project_dir/hosts" ]]; then
+if [[ ! -d "$project_dir/hosts" ]]; then
   echo "no node storage under: $project_dir" >&2
   exit 10
 fi
@@ -97,8 +97,7 @@ python3 - "$project_dir" <<'PY'
 import glob, json, os, sys
 project_dir = sys.argv[1]
 agents = []
-node_files = glob.glob(os.path.join(project_dir, "nodes", "*", "node.json"))
-node_files += glob.glob(os.path.join(project_dir, "hosts", "*", "nodes", "*", "node.json"))
+node_files = glob.glob(os.path.join(project_dir, "hosts", "*", "nodes", "*", "node.json"))
 for nf in node_files:
     if not os.path.isfile(nf):
         continue
