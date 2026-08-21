@@ -452,6 +452,17 @@ class ActiveNodesGateTests(unittest.TestCase):
 
 
 class ActiveNodesEndpointTests(unittest.TestCase):
+    def test_workspace_websocket_attaches_without_a_project(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            _store, registry = _registry(base)
+
+            with TestClient(create_app(registry)) as client:
+                with client.websocket_connect("/ws/-"):
+                    self.assertEqual(len(registry._workspace_observers), 1)
+
+            self.assertEqual(registry._workspace_observers, {})
+
     def test_endpoint_returns_entries(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
@@ -515,6 +526,66 @@ class ActiveNodesEndpointTests(unittest.TestCase):
                 blockers = client.get("/self-update").json()["blockers"]
 
             self.assertEqual([item["node_id"] for item in blockers], [waiting.id])
+
+
+class WorkspaceNodeEventTests(unittest.IsolatedAsyncioTestCase):
+    async def test_transition_pushes_active_entry_with_ephemeral_sequence(self) -> None:
+        from miniclaw2.runner import NodeRunner
+
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            store, registry = _registry(base)
+            project = _add_project(store, registry, base / "p", name="p")
+            node = _add_node(store, project, state=NodeState.QUEUED, summary="执行")
+            events: list[dict[str, object]] = []
+
+            async def collect(event: dict[str, object]) -> None:
+                events.append(event)
+
+            registry.attach_workspace_observer(collect)
+            runner = NodeRunner(
+                node,
+                project,
+                store,
+                lambda _event: asyncio.sleep(0),
+                on_state_change=lambda changed, previous: registry._publish_workspace_node(
+                    project, changed, previous
+                ),
+            )
+            registry._runtimes[project.id].runners[node.id] = runner
+
+            runner._transition(NodeState.RUNNING, started=True)
+            await asyncio.sleep(0)
+
+            self.assertEqual(len(events), 1)
+            event = events[0]
+            self.assertEqual(event["type"], "workspace_node_updated")
+            self.assertEqual(event["seq"], 0)
+            self.assertEqual(event["previous_state"], "queued")
+            self.assertEqual(event["entry"]["node_id"], node.id)  # type: ignore[index]
+            self.assertEqual(event["entry"]["state"], "running")  # type: ignore[index]
+
+            runner._transition(NodeState.RUNNING)
+            await asyncio.sleep(0)
+            self.assertEqual(len(events), 1)
+
+    async def test_hard_delete_event_is_distinct_from_visibility_removal(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            store, registry = _registry(base)
+            project = _add_project(store, registry, base / "p", name="p")
+            node = _add_node(store, project, state=NodeState.VIRTUAL, summary="草稿")
+            events: list[dict[str, object]] = []
+
+            async def collect(event: dict[str, object]) -> None:
+                events.append(event)
+
+            registry.attach_workspace_observer(collect)
+            await registry._publish_workspace_removed(project, node)
+
+            self.assertEqual(events[0]["type"], "workspace_node_removed")
+            self.assertTrue(events[0]["deleted"])
+            self.assertEqual(events[0]["previous_state"], "virtual")
 
 
 if __name__ == "__main__":

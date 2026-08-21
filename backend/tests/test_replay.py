@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from miniclaw2.domain import Node, NodeKind, NodeState, Project
-from miniclaw2.registry import ProjectRegistry
+from miniclaw2.registry import ProjectRegistry, ProjectRuntime
 from miniclaw2.replay import (
     EVENT_SCHEMA_VERSION,
     LiveReplayBuffer,
@@ -112,6 +112,7 @@ class CoveredByReplayTest(unittest.TestCase):
             )
         )
 
+
     def test_legacy_checkpoint_review_is_upgraded_before_replay(self) -> None:
         upgraded = upgrade_event_record(
             {
@@ -155,6 +156,45 @@ class CoveredByReplayTest(unittest.TestCase):
             },
         )
         self.assertNotIn("updated_input", upgraded)
+
+
+class RegistryReplayCompatibilityTest(unittest.TestCase):
+    def test_legacy_lifecycle_events_receive_current_node_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            store = Store(root=Path(raw) / "store")
+            registry = ProjectRegistry(store=store)
+            project_root = Path(raw) / "repo"
+            project_root.mkdir()
+            project = store.create_project(
+                Project(root_path=str(project_root), machine_id=store.machine.id)
+            )
+            registry._runtimes[project.id] = ProjectRuntime(project)
+            node = store.create_node(
+                Node(
+                    project_id=project.id,
+                    kind=NodeKind.AGENT,
+                    model_preset_id=project.model_preset_id,
+                    state=NodeState.DONE,
+                )
+            )
+            store.append_event(
+                project.id,
+                node.id,
+                1,
+                {"type": "node_started", "node_id": node.id, "seq": 1},
+            )
+            store.append_event(
+                project.id,
+                node.id,
+                2,
+                {"type": "turn_done", "node_id": node.id, "seq": 2},
+            )
+
+            records = registry.replay_node_events(project.id, node.id)
+
+            assert records is not None
+            self.assertEqual(records[0]["event"]["node"]["id"], node.id)
+            self.assertEqual(records[1]["event"]["node"]["state"], "done")
 
 
 class FreshNodeLaunchTest(unittest.TestCase):

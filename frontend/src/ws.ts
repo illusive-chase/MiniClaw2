@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { ClientMessage, ServerEvent } from "./types";
+import type { ClientMessage, ServerEvent, WorkspaceEvent } from "./types";
 
 export type WSStatus = "connecting" | "open" | "closed";
 
@@ -158,4 +158,58 @@ export function useSessionSocket(
   };
 
   return { status, send, simulateDrop };
+}
+
+export function useWorkspaceSocket(
+  enabled: boolean,
+  onEvent: (ev: WorkspaceEvent) => void,
+  onOpen: () => void,
+): WSStatus {
+  const [status, setStatus] = useState<WSStatus>("closed");
+  const onEventRef = useRef(onEvent);
+  const onOpenRef = useRef(onOpen);
+  onEventRef.current = onEvent;
+  onOpenRef.current = onOpen;
+
+  useEffect(() => {
+    if (!enabled) {
+      setStatus("closed");
+      return;
+    }
+    let cancelled = false;
+    let ws: WebSocket | null = null;
+
+    const connect = () => {
+      if (cancelled) return;
+      const proto = window.location.protocol === "https:" ? "wss" : "ws";
+      ws = new WebSocket(`${proto}://${window.location.host}/ws/-`);
+      setStatus("connecting");
+      ws.onopen = () => {
+        setStatus("open");
+        onOpenRef.current();
+      };
+      ws.onclose = (event) => {
+        setStatus("closed");
+        if (!cancelled && (event.code < 4000 || event.code >= 5000)) {
+          window.setTimeout(connect, 1000);
+        }
+      };
+      ws.onerror = () => setStatus("closed");
+      ws.onmessage = (event) => {
+        try {
+          onEventRef.current(JSON.parse(event.data) as WorkspaceEvent);
+        } catch (error) {
+          console.error("bad workspace ws frame", error);
+        }
+      };
+    };
+
+    connect();
+    return () => {
+      cancelled = true;
+      ws?.close();
+    };
+  }, [enabled]);
+
+  return status;
 }

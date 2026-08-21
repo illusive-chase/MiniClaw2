@@ -38,7 +38,7 @@ import {
   sortFeed,
   summarize,
   unreadEntries,
-  useActiveNodes,
+  type ActiveNodesFeed,
   writeReadKeys,
   writeUnreadOnly,
 } from "../activeNodes";
@@ -47,6 +47,7 @@ import type { ActiveNodeEntry } from "../types";
 
 type Props = {
   enabled: boolean;
+  feed: ActiveNodesFeed;
   currentSessionId: string | null;
   onJump: (entry: ActiveNodeEntry) => void;
 };
@@ -60,8 +61,8 @@ const BADGE_TONE_CLASS: Record<string, string> = {
 /* Panel gap below the header, matching GitWorkspaceStatus's popover offset. */
 const PANEL_TOP_GAP = 6;
 
-export function NotificationBell({ enabled, currentSessionId, onJump }: Props) {
-  const { entries, loaded } = useActiveNodes(enabled);
+export function NotificationBell({ enabled, feed, currentSessionId, onJump }: Props) {
+  const { entries, loaded } = feed;
   const [open, setOpen] = useState(false);
   const [unreadOnly, setUnreadOnly] = useState(readUnreadOnly);
   const [readKeys, setReadKeys] = useState<Set<string>>(() => new Set());

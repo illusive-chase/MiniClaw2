@@ -142,11 +142,13 @@ class NodeRunner:
         on_event: Callable[[dict[str, Any]], Awaitable[None]],
         *,
         reap_lock: asyncio.Lock | None = None,
+        on_state_change: Callable[[Node, NodeState], Awaitable[None]] | None = None,
     ) -> None:
         self.node = node
         self.project = project
         self.store = store
         self.on_event = on_event
+        self.on_state_change = on_state_change
         self._reap_lock = reap_lock or asyncio.Lock()
 
         self._seq = 0
@@ -346,7 +348,7 @@ class NodeRunner:
                         await self._emit(ErrorEvent(message=error_msg))
                 self._transition(final_state, finished=True)
                 await self._emit_node_updated()
-                await self._emit(TurnDone())
+                await self._emit(TurnDone(node=self.node.model_dump()))
         except asyncio.CancelledError:
             raise
         except StaleLaunchSettingsError as exc:
@@ -359,7 +361,7 @@ class NodeRunner:
             await self._emit_node_started()
             await self._emit(ErrorEvent(message=error_msg))
             await self._emit_node_updated()
-            await self._emit(TurnDone())
+            await self._emit(TurnDone(node=self.node.model_dump()))
         except Exception as exc:  # noqa: BLE001
             logger.exception("runner failed before start")
             error_msg = f"Unexpected runner error: {exc}"
@@ -370,7 +372,7 @@ class NodeRunner:
             await self._emit_node_started()
             await self._emit(ErrorEvent(message=error_msg))
             await self._emit_node_updated()
-            await self._emit(TurnDone())
+            await self._emit(TurnDone(node=self.node.model_dump()))
 
     async def _run_op(self) -> None:
         """Run a non-provider op node (currently only ``commit``).
@@ -439,7 +441,7 @@ class NodeRunner:
         self._write_op_preview(final_state)
         self._transition(final_state, finished=True)
         await self._emit_node_updated()
-        await self._emit(TurnDone())
+        await self._emit(TurnDone(node=self.node.model_dump()))
 
     async def _run_code_review(self) -> None:
         """Run a provider-native review without lane materialization or reap."""
@@ -564,7 +566,7 @@ class NodeRunner:
             )
         self._transition(final_state, finished=True)
         await self._emit_node_updated()
-        await self._emit(TurnDone())
+        await self._emit(TurnDone(node=self.node.model_dump()))
 
     async def _run_native_review(
         self, *, system_context: str
@@ -803,7 +805,7 @@ class NodeRunner:
         )
         self._transition(final_state, finished=True)
         await self._emit_node_updated()
-        await self._emit(TurnDone())
+        await self._emit(TurnDone(node=self.node.model_dump()))
 
     async def _run_provider_turn(
         self,
@@ -1419,6 +1421,7 @@ class NodeRunner:
         started: bool = False,
         finished: bool = False,
     ) -> None:
+        previous_state = self.node.state
         self.node.state = state
         now = time.time()
         if started and self.node.started_at is None:
@@ -1443,6 +1446,13 @@ class NodeRunner:
                     "failed to update project activity for %s",
                     self.project.id,
                 )
+        if state is not previous_state and self.on_state_change is not None:
+            try:
+                asyncio.get_running_loop().create_task(
+                    self.on_state_change(self.node, previous_state)
+                )
+            except RuntimeError:
+                pass
 
     # ---- provider event handling ----
 
@@ -1584,6 +1594,7 @@ class NodeRunner:
                 ),
                 agent_op_kind=self.node.agent_op_kind,
                 prompt=self.node.prompt,
+                node=self.node.model_dump(),
             )
         )
 

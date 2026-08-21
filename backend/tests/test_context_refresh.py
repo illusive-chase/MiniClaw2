@@ -110,6 +110,29 @@ class AgentDrivenContextTaskTest(unittest.TestCase):
             meta = (Path(raw) / ".miniclaw2" / "context.meta.json").read_text(encoding="utf-8")
             self.assertIn('"rewritten": false', meta)
 
+    def test_task_broadcasts_running_and_terminal_status(self) -> None:
+        async def scenario(project: Project, provider: FakeProvider) -> None:
+            statuses: list[dict[str, object]] = []
+
+            async def on_status(status: dict[str, object]) -> None:
+                statuses.append(status)
+
+            with patch("miniclaw2.runner._make_provider", return_value=provider):
+                start_context_task = context_refresh.start_context_task
+                start_context_task(project, mode="init", on_status=on_status)
+                task = context_refresh._TASKS[project.id].task
+                assert task is not None
+                await task
+
+            self.assertEqual(statuses[0]["running"], True)
+            self.assertEqual(statuses[0]["mode"], "init")
+            self.assertEqual(statuses[-1], {"running": False})
+            self.assertEqual(context_refresh.context_refresh_status(project.id), {"running": False})
+
+        with tempfile.TemporaryDirectory() as raw:
+            project = Project(root_path=raw, name="Alpha")
+            self._run(scenario(project, FakeProvider()))
+
 
 class ContextRefreshApiTest(unittest.TestCase):
     def _client_with_project(

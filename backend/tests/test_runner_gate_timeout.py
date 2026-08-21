@@ -146,10 +146,14 @@ class RunnerGateTimeoutTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(node.state, NodeState.DONE)
         self.assertIsNone(node.error)
+        started = next(ev for ev in emitted if ev.get("type") == "node_started")
+        self.assertEqual(started["node"]["id"], node.id)
+        self.assertEqual(started["node"]["state"], "running")
         self.assertTrue(
             any(ev.get("type") == "interaction_request" for ev in emitted)
         )
         self.assertEqual(emitted[-1].get("type"), "turn_done")
+        self.assertEqual(emitted[-1]["node"]["state"], "done")
 
     async def test_permission_timeout_can_automatically_reject(self) -> None:
         config = load_global_config(self.store_root)

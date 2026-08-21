@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 
 import {
-  ACTIVE_NODES_POLL_MS,
   READ_KEYS_STORAGE_KEY,
   UNREAD_ONLY_STORAGE_KEY,
   badgeCountLabel,
@@ -22,10 +21,9 @@ import {
   unreadEntries,
   writeReadKeys,
   writeUnreadOnly,
+  applyWorkspaceEvent,
 } from "../src/activeNodes";
 import type { ActiveNodeEntry, NodeState } from "../src/types";
-
-assert.equal(ACTIVE_NODES_POLL_MS, 15_000);
 
 function entry(
   nodeId: string,
@@ -51,6 +49,32 @@ function entry(
     finished_at: opts.finished_at ?? null,
     gate: opts.gate ?? null,
   };
+}
+
+/* ---- pushed workspace updates ---- */
+
+{
+  const running = entry("n1", "running");
+  const waiting = entry("n1", "waiting");
+  const updated = applyWorkspaceEvent([running], {
+    type: "workspace_node_updated",
+    project_id: "p1",
+    node_id: "n1",
+    entry: waiting,
+    previous_state: "running",
+    seq: 0,
+  });
+  assert.deepEqual(updated, [waiting]);
+  assert.deepEqual(
+    applyWorkspaceEvent(updated, {
+      type: "workspace_node_removed",
+      project_id: "p1",
+      node_id: "n1",
+      previous_state: "waiting",
+      seq: 0,
+    }),
+    [],
+  );
 }
 
 /** Swap in a working localStorage and clear it. */

@@ -78,6 +78,7 @@ class NodeStarted(BaseModel):
     subtype: str | None = None
     agent_op_kind: str | None = None
     prompt: str = ""
+    node: dict[str, Any]
     seq: int = 0
 
 
@@ -112,6 +113,37 @@ class GitStatus(BaseModel):
 class TurnDone(BaseModel):
     type: Literal["turn_done"] = "turn_done"
     node_id: str = ""
+    node: dict[str, Any]
+    seq: int = 0
+
+
+class WorkspaceNodeUpdated(BaseModel):
+    """Ephemeral workspace summary; never persisted or replayed."""
+
+    type: Literal["workspace_node_updated"] = "workspace_node_updated"
+    project_id: str
+    node_id: str
+    entry: dict[str, Any]
+    previous_state: str | None = None
+    created: bool = False
+    seq: int = 0
+
+
+class WorkspaceNodeRemoved(BaseModel):
+    """Remove a row from workspace summaries, optionally after hard delete."""
+
+    type: Literal["workspace_node_removed"] = "workspace_node_removed"
+    project_id: str
+    node_id: str
+    previous_state: str | None = None
+    deleted: bool = False
+    seq: int = 0
+
+
+class ContextRefreshUpdated(BaseModel):
+    type: Literal["context_refresh_updated"] = "context_refresh_updated"
+    project_id: str
+    context_refresh: dict[str, Any]
     seq: int = 0
 
 

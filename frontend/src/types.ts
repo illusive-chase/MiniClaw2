@@ -58,7 +58,12 @@ export type TokenUsage = {
   cumulative_cache_creation_tokens?: number | null;
 };
 
-export type TurnDone = { type: "turn_done"; node_id: string; seq?: number };
+export type TurnDone = {
+  type: "turn_done";
+  node_id: string;
+  node: NodeInfo;
+  seq?: number;
+};
 export type ErrorEvent = { type: "error"; message: string; node_id: string; seq?: number };
 export type NodeStarted = {
   type: "node_started";
@@ -70,6 +75,7 @@ export type NodeStarted = {
   category?: NodeCategory | null;
   subtype?: ReviewSubtype | null;
   prompt?: string;
+  node: NodeInfo;
   seq?: number;
 };
 export type NodeUpdated = {
@@ -126,6 +132,17 @@ export type GitStatusEvent = Omit<GitStatus, "files"> & {
   seq?: number;
 };
 
+export type ContextRefreshUpdated = {
+  type: "context_refresh_updated";
+  project_id: string;
+  context_refresh: {
+    running: boolean;
+    mode?: "init" | "refresh" | string;
+    started_at?: number;
+  };
+  seq: 0;
+};
+
 export type ServerEvent =
   | TextDelta
   | Thinking
@@ -137,6 +154,7 @@ export type ServerEvent =
   | NodeStarted
   | NodeUpdated
   | NodeRemoved
+  | ContextRefreshUpdated
   | GitStatusEvent;
 
 export type ClientMessage =
@@ -442,8 +460,8 @@ export type ActiveNodeEntry = {
   is_active_planspace: boolean;
   label: string;
   started_at?: number | null;
-  /* Terminal timestamp; only meaningful for `error` rows, which report time
-   * since failure rather than a still-growing run duration. */
+  /* Terminal timestamp; used by every terminal row instead of a still-growing
+   * duration measured from node start. */
   finished_at?: number | null;
   gate?: ActiveNodeGate | null;
 };
@@ -452,6 +470,27 @@ export type ActiveNodesResponse = {
   generated_at: number;
   entries: ActiveNodeEntry[];
 };
+
+export type WorkspaceNodeUpdated = {
+  type: "workspace_node_updated";
+  project_id: string;
+  node_id: string;
+  entry: ActiveNodeEntry;
+  previous_state?: NodeState | null;
+  created?: boolean;
+  seq: 0;
+};
+
+export type WorkspaceNodeRemoved = {
+  type: "workspace_node_removed";
+  project_id: string;
+  node_id: string;
+  previous_state?: NodeState | null;
+  deleted?: boolean;
+  seq: 0;
+};
+
+export type WorkspaceEvent = WorkspaceNodeUpdated | WorkspaceNodeRemoved;
 
 export type ArtifactRef = {
   name: string;

@@ -104,8 +104,10 @@ import type {
   TemplateSummary,
   TemplateInstanceRecord,
   Tag,
+  WorkspaceEvent,
 } from "./types";
 import { useSessionSocket } from "./ws";
+import { useActiveNodes } from "./activeNodes";
 import {
   canResumeNode,
   nodeIdsByRecentActivityInLane,
@@ -139,6 +141,48 @@ const INTERRUPTIBLE_STATES = new Set<NodeInfo["state"]>([
   "waiting",
   "awaiting_human_input",
 ]);
+const LANDING_ACTIVE_STATES = new Set<NodeInfo["state"]>([
+  "running",
+  "waiting",
+  "awaiting_human_input",
+]);
+
+function applyWorkspaceEventToSessions(
+  sessions: SessionInfo[] | null,
+  event: WorkspaceEvent,
+): SessionInfo[] | null {
+  if (sessions === null) return null;
+  return sessions.map((item) => {
+    if (item.id !== event.project_id) return item;
+    const previous = event.previous_state ?? null;
+    const current =
+      event.type === "workspace_node_updated" ? event.entry.state : null;
+    const activeDelta =
+      Number(current !== null && LANDING_ACTIVE_STATES.has(current))
+      - Number(previous !== null && LANDING_ACTIVE_STATES.has(previous));
+    const queuedDelta =
+      Number(current === "queued") - Number(previous === "queued");
+    const activityAt =
+      event.type === "workspace_node_updated"
+        ? event.entry.finished_at ?? event.entry.started_at ?? null
+        : null;
+    return {
+      ...item,
+      turns: Math.max(
+        0,
+        item.turns
+          + (event.type === "workspace_node_updated" && event.created ? 1 : 0)
+          - (event.type === "workspace_node_removed" && event.deleted ? 1 : 0),
+      ),
+      active_count: Math.max(0, item.active_count + activeDelta),
+      queued_count: Math.max(0, item.queued_count + queuedDelta),
+      last_activity_at:
+        activityAt === null
+          ? item.last_activity_at
+          : Math.max(item.last_activity_at ?? item.created_at, activityAt),
+    };
+  });
+}
 
 function upsertSession(
   sessions: SessionInfo[] | null,
@@ -158,6 +202,10 @@ function apiErrorText(err: unknown): string {
 export function App() {
   const [route, setRoute] = useState<Route>("landing");
   const [landingSessions, setLandingSessions] = useState<SessionInfo[] | null>(null);
+  const handleWorkspaceEvent = useCallback((event: WorkspaceEvent) => {
+    setLandingSessions((current) => applyWorkspaceEventToSessions(current, event));
+  }, []);
+  const activeNodesFeed = useActiveNodes(true, handleWorkspaceEvent);
   const [landingTags, setLandingTags] = useState<Tag[]>([]);
   const [session, setSession] = useState<SessionInfo | null>(null);
   const [nodes, setNodes] = useState<NodeInfo[]>([]);
@@ -754,11 +802,9 @@ export function App() {
     sessionSettingsSaving ||
     !!sessionContextSpace?.context_refresh?.running;
 
-  /* refresh node list.
+  /* Refresh the node list for initial loads and explicit mutations.
    *
-   * refreshNodes is called both on initial load and as a hedge from
-   * handleEvent (turn_done / node_started / interaction_request). The
-   * hedge races with the WebSocket: between the listNodes API request
+   * Between the listNodes API request
    * and its response, ev-driven setNodes calls can add or mutate nodes
    * locally. A blanket ``setNodes(next)`` would clobber those in-flight
    * updates — most visibly, when the backend snapshot is taken between a
@@ -995,14 +1041,6 @@ export function App() {
     window.addEventListener("focus", onFocus);
     return () => window.removeEventListener("focus", onFocus);
   }, [refreshGit, session?.id]);
-
-  useEffect(() => {
-    if (!sessionContextSpace?.context_refresh?.running) return;
-    const timer = window.setInterval(() => {
-      void refreshContextSpace();
-    }, 1200);
-    return () => window.clearInterval(timer);
-  }, [sessionContextSpace?.context_refresh?.running, refreshContextSpace]);
 
   /* Historical principle-edit nodes refresh only principles. Librarian nodes may
    * write either entry type, so their terminal transition refreshes both shelves. */
@@ -2003,11 +2041,15 @@ export function App() {
           setPendingGates((current) => ({ ...current, [ev.node_id]: pending }));
         }
         openInteractionNodeIfAppropriate(ev.node_id);
-        void refreshNodes();
       } else if (ev.type === "turn_done") {
         setPendingGates((current) => withoutPendingNode(current, ev.node_id));
         setPendingReviews((current) => withoutPendingNode(current, ev.node_id));
-        void refreshNodes();
+        setNodes((prev) => {
+          const updated = upsertNode(prev, ev.node);
+          nodeCountRef.current = updated.length;
+          nodesRef.current = updated;
+          return updated;
+        });
       } else if (ev.type === "error") {
         console.error("server error:", ev.message);
       } else if (ev.type === "node_started") {
@@ -2016,7 +2058,12 @@ export function App() {
         if (startedKind !== "op") {
           selectEventNodeIfIdle(ev.node_id);
         }
-        void refreshNodes();
+        setNodes((prev) => {
+          const updated = upsertNode(prev, ev.node);
+          nodeCountRef.current = updated.length;
+          nodesRef.current = updated;
+          return updated;
+        });
       } else if (ev.type === "node_updated") {
         eventNodeId = ev.node.id;
         setNodes((prev) => {
@@ -2058,6 +2105,13 @@ export function App() {
           files: ev.files ?? current?.files ?? [],
         }));
         void refreshGit();
+      } else if (ev.type === "context_refresh_updated") {
+        setSessionContextSpace((current) =>
+          current
+            ? { ...current, context_refresh: ev.context_refresh }
+            : current,
+        );
+        if (!ev.context_refresh.running) void refreshContextSpace();
       }
       appendSelectedEvent(eventNodeId, ev);
     },
@@ -2065,8 +2119,8 @@ export function App() {
       appendSelectedEvent,
       inspectNode,
       openInteractionNodeIfAppropriate,
+      refreshContextSpace,
       refreshGit,
-      refreshNodes,
       selectEventNodeIfIdle,
     ],
   );
@@ -2501,6 +2555,14 @@ export function App() {
             setLandingSessions((current) => upsertSession(current, s));
             openProject(s);
           }}
+          notificationBell={(
+            <NotificationBell
+              enabled
+              feed={activeNodesFeed}
+              currentSessionId={null}
+              onJump={jumpToActiveNode}
+            />
+          )}
           />
         </div>
         <NewProjectModal
@@ -2728,7 +2790,8 @@ export function App() {
           )}
 
           <NotificationBell
-            enabled={route === "project"}
+            enabled
+            feed={activeNodesFeed}
             currentSessionId={session?.id ?? null}
             onJump={jumpToActiveNode}
           />

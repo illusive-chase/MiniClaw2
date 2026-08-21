@@ -13,8 +13,8 @@ to see one is not this module's job — the frontend tracks that per device with
 a read set, because "have I looked at this" is a property of the person at
 this screen, not of the project.
 
-Cost matters here because the endpoint is polled. ``Store.list_nodes``
-re-reads and re-validates every ``node.json`` in a project (~1.1ms per node
+Cost matters here because the endpoint remains the initial snapshot source.
+``Store.list_nodes`` re-reads and re-validates every ``node.json`` in a project (~1.1ms per node
 measured on a 358-node store), so a naive full sweep costs ~400ms and would
 burn that every few seconds forever. Instead we keep an mtime/size-keyed
 cache of the handful of fields this view needs and re-read only the files
@@ -76,7 +76,7 @@ class NodeFacts:
 
     Deliberately not a ``Node``: constructing one runs full Pydantic
     validation plus model-catalog binding, which is exactly the cost this
-    module exists to avoid paying on every poll.
+    module exists to keep snapshot reads cheap.
     """
 
     id: str
@@ -208,7 +208,7 @@ class ActiveNodesIndex:
             try:
                 payload = json.loads(path.read_text(encoding="utf-8"))
             except (OSError, ValueError):
-                # A node being rewritten right now reappears on the next poll.
+                # A node being rewritten right now reappears on the next snapshot.
                 logger.debug("skipping unreadable node record %s", path, exc_info=True)
                 continue
             if not isinstance(payload, dict):
@@ -249,7 +249,7 @@ def collect_active_entries(
     moment = time.time() if now is None else now
     store = registry.store
     # Evaluated once per sweep, not per node: the property stats the schema
-    # file and the machine record, and this endpoint is polled.
+    # file and the machine record, and a snapshot should stay cheap.
     if store.read_only_reason is not None:
         return []
     store_root = store.root
@@ -273,8 +273,6 @@ def collect_active_entries(
         if not visible:
             continue
 
-        # Resolving the active lane touches the contextspace on disk, so only
-        # pay for it on projects that actually contribute a row.
         active_planspace_id: str | None = None
         try:
             active = resolve_active_planspace(project, context_root)
@@ -283,36 +281,107 @@ def collect_active_entries(
             logger.debug(
                 "active planspace unresolved for %s", project.id, exc_info=True
             )
-
         titles: dict[str, str | None] = {}
         for facts in visible:
-            planspace_id = facts.planspace_id
-            if planspace_id and planspace_id not in titles:
+            if facts.planspace_id and facts.planspace_id not in titles:
                 try:
-                    titles[planspace_id] = planspace_display_title(
-                        context_root, planspace_id
+                    titles[facts.planspace_id] = planspace_display_title(
+                        context_root, facts.planspace_id
                     )
                 except Exception:  # noqa: BLE001
-                    titles[planspace_id] = None
-            entries.append(
-                ActiveEntry(
-                    project_id=project.id,
-                    project_name=project.name,
-                    node_id=facts.id,
-                    state=facts.state,
-                    category=facts.category,
-                    planspace_id=planspace_id,
-                    planspace_title=titles.get(planspace_id) if planspace_id else None,
-                    is_active_planspace=bool(
-                        planspace_id and planspace_id == active_planspace_id
-                    ),
-                    label=facts.label,
-                    started_at=facts.started_at or facts.created_at,
-                    finished_at=facts.finished_at,
-                    gate=_gate_summary(registry, project.id, facts),
-                )
+                    titles[facts.planspace_id] = None
+            entry = active_entry_from_facts(
+                registry,
+                project,
+                facts,
+                now=moment,
+                active_planspace_id=active_planspace_id,
+                planspace_title=titles.get(facts.planspace_id),
             )
+            if entry is not None:
+                entries.append(entry)
     return entries
+
+
+def active_entry_from_node(
+    registry: Any,
+    project: Project,
+    node: Any,
+    *,
+    now: float | None = None,
+) -> ActiveEntry | None:
+    """Derive the same row used by the snapshot endpoint from a live node."""
+    if registry.store.read_only_reason is not None:
+        return None
+    payload = node.model_dump() if hasattr(node, "model_dump") else dict(node)
+    owner_host_id = str(
+        getattr(node, "owner_host_id", None)
+        or payload.get("owner_host_id")
+        or registry.store.machine.id
+    )
+    facts = _facts_from_payload(payload, owner_host_id)
+    if facts is None:
+        return None
+    return active_entry_from_facts(
+        registry,
+        project,
+        facts,
+        now=now,
+        resolve_context=True,
+    )
+
+
+def active_entry_from_facts(
+    registry: Any,
+    project: Project,
+    facts: NodeFacts,
+    *,
+    now: float | None = None,
+    active_planspace_id: str | None = None,
+    planspace_title: str | None = None,
+    resolve_context: bool = False,
+) -> ActiveEntry | None:
+    """Pure row derivation shared by snapshot scans and live transitions."""
+    moment = time.time() if now is None else now
+    if not _is_visible(facts, now=moment) or not _is_native(
+        registry, project, facts
+    ):
+        return None
+
+    if resolve_context:
+        root = contextspace_root(registry.store.root)
+        try:
+            active = resolve_active_planspace(project, root)
+            active_planspace_id = active[1].id if active is not None else None
+        except Exception:  # noqa: BLE001
+            logger.debug(
+                "active planspace unresolved for %s", project.id, exc_info=True
+            )
+        if facts.planspace_id:
+            try:
+                planspace_title = planspace_display_title(root, facts.planspace_id)
+            except Exception:  # noqa: BLE001
+                logger.debug(
+                    "planspace title unresolved for %s",
+                    facts.planspace_id,
+                    exc_info=True,
+                )
+    return ActiveEntry(
+        project_id=project.id,
+        project_name=project.name,
+        node_id=facts.id,
+        state=facts.state,
+        category=facts.category,
+        planspace_id=facts.planspace_id,
+        planspace_title=planspace_title,
+        is_active_planspace=bool(
+            facts.planspace_id and facts.planspace_id == active_planspace_id
+        ),
+        label=facts.label,
+        started_at=facts.started_at or facts.created_at,
+        finished_at=facts.finished_at,
+        gate=_gate_summary(registry, project.id, facts),
+    )
 
 
 def _is_native(registry: Any, project: Project, facts: NodeFacts) -> bool:

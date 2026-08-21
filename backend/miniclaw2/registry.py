@@ -19,6 +19,11 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from .active_nodes import (
+    ACTIVE_STATES,
+    TERMINAL_STATES as ACTIVE_TERMINAL_STATES,
+    active_entry_from_node,
+)
 from .artifacts import workspace_artifacts_dir
 from .contextspace import (
     contextspace_root,
@@ -33,7 +38,12 @@ from .contextspace import (
     resolve_active_planspace,
     set_planspace_mode,
 )
-from .events import NodeRemoved, GitStatus
+from .events import (
+    GitStatus,
+    NodeRemoved,
+    WorkspaceNodeRemoved,
+    WorkspaceNodeUpdated,
+)
 from .git_state import (
     ensure_miniclaw_git_excluded,
     git_status,
@@ -333,6 +343,9 @@ class ProjectRegistry:
     ) -> None:
         self._store = store
         self._runtimes: dict[str, ProjectRuntime] = {}
+        self._workspace_observers: dict[
+            str, Callable[[dict[str, Any]], Awaitable[None]]
+        ] = {}
         self._initialized = False
         self._self_update_pending = False
         if initialize:
@@ -1049,6 +1062,7 @@ class ProjectRegistry:
         for node in lane_nodes:
             if self.store.delete_node(pid, node.id):
                 removed.append(node.id)
+                self._schedule_workspace_removed(rt.project, node)
             self._remove_workspace_artifacts(rt.project, node.id)
             rt.deferred_until_idle_node_ids.discard(node.id)
         rt.priority_node_ids = [
@@ -1150,6 +1164,115 @@ class ProjectRegistry:
             return None
         return rt.add_observer(on_event)
 
+    def attach_workspace_observer(
+        self,
+        on_event: Callable[[dict[str, Any]], Awaitable[None]],
+    ) -> str:
+        token = uuid4().hex
+        self._workspace_observers[token] = on_event
+        return token
+
+    def detach_workspace_observer(self, token: str | None) -> None:
+        if token is not None:
+            self._workspace_observers.pop(token, None)
+
+    async def broadcast_project(self, pid: str, event: dict[str, Any]) -> None:
+        rt = self._runtimes.get(pid)
+        if rt is not None:
+            await rt.broadcast(event)
+
+    async def _broadcast_workspace(self, event: dict[str, Any]) -> None:
+        stale: list[str] = []
+        for token, on_event in list(self._workspace_observers.items()):
+            try:
+                await on_event(event)
+            except Exception:  # noqa: BLE001
+                logger.debug("dropping failed workspace observer", exc_info=True)
+                stale.append(token)
+        for token in stale:
+            self.detach_workspace_observer(token)
+
+    async def _publish_workspace_node(
+        self,
+        project: Project,
+        node: Node,
+        previous_state: NodeState | None,
+        *,
+        created: bool = False,
+    ) -> None:
+        if (
+            self.store.read_only_reason is not None
+            or not self.is_native_node(project, node)
+        ):
+            return
+        entry = active_entry_from_node(self, project, node)
+        previous = previous_state.value if previous_state is not None else None
+        if entry is not None:
+            await self._broadcast_workspace(
+                WorkspaceNodeUpdated(
+                    project_id=project.id,
+                    node_id=node.id,
+                    entry=asdict(entry),
+                    previous_state=previous,
+                    created=created,
+                ).model_dump()
+            )
+            return
+        if previous in ACTIVE_STATES or previous in ACTIVE_TERMINAL_STATES:
+            await self._broadcast_workspace(
+                WorkspaceNodeRemoved(
+                    project_id=project.id,
+                    node_id=node.id,
+                    previous_state=previous,
+                ).model_dump()
+            )
+
+    async def _publish_workspace_removed(
+        self,
+        project: Project,
+        node: Node,
+    ) -> None:
+        if (
+            self.store.read_only_reason is not None
+            or not self.is_native_node(project, node)
+        ):
+            return
+        await self._broadcast_workspace(
+            WorkspaceNodeRemoved(
+                project_id=project.id,
+                node_id=node.id,
+                previous_state=node.state.value,
+                deleted=True,
+            ).model_dump()
+        )
+
+    def _schedule_workspace_node(
+        self,
+        project: Project,
+        node: Node,
+        previous_state: NodeState | None,
+        *,
+        created: bool = False,
+    ) -> None:
+        try:
+            snapshot = node.model_copy(deep=True)
+            asyncio.get_running_loop().create_task(
+                self._publish_workspace_node(
+                    project, snapshot, previous_state, created=created
+                )
+            )
+        except RuntimeError:
+            pass
+
+    def _schedule_workspace_removed(self, project: Project, node: Node) -> None:
+        try:
+            snapshot = node.model_copy(deep=True)
+            asyncio.get_running_loop().create_task(
+                self._publish_workspace_removed(project, snapshot)
+            )
+        except RuntimeError:
+            pass
+
     def detach_observer(self, pid: str, token: str | None) -> None:
         if token is None:
             return
@@ -1230,7 +1353,20 @@ class ProjectRegistry:
             nid = latest.id
         if self.store.load_node(pid, nid) is None:
             return None
-        return self.store.replay_events(pid, nid, since_seq)
+        records = self.store.replay_events(pid, nid, since_seq)
+        node = self.store.load_node(pid, nid)
+        if node is None:
+            return None
+        snapshot = node.model_dump()
+        for record in records:
+            event = record.get("event")
+            if (
+                isinstance(event, dict)
+                and event.get("type") in {"node_started", "turn_done"}
+                and not isinstance(event.get("node"), dict)
+            ):
+                event["node"] = snapshot
+        return records
 
     # ---- node lifecycle ----
 
@@ -1331,6 +1467,7 @@ class ProjectRegistry:
             settings_snapshot=settings_snapshot,
         )
         self.store.create_node(node)
+        self._schedule_workspace_node(rt.project, node, None, created=True)
         if node.category is Category.REVIEW:
             try:
                 virtual_preview_node = node.model_copy(
@@ -1377,6 +1514,9 @@ class ProjectRegistry:
             self.store,
             rt.broadcast,
             reap_lock=rt.reap_lock,
+            on_state_change=lambda changed, previous: self._publish_workspace_node(
+                rt.project, changed.model_copy(deep=True), previous
+            ),
         )
         task = asyncio.create_task(coro if coro is not None else runner.run())
         rt.runners[node.id] = runner
@@ -1485,11 +1625,13 @@ class ProjectRegistry:
             return
         finished_node = runner.node
         if task is not None and task.cancelled() and finished_node.state is NodeState.QUEUED:
+            previous_state = finished_node.state
             finished_node.state = NodeState.CANCELLED
             finished_node.error = "cancelled before runner start"
             finished_node.started_at = finished_node.created_at
             finished_node.finished_at = time.time()
             self.store.update_node(finished_node)
+            self._schedule_workspace_node(rt.project, finished_node, previous_state)
         if (
             finished_node.kind is NodeKind.OP
             and finished_node.op_kind == "commit"
@@ -1585,6 +1727,7 @@ class ProjectRegistry:
             model_preset_id=rt.project.model_preset_id,
         )
         self.store.create_node(node)
+        self._schedule_workspace_node(rt.project, node, None, created=True)
         rt.priority_node_ids.append(node.id)
         self._schedule_queued(rt)
         return self.store.load_node(pid, node.id) or node
@@ -1627,6 +1770,7 @@ class ProjectRegistry:
             ),
         )
         self.store.create_node(node)
+        self._schedule_workspace_node(rt.project, node, None, created=True)
         rt.priority_node_ids.append(node.id)
         self._schedule_queued(rt)
         return self.store.load_node(pid, node.id) or node
@@ -1702,6 +1846,7 @@ class ProjectRegistry:
             prompt=prompt_text,
         )
         self.store.create_node(node)
+        self._schedule_workspace_node(rt.project, node, None, created=True)
 
         if not activated:
             rt.deferred_until_idle_node_ids.add(node.id)
@@ -1987,6 +2132,7 @@ class ProjectRegistry:
                 "preview_write_failed",
                 "Virtual preview could not be preserved before promotion.",
             )
+        previous_state = node.state
         node.state = NodeState.QUEUED
         if node.kind is NodeKind.AGENT:
             node.prompt = node.prompt_draft or node.prompt
@@ -2005,6 +2151,7 @@ class ProjectRegistry:
             node.settings_snapshot = snapshot
             node.pending_extra_skills = []
         self.store.update_node(node)
+        self._schedule_workspace_node(rt.project, node, previous_state)
 
         try:
             asyncio.get_running_loop().create_task(rt.broadcast({
@@ -2059,6 +2206,7 @@ class ProjectRegistry:
         if resume_from_node_id is None and node.provider_session_id:
             resume_from_node_id = node.parent_node_id
 
+        previous_state = node.state
         virtual = node.model_copy(
             update={
                 "state": NodeState.VIRTUAL,
@@ -2079,6 +2227,7 @@ class ProjectRegistry:
             pid, virtual.id, render_virtual_preview(virtual)
         )
         self.store.update_node(virtual)
+        self._schedule_workspace_node(rt.project, virtual, previous_state)
         rt.priority_node_ids = [
             node_id for node_id in rt.priority_node_ids if node_id != virtual.id
         ]
@@ -2601,6 +2750,7 @@ class ProjectRegistry:
 
         if not self.store.delete_node(pid, vid):
             return False, []
+        self._schedule_workspace_removed(rt.project, node)
         try:
             event = NodeRemoved(id=vid).model_dump()
             asyncio.get_running_loop().create_task(rt.broadcast(event))
@@ -2692,6 +2842,7 @@ class ProjectRegistry:
         for member in members:
             if self.store.delete_node(pid, member.id):
                 removed.append(member.id)
+                self._schedule_workspace_removed(rt.project, member)
             self._remove_workspace_artifacts(rt.project, member.id)
             rt.deferred_until_idle_node_ids.discard(member.id)
         rt.priority_node_ids = [
@@ -2907,6 +3058,7 @@ class ProjectRegistry:
             planspace_id=agent_node.planspace_id,
         )
         self.store.create_node(op_node)
+        self._schedule_workspace_node(rt.project, op_node, None, created=True)
         rt.priority_node_ids.append(op_node.id)
         self._schedule_queued(rt)
 

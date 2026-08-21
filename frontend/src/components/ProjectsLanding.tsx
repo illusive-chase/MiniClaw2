@@ -5,6 +5,7 @@ import {
   useRef,
   useState,
   type Dispatch,
+  type ReactNode,
   type SetStateAction,
 } from "react";
 import {
@@ -59,6 +60,7 @@ type Props = {
   onGlobalStateChanged: (state: GlobalState) => void;
   /** template runner kicks off a new project — open the result */
   onTemplateLaunched?: (session: SessionInfo, templateName: string) => void;
+  notificationBell?: ReactNode;
 };
 
 export function ProjectsLanding({
@@ -72,6 +74,7 @@ export function ProjectsLanding({
   globalState,
   onGlobalStateChanged,
   onTemplateLaunched,
+  notificationBell,
 }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [testsOpen, setTestsOpen] = useState(false);
@@ -91,8 +94,8 @@ export function ProjectsLanding({
     }
   }, [setSessions]);
 
-  /* Tags refresh on their own cadence: the 10s session poll would otherwise
-   * re-fetch a list that only changes when the user edits it. */
+  /* Tags refresh on mount and focus; node activity arrives over the workspace
+   * socket and does not force this mostly-static list to reload. */
   const refreshTags = useCallback(async () => {
     try {
       setTags(await listTags());
@@ -104,14 +107,12 @@ export function ProjectsLanding({
   useEffect(() => {
     void refresh();
     void refreshTags();
-    const interval = window.setInterval(() => void refresh(), 10_000);
     const onFocus = () => {
       void refresh();
       void refreshTags();
     };
     window.addEventListener("focus", onFocus);
     return () => {
-      window.clearInterval(interval);
       window.removeEventListener("focus", onFocus);
     };
   }, [refresh, refreshTags]);
@@ -304,6 +305,7 @@ export function ProjectsLanding({
           </p>
         </div>
         <div className="flex items-center gap-2">
+          {notificationBell}
           <button
             type="button"
             onClick={() => setSettingsOpen(true)}

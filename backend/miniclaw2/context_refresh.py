@@ -1,9 +1,10 @@
 """Out-of-band CONTEXT.md init / refresh tasks.
 
 Runs a framework-owned agent (preset prompt) against the project's provider
-without going through ``NodeRunner``: no node row, no ``events.jsonl``, no
-WebSocket broadcast. The agent writes ``CONTEXT.md`` itself via its ``Write``
-tool; the framework only books the meta file on success.
+without going through ``NodeRunner``: no node row and no ``events.jsonl``.
+Task status is broadcast on the project WebSocket. The agent writes
+``CONTEXT.md`` itself via its ``Write`` tool; the framework only books the
+meta file on success.
 """
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ import asyncio
 import json
 import logging
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -34,6 +36,7 @@ class ContextTask:
     started_at: float
     task: asyncio.Task[None] | None = field(default=None)
     provider: AgentProvider | None = field(default=None)
+    on_status: Callable[[dict[str, Any]], Awaitable[None]] | None = field(default=None)
 
 
 _TASKS: dict[str, ContextTask] = {}
@@ -50,11 +53,16 @@ def context_refresh_status(project_id: str) -> dict[str, Any]:
     }
 
 
-def start_context_task(project: Project, *, mode: str) -> dict[str, Any]:
+def start_context_task(
+    project: Project,
+    *,
+    mode: str,
+    on_status: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
+) -> dict[str, Any]:
     """Start an async CONTEXT.md init/refresh task.
 
     The task deliberately runs outside the node runner: no provider-tracked
-    node row, no events.jsonl writes, no WebSocket broadcast.
+    node row or events.jsonl writes. Only its coarse status is broadcast.
     """
 
     if mode not in {"init", "refresh"}:
@@ -74,8 +82,9 @@ def start_context_task(project: Project, *, mode: str) -> dict[str, Any]:
         project_id=project.id,
         mode=mode,
         started_at=started_at,
+        on_status=on_status,
     )
-    record.task = asyncio.create_task(_run_agent_context_task(project, record))
+    record.task = asyncio.create_task(_run_context_task_with_status(project, record))
     _TASKS[project.id] = record
 
     def cleanup(done: asyncio.Task[None], *, pid: str = project.id) -> None:
@@ -85,6 +94,32 @@ def start_context_task(project: Project, *, mode: str) -> dict[str, Any]:
 
     record.task.add_done_callback(cleanup)
     return context_refresh_status(project.id)
+
+
+async def _run_context_task_with_status(project: Project, record: ContextTask) -> None:
+    try:
+        await _notify_status(
+            record,
+            {
+                "running": True,
+                "mode": record.mode,
+                "started_at": record.started_at,
+            },
+        )
+        await _run_agent_context_task(project, record)
+    finally:
+        if _TASKS.get(project.id) is record:
+            _TASKS.pop(project.id, None)
+        await _notify_status(record, {"running": False})
+
+
+async def _notify_status(record: ContextTask, status: dict[str, Any]) -> None:
+    if record.on_status is None:
+        return
+    try:
+        await record.on_status(status)
+    except Exception:  # noqa: BLE001
+        logger.exception("context refresh status broadcast failed")
 
 
 async def cancel_context_task(project_id: str) -> bool:
@@ -99,6 +134,7 @@ async def cancel_context_task(project_id: str) -> bool:
         except Exception:  # noqa: BLE001
             logger.exception("provider interrupt failed during context cancel")
     record.task.cancel()
+    await asyncio.gather(record.task, return_exceptions=True)
     return True
 
 

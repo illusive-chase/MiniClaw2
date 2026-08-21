@@ -1,10 +1,4 @@
-/* Cross-project notification feed: polling, unread bookkeeping, ordering.
- *
- * The WebSocket is per-project, so a node blocked on a human — or one that
- * simply finished — in another project produces no event here. This polls a
- * workspace-wide endpoint instead. Cadence is measured in seconds rather than
- * instant on purpose: the signal is "something happened somewhere", and a
- * human's reaction time dwarfs the delay.
+/* Cross-project notification feed: pushed updates, unread bookkeeping, ordering.
  *
  * Unread is tracked per device, keyed on the *event* rather than a clock. See
  * `notificationKey` for why a timestamp watermark cannot work here.
@@ -13,9 +7,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { listActiveNodes } from "./api";
-import type { ActiveNodeEntry, NodeCategory, NodeState } from "./types";
-
-export const ACTIVE_NODES_POLL_MS = 15_000;
+import type {
+  ActiveNodeEntry,
+  NodeCategory,
+  NodeState,
+  WorkspaceEvent,
+} from "./types";
+import { useWorkspaceSocket } from "./ws";
 
 /* A fresh key: the old `activeNodes.waitingOnly` value means a different
  * filter. Reusing it would hand long-time users a filter they never set. */
@@ -345,41 +343,72 @@ export type ActiveNodesFeed = {
   loaded: boolean;
 };
 
+export function applyWorkspaceEvent(
+  entries: ActiveNodeEntry[],
+  event: WorkspaceEvent,
+): ActiveNodeEntry[] {
+  if (event.type === "workspace_node_removed") {
+    return entries.filter((entry) => entry.node_id !== event.node_id);
+  }
+  const index = entries.findIndex((entry) => entry.node_id === event.node_id);
+  if (index < 0) return [...entries, event.entry];
+  const next = [...entries];
+  next[index] = event.entry;
+  return next;
+}
+
 /**
- * Poll the workspace-wide notification endpoint.
+ * Seed from the workspace snapshot, then apply pushed node transitions.
  *
- * Polling pauses while the tab is hidden and re-fetches immediately when it
- * comes back, so a backgrounded window does not keep the backend sweeping.
- * Fetch failures leave the last-known entries in place and are not surfaced:
+ * The snapshot re-fetches when a connection opens or the tab returns to the
+ * foreground. Fetch failures leave the last-known entries in place and are not surfaced:
  * this is ambient status, not the result of a user action, so an error
  * banner here would be noise the user cannot act on.
  */
-export function useActiveNodes(enabled: boolean): ActiveNodesFeed {
+export function useActiveNodes(
+  enabled: boolean,
+  onWorkspaceEvent?: (event: WorkspaceEvent) => void,
+): ActiveNodesFeed {
   const [feed, setFeed] = useState<ActiveNodesFeed>({ entries: [], loaded: false });
   /* Guards against a slow in-flight response landing after the hook is
    * disabled (returning to the landing page) and repopulating the feed. */
   const enabledRef = useRef(enabled);
+  const eventVersionRef = useRef(0);
+  const onWorkspaceEventRef = useRef(onWorkspaceEvent);
   enabledRef.current = enabled;
+  onWorkspaceEventRef.current = onWorkspaceEvent;
 
   const refresh = useCallback(async () => {
     if (!enabledRef.current) return;
+    const version = eventVersionRef.current;
     try {
       const payload = await listActiveNodes();
-      if (enabledRef.current) setFeed({ entries: payload.entries, loaded: true });
+      if (!enabledRef.current) return;
+      if (version !== eventVersionRef.current) {
+        void refresh();
+        return;
+      }
+      setFeed({ entries: payload.entries, loaded: true });
     } catch {
-      /* keep the previous snapshot; the next tick may succeed */
+      /* keep the previous snapshot; reconnect or focus will retry */
     }
   }, []);
+
+  const handleWorkspaceEvent = useCallback((event: WorkspaceEvent) => {
+    eventVersionRef.current += 1;
+    setFeed((current) => {
+      return { ...current, entries: applyWorkspaceEvent(current.entries, event) };
+    });
+    onWorkspaceEventRef.current?.(event);
+  }, []);
+
+  useWorkspaceSocket(enabled, handleWorkspaceEvent, refresh);
 
   useEffect(() => {
     if (!enabled) {
       setFeed({ entries: [], loaded: false });
       return;
     }
-    void refresh();
-    const timer = window.setInterval(() => {
-      if (document.visibilityState === "visible") void refresh();
-    }, ACTIVE_NODES_POLL_MS);
     const onVisibility = () => {
       if (document.visibilityState === "visible") void refresh();
     };
@@ -387,7 +416,6 @@ export function useActiveNodes(enabled: boolean): ActiveNodesFeed {
     document.addEventListener("visibilitychange", onVisibility);
     window.addEventListener("focus", onVisibility);
     return () => {
-      window.clearInterval(timer);
       document.removeEventListener("visibilitychange", onVisibility);
       window.removeEventListener("focus", onVisibility);
     };

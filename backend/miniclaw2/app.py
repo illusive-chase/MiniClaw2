@@ -36,6 +36,7 @@ from .contextspace import (
 from .context_refresh import cancel_context_task, context_refresh_status, start_context_task
 from .domain import Node
 from .events import (
+    ContextRefreshUpdated,
     InteractionResponse,
     Interrupt,
     ReplayRequest,
@@ -915,8 +916,7 @@ def create_app(
     def list_active_nodes() -> ActiveNodesResponse:
         """Nodes running, needing a human, or recently finished, workspace-wide.
 
-        Polled by the notification bell. The per-project WebSocket cannot
-        answer this: it only carries events for the project currently open.
+        This is the initial/reconciliation snapshot for the workspace stream.
         """
         entries = collect_active_entries(registry, active_nodes_index)
         return ActiveNodesResponse(
@@ -1271,7 +1271,17 @@ def create_app(
         if registry.is_running(sid):
             raise HTTPException(409, "turn in progress")
         try:
-            start_context_task(project, mode="init")
+            start_context_task(
+                project,
+                mode="init",
+                on_status=lambda status: registry.broadcast_project(
+                    project.id,
+                    ContextRefreshUpdated(
+                        project_id=project.id,
+                        context_refresh=status,
+                    ).model_dump(),
+                ),
+            )
         except RuntimeError as exc:
             raise HTTPException(409, str(exc)) from exc
         except ValueError as exc:
@@ -1287,7 +1297,17 @@ def create_app(
         if registry.is_running(sid):
             raise HTTPException(409, "turn in progress")
         try:
-            start_context_task(project, mode="refresh")
+            start_context_task(
+                project,
+                mode="refresh",
+                on_status=lambda status: registry.broadcast_project(
+                    project.id,
+                    ContextRefreshUpdated(
+                        project_id=project.id,
+                        context_refresh=status,
+                    ).model_dump(),
+                ),
+            )
         except RuntimeError as exc:
             raise HTTPException(409, str(exc)) from exc
         except ValueError as exc:
@@ -1970,6 +1990,26 @@ def create_app(
     async def ws(websocket: WebSocket, sid: str) -> None:
         initialize_registry()
         _record_hook_port_from_scope(websocket.scope)
+        if sid == "-":
+            await websocket.accept()
+            send_lock = asyncio.Lock()
+
+            async def send_workspace_event(event: dict[str, Any]) -> None:
+                async with send_lock:
+                    await websocket.send_json(event)
+
+            observer_token = registry.attach_workspace_observer(send_workspace_event)
+            try:
+                while True:
+                    message = await websocket.receive()
+                    if message["type"] == "websocket.disconnect":
+                        break
+            except WebSocketDisconnect:
+                pass
+            finally:
+                registry.detach_workspace_observer(observer_token)
+            return
+
         project = registry.get_project(sid)
         if project is None:
             await websocket.close(code=4404, reason="session not found")
