@@ -60,7 +60,10 @@ type Props = {
   onGlobalStateChanged: (state: GlobalState) => void;
   /** template runner kicks off a new project — open the result */
   onTemplateLaunched?: (session: SessionInfo, templateName: string) => void;
-  notificationBell?: ReactNode;
+  /** Header slot: the run-status and notification buttons. */
+  headerStatus?: ReactNode;
+  /** Overlays the project list, anchored below the header rather than scrolling with it. */
+  noticeRail?: ReactNode;
 };
 
 export function ProjectsLanding({
@@ -74,7 +77,8 @@ export function ProjectsLanding({
   globalState,
   onGlobalStateChanged,
   onTemplateLaunched,
-  notificationBell,
+  headerStatus,
+  noticeRail,
 }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [testsOpen, setTestsOpen] = useState(false);
@@ -305,7 +309,7 @@ export function ProjectsLanding({
           </p>
         </div>
         <div className="flex items-center gap-2">
-          {notificationBell}
+          {headerStatus}
           <button
             type="button"
             onClick={() => setSettingsOpen(true)}
@@ -339,7 +343,11 @@ export function ProjectsLanding({
         </div>
       </header>
 
-      <div className="flex-1 overflow-y-auto bg-surface-sunken px-8 py-7">
+      <div className="relative min-h-0 flex-1">
+        {/* Outside the scroll container: banners are pinned to the viewport,
+            not to a position in the project list. */}
+        {noticeRail}
+        <div className="h-full overflow-y-auto bg-surface-sunken px-8 py-7">
         {error && (
           <div className="mb-4 rounded-md border border-state-error/30 bg-state-error-soft px-3 py-2 text-xs text-state-error">
             {error}
@@ -493,6 +501,7 @@ export function ProjectsLanding({
             )}
           </>
         )}
+        </div>
       </div>
 
       {testsOpen && (

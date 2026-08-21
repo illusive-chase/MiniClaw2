@@ -81,6 +81,8 @@ import {
 } from "./templateInstantiate";
 import { ProjectsLanding } from "./components/ProjectsLanding";
 import { NotificationBell } from "./components/NotificationBell";
+import { NoticeBannerRail } from "./components/NoticeBannerRail";
+import { RunStatusButton } from "./components/RunStatusButton";
 import { ThemeToggle } from "./components/ThemeToggle";
 import { UsageStrip } from "./components/UsageStrip";
 import { GitWorkspaceStatus } from "./components/GitWorkspaceStatus";
@@ -107,7 +109,8 @@ import type {
   WorkspaceEvent,
 } from "./types";
 import { useSessionSocket } from "./ws";
-import { useActiveNodes } from "./activeNodes";
+import { useActiveNodes, useReadKeys } from "./activeNodes";
+import { useNotices } from "./notices";
 import {
   canResumeNode,
   nodeBelongsToHost,
@@ -203,10 +206,84 @@ function apiErrorText(err: unknown): string {
 export function App() {
   const [route, setRoute] = useState<Route>("landing");
   const [landingSessions, setLandingSessions] = useState<SessionInfo[] | null>(null);
-  const handleWorkspaceEvent = useCallback((event: WorkspaceEvent) => {
-    setLandingSessions((current) => applyWorkspaceEventToSessions(current, event));
-  }, []);
+
+  /* `jumpToActiveNode` is defined much further down, and a system
+   * notification's click handler fires long after render — so it is reached
+   * through a ref rather than hoisting the whole jump machinery up here.
+   *
+   * `dismissBanner` is reached the same way for a different reason: it needs
+   * `markRead`, which comes from the read-keys controller, which needs the feed,
+   * which needs the push callback that `useNotices` returns. That is a genuine
+   * cycle rather than mere ordering, so one side of it goes through a ref. */
+  const jumpToActiveNodeRef = useRef<
+    ((entry: Pick<ActiveNodeEntry, "project_id" | "node_id">) => void) | null
+  >(null);
+  const dismissBannerRef = useRef<
+    ((notice: { id: string; readKey: string }) => void) | null
+  >(null);
+  const {
+    notices,
+    push: pushNotice,
+    dismiss: dismissNotice,
+    expire: expireNotice,
+    /* Clicking a system notification is at least as deliberate as clicking the
+     * in-page banner, so it settles the same way: the banner goes and its read
+     * key is marked. Without this the user answered a notification and came
+     * back to the banner and unread badge still asking about it. */
+  } = useNotices((notice) => {
+    dismissBannerRef.current?.(notice);
+    jumpToActiveNodeRef.current?.(notice.entry);
+  });
+
+  /* Banners are derived here, from *pushed* transitions only. The snapshot
+   * path inside `useActiveNodes` never reaches this callback, which is what
+   * keeps a reconnect or a tab refresh from redelivering a screenful of
+   * banners for work the user already saw. */
+  const handleWorkspaceEvent = useCallback(
+    (event: WorkspaceEvent) => {
+      setLandingSessions((current) => applyWorkspaceEventToSessions(current, event));
+      pushNotice(event);
+    },
+    [pushNotice],
+  );
   const activeNodesFeed = useActiveNodes(true, handleWorkspaceEvent);
+  /* One owner for read state: the bell's history rows and the banner rail
+   * acknowledge the same keys. */
+  const readKeysController = useReadKeys(activeNodesFeed);
+  const { markRead } = readKeysController;
+
+  /* The two header panels are both full-width, so only one can be open. Held
+   * here rather than inside each component, which would let them overlap. */
+  const [openPanel, setOpenPanel] = useState<"run" | "notifications" | null>(null);
+  const toggleRunPanel = useCallback(() => {
+    setOpenPanel((current) => (current === "run" ? null : "run"));
+  }, []);
+  const toggleNotificationsPanel = useCallback(() => {
+    setOpenPanel((current) =>
+      current === "notifications" ? null : "notifications",
+    );
+  }, []);
+  /* Close only if still the one asking: a click that opens the other panel
+   * already reassigned this state, and clobbering it would close both. */
+  const closeRunPanel = useCallback(() => {
+    setOpenPanel((current) => (current === "run" ? null : current));
+  }, []);
+  const closeNotificationsPanel = useCallback(() => {
+    setOpenPanel((current) => (current === "notifications" ? null : current));
+  }, []);
+
+  const dismissBanner = useCallback(
+    (notice: { id: string; readKey: string }) => {
+      /* Closing or clicking through a banner is an acknowledgement, so it
+       * settles the matching history row too. Expiry does not: a banner that
+       * timed out was never necessarily seen. */
+      markRead([notice.readKey]);
+      dismissNotice(notice.id);
+    },
+    [dismissNotice, markRead],
+  );
+  dismissBannerRef.current = dismissBanner;
+
   const [landingTags, setLandingTags] = useState<Tag[]>([]);
   const [session, setSession] = useState<SessionInfo | null>(null);
   const [nodes, setNodes] = useState<NodeInfo[]>([]);
@@ -695,6 +772,7 @@ export function App() {
     },
     [openProject, revealJumpTarget],
   );
+  jumpToActiveNodeRef.current = jumpToActiveNode;
 
   useEffect(() => {
     if (!pendingJump) return;
@@ -2579,12 +2657,35 @@ export function App() {
             setLandingSessions((current) => upsertSession(current, s));
             openProject(s);
           }}
-          notificationBell={(
-            <NotificationBell
-              enabled
-              feed={activeNodesFeed}
-              currentSessionId={null}
+          headerStatus={(
+            <>
+              <RunStatusButton
+                enabled
+                entries={activeNodesFeed.entries}
+                currentSessionId={null}
+                open={openPanel === "run"}
+                onToggle={toggleRunPanel}
+                onClose={closeRunPanel}
+                onJump={jumpToActiveNode}
+              />
+              <NotificationBell
+                enabled
+                feed={activeNodesFeed}
+                currentSessionId={null}
+                readKeysController={readKeysController}
+                open={openPanel === "notifications"}
+                onToggle={toggleNotificationsPanel}
+                onClose={closeNotificationsPanel}
+                onJump={jumpToActiveNode}
+              />
+            </>
+          )}
+          noticeRail={(
+            <NoticeBannerRail
+              notices={notices}
               onJump={jumpToActiveNode}
+              onDismiss={dismissBanner}
+              onExpire={(notice) => expireNotice(notice.id)}
             />
           )}
           />
@@ -2815,10 +2916,24 @@ export function App() {
             </span>
           )}
 
+          <RunStatusButton
+            enabled
+            entries={activeNodesFeed.entries}
+            currentSessionId={session?.id ?? null}
+            open={openPanel === "run"}
+            onToggle={toggleRunPanel}
+            onClose={closeRunPanel}
+            onJump={jumpToActiveNode}
+          />
+
           <NotificationBell
             enabled
             feed={activeNodesFeed}
             currentSessionId={session?.id ?? null}
+            readKeysController={readKeysController}
+            open={openPanel === "notifications"}
+            onToggle={toggleNotificationsPanel}
+            onClose={closeNotificationsPanel}
             onJump={jumpToActiveNode}
           />
 
@@ -2913,6 +3028,17 @@ export function App() {
               Loading canvas…
             </div>
           )}
+
+          {/* Sibling of the canvas, not a child: wheel events over a banner
+              never reach React Flow's zoom handler, which is what lets the
+              rail scroll internally. Top-left, clear of the bottom-right
+              notices below. */}
+          <NoticeBannerRail
+            notices={notices}
+            onJump={jumpToActiveNode}
+            onDismiss={dismissBanner}
+            onExpire={(notice) => expireNotice(notice.id)}
+          />
 
           {/* Hide the banner only while the matching response controls are
               actually visible in the details panel. */}

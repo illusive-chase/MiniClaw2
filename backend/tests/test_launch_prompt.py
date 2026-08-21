@@ -169,6 +169,35 @@ class HumanInteractReviewBlockTests(unittest.TestCase):
         self.assertIn("Model selection is framework-owned", block)
 
 
+class ArtifactInstructionsTests(unittest.TestCase):
+    def test_long_markdown_and_html_are_written_section_by_section(self) -> None:
+        brief = ReviewBrief(
+            check_what="the artifact is complete",
+            expected="all sections are present",
+            abnormal="the artifact is truncated",
+        )
+        nodes = [
+            _agent_node(category=Category.REGULAR),
+            _agent_node(category=Category.PLANNING),
+            _agent_node(
+                category=Category.REVIEW,
+                subtype=ReviewSubtype.AGENTIC_REVIEW,
+                brief=brief,
+            ),
+            _agent_node(
+                category=Category.REVIEW,
+                subtype=ReviewSubtype.HUMAN_INTERACT_REVIEW,
+                brief=brief,
+            ),
+        ]
+
+        for node in nodes:
+            with self.subTest(category=node.category, subtype=node.subtype):
+                block = build_category_launch_block(node)
+                self.assertIn("`.md` or `.html` artifact is long", block)
+                self.assertIn("one section at a time", block)
+
+
 class OpAndUnknownTests(unittest.TestCase):
     def test_op_node_gets_empty_block(self) -> None:
         node = Node(

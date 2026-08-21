@@ -1,12 +1,12 @@
-/* Cross-project notification bell: a header button carrying two independent
- * signals, expanding into a full-width feed.
+/* Cross-project notification bell: unread events, expanding into a full-width
+ * feed.
  *
- * The two signals are deliberately separate visual channels, because one
- * number cannot say both things. The badge counts *unread events* — things
- * that happened which this device has not shown the user yet. The icon's form
- * says whether anything is running *right now*. So "0 unread but running" (you
- * just looked, work continues) and "3 unread, all finished" (you were away and
- * three things ended) are both expressible, and they mean different things.
+ * The badge counts *unread events* — things that happened which this device has
+ * not shown the user yet. It counts only events worth acknowledging once
+ * (blocked / failed / finished); running and queued nodes belong to the
+ * run-status button beside it, where a count that rises and falls with the
+ * machine is the right shape. A badge that is never zero on a busy workspace
+ * teaches the user to ignore it.
  *
  * Every project counts, including the one on screen. Unread is about whether a
  * person saw an event, and an event in the current project can be missed just
@@ -31,25 +31,32 @@ import {
   isUnread,
   isVerticallyVisible,
   notificationKey,
-  pruneReadKeys,
   readUnreadOnly,
-  resolveReadKeys,
   rowContext,
   sortFeed,
   summarize,
+  summaryParts,
   unreadEntries,
   withinTerminalWindow,
   type ActiveNodesFeed,
-  writeReadKeys,
+  type ReadKeysController,
   writeUnreadOnly,
 } from "../activeNodes";
 import { stateMeta } from "../canvas/nodes/stateMeta";
+import { badgeCountable } from "../notices";
 import type { ActiveNodeEntry } from "../types";
 
 type Props = {
   enabled: boolean;
   feed: ActiveNodesFeed;
   currentSessionId: string | null;
+  /* Read state is owned outside this component: the banner rail settles the
+   * same keys, and two owners would let one surface show as unread what the
+   * other already acknowledged. */
+  readKeysController: ReadKeysController;
+  open: boolean;
+  onToggle: () => void;
+  onClose: () => void;
   onJump: (entry: ActiveNodeEntry) => void;
 };
 
@@ -62,33 +69,24 @@ const BADGE_TONE_CLASS: Record<string, string> = {
 /* Panel gap below the header, matching GitWorkspaceStatus's popover offset. */
 const PANEL_TOP_GAP = 6;
 
-export function NotificationBell({ enabled, feed, currentSessionId, onJump }: Props) {
-  const { entries, loaded } = feed;
-  const [open, setOpen] = useState(false);
+export function NotificationBell({
+  enabled,
+  feed,
+  currentSessionId,
+  readKeysController,
+  open,
+  onToggle,
+  onClose,
+  onJump,
+}: Props) {
+  const { entries } = feed;
+  const { readKeys, markRead, markAllRead } = readKeysController;
   const [unreadOnly, setUnreadOnly] = useState(readUnreadOnly);
-  const [readKeys, setReadKeys] = useState<Set<string>>(() => new Set());
   const [panelTop, setPanelTop] = useState<number | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const buttonRef = useRef<HTMLButtonElement | null>(null);
   const panelRef = useRef<HTMLDivElement | null>(null);
   const viewportRef = useRef<HTMLDivElement | null>(null);
-
-  /* Seeding waits for the first *completed* fetch, not the first non-empty
-   * one. On a quiet workspace those differ: seeding only when rows appear
-   * would defer the seed to the user's first real notification and mark that
-   * one read. `loaded` distinguishes "nothing yet" from "nothing there". */
-  const seededRef = useRef(false);
-  useEffect(() => {
-    if (seededRef.current || !loaded) return;
-    seededRef.current = true;
-    setReadKeys(resolveReadKeys(entries));
-  }, [entries, loaded]);
-
-  const persist = useCallback((next: Set<string>, feed: ActiveNodeEntry[]) => {
-    const pruned = pruneReadKeys(next, new Set(feed.map(notificationKey)));
-    writeReadKeys(pruned);
-    setReadKeys(pruned);
-  }, []);
 
   /* Elapsed times tick off a clock rather than the poll, so "已跑 4m12s"
    * advances smoothly between fetches. Only while the panel is open — nothing
@@ -117,11 +115,29 @@ export function NotificationBell({ enabled, feed, currentSessionId, onJump }: Pr
     [entries, open],
   );
 
-  const unread = useMemo(() => unreadEntries(visibleEntries, readKeys), [visibleEntries, readKeys]);
-  const tone = badgeTone(unread);
-  const summary = useMemo(() => summarize(visibleEntries), [visibleEntries]);
-  const unreadSummary = useMemo(() => summarize(unread), [unread]);
-  const runningCount = summary.running + summary.queued;
+  /* Two collections, because the badge and the panel answer different
+   * questions and conflating them made the panel contradict itself.
+   *
+   * The badge counts only events worth one acknowledgement each (D13): a
+   * workspace with anything running would otherwise carry a permanently
+   * non-zero badge, which conveys nothing — running and queued live on the
+   * run-status button instead.
+   *
+   * The panel lists *every* row, so its header text and its "mark all read"
+   * button must count every unread row. Driving those off the badge's filtered
+   * set let the header say "无未读" while unread running rows sat underneath
+   * it, with a bulk action disabled and unable to clear them. */
+  const unread = useMemo(
+    () => unreadEntries(visibleEntries, readKeys),
+    [visibleEntries, readKeys],
+  );
+  const badgeUnread = useMemo(() => badgeCountable(unread), [unread]);
+  const tone = badgeTone(badgeUnread);
+  const badgeParts = useMemo(
+    () => summaryParts(summarize(badgeUnread)),
+    [badgeUnread],
+  );
+  const unreadParts = useMemo(() => summaryParts(summarize(unread)), [unread]);
 
   const rows = useMemo(() => {
     const filtered = unreadOnly
@@ -155,31 +171,27 @@ export function NotificationBell({ enabled, feed, currentSessionId, onJump }: Pr
     if (open) captureVisibleRows();
   }, [captureVisibleRows, open, rows]);
 
-  const entriesRef = useRef<ActiveNodeEntry[]>(entries);
-  entriesRef.current = entries;
+  /* Settle on the open→closed transition rather than inside the click handler.
+   * The panel can also be closed from outside — opening the run-status panel
+   * closes this one — and rows the user read during that visit must count as
+   * read however the panel went away. */
+  const settleSeenRows = useCallback(() => {
+    const seen = visibleDuringOpenRef.current;
+    if (seen.size === 0) return;
+    visibleDuringOpenRef.current = new Set();
+    markRead(seen);
+  }, [markRead]);
+
+  const wasOpenRef = useRef(open);
+  useEffect(() => {
+    if (wasOpenRef.current && !open) settleSeenRows();
+    wasOpenRef.current = open;
+  }, [open, settleSeenRows]);
 
   const closeAndSettle = useCallback(() => {
     captureVisibleRows();
-    setOpen(false);
-    const seen = visibleDuringOpenRef.current;
-    if (seen.size === 0) return;
-    setReadKeys((current) => {
-      const next = new Set(current);
-      for (const key of seen) next.add(key);
-      const pruned = pruneReadKeys(
-        next,
-        new Set(entriesRef.current.map(notificationKey)),
-      );
-      writeReadKeys(pruned);
-      return pruned;
-    });
-  }, [captureVisibleRows]);
-
-  const markAllRead = useCallback(() => {
-    const next = new Set(readKeys);
-    for (const entry of entries) next.add(notificationKey(entry));
-    persist(next, entries);
-  }, [entries, persist, readKeys]);
+    onClose();
+  }, [captureVisibleRows, onClose]);
 
   const updatePanelTop = useCallback(() => {
     const trigger = buttonRef.current;
@@ -224,8 +236,8 @@ export function NotificationBell({ enabled, feed, currentSessionId, onJump }: Pr
     }
     updatePanelTop();
     visibleDuringOpenRef.current = new Set();
-    setOpen(true);
-  }, [closeAndSettle, open, updatePanelTop]);
+    onToggle();
+  }, [closeAndSettle, onToggle, open, updatePanelTop]);
 
   useEffect(() => {
     if (!enabled) return;
@@ -249,23 +261,12 @@ export function NotificationBell({ enabled, feed, currentSessionId, onJump }: Pr
 
   if (!enabled) return null;
 
-  const unreadParts = [
-    unreadSummary.waiting > 0 ? `${unreadSummary.waiting} 等我` : "",
-    unreadSummary.error > 0 ? `${unreadSummary.error} 出错` : "",
-    unreadSummary.done > 0 ? `${unreadSummary.done} 已完成` : "",
-    unreadSummary.cancelled > 0 ? `${unreadSummary.cancelled} 已取消` : "",
-    unreadSummary.running > 0 ? `${unreadSummary.running} 在跑` : "",
-    unreadSummary.queued > 0 ? `${unreadSummary.queued} 排队` : "",
-  ].filter(Boolean);
-
-  /* Both channels are spoken, because a screen reader gets neither the badge's
-   * color nor the icon's animation. */
-  const ariaLabel = (() => {
-    const running = runningCount > 0 ? `${runningCount} 个节点在跑` : "";
-    if (unread.length === 0) return running ? `通知：无未读，${running}` : "通知：无未读";
-    const detail = `通知：${unread.length} 条未读（${unreadParts.join(" · ")}）`;
-    return running ? `${detail}，${running}` : detail;
-  })();
+  /* Spelled out because a screen reader gets neither the badge's color nor its
+   * position. The badge's own count, so the label matches the glyph. */
+  const ariaLabel =
+    badgeUnread.length === 0
+      ? "通知：无未读"
+      : `通知：${badgeUnread.length} 条未读（${badgeParts.join(" · ")}）`;
 
   return (
     <div ref={containerRef} className="relative shrink-0">
@@ -298,12 +299,6 @@ export function NotificationBell({ enabled, feed, currentSessionId, onJump }: Pr
           <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
           <path d="M13.7 21a2 2 0 0 1-3.4 0" />
         </svg>
-        {runningCount > 0 ? (
-          <span
-            aria-hidden="true"
-            className="pulse-slow absolute right-[5px] top-[5px] h-1.5 w-1.5 rounded-full bg-state-running ring-1 ring-surface"
-          />
-        ) : null}
         {tone ? (
           <span
             aria-hidden="true"
@@ -312,7 +307,7 @@ export function NotificationBell({ enabled, feed, currentSessionId, onJump }: Pr
               BADGE_TONE_CLASS[tone]
             }
           >
-            {badgeCountLabel(unread.length)}
+            {badgeCountLabel(badgeUnread.length)}
           </span>
         ) : null}
       </button>

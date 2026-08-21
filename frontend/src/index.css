@@ -229,6 +229,64 @@ body {
     transform-origin: top;
   }
 
+  /* Banners slide in from off-rail and leave the same way, so the rail reads
+   * as one edge things enter and exit through. The leave keyframe also
+   * collapses height and margin: without that the banners below would hold
+   * their old position for the whole exit and then snap up at the end. */
+  @keyframes notice-banner-in {
+    from {
+      opacity: 0;
+      transform: translateX(-115%);
+    }
+    to {
+      opacity: 1;
+      transform: translateX(0);
+    }
+  }
+  .notice-banner-enter {
+    animation: notice-banner-in 260ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+
+  @keyframes notice-banner-out {
+    from {
+      opacity: 1;
+      transform: translateX(0);
+      max-height: 220px;
+      margin-bottom: 0;
+    }
+    60% {
+      opacity: 0;
+      transform: translateX(-115%);
+      max-height: 220px;
+      margin-bottom: 0;
+    }
+    to {
+      opacity: 0;
+      transform: translateX(-115%);
+      max-height: 0;
+      /* Cancels the rail's `gap-2` as well as the banner's own height, so the
+       * banners below close the space exactly rather than keeping a stray row
+       * of padding where this one was. */
+      margin-bottom: -0.5rem;
+    }
+  }
+  .notice-banner-leave {
+    animation: notice-banner-out 200ms cubic-bezier(0.4, 0, 1, 1) both;
+    /* The banner is on its way out; a hover or click landing mid-exit would
+     * act on a record the reducer has already dropped. */
+    pointer-events: none;
+    overflow: hidden;
+  }
+
+  /* Both banner animations are pure decoration — the rail is equally readable
+   * without them, so honor the OS setting rather than scaling them down. */
+  @media (prefers-reduced-motion: reduce) {
+    .notice-banner-enter,
+    .notice-banner-leave {
+      animation-duration: 1ms;
+    }
+  }
+
   /* sweep: the bar is w-1/3 of its parent track. Translating by % of self,
    * -100% places the right edge at 0 (just off-left); 300% places the left
    * edge at 100% (just off-right). The resulting motion fills the track. */
@@ -461,4 +519,18 @@ html.dark .hljs-emphasis {
 }
 ::-webkit-scrollbar-track {
   background: transparent;
+}
+
+/* The banner rail floats over the canvas, so a full-weight scrollbar would
+ * read as a panel edge. Thinner and near-invisible until the pointer is over
+ * the rail — by which point the user is looking for it. */
+.notice-rail-viewport::-webkit-scrollbar {
+  width: 6px;
+}
+.notice-rail-viewport::-webkit-scrollbar-thumb {
+  background: rgb(var(--border-strong) / 0.35);
+  border: 1px solid transparent;
+}
+.notice-rail-viewport:hover::-webkit-scrollbar-thumb {
+  background: rgb(var(--ink-muted) / 0.45);
 }

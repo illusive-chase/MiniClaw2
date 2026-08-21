@@ -57,10 +57,12 @@ then list its filename in the `artifacts` field of your preview:
 
 Only declared files ending in `.md`, `.json`, or `.html` are shown.
 An `.html` file must be a single self-contained document — inline
-CSS and JS, no external assets, no companion files. Keep artifacts
-few and final: they are a publication for the human, not a scratch
-space. Files you do not declare remain readable by later agents but
-are never shown to the human.
+CSS and JS, no external assets, no companion files. If the intended
+content of a `.md` or `.html` artifact is long, do not write the whole
+file in one tool call; build it incrementally with multiple tool calls,
+one section at a time. Keep artifacts few and final: they are a
+publication for the human, not a scratch space. Files you do not declare
+remain readable by later agents but are never shown to the human.
 
 ### 2. Virtual previews (the plan)
 

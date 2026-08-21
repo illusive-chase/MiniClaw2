@@ -153,6 +153,26 @@ export function withinTerminalWindow(
   return entries.filter((entry) => isWithinTerminalWindow(entry, now));
 }
 
+/* What the run-status button counts: the machine is busy, or it is stuck on a
+ * person. `waiting` deliberately appears here *and* in the notification badge
+ * — it is both "this project has not finished" and "this needs me", and the
+ * two buttons answer different questions. */
+const RUN_STATUS_STATES: ReadonlySet<NodeState> = new Set<NodeState>([
+  "running",
+  "queued",
+  "waiting",
+  "awaiting_human_input",
+]);
+
+export function isRunStatusEntry(entry: ActiveNodeEntry): boolean {
+  return RUN_STATUS_STATES.has(entry.state);
+}
+
+/** Rows the run-status panel lists: everything currently in flight. */
+export function runStatusEntries(entries: ActiveNodeEntry[]): ActiveNodeEntry[] {
+  return entries.filter(isRunStatusEntry);
+}
+
 export type ActiveNodesSummary = {
   waiting: number;
   running: number;
@@ -180,6 +200,29 @@ export function summarize(entries: ActiveNodeEntry[]): ActiveNodesSummary {
     else if (entry.state === "cancelled") summary.cancelled += 1;
   }
   return summary;
+}
+
+/**
+ * Spell a summary out as parts, one per non-zero state.
+ *
+ * Ordered by urgency, the same ranking `sortActiveEntries` uses, so a
+ * breakdown reads in the order the rows below it appear.
+ *
+ * Every state is covered, including the three the unread badge does not count.
+ * A caller summarizing a *filtered* set simply gets no part for the states it
+ * filtered out — but a caller summarizing the whole feed must not silently
+ * describe only three of the six, or a header ends up claiming nothing is
+ * unread while unread rows sit underneath it.
+ */
+export function summaryParts(summary: ActiveNodesSummary): string[] {
+  return [
+    summary.waiting > 0 ? `${summary.waiting} 等我` : "",
+    summary.error > 0 ? `${summary.error} 出错` : "",
+    summary.running > 0 ? `${summary.running} 在跑` : "",
+    summary.queued > 0 ? `${summary.queued} 排队` : "",
+    summary.done > 0 ? `${summary.done} 已完成` : "",
+    summary.cancelled > 0 ? `${summary.cancelled} 取消` : "",
+  ].filter(Boolean);
 }
 
 /**
@@ -376,6 +419,69 @@ export type ActiveNodesFeed = {
    */
   loaded: boolean;
 };
+
+export type ReadKeysController = {
+  readKeys: ReadonlySet<string>;
+  /** Mark specific notification keys read, persisting the result. */
+  markRead: (keys: Iterable<string>) => void;
+  /** Mark everything currently in the feed read. */
+  markAllRead: () => void;
+};
+
+/**
+ * Own the read set for every surface that displays notifications.
+ *
+ * Lifted out of the bell because the banner rail marks the same things read:
+ * dismissing a banner and scrolling past its history row are the same
+ * acknowledgement, and two components each keeping their own set would let one
+ * surface show as unread what the other already settled. One owner, one
+ * `localStorage` key.
+ */
+export function useReadKeys(feed: ActiveNodesFeed): ReadKeysController {
+  const { entries, loaded } = feed;
+  const [readKeys, setReadKeys] = useState<Set<string>>(() => new Set());
+
+  /* Seeding waits for the first *completed* fetch, not the first non-empty
+   * one. On a quiet workspace those differ: seeding only when rows appear
+   * would defer the seed to the user's first real notification and mark that
+   * one read. `loaded` distinguishes "nothing yet" from "nothing there". */
+  const seededRef = useRef(false);
+  useEffect(() => {
+    if (seededRef.current || !loaded) return;
+    seededRef.current = true;
+    setReadKeys(resolveReadKeys(entries));
+  }, [entries, loaded]);
+
+  /* Pruning protects keys still in the feed, so it needs the live entries
+   * without making every caller pass them in. */
+  const entriesRef = useRef<ActiveNodeEntry[]>(entries);
+  entriesRef.current = entries;
+
+  const markRead = useCallback((keys: Iterable<string>) => {
+    setReadKeys((current) => {
+      const next = new Set(current);
+      let changed = false;
+      for (const key of keys) {
+        if (next.has(key)) continue;
+        next.add(key);
+        changed = true;
+      }
+      if (!changed) return current;
+      const pruned = pruneReadKeys(
+        next,
+        new Set(entriesRef.current.map(notificationKey)),
+      );
+      writeReadKeys(pruned);
+      return pruned;
+    });
+  }, []);
+
+  const markAllRead = useCallback(() => {
+    markRead(entriesRef.current.map(notificationKey));
+  }, [markRead]);
+
+  return { readKeys, markRead, markAllRead };
+}
 
 export function applyWorkspaceEvent(
   entries: ActiveNodeEntry[],
