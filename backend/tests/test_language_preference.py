@@ -212,6 +212,18 @@ class LanguagePreferenceRunnerTest(unittest.IsolatedAsyncioTestCase):
             self.assertIn("Language preference", launch_instructions)
             self.assertIn("Simplified Chinese", launch_instructions)
             self.assertIn("planspace STATUS/PLAN text fields", launch_instructions)
+            self.assertIn("Publishing artifacts", launch_instructions)
+            self.assertIn("preview.json", launch_instructions)
+            self.assertEqual(
+                node.launch_instructions_snapshot,
+                launch_instructions,
+            )
+            persisted = store.load_node(project.id, node.id)
+            assert persisted is not None
+            self.assertEqual(
+                persisted.launch_instructions_snapshot,
+                launch_instructions,
+            )
             self.assertEqual(
                 node.settings_snapshot["preferred_language"],
                 "Simplified Chinese",

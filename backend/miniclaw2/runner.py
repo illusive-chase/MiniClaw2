@@ -228,6 +228,10 @@ class NodeRunner:
             self._materialize_skills()
             self._validate_launch_settings()
             self._materialize_lane()
+            launch_instructions = self._build_agent_launch_instructions(
+                context_bundle
+            )
+            self.node.launch_instructions_snapshot = launch_instructions
 
             is_human_review = self._is_human_interact_review()
             first_state = (
@@ -260,32 +264,6 @@ class NodeRunner:
                             self._transition(NodeState.RUNNING)
                             await self._emit_node_updated()
                         library_snapshot = self._snapshot_library_entries()
-                        launch_instructions = _compose_launch_instructions(
-                            _authoring_init_block(self.node, self.store.root),
-                            build_category_launch_block(
-                                self.node,
-                                lane_path=self._lane_prompt_path(),
-                                outputs_path=str(
-                                    workspace_artifacts_dir(
-                                        self.project,
-                                        self.node.id,
-                                    )
-                                ),
-                                store_root=self.store.root,
-                            ),
-                            _skill_suggestion_block(self._skill_materialization),
-                            build_qa_mode_block(self.node),
-                            build_dependency_launch_block(
-                                self.node,
-                                lane_path=self._lane_prompt_path(),
-                                foreign_hosts=self._foreign_dependency_hosts(),
-                            ),
-                            context_bundle.turn_text,
-                            language_launch_instruction(
-                                project_preferred_language(self.project)
-                            ),
-                            anti_self_poisoning_block(),
-                        )
                         final_state, error_msg = await self._run_provider_turn(
                             self.node.prompt,
                             launch_instructions=launch_instructions,
@@ -1204,6 +1182,34 @@ class NodeRunner:
         )
 
     # ---- bundle + settings snapshots ----
+
+    def _build_agent_launch_instructions(self, context_bundle: Any) -> str:
+        return _compose_launch_instructions(
+            _authoring_init_block(self.node, self.store.root),
+            build_category_launch_block(
+                self.node,
+                lane_path=self._lane_prompt_path(),
+                outputs_path=str(
+                    workspace_artifacts_dir(
+                        self.project,
+                        self.node.id,
+                    )
+                ),
+                store_root=self.store.root,
+            ),
+            _skill_suggestion_block(self._skill_materialization),
+            build_qa_mode_block(self.node),
+            build_dependency_launch_block(
+                self.node,
+                lane_path=self._lane_prompt_path(),
+                foreign_hosts=self._foreign_dependency_hosts(),
+            ),
+            context_bundle.turn_text,
+            language_launch_instruction(
+                project_preferred_language(self.project)
+            ),
+            anti_self_poisoning_block(),
+        )
 
     def _snapshot_context_bundle(self):
         bundle = compose_context_bundle(

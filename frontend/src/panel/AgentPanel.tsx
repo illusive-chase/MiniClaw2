@@ -1874,10 +1874,7 @@ function AgentInputCard({
     () => (contextBundle?.sources ?? []).filter((s) => s.injection === "turn"),
     [contextBundle],
   );
-  const systemText =
-    contextBundle?.system_text?.trim() || node.system_context_snapshot?.trim() || "";
-  const turnText = contextBundle?.turn_text?.trim() || "";
-  const userPrompt = node.prompt?.trim() || "";
+  const input = agentInputText(node, contextBundle);
 
   return (
     <div className="overflow-hidden rounded-md border border-line bg-surface-sunken">
@@ -1897,18 +1894,41 @@ function AgentInputCard({
       <div className="space-y-2 px-3 py-3">
         <PromptBlock
           label="System prompt"
-          text={systemText}
+          text={input.systemText}
           sources={systemSources}
         />
         <PromptBlock
-          label="Input prompt"
-          text={userPrompt}
-          extras={turnText ? [{ label: "turn injection", text: turnText }] : []}
+          label="Node instructions"
+          text={input.nodeInstructions}
           sources={turnSources}
         />
+        <PromptBlock label="Input prompt" text={input.userPrompt} />
       </div>
     </div>
   );
+}
+
+export function agentInputText(
+  node: NodeInfo,
+  contextBundle: ContextBundle | null,
+): {
+  systemText: string;
+  nodeInstructions: string;
+  userPrompt: string;
+} {
+  const turnText = contextBundle?.turn_text?.trim() || "";
+  return {
+    systemText:
+      contextBundle?.system_text?.trim() ||
+      node.system_context_snapshot?.trim() ||
+      "",
+    // Historical nodes predate the exact launch snapshot. Their ContextSpace
+    // turn injection is still useful and was the only turn-level material the
+    // previous inspector exposed.
+    nodeInstructions:
+      node.launch_instructions_snapshot?.trim() || turnText,
+    userPrompt: node.prompt?.trim() || "",
+  };
 }
 
 function BasicInformationCard({
@@ -1949,15 +1969,13 @@ function BasicInformationCard({
 function PromptBlock({
   label,
   text,
-  extras = [],
   sources = [],
 }: {
   label: string;
   text: string;
-  extras?: Array<{ label: string; text: string }>;
   sources?: ContextBundleSource[];
 }) {
-  const totalChars = text.length + extras.reduce((n, e) => n + e.text.length, 0);
+  const totalChars = text.length;
   const fileSources = sources.filter((s) => s.path);
   return (
     <details className="overflow-hidden rounded border border-line bg-surface">
@@ -1976,16 +1994,6 @@ function PromptBlock({
         ) : (
           <div className="text-[11px] text-ink-muted">No content.</div>
         )}
-        {extras.map((extra, i) => (
-          <div key={i} className="mt-2 border-t border-line/60 pt-2">
-            <div className="mb-1 text-[10px] uppercase tracking-[0.12em] text-ink-subtle">
-              {extra.label}
-            </div>
-            <pre className="whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-ink">
-              {extra.text}
-            </pre>
-          </div>
-        ))}
         {fileSources.length > 0 && (
           <ol className="mt-3 list-none space-y-0.5 border-t border-line/60 pt-2 font-mono text-[10.5px] text-ink-muted">
             {fileSources.map((src, i) => (

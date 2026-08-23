@@ -552,6 +552,7 @@ export type NodeInfo = {
   usage?: TokenUsage | null;
   artifacts?: ArtifactRef[];
   system_context_snapshot?: string;
+  launch_instructions_snapshot?: string;
   settings_snapshot?: Record<string, unknown>;
   created_at: number;
   started_at?: number | null;

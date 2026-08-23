@@ -277,6 +277,11 @@ class Node(BaseModel):
     usage: TokenUsage | None = None
     artifacts: list[ArtifactRef] = Field(default_factory=list)
     system_context_snapshot: str = ""
+    # Exact per-node instructions prepared for the provider turn. This is
+    # separate from ContextSpace's system text: category rules, preview and
+    # artifact contracts, dependency paths, and language guidance are turn
+    # instructions composed by the runner.
+    launch_instructions_snapshot: str = ""
     settings_snapshot: dict[str, Any] = Field(default_factory=dict)
     created_at: float = Field(default_factory=_now)
     started_at: float | None = None

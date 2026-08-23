@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 
 import {
+  agentInputText,
   virtualDraftAfterSave,
   virtualDraftFromNode,
   virtualDraftValidationError,
@@ -22,6 +23,45 @@ function node(over: Partial<NodeInfo> = {}): NodeInfo {
     created_at: 0,
     ...over,
   } as NodeInfo;
+}
+
+/* The inspector separates provider system context, MiniClaw's per-node rules,
+ * and the user's prompt. The launch snapshot includes category-specific
+ * preview/artifact rules and must win over the older turn-text fallback. */
+{
+  const input = agentInputText(
+    node({
+      state: "done",
+      prompt: "implement the feature",
+      system_context_snapshot: "project context",
+      launch_instructions_snapshot:
+        "preview.json contract\nPublishing artifacts",
+    }),
+    {
+      bundle_id: "bundle-1",
+      created_at: 0,
+      sources: [],
+      system_text: "full system context",
+      turn_text: "principle turn injection",
+    },
+  );
+  assert.deepEqual(input, {
+    systemText: "full system context",
+    nodeInstructions: "preview.json contract\nPublishing artifacts",
+    userPrompt: "implement the feature",
+  });
+}
+
+/* Nodes launched before launch-instruction snapshots existed still expose
+ * their recorded turn injection instead of showing an empty disclosure. */
+{
+  const input = agentInputText(node({ state: "done" }), {
+    bundle_id: "bundle-1",
+    created_at: 0,
+    sources: [],
+    turn_text: "legacy turn injection",
+  });
+  assert.equal(input.nodeInstructions, "legacy turn injection");
 }
 
 /* A node the backend has already normalized must round-trip unchanged. The
