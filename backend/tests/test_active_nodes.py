@@ -507,6 +507,29 @@ class ActiveNodesEndpointTests(unittest.TestCase):
             self.assertEqual(entry["state"], "running")
             self.assertIsNone(entry["gate"])
 
+    def test_endpoint_preserves_op_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            store, registry = _registry(base)
+            project = _add_project(store, registry, base / "p", name="p")
+            commit = _add_node(
+                store,
+                project,
+                state=NodeState.DONE,
+                kind=NodeKind.OP,
+                op_kind="commit",
+                finished_at=time.time(),
+            )
+
+            with TestClient(create_app(registry)) as client:
+                body = client.get("/active-nodes").json()
+
+            entry = next(
+                item for item in body["entries"] if item["node_id"] == commit.id
+            )
+            self.assertEqual(entry["kind"], "op")
+            self.assertEqual(entry["op_kind"], "commit")
+
     def test_endpoint_is_empty_when_nothing_is_active(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)

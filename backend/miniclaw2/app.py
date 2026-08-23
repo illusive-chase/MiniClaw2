@@ -210,6 +210,8 @@ class ActiveNodeEntry(BaseModel):
     node_id: str
     state: str
     category: str | None = None
+    kind: str
+    op_kind: str | None = None
     planspace_id: str | None = None
     planspace_title: str | None = None
     is_active_planspace: bool = False
@@ -937,6 +939,8 @@ def create_app(
                     node_id=entry.node_id,
                     state=entry.state,
                     category=entry.category,
+                    kind=entry.kind,
+                    op_kind=entry.op_kind,
                     planspace_id=entry.planspace_id,
                     planspace_title=entry.planspace_title,
                     is_active_planspace=entry.is_active_planspace,

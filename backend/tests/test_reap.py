@@ -795,6 +795,24 @@ class ReapArtifactAndQaModeTests(ReapTestBase):
         self.assertTrue(updated.qa_mode)
         self.assertTrue(self.store.load_node("p1", existing.id).qa_mode)
 
+    def test_qa_mode_is_cleared_when_rewritten_as_review(self) -> None:
+        existing = self._existing_virtual(qa_mode=True)
+        payload = _virtual_payload(existing.id, "lane-A", category="review")
+        payload["subtype"] = "agentic_review"
+        payload["brief"] = {
+            "check_what": "the implementation",
+            "expected": "the requested behavior",
+            "abnormal": "a regression",
+        }
+
+        updated = self._rewrite(existing, payload)
+
+        self.assertIs(updated.category, Category.REVIEW)
+        self.assertFalse(updated.qa_mode)
+        persisted = self.store.load_node("p1", existing.id)
+        self.assertIsNotNone(persisted)
+        self.assertFalse(persisted.qa_mode)
+
     def test_new_virtual_defaults_to_no_artifact(self) -> None:
         node = self._make_running_node(category=Category.PLANNING)
         lane_root, pre = self._setup_lane(node)

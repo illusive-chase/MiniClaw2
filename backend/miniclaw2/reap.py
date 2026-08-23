@@ -376,9 +376,11 @@ def reap_lane(
         updated.planspace_id = existing.planspace_id
         updated.resume_from_node_id = existing.resume_from_node_id
         # qa_mode is deliberately absent from the preview contract (it is the
-        # user's own consent to be interrupted), so a planner rewrite would
-        # otherwise silently clear it.
-        updated.qa_mode = existing.qa_mode
+        # user's own consent to be interrupted), so preserve it where valid.
+        # Review nodes have their own interaction contract and reject Q/A mode.
+        updated.qa_mode = (
+            existing.qa_mode if updated.category is not Category.REVIEW else False
+        )
         updated.scheduled_deps = _rewrite_scheduled_deps(
             updated.scheduled_deps,
             slug_to_canonical,
