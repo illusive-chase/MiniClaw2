@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 
 from miniclaw2.contextspace import create_planspace, read_template_instances
 from miniclaw2.domain import (
+    ArtifactMode,
     Category,
     Node,
     NodeKind,
@@ -75,6 +76,8 @@ def _add_virtual(
     resume_from: str | None = None,
     summary: str = "",
     model_preset_id: str = "opus-4-8",
+    artifact_mode: ArtifactMode = ArtifactMode.DEFAULT,
+    artifact_spec: str = "",
 ) -> Node:
     node = Node(
         project_id=pid,
@@ -91,6 +94,8 @@ def _add_virtual(
         resume_from_node_id=resume_from,
         proposed_by="test",
         summary=summary,
+        artifact_mode=artifact_mode,
+        artifact_spec=artifact_spec,
     )
     store.create_node(node)
     return node
@@ -224,6 +229,104 @@ class UserTemplateSerializerTest(unittest.TestCase):
 
         reloaded = load_user_template("greetings", self.store.root)
         self.assertEqual(reloaded.brief, "Hello then goodbye.")
+
+    def test_artifact_intent_is_captured_and_survives_a_rewrite(self) -> None:
+        """The whole capture→edit→save loop must not silently drop the field.
+
+        A rewrite that omits these two keys writes a lane.yaml without them, so
+        the intent is gone from disk — a data-loss path, not a missing feature.
+        """
+        pid, lane = _make_project_with_lane(self.registry)
+        markdown = _add_virtual(
+            self.store,
+            pid,
+            lane,
+            prompt_draft="Write the report.",
+            artifact_mode=ArtifactMode.MARKDOWN,
+        )
+        custom = _add_virtual(
+            self.store,
+            pid,
+            lane,
+            prompt_draft="Produce the comparison.",
+            scheduled_deps=[markdown.id],
+            artifact_mode=ArtifactMode.CUSTOM,
+            artifact_spec="three files, one per audience",
+        )
+
+        template = serialize_selection(
+            self.store,
+            pid,
+            [markdown.id, custom.id],
+            name="Artifact flow",
+            brief="Captures deliverable shape.",
+        )
+
+        self.assertIs(template.nodes[0].artifact_mode, ArtifactMode.MARKDOWN)
+        self.assertIs(template.nodes[1].artifact_mode, ArtifactMode.CUSTOM)
+        self.assertEqual(
+            template.nodes[1].artifact_spec, "three files, one per audience"
+        )
+
+        lane_data = yaml.safe_load(
+            (template.root / "lane.yaml").read_text(encoding="utf-8")
+        )
+        self.assertEqual(lane_data["nodes"][0]["artifact_mode"], "markdown")
+        self.assertNotIn("artifact_spec", lane_data["nodes"][0])
+        self.assertEqual(lane_data["nodes"][1]["artifact_mode"], "custom")
+
+        # Now save it back the way the editor does, echoing the detail payload.
+        rewritten = rewrite_user_template(
+            "artifact-flow",
+            name="Artifact flow",
+            brief="Captures deliverable shape.",
+            nodes=[
+                {
+                    "id": node.id,
+                    "kind": "agent",
+                    "category": node.category.value,
+                    "prompt": node.prompt,
+                    "motivation": node.summary,
+                    "scheduled_deps": list(node.scheduled_deps or []),
+                    "artifact_mode": node.artifact_mode.value,
+                    "artifact_spec": node.artifact_spec,
+                }
+                for node in template.nodes
+            ],
+            arguments=[],
+            inputs=[],
+            store_root=self.store.root,
+        )
+
+        self.assertIs(rewritten.nodes[0].artifact_mode, ArtifactMode.MARKDOWN)
+        self.assertIs(rewritten.nodes[1].artifact_mode, ArtifactMode.CUSTOM)
+        self.assertEqual(
+            rewritten.nodes[1].artifact_spec, "three files, one per audience"
+        )
+
+        reloaded = load_user_template("artifact-flow", self.store.root)
+        self.assertEqual(
+            [node.artifact_mode.value for node in reloaded.nodes],
+            ["markdown", "custom"],
+        )
+
+    def test_default_artifact_mode_stays_out_of_lane_yaml(self) -> None:
+        pid, lane = _make_project_with_lane(self.registry)
+        node = _add_virtual(self.store, pid, lane, prompt_draft="plain")
+
+        template = serialize_selection(
+            self.store,
+            pid,
+            [node.id],
+            name="Plain flow",
+            brief="No deliverable shape.",
+        )
+
+        lane_data = yaml.safe_load(
+            (template.root / "lane.yaml").read_text(encoding="utf-8")
+        )
+        self.assertNotIn("artifact_mode", lane_data["nodes"][0])
+        self.assertIs(template.nodes[0].artifact_mode, ArtifactMode.DEFAULT)
 
     def test_save_emits_v2_arguments_from_loader_placeholder_scan(self) -> None:
         pid, lane = _make_project_with_lane(self.registry)
@@ -546,6 +649,41 @@ class ApplyUserTemplateTest(unittest.TestCase):
         self.assertEqual(first.proposed_by, f"template:{template.name}")
         self.assertIsNotNone(first.template_instance_id)
         self.assertEqual(second.template_instance_id, first.template_instance_id)
+
+    def test_apply_stamps_artifact_intent_onto_the_persisted_node(self) -> None:
+        """Guards both transfer points in the launcher.
+
+        The launcher builds a Node for topology and then hands agent nodes to
+        `create_virtual`, which rebuilds them; carrying the fields in only one
+        of those two places loses them at persistence.
+        """
+        pid, lane = _make_project_with_lane(self.registry)
+        node = _add_virtual(
+            self.store,
+            pid,
+            lane,
+            prompt_draft="Write the summary.",
+            artifact_mode=ArtifactMode.CUSTOM,
+            artifact_spec="one page, decision-first",
+        )
+        saved = serialize_selection(
+            self.store, pid, [node.id], name="Artifact stamp", brief="b"
+        )
+        template = load_user_template(saved.root.name, self.store.root)
+
+        target_pid, _ = _make_project_with_lane(self.registry)
+        target_project = self.registry.get_project(target_pid)
+        assert target_project is not None
+
+        created = apply_user_template(template, target_project, self.registry)
+
+        self.assertEqual(len(created), 1)
+        self.assertIs(created[0].artifact_mode, ArtifactMode.CUSTOM)
+        self.assertEqual(created[0].artifact_spec, "one page, decision-first")
+        stored = self.store.load_node(target_pid, created[0].id)
+        assert stored is not None
+        self.assertIs(stored.artifact_mode, ArtifactMode.CUSTOM)
+        self.assertEqual(stored.artifact_spec, "one page, decision-first")
 
     def test_apply_with_anchor_binds_root_deps(self) -> None:
         slug = self._build_greetings_template()

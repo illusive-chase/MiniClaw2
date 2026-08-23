@@ -31,6 +31,7 @@ import yaml
 
 from ..contextspace import contextspace_root
 from ..domain import (
+    ArtifactMode,
     Category,
     NodeKind,
     PlanspaceMode,
@@ -135,6 +136,9 @@ class TemplateNodeSpec:
     #: node has no opinion and inherits the target project's preset at stamp
     #: time — which is also what pre-per-node templates load as.
     model_preset_id: str | None = None
+    #: Deliverable shape this node must publish, captured at authoring time.
+    artifact_mode: ArtifactMode = ArtifactMode.DEFAULT
+    artifact_spec: str = ""
 
     @property
     def input_deps(self) -> list[str]:
@@ -169,6 +173,8 @@ class TemplateNodeSpec:
             "prompt_preview": self.prompt.strip().replace("\n", " ")[:160],
             "brief": self.brief.model_dump() if self.brief else None,
             "model_preset_id": self.model_preset_id,
+            "artifact_mode": self.artifact_mode.value,
+            "artifact_spec": self.artifact_spec,
         }
 
 
@@ -675,6 +681,10 @@ def _parse_lane_nodes(
             name, node_id, kind, raw.get("model_preset_id")
         )
 
+        artifact_mode, artifact_spec = _parse_node_artifact(
+            name, node_id, kind, category, raw
+        )
+
         summary = raw.get("motivation") or raw.get("summary") or ""
         if summary and not isinstance(summary, str):
             raise TemplateError(f"{name}: node {node_id} motivation must be a string")
@@ -692,9 +702,68 @@ def _parse_lane_nodes(
                 resume_from=resume_from,
                 summary=summary or _default_summary(kind, brief, prompt),
                 model_preset_id=model_preset_id,
+                artifact_mode=artifact_mode,
+                artifact_spec=artifact_spec,
             )
         )
     return nodes
+
+
+def _parse_node_artifact(
+    name: str,
+    node_id: str,
+    kind: NodeKind,
+    category: Category,
+    raw: dict[str, Any],
+) -> tuple[ArtifactMode, str]:
+    """Read one node's authored deliverable shape.
+
+    Mirrors the ``Node`` invariants so a hand-written ``lane.yaml`` fails with
+    a message naming the template and node rather than at ``Node`` construction.
+    """
+    raw_mode = raw.get("artifact_mode")
+    raw_spec = raw.get("artifact_spec")
+    if raw_spec is not None and not isinstance(raw_spec, str):
+        raise TemplateError(
+            f"{name}: node {node_id} artifact_spec must be a string"
+        )
+    spec = (raw_spec or "").strip()
+    if raw_mode is None:
+        mode = ArtifactMode.DEFAULT
+    else:
+        if not isinstance(raw_mode, str):
+            raise TemplateError(
+                f"{name}: node {node_id} artifact_mode must be a string"
+            )
+        try:
+            mode = ArtifactMode(raw_mode.strip() or ArtifactMode.DEFAULT.value)
+        except ValueError as exc:
+            raise TemplateError(
+                f"{name}: node {node_id} has unknown artifact_mode {raw_mode!r}"
+            ) from exc
+    if mode is ArtifactMode.CUSTOM:
+        if not spec:
+            raise TemplateError(
+                f"{name}: node {node_id} artifact_mode=custom requires a"
+                " non-empty artifact_spec"
+            )
+    elif spec:
+        raise TemplateError(
+            f"{name}: node {node_id} artifact_spec is only valid when"
+            " artifact_mode=custom"
+        )
+    if mode is not ArtifactMode.DEFAULT:
+        if kind is not NodeKind.AGENT:
+            raise TemplateError(
+                f"{name}: node {node_id} is kind={kind.value} and must not"
+                " carry artifact_mode"
+            )
+        if category is Category.REVIEW:
+            raise TemplateError(
+                f"{name}: node {node_id} is a review node and must not carry"
+                " artifact_mode"
+            )
+    return mode, spec
 
 
 def _parse_node_model_preset_id(

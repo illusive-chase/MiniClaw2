@@ -56,6 +56,7 @@ from .domain import (
     AUTHORING_AGENT_OP_KINDS,
     KNOWN_AGENT_OP_KINDS,
     TERMINAL_NODE_STATES,
+    ArtifactMode,
     Category,
     Node,
     NodeKind,
@@ -2342,6 +2343,9 @@ class ProjectRegistry:
         scheduled_deps: list[str] | None = None,
         pending_extra_principles: list[str] | None = None,
         pending_extra_skills: list[str | dict[str, Any]] | None = None,
+        qa_mode: bool = False,
+        artifact_mode: str | ArtifactMode | None = None,
+        artifact_spec: str | None = None,
         agent_op_kind: str | None = None,
         provider: str | None = None,
         model_preset_id: str | None = None,
@@ -2477,6 +2481,20 @@ class ProjectRegistry:
             ):
                 raise ValueError(f"{agent_op_kind} requires category=regular")
 
+        try:
+            next_artifact_mode = (
+                artifact_mode
+                if isinstance(artifact_mode, ArtifactMode)
+                else ArtifactMode(str(artifact_mode))
+                if artifact_mode is not None
+                else ArtifactMode.DEFAULT
+            )
+        except ValueError as exc:
+            raise ValueError(f"unknown artifact_mode: {artifact_mode!r}") from exc
+        next_artifact_spec = (artifact_spec or "").strip()
+        if next_artifact_mode is not ArtifactMode.CUSTOM:
+            next_artifact_spec = ""
+
         node_kwargs: dict[str, Any] = {}
         if node_id is not None:
             node_kwargs["id"] = node_id
@@ -2503,6 +2521,9 @@ class ProjectRegistry:
                 pending_extra_skills,
                 store_root=self.store.root,
             ),
+            qa_mode=bool(qa_mode),
+            artifact_mode=next_artifact_mode,
+            artifact_spec=next_artifact_spec,
             resume_from_node_id=normalized_resume_id,
             proposed_by=_proposed_by,
             template_instance_id=_template_instance_id,
@@ -2563,6 +2584,9 @@ class ProjectRegistry:
         scheduled_deps: list[str] | None | object = _UNSET,
         pending_extra_principles: list[str] | None | object = _UNSET,
         pending_extra_skills: list[str | dict[str, Any]] | None | object = _UNSET,
+        qa_mode: bool | None | object = _UNSET,
+        artifact_mode: str | ArtifactMode | None | object = _UNSET,
+        artifact_spec: str | None | object = _UNSET,
         agent_op_kind: str | None | object = _UNSET,
         provider: str | None | object = _UNSET,
         model_preset_id: str | None | object = _UNSET,
@@ -2728,6 +2752,36 @@ class ProjectRegistry:
                 pending_extra_skills,
                 store_root=self.store.root,
             )
+
+        if qa_mode is not _UNSET:
+            update["qa_mode"] = bool(qa_mode)
+
+        # Both artifact fields are resolved in one branch: a request that only
+        # moves the mode back to default would otherwise leave a stale custom
+        # spec behind and trip the paired Node invariant below.
+        if artifact_mode is not _UNSET or artifact_spec is not _UNSET:
+            if artifact_mode is _UNSET:
+                next_artifact_mode = existing.artifact_mode
+            else:
+                try:
+                    next_artifact_mode = (
+                        artifact_mode
+                        if isinstance(artifact_mode, ArtifactMode)
+                        else ArtifactMode(str(artifact_mode or "default"))
+                    )
+                except ValueError as exc:
+                    raise ValueError(
+                        f"unknown artifact_mode: {artifact_mode!r}"
+                    ) from exc
+            next_artifact_spec = (
+                existing.artifact_spec
+                if artifact_spec is _UNSET
+                else str(artifact_spec or "")
+            ).strip()
+            if next_artifact_mode is not ArtifactMode.CUSTOM:
+                next_artifact_spec = ""
+            update["artifact_mode"] = next_artifact_mode
+            update["artifact_spec"] = next_artifact_spec
 
         if provider is not _UNSET:
             raise ValueError("provider is no longer accepted; use model_preset_id")
@@ -3003,6 +3057,9 @@ class ProjectRegistry:
                 store_root=self.store.root,
             ),
             agent_op_kind=original.agent_op_kind,
+            qa_mode=original.qa_mode,
+            artifact_mode=original.artifact_mode,
+            artifact_spec=original.artifact_spec,
             model_preset_id=original.model_preset_id,
             _allow_compatibility_model_preset=True,
             planspace_id=original.planspace_id,

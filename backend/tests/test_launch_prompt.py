@@ -5,6 +5,7 @@ from __future__ import annotations
 import unittest
 
 from miniclaw2.domain import (
+    ArtifactMode,
     Category,
     Node,
     NodeKind,
@@ -14,8 +15,10 @@ from miniclaw2.domain import (
 )
 from miniclaw2.launch_prompt import (
     anti_self_poisoning_block,
+    build_artifact_requirement,
     build_category_launch_block,
     build_dependency_launch_block,
+    build_qa_mode_block,
 )
 from miniclaw2.materialize import GRAPH_DIRNAME
 
@@ -243,6 +246,112 @@ class RunnerCompositionTests(unittest.TestCase):
 
         out = _compose_launch_instructions("", "X", "", "Y")
         self.assertEqual(out, "X\n\n---\n\nY")
+
+
+class ArtifactRequirementTests(unittest.TestCase):
+    def _render(self, node: Node) -> str:
+        return build_category_launch_block(
+            node,
+            lane_path="lane/path",
+            outputs_path="/tmp/outputs",
+        )
+
+    def test_no_template_leaks_the_token(self) -> None:
+        cases = [
+            _agent_node(category=Category.REGULAR),
+            _agent_node(category=Category.PLANNING),
+            _agent_node(
+                category=Category.REVIEW,
+                subtype=ReviewSubtype.AGENTIC_REVIEW,
+                brief=ReviewBrief(check_what="c", expected="e", abnormal="a"),
+            ),
+            _agent_node(
+                category=Category.REVIEW,
+                subtype=ReviewSubtype.HUMAN_INTERACT_REVIEW,
+                brief=ReviewBrief(check_what="c", expected="e", abnormal="a"),
+            ),
+        ]
+        for node in cases:
+            with self.subTest(category=node.category, subtype=node.subtype):
+                rendered = self._render(node)
+                self.assertNotIn("<<artifact_requirement>>", rendered)
+                self.assertIn("## Publishing artifacts", rendered)
+
+    def test_default_mode_keeps_the_not_expected_posture(self) -> None:
+        rendered = self._render(_agent_node())
+        self.assertIn("Artifacts are **not** expected from this node.", rendered)
+
+    def test_markdown_mode_requires_a_markdown_artifact(self) -> None:
+        node = _agent_node()
+        node.artifact_mode = ArtifactMode.MARKDOWN
+        rendered = self._render(node)
+        self.assertIn(
+            "This node must publish at least one Markdown artifact.", rendered
+        )
+        self.assertNotIn("Artifacts are **not** expected", rendered)
+
+    def test_html_mode_requires_a_self_contained_file(self) -> None:
+        node = _agent_node()
+        node.artifact_mode = ArtifactMode.HTML
+        rendered = self._render(node)
+        self.assertIn("This node must publish an HTML artifact.", rendered)
+        self.assertIn("self-contained", rendered)
+
+    def test_custom_spec_is_blockquoted_and_outranked(self) -> None:
+        node = _agent_node()
+        node.artifact_mode = ArtifactMode.CUSTOM
+        node.artifact_spec = (
+            "produce `a.md` and `b.md`\n"
+            "\n"
+            "then a ```fenced``` summary"
+        )
+        block = build_artifact_requirement(node)
+        for line in node.artifact_spec.strip().splitlines():
+            with self.subTest(line=line):
+                if line.strip():
+                    self.assertIn(f"> {line}", block)
+        # Framework constraints must sit after the user's text so the ordering
+        # itself reads as precedence.
+        self.assertLess(
+            block.find("produce `a.md`"),
+            block.find("outrank the specification"),
+        )
+        self.assertNotIn("<<artifact_spec_quoted>>", block)
+
+
+class QaModeBlockTests(unittest.TestCase):
+    def test_block_is_empty_when_off(self) -> None:
+        self.assertEqual(build_qa_mode_block(_agent_node()), "")
+
+    def test_block_is_present_when_on(self) -> None:
+        node = _agent_node()
+        node.qa_mode = True
+        block = build_qa_mode_block(node)
+        self.assertIn("Q/A mode", block)
+        self.assertIn("ask-user", block)
+
+    def test_block_names_no_concrete_tool(self) -> None:
+        # claude exposes AskUserQuestion, codex exposes a self-injected
+        # ask_user dynamic tool; naming either one hallucinates on the other.
+        node = _agent_node()
+        node.qa_mode = True
+        block = build_qa_mode_block(node)
+        self.assertNotIn("AskUserQuestion", block)
+        self.assertNotIn("ask_user", block)
+
+    def test_composition_includes_and_omits_the_block(self) -> None:
+        from miniclaw2.runner import _compose_launch_instructions
+
+        node = _agent_node()
+        node.qa_mode = True
+        on = build_qa_mode_block(node)
+        composed = _compose_launch_instructions("CAT", on, "LANG")
+        self.assertIn(on, composed)
+        node.qa_mode = False
+        composed_off = _compose_launch_instructions(
+            "CAT", build_qa_mode_block(node), "LANG"
+        )
+        self.assertEqual(composed_off, "CAT\n\n---\n\nLANG")
 
 
 if __name__ == "__main__":

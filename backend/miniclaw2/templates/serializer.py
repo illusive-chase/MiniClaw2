@@ -33,6 +33,7 @@ from uuid import uuid4
 import yaml
 
 from ..domain import (
+    ArtifactMode,
     Category,
     Node,
     NodeKind,
@@ -112,6 +113,10 @@ def serialize_selection(
         # is later stamped into.
         if node.model_preset_id:
             entry["model_preset_id"] = node.model_preset_id
+        if node.artifact_mode is not ArtifactMode.DEFAULT:
+            entry["artifact_mode"] = node.artifact_mode.value
+            if node.artifact_spec:
+                entry["artifact_spec"] = node.artifact_spec
         if node.subtype is not None:
             entry["subtype"] = node.subtype.value
         if node.brief is not None:
@@ -219,6 +224,17 @@ def rewrite_user_template(
                 )
             if model_preset_id.strip():
                 entry["model_preset_id"] = model_preset_id.strip()
+        artifact_mode = node.get("artifact_mode")
+        if artifact_mode is not None:
+            if not isinstance(artifact_mode, str):
+                raise SerializerError(
+                    f"模板节点 {node.get('id')!r} 的 artifact_mode 必须是字符串"
+                )
+            if artifact_mode != ArtifactMode.DEFAULT.value:
+                entry["artifact_mode"] = artifact_mode
+                spec = node.get("artifact_spec")
+                if isinstance(spec, str) and spec.strip():
+                    entry["artifact_spec"] = spec.strip()
         if node.get("subtype") is not None:
             entry["subtype"] = node["subtype"]
         if node.get("brief") is not None:

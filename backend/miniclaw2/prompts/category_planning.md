@@ -45,7 +45,9 @@ the plan.
 
 Use `"error"` or `"cancelled"` for `state` on failure paths.
 
-## Publishing artifacts (only when explicitly requested)
+## Publishing artifacts
+
+<<artifact_requirement>>
 
 To show a file to the human, write it under:
 
@@ -121,15 +123,32 @@ Only active presets may be newly selected:
 Changing the preset on a continuation/resume virtual is not allowed because it
 must inherit the source node's provider session settings.
 
+`artifact_mode` is optional and declares the deliverable shape the node
+must publish: `"default"` (no artifact expected), `"markdown"`, `"html"`,
+or `"custom"`. `"custom"` additionally requires `"artifact_spec"`, a
+sentence describing what to produce. Set it when the plan genuinely calls
+for a file the human will read — a report, a rendered comparison — and
+leave it out otherwise.
+
+**Omitting `artifact_mode` when you rewrite an existing virtual keeps its
+current value.** The user may have set it themselves; a rewrite that does
+not mention it is read as "I did not consider this", not as "reset it to
+default". To clear it, write `"artifact_mode": "default"` explicitly.
+
+`artifact_mode` is only valid on `planning` and `regular` virtuals. Review
+virtuals have their own deliverable contract (the brief plus the handoff
+text) and must not carry it.
+
 ### Rewriting and obsoleting
 
 To **rewrite** an existing virtual, write a new preview at its
 current path. The id and `proposed_by` field will be preserved by
 the framework — you are free to update `motivation`, `prompt_draft`,
-`category`, `scheduled_deps`, and (for reviews) `subtype`, `brief`, and
-`review_target`. You may also explicitly update `model_preset_id` under the
-selection rule above. Continuation/resume provider settings remain
-framework-controlled and cannot be changed from a preview.
+`category`, `scheduled_deps`, `artifact_mode`, and (for reviews)
+`subtype`, `brief`, and `review_target`. You may also explicitly update
+`model_preset_id` under the selection rule above. Continuation/resume
+provider settings remain framework-controlled and cannot be changed from
+a preview.
 
 To **obsolete** a virtual, rewrite its preview with a non-null
 `obsolete_reason` explaining why it no longer applies. Do not `rm`

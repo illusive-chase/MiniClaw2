@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 
 from miniclaw2.app import create_app
 from miniclaw2.domain import Node, NodeState, Project
-from miniclaw2.language import project_preferred_language
+from miniclaw2.language import language_launch_instruction, project_preferred_language
 from miniclaw2.providers.base import AgentProviderEvent
 from miniclaw2.registry import ProjectRegistry
 from miniclaw2.runner import NodeRunner
@@ -155,6 +155,14 @@ class LanguagePreferenceRegistryTest(unittest.TestCase):
             self.assertEqual(updated.settings_override["language"], "Japanese")
             self.assertEqual(updated.settings_override["preferred_language"], "Russian")
             self.assertEqual(updated.settings_override["custom_flag"], "test-value")
+
+    def test_language_instruction_names_published_artifact_prose(self) -> None:
+        # Artifacts are the most reader-facing text a node produces, so the
+        # enumeration must name them explicitly.
+        instruction = language_launch_instruction("Simplified Chinese")
+        self.assertIn("published artifact prose", instruction)
+        self.assertIn("Simplified Chinese", instruction)
+        self.assertEqual(language_launch_instruction(None), "")
 
     def test_project_preferred_language_ignores_invalid_persisted_value(self) -> None:
         project = Project(

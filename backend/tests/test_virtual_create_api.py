@@ -111,6 +111,111 @@ class VirtualCreateApiTest(unittest.TestCase):
         self.assertEqual(created.status_code, 422, created.text)
         self.assertIn("provider", created.text)
 
+    def _lane_session(self) -> str:
+        launched = self.client.post(
+            "/templates/hello-text/run",
+            json={"model_preset_id": "gpt-5.6"},
+        )
+        self.assertEqual(launched.status_code, 200, launched.text)
+        return launched.json()["id"]
+
+    def test_create_virtual_defaults_artifact_and_qa_off(self) -> None:
+        sid = self._lane_session()
+
+        created = self.client.post(
+            f"/sessions/{sid}/virtuals",
+            json={"prompt_draft": "plain node"},
+        )
+
+        self.assertEqual(created.status_code, 200, created.text)
+        node = created.json()["node"]
+        self.assertEqual(node["artifact_mode"], "default")
+        self.assertEqual(node["artifact_spec"], "")
+        self.assertFalse(node["qa_mode"])
+
+    def test_create_virtual_accepts_artifact_and_qa_mode(self) -> None:
+        sid = self._lane_session()
+
+        created = self.client.post(
+            f"/sessions/{sid}/virtuals",
+            json={
+                "prompt_draft": "write the report",
+                "artifact_mode": "markdown",
+                "qa_mode": True,
+            },
+        )
+
+        self.assertEqual(created.status_code, 200, created.text)
+        node = created.json()["node"]
+        self.assertEqual(node["artifact_mode"], "markdown")
+        self.assertTrue(node["qa_mode"])
+
+        readback = self.client.get(f"/sessions/{sid}/nodes")
+        self.assertEqual(readback.status_code, 200, readback.text)
+        stored = next(
+            item for item in readback.json() if item["id"] == node["id"]
+        )
+        self.assertEqual(stored["artifact_mode"], "markdown")
+        self.assertTrue(stored["qa_mode"])
+
+    def test_create_virtual_custom_requires_spec(self) -> None:
+        sid = self._lane_session()
+
+        created = self.client.post(
+            f"/sessions/{sid}/virtuals",
+            json={"prompt_draft": "x", "artifact_mode": "custom"},
+        )
+
+        self.assertEqual(created.status_code, 400, created.text)
+        self.assertIn("artifact_spec", created.json()["detail"])
+
+    def test_create_virtual_drops_spec_when_mode_is_not_custom(self) -> None:
+        sid = self._lane_session()
+
+        created = self.client.post(
+            f"/sessions/{sid}/virtuals",
+            json={
+                "prompt_draft": "x",
+                "artifact_mode": "markdown",
+                "artifact_spec": "ignored",
+            },
+        )
+
+        self.assertEqual(created.status_code, 200, created.text)
+        self.assertEqual(created.json()["node"]["artifact_spec"], "")
+
+    def test_create_virtual_rejects_unknown_artifact_mode(self) -> None:
+        sid = self._lane_session()
+
+        created = self.client.post(
+            f"/sessions/{sid}/virtuals",
+            json={"prompt_draft": "x", "artifact_mode": "pdf"},
+        )
+
+        self.assertEqual(created.status_code, 400, created.text)
+        self.assertIn("artifact_mode", created.json()["detail"])
+
+    def test_create_review_virtual_rejects_artifact_mode(self) -> None:
+        sid = self._lane_session()
+
+        created = self.client.post(
+            f"/sessions/{sid}/virtuals",
+            json={
+                "prompt_draft": "review it",
+                "category": "review",
+                "subtype": "agentic_review",
+                "brief": {
+                    "check_what": "c",
+                    "expected": "e",
+                    "abnormal": "a",
+                },
+                "artifact_mode": "markdown",
+            },
+        )
+
+        self.assertEqual(created.status_code, 400, created.text)
+        self.assertIn("artifact_mode", created.json()["detail"])
+
 
 if __name__ == "__main__":
     unittest.main()

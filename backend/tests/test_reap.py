@@ -8,6 +8,7 @@ import unittest
 from pathlib import Path
 
 from miniclaw2.domain import (
+    ArtifactMode,
     Category,
     Node,
     NodeKind,
@@ -696,6 +697,158 @@ class ReapAtomicityTests(ReapTestBase):
         ids_after = {n.id for n in self.store.list_nodes("p1")}
         self.assertTrue(result.fatal)
         self.assertEqual(ids_before, ids_after)
+
+
+class ReapArtifactAndQaModeTests(ReapTestBase):
+    """Draft-time intent must survive a planner rewrite of a virtual."""
+
+    def _existing_virtual(
+        self,
+        *,
+        artifact_mode: ArtifactMode = ArtifactMode.DEFAULT,
+        artifact_spec: str = "",
+        qa_mode: bool = False,
+    ) -> Node:
+        virtual = Node(
+            id="v-existing",
+            project_id="p1",
+            kind=NodeKind.AGENT,
+            category=Category.REGULAR,
+            state=NodeState.VIRTUAL,
+            planspace_id="lane-A",
+            model_preset_id="gpt-5.5",
+            prompt_draft="original draft",
+            proposed_by="user",
+            summary="original motivation",
+            artifact_mode=artifact_mode,
+            artifact_spec=artifact_spec,
+            qa_mode=qa_mode,
+        )
+        self.store.create_node(virtual)
+        return virtual
+
+    def _rewrite(self, existing: Node, payload: dict) -> Node:
+        node = self._make_running_node(category=Category.PLANNING)
+        lane_root, pre = self._setup_lane(node)
+        _write_preview(
+            lane_root / "nodes" / "n1" / "preview.json",
+            _executed_payload("n1", "lane-A", category="planning"),
+        )
+        _write_preview(
+            lane_root / "nodes" / existing.id / "preview.json",
+            payload,
+        )
+        result = reap_lane(self.project, node, lane_root, pre, self.store)
+        self.assertTrue(result.ok(), result.rejection_reasons)
+        self.assertEqual(len(result.modified_virtuals), 1)
+        return result.modified_virtuals[0]
+
+    def test_omitted_artifact_mode_keeps_the_current_value(self) -> None:
+        existing = self._existing_virtual(artifact_mode=ArtifactMode.MARKDOWN)
+        payload = _virtual_payload(existing.id, "lane-A")
+        self.assertNotIn("artifact_mode", payload)
+
+        updated = self._rewrite(existing, payload)
+
+        self.assertIs(updated.artifact_mode, ArtifactMode.MARKDOWN)
+
+    def test_explicit_default_clears_the_current_value(self) -> None:
+        existing = self._existing_virtual(artifact_mode=ArtifactMode.MARKDOWN)
+        payload = _virtual_payload(existing.id, "lane-A")
+        payload["artifact_mode"] = "default"
+
+        updated = self._rewrite(existing, payload)
+
+        self.assertIs(updated.artifact_mode, ArtifactMode.DEFAULT)
+
+    def test_explicit_mode_change_drops_the_previous_spec(self) -> None:
+        existing = self._existing_virtual(
+            artifact_mode=ArtifactMode.CUSTOM, artifact_spec="old spec"
+        )
+        payload = _virtual_payload(existing.id, "lane-A")
+        payload["artifact_mode"] = "html"
+
+        updated = self._rewrite(existing, payload)
+
+        self.assertIs(updated.artifact_mode, ArtifactMode.HTML)
+        self.assertEqual(updated.artifact_spec, "")
+
+    def test_planner_can_set_custom_with_spec(self) -> None:
+        existing = self._existing_virtual()
+        payload = _virtual_payload(existing.id, "lane-A")
+        payload["artifact_mode"] = "custom"
+        payload["artifact_spec"] = "one risk table"
+
+        updated = self._rewrite(existing, payload)
+
+        self.assertIs(updated.artifact_mode, ArtifactMode.CUSTOM)
+        self.assertEqual(updated.artifact_spec, "one risk table")
+
+    def test_qa_mode_survives_a_rewrite(self) -> None:
+        # qa_mode is deliberately not in the preview contract, so the rewrite
+        # cannot mention it — the framework must carry it over.
+        existing = self._existing_virtual(qa_mode=True)
+        payload = _virtual_payload(existing.id, "lane-A")
+
+        updated = self._rewrite(existing, payload)
+
+        self.assertTrue(updated.qa_mode)
+        self.assertTrue(self.store.load_node("p1", existing.id).qa_mode)
+
+    def test_new_virtual_defaults_to_no_artifact(self) -> None:
+        node = self._make_running_node(category=Category.PLANNING)
+        lane_root, pre = self._setup_lane(node)
+        _write_preview(
+            lane_root / "nodes" / "n1" / "preview.json",
+            _executed_payload("n1", "lane-A", category="planning"),
+        )
+        _write_preview(
+            lane_root / "nodes" / "V_new" / "preview.json",
+            _virtual_payload("V_new", "lane-A"),
+        )
+
+        result = reap_lane(self.project, node, lane_root, pre, self.store)
+
+        self.assertTrue(result.ok(), result.rejection_reasons)
+        self.assertIs(
+            result.new_virtuals[0].artifact_mode, ArtifactMode.DEFAULT
+        )
+        self.assertFalse(result.new_virtuals[0].qa_mode)
+
+    def test_review_agent_may_also_set_artifact_mode(self) -> None:
+        # artifact_mode is part of a virtual's shape, like prompt_draft, so the
+        # existing planning-or-review write gate is the only gate it needs.
+        existing = self._existing_virtual()
+        node = Node(
+            id="n1",
+            project_id="p1",
+            kind=NodeKind.AGENT,
+            category=Category.REVIEW,
+            subtype=ReviewSubtype.AGENTIC_REVIEW,
+            brief=ReviewBrief(check_what="c", expected="e", abnormal="a"),
+            state=NodeState.DONE,
+            planspace_id="lane-A",
+            model_preset_id="gpt-5.5",
+            started_at=1.0,
+            finished_at=2.0,
+        )
+        self.store.create_node(node)
+        lane_root, pre = self._setup_lane(node)
+        own = _executed_payload("n1", "lane-A", category="review")
+        own["subtype"] = "agentic_review"
+        _write_preview(lane_root / "nodes" / "n1" / "preview.json", own)
+        payload = _virtual_payload(existing.id, "lane-A")
+        payload["artifact_mode"] = "markdown"
+        _write_preview(
+            lane_root / "nodes" / existing.id / "preview.json", payload
+        )
+
+        result = reap_lane(self.project, node, lane_root, pre, self.store)
+
+        self.assertTrue(result.ok(), result.rejection_reasons)
+        self.assertIs(
+            result.modified_virtuals[0].artifact_mode, ArtifactMode.MARKDOWN
+        )
 
 
 if __name__ == "__main__":

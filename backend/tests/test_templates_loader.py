@@ -7,7 +7,7 @@ from typing import Any
 
 import yaml
 
-from miniclaw2.domain import Category, NodeKind, ReviewSubtype
+from miniclaw2.domain import ArtifactMode, Category, NodeKind, ReviewSubtype
 from miniclaw2.templates import TemplateError, list_templates, load_template
 from miniclaw2.templates.loader import (
     SCHEMA_VERSION,
@@ -663,6 +663,128 @@ class TemplateSchemaV2Test(unittest.TestCase):
             sorted((w["code"], w["name"]) for w in meta["warnings"]),
             [("dangling_argument", "gone"), ("unreferenced_input", "orphan")],
         )
+
+    # --- per-node artifact intent ------------------------------------------
+
+    def test_node_without_artifact_keys_loads_as_default(self) -> None:
+        """Old lane.yaml files predate the field and must still load.
+
+        This is why SCHEMA_VERSION is not bumped for it — a bump would make
+        every existing user template report a migration error at once.
+        """
+        template = self.simple("plain prompt")
+        node = template.nodes[0]
+        self.assertIs(node.artifact_mode, ArtifactMode.DEFAULT)
+        self.assertEqual(node.artifact_spec, "")
+        self.assertEqual(node.metadata()["artifact_mode"], "default")
+
+    def test_node_artifact_mode_is_parsed_and_exposed(self) -> None:
+        root = self.write(
+            prompts={"n0.md": "a"},
+            nodes=[
+                {
+                    "id": "n0",
+                    "kind": "agent",
+                    "category": "regular",
+                    "prompt_file": "prompts/n0.md",
+                    "artifact_mode": "markdown",
+                }
+            ],
+        )
+        template = _load_from_root(root, "fixture")
+        self.assertIs(template.nodes[0].artifact_mode, ArtifactMode.MARKDOWN)
+        self.assertEqual(
+            template.nodes[0].metadata()["artifact_mode"], "markdown"
+        )
+
+    def test_node_artifact_custom_carries_its_spec(self) -> None:
+        root = self.write(
+            prompts={"n0.md": "a"},
+            nodes=[
+                {
+                    "id": "n0",
+                    "kind": "agent",
+                    "category": "regular",
+                    "prompt_file": "prompts/n0.md",
+                    "artifact_mode": "custom",
+                    "artifact_spec": "  a risk table  ",
+                }
+            ],
+        )
+        template = _load_from_root(root, "fixture")
+        self.assertIs(template.nodes[0].artifact_mode, ArtifactMode.CUSTOM)
+        self.assertEqual(template.nodes[0].artifact_spec, "a risk table")
+
+    def test_unknown_artifact_mode_is_rejected(self) -> None:
+        self.write(
+            prompts={"n0.md": "a"},
+            nodes=[
+                {
+                    "id": "n0",
+                    "kind": "agent",
+                    "category": "regular",
+                    "prompt_file": "prompts/n0.md",
+                    "artifact_mode": "pdf",
+                }
+            ],
+        )
+        with self.assertRaisesRegex(TemplateError, "unknown artifact_mode"):
+            _load_from_root(self.root, "fixture")
+
+    def test_custom_without_spec_is_rejected(self) -> None:
+        self.write(
+            prompts={"n0.md": "a"},
+            nodes=[
+                {
+                    "id": "n0",
+                    "kind": "agent",
+                    "category": "regular",
+                    "prompt_file": "prompts/n0.md",
+                    "artifact_mode": "custom",
+                }
+            ],
+        )
+        with self.assertRaisesRegex(TemplateError, "non-empty artifact_spec"):
+            _load_from_root(self.root, "fixture")
+
+    def test_spec_without_custom_is_rejected(self) -> None:
+        self.write(
+            prompts={"n0.md": "a"},
+            nodes=[
+                {
+                    "id": "n0",
+                    "kind": "agent",
+                    "category": "regular",
+                    "prompt_file": "prompts/n0.md",
+                    "artifact_mode": "markdown",
+                    "artifact_spec": "stray",
+                }
+            ],
+        )
+        with self.assertRaisesRegex(TemplateError, "only valid when"):
+            _load_from_root(self.root, "fixture")
+
+    def test_review_node_must_not_carry_artifact_mode(self) -> None:
+        self.write(
+            prompts={"n0.md": "a"},
+            nodes=[
+                {
+                    "id": "n0",
+                    "kind": "agent",
+                    "category": "review",
+                    "subtype": "agentic_review",
+                    "brief": {
+                        "check_what": "c",
+                        "expected": "e",
+                        "abnormal": "a",
+                    },
+                    "prompt_file": "prompts/n0.md",
+                    "artifact_mode": "markdown",
+                }
+            ],
+        )
+        with self.assertRaisesRegex(TemplateError, "review node"):
+            _load_from_root(self.root, "fixture")
 
 
 if __name__ == "__main__":

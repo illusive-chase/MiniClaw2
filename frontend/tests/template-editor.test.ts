@@ -42,6 +42,8 @@ function node(id: string, overrides: Partial<EditorNode> = {}): EditorNode {
     scheduled_deps: [],
     resume_from: null,
     model_preset_id: null,
+    artifact_mode: "default",
+    artifact_spec: "",
     ...overrides,
   };
 }
@@ -506,6 +508,8 @@ function testPayloadShapeMatchesTheWriteEndpoint() {
   ]);
   // Node keys must match UserTemplateNodeWrite exactly — it forbids extras.
   assert.deepEqual(Object.keys(payload.nodes[0]).sort(), [
+    "artifact_mode",
+    "artifact_spec",
     "brief",
     "category",
     "id",
@@ -684,6 +688,89 @@ function testDetailLoadsPerNodeModelIncludingAbsentAsInherit() {
   assert.equal(loaded.nodes[1].model_preset_id, null);
 }
 
+function testArtifactIntentSurvivesASave() {
+  /* Not sending these two keys is a data-loss path, not a missing feature: the
+   * serializer's rewrite side only writes what the payload carries, so one save
+   * through the editor would erase an intent captured from the canvas. */
+  const payload = buildRewritePayload(
+    state({
+      nodes: [
+        node("n0", { artifact_mode: "markdown" }),
+        node("n1", {
+          artifact_mode: "custom",
+          artifact_spec: "one risk table",
+          scheduled_deps: ["n0"],
+        }),
+      ],
+    }),
+  );
+  assert.equal(payload.nodes[0].artifact_mode, "markdown");
+  assert.equal(payload.nodes[0].artifact_spec, "");
+  assert.equal(payload.nodes[1].artifact_mode, "custom");
+  assert.equal(payload.nodes[1].artifact_spec, "one risk table");
+}
+
+function testPayloadZeroesArtifactIntentOnReviewNodes() {
+  const payload = buildRewritePayload(
+    state({
+      nodes: [
+        node("n0", {
+          category: "review",
+          subtype: "agentic_review",
+          brief: { check_what: "c", expected: "e", abnormal: "a" },
+          artifact_mode: "markdown",
+          artifact_spec: "leftover",
+        }),
+      ],
+    }),
+  );
+  assert.equal(payload.nodes[0].artifact_mode, "default");
+  assert.equal(payload.nodes[0].artifact_spec, "");
+}
+
+function testArtifactChangeMarksTheEditorDirty() {
+  const base = state({ nodes: [node("n0")] });
+  const saved = buildRewritePayload(base);
+  assert.equal(isDirty(base, saved), false);
+  assert.equal(
+    isDirty(updateNode(base, "n0", { artifact_mode: "html" }), saved),
+    true,
+  );
+}
+
+function testDetailLoadsArtifactIntentIncludingAbsentAsDefault() {
+  const detail: TemplateDetail = {
+    slug: "artifacts",
+    name: "Artifacts",
+    brief: "",
+    allowed_model_preset_ids: [],
+    auto_commit: false,
+    node_count: 2,
+    schema_version: 2,
+    arguments: [],
+    inputs: [],
+    warnings: [],
+    nodes: [
+      {
+        id: "n0",
+        kind: "agent",
+        category: "regular",
+        prompt_preview: "",
+        prompt: "a",
+        artifact_mode: "custom",
+        artifact_spec: "one page",
+      },
+      // A template authored before the field omits it entirely.
+      { id: "n1", kind: "agent", category: "regular", prompt_preview: "", prompt: "b" },
+    ],
+  };
+  const loaded = templateEditorStateFromDetail(detail);
+  assert.equal(loaded.nodes[0].artifact_mode, "custom");
+  assert.equal(loaded.nodes[0].artifact_spec, "one page");
+  assert.equal(loaded.nodes[1].artifact_mode, "default");
+  assert.equal(loaded.nodes[1].artifact_spec, "");
+}
+
 testDetailLoadsPromptSourceNotThePreview();
 testDetailWithoutPromptLoadsEmptyRatherThanTruncated();
 testScanMirrorsTheLoaderRules();
@@ -717,6 +804,10 @@ testModelChangeMarksTheEditorDirty();
 testPreviewModelResolutionFollowsResumeSource();
 testPreviewModelResolutionOmitsInvalidResumeMetadata();
 testDetailLoadsPerNodeModelIncludingAbsentAsInherit();
+testArtifactIntentSurvivesASave();
+testPayloadZeroesArtifactIntentOnReviewNodes();
+testArtifactChangeMarksTheEditorDirty();
+testDetailLoadsArtifactIntentIncludingAbsentAsDefault();
 testPayloadDropsReviewOnlyFieldsFromNonReviewNodes();
 testDirtyTracksTheSerializedPayload();
 testLayoutPutsDepsLeftOfDependents();

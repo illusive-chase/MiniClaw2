@@ -74,6 +74,7 @@ from .launch_prompt import (
     build_dependency_launch_block,
     build_library_init_block,
     build_principle_init_block,
+    build_qa_mode_block,
 )
 from .materialize import (
     GRAPH_RUNS_DIRNAME,
@@ -273,6 +274,7 @@ class NodeRunner:
                                 store_root=self.store.root,
                             ),
                             _skill_suggestion_block(self._skill_materialization),
+                            build_qa_mode_block(self.node),
                             build_dependency_launch_block(
                                 self.node,
                                 lane_path=self._lane_prompt_path(),

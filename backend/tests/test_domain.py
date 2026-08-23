@@ -7,6 +7,7 @@ import unittest
 from pydantic import ValidationError
 
 from miniclaw2.domain import (
+    ArtifactMode,
     Category,
     Node,
     NodeKind,
@@ -181,6 +182,126 @@ class NodeInvariantTests(unittest.TestCase):
                 category=Category.PLANNING,
                 state=NodeState.VIRTUAL,
                 started_at=123.0,
+            )
+
+
+class ArtifactModeInvariantTests(unittest.TestCase):
+    def _agent(self, **kwargs: object) -> Node:
+        return Node(
+            project_id="p1",
+            kind=NodeKind.AGENT,
+            model_preset_id="gpt-5.5",
+            **kwargs,
+        )
+
+    def test_defaults_to_default_mode(self) -> None:
+        node = self._agent()
+        self.assertIs(node.artifact_mode, ArtifactMode.DEFAULT)
+        self.assertEqual(node.artifact_spec, "")
+
+    def test_work_and_planning_accept_non_default_modes(self) -> None:
+        for category in (Category.REGULAR, Category.PLANNING):
+            for mode in (ArtifactMode.MARKDOWN, ArtifactMode.HTML):
+                with self.subTest(category=category, mode=mode):
+                    node = self._agent(category=category, artifact_mode=mode)
+                    self.assertIs(node.artifact_mode, mode)
+
+    def test_op_node_rejects_artifact_fields(self) -> None:
+        with self.assertRaises(ValidationError):
+            Node(
+                project_id="p1",
+                kind=NodeKind.OP,
+                op_kind="commit",
+                artifact_mode=ArtifactMode.MARKDOWN,
+            )
+        with self.assertRaises(ValidationError):
+            Node(
+                project_id="p1",
+                kind=NodeKind.OP,
+                op_kind="commit",
+                artifact_spec="something",
+            )
+
+    def test_review_node_rejects_artifact_mode(self) -> None:
+        with self.assertRaises(ValidationError):
+            self._agent(
+                category=Category.REVIEW,
+                subtype=ReviewSubtype.AGENTIC_REVIEW,
+                brief=ReviewBrief(check_what="c", expected="e", abnormal="a"),
+                artifact_mode=ArtifactMode.MARKDOWN,
+            )
+
+    def test_library_op_kinds_reject_artifact_mode(self) -> None:
+        # A library node's category is forced to REGULAR, so a category-only
+        # gate would let it through; the op-kind gate is what stops it.
+        for op_kind in ("library_edit", "principle_edit"):
+            with self.subTest(op_kind=op_kind):
+                with self.assertRaises(ValidationError):
+                    self._agent(
+                        agent_op_kind=op_kind,
+                        category=Category.REGULAR,
+                        artifact_mode=ArtifactMode.MARKDOWN,
+                    )
+
+    def test_custom_requires_spec(self) -> None:
+        with self.assertRaises(ValidationError):
+            self._agent(artifact_mode=ArtifactMode.CUSTOM)
+        with self.assertRaises(ValidationError):
+            self._agent(artifact_mode=ArtifactMode.CUSTOM, artifact_spec="   ")
+        node = self._agent(
+            artifact_mode=ArtifactMode.CUSTOM, artifact_spec="one table"
+        )
+        self.assertEqual(node.artifact_spec, "one table")
+
+    def test_spec_without_custom_is_rejected(self) -> None:
+        for mode in (
+            ArtifactMode.DEFAULT,
+            ArtifactMode.MARKDOWN,
+            ArtifactMode.HTML,
+        ):
+            with self.subTest(mode=mode):
+                with self.assertRaises(ValidationError):
+                    self._agent(artifact_mode=mode, artifact_spec="stray")
+
+
+class QaModeInvariantTests(unittest.TestCase):
+    def test_defaults_off(self) -> None:
+        node = Node(
+            project_id="p1", kind=NodeKind.AGENT, model_preset_id="gpt-5.5"
+        )
+        self.assertFalse(node.qa_mode)
+
+    def test_work_and_planning_accept_qa_mode(self) -> None:
+        for category in (Category.REGULAR, Category.PLANNING):
+            with self.subTest(category=category):
+                node = Node(
+                    project_id="p1",
+                    kind=NodeKind.AGENT,
+                    model_preset_id="gpt-5.5",
+                    category=category,
+                    qa_mode=True,
+                )
+                self.assertTrue(node.qa_mode)
+
+    def test_op_node_rejects_qa_mode(self) -> None:
+        with self.assertRaises(ValidationError):
+            Node(
+                project_id="p1",
+                kind=NodeKind.OP,
+                op_kind="commit",
+                qa_mode=True,
+            )
+
+    def test_review_node_rejects_qa_mode(self) -> None:
+        with self.assertRaises(ValidationError):
+            Node(
+                project_id="p1",
+                kind=NodeKind.AGENT,
+                model_preset_id="gpt-5.5",
+                category=Category.REVIEW,
+                subtype=ReviewSubtype.AGENTIC_REVIEW,
+                brief=ReviewBrief(check_what="c", expected="e", abnormal="a"),
+                qa_mode=True,
             )
 
 

@@ -1544,6 +1544,9 @@ export function App() {
               ),
           planspace_id: payload.planspace_id,
           resume_from_node_id: payload.resume_from_node_id ?? null,
+          qa_mode: false,
+          artifact_mode: "default",
+          artifact_spec: "",
         });
         if (payload.position) {
           setNodePositionTarget({

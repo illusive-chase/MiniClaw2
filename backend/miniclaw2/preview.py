@@ -16,6 +16,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from .domain import (
+    ArtifactMode,
     Category,
     Node,
     NodeKind,
@@ -112,6 +113,8 @@ class VirtualPreview(BaseModel):
     brief: ExecutedPreviewBrief | None = None
     review_target: ReviewTarget | None = None
     scheduled_deps: list[str] = []
+    artifact_mode: Literal["default", "markdown", "html", "custom"] = "default"
+    artifact_spec: str | None = None
     obsolete_reason: str | None = None
 
     @model_validator(mode="after")
@@ -127,6 +130,10 @@ class VirtualPreview(BaseModel):
                 raise ValueError("verifier virtuals require a brief")
             if self.prompt_draft:
                 raise ValueError("verifier virtuals must not carry prompt_draft")
+            if self.artifact_mode != "default" or self.artifact_spec:
+                raise ValueError(
+                    "verifier virtuals must not carry artifact fields"
+                )
             return self
         if self.subtype == "programmatic_review":
             raise ValueError("programmatic_review virtuals require kind=verifier")
@@ -139,6 +146,10 @@ class VirtualPreview(BaseModel):
                 self.review_target = ReviewTarget()
             if self.subtype != "code_review" and self.review_target is not None:
                 raise ValueError("review_target is only valid on code_review virtuals")
+            if self.artifact_mode != "default" or self.artifact_spec:
+                raise ValueError(
+                    "artifact_mode is not available on review virtuals"
+                )
         else:
             if self.subtype is not None:
                 raise ValueError("non-review virtuals must not carry a subtype")
@@ -146,6 +157,15 @@ class VirtualPreview(BaseModel):
                 raise ValueError("non-review virtuals must not carry a brief")
             if self.review_target is not None:
                 raise ValueError("review_target is only valid on code_review virtuals")
+        if self.artifact_mode == "custom":
+            if not (self.artifact_spec or "").strip():
+                raise ValueError(
+                    "artifact_mode=custom requires a non-empty artifact_spec"
+                )
+        elif self.artifact_spec:
+            raise ValueError(
+                "artifact_spec is only valid when artifact_mode=custom"
+            )
         return self
 
 
@@ -270,10 +290,22 @@ def render_virtual_preview(node: Node) -> str:
             payload["brief"] = node.brief.model_dump()
         if node.review_target is not None:
             payload["review_target"] = node.review_target.model_dump()
+    if node.artifact_mode is not ArtifactMode.DEFAULT:
+        payload["artifact_mode"] = node.artifact_mode.value
+        if node.artifact_spec:
+            payload["artifact_spec"] = node.artifact_spec
     if node.obsolete_reason is not None:
         payload["obsolete_reason"] = node.obsolete_reason
     preview = VirtualPreview.model_validate(payload)
-    return json.dumps(preview.model_dump(exclude_none=True), ensure_ascii=False, indent=2)
+    data = preview.model_dump(exclude_none=True)
+    # ``artifact_mode`` defaults to a non-None value, so ``exclude_none`` cannot
+    # keep it out of a default-mode preview the way it does for
+    # ``obsolete_reason``. Emitting it always would also read to a planning
+    # agent as an explicit choice, which is exactly the distinction the reap
+    # side draws on ``model_fields_set``.
+    if "artifact_mode" not in payload:
+        data.pop("artifact_mode", None)
+    return json.dumps(data, ensure_ascii=False, indent=2)
 
 
 def virtual_preview_to_node(
@@ -283,6 +315,7 @@ def virtual_preview_to_node(
     canonical_id: str,
     verify_script_ref: str | None = None,
     model_preset_id_override: str | None = None,
+    artifact_override: tuple[ArtifactMode, str] | None = None,
 ) -> Node:
     """Promote a parsed VirtualPreview into a persistable ``Node`` with
     a framework-assigned canonical id."""
@@ -311,4 +344,14 @@ def virtual_preview_to_node(
         proposed_by=preview.proposed_by,
         obsolete_reason=preview.obsolete_reason,
         summary=preview.motivation,
+        artifact_mode=(
+            artifact_override[0]
+            if artifact_override is not None
+            else ArtifactMode(preview.artifact_mode)
+        ),
+        artifact_spec=(
+            artifact_override[1]
+            if artifact_override is not None
+            else (preview.artifact_spec or "")
+        ),
     )

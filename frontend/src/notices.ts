@@ -18,7 +18,12 @@
 
 import { useCallback, useRef, useState } from "react";
 
-import { activeStateLabel, notificationKey, rowContext } from "./activeNodes";
+import {
+  activeStateLabel,
+  isNotificationEligible,
+  notificationKey,
+  rowContext,
+} from "./activeNodes";
 import type { ActiveNodeEntry, NodeState, WorkspaceEvent } from "./types";
 
 /**
@@ -155,6 +160,11 @@ export function noticeFromEvent(
   /* A removal is a record disappearing, not something happening. */
   if (event.type !== "workspace_node_updated") return null;
   const entry = event.entry;
+  /* A commit op is an implementation detail of work that already has a user-
+   * facing result. Manual commits are initiated in the current UI; automatic
+   * commits immediately follow an agent completion. Keep their activity rows,
+   * but do not turn either path into a duplicate notification. */
+  if (!isNotificationEligible(entry)) return null;
   /* No transition, no event. The backend does not emit these, but anything
    * that ever synthesizes an event from a snapshot row would land here, and
    * it must stay silent. */
@@ -215,6 +225,7 @@ export function removeNotice(notices: Notice[], id: string): Notice[] {
  * where a count that rises and falls with the machine is exactly right.
  */
 export function countsTowardBadge(entry: ActiveNodeEntry): boolean {
+  if (!isNotificationEligible(entry)) return false;
   const kind = noticeKind(entry.state);
   return kind !== null && isPersistentKind(kind);
 }

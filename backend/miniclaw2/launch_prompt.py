@@ -17,7 +17,7 @@ import json
 from functools import lru_cache
 from pathlib import Path
 
-from .domain import Category, Node, NodeKind, ReviewSubtype
+from .domain import ArtifactMode, Category, Node, NodeKind, ReviewSubtype
 from .materialize import GRAPH_DIRNAME
 from .model_catalog import list_model_presets
 
@@ -30,6 +30,58 @@ _CATEGORY_HUMAN_INTERACT_REVIEW = "category_human_interact_review.md"
 _ANTI_SELF_POISONING = "anti_self_poisoning.md"
 _PRINCIPLE_INIT = "principle_init.md"
 _LIBRARY_INIT = "library_init.md"
+_QA_MODE = "qa_mode.md"
+
+
+_ARTIFACT_DEFAULT = """\
+Artifacts are **not** expected from this node. Publish one only if the
+turn's prompt explicitly asks for a file to show the human.\
+"""
+
+_ARTIFACT_MARKDOWN = """\
+**This node must publish at least one Markdown artifact.** The user asked
+for a written deliverable from this turn, so the "only when explicitly
+requested" default does not apply — this is that request. Write it as one
+or more `.md` files and declare each one in your preview's `artifacts`.
+
+Write it for a reader who was not in this session: state the outcome
+first, then the reasoning. It is a publication, not a session log.\
+"""
+
+_ARTIFACT_HTML = """\
+**This node must publish an HTML artifact.** The user asked for a
+rendered deliverable from this turn, so the "only when explicitly
+requested" default does not apply — this is that request. Write a single
+self-contained `.html` file — inline all CSS and JS, embed images as data
+URIs, reference no external asset — and declare it in your preview's
+`artifacts`.
+
+Mind the 2 MiB per-file cap: embedded data URIs count toward it. Reach
+for HTML when the content genuinely needs rendering (a diagram, a table
+that must be scanned, a layout); otherwise Markdown reads better.\
+"""
+
+_ARTIFACT_CUSTOM = """\
+**This node must publish an artifact matching the user's specification
+below.** The user asked for a deliverable from this turn, so the "only
+when explicitly requested" default does not apply — this is that request.
+
+The user's specification, verbatim:
+
+<<artifact_spec_quoted>>
+
+The framework constraints above still bind and outrank the specification:
+declared files must end in `.md`, `.json`, or `.html`; at most 16 files;
+2 MiB per file; 8 MiB per node. If the specification asks for a format
+outside those suffixes, produce the closest allowed one and say so in
+your preview's `summary` rather than failing silently.\
+"""
+
+_ARTIFACT_REQUIREMENTS: dict[ArtifactMode, str] = {
+    ArtifactMode.DEFAULT: _ARTIFACT_DEFAULT,
+    ArtifactMode.MARKDOWN: _ARTIFACT_MARKDOWN,
+    ArtifactMode.HTML: _ARTIFACT_HTML,
+}
 
 
 @lru_cache(maxsize=16)
@@ -67,6 +119,7 @@ def _substitutions(
         "node_id": node.id,
         "lane_id": node.planspace_id or "",
         "outputs_path": outputs_path or "",
+        "artifact_requirement": build_artifact_requirement(node),
     }
     if node.category is Category.PLANNING:
         subs["planning_model_preset_id"] = node.model_preset_id or ""
@@ -175,6 +228,32 @@ def build_library_init_block(principles_dir: str, skills_dir: str) -> str:
         .replace("<<skills_dir>>", skills_dir)
         .strip()
     )
+
+
+def _blockquote(text: str) -> str:
+    """Prefix each line with `> ` so arbitrary user text cannot break out."""
+    return "\n".join(
+        f"> {line}" if line.strip() else ">"
+        for line in text.strip().splitlines()
+    )
+
+
+def build_artifact_requirement(node: Node) -> str:
+    """Return the artifact-requirement paragraph for this node's mode."""
+    mode = node.artifact_mode
+    if mode is ArtifactMode.CUSTOM:
+        return _ARTIFACT_CUSTOM.replace(
+            "<<artifact_spec_quoted>>",
+            _blockquote(node.artifact_spec),
+        )
+    return _ARTIFACT_REQUIREMENTS[mode]
+
+
+def build_qa_mode_block(node: Node) -> str:
+    """Return the ask-user encouragement block for Q/A-enabled nodes."""
+    if node.kind is not NodeKind.AGENT or not node.qa_mode:
+        return ""
+    return _load_template(_QA_MODE).strip()
 
 
 def anti_self_poisoning_block() -> str:

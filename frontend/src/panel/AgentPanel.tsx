@@ -15,6 +15,7 @@ import rehypeHighlight from "rehype-highlight";
 import { getNodePreview } from "../api";
 import type {
   Activity,
+  ArtifactMode,
   ContextBundle,
   ContextBundleSource,
   EventRecord,
@@ -41,11 +42,13 @@ import {
   type ResolveGatePayload,
 } from "../components/PendingGateInline";
 import {
+  artifactModeAvailable,
   canResumeNode,
   categoryForClassification,
   isLibraryOpKind,
   nodeClassification,
   nodeClassificationLabel,
+  qaModeAvailable,
   type NodeClassification,
   type NodeMutationLock,
 } from "../nodeUtil";
@@ -603,7 +606,14 @@ function formatArtifactBytes(bytes: number): string {
   return `${bytes} B`;
 }
 
-type VirtualDraft = {
+const ARTIFACT_MODE_HINTS: Record<ArtifactMode, string> = {
+  default: "不要求产出物。只有 Prompt 里明确要求时才会产出文件。",
+  markdown: "要求本轮产出至少一份 Markdown 文件给你看。",
+  html: "要求本轮产出一份自包含的 HTML 文件——内联样式与脚本，不引用外部资源。",
+  custom: "在下方描述你想要的产出物。这段文字会原样进入 agent 的提示。",
+};
+
+export type VirtualDraft = {
   promptDraft: string;
   motivation: string;
   modelPresetId: string;
@@ -616,6 +626,9 @@ type VirtualDraft = {
   scheduledDeps: string[];
   pendingExtraPrinciples: string[];
   pendingExtraSkills: SkillSelection[];
+  qaMode: boolean;
+  artifactMode: ArtifactMode;
+  artifactSpec: string;
   obsoleteReason: string;
 };
 
@@ -1138,6 +1151,97 @@ const EditableVirtualNodeBody = forwardRef<VirtualNodeBodyHandle, VirtualNodeBod
         </div>
       </section>
 
+      {artifactModeAvailable(draft.classification) && (
+        <section className="mb-5">
+          <div className="overflow-hidden rounded-md border border-line bg-surface-sunken">
+            <div className="border-b border-line px-3 py-2">
+              <SectionHeading>Artifact</SectionHeading>
+            </div>
+            <div className="space-y-3 px-3 py-3">
+              <div className="inline-flex rounded-md border border-line bg-surface p-0.5">
+                {([
+                  ["default", "Default"],
+                  ["markdown", "Markdown"],
+                  ["html", "HTML"],
+                  ["custom", "Custom"],
+                ] as const).map(([value, label]) => (
+                  <button
+                    key={value}
+                    type="button"
+                    onClick={() =>
+                      setDraft((current) => ({
+                        ...current,
+                        artifactMode: value,
+                      }))
+                    }
+                    className={
+                      "rounded px-3 py-1.5 text-[12px] font-medium transition " +
+                      (draft.artifactMode === value
+                        ? "bg-surface-raised text-ink-strong shadow-card"
+                        : "text-ink-muted hover:text-ink")
+                    }
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+
+              <p className="text-[11px] leading-relaxed text-ink-muted">
+                {ARTIFACT_MODE_HINTS[draft.artifactMode]}
+              </p>
+
+              {draft.artifactMode === "custom" && (
+                <FieldLabel label="期望的产出物">
+                  <textarea
+                    value={draft.artifactSpec}
+                    onChange={(e) =>
+                      setDraft((current) => ({
+                        ...current,
+                        artifactSpec: e.target.value,
+                      }))
+                    }
+                    rows={4}
+                    placeholder="例如：产出三份 markdown——一份面向决策者的摘要、一份实现细节、一份风险清单。"
+                    className={fieldClassName}
+                  />
+                </FieldLabel>
+              )}
+            </div>
+          </div>
+        </section>
+      )}
+
+      {qaModeAvailable(draft.classification) && (
+        <section className="mb-5">
+          <div className="overflow-hidden rounded-md border border-line bg-surface-sunken">
+            <div className="border-b border-line px-3 py-2">
+              <SectionHeading>Q/A 模式</SectionHeading>
+            </div>
+            <div className="space-y-2 px-3 py-3">
+              <label className="flex cursor-pointer items-start gap-2">
+                <input
+                  type="checkbox"
+                  checked={draft.qaMode}
+                  onChange={(e) =>
+                    setDraft((current) => ({
+                      ...current,
+                      qaMode: e.target.checked,
+                    }))
+                  }
+                  className="mt-0.5"
+                />
+                <span className="text-[11.5px] leading-relaxed text-ink">
+                  遇到影响结果的歧义时，先向你提问再继续。适合需求还没完全定死的节点。
+                </span>
+              </label>
+              <p className="text-[11px] leading-relaxed text-ink-muted">
+                提问期间节点会阻塞等待你的回答，并占用项目的并发额度。
+              </p>
+            </div>
+          </div>
+        </section>
+      )}
+
       <PrinciplesAttachSection
         principles={principles}
         attached={draft.pendingExtraPrinciples}
@@ -1596,7 +1700,7 @@ function SkillsAttachSection({
   );
 }
 
-function virtualDraftFromNode(node: NodeInfo): VirtualDraft {
+export function virtualDraftFromNode(node: NodeInfo): VirtualDraft {
   return {
     promptDraft: node.prompt_draft || node.prompt || "",
     motivation: node.summary || "",
@@ -1611,30 +1715,39 @@ function virtualDraftFromNode(node: NodeInfo): VirtualDraft {
     scheduledDeps: [...(node.scheduled_deps ?? [])],
     pendingExtraPrinciples: [...(node.pending_extra_principles ?? [])],
     pendingExtraSkills: [...(node.pending_extra_skills ?? [])],
+    qaMode: node.qa_mode ?? false,
+    artifactMode: node.artifact_mode || "default",
+    artifactSpec: node.artifact_spec || "",
     obsoleteReason: node.obsolete_reason || "",
   };
 }
 
-function virtualDraftAfterSave(draft: VirtualDraft): VirtualDraft {
+export function virtualDraftAfterSave(draft: VirtualDraft): VirtualDraft {
+  const artifactMode = artifactModeAvailable(draft.classification)
+    ? draft.artifactMode
+    : "default";
+  const normalized: VirtualDraft = {
+    ...draft,
+    qaMode: qaModeAvailable(draft.classification) ? draft.qaMode : false,
+    artifactMode,
+    artifactSpec: artifactMode === "custom" ? draft.artifactSpec.trim() : "",
+    obsoleteReason: draft.obsoleteReason.trim(),
+  };
   if (draft.classification === "review") {
-    return {
-      ...draft,
-      obsoleteReason: draft.obsoleteReason.trim(),
-    };
+    return normalized;
   }
   return {
-    ...draft,
+    ...normalized,
     subtype: "agentic_review",
     brief: {
       check_what: "",
       expected: "",
       abnormal: "",
     },
-    obsoleteReason: draft.obsoleteReason.trim(),
   };
 }
 
-function virtualDraftValidationError(
+export function virtualDraftValidationError(
   draft: VirtualDraft,
   node: NodeInfo,
 ): string | null {
@@ -1645,6 +1758,13 @@ function virtualDraftValidationError(
   }
   if (!node.resume_from_node_id && !draft.modelPresetId) {
     return "请先选择模型档位。";
+  }
+  if (
+    artifactModeAvailable(draft.classification) &&
+    draft.artifactMode === "custom" &&
+    !draft.artifactSpec.trim()
+  ) {
+    return "选择 custom 时请先描述期望的产出物。";
   }
   return null;
 }
@@ -1667,7 +1787,7 @@ function virtualDraftReadyToPromote(
   return true;
 }
 
-function virtualPayloadFromDraft(
+export function virtualPayloadFromDraft(
   draft: VirtualDraft,
   node: NodeInfo,
 ): UpdateVirtualPayload {
@@ -1712,6 +1832,19 @@ function virtualPayloadFromDraft(
     payload.subtype = null;
     payload.brief = null;
     payload.review_target = null;
+  }
+  /* Both branches send explicitly. Switching a work node that carried an
+   * artifact intent over to review would otherwise post a review category
+   * alongside a stale artifact_mode, and the backend's paired invariant
+   * rejects that with a 400 the user cannot connect to what they just did. */
+  payload.qa_mode = qaModeAvailable(draft.classification) ? draft.qaMode : false;
+  if (artifactModeAvailable(draft.classification)) {
+    payload.artifact_mode = draft.artifactMode;
+    payload.artifact_spec =
+      draft.artifactMode === "custom" ? draft.artifactSpec.trim() : "";
+  } else {
+    payload.artifact_mode = "default";
+    payload.artifact_spec = "";
   }
   return payload;
 }

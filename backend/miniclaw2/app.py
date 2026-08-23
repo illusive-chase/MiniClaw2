@@ -276,6 +276,9 @@ class UpdateVirtualRequest(BaseModel):
     scheduled_deps: list[str] | None = None
     pending_extra_principles: list[str] | None = None
     pending_extra_skills: list[str | dict[str, Any]] | None = None
+    qa_mode: bool | None = None
+    artifact_mode: str | None = None
+    artifact_spec: str | None = None
     agent_op_kind: str | None = None
     model_preset_id: str | None = None
     obsolete_reason: str | None = None
@@ -293,6 +296,9 @@ class CreateVirtualRequest(BaseModel):
     scheduled_deps: list[str] | None = None
     pending_extra_principles: list[str] | None = None
     pending_extra_skills: list[str | dict[str, Any]] | None = None
+    qa_mode: bool | None = None
+    artifact_mode: str | None = None
+    artifact_spec: str | None = None
     agent_op_kind: str | None = None
     model_preset_id: str | None = None
     planspace_id: str | None = None
@@ -450,6 +456,9 @@ class UserTemplateNodeWrite(BaseModel):
     resume_from: str | None = None
     #: Model this node runs on. ``None`` inherits the project preset at apply.
     model_preset_id: str | None = None
+    #: Deliverable shape this node must publish. ``None`` means default.
+    artifact_mode: str | None = None
+    artifact_spec: str | None = None
 
 
 class RewriteUserTemplateRequest(BaseModel):
@@ -1503,6 +1512,9 @@ def create_app(
                 scheduled_deps=req.scheduled_deps,
                 pending_extra_principles=req.pending_extra_principles,
                 pending_extra_skills=req.pending_extra_skills,
+                qa_mode=bool(req.qa_mode),
+                artifact_mode=req.artifact_mode,
+                artifact_spec=req.artifact_spec,
                 agent_op_kind=req.agent_op_kind,
                 model_preset_id=req.model_preset_id,
                 planspace_id=req.planspace_id,

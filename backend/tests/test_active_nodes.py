@@ -68,12 +68,15 @@ def _add_node(
     prompt: str = "",
     planspace_id: str | None = None,
     finished_at: float | None = None,
+    kind: NodeKind = NodeKind.AGENT,
+    op_kind: str | None = None,
 ) -> Node:
     node = store.create_node(
         Node(
             project_id=project.id,
-            kind=NodeKind.AGENT,
-            category=Category.REGULAR,
+            kind=kind,
+            op_kind=op_kind,
+            category=Category.REGULAR if kind is NodeKind.AGENT else None,
             model_preset_id=project.model_preset_id,
             state=state,
             summary=summary,
@@ -141,6 +144,27 @@ class ActiveNodesCollectionTests(unittest.TestCase):
             self.assertEqual(set(by_id), {done.id, cancelled.id})
             self.assertEqual(by_id[done.id].finished_at, now - 60)
             self.assertIsNone(by_id[cancelled.id].gate)
+
+    def test_entries_preserve_node_kind_and_op_kind(self) -> None:
+        """The frontend needs op identity to silence mechanical commit notices."""
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            store, registry = _registry(base)
+            project = _add_project(store, registry, base / "p", name="p")
+            commit = _add_node(
+                store,
+                project,
+                state=NodeState.QUEUED,
+                kind=NodeKind.OP,
+                op_kind="commit",
+            )
+
+            entries = collect_active_entries(registry, ActiveNodesIndex())
+
+            self.assertEqual(len(entries), 1)
+            self.assertEqual(entries[0].node_id, commit.id)
+            self.assertEqual(entries[0].kind, "op")
+            self.assertEqual(entries[0].op_kind, "commit")
 
     def test_terminal_nodes_leave_the_window_but_active_ones_never_do(self) -> None:
         """The window bounds how far back the panel looks. A node still running

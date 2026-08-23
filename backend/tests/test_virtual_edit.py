@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 
 from miniclaw2.contextspace import create_planspace
 from miniclaw2.domain import (
+    ArtifactMode,
     Category,
     Node,
     NodeKind,
@@ -390,6 +391,116 @@ class VirtualEditRegistryTests(unittest.TestCase):
                 category=Category.REGULAR,
                 review_target={"type": "uncommitted"},
             )
+
+    def test_update_virtual_toggles_qa_mode_both_ways(self) -> None:
+        node = self._virtual("qa-node")
+
+        on = self.registry.update_virtual(self.project.id, node.id, qa_mode=True)
+        assert on is not None
+        self.assertTrue(on.qa_mode)
+
+        # False is falsy, so only a real _UNSET sentinel can distinguish
+        # "not sent" from "explicitly turned off".
+        off = self.registry.update_virtual(
+            self.project.id, node.id, qa_mode=False
+        )
+        assert off is not None
+        self.assertFalse(off.qa_mode)
+
+    def test_update_virtual_leaves_qa_mode_alone_when_not_sent(self) -> None:
+        node = self._virtual("qa-keep")
+        self.registry.update_virtual(self.project.id, node.id, qa_mode=True)
+
+        updated = self.registry.update_virtual(
+            self.project.id, node.id, prompt_draft="unrelated edit"
+        )
+
+        assert updated is not None
+        self.assertTrue(updated.qa_mode)
+
+    def test_update_virtual_sets_and_clears_artifact_mode(self) -> None:
+        node = self._virtual("artifact-node")
+
+        markdown = self.registry.update_virtual(
+            self.project.id, node.id, artifact_mode="markdown"
+        )
+        assert markdown is not None
+        self.assertIs(markdown.artifact_mode, ArtifactMode.MARKDOWN)
+
+        back = self.registry.update_virtual(
+            self.project.id, node.id, artifact_mode="default"
+        )
+        assert back is not None
+        self.assertIs(back.artifact_mode, ArtifactMode.DEFAULT)
+
+    def test_clearing_mode_without_sending_spec_drops_the_stale_spec(
+        self,
+    ) -> None:
+        """Both artifact fields resolve in one branch.
+
+        Resolving them separately would leave a custom spec behind when only the
+        mode moves back to default, and the paired Node invariant then rejects a
+        save the user never asked for.
+        """
+        node = self._virtual("artifact-custom")
+        self.registry.update_virtual(
+            self.project.id,
+            node.id,
+            artifact_mode="custom",
+            artifact_spec="one table",
+        )
+
+        cleared = self.registry.update_virtual(
+            self.project.id, node.id, artifact_mode="default"
+        )
+
+        assert cleared is not None
+        self.assertIs(cleared.artifact_mode, ArtifactMode.DEFAULT)
+        self.assertEqual(cleared.artifact_spec, "")
+
+    def test_update_virtual_custom_requires_spec(self) -> None:
+        node = self._virtual("artifact-bad")
+
+        with self.assertRaises(ValueError):
+            self.registry.update_virtual(
+                self.project.id, node.id, artifact_mode="custom"
+            )
+
+    def test_update_virtual_rejects_unknown_artifact_mode(self) -> None:
+        node = self._virtual("artifact-unknown")
+
+        with self.assertRaises(ValueError):
+            self.registry.update_virtual(
+                self.project.id, node.id, artifact_mode="pdf"
+            )
+
+    def test_switching_to_review_with_zeroed_artifact_fields_succeeds(
+        self,
+    ) -> None:
+        """The panel zeroes both fields when the classification leaves work.
+
+        Without that, this same call carries a review category plus a live
+        artifact intent and the user gets a 400 they cannot connect to the
+        classification switch they just made.
+        """
+        node = self._virtual("artifact-switch")
+        self.registry.update_virtual(
+            self.project.id, node.id, artifact_mode="markdown"
+        )
+
+        updated = self.registry.update_virtual(
+            self.project.id,
+            node.id,
+            category=Category.REVIEW,
+            subtype=ReviewSubtype.AGENTIC_REVIEW,
+            brief=ReviewBrief(check_what="c", expected="e", abnormal="a"),
+            artifact_mode="default",
+            artifact_spec="",
+        )
+
+        assert updated is not None
+        self.assertIs(updated.category, Category.REVIEW)
+        self.assertIs(updated.artifact_mode, ArtifactMode.DEFAULT)
 
     def test_update_virtual_returns_none_for_executed_node(self) -> None:
         node = Node(

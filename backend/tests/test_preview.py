@@ -6,6 +6,7 @@ import json
 import unittest
 
 from miniclaw2.domain import (
+    ArtifactMode,
     Category,
     Node,
     NodeKind,
@@ -294,6 +295,128 @@ class VirtualPreviewToNodeTests(unittest.TestCase):
         )
         self.assertEqual(node.kind, NodeKind.VERIFIER)
         self.assertEqual(node.verify_script_ref, "/tmp/check.sh")
+
+
+class VirtualPreviewArtifactTests(unittest.TestCase):
+    def _node(self, **over) -> Node:
+        kwargs = {
+            "id": "n-art",
+            "project_id": "p1",
+            "kind": NodeKind.AGENT,
+            "model_preset_id": "gpt-5.5",
+            "state": NodeState.VIRTUAL,
+            "category": Category.REGULAR,
+            "planspace_id": "auth-flow",
+            "proposed_by": "user",
+            "prompt_draft": "do it",
+            "summary": "why",
+        }
+        kwargs.update(over)
+        return Node(**kwargs)
+
+    def test_parse_rejects_artifact_mode_on_review_virtual(self) -> None:
+        payload = _virtual_payload(
+            category="review",
+            subtype="agentic_review",
+            brief={"check_what": "a", "expected": "b", "abnormal": "c"},
+            artifact_mode="markdown",
+        )
+        # Must be a structured PreviewValidationError, not a bare ValueError
+        # surfacing later as an opaque "reap pipeline error".
+        with self.assertRaises(PreviewValidationError):
+            parse_preview(json.dumps(payload))
+
+    def test_parse_rejects_artifact_mode_on_verifier_virtual(self) -> None:
+        payload = _virtual_payload(
+            kind="verifier",
+            category="review",
+            subtype="programmatic_review",
+            prompt_draft="",
+            brief={"check_what": "a", "expected": "b", "abnormal": "c"},
+            artifact_mode="markdown",
+        )
+        with self.assertRaises(PreviewValidationError):
+            parse_preview(json.dumps(payload))
+
+    def test_parse_rejects_custom_without_spec(self) -> None:
+        with self.assertRaises(PreviewValidationError):
+            parse_preview(json.dumps(_virtual_payload(artifact_mode="custom")))
+
+    def test_parse_rejects_spec_without_custom(self) -> None:
+        with self.assertRaises(PreviewValidationError):
+            parse_preview(
+                json.dumps(
+                    _virtual_payload(
+                        artifact_mode="markdown", artifact_spec="stray"
+                    )
+                )
+            )
+
+    def test_parse_rejects_unknown_artifact_mode(self) -> None:
+        with self.assertRaises(PreviewValidationError):
+            parse_preview(json.dumps(_virtual_payload(artifact_mode="pdf")))
+
+    def test_render_omits_default_and_emits_non_default(self) -> None:
+        default_payload = json.loads(render_virtual_preview(self._node()))
+        self.assertNotIn("artifact_mode", default_payload)
+        self.assertNotIn("artifact_spec", default_payload)
+
+        markdown_payload = json.loads(
+            render_virtual_preview(
+                self._node(artifact_mode=ArtifactMode.MARKDOWN)
+            )
+        )
+        self.assertEqual(markdown_payload["artifact_mode"], "markdown")
+        self.assertNotIn("artifact_spec", markdown_payload)
+
+        custom_payload = json.loads(
+            render_virtual_preview(
+                self._node(
+                    artifact_mode=ArtifactMode.CUSTOM,
+                    artifact_spec="three files",
+                )
+            )
+        )
+        self.assertEqual(custom_payload["artifact_mode"], "custom")
+        self.assertEqual(custom_payload["artifact_spec"], "three files")
+
+    def test_omitted_field_is_absent_from_model_fields_set(self) -> None:
+        omitted = parse_preview(json.dumps(_virtual_payload()))
+        assert isinstance(omitted, VirtualPreview)
+        self.assertNotIn("artifact_mode", omitted.model_fields_set)
+
+        explicit = parse_preview(
+            json.dumps(_virtual_payload(artifact_mode="default"))
+        )
+        assert isinstance(explicit, VirtualPreview)
+        self.assertIn("artifact_mode", explicit.model_fields_set)
+
+    def test_to_node_reads_the_preview_when_no_override(self) -> None:
+        preview = parse_preview(
+            json.dumps(
+                _virtual_payload(
+                    artifact_mode="custom", artifact_spec="one report"
+                )
+            )
+        )
+        assert isinstance(preview, VirtualPreview)
+        node = virtual_preview_to_node(
+            preview, project_id="p1", canonical_id="canon-art"
+        )
+        self.assertIs(node.artifact_mode, ArtifactMode.CUSTOM)
+        self.assertEqual(node.artifact_spec, "one report")
+
+    def test_to_node_prefers_the_override(self) -> None:
+        preview = parse_preview(json.dumps(_virtual_payload()))
+        assert isinstance(preview, VirtualPreview)
+        node = virtual_preview_to_node(
+            preview,
+            project_id="p1",
+            canonical_id="canon-art2",
+            artifact_override=(ArtifactMode.HTML, ""),
+        )
+        self.assertIs(node.artifact_mode, ArtifactMode.HTML)
+        self.assertEqual(node.artifact_spec, "")
 
 
 if __name__ == "__main__":

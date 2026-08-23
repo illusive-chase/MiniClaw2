@@ -83,6 +83,7 @@ class NodeFacts:
     state: str
     category: str | None
     kind: str
+    op_kind: str | None
     planspace_id: str | None
     label: str
     started_at: float | None
@@ -98,6 +99,8 @@ class ActiveEntry:
     node_id: str
     state: str
     category: str | None
+    kind: str
+    op_kind: str | None
     planspace_id: str | None
     planspace_title: str | None
     is_active_planspace: bool
@@ -134,12 +137,14 @@ def _facts_from_payload(payload: dict[str, Any], owner_host_id: str) -> NodeFact
 
     category = payload.get("category")
     kind = payload.get("kind")
+    op_kind = payload.get("op_kind")
     planspace_id = payload.get("planspace_id")
     return NodeFacts(
         id=node_id,
         state=state,
         category=category if isinstance(category, str) else None,
         kind=kind if isinstance(kind, str) else "agent",
+        op_kind=op_kind if isinstance(op_kind, str) else None,
         planspace_id=planspace_id if isinstance(planspace_id, str) else None,
         label=_label_for(payload),
         started_at=_float_or_none("started_at"),
@@ -366,6 +371,8 @@ def active_entry_from_facts(
         node_id=facts.id,
         state=facts.state,
         category=facts.category,
+        kind=facts.kind,
+        op_kind=facts.op_kind,
         planspace_id=facts.planspace_id,
         planspace_title=planspace_title,
         is_active_planspace=bool(

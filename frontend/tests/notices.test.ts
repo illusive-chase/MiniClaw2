@@ -18,13 +18,25 @@ import {
   type Notice,
 } from "../src/notices";
 import { mergeRailItems } from "../src/components/NoticeBannerRail";
-import { notificationKey, rowContext, summarize, summaryParts } from "../src/activeNodes";
+import {
+  isNotificationEligible,
+  isUnread,
+  notificationKey,
+  rowContext,
+  summarize,
+  summaryParts,
+} from "../src/activeNodes";
 import type { ActiveNodeEntry, NodeState, WorkspaceEvent } from "../src/types";
 
 function entry(
   nodeId: string,
   state: NodeState,
-  opts: { project_id?: string; project_name?: string } = {},
+  opts: {
+    project_id?: string;
+    project_name?: string;
+    kind?: ActiveNodeEntry["kind"];
+    op_kind?: string | null;
+  } = {},
 ): ActiveNodeEntry {
   return {
     project_id: opts.project_id ?? "p1",
@@ -32,6 +44,8 @@ function entry(
     node_id: nodeId,
     state,
     category: "regular",
+    kind: opts.kind ?? "agent",
+    op_kind: opts.op_kind ?? null,
     planspace_id: null,
     planspace_title: null,
     is_active_planspace: false,
@@ -40,6 +54,10 @@ function entry(
     finished_at: null,
     gate: null,
   };
+}
+
+function commitEntry(nodeId: string, state: NodeState): ActiveNodeEntry {
+  return entry(nodeId, state, { kind: "op", op_kind: "commit" });
 }
 
 function updated(
@@ -149,6 +167,37 @@ function push(notices: Notice[], event: WorkspaceEvent, now = 1000): Notice[] {
     seq: 0,
   };
   assert.equal(derive(removal), null);
+}
+
+/* ---- T4b: commit ops are activity, not notifications ---- */
+
+{
+  /* A manual commit is user-initiated, while an automatic commit immediately
+   * follows the agent result. Neither should produce a second notification for
+   * the work, at any point in the commit node's short lifecycle. */
+  for (const [state, previous] of [
+    ["queued", null],
+    ["running", "queued"],
+    ["done", "running"],
+    ["error", "running"],
+  ] as Array<[NodeState, NodeState | null]>) {
+    const event = updated("commit-node", state, previous);
+    event.entry = commitEntry("commit-node", state);
+    assert.equal(derive(event), null);
+  }
+
+  const doneCommit = commitEntry("commit-node", "done");
+  assert.equal(isNotificationEligible(doneCommit), false);
+  assert.equal(isUnread(doneCommit, new Set()), false);
+  assert.equal(countsTowardBadge(doneCommit), false);
+
+  /* Other op nodes can be slow or actionable and retain normal behavior. */
+  const pull = entry("pull-node", "done", { kind: "op", op_kind: "pull" });
+  const pullEvent = updated("pull-node", "done", "running");
+  pullEvent.entry = pull;
+  assert.ok(derive(pullEvent));
+  assert.equal(isUnread(pull, new Set()), true);
+  assert.equal(countsTowardBadge(pull), true);
 }
 
 /* ---- T5: only persistent kinds reach the badge ---- */

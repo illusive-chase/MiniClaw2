@@ -82,6 +82,13 @@ class PlanspaceMode(StrEnum):
     MANUAL = "manual"
 
 
+class ArtifactMode(StrEnum):
+    DEFAULT = "default"
+    MARKDOWN = "markdown"
+    HTML = "html"
+    CUSTOM = "custom"
+
+
 TERMINAL_NODE_STATES: frozenset[NodeState] = frozenset({
     NodeState.DONE,
     NodeState.ERROR,
@@ -254,6 +261,13 @@ class Node(BaseModel):
     # Virtual-only intent promoted into the corresponding launch settings.
     pending_extra_principles: list[str] = Field(default_factory=list)
     pending_extra_skills: list[dict[str, Any]] = Field(default_factory=list)
+    # Draft-time intent: inject the ask-user encouragement block at launch.
+    qa_mode: bool = False
+    # Draft-time intent: what shape of deliverable this node must publish.
+    # Unlike pending_extra_*, these are read directly off the node at launch
+    # and therefore survive promotion untouched.
+    artifact_mode: ArtifactMode = ArtifactMode.DEFAULT
+    artifact_spec: str = ""
     resume_from_node_id: str | None = None
     verify_script_ref: str | None = None
     proposed_by: str | None = None
@@ -286,6 +300,16 @@ class Node(BaseModel):
                 raise ValueError(
                     "pending_extra_skills is only valid on agent nodes"
                 )
+            if self.qa_mode:
+                raise ValueError("qa_mode is only valid on agent nodes")
+            if self.artifact_mode is not ArtifactMode.DEFAULT:
+                raise ValueError(
+                    "artifact_mode is only valid on agent nodes"
+                )
+            if self.artifact_spec:
+                raise ValueError(
+                    "artifact_spec is only valid on agent nodes"
+                )
         if (
             self.agent_op_kind is not None
             and self.agent_op_kind not in KNOWN_AGENT_OP_KINDS
@@ -301,6 +325,26 @@ class Node(BaseModel):
             raise ValueError(
                 f"{self.agent_op_kind} requires category=regular"
             )
+        if self.qa_mode and self.category is Category.REVIEW:
+            raise ValueError("qa_mode is not available on review nodes")
+        if self.artifact_mode is ArtifactMode.CUSTOM:
+            if not self.artifact_spec.strip():
+                raise ValueError(
+                    "artifact_mode=custom requires a non-empty artifact_spec"
+                )
+        elif self.artifact_spec:
+            raise ValueError(
+                "artifact_spec is only valid when artifact_mode=custom"
+            )
+        if self.artifact_mode is not ArtifactMode.DEFAULT:
+            if self.category is Category.REVIEW:
+                raise ValueError(
+                    "artifact_mode is not available on review nodes"
+                )
+            if self.agent_op_kind in AUTHORING_AGENT_OP_KINDS:
+                raise ValueError(
+                    f"artifact_mode is not available on {self.agent_op_kind} nodes"
+                )
         if self.kind is NodeKind.OP:
             if self.category is not None:
                 raise ValueError("op nodes must not carry a category")

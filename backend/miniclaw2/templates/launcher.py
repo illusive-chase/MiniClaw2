@@ -207,6 +207,8 @@ def _stamp_lane(
             proposed_by=f"template:{template.name}",
             template_instance_id=instance_id,
             summary=spec.summary,
+            artifact_mode=spec.artifact_mode,
+            artifact_spec=spec.artifact_spec,
             verify_script_ref=(
                 str(spec.script_ref) if spec.kind is NodeKind.VERIFIER and spec.script_ref else None
             ),
@@ -264,6 +266,8 @@ def _stamp_lane(
                     motivation=node.summary,
                     scheduled_deps=node.scheduled_deps,
                     model_preset_id=node.model_preset_id,
+                    artifact_mode=node.artifact_mode,
+                    artifact_spec=node.artifact_spec,
                     planspace_id=planspace_id,
                     resume_from_node_id=node.resume_from_node_id,
                     _allow_nonterminal_resume=True,

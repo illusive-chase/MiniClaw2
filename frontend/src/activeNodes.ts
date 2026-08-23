@@ -243,8 +243,23 @@ export function notificationKey(entry: ActiveNodeEntry): string {
   return `${entry.node_id}:${entry.state}`;
 }
 
+/**
+ * Whether this activity should ask for the user's attention.
+ *
+ * Commit ops are bookkeeping nodes. A manual commit was just initiated by the
+ * person looking at the Git panel, while an automatic commit immediately
+ * follows the agent result that already notified them. Both remain visible in
+ * the activity feed and run-status view, but neither should create another
+ * unread item or banner for the same work.
+ */
+export function isNotificationEligible(entry: ActiveNodeEntry): boolean {
+  return !(entry.kind === "op" && entry.op_kind === "commit");
+}
+
 export function isUnread(entry: ActiveNodeEntry, readKeys: ReadonlySet<string>): boolean {
-  return !readKeys.has(notificationKey(entry));
+  return (
+    isNotificationEligible(entry) && !readKeys.has(notificationKey(entry))
+  );
 }
 
 export function unreadEntries(

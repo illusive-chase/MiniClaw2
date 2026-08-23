@@ -24,6 +24,7 @@ import type {
   SessionInfo,
   SessionContextSpaceInfo,
   ArtifactFile,
+  ArtifactMode,
   GitState,
   GitStatus,
   SkillSelection,
@@ -552,6 +553,9 @@ export type UpdateVirtualPayload = {
   scheduled_deps?: string[];
   pending_extra_principles?: string[];
   pending_extra_skills?: SkillSelection[];
+  qa_mode?: boolean;
+  artifact_mode?: ArtifactMode;
+  artifact_spec?: string;
   agent_op_kind?: string | null;
   model_preset_id?: string;
   obsolete_reason?: string | null;
@@ -567,6 +571,9 @@ export type CreateVirtualPayload = {
   scheduled_deps?: string[];
   pending_extra_principles?: string[];
   pending_extra_skills?: SkillSelection[];
+  qa_mode?: boolean;
+  artifact_mode?: ArtifactMode;
+  artifact_spec?: string;
   agent_op_kind?: string | null;
   model_preset_id?: string;
   planspace_id?: string | null;

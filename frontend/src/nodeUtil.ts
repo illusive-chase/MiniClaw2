@@ -153,6 +153,23 @@ export function categoryForClassification(
   }
 }
 
+/** Artifact intent is only available on work and planning nodes. Review nodes
+ * have their own deliverable contract (the brief plus the handoff text); a
+ * library node's deliverable is one library entry, not an artifact. Q/A mode
+ * follows the same boundary minus the library exclusion — the librarian may
+ * still need to ask which entry the user meant. */
+export function artifactModeAvailable(
+  classification: NodeClassification,
+): boolean {
+  return classification === "work" || classification === "planning";
+}
+
+export function qaModeAvailable(
+  classification: NodeClassification,
+): boolean {
+  return classification !== "review";
+}
+
 /** Short label for the canvas tile chip. */
 export function nodeClassificationChipLabel(node: NodeInfo): string {
   if (isLibraryOpKind(node.agent_op_kind)) return "library";

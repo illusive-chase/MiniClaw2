@@ -19,6 +19,7 @@
  *   to the field that causes it.
  */
 import type {
+  ArtifactMode,
   NodeCategory,
   ReviewBrief,
   ReviewSubtype,
@@ -58,6 +59,9 @@ export type EditorNode = {
   /** Model this node runs on. null means "inherit the project preset at
    * apply time" — a distinct, legitimate state, not a missing value. */
   model_preset_id: string | null;
+  /** Deliverable shape this node must publish when stamped. */
+  artifact_mode: ArtifactMode;
+  artifact_spec: string;
 };
 
 export type EditorArgument = {
@@ -113,6 +117,8 @@ export function templateEditorStateFromDetail(
       scheduled_deps: [...(node.scheduled_deps ?? [])],
       resume_from: node.resume_from ?? null,
       model_preset_id: node.model_preset_id ?? null,
+      artifact_mode: node.artifact_mode ?? "default",
+      artifact_spec: node.artifact_spec ?? "",
     })),
     arguments: detail.arguments.map((argument) => ({
       name: argument.name,
@@ -444,6 +450,8 @@ export function addNode(
     scheduled_deps: [],
     resume_from: null,
     model_preset_id: null,
+    artifact_mode: "default",
+    artifact_spec: "",
     ...overrides,
   };
   return { state: { ...state, nodes: [...state.nodes, node] }, node };
@@ -766,6 +774,8 @@ export type TemplateRewriteNode = {
   scheduled_deps: string[];
   resume_from: string | null;
   model_preset_id: string | null;
+  artifact_mode: ArtifactMode;
+  artifact_spec: string;
 };
 
 export type TemplateRewritePayload = {
@@ -804,6 +814,11 @@ export function buildRewritePayload(
       scheduled_deps: [...node.scheduled_deps],
       resume_from: node.resume_from,
       model_preset_id: node.model_preset_id,
+      artifact_mode: node.category === "review" ? "default" : node.artifact_mode,
+      artifact_spec:
+        node.category !== "review" && node.artifact_mode === "custom"
+          ? node.artifact_spec
+          : "",
     })),
     arguments: resolveArguments(state).map((argument) => ({
       name: argument.name,

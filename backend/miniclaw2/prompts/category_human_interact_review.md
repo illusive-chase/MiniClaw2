@@ -65,7 +65,9 @@ ground the human prose in the upstream work.
 
 Use `"error"` or `"cancelled"` for `state` on failure paths.
 
-## Publishing artifacts (only when explicitly requested)
+## Publishing artifacts
+
+<<artifact_requirement>>
 
 To show a file to the human, write it under:
 

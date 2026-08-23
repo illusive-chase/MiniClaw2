@@ -107,7 +107,8 @@ def language_launch_instruction(preferred_language: str | None) -> str:
         f"`{language}` for every natural-language string you write that "
         "MiniClaw2 may show to the user, including assistant replies, "
         "ask-user questions and options, plan-approval text, review handoffs, "
-        "summaries, and planspace STATUS/PLAN text fields. Do not translate "
+        "summaries, published artifact prose, and planspace STATUS/PLAN text "
+        "fields. Do not translate "
         "code, commands, file paths, identifiers, JSON keys, protocol values, "
         "logs, exact quotes, or externally sourced text that must remain exact."
     )

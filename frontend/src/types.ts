@@ -329,6 +329,9 @@ export type TemplateNodeSpec = {
    * means the node has no opinion and inherits the target project's preset
    * when the template is applied. */
   model_preset_id?: string | null;
+  /** Deliverable shape captured with the template. Absent/null = default. */
+  artifact_mode?: ArtifactMode | null;
+  artifact_spec?: string | null;
 };
 
 export type NodeKind = "agent" | "op" | "verifier";
@@ -419,6 +422,8 @@ export type SelfUpdateApplyResult = {
   message: string;
 };
 export type NodeCategory = "planning" | "regular" | "review";
+/** Deliverable shape a node must publish. `default` = no artifact expected. */
+export type ArtifactMode = "default" | "markdown" | "html" | "custom";
 export type ReviewSubtype =
   | "agentic_review"
   | "human_interact_review"
@@ -455,6 +460,8 @@ export type ActiveNodeEntry = {
   node_id: string;
   state: NodeState;
   category?: NodeCategory | null;
+  kind?: NodeKind | null;
+  op_kind?: string | null;
   planspace_id?: string | null;
   planspace_title?: string | null;
   is_active_planspace: boolean;
@@ -533,6 +540,9 @@ export type NodeInfo = {
   scheduled_deps?: string[];
   pending_extra_principles?: string[];
   pending_extra_skills?: SkillSelection[];
+  qa_mode?: boolean;
+  artifact_mode?: ArtifactMode | null;
+  artifact_spec?: string | null;
   resume_from_node_id?: string | null;
   verify_script_ref?: string | null;
   proposed_by?: string | null;

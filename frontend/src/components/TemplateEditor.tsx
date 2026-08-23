@@ -911,6 +911,10 @@ function NodeInspector({
                     subtype: node.subtype ?? "agentic_review",
                     brief:
                       node.brief ?? { check_what: "", expected: "", abnormal: "" },
+                    // Review nodes have their own deliverable contract; leaving
+                    // an artifact intent set here would be rejected on save.
+                    artifact_mode: "default",
+                    artifact_spec: "",
                   }
                 : { category, subtype: null, brief: null },
             );
@@ -999,6 +1003,40 @@ function NodeInspector({
           )
         )}
       </label>
+
+      {node.category !== "review" && (
+        <label className="flex flex-col gap-1">
+          <span className="text-[10px] font-medium uppercase tracking-[0.14em] text-ink-subtle">
+            产出物
+          </span>
+          <select
+            value={node.artifact_mode}
+            onChange={(event) =>
+              onPatch({
+                artifact_mode: event.target.value as EditorNode["artifact_mode"],
+              })
+            }
+            title="应用模板时，该节点会被要求产出这种形态的产出物"
+            className="w-full rounded border border-line bg-surface-sunken px-2 py-1 text-[11px] text-ink focus:border-brand focus:outline-none"
+          >
+            <option value="default">（不要求产出物）</option>
+            <option value="markdown">markdown</option>
+            <option value="html">html</option>
+            <option value="custom">custom（自定义描述）</option>
+          </select>
+          {node.artifact_mode === "custom" && (
+            <textarea
+              value={node.artifact_spec}
+              onChange={(event) =>
+                onPatch({ artifact_spec: event.target.value })
+              }
+              rows={3}
+              placeholder="描述期望的产出物，这段文字会原样进入 agent 的提示。"
+              className="w-full resize-y rounded border border-line bg-surface-sunken px-2 py-1.5 text-[11px] leading-snug text-ink placeholder:text-ink-subtle focus:border-brand focus:outline-none"
+            />
+          )}
+        </label>
+      )}
 
       <label className="flex flex-col gap-1">
         <span className="text-[10px] font-medium uppercase tracking-[0.14em] text-ink-subtle">

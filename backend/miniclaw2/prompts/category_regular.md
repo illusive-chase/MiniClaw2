@@ -46,7 +46,9 @@ If the run errored, set `"state": "error"`; if cancelled,
 `"state": "cancelled"`. If you do not write a valid preview the
 framework will re-prompt you, then write a stub if you still don't.
 
-## Publishing artifacts (only when explicitly requested)
+## Publishing artifacts
+
+<<artifact_requirement>>
 
 To show a file to the human, write it under:
 

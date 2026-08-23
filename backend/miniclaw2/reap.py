@@ -22,7 +22,7 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .domain import Category, Node, NodeKind, NodeState, Project, _new_id
+from .domain import ArtifactMode, Category, Node, NodeKind, NodeState, Project, _new_id
 from .materialize import diff_lane
 from .model_catalog import (
     normalize_active_model_preset_id,
@@ -78,6 +78,21 @@ def _resolve_planner_model_preset(
             store_root=store.root,
         )
     return selected
+
+
+def _resolve_preview_artifact(
+    preview: VirtualPreview,
+    *,
+    inherited_mode: ArtifactMode,
+    inherited_spec: str,
+) -> tuple[ArtifactMode, str]:
+    """Resolve artifact intent; an absent field inherits the current value."""
+    if "artifact_mode" not in preview.model_fields_set:
+        return inherited_mode, inherited_spec
+    mode = ArtifactMode(preview.artifact_mode)
+    if mode is ArtifactMode.CUSTOM:
+        return mode, preview.artifact_spec or ""
+    return mode, ""
 
 
 def _rewrite_scheduled_deps(
@@ -292,6 +307,11 @@ def reap_lane(
             project_id=project.id,
             canonical_id=canonical,
             model_preset_id_override=model_preset_id,
+            artifact_override=_resolve_preview_artifact(
+                preview,
+                inherited_mode=ArtifactMode.DEFAULT,
+                inherited_spec="",
+            ),
         )
         # Provenance + lane are framework-controlled; the agent's claim is overridden.
         draft.proposed_by = f"node:{node.id}"
@@ -331,6 +351,11 @@ def reap_lane(
             canonical_id=existing.id,
             verify_script_ref=existing.verify_script_ref,
             model_preset_id_override=model_preset_id,
+            artifact_override=_resolve_preview_artifact(
+                preview,
+                inherited_mode=existing.artifact_mode,
+                inherited_spec=existing.artifact_spec,
+            ),
         )
         if existing.resume_from_node_id:
             resume_source = store.load_node(project.id, existing.resume_from_node_id)
@@ -350,6 +375,10 @@ def reap_lane(
         updated.created_at = existing.created_at
         updated.planspace_id = existing.planspace_id
         updated.resume_from_node_id = existing.resume_from_node_id
+        # qa_mode is deliberately absent from the preview contract (it is the
+        # user's own consent to be interrupted), so a planner rewrite would
+        # otherwise silently clear it.
+        updated.qa_mode = existing.qa_mode
         updated.scheduled_deps = _rewrite_scheduled_deps(
             updated.scheduled_deps,
             slug_to_canonical,
