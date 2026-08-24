@@ -1021,6 +1021,63 @@ export async function deleteUserTemplate(slug: string): Promise<void> {
   }
 }
 
+/** Open (or re-attach to) a template's embedded editing session.
+ *
+ * The session is an ordinary temporary project whose lane holds the template's
+ * own nodes with `{{placeholder}}` text intact, so the shared project canvas can
+ * edit it. Calling this twice returns the same session rather than stamping a
+ * second copy — otherwise unsaved edits in the first would become unreachable. */
+export async function openUserTemplateSession(
+  slug: string,
+): Promise<SessionInfo> {
+  const res = await fetch(
+    `/user-templates/${encodeURIComponent(slug)}/session`,
+    { method: "POST" },
+  );
+  if (!res.ok) {
+    throw new ApiError(
+      "openUserTemplateSession",
+      res.status,
+      await readErrorDetail(res),
+    );
+  }
+  return res.json();
+}
+
+/** Write an embedded session's graph back onto its template. Explicit: editing
+ * the session never saves on its own. */
+export async function commitUserTemplateSession(
+  slug: string,
+): Promise<TemplateDetail> {
+  const res = await fetch(
+    `/user-templates/${encodeURIComponent(slug)}/session/commit`,
+    { method: "POST" },
+  );
+  if (!res.ok) {
+    throw new ApiError(
+      "commitUserTemplateSession",
+      res.status,
+      await readErrorDetail(res),
+    );
+  }
+  return res.json();
+}
+
+/** Discard an embedded session. Uncommitted graph edits go with it. */
+export async function discardUserTemplateSession(slug: string): Promise<void> {
+  const res = await fetch(
+    `/user-templates/${encodeURIComponent(slug)}/session`,
+    { method: "DELETE" },
+  );
+  if (!res.ok && res.status !== 204) {
+    throw new ApiError(
+      "discardUserTemplateSession",
+      res.status,
+      await readErrorDetail(res),
+    );
+  }
+}
+
 /** Instance records for one planspace, newest last. Nodes carry only the
  * instance id, so the group header reads its template and arguments here. */
 export async function listTemplateInstances(

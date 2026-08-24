@@ -80,12 +80,15 @@ from .templates import (
     TemplateError,
     apply_user_template,
     delete_user_template,
+    embedded_session_slug,
     launch_template,
     list_templates,
     list_user_templates,
     load_template,
     load_user_template,
+    materialize_embedded_session,
     rewrite_user_template,
+    serialize_embedded_session,
     serialize_selection,
 )
 
@@ -1849,6 +1852,72 @@ def create_app(
         registry.store.sync.schedule_commit(f"delete template {slug}")
         return Response(status_code=204)
 
+    @app.post("/user-templates/{slug}/session", response_model=SessionInfo)
+    async def open_user_template_session(slug: str) -> SessionInfo:
+        """Open (or re-attach to) the embedded editing session for a template.
+
+        The session is an ordinary temporary project whose lane holds the
+        template's own nodes with placeholders intact, so the shared project
+        canvas can edit it. Re-opening returns the existing session rather than
+        stamping a second copy — otherwise the unsaved edits in the first one
+        would become unreachable.
+        """
+        registry.store.assert_writable()
+        try:
+            template = load_user_template(slug, registry.store.root)
+        except TemplateError as exc:
+            raise HTTPException(404, str(exc)) from exc
+
+        existing = _embedded_session_for(registry, slug)
+        if existing is not None:
+            return _session_info(registry, existing)
+
+        try:
+            project, _lane = materialize_embedded_session(template, registry)
+        except TemplateError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        registry.store.sync.schedule_commit(f"open template session {slug}")
+        return _session_info(registry, project)
+
+    @app.post(
+        "/user-templates/{slug}/session/commit",
+        response_model=TemplateDetail,
+    )
+    async def commit_user_template_session(slug: str) -> TemplateDetail:
+        """Write an embedded session's graph back onto its template.
+
+        Explicit commit, never automatic: the session is a scratch space, and
+        an author who edits without saving must be able to walk away.
+        """
+        registry.store.assert_writable()
+        project = _embedded_session_for(registry, slug)
+        if project is None:
+            raise HTTPException(404, f"no open session for template: {slug}")
+        if _context_task_running(project.id):
+            raise HTTPException(409, "context refresh in progress")
+        try:
+            template = serialize_embedded_session(registry, project, slug)
+        except SerializerError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        except TemplateError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        registry.store.sync.schedule_commit(f"commit template session {slug}")
+        return TemplateDetail(**_template_detail_payload(template))
+
+    @app.delete("/user-templates/{slug}/session", status_code=204)
+    def discard_user_template_session(slug: str) -> Response:
+        """Throw the session away. Uncommitted graph edits go with it."""
+        project = _embedded_session_for(registry, slug)
+        if project is None:
+            raise HTTPException(404, f"no open session for template: {slug}")
+        # `delete_project` removes the temporary workspace for a temporary
+        # project, so the scratch worktree does not outlive the session.
+        if not registry.delete_project(project.id):
+            raise HTTPException(404, f"no open session for template: {slug}")
+        return Response(status_code=204)
+
     @app.get("/principles", response_model=list[dict[str, Any]])
     def list_principles_endpoint() -> list[dict[str, Any]]:
         return list_principles(store_root=registry.store.root)
@@ -2216,6 +2285,25 @@ def _global_state_payload(store_root: Path) -> dict[str, Any]:
             ),
         },
     }
+
+
+def _embedded_session_for(registry: ProjectRegistry, slug: str) -> Any:
+    """Find the open embedded editing session for a user template, if any.
+
+    Matched on the ``embedded:<slug>`` marker rather than a bare template name:
+    ``launch_template`` tags its bundled test runs with the template's display
+    name, and every bundled template's display name is also its directory name,
+    so a bare comparison would let a test run be committed over a user template
+    it never came from.
+    """
+    if not slug:
+        return None
+    for project in registry.list_projects():
+        if not project.temporary:
+            continue
+        if embedded_session_slug(project.template_id) == slug:
+            return project
+    return None
 
 
 def _session_info(registry: ProjectRegistry, project: Any) -> SessionInfo:

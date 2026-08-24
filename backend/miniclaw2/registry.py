@@ -2357,6 +2357,9 @@ class ProjectRegistry:
         _allow_nonterminal_resume: bool = False,
         _proposed_by: str = "user",
         _template_instance_id: str | None = None,
+        _template_source_node_id: str | None = None,
+        _template_source_model_preset_id: str | None = None,
+        _template_source_motivation: str | None = None,
         _defer_auto_promotion: bool = False,
         _created_at: float | None = None,
     ) -> Node | None:
@@ -2527,6 +2530,9 @@ class ProjectRegistry:
             resume_from_node_id=normalized_resume_id,
             proposed_by=_proposed_by,
             template_instance_id=_template_instance_id,
+            template_source_node_id=_template_source_node_id,
+            template_source_model_preset_id=_template_source_model_preset_id,
+            template_source_motivation=_template_source_motivation,
             summary="" if motivation is None else str(motivation),
         )
         if self.store.load_node(pid, node.id) is not None:
@@ -2616,6 +2622,8 @@ class ProjectRegistry:
             )
         if motivation is not _UNSET:
             update["summary"] = "" if motivation is None else str(motivation)
+            if existing.template_source_node_id is not None:
+                update["template_source_motivation"] = update["summary"]
         if obsolete_reason is not _UNSET:
             normalized_obsolete = (
                 str(obsolete_reason).strip()
@@ -2807,6 +2815,8 @@ class ProjectRegistry:
                 next_model_preset_id = normalize_active_model_preset_id(
                     next_model_preset_id, store_root=self.store.root
                 )
+                if existing.template_source_node_id is not None:
+                    update["template_source_model_preset_id"] = next_model_preset_id
             update["model_preset_id"] = next_model_preset_id
         updated = existing.model_copy(update=update)
         # Revalidating from a dump drops private attributes, so the owner host

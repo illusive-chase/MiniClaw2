@@ -32,20 +32,24 @@ from uuid import uuid4
 
 import yaml
 
+from ..contextspace import read_template_ports
 from ..domain import (
     ArtifactMode,
     Category,
     Node,
     NodeKind,
     NodeState,
+    Project,
     TERMINAL_NODE_STATES,
 )
 from ..store import Store
 from ..virtual_graph import is_connected
 from .loader import (
+    INPUT_DEP_PREFIX,
     SCHEMA_VERSION,
     Template,
     TemplateError,
+    load_user_template,
     user_templates_root,
     _load_from_root,
     _scan_placeholders,
@@ -199,7 +203,7 @@ def rewrite_user_template(
     # Refuse to rewrite a template that does not currently load: the editor
     # state was built from a successful load, so an unreadable target means
     # the caller is overwriting something it never saw.
-    _load_from_root(target_dir, slug, store_root=store_root)
+    current = _load_from_root(target_dir, slug, store_root=store_root)
     lane_entries: list[dict[str, Any]] = []
     prompt_writes: list[tuple[str, str]] = []
     for index, node in enumerate(nodes):
@@ -262,18 +266,163 @@ def rewrite_user_template(
         "schema_version": SCHEMA_VERSION,
         "name": name,
         "brief": brief,
-        "lane_mode": "manual",
+        "lane_mode": current.lane_mode.value,
         "arguments": merged_arguments,
         "inputs": inputs,
     }
+    if current.allowed_model_preset_ids:
+        template_yaml["allowed_model_preset_ids"] = list(
+            current.allowed_model_preset_ids
+        )
+    if current.auto_commit:
+        template_yaml["auto_commit"] = True
+    if current.permission_mode is not None:
+        template_yaml["permission_mode"] = current.permission_mode
+
+    seed_copies: list[tuple[Path, str]] = []
+    if current.seed:
+        seed_entries: list[dict[str, str]] = []
+        for source, destination in current.seed:
+            try:
+                source_rel = source.relative_to(current.root).as_posix()
+            except ValueError as exc:
+                raise SerializerError(
+                    f"模板 seed 来源必须位于模板目录内: {source}"
+                ) from exc
+            seed_entries.append({"from": source_rel, "to": destination})
+            seed_copies.append((source, source_rel))
+        template_yaml["seed"] = seed_entries
     return _materialize_template(
         target_dir,
         slug,
         template_yaml=template_yaml,
         lane_yaml={"nodes": lane_entries},
         prompt_writes=prompt_writes,
+        asset_copies=seed_copies,
         store_root=store_root,
         overwrite=True,
+    )
+
+
+def serialize_embedded_session(
+    registry: Any,
+    project: Project,
+    slug: str,
+    *,
+    name: str | None = None,
+    brief: str | None = None,
+) -> Template:
+    """Commit an embedded editing session back onto its user template.
+
+    The inverse of ``launcher.materialize_embedded_session``. Because that
+    stamp never rendered placeholders, the nodes still hold the definition's own
+    ``{{placeholder}}`` text and this is a lossless write-back — the property
+    the ``test_embedded_session`` round-trip test pins down.
+
+    Reuses ``rewrite_user_template`` rather than ``serialize_selection``:
+    the rewrite path already accepts ``inputs`` and ``motivation`` and already
+    validates a candidate directory before replacing the live one, whereas
+    ``serialize_selection`` hardcodes ``inputs: []`` and would drop every port.
+    """
+    lane_id = project.active_planspace_id or ""
+    if not lane_id:
+        raise SerializerError("embedded session has no active direction")
+
+    store = registry.store
+    nodes = [
+        node
+        for node in store.list_nodes(project.id)
+        if (node.planspace_id or "") == lane_id and node.kind is not NodeKind.OP
+    ]
+    if not nodes:
+        raise SerializerError("embedded session has no nodes to save")
+
+    ports = read_template_ports(project, lane_id, store_root=store.root)
+    ordered = _topological_order(nodes)
+    slug_by_node_id = {node.id: f"n{index}" for index, node in enumerate(ordered)}
+    # Port edges live on the manifest, so a node's `in:<port>` deps have to be
+    # rebuilt from the consumer lists rather than read off `scheduled_deps`.
+    ports_by_consumer: dict[str, list[str]] = {}
+    for port in ports:
+        port_name = port.get("name")
+        if not isinstance(port_name, str):
+            continue
+        for consumer in port.get("consumers") or []:
+            ports_by_consumer.setdefault(consumer, []).append(port_name)
+
+    node_payloads: list[dict[str, Any]] = []
+    for node in ordered:
+        if node.kind is not NodeKind.AGENT:
+            raise SerializerError(
+                "用户模板只能包含 agent 节点；不支持 verifier 节点"
+            )
+        deps = [
+            slug_by_node_id[dep]
+            for dep in node.scheduled_deps
+            if dep in slug_by_node_id
+        ]
+        deps.extend(
+            f"{INPUT_DEP_PREFIX}{port_name}"
+            for port_name in ports_by_consumer.get(node.id, [])
+        )
+        resume_from = ""
+        if node.resume_from_node_id in slug_by_node_id:
+            resume_from = slug_by_node_id[node.resume_from_node_id]
+        node_payloads.append(
+            {
+                "id": slug_by_node_id[node.id],
+                "kind": node.kind.value,
+                "category": node.category.value,
+                "subtype": node.subtype.value if node.subtype else None,
+                "brief": node.brief.model_dump() if node.brief else None,
+                "scheduled_deps": deps,
+                "resume_from": resume_from,
+                "motivation": (
+                    node.template_source_motivation
+                    if node.template_source_node_id is not None
+                    else node.summary or ""
+                ),
+                "model_preset_id": (
+                    node.template_source_model_preset_id
+                    if node.template_source_node_id is not None
+                    else node.model_preset_id
+                ),
+                "artifact_mode": node.artifact_mode.value,
+                "artifact_spec": node.artifact_spec,
+                # Reads `prompt_draft` for a virtual and `prompt` otherwise:
+                # promotion moves the text across and clears the draft, so a
+                # node that has run would otherwise save an empty prompt.
+                "prompt": _prompt_text(node),
+            }
+        )
+
+    current = load_user_template(slug, store.root)
+    return rewrite_user_template(
+        slug,
+        name=name if name is not None else current.name,
+        brief=brief if brief is not None else current.brief,
+        nodes=node_payloads,
+        # Only the three keys `_parse_arguments` reads. `TemplateArgument.
+        # metadata()` also carries `required` and `declared`, which are derived
+        # for the UI — writing them back would put keys into `template.yaml`
+        # that the editor's own write schema rejects.
+        arguments=[
+            {
+                "name": argument.name,
+                "description": argument.description,
+                "default": argument.default,
+            }
+            for argument in current.arguments
+        ],
+        inputs=[
+            {
+                "name": port["name"],
+                "description": port.get("description", ""),
+            }
+            for port in ports
+            if isinstance(port.get("name"), str)
+        ],
+        store_root=store.root,
     )
 
 
@@ -435,6 +584,7 @@ def _materialize_template(
     prompt_writes: list[tuple[str, str]],
     store_root: Path,
     overwrite: bool,
+    asset_copies: list[tuple[Path, str]] | None = None,
 ) -> Template:
     """Write, loader-validate, and install one complete template directory.
 
@@ -453,6 +603,13 @@ def _materialize_template(
     try:
         candidate.mkdir(parents=False, exist_ok=False)
         (candidate / "prompts").mkdir(parents=True, exist_ok=True)
+        for source, relative_target in asset_copies or []:
+            target = candidate / relative_target
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if source.is_dir():
+                shutil.copytree(source, target, dirs_exist_ok=True)
+            else:
+                shutil.copyfile(source, target)
         for rel, text in prompt_writes:
             _atomic_write_text(candidate / rel, text)
         _atomic_write_yaml(candidate / "template.yaml", template_yaml)

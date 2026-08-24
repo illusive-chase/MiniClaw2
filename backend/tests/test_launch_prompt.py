@@ -19,6 +19,7 @@ from miniclaw2.launch_prompt import (
     build_category_launch_block,
     build_dependency_launch_block,
     build_qa_mode_block,
+    shared_host_processes_block,
 )
 from miniclaw2.materialize import GRAPH_DIRNAME
 
@@ -352,6 +353,31 @@ class QaModeBlockTests(unittest.TestCase):
             "CAT", build_qa_mode_block(node), "LANG"
         )
         self.assertEqual(composed_off, "CAT\n\n---\n\nLANG")
+
+
+class SharedHostProcessesTests(unittest.TestCase):
+    """A pattern kill from an agent takes the human's own :5173 down."""
+
+    def test_block_names_the_patterns_that_broke_the_dev_server(self) -> None:
+        block = shared_host_processes_block()
+        # The literal command an agent ran as "Stop dev server", plus the
+        # ports that belong to the human's session rather than the agent's.
+        self.assertIn("pkill -f vite", block)
+        self.assertIn("killall node", block)
+        self.assertIn("5173", block)
+        self.assertIn("8000", block)
+
+    def test_every_agent_launch_carries_the_block(self) -> None:
+        from miniclaw2.runner import _compose_launch_instructions
+
+        block = shared_host_processes_block()
+        composed = _compose_launch_instructions("CAT", block, "LANG")
+        self.assertIn(block, composed)
+
+    def test_block_is_unconditional(self) -> None:
+        """Unlike qa_mode, this guidance is never node-gated."""
+        self.assertEqual(shared_host_processes_block(), shared_host_processes_block())
+        self.assertTrue(shared_host_processes_block().strip())
 
 
 if __name__ == "__main__":

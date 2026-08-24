@@ -25,6 +25,8 @@ import {
   summarizeInstanceArguments,
   summarizeInstanceProgress,
   templateInstanceBoxNodeId,
+  templatePortNameFromNodeId,
+  templatePortNodeId,
   TEMPLATE_GROUP_NODE_Z_INDEX,
   type BuildGraphArgs,
 } from "../src/canvas/layout";
@@ -2735,4 +2737,274 @@ testLaneJumpVisibilityFollowsScreenHeight();
 testLaneJumpAvailabilityMatchesViewportPosition();
 testLaneJumpOffsetClearsTheControlsColumn();
 testInstanceSummaryHelpers();
+/* ───────── embedded template session: ports + argument chips ───────── */
+
+function testTemplatePortsRenderNodesAndEdges(): void {
+  const built = buildGraph(args({
+    nodes: [
+      node("consumer", {
+        planspace_id: TEMPLATE_LANE,
+        state: "virtual",
+        created_at: 1,
+      }),
+    ],
+    knownPlanspaceIds: [TEMPLATE_LANE],
+    activePlanspaceId: TEMPLATE_LANE,
+    templatePorts: [
+      { name: "spec", description: "the spec node", consumers: ["consumer"] },
+    ],
+  }));
+
+  const portId = templatePortNodeId("spec");
+  const port = built.rfNodes.find((item) => item.id === portId);
+  assert.ok(port, "a declared port must render a node");
+  assert.equal(port?.type, "templatePort");
+  assert.equal(port?.parentNode, `planspace:${TEMPLATE_LANE}`);
+  assert.deepEqual(port?.data, {
+    name: "spec",
+    description: "the spec node",
+    consumerIds: ["consumer"],
+    unreferenced: false,
+  });
+
+  const edge = built.rfEdges.find(
+    (item) => item.source === portId && item.target === "consumer",
+  );
+  assert.ok(edge, "a port with a consumer must render an edge to it");
+  assert.equal(edge?.type, "dependency");
+}
+
+function testUnreferencedPortIsFlagged(): void {
+  /* An unreferenced port would be dropped on save, so the canvas has to warn
+   * rather than render it as an ordinary connected port. */
+  const built = buildGraph(args({
+    nodes: [node("solo", { planspace_id: TEMPLATE_LANE, created_at: 1 })],
+    knownPlanspaceIds: [TEMPLATE_LANE],
+    activePlanspaceId: TEMPLATE_LANE,
+    templatePorts: [{ name: "orphan", consumers: [] }],
+  }));
+
+  const port = built.rfNodes.find(
+    (item) => item.id === templatePortNodeId("orphan"),
+  );
+  assert.equal((port?.data as { unreferenced: boolean }).unreferenced, true);
+  assert.equal(
+    built.rfEdges.filter((edge) => edge.source === templatePortNodeId("orphan")).length,
+    0,
+    "an unreferenced port must not emit an edge",
+  );
+}
+
+function testPortConsumerOffCanvasDoesNotDangle(): void {
+  /* A consumer id can outlive the node it names (deleted in the session). The
+   * port must degrade to unreferenced instead of emitting an edge to nothing. */
+  const built = buildGraph(args({
+    nodes: [node("present", { planspace_id: TEMPLATE_LANE, created_at: 1 })],
+    knownPlanspaceIds: [TEMPLATE_LANE],
+    activePlanspaceId: TEMPLATE_LANE,
+    templatePorts: [
+      { name: "spec", consumers: ["deleted-node", "present"] },
+    ],
+  }));
+
+  const portId = templatePortNodeId("spec");
+  assert.deepEqual(
+    (built.rfNodes.find((item) => item.id === portId)?.data as { consumerIds: string[] })
+      .consumerIds,
+    ["present"],
+  );
+  assert.deepEqual(
+    built.rfEdges.filter((edge) => edge.source === portId).map((edge) => edge.target),
+    ["present"],
+  );
+}
+
+function testPortsFlowIntoLaneSizing(): void {
+  const withoutPorts = buildGraph(args({
+    nodes: [node("only", { planspace_id: TEMPLATE_LANE, created_at: 1 })],
+    knownPlanspaceIds: [TEMPLATE_LANE],
+    activePlanspaceId: TEMPLATE_LANE,
+  }));
+  const withManyPorts = buildGraph(args({
+    nodes: [node("only", { planspace_id: TEMPLATE_LANE, created_at: 1 })],
+    knownPlanspaceIds: [TEMPLATE_LANE],
+    activePlanspaceId: TEMPLATE_LANE,
+    templatePorts: [
+      { name: "a", consumers: ["only"] },
+      { name: "b", consumers: ["only"] },
+      { name: "c", consumers: ["only"] },
+      { name: "d", consumers: ["only"] },
+    ],
+  }));
+
+  const laneWidth = (result: ReturnType<typeof buildGraph>): number => {
+    const lane = result.rfNodes.find(
+      (item) => item.id === `planspace:${TEMPLATE_LANE}`,
+    );
+    return (lane?.width as number) ?? 0;
+  };
+  assert.ok(
+    laneWidth(withManyPorts) > laneWidth(withoutPorts),
+    "a row of ports must widen the lane that holds them",
+  );
+}
+
+function testPortsHonourLayoutHints(): void {
+  const portId = templatePortNodeId("spec");
+  const built = buildGraph(args({
+    nodes: [node("consumer", { planspace_id: TEMPLATE_LANE, created_at: 1 })],
+    knownPlanspaceIds: [TEMPLATE_LANE],
+    activePlanspaceId: TEMPLATE_LANE,
+    layoutHints: { [portId]: { x: 640, y: 24 } },
+    templatePorts: [{ name: "spec", consumers: ["consumer"] }],
+  }));
+
+  assert.deepEqual(
+    built.rfNodes.find((item) => item.id === portId)?.position,
+    { x: 640, y: 24 },
+  );
+}
+
+function testPortsOnlyRenderInTheActiveLane(): void {
+  /* Ports belong to the template being edited, which is the active lane. A
+   * port has no meaning in a lane that is not the write target. */
+  const built = buildGraph(args({
+    nodes: [node("elsewhere", { planspace_id: TEMPLATE_LANE, created_at: 1 })],
+    knownPlanspaceIds: [TEMPLATE_LANE],
+    activePlanspaceId: null,
+    templatePorts: [{ name: "spec", consumers: ["elsewhere"] }],
+  }));
+
+  assert.equal(
+    built.rfNodes.some((item) => item.type === "templatePort"),
+    false,
+    "no active lane means no port row",
+  );
+}
+
+function testArgumentChipsGrowTheNodeHeight(): void {
+  /* The rfNode height is what lane fitting and sibling stacking read; the chip
+   * row is real CSS height. Letting them diverge overlaps tiles. */
+  const plain = buildGraph(args({
+    nodes: [node("n", { planspace_id: TEMPLATE_LANE, created_at: 1 })],
+    knownPlanspaceIds: [TEMPLATE_LANE],
+    activePlanspaceId: TEMPLATE_LANE,
+  }));
+  const chipped = buildGraph(args({
+    nodes: [node("n", { planspace_id: TEMPLATE_LANE, created_at: 1 })],
+    knownPlanspaceIds: [TEMPLATE_LANE],
+    activePlanspaceId: TEMPLATE_LANE,
+    templateArgumentsByNodeId: {
+      n: ["focus", "audience", "scope", "format", "constraints"],
+    },
+  }));
+
+  const heightOf = (result: ReturnType<typeof buildGraph>): number =>
+    (result.rfNodes.find((item) => item.id === "n")?.height as number) ?? 0;
+  assert.equal(
+    heightOf(chipped),
+    heightOf(plain) + 3 * 22,
+    "every wrapped two-chip row must be reflected in the declared node height",
+  );
+  assert.deepEqual(
+    (chipped.rfNodes.find((item) => item.id === "n")?.data as { templateArguments: string[] })
+      .templateArguments,
+    ["focus", "audience", "scope", "format", "constraints"],
+  );
+  assert.equal(
+    "templateArguments" in (plain.rfNodes.find((item) => item.id === "n")?.data ?? {}),
+    false,
+    "a node with no template arguments must not carry the field at all",
+  );
+}
+
+function testPortRowDoesNotOverlapContextOrAgentRows(): void {
+  assert.ok(
+    LANE.templatePortRowY >= LANE.planspaceLaneCtxRowY + LANE.contextHeight,
+    "the template port row must start below the context row",
+  );
+  assert.ok(
+    LANE.templateSessionAgentRowY >=
+      LANE.templatePortRowY + LANE.templatePortHeight,
+    "the embedded-session agent row must start below the port row",
+  );
+
+  const built = buildGraph(args({
+    nodes: [node("consumer", { planspace_id: TEMPLATE_LANE, created_at: 1 })],
+    knownPlanspaceIds: [TEMPLATE_LANE],
+    activePlanspaceId: TEMPLATE_LANE,
+    templatePorts: [{ name: "spec", consumers: ["consumer"] }],
+  }));
+  assert.equal(
+    built.rfNodes.find((item) => item.id === "consumer")?.position.y,
+    LANE.templateSessionAgentRowY,
+  );
+}
+
+function testPortIdHelpersRoundTrip(): void {
+  assert.equal(templatePortNodeId("spec"), "tplport:spec");
+  assert.equal(templatePortNameFromNodeId("tplport:spec"), "spec");
+  assert.equal(templatePortNameFromNodeId("some-node-id"), null);
+  assert.equal(templatePortNameFromNodeId("tplport:"), null);
+}
+
+function testOrdinaryProjectLayoutIsUnchangedByPortSupport(): void {
+  /* The zero-impact proof: buildGraph is the shared path for every canvas, so a
+   * project that supplies no ports and no argument map must produce exactly the
+   * output it did before this feature existed. */
+  const plainNodes = () => [
+    node("first", { planspace_id: TEMPLATE_LANE, created_at: 1 }),
+    node("second", {
+      planspace_id: TEMPLATE_LANE,
+      state: "virtual",
+      scheduled_deps: ["first"],
+      created_at: 2,
+    }),
+    node("free", { created_at: 3 }),
+  ];
+  const baseline = buildGraph(args({
+    nodes: plainNodes(),
+    knownPlanspaceIds: [TEMPLATE_LANE],
+    activePlanspaceId: TEMPLATE_LANE,
+  }));
+  const withEmptyPortInputs = buildGraph(args({
+    nodes: plainNodes(),
+    knownPlanspaceIds: [TEMPLATE_LANE],
+    activePlanspaceId: TEMPLATE_LANE,
+    templatePorts: [],
+    templateArgumentsByNodeId: {},
+  }));
+
+  const shape = (result: ReturnType<typeof buildGraph>) =>
+    result.rfNodes.map((item) => ({
+      id: item.id,
+      type: item.type,
+      position: item.position,
+      width: item.width,
+      height: item.height,
+      parentNode: item.parentNode,
+    }));
+  assert.deepEqual(
+    shape(withEmptyPortInputs),
+    shape(baseline),
+    "port support must not move or resize any ordinary node",
+  );
+  assert.deepEqual(
+    withEmptyPortInputs.rfEdges.map((edge) => edge.id).sort(),
+    baseline.rfEdges.map((edge) => edge.id).sort(),
+    "port support must not change edges for a port-free graph",
+  );
+}
+
+testTemplatePortsRenderNodesAndEdges();
+testUnreferencedPortIsFlagged();
+testPortConsumerOffCanvasDoesNotDangle();
+testPortsFlowIntoLaneSizing();
+testPortsHonourLayoutHints();
+testPortsOnlyRenderInTheActiveLane();
+testArgumentChipsGrowTheNodeHeight();
+testPortRowDoesNotOverlapContextOrAgentRows();
+testPortIdHelpersRoundTrip();
+testOrdinaryProjectLayoutIsUnchangedByPortSupport();
+
 console.log("canvas layout tests passed");

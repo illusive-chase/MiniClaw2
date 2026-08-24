@@ -29,8 +29,11 @@ turns that state into an interactive project canvas.
   `python -m pytest backend/tests`; after an editable install from `backend/`,
   run the app with `python -m miniclaw2 --reload`.
 - Frontend uses React 18, strict TypeScript, Vite 5, and Tailwind. From
-  `frontend/`, use `npm run dev` while iterating and `npm run build` to run
-  TypeScript plus the production build.
+  `frontend/`, use `npm run build` to run TypeScript plus the production
+  build, and `npx tsc --noEmit` for a type-only check; neither needs a
+  port. A human session usually holds `:5173` and `:8000` already, so if
+  a turn genuinely needs a live page, start `npm run dev` on a distinctive
+  high port and stop it by the pid you captured — never by a name pattern.
 - Follow the existing typed Python and typed React style. Keep changes focused;
   the repository has no project-wide formatter or lint command to apply
   opportunistically.

@@ -665,7 +665,11 @@ function TemplateInstancePanel({
             </div>
             <dl className="mt-2 rounded-md border border-line bg-surface-sunken px-3 py-2 text-[11.5px]">
               {Object.entries(record.arguments).map(([name, value]) => (
-                <div key={name} className="grid grid-cols-[120px_1fr] gap-3 py-0.5">
+                /* `minmax(0,1fr)`: a bare `1fr` floors the track at the
+                   value's min-content width, and an argument value is
+                   free text that can hold a path or id longer than the
+                   380px panel. */
+                <div key={name} className="grid grid-cols-[120px_minmax(0,1fr)] gap-3 py-0.5">
                   <dt className="truncate font-mono text-ink-subtle">{name}</dt>
                   <dd className="break-words font-mono text-ink">{value || "—"}</dd>
                 </div>

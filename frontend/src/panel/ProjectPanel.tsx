@@ -250,7 +250,11 @@ export function ProjectPanel({
       <div className="flex-1 overflow-y-auto bg-surface px-4 py-3 text-sm">
         <section className="mb-5">
           <SectionLabel>Settings</SectionLabel>
-          <dl className="mt-1 grid grid-cols-[140px_1fr] gap-x-3 gap-y-1.5 rounded-md border border-line bg-surface-sunken px-3 py-2 text-[11.5px]">
+          {/* `minmax(0,1fr)`: `KV`'s `truncate` caps the item, but a bare
+              `1fr` track keeps an auto floor at the value's min-content
+              width, so a long model slug or template id would widen the
+              card rather than ellipsize. */}
+          <dl className="mt-1 grid grid-cols-[140px_minmax(0,1fr)] gap-x-3 gap-y-1.5 rounded-md border border-line bg-surface-sunken px-3 py-2 text-[11.5px]">
             <KV
               label="Default model"
               value={modelPresetLabel(modelPresets, session.model_preset_id)}

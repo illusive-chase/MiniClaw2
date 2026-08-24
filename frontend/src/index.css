@@ -436,6 +436,13 @@ body {
   border-radius: 4px;
   color: rgb(var(--ink-strong));
   border: 1px solid rgb(var(--border) / 0.6);
+  /* Agent prose is rendered inside the 380px side panel, and an inline code
+   * span is usually the one thing with no break opportunity — a path, a
+   * planspace id, a flag. `anywhere` (not `break-word`) because only it also
+   * lowers min-content, which is what keeps the span from widening a flex or
+   * grid ancestor that would then clip it. `pre` blocks are exempt: they
+   * scroll on their own via `overflow-x: auto` below. */
+  overflow-wrap: anywhere;
 }
 .md-prose pre {
   background: rgb(var(--surface-sunken));
@@ -452,6 +459,19 @@ body {
   padding: 0;
   font-size: inherit;
   color: rgb(var(--ink-strong));
+  /* Undo the inline-code `anywhere`: inside a `pre` the block already scrolls
+   * horizontally, and breaking tokens mid-identifier would corrupt how the
+   * code reads. */
+  overflow-wrap: normal;
+}
+/* A GFM table has no natural maximum width, so a few columns of agent output
+ * overflow the 380px panel. Let the table scroll inside its own box rather
+ * than pushing the panel sideways. `display: block` is what makes the wrapper
+ * scrollable, since a bare `table` ignores `overflow`. */
+.md-prose > table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
 }
 .md-prose blockquote {
   border-left: 3px solid rgb(var(--brand));

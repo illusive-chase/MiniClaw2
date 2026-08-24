@@ -75,6 +75,7 @@ from .launch_prompt import (
     build_library_init_block,
     build_principle_init_block,
     build_qa_mode_block,
+    shared_host_processes_block,
 )
 from .materialize import (
     GRAPH_RUNS_DIRNAME,
@@ -1208,6 +1209,7 @@ class NodeRunner:
             language_launch_instruction(
                 project_preferred_language(self.project)
             ),
+            shared_host_processes_block(),
             anti_self_poisoning_block(),
         )
 

@@ -20,6 +20,32 @@ export type AgentNodeData = {
   isLastInLane: boolean;
   readyToPromote: boolean;
   canCreateVirtual: boolean;
+  /** Template arguments this node's prompt references. Only an embedded
+   * template session supplies these; ordinary projects leave it undefined and
+   * render exactly as before. */
+  templateArguments?: string[];
+};
+
+/** One declared input port of the template being edited in an embedded session.
+ *
+ * A port is not an agent: it carries no state, never reaches the scheduler, and
+ * exists only so the template's signature is something the author can see and
+ * connect. It lives on the planspace manifest rather than in `scheduled_deps`,
+ * because the backend resolves every dep through `load_node` and an `in:<port>`
+ * literal resolves to nothing. */
+export type TemplatePortRecord = {
+  name: string;
+  description?: string;
+  /** Node ids whose prompts consume this port. */
+  consumers?: string[];
+};
+
+export type TemplatePortNodeData = {
+  name: string;
+  description: string;
+  consumerIds: string[];
+  /** No node consumes this port, so it would be dropped on save. */
+  unreferenced: boolean;
 };
 
 export type OpNodeData = {
@@ -170,6 +196,7 @@ export type RFNodeData =
   | PlanspaceLaneData
   | TemplateGroupData
   | TemplateInstanceBoxData
+  | TemplatePortNodeData
   | ErrorTerminalData
   | ArtifactNodeData;
 
@@ -179,6 +206,20 @@ export type RFEdge = Edge;
 /* ───────── geometry ───────── */
 
 const AGENT_NODE_HEIGHT = 86;
+
+/* An argument chip row adds a line to the card. The rfNode height has to grow
+ * with it: the real height is CSS-driven but layout (lane fitting, sibling
+ * stacking, group bounds) reads the number declared here, and letting the two
+ * diverge shows up as overlapping tiles and short lanes. Raising
+ * AGENT_NODE_HEIGHT itself instead would loosen spacing in every ordinary
+ * project, which is why this is a per-node addend. */
+const AGENT_ARG_CHIP_ROW_HEIGHT = 22;
+const AGENT_ARG_CHIPS_PER_ROW = 2;
+
+function agentNodeHeight(argumentCount: number): number {
+  const rows = Math.ceil(Math.max(0, argumentCount) / AGENT_ARG_CHIPS_PER_ROW);
+  return AGENT_NODE_HEIGHT + rows * AGENT_ARG_CHIP_ROW_HEIGHT;
+}
 
 export const LANE = {
   rootX: 40,
@@ -200,6 +241,13 @@ export const LANE = {
   opSpacing: 140,
   contextHeight: 80,
   siblingYStep: 152,
+  /* Input ports of an embedded template session. They sit in their own row
+   * above the agent row so a port never competes with a node for a slot. */
+  templatePortWidth: 168,
+  templatePortHeight: 52,
+  templatePortSpacing: 196,
+  templatePortRowY: 148,
+  templateSessionAgentRowY: 224,
   /* Lane is laid out vertically as: header band → ctx row → agent row → bottom pad.
    * Y values below are RELATIVE positions inside the lane (origin = lane top-left). */
   planspaceLaneSpacing: 360,
@@ -238,6 +286,23 @@ export function templateGroupNodeId(instanceId: string): string {
 
 export function templateInstanceBoxNodeId(instanceId: string): string {
   return `tplbox:${instanceId}`;
+}
+
+/** Render id prefix for an embedded session's input ports. */
+const TEMPLATE_PORT_ID_PREFIX = "tplport:";
+
+/** Render id for one input port of an embedded template session.
+ *
+ * Prefixed so it can never collide with a real node id, which is what lets
+ * ports share the canvas's single id space without reaching the scheduler. */
+export function templatePortNodeId(portName: string): string {
+  return `${TEMPLATE_PORT_ID_PREFIX}${portName}`;
+}
+
+/** Inverse of {@link templatePortNodeId}; null for any non-port render id. */
+export function templatePortNameFromNodeId(nodeId: string): string | null {
+  if (!nodeId.startsWith(TEMPLATE_PORT_ID_PREFIX)) return null;
+  return nodeId.slice(TEMPLATE_PORT_ID_PREFIX.length) || null;
 }
 
 export function snapPlanspaceChildPosition(
@@ -615,6 +680,12 @@ export type BuildGraphArgs = {
   principles?: PrincipleEnumeration[];
   /** Native Agent Skills enumerated from GET /skills. */
   skills?: SkillEnumeration[];
+  /** Input ports of the template being edited, when this project is an
+   * embedded template session. Absent for every ordinary project, which is
+   * what keeps this addition invisible there. */
+  templatePorts?: TemplatePortRecord[];
+  /** Template argument names per node id, for the prompt-parameter chips. */
+  templateArgumentsByNodeId?: Record<string, string[]>;
   gitCommits?: CommitDescriptor[];
   gitHead?: string | null;
   gitDirtyCount?: number;
@@ -976,6 +1047,8 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
     collapsedTemplateInstanceIds = [],
     principles = [],
     skills = [],
+    templatePorts = [],
+    templateArgumentsByNodeId = {},
     gitCommits = [],
     gitHead = null,
     gitDirtyCount = 0,
@@ -1065,7 +1138,21 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
   const laneChildCount = new Map<string, number>();
   const laneColors = new Map<string, PlanspaceColor>();
   const nodeRelativePositions = new Map<string, { x: number; y: number }>();
+  const nodeRenderedHeights = new Map<string, number>();
   const branchSiblingCounts = new Map<string, number>();
+  const hasTemplatePortRow = (laneId: string): boolean =>
+    templatePorts.length > 0 && laneId === activePlanspaceId;
+  const agentRowY = (laneId: string): number =>
+    hasTemplatePortRow(laneId)
+      ? LANE.templateSessionAgentRowY
+      : LANE.planspaceLaneAgentRowY;
+  const tallestAgentHeight = Math.max(
+    AGENT_NODE_HEIGHT,
+    ...Object.values(templateArgumentsByNodeId).map((names) =>
+      agentNodeHeight(names.length),
+    ),
+  );
+  const branchStep = Math.max(LANE.siblingYStep, tallestAgentHeight + 20);
 
   const shaSet = new Set(gitCommits.map((commit) => commit.sha));
   const columnIndexes = new Map<string, number>();
@@ -1304,7 +1391,7 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
     const bottom = relY + height;
     const prev = laneChildMaxX.get(laneId) ?? LANE.planspaceLanePaddingX;
     if (right > prev) laneChildMaxX.set(laneId, right);
-    const prevBottom = laneChildMaxY.get(laneId) ?? LANE.planspaceLaneAgentRowY + LANE.agentHeight;
+    const prevBottom = laneChildMaxY.get(laneId) ?? agentRowY(laneId) + LANE.agentHeight;
     if (bottom > prevBottom) laneChildMaxY.set(laneId, bottom);
     laneChildCount.set(laneId, (laneChildCount.get(laneId) ?? 0) + 1);
   };
@@ -1333,7 +1420,7 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
       laneId,
       blockWidth + LANE.templateGroupPadding * 2 + LANE.templateGroupGap,
       undefined,
-      LANE.planspaceLaneAgentRowY,
+      agentRowY(laneId),
     );
     const shifted = { x: origin.x + LANE.templateGroupPadding, y: origin.y };
     instanceOrigins.set(cluster.instanceId, shifted);
@@ -1365,7 +1452,7 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
             laneId,
             LANE.agentSpacing,
             layoutHints[boxId],
-            LANE.planspaceLaneAgentRowY,
+            agentRowY(laneId),
           ),
         );
       }
@@ -1380,6 +1467,11 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
       planspaceIndex,
       planspaceColorOverrides,
     );
+    const templateArguments = templateArgumentsByNodeId[node.id];
+    const hasArgChips = (templateArguments?.length ?? 0) > 0;
+    const renderedAgentHeight = agentNodeHeight(templateArguments?.length ?? 0);
+    const agentExtentHeight = Math.max(LANE.agentHeight, renderedAgentHeight);
+    nodeRenderedHeights.set(node.id, renderedAgentHeight);
     if (planspaceId && planspaceColor) laneColors.set(planspaceId, planspaceColor);
     const placeInLane = (
       spacing: number,
@@ -1414,7 +1506,7 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
           stored.x,
           stored.y,
           LANE.agentWidth,
-          LANE.agentHeight,
+          agentExtentHeight,
         );
         nodeRelativePositions.set(node.id, stored);
         return stored;
@@ -1430,7 +1522,7 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
         position.x,
         position.y,
         LANE.agentWidth,
-        LANE.agentHeight,
+        agentExtentHeight,
       );
       nodeRelativePositions.set(node.id, position);
       return position;
@@ -1452,7 +1544,7 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
           stored.x,
           stored.y,
           LANE.agentWidth,
-          LANE.agentHeight,
+          agentExtentHeight,
         );
         nodeRelativePositions.set(node.id, stored);
         return stored;
@@ -1464,14 +1556,14 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
       branchSiblingCounts.set(key, siblingIndex + 1);
       const position = {
         x: anchorPosition.x,
-        y: anchorPosition.y + LANE.siblingYStep * (siblingIndex + 1),
+        y: anchorPosition.y + branchStep * (siblingIndex + 1),
       };
       recordChildExtent(
         planspaceId,
         position.x,
         position.y,
         LANE.agentWidth,
-        LANE.agentHeight,
+        agentExtentHeight,
       );
       nodeRelativePositions.set(node.id, position);
       return position;
@@ -1486,7 +1578,7 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
       if (node.state === "done") return;
       const parent = node.parent_node_id ? (nodeById.get(node.parent_node_id) ?? null) : null;
       const position = planspaceId
-        ? placeInLane(LANE.opSpacing, LANE.opWidth, LANE.opHeight, LANE.planspaceLaneAgentRowY)
+        ? placeInLane(LANE.opSpacing, LANE.opWidth, LANE.opHeight, agentRowY(planspaceId))
         : placeFree(LANE.opSpacing);
       rfNodes.push({
         id: node.id,
@@ -1521,8 +1613,8 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
             placeInLane(
               LANE.agentSpacing,
               LANE.agentWidth,
-              LANE.agentHeight,
-              LANE.planspaceLaneAgentRowY,
+              agentExtentHeight,
+              agentRowY(planspaceId),
             )
           )
         : placeFree(LANE.agentSpacing);
@@ -1531,7 +1623,9 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
         type: "agent",
         position,
         width: LANE.agentWidth,
-        height: AGENT_NODE_HEIGHT,
+        /* Kept in step with the chip row the card actually renders — layout
+         * reads this number, not the CSS box. */
+        height: renderedAgentHeight,
         data: {
           node,
           resumeParent,
@@ -1540,6 +1634,7 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
           isLastInLane,
           readyToPromote: isVirtualReady(node, nodeById),
           canCreateVirtual,
+          ...(hasArgChips ? { templateArguments } : {}),
         },
         draggable: true,
         ...(planspaceId
@@ -2087,7 +2182,7 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
           planspaceId,
           LANE.agentSpacing,
           layoutHints[boxId],
-          LANE.planspaceLaneAgentRowY,
+          agentRowY(planspaceId),
         );
       recordChildExtent(
         planspaceId,
@@ -2130,7 +2225,12 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
       ...memberBounds.map((position) => position.x + LANE.agentWidth),
     );
     const maxY = Math.max(
-      ...memberBounds.map((position) => position.y + AGENT_NODE_HEIGHT),
+      ...cluster.memberNodeIds.flatMap((id) => {
+        const position = nodeRelativePositions.get(id);
+        return position
+          ? [position.y + (nodeRenderedHeights.get(id) ?? AGENT_NODE_HEIGHT)]
+          : [];
+      }),
     );
     /* The frame is inset from its members and clamped to the lane's padding so
      * a member dragged to the lane edge cannot push the border out of bounds. */
@@ -2173,6 +2273,71 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
     });
   }
 
+  /* Input ports of an embedded template session. Emitted into the active lane
+   * only, and only when the caller supplies ports at all — an ordinary project
+   * passes none, so every rfNode and rfEdge below is skipped and the output is
+   * byte-identical to what it was before this existed.
+   *
+   * The port→node edge is built from the manifest's consumer lists, not from
+   * `scheduled_deps`: the backend cannot store an `in:<port>` literal there
+   * (it resolves every dep through `load_node`), so the manifest is the only
+   * place the edge exists. */
+  const portLaneId = activePlanspaceId;
+  if (templatePorts.length > 0 && portLaneId && planspaceOrder.includes(portLaneId)) {
+    let portCursorX = LANE.planspaceLanePaddingX;
+    for (const port of templatePorts) {
+      if (!port || typeof port.name !== "string" || !port.name) continue;
+      const portNodeId = templatePortNodeId(port.name);
+      const stored = layoutHints[portNodeId];
+      const position = stored ?? { x: portCursorX, y: LANE.templatePortRowY };
+      portCursorX = Math.max(
+        portCursorX,
+        position.x + LANE.templatePortSpacing,
+      );
+      /* Only consumers that are actually on the canvas: a port pointing at a
+       * deleted node must render as unreferenced rather than sprout a dangling
+       * edge. */
+      const consumerIds = (port.consumers ?? []).filter((id) =>
+        nodeById.has(id),
+      );
+      rfNodes.push({
+        id: portNodeId,
+        type: "templatePort",
+        position,
+        width: LANE.templatePortWidth,
+        height: LANE.templatePortHeight,
+        data: {
+          name: port.name,
+          description: port.description ?? "",
+          consumerIds,
+          unreferenced: consumerIds.length === 0,
+        },
+        draggable: true,
+        parentNode: `planspace:${portLaneId}`,
+        extent: PLANSPACE_CHILD_EXTENT,
+      });
+      recordChildExtent(
+        portLaneId,
+        position.x,
+        position.y,
+        LANE.templatePortWidth,
+        LANE.templatePortHeight,
+      );
+      for (const consumerId of consumerIds) {
+        pushRenderedEdge({
+          id: `port:${portNodeId}->${consumerId}`,
+          source: portNodeId,
+          target: consumerId,
+          type: "dependency",
+          data: {
+            childState: nodeById.get(consumerId)?.state,
+            overlapsContinue: false,
+          },
+        });
+      }
+    }
+  }
+
   /* Lane swimlanes. Constructed AFTER both the main child loop and the ctx
    * loop so the per-lane width includes the longest of (agent row, ctx row).
    * Spliced at the front because React Flow requires parents to come before
@@ -2187,7 +2352,7 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
       maxRight + LANE.planspaceLanePaddingX,
     );
     const maxBottom =
-      laneChildMaxY.get(planspaceId) ?? (LANE.planspaceLaneAgentRowY + LANE.agentHeight);
+      laneChildMaxY.get(planspaceId) ?? (agentRowY(planspaceId) + LANE.agentHeight);
     const height = Math.max(
       LANE.planspaceLaneMinHeight,
       maxBottom + LANE.planspaceLanePaddingY,

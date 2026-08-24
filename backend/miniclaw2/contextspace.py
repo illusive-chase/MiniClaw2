@@ -426,6 +426,20 @@ def describe_project_contextspace(
     active_planspace_id = active[1].id if active is not None else None
     all_bindings = list_project_bindings(root)
     bindings = [binding] if binding is not None else []
+    #: Only an embedded template session has these; every other project reports
+    #: an empty list, which is what keeps the canvas addition invisible there.
+    template_ports: list[dict[str, Any]] = []
+    if active_planspace_id:
+        try:
+            template_ports = read_template_ports(
+                project,
+                active_planspace_id,
+                store_root=store_root,
+            )
+        except ValueError:
+            # A corrupt or unreachable manifest must not make the whole
+            # contextspace summary unreadable — the lane still renders.
+            template_ports = []
     return {
         "root": str(root),
         "exists": root.exists(),
@@ -433,6 +447,7 @@ def describe_project_contextspace(
         "resolved_binding_id": binding.id if binding else None,
         "active_planspace_id": active_planspace_id,
         "planspace_view": project.planspace_view,
+        "template_ports": template_ports,
         "context_file": {
             "exists": (Path(project.root_path) / "CONTEXT.md").exists(),
         },
@@ -649,6 +664,134 @@ def remove_template_instance(
         raw.pop("template_instances", None)
     _write_yaml(manifest_path, raw)
     return True
+
+
+#: Port names accept the same shape as template arguments. Kept as a literal
+#: rather than imported from ``templates.loader``: that module imports this one,
+#: so the dependency only runs one way. Must stay byte-identical to
+#: ``loader.PARAM_NAME_RE`` — a divergence would only surface at commit time,
+#: when the rewritten template fails to load.
+_PORT_NAME_RE = re.compile(r"^[a-z][a-z0-9_]*$")
+
+
+def read_template_ports(
+    project: Project,
+    lane_id: str,
+    *,
+    store_root: Path | None = None,
+) -> list[dict[str, Any]]:
+    """Return the input ports an embedded template session declares.
+
+    Ports live on the planspace manifest rather than on ``domain.Node``: a port
+    is part of the template's signature, not a schedulable step, and nothing in
+    the runtime should be able to mistake one for a node.
+    """
+    manifest_path, raw = _project_planspace_manifest(
+        project,
+        lane_id,
+        store_root=store_root,
+    )
+    del manifest_path
+    return _coerce_template_ports(raw.get("template_ports"), lane_id)
+
+
+def write_template_ports(
+    project: Project,
+    lane_id: str,
+    ports: list[dict[str, Any]],
+    *,
+    store_root: Path | None = None,
+) -> None:
+    """Replace the input-port list on a project planspace manifest.
+
+    Whole-list replacement, not append: the embedded editor always holds the
+    complete signature, so a partial update would have no meaning.
+    """
+    manifest_path, raw = _project_planspace_manifest(
+        project,
+        lane_id,
+        store_root=store_root,
+    )
+    normalized = _normalize_template_ports(ports, lane_id)
+    if normalized:
+        raw["template_ports"] = normalized
+    else:
+        # Drop the key rather than leaving `[]`, matching
+        # `remove_template_instance` — an absent key and an empty list mean the
+        # same thing, and only one of them round-trips through YAML cleanly.
+        raw.pop("template_ports", None)
+    _write_yaml(manifest_path, raw)
+
+
+def _coerce_template_ports(
+    records: Any,
+    lane_id: str,
+) -> list[dict[str, Any]]:
+    if records is None:
+        return []
+    if not isinstance(records, list) or any(
+        not isinstance(record, dict) for record in records
+    ):
+        raise ValueError(f"invalid template ports in planspace: {lane_id}")
+    return [dict(record) for record in records]
+
+
+def _normalize_template_ports(
+    ports: list[dict[str, Any]],
+    lane_id: str,
+) -> list[dict[str, Any]]:
+    """Validate port shape by hand — an untyped manifest key gets no schema."""
+    if not isinstance(ports, list):
+        raise ValueError(f"invalid template ports in planspace: {lane_id}")
+    normalized: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for port in ports:
+        if not isinstance(port, dict):
+            raise ValueError(f"invalid template ports in planspace: {lane_id}")
+        name = port.get("name")
+        if not isinstance(name, str) or not _PORT_NAME_RE.match(name):
+            raise ValueError(f"invalid template port name: {name!r}")
+        if name in seen:
+            raise ValueError(f"duplicate template port: {name}")
+        seen.add(name)
+        description = port.get("description", "")
+        if description is None:
+            description = ""
+        if not isinstance(description, str):
+            raise ValueError(f"template port {name!r} description must be a string")
+        normalized.append(
+            {
+                "name": name,
+                "description": description,
+                "consumers": _normalize_port_consumers(name, port.get("consumers")),
+            }
+        )
+    return normalized
+
+
+def _normalize_port_consumers(name: str, raw: Any) -> list[str]:
+    """Node ids that depend on this port.
+
+    The edge lives here rather than in ``Node.scheduled_deps`` because
+    ``registry._normalize_virtual_scheduled_deps`` resolves every dep through
+    ``load_node`` and rejects what it cannot find — an ``in:<port>`` literal
+    resolves to nothing. Keeping the edge on the manifest is what lets a
+    definition's ``in:<port>`` dep survive the round trip.
+    """
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise ValueError(f"template port {name!r} consumers must be a list")
+    consumers: list[str] = []
+    for entry in raw:
+        if not isinstance(entry, str) or not entry.strip():
+            raise ValueError(
+                f"template port {name!r} consumers must be non-empty strings"
+            )
+        node_id = entry.strip()
+        if node_id not in consumers:
+            consumers.append(node_id)
+    return consumers
 
 
 def _project_planspace_manifest(

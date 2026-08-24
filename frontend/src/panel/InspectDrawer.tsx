@@ -156,7 +156,11 @@ function KVTable({
   className?: string;
 }) {
   return (
-    <dl className={"grid grid-cols-[140px_1fr] gap-x-3 gap-y-1 px-3 py-2 text-[11px] " + (className ?? "")}>
+    /* `minmax(0,1fr)`, not `1fr`: the `truncate` below caps the item but not
+       the track, whose bare-`1fr` auto floor still stretches to the value's
+       min-content width — so a long id would widen the drawer instead of
+       ellipsizing. */
+    <dl className={"grid grid-cols-[140px_minmax(0,1fr)] gap-x-3 gap-y-1 px-3 py-2 text-[11px] " + (className ?? "")}>
       {rows.map(([k, v]) => (
         <div key={k} className="contents">
           <dt className="text-ink-subtle">{k}</dt>

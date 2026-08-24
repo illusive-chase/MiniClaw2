@@ -34,6 +34,7 @@ function AgentNodeImpl({ data, selected }: NodeProps<AgentNodeData>) {
     planspaceColor,
     readyToPromote,
     canCreateVirtual,
+    templateArguments,
   } = data;
   const hoveredByGroup = useNodeInHoverGroup(node.id);
   /* While a wire is being pulled, every tile that could receive it says so.
@@ -294,6 +295,24 @@ function AgentNodeImpl({ data, selected }: NodeProps<AgentNodeData>) {
           {node.id.slice(0, 6)}
         </span>
       </div>
+
+      {/* Template argument chips. Only an embedded template session supplies
+       * these; every ordinary project leaves the row out entirely. The rfNode
+       * height in `layout.ts` grows with every two-chip row — the two must stay
+       * in step or lane fitting reads a stale height. */}
+      {templateArguments && templateArguments.length > 0 ? (
+        <div className="flex flex-wrap gap-1 px-3.5 pt-1.5">
+          {templateArguments.map((name) => (
+            <span
+              key={name}
+              className="w-24 min-w-0 truncate rounded border border-brand/40 bg-brand-soft px-1 py-0.5 font-mono text-[8.5px] text-brand"
+              title={`模板参数 {{${name}}}`}
+            >
+              {`{{${name}}}`}
+            </span>
+          ))}
+        </div>
+      ) : null}
 
       {/* body — prompt preview */}
       <div className="line-clamp-3 px-3.5 pt-1.5 text-[12.5px] leading-[1.38] text-ink-strong">

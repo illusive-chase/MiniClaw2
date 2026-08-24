@@ -79,6 +79,9 @@ import {
   templateInstanceFetchScope,
   templateNeedsInstantiateDialog,
 } from "./templateInstantiate";
+/* The canvas and the template loader must agree on what a placeholder is, so the
+ * argument chips reuse the editor's scanner rather than re-deriving the rule. */
+import { scanPlaceholders } from "./templateEditor";
 import { ProjectsLanding } from "./components/ProjectsLanding";
 import { NotificationBell } from "./components/NotificationBell";
 import { NoticeBannerRail } from "./components/NoticeBannerRail";
@@ -108,6 +111,7 @@ import type {
   Tag,
   WorkspaceEvent,
 } from "./types";
+import { EMBEDDED_SESSION_PREFIX } from "./types";
 import { useSessionSocket } from "./ws";
 import { useActiveNodes, useReadKeys } from "./activeNodes";
 import { useNotices } from "./notices";
@@ -127,7 +131,20 @@ import {
   ScheduledDepsUpdateQueue,
 } from "./canvas/dependencyWiring";
 
-type Route = "landing" | "project";
+/** Top-level surfaces. `template` is the template editor, which used to be a
+ * `fixed inset-0` overlay stacked on top of `project`.
+ *
+ * It is a sibling of `project` rather than a replacement for it: the project
+ * session stays loaded underneath, exactly as it did while the overlay was up.
+ * That is what {@link isSessionRoute} preserves — anything gated on "a session
+ * is open" must treat `template` like `project`, or opening the editor would
+ * silently drop the socket and every in-flight node refresh. */
+type Route = "landing" | "project" | "template";
+
+/** True on any route that has a live project session behind it. */
+function isSessionRoute(route: Route): boolean {
+  return route !== "landing";
+}
 type PendingGateState = {
   request: InteractionRequest;
   nodeId: string;
@@ -714,6 +731,24 @@ export function App() {
    * lane visibility changes. */
   const hiddenPlanspaceIdsRef = useRef<string[]>([]);
 
+  /* Opening and closing the template editor is a route change, not just a state
+   * flip. The ref is written before setRoute for the same reason openProject
+   * does it: async callbacks already in flight read the ref, not the state. */
+  const openTemplateEditor = useCallback((slug: string) => {
+    setEditingTemplateSlug(slug);
+    currentRouteRef.current = "template";
+    setRoute("template");
+  }, []);
+
+  const closeTemplateEditor = useCallback(() => {
+    setEditingTemplateSlug(null);
+    /* Back to the project underneath: the editor is stacked on it, never a
+     * replacement for it. Landing is the fallback when no session is open. */
+    const next: Route = currentSessionIdRef.current ? "project" : "landing";
+    currentRouteRef.current = next;
+    setRoute(next);
+  }, []);
+
   const centerOnNode = useCallback((nodeId: string) => {
     setCenterOnNodeRequest((current) => ({
       nodeId,
@@ -807,6 +842,10 @@ export function App() {
     currentRouteRef.current = "landing";
     currentSessionIdRef.current = null;
     resetAllSessionState();
+    /* The editor slug is session-independent library state, so
+     * resetAllSessionState leaves it alone — but landing has no editor route to
+     * return to, and a stale slug would reopen it on the next project. */
+    setEditingTemplateSlug(null);
     /* Abandon any jump in flight. Left set, it would fire the next time the
      * user opened that project on their own and select a node they never
      * asked for. */
@@ -928,7 +967,10 @@ export function App() {
     try {
       const next = await listNodes(sessionId);
       if (seq !== refreshNodesSeqRef.current) return;
-      if (currentRouteRef.current !== "project" || currentSessionIdRef.current !== sessionId) {
+      if (
+        !isSessionRoute(currentRouteRef.current) ||
+        currentSessionIdRef.current !== sessionId
+      ) {
         return;
       }
       const nextById = new Map(next.map((node) => [node.id, node]));
@@ -1037,6 +1079,37 @@ export function App() {
       session?.id ? collapsedTemplateInstancesBySession[session.id] ?? [] : [],
     [collapsedTemplateInstancesBySession, session?.id],
   );
+
+  /* An embedded template session, identified by the ports its active lane
+   * declares. Everything below degrades to empty for an ordinary project. */
+  const templatePorts = useMemo(
+    () => sessionContextSpace?.template_ports ?? [],
+    [sessionContextSpace?.template_ports],
+  );
+  /* The backend marks an embedded editing session with an `embedded:` prefix;
+   * a bundled template test run carries a bare template name. A port-less
+   * template is still an editing session, so the marker — not the port list —
+   * is what decides whether this project shows template affordances. */
+  const isEmbeddedTemplateSession =
+    session?.template_id?.startsWith(EMBEDDED_SESSION_PREFIX) ?? false;
+
+  /* Argument chips come from scanning the prompt each node actually holds, not
+   * from the template's declared argument list: an embedded session keeps its
+   * `{{placeholder}}` text unrendered, and a placeholder typed into the session
+   * is a new argument the moment it appears. Reuses the editor's scanner so the
+   * canvas and the template loader agree on what counts as a placeholder. */
+  const templateArgumentsByNodeId = useMemo(() => {
+    if (!isEmbeddedTemplateSession) return {};
+    const out: Record<string, string[]> = {};
+    for (const node of nodes) {
+      if (node.kind !== "agent") continue;
+      const text = node.prompt_draft || node.prompt || "";
+      if (!text.includes("{{")) continue;
+      const { argumentNames } = scanPlaceholders(text);
+      if (argumentNames.length > 0) out[node.id] = argumentNames;
+    }
+    return out;
+  }, [nodes, isEmbeddedTemplateSession]);
 
   const toggleTemplateInstanceCollapsed = useCallback(
     (instanceId: string, collapsed: boolean) => {
@@ -2328,7 +2401,7 @@ export function App() {
   );
 
   const { status, send } = useSessionSocket(
-    route === "project" ? (session?.id ?? null) : null,
+    isSessionRoute(route) ? (session?.id ?? null) : null,
     handleEvent,
     socketReplayNodeIds,
     /* `context_refresh_updated` is ephemeral (seq 0, never persisted, never
@@ -2742,6 +2815,22 @@ export function App() {
     [readOnly, session?.id],
   );
 
+  /* The template editor is its own route rather than an overlay on `project`.
+   * Placed as an early return ahead of both other branches, and deliberately
+   * before `landing`: the project session it was opened from stays loaded (the
+   * socket and node refreshes are gated on `isSessionRoute`), so returning goes
+   * straight back to the graph. A missing slug degrades to the normal routes
+   * rather than rendering an empty shell. */
+  if (route === "template" && editingTemplateSlug) {
+    return (
+      <TemplateEditor
+        slug={editingTemplateSlug}
+        onClose={closeTemplateEditor}
+        onSaved={() => setLibraryRefreshToken((v) => v + 1)}
+      />
+    );
+  }
+
   if (route === "landing") {
     return (
       <div className="flex h-screen flex-col bg-surface text-ink">
@@ -3103,6 +3192,8 @@ export function App() {
               canCreateVirtual={!virtualCreateDisabled}
               templateInstances={templateInstances}
               collapsedTemplateInstanceIds={collapsedTemplateInstanceIds}
+              templatePorts={templatePorts}
+              templateArgumentsByNodeId={templateArgumentsByNodeId}
               nodePositionTarget={nodePositionTarget}
               centerOnNodeRequest={centerOnNodeRequest}
               onNodePositionTargetApplied={(nodeId) => {
@@ -3243,7 +3334,7 @@ export function App() {
                 onDeletePrinciple={handleDeletePrinciple}
                 onDeleteSkill={handleDeleteSkill}
                 onOpenFull={openLibraryEntry}
-                onEditTemplate={setEditingTemplateSlug}
+                onEditTemplate={openTemplateEditor}
                 onApplyTemplate={
                   readOnly ? undefined : (slug) => void onTemplateDrop(slug, null)
                 }
@@ -3387,13 +3478,8 @@ export function App() {
       onSavedAndEdit={(slug) => {
         setSaveTemplateOpen(false);
         setLibraryRefreshToken((v) => v + 1);
-        setEditingTemplateSlug(slug);
+        openTemplateEditor(slug);
       }}
-    />
-    <TemplateEditor
-      slug={editingTemplateSlug}
-      onClose={() => setEditingTemplateSlug(null)}
-      onSaved={() => setLibraryRefreshToken((v) => v + 1)}
     />
     <InstantiateTemplateModal
       open={instantiateTarget !== null}

@@ -299,7 +299,9 @@ export function AgentPanel({
                 </span>
               )}
             </div>
-            <h2 className="mt-1.5 line-clamp-2 font-display text-[15px] font-semibold leading-snug text-ink-strong">
+            {/* `break-words` so a headline whose first word is a long path
+                wraps within the clamp instead of being cut mid-token. */}
+            <h2 className="mt-1.5 line-clamp-2 break-words font-display text-[15px] font-semibold leading-snug text-ink-strong">
               {headline}
             </h2>
           </div>
@@ -1296,7 +1298,12 @@ const EditableVirtualNodeBody = forwardRef<VirtualNodeBodyHandle, VirtualNodeBod
                         }
                         className="mt-0.5"
                       />
-                      <span className="min-w-0">
+                      {/* `min-w-0` lets the flex item shrink below its
+                          min-content width; `break-words` is what then wraps
+                          an unbreakable token (a path, a slug) inside that
+                          reduced width. Without the pair, a dependency
+                          summary would force this list to scroll sideways. */}
+                      <span className="min-w-0 break-words">
                         <span className="font-mono text-ink-muted">
                           {candidate.id.slice(0, 8)}
                         </span>
@@ -1432,7 +1439,10 @@ function VerifierVirtualBody({
                   className="rounded-md border border-line bg-surface px-3 py-2 text-[11.5px]"
                 >
                   <span className="font-mono text-ink-muted">{dep.id.slice(0, 8)}</span>
-                  <span className="ml-2 text-ink">
+                  {/* A dependency summary is agent-authored and often cites a
+                      path or slug with no break opportunity; without
+                      `break-words` it overflows this card. */}
+                  <span className="ml-2 break-words text-ink">
                     {oneLine(dep.summary || dep.prompt_draft || dep.prompt || dep.state).slice(0, 120)}
                   </span>
                 </div>
@@ -2143,7 +2153,14 @@ function PreviewCard({
       </div>
       <div className="p-2.5">
         {fields ? (
-          <dl className="grid gap-2">
+          /* An implicit column is sized `auto`, whose floor is the widest
+             unbreakable token in the field text — agents routinely cite full
+             paths like `.miniclaw2/graph/runs/<id>/lanes/<lane>/preview.json`,
+             which is far wider than the 380px panel. Pinning the single track
+             to `minmax(0,1fr)` caps it at the card so `break-words` below can
+             actually wrap those tokens instead of overflowing into the card's
+             `overflow-hidden`. */
+          <dl className="grid grid-cols-[minmax(0,1fr)] gap-2">
             <PreviewField
               label="运行原因"
               value={fields.motivation}
@@ -2565,7 +2582,13 @@ function KVGrid({
   className?: string;
 }) {
   return (
-    <dl className={"grid grid-cols-[120px_1fr] gap-x-3 gap-y-1.5 text-[11.5px] " + (className ?? "")}>
+    /* `minmax(0,1fr)`, not `1fr`: a bare `1fr` is `minmax(auto,1fr)`, whose
+       auto floor is the value's min-content width. Values here are single
+       unbreakable tokens (node ids, planspace ids, model slugs) wider than
+       the 380px panel, so the track would outgrow the card and the card's
+       `overflow-hidden` would clip it. `break-words` alone cannot rescue
+       that — it wraps visually without lowering min-content. */
+    <dl className={"grid grid-cols-[120px_minmax(0,1fr)] gap-x-3 gap-y-1.5 text-[11.5px] " + (className ?? "")}>
       {rows.map(([k, v]) => (
         <div key={k} className="contents">
           <dt className="text-ink-subtle">{k}</dt>

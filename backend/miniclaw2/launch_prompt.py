@@ -28,6 +28,7 @@ _CATEGORY_PLANNING = "category_planning.md"
 _CATEGORY_AGENTIC_REVIEW = "category_agentic_review.md"
 _CATEGORY_HUMAN_INTERACT_REVIEW = "category_human_interact_review.md"
 _ANTI_SELF_POISONING = "anti_self_poisoning.md"
+_SHARED_HOST_PROCESSES = "shared_host_processes.md"
 _PRINCIPLE_INIT = "principle_init.md"
 _LIBRARY_INIT = "library_init.md"
 _QA_MODE = "qa_mode.md"
@@ -254,6 +255,18 @@ def build_qa_mode_block(node: Node) -> str:
     if node.kind is not NodeKind.AGENT or not node.qa_mode:
         return ""
     return _load_template(_QA_MODE).strip()
+
+
+def shared_host_processes_block() -> str:
+    """Return the guidance protecting co-resident processes from broad kills.
+
+    Agents run with permissions bypassed on the same host as the human's
+    own MiniClaw2 dev server. A pattern kill (`pkill -f vite`) matches
+    that server too, taking :5173 down mid-session while the backend
+    stays up — so the failure reads as a frontend bug rather than as
+    something an agent did.
+    """
+    return _load_template(_SHARED_HOST_PROCESSES).strip()
 
 
 def anti_self_poisoning_block() -> str:

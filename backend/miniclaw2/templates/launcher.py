@@ -6,12 +6,14 @@ import re
 import shutil
 import time
 from pathlib import Path
+from typing import Any
 from uuid import uuid4
 
 from ..contextspace import (
     append_template_instance,
     create_planspace,
     read_template_instances,
+    write_template_ports,
 )
 from ..domain import Node, NodeKind, NodeState, Project
 from ..materialize import GRAPH_RUNS_DIRNAME
@@ -130,6 +132,143 @@ def apply_user_template(
     )
 
 
+#: ``Project.template_id`` prefix marking an embedded editing session.
+#: ``launch_template`` stores a bare template name for its bundled test runs,
+#: and every bundled template's display name equals its directory name — so a
+#: bare slug comparison cannot tell a test run from an editing session. The
+#: prefix makes the distinction structural instead of coincidental.
+#:
+#: Mirrored by ``EMBEDDED_SESSION_PREFIX`` in ``frontend/src/types.ts``, which
+#: reads the same field to decide whether to show template affordances;
+#: ``test_embedded_session`` asserts the two stay identical.
+EMBEDDED_SESSION_PREFIX = "embedded:"
+
+
+def embedded_session_template_id(slug: str) -> str:
+    """The ``Project.template_id`` an embedded session for ``slug`` carries."""
+    return f"{EMBEDDED_SESSION_PREFIX}{slug}"
+
+
+def embedded_session_slug(template_id: str | None) -> str | None:
+    """Inverse of :func:`embedded_session_template_id`; ``None`` if unrelated."""
+    if not template_id or not template_id.startswith(EMBEDDED_SESSION_PREFIX):
+        return None
+    return template_id[len(EMBEDDED_SESSION_PREFIX) :] or None
+
+
+def materialize_embedded_session(
+    template: Template,
+    registry: ProjectRegistry,
+) -> tuple[Project, str]:
+    """Open ``template`` as a real, editable project — its embedded session.
+
+    Returns ``(project, planspace_id)``. The project is ``temporary=True``, so
+    it stays out of sync, records no host head, cannot be rebound, and has its
+    workspace cleaned up on delete.
+
+    Unlike :func:`launch_template` this stamps the *definition*, not an
+    instance of it: prompts keep their ``{{placeholder}}`` text and the input
+    ports go to the planspace manifest instead of being bound to nodes. That
+    asymmetry is the whole point — ``_render_prompt`` is one-way, so a rendered
+    stamp can never be serialized back into a template without silently losing
+    every argument and port.
+
+    The accepted cost: running a node in this session hands the agent the
+    literal ``{{focus}}`` text, because nothing has filled the arguments in.
+    The session is for authoring, and an unfilled definition is what authoring
+    operates on.
+    """
+    if any(node.kind is not NodeKind.AGENT for node in template.nodes):
+        raise TemplateError("embedded sessions support agent-only templates")
+
+    # Tagged with the `embedded:` prefix rather than a bare name: bundled test
+    # runs write `template.name`, and every bundled template's display name is
+    # also its slug, so a bare value could not tell the two apart.
+    project = registry.create_project(
+        cwd=None,
+        model_preset_id=None,
+        auto_commit=template.auto_commit or None,
+        permission_mode=template.permission_mode,
+        temporary=True,
+        template_id=embedded_session_template_id(template.slug),
+    )
+
+    try:
+        _seed_workspace(template, Path(project.root_path))
+        planspace_id = create_planspace(
+            project,
+            title=f"Template: {template.name}",
+            mode=template.lane_mode,
+            store_root=registry.store.root,
+            seed_text=template.brief,
+        )
+        project.active_planspace_id = planspace_id
+        registry.store.update_project(project)
+
+        stamped = _stamp_lane(
+            template,
+            project,
+            None,
+            planspace_id,
+            registry,
+            anchor_node_id=None,
+            render=False,
+        )
+        write_template_ports(
+            project,
+            planspace_id,
+            _port_records_for(template, stamped),
+            store_root=registry.store.root,
+        )
+    except Exception:
+        registry.delete_project(project.id)
+        raise
+
+    return project, planspace_id
+
+
+def _port_records_for(
+    template: Template,
+    stamped: list[Node],
+) -> list[dict[str, Any]]:
+    """Build manifest port records, mapping each port's consumers to node ids.
+
+    ``_stamp_lane`` returns its nodes in ``template.nodes`` order, which is the
+    only bridge back from a generated node id to the slug it came from.
+    """
+    if len(stamped) != len(template.nodes):
+        raise TemplateError("stamped node count does not match the template")
+    node_id_by_slug = {
+        spec.id: node.id for spec, node in zip(template.nodes, stamped)
+    }
+    consumers_by_port: dict[str, list[str]] = {
+        template_input.name: [] for template_input in template.inputs
+    }
+    for spec in template.nodes:
+        node_id = node_id_by_slug.get(spec.id)
+        if node_id is None:
+            continue
+        for port in spec.input_deps:
+            # A dep naming an undeclared port is possible in a hand-edited
+            # template; carry it so the round trip does not drop the edge.
+            consumers_by_port.setdefault(port, []).append(node_id)
+    declared = {template_input.name for template_input in template.inputs}
+    records = [
+        {
+            "name": template_input.name,
+            "description": template_input.description,
+            "consumers": consumers_by_port.get(template_input.name, []),
+        }
+        for template_input in template.inputs
+    ]
+    records.extend(
+        {"name": port, "description": "", "consumers": consumers}
+        for port, consumers in consumers_by_port.items()
+        if port not in declared
+    )
+    return records
+
+
 def _stamp_lane(
     template: Template,
     project: Project,
@@ -140,21 +279,38 @@ def _stamp_lane(
     anchor_node_id: str | None,
     arguments: dict[str, str] | None = None,
     input_bindings: dict[str, str] | None = None,
+    render: bool = True,
 ) -> list[Node]:
     """Stamp every node of ``template`` as a virtual in ``planspace_id``.
 
     ``fallback_model_preset_id`` applies only to agent nodes that declare no
     model of their own; ``None`` means "use the target project's preset".
+
+    ``render=False`` stamps the *definition itself* rather than an instance of
+    it: prompts keep their ``{{placeholder}}`` text and ``in:<port>`` deps are
+    left out of the graph. That is what an embedded editing session needs —
+    rendering is one-way (see ``_render_prompt``), so a rendered stamp cannot
+    be serialized back into a template without losing every argument and port.
+    Callers that pass ``render=False`` own persisting the ports themselves
+    (``contextspace.write_template_ports``).
     """
     fallback_model_preset_id = fallback_model_preset_id or project.model_preset_id
-    resolved_arguments = _resolve_arguments(template, arguments or {})
-    resolved_inputs = _validate_input_bindings(
-        template,
-        project,
-        planspace_id,
-        registry,
-        input_bindings or {},
-    )
+    if render:
+        resolved_arguments = _resolve_arguments(template, arguments or {})
+        resolved_inputs = _validate_input_bindings(
+            template,
+            project,
+            planspace_id,
+            registry,
+            input_bindings or {},
+        )
+    else:
+        if arguments or input_bindings:
+            raise TemplateError(
+                "an unrendered stamp takes no arguments or input bindings"
+            )
+        resolved_arguments = {}
+        resolved_inputs = {}
     existing_instances = read_template_instances(
         project,
         planspace_id,
@@ -213,7 +369,7 @@ def _stamp_lane(
                 str(spec.script_ref) if spec.kind is NodeKind.VERIFIER and spec.script_ref else None
             ),
         )
-        if spec.kind is NodeKind.AGENT:
+        if spec.kind is NodeKind.AGENT and render:
             lane_path = f"{GRAPH_RUNS_DIRNAME}/{node.id}/lanes/{planspace_id}"
             node.prompt_draft = _render_prompt(
                 spec.prompt,
@@ -226,7 +382,12 @@ def _stamp_lane(
 
     for spec, node in pending:
         translated = [slug_to_node_id[dep] for dep in spec.internal_deps]
-        translated.extend(resolved_inputs[port] for port in spec.input_deps)
+        if render:
+            translated.extend(resolved_inputs[port] for port in spec.input_deps)
+        # An unrendered stamp keeps ports out of the graph entirely: the
+        # registry resolves every scheduled_dep through `load_node`, and an
+        # `in:<port>` literal resolves to nothing. The port edge is carried on
+        # the planspace manifest instead.
         if not template.inputs and anchor_node_id and not translated:
             translated = [anchor_node_id]
         node.scheduled_deps = translated
@@ -254,7 +415,7 @@ def _stamp_lane(
 
     created: list[Node] = []
     try:
-        for _, node in pending:
+        for spec, node in pending:
             if node.kind is NodeKind.AGENT:
                 stamped = registry.create_virtual(
                     project.id,
@@ -273,6 +434,11 @@ def _stamp_lane(
                     _allow_nonterminal_resume=True,
                     _proposed_by=node.proposed_by or f"template:{template.name}",
                     _template_instance_id=instance_id,
+                    _template_source_node_id=spec.id if not render else None,
+                    _template_source_model_preset_id=(
+                        spec.model_preset_id if not render else None
+                    ),
+                    _template_source_motivation=(spec.summary if not render else None),
                     _defer_auto_promotion=True,
                     _created_at=node.created_at,
                 )
