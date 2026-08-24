@@ -42,6 +42,7 @@ from .events import (
     ReplayRequest,
     UserMessage,
 )
+from .file_manager import RevealError, RevealUnsupportedError, reveal_directory
 from .git_state import commit_graph, node_diff
 from .global_config import (
     CodeReviewSettings,
@@ -193,6 +194,9 @@ class SessionInfo(BaseModel):
     read_only: bool = False
     can_delete: bool = True
     can_bind_here: bool = False
+    # Empty unless this host has a local binding: an unbound project's
+    # `root_path` is a sentinel, not a directory anyone could open.
+    root_path: str = ""
     hosts: list[dict[str, Any]] = Field(default_factory=list)
     last_sync_at: float | None = None
     project_context_binding_id: str | None = None
@@ -1087,6 +1091,28 @@ def create_app(
         if project is None:
             raise HTTPException(404, "session not found")
         return _session_info(registry, project)
+
+    @app.post("/sessions/{sid}/reveal", response_model=dict[str, Any])
+    def reveal_session_root(sid: str) -> dict[str, Any]:
+        """Open the project directory in this machine's file manager.
+
+        Deliberately not gated on ``read_only``: a read-only store still lets
+        the human look at the tree, and a store-level write lock has nothing to
+        do with whether a folder may be opened. What it *is* gated on is a local
+        binding, because without one there is no directory on this machine.
+        """
+        project = registry.get_project(sid)
+        if project is None:
+            raise HTTPException(404, "session not found")
+        if not registry.is_native_project(project):
+            raise HTTPException(409, "此设备尚未配置项目路径")
+        try:
+            reveal_directory(project.root_path)
+        except RevealUnsupportedError as exc:
+            raise HTTPException(501, str(exc)) from exc
+        except RevealError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        return {"root_path": project.root_path}
 
     @app.get("/sessions/{sid}/git", response_model=dict[str, Any])
     def get_git_state(sid: str) -> dict[str, Any]:
@@ -2338,6 +2364,7 @@ def _session_info(registry: ProjectRegistry, project: Any) -> SessionInfo:
             and not project.temporary
             and registry.store.read_only_reason is None
         ),
+        root_path=project.root_path if bound_here else "",
         hosts=registry.store.list_hosts(project.id),
         last_sync_at=registry.store.sync.identity.last_sync_at,
         project_context_binding_id=project.project_context_binding_id,

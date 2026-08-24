@@ -222,6 +222,8 @@ export type SessionInfo = {
   read_only: boolean;
   can_delete: boolean;
   can_bind_here: boolean;
+  /** Absolute project directory on this device, or "" when unbound here. */
+  root_path?: string;
   hosts: SessionHost[];
   last_sync_at?: number | null;
   project_context_binding_id?: string | null;

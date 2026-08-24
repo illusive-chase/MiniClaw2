@@ -70,9 +70,10 @@ export const TimelineEdge = memo(TimelineEdgeImpl);
 
 /* Width of the invisible strip along a dependency edge that accepts a click.
  *
- * React Flow defaults to 20px and puts `nopan` on every edge, so this strip is
- * also where right-drag stops panning. 10px still beats a 1.7px stroke as a
- * target while halving that cost. */
+ * React Flow defaults to 20px, which is a wide band to hand an arrow whose only
+ * gesture is "withdraw me". 10px still beats a 1.7px stroke as a target while
+ * keeping the strip from shadowing the tiles it runs between. Only edges
+ * `resolveInteractiveDependencyEdges` arms get a hit area at all. */
 const DEPENDENCY_INTERACTION_WIDTH = 10;
 
 /** Primary DAG arrow — template/planning dependency from scheduled_deps. */
@@ -132,15 +133,10 @@ function DependencyEdgeImpl(props: EdgeProps<EdgeData>) {
 
 /* The withdraw affordance for one dependency edge.
  *
- * Two things it must not do. It must not carry `nopan`, and it must not swallow
- * a non-primary mousedown: right-drag is this canvas's main pan gesture and it
- * reaches d3-zoom by bubbling, so either one would turn this button into another
- * patch where panning dies.
- *
- * Note this control is genuinely free of `nopan`, unlike the edge it belongs to.
- * EdgeLabelRenderer portals it into a container outside the edge's own <g>, so
- * the class React Flow puts on every edge is not an ancestor of it — the pan
- * filter's `closest('.nopan')` finds nothing here.
+ * It must not swallow a non-primary mousedown: right-drag is this canvas's main
+ * pan gesture, and the canvas reads that press from the wrapper in the capture
+ * phase (`rightDragPan.ts`), so stopping it here would turn this small button
+ * into a spot where panning dies.
  *
  * `pointer-events: auto` is required — EdgeLabelRenderer's container sets
  * `pointer-events: none`, so without it the control paints but cannot be

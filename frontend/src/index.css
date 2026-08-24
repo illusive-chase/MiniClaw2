@@ -198,19 +198,20 @@ body {
   pointer-events: none;
 }
 
-/* Dependency edges are the exception: clicking one offers to withdraw it, so
- * they need React Flow's hit area back. `visibleStroke` is what makes the
- * transparent interaction path count — it tests the stroke region without
- * asking whether it was painted.
+/* An arrow claims its hit ribbon only while clicking it would actually do
+ * something: a dependency whose endpoint is selected and which is still
+ * withdrawable. `resolveInteractiveDependencyEdges` decides that per render and
+ * stamps this class; every other arrow stays inert above.
  *
- * This costs a thin ribbon along each dependency edge where right-drag does not
- * pan: React Flow puts `nopan` on every edge unconditionally, and its d3-zoom
- * filter refuses to pan whenever the pressed element sits inside one. The
- * ribbon is narrowed to DEPENDENCY_INTERACTION_WIDTH rather than the default
- * 20px, and it is the same kind of dead area every node tile already is — tiles
- * carry `nopan` too, and are far larger targets. Withdrawing a dependency has
- * to be reachable from the edge itself, so this is the price. */
-.react-flow .react-flow__edge-dependency {
+ * `visibleStroke` is what makes the transparent interaction path count — it
+ * tests the stroke region without asking whether it was painted.
+ *
+ * React Flow puts `nopan` on every edge unconditionally and its d3-zoom filter
+ * refuses to pan from inside one, so an armed ribbon would be a strip where
+ * right-drag dies. It is not: `rightDragPan.ts` runs those presses itself, so the
+ * ribbon claims the left-click that withdraws the dependency while right-drag
+ * passes straight through it. */
+.react-flow .react-flow__edge-dependency.edge-interactive {
   pointer-events: visibleStroke;
 }
 

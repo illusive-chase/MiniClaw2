@@ -370,10 +370,9 @@ function AgentNodeImpl({ data, selected }: NodeProps<AgentNodeData>) {
         * drops React Flow's `connectionindicator` class — the class that would
         * otherwise give a handle `pointer-events: all` and a crosshair cursor.
         *
-        * Keeping them inert is what removes the six right-drag dead patches
-        * these used to punch through each tile: React Flow puts `nopan` on
-        * every handle unconditionally, and this canvas pans on right-drag, so a
-        * pointer-reachable handle is also a spot where panning dies.
+        * Keeping them inert also keeps them out of the hit-testing that runs on
+        * every pointer move over a tile, and out of the drop-surface walk that
+        * resolves a released wire.
         *
         * The id-less left/right pair must stay FIRST: React Flow resolves an
         * edge with no handle id to index 0 of the matching bounds array, which

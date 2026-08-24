@@ -83,9 +83,16 @@ import { setLaneAppendResolver } from "./lanePlacement";
 import {
   decorateEdges,
   resolveHoverGroup,
+  resolveInteractiveDependencyEdges,
   type EdgeDisconnectDecoration,
 } from "./edgeVisibility";
 import { decoratePendingGateLayers } from "./nodeLayers";
+import {
+  isRightDragPan,
+  panViewportBy,
+  shouldPanThroughRightDrag,
+  type RightDragHit,
+} from "./rightDragPan";
 
 const NODE_TYPES = {
   agent: AgentNode,
@@ -947,17 +954,67 @@ function CanvasInner({
     );
   }, [selectedNodeId, setRfNodes]);
 
+  /* Which rendered nodes are selected right now, as a value that only changes
+   * when the selection does. Derived from `rfNodes` because React Flow owns
+   * selection there; a dragged tile rewrites that array on every frame, so the
+   * key is what keeps the memos below from recomputing mid-drag. */
+  const selectedRenderKey = useMemo(
+    () =>
+      (rfNodes as RFNode[])
+        .filter((node) => node.selected)
+        .map((node) => node.id)
+        .sort()
+        .join("|"),
+    [rfNodes],
+  );
+  const selectedRenderIds = useMemo(
+    () => new Set(selectedRenderKey ? selectedRenderKey.split("|") : []),
+    [selectedRenderKey],
+  );
+
+  /* Arrows that may claim a pointer hit this render. Everything else is left
+   * inert so right-drag panning is not interrupted by a strip of dead canvas
+   * along an arrow nothing can act on — see `resolveInteractiveDependencyEdges`
+   * and the `edge-interactive` rule in `index.css`. */
+  const interactiveEdgeIds = useMemo(
+    () =>
+      resolveInteractiveDependencyEdges({
+        edges: built.rfEdges,
+        selectedRenderIds,
+        resolveConnectableNodeId,
+        canWithdraw: (sourceId, targetId) =>
+          canDisconnectDependency(sourceId, targetId, nodesByIdRef.current) &&
+          canMutateNode(targetId),
+        keepEdgeId: disconnectTarget?.edgeId ?? null,
+      }),
+    [
+      built.rfEdges,
+      selectedRenderIds,
+      resolveConnectableNodeId,
+      canMutateNode,
+      nodes,
+      disconnectTarget?.edgeId,
+    ],
+  );
+
   /* Edges depend on hover (the `loads` lane fades in only for the hovered or
    * selected node), so they get a separate effect. */
   useEffect(() => {
     setRfEdges(
-      decorateEdges(built.rfEdges, selectedNodeId, hoverGroup, edgeDisconnect),
+      decorateEdges(
+        built.rfEdges,
+        selectedNodeId,
+        hoverGroup,
+        edgeDisconnect,
+        interactiveEdgeIds,
+      ),
     );
   }, [
     built.rfEdges,
     selectedNodeId,
     hoverGroup,
     edgeDisconnect,
+    interactiveEdgeIds,
     setRfEdges,
   ]);
 
@@ -1020,6 +1077,130 @@ function CanvasInner({
     },
     [scheduleFlushLayout],
   );
+
+  /* Right-drag panning over tiles and arrows.
+   *
+   * React Flow refuses to pan from anything carrying `nopan`, which it stamps on
+   * every node wrapper and every edge — so without this, a right-drag that
+   * begins on a tile does nothing at all. The canvas runs those presses itself,
+   * over the same viewport plumbing ctrl+wheel zoom already uses. See
+   * `rightDragPan.ts` for which presses qualify.
+   *
+   * Capture phase on the wrapper: node tiles call `stopPropagation` on mousedown
+   * to protect their own controls, so a bubble-phase listener would never see
+   * the press it needs to act on. */
+  const rightDragRef = useRef<{
+    pointerId: number;
+    lastX: number;
+    lastY: number;
+    startX: number;
+    startY: number;
+    panned: boolean;
+  } | null>(null);
+  /* Set when a right-drag actually moved the canvas, so the release does not
+   * also open a menu.
+   *
+   * Cleared at the start of every right-button press rather than when it is
+   * consumed, because which event would consume it is platform-dependent:
+   * macOS fires `contextmenu` on mousedown, before the drag is even known to be
+   * one, while other platforms fire it on mouseup. Resetting on press means the
+   * flag can only ever describe the gesture in progress. */
+  const suppressNextContextMenuRef = useRef(false);
+
+  const describeRightDragHit = useCallback((target: HTMLElement): RightDragHit => {
+    const nodeEl = target.closest(".react-flow__node");
+    return {
+      insideNoPan: Boolean(target.closest(".nopan")),
+      insideSelectedNode: Boolean(nodeEl?.classList.contains("selected")),
+      insideSelectionRect: Boolean(
+        target.closest(".react-flow__nodesselection-rect"),
+      ),
+      insideEditable: Boolean(
+        target.closest("input, textarea, select, [contenteditable=''], [contenteditable='true']"),
+      ),
+    };
+  }, []);
+
+  const onPointerDownCapture = useCallback(
+    (event: React.PointerEvent<HTMLDivElement>) => {
+      if (event.button !== 2) return;
+      suppressNextContextMenuRef.current = false;
+      if (rightDragRef.current) return;
+      const target = event.target as HTMLElement | null;
+      if (!target) return;
+      if (!shouldPanThroughRightDrag(describeRightDragHit(target))) return;
+      rightDragRef.current = {
+        pointerId: event.pointerId,
+        lastX: event.clientX,
+        lastY: event.clientY,
+        startX: event.clientX,
+        startY: event.clientY,
+        panned: false,
+      };
+    },
+    [describeRightDragHit],
+  );
+
+  /* Window-level move/up: the press starts over a tile, and the pointer routinely
+   * leaves it mid-drag. Listening on the wrapper would drop the gesture the
+   * moment it crossed onto something else. */
+  useEffect(() => {
+    const onMove = (event: PointerEvent) => {
+      const drag = rightDragRef.current;
+      if (!drag || event.pointerId !== drag.pointerId) return;
+      const dx = event.clientX - drag.lastX;
+      const dy = event.clientY - drag.lastY;
+      drag.lastX = event.clientX;
+      drag.lastY = event.clientY;
+      if (
+        !drag.panned &&
+        !isRightDragPan(event.clientX - drag.startX, event.clientY - drag.startY)
+      ) {
+        return;
+      }
+      drag.panned = true;
+      if (dx === 0 && dy === 0) return;
+      const next = panViewportBy(liveViewportRef.current, dx, dy);
+      liveViewportRef.current = next;
+      viewportRef.current = next;
+      pendingViewportRef.current = next;
+      setViewport(next, { duration: 0 });
+    };
+    const onUp = (event: PointerEvent) => {
+      const drag = rightDragRef.current;
+      if (!drag || event.pointerId !== drag.pointerId) return;
+      rightDragRef.current = null;
+      if (!drag.panned) return;
+      /* The gesture moved the canvas, so a menu event arriving on release must
+       * not be read as a right-click. It matters when the press began on an
+       * unselected tile and released over a selected one, whose handler would
+       * otherwise open its menu at the end of a pan. */
+      suppressNextContextMenuRef.current = true;
+      scheduleFlushLayout(250);
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onUp);
+    return () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onUp);
+    };
+  }, [scheduleFlushLayout, setViewport]);
+
+  /* One handler owns "no browser menu on this canvas".
+   *
+   * React Flow's own suppression only covers the pane, and the node handler now
+   * declines unselected tiles so their presses can pan — which would otherwise
+   * let the OS menu through. Suppressing here instead keeps the rule in one
+   * place and independent of what the press landed on.
+   *
+   * Bubble phase, so the node handler above has already read
+   * `suppressNextContextMenuRef` by the time this runs. The flag itself is reset
+   * on the next right-button press, not here. */
+  const onCanvasContextMenu = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
+    event.preventDefault();
+  }, []);
 
   const onWheelCapture = useCallback(
     (event: React.WheelEvent<HTMLDivElement>) => {
@@ -1352,13 +1533,43 @@ function CanvasInner({
 
   const onNodeContextMenu = useCallback<NodeMouseHandler>(
     (event, node) => {
-      event.preventDefault();
       const rf = node as RFNode;
+      /* An unselected tile has no menu, so the press is left to fall through to
+       * d3-zoom and pan like empty canvas would. Returning without
+       * `preventDefault` is the whole point: the browser menu is suppressed by
+       * the wrapper's own contextmenu handler, which keeps right-drag usable
+       * over tiles the user has not selected. */
+      if (!rf.selected) return;
+      event.preventDefault();
+      /* A right-drag that panned across this tile and released over it must not
+       * also open its menu. */
+      if (suppressNextContextMenuRef.current) return;
       let agentId: string | null = null;
       if (rf.type === "agent") {
         const data = rf.data as import("./layout").AgentNodeData;
         agentId = data.node.id;
       }
+      onAgentNodeContextMenu?.(agentId, event.clientX, event.clientY);
+    },
+    [onAgentNodeContextMenu],
+  );
+
+  /* The marquee rect React Flow floats over a multi-selection sits above the
+   * tiles, so it — not they — receives the right-click that should offer to save
+   * the whole selection as a template. Without this the rect would swallow the
+   * gesture, and because it also carries `nopan` the press could neither open a
+   * menu nor pan. The tile handler's guards do not apply: the rect only exists
+   * while a selection does. */
+  const onSelectionContextMenu = useCallback(
+    (event: React.MouseEvent, selNodes: Node[]) => {
+      event.preventDefault();
+      if (suppressNextContextMenuRef.current) return;
+      const firstAgent = (selNodes as RFNode[]).find(
+        (node) => node.type === "agent",
+      );
+      const agentId = firstAgent
+        ? (firstAgent.data as import("./layout").AgentNodeData).node.id
+        : null;
       onAgentNodeContextMenu?.(agentId, event.clientX, event.clientY);
     },
     [onAgentNodeContextMenu],
@@ -1444,6 +1655,8 @@ function CanvasInner({
       ref={wrapperRef}
       className="group/canvas relative h-full w-full"
       onWheelCapture={onWheelCapture}
+      onPointerDownCapture={onPointerDownCapture}
+      onContextMenu={onCanvasContextMenu}
       onDoubleClick={onCanvasDoubleClick}
       onDragOver={onCanvasDragOver}
       onDrop={onCanvasDrop}
@@ -1454,6 +1667,7 @@ function CanvasInner({
         onNodesChange={handleNodesChange}
         onNodeClick={onNodeClick}
         onNodeContextMenu={onNodeContextMenu}
+        onSelectionContextMenu={onSelectionContextMenu}
         onNodeMouseEnter={onNodeMouseEnter}
         onNodeMouseLeave={onNodeMouseLeave}
         onEdgeClick={onEdgeClick}

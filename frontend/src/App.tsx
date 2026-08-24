@@ -38,6 +38,7 @@ import {
   gitPush,
   bindProjectHere,
   unbindProjectHere,
+  revealProjectRoot,
   artifactRawUrl,
   type PrincipleSummary,
   type SkillSummary,
@@ -425,6 +426,7 @@ export function App() {
   const [pendingReviews, setPendingReviews] = useState<Record<string, PendingGateState>>({});
 
   const [projectMutationPending, setProjectMutationPending] = useState(false);
+  const [revealPending, setRevealPending] = useState(false);
   const [laneCreationNotice, setLaneCreationNotice] =
     useState<LaneCreationNotice | null>(null);
   const [nodePositionTarget, setNodePositionTarget] =
@@ -3131,6 +3133,29 @@ export function App() {
             onClose={closeNotificationsPanel}
             onJump={jumpToActiveNode}
           />
+
+          <button
+            type="button"
+            onClick={() => {
+              if (!session?.id) return;
+              setRevealPending(true);
+              void revealProjectRoot(session.id)
+                .catch((error: unknown) => window.alert(apiErrorText(error)))
+                .finally(() => setRevealPending(false));
+            }}
+            disabled={!session?.bound_here || revealPending}
+            className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-line bg-surface text-ink-muted transition hover:border-line-strong hover:bg-surface-sunken hover:text-ink disabled:cursor-not-allowed disabled:opacity-40"
+            title={
+              session?.bound_here
+                ? `在文件管理器中打开 ${session.root_path || "项目目录"}`
+                : "此设备尚未配置项目路径"
+            }
+            aria-label="在文件管理器中打开项目目录"
+          >
+            <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="m6 14 1.45-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.55 6a2 2 0 0 1-1.94 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2" />
+            </svg>
+          </button>
 
           <button
             type="button"

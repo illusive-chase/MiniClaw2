@@ -752,6 +752,16 @@ export async function unbindProjectHere(
   return res.json();
 }
 
+/** Ask the backend to open the project directory in the host file manager.
+ * Only the backend can do this — the browser cannot reveal a local path. */
+export async function revealProjectRoot(id: string): Promise<{ root_path: string }> {
+  const res = await fetch(`/sessions/${id}/reveal`, { method: "POST" });
+  if (!res.ok) {
+    throw new ApiError("revealProjectRoot", res.status, await readErrorDetail(res));
+  }
+  return res.json();
+}
+
 export async function updateSessionPreferences(
   id: string,
   body: {
