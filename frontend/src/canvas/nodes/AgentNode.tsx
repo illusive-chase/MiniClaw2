@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Handle, Position, type NodeProps } from "reactflow";
 import type { InteractionRequest, ModelPreset, NodeInfo, NodeState } from "../../types";
 import {
@@ -15,6 +15,8 @@ import {
 } from "../../nodeUtil";
 import { modelPresetDetail, modelPresetLabel, providerLabel } from "../../modelPresets";
 import { useNodeInHoverGroup } from "../hoverStore";
+import { startWiringDrag, useWiringDrag } from "../wiringDragStore";
+import { useLongPressWiring } from "../useLongPressWiring";
 
 /**
  * Agent tile: rounded rectangle, ~224x130. The primary work unit.
@@ -34,6 +36,16 @@ function AgentNodeImpl({ data, selected }: NodeProps<AgentNodeData>) {
     canCreateVirtual,
   } = data;
   const hoveredByGroup = useNodeInHoverGroup(node.id);
+  /* While a wire is being pulled, every tile that could receive it says so.
+   * The drag carries only its source, so eligibility is decided here from the
+   * same rule the drop uses: this tile must be an editable virtual that does
+   * not already hold the dependency, and cannot be the source itself. */
+  const wiringDrag = useWiringDrag();
+  const isWiringSource = wiringDrag?.sourceId === node.id;
+  const isWiringCandidate =
+    Boolean(wiringDrag) &&
+    !isWiringSource &&
+    agentNodeContext.canAcceptDependency(wiringDrag?.sourceId ?? "", node.id);
   const meta = stateMeta(node.state);
   const pendingGate = agentNodeContext.pendingGateForNode(node.id);
   const headline = oneLine(
@@ -88,15 +100,7 @@ function AgentNodeImpl({ data, selected }: NodeProps<AgentNodeData>) {
   }, [selected, isVirtual, node.id]);
 
   const actionItems = useMemo(() => {
-    const items: Array<{
-      key: "promote" | "dequeue" | "continuation" | "dependency" | "remove" | "interrupt" | "rerun";
-      icon: ReactNode;
-      title: string;
-      disabled: boolean;
-      tone: "brand" | "neutral" | "danger";
-      alwaysVisible?: boolean;
-      onClick: () => void;
-    }> = [];
+    const items: ActionItem[] = [];
     if (isActiveState(node.state)) {
       items.push({
         key: "interrupt",
@@ -255,7 +259,9 @@ function AgentNodeImpl({ data, selected }: NodeProps<AgentNodeData>) {
       <div
         className={
           "relative select-none overflow-hidden rounded-lg border text-left shadow-card transition " +
-          (selected
+          (isWiringCandidate
+            ? "border-brand ring-2 ring-brand/45 ring-offset-2 ring-offset-surface-sunken shadow-raised"
+            : selected
             ? "border-brand ring-2 ring-brand ring-offset-2 ring-offset-surface-sunken"
             : hoveredByGroup
               ? isVirtual
@@ -337,49 +343,73 @@ function AgentNodeImpl({ data, selected }: NodeProps<AgentNodeData>) {
         />
       )}
 
-      {/* react-flow handles */}
+      {/* react-flow handles — all six are programmatic anchors only.
+        *
+        * Dependencies are wired by long-pressing the "↘" action button, not by
+        * dragging a handle, so nothing here needs to be pointer-reachable. Every
+        * handle is pinned `isConnectableStart`/`isConnectableEnd` false, which
+        * drops React Flow's `connectionindicator` class — the class that would
+        * otherwise give a handle `pointer-events: all` and a crosshair cursor.
+        *
+        * Keeping them inert is what removes the six right-drag dead patches
+        * these used to punch through each tile: React Flow puts `nopan` on
+        * every handle unconditionally, and this canvas pans on right-drag, so a
+        * pointer-reachable handle is also a spot where panning dies.
+        *
+        * The id-less left/right pair must stay FIRST: React Flow resolves an
+        * edge with no handle id to index 0 of the matching bounds array, which
+        * is how dep/resume/timeline keep their left/right anchors. */}
       <Handle
         type="target"
         position={Position.Left}
-        className="!h-3 !w-3 !border-2 !border-line !bg-surface !opacity-0"
+        isConnectableStart={false}
+        isConnectableEnd={false}
+        className={ANCHOR_HANDLE_CLASS}
       />
       <Handle
         type="source"
         position={Position.Right}
-        className="!h-3 !w-3 !border-2 !border-line !bg-surface !opacity-0"
+        isConnectableStart={false}
+        isConnectableEnd={false}
+        className={ANCHOR_HANDLE_CLASS}
       />
       <Handle
         type="source"
         id="produces"
         position={Position.Bottom}
-        className="!h-3 !w-3 !border-2 !border-line !bg-surface !opacity-0"
+        isConnectableStart={false}
+        isConnectableEnd={false}
+        className={ANCHOR_HANDLE_CLASS}
       />
       <Handle
         type="target"
         id="loads"
         position={Position.Top}
-        className="!h-3 !w-3 !border-2 !border-line !bg-surface !opacity-0"
+        isConnectableStart={false}
+        isConnectableEnd={false}
+        className={ANCHOR_HANDLE_CLASS}
       />
       {/* Epoch links run to the vertical trunk, so they enter the top and
         * leave the bottom rather than sharing the horizontal dep/resume axis.
         * Anchored left of centre to stay clear of loads (top) and produces
-        * (bottom), and because the trunk column sits to the left. These must
-        * stay AFTER the id-less handles: React Flow resolves an edge with no
-        * handle id to index 0 of the matching bounds array, which is how
-        * dep/resume/timeline keep their left/right anchors. */}
+        * (bottom), and because the trunk column sits to the left. */}
       <Handle
         type="target"
         id="epochIn"
         position={Position.Top}
         style={{ left: "22%" }}
-        className="!h-3 !w-3 !border-2 !border-line !bg-surface !opacity-0"
+        isConnectableStart={false}
+        isConnectableEnd={false}
+        className={ANCHOR_HANDLE_CLASS}
       />
       <Handle
         type="source"
         id="epochOut"
         position={Position.Bottom}
         style={{ left: "22%" }}
-        className="!h-3 !w-3 !border-2 !border-line !bg-surface !opacity-0"
+        isConnectableStart={false}
+        isConnectableEnd={false}
+        className={ANCHOR_HANDLE_CLASS}
       />
       </div>
 
@@ -418,22 +448,19 @@ function AgentNodeImpl({ data, selected }: NodeProps<AgentNodeData>) {
       )}
 
       {actionItems.map((item, actionIndex) => (
-        <button
+        <ActionButton
           key={item.key}
-          type="button"
-          onClick={(e) => {
-            e.stopPropagation();
-            if (!item.disabled) item.onClick();
-          }}
-          onMouseDown={(e) => e.stopPropagation()}
-          disabled={item.disabled}
-          style={{ top: stackTop(actionIndex, actionItems.length) }}
-          className={actionButtonClass(item.tone, item.alwaysVisible)}
-          title={item.title}
-          aria-label={item.title}
-        >
-          {item.icon}
-        </button>
+          item={item}
+          top={stackTop(actionIndex, actionItems.length)}
+          /* Only the dependency button carries the wiring gesture: it is the
+           * one whose click already means "attach something downstream of this
+           * node", which is exactly what the wire declares in longhand. */
+          wiring={
+            item.key === "dependency"
+              ? { nodeId: node.id, enabled: !item.disabled }
+              : null
+          }
+        />
       ))}
 
       {removeOpen && removeIndex >= 0 && (
@@ -496,6 +523,7 @@ export type AgentNodeContext = {
   onRerunNode: (nodeId: string) => void;
   canCreateVirtual: boolean;
   canMutateNode: (nodeId: string) => boolean;
+  canAcceptDependency: (sourceNodeId: string, targetNodeId: string) => boolean;
   canPromoteVirtual: boolean;
   canDequeue: boolean;
   manualPromotionPlanspaceId: string | null;
@@ -518,6 +546,7 @@ let agentNodeContext: AgentNodeContext = {
   onRerunNode: () => {},
   canCreateVirtual: false,
   canMutateNode: () => false,
+  canAcceptDependency: () => false,
   canPromoteVirtual: false,
   canDequeue: false,
   manualPromotionPlanspaceId: null,
@@ -533,11 +562,84 @@ export function setAgentNodeContext(ctx: AgentNodeContext): void {
   agentNodeContext = ctx;
 }
 
-function stackTop(index: number, total: number): string {
+/* All six handles are invisible programmatic anchors — edges attach to them,
+ * pointers never touch them. Dependencies are wired by long-pressing the "↘"
+ * button instead, so no handle has to be findable, and keeping them all
+ * `opacity-0` is what removes the row of dots that briefly appeared on every
+ * tile edge when dragging handles was the wiring gesture. */
+const ANCHOR_HANDLE_CLASS =
+  "!h-3 !w-3 !border-2 !border-line !bg-surface !opacity-0";
+
+/* Vertical offset of one action button, top to bottom in push order.
+ *
+ * Buttons are centred on the tile's right edge. Nothing else competes for that
+ * column now: the handles beneath them are inert, so a button sitting over one
+ * costs nothing. */
+export function stackTop(index: number, total: number): string {
   if (index < 0) return "50%";
   const step = 30;
   const offset = (index - (total - 1) / 2) * step;
   return `calc(50% + ${offset}px)`;
+}
+
+type ActionItem = {
+  key: "promote" | "dequeue" | "continuation" | "dependency" | "remove" | "interrupt" | "rerun";
+  icon: ReactNode;
+  title: string;
+  disabled: boolean;
+  tone: "brand" | "neutral" | "danger";
+  alwaysVisible?: boolean;
+  onClick: () => void;
+};
+
+/* One button in the tile's right-edge action stack.
+ *
+ * Its own component because the dependency button needs hooks the others do
+ * not: the long-press that pulls out a wire. Keeping that inside the map
+ * callback would call hooks conditionally. */
+function ActionButton({
+  item,
+  top,
+  wiring,
+}: {
+  item: ActionItem;
+  top: string;
+  wiring: { nodeId: string; enabled: boolean } | null;
+}) {
+  const onBegin = useCallback(
+    (origin: { x: number; y: number }) => {
+      startWiringDrag(wiring?.nodeId ?? "", origin);
+    },
+    [wiring?.nodeId],
+  );
+  const longPress = useLongPressWiring({
+    enabled: Boolean(wiring?.enabled),
+    onBegin,
+  });
+
+  return (
+    <button
+      type="button"
+      onClick={(e) => {
+        e.stopPropagation();
+        if (!item.disabled) item.onClick();
+      }}
+      onClickCapture={wiring ? longPress.onClickCapture : undefined}
+      onPointerDown={wiring ? longPress.onPointerDown : undefined}
+      onMouseDown={(e) => e.stopPropagation()}
+      disabled={item.disabled}
+      style={{ top }}
+      className={actionButtonClass(item.tone, item.alwaysVisible)}
+      title={
+        wiring?.enabled
+          ? `${item.title}（长按拖出连线）`
+          : item.title
+      }
+      aria-label={item.title}
+    >
+      {item.icon}
+    </button>
+  );
 }
 
 function actionButtonClass(

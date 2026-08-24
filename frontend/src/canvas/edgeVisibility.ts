@@ -1,10 +1,20 @@
 import type { Edge } from "reactflow";
 import type { RFEdge } from "./layout";
 
+/** The withdraw affordance the canvas attaches to one clicked dependency edge. */
+export type EdgeDisconnectDecoration = {
+  edgeId: string;
+  confirming: boolean;
+  onRequest: () => void;
+  onConfirm: () => void;
+  onCancel: () => void;
+};
+
 export function decorateEdges(
   edges: RFEdge[],
   selectedNodeId: string | null,
   hoverGroup: readonly string[],
+  disconnect?: EdgeDisconnectDecoration | null,
 ): Edge[] {
   const hoveredNodeIds = new Set(hoverGroup);
   return edges.map((edge) => {
@@ -21,6 +31,14 @@ export function decorateEdges(
       return {
         ...edge,
         style: { ...(edge.style ?? {}), opacity: endpoint ? 0.75 : 0 },
+      };
+    }
+    if (disconnect && edge.id === disconnect.edgeId) {
+      const { edgeId: _edgeId, ...affordance } = disconnect;
+      return {
+        ...edge,
+        selected: true,
+        data: { ...(edge.data ?? {}), disconnect: affordance },
       };
     }
     if (

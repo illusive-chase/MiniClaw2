@@ -8,6 +8,7 @@ import ReactFlow, {
   applyNodeChanges,
   useOnSelectionChange,
   useStoreApi,
+  type EdgeMouseHandler,
   type Node,
   type NodeChange,
   type NodeMouseHandler,
@@ -61,13 +62,27 @@ import {
   TimelineEdge,
 } from "./edges/TimelineEdge";
 import { CommitEdge } from "./edges/CommitEdge";
+import { WiringOverlay } from "./edges/WiringOverlay";
+import {
+  canDisconnectDependency,
+  resolveWiringDrop,
+} from "./dependencyWiring";
+import {
+  endWiringDrag,
+  moveWiringPointer,
+  useWiringDrag,
+} from "./wiringDragStore";
 import { ErrorTerminalNode } from "./nodes/ErrorTerminalNode";
 import { ArtifactNode } from "./nodes/ArtifactNode";
 import { CommitNode } from "./nodes/CommitNode";
 import { CommitColumnHeaderNode } from "./nodes/CommitColumnHeaderNode";
 import { setHoverGroup } from "./hoverStore";
 import { setLaneAppendResolver } from "./lanePlacement";
-import { decorateEdges, resolveHoverGroup } from "./edgeVisibility";
+import {
+  decorateEdges,
+  resolveHoverGroup,
+  type EdgeDisconnectDecoration,
+} from "./edgeVisibility";
 import { decoratePendingGateLayers } from "./nodeLayers";
 
 const NODE_TYPES = {
@@ -97,6 +112,16 @@ const DEFAULT_VIEWPORT: Viewport = { x: 0, y: 0, zoom: 0.9 };
 const MIN_ZOOM = 0.3;
 const MAX_ZOOM = 1.6;
 const CTRL_WHEEL_ZOOM_SENSITIVITY = 0.0012;
+
+/** The dependency edge the user clicked, resolved to the pair a withdrawal
+ * would rewrite. `edgeId` is the rendered id, which for a collapsed instance
+ * differs from `sourceId`/`targetId`. */
+type DisconnectTarget = {
+  edgeId: string;
+  sourceId: string;
+  targetId: string;
+  confirming: boolean;
+};
 
 export type CanvasSelection =
   | { kind: "agent" | "op"; nodeId: string }
@@ -201,6 +226,24 @@ export type CanvasProps = {
    */
   onAttachPrincipleToVirtual?: (virtualNodeId: string, principleId: string) => void;
   onAttachSkillToVirtual?: (virtualNodeId: string, skillId: string) => void;
+  /** Whether this host/session may rewrite a node owned dependency list. */
+  canMutateNode?: (nodeId: string) => boolean;
+  /**
+   * Fires when the user drags a wire from one agent tile onto another. The
+   * source is appended to the target's `scheduled_deps` — the target is the side
+   * that owns the array, so a wire drawn A→B means "B depends on A".
+   */
+  onConnectDependency?: (targetNodeId: string, sourceNodeId: string) => void;
+  /**
+   * Fires when a wire is released on empty canvas: create a new draft virtual
+   * that waits for `sourceNodeId`, positioned where the user let go.
+   */
+  onCreateDependencyVirtualAt?: (
+    sourceNodeId: string,
+    position: { x: number; y: number },
+  ) => void;
+  /** Fires when the user confirms withdrawing a dependency on the canvas. */
+  onDisconnectDependency?: (targetNodeId: string, sourceNodeId: string) => void;
   /** Called after drag-end / pan / zoom with layout state that changed. */
   onLayoutHintsChange?: (
     updates: Record<string, { x: number; y: number }>,
@@ -253,6 +296,10 @@ function CanvasInner({
   onTemplateDrop,
   onAttachPrincipleToVirtual,
   onAttachSkillToVirtual,
+  canMutateNode = () => false,
+  onConnectDependency,
+  onCreateDependencyVirtualAt,
+  onDisconnectDependency,
   onLayoutHintsChange,
   gitCommits,
   gitHead,
@@ -421,6 +468,234 @@ function CanvasInner({
     }
     return nodeId;
   }, []);
+  /* The inverse: an endpoint React Flow reports may be a collapsed instance box
+   * standing in for several members, so a drag on it has to be resolved back to
+   * a durable node id before it can mean anything to `scheduled_deps`.
+   *
+   * As a source, the box means its sinks — the members nothing inside the
+   * instance consumes. One sink resolves cleanly; several would make a single
+   * drag write several dependencies, which is the create-downstream gesture's
+   * job, not this one's. As a target it never resolves: the array cannot say
+   * "depends on this whole instance", and members are usually already executed.
+   *
+   * Reads through `builtRef` so the callback identity survives rebuilds — a new
+   * identity here would reinstall the handler on every node event. */
+  const resolveConnectableNodeId = useCallback(
+    (renderId: string, role: "source" | "target"): string | null => {
+      for (const cluster of Object.values(builtRef.current.templateInstances)) {
+        if (!cluster.collapsed) continue;
+        if (templateInstanceBoxNodeId(cluster.instanceId) !== renderId) continue;
+        if (role === "target") return null;
+        return cluster.sinkNodeIds.length === 1 ? cluster.sinkNodeIds[0] : null;
+      }
+      return renderId;
+    },
+    [],
+  );
+  const nodesByIdRef = useRef(new Map<string, NodeInfo>());
+  nodesByIdRef.current = useMemo(
+    () => new Map(nodes.map((node) => [node.id, node])),
+    [nodes],
+  );
+  /* The wire currently being pulled out of a tile, if any. Lives in a module
+   * store shared with AgentNode, which starts the gesture. */
+  const wiringDrag = useWiringDrag();
+  /* Which dependency edge is currently offering to be withdrawn, and whether it
+   * has advanced to the confirm step. Local canvas UI state: it stays out of
+   * `buildGraph`, which is a pure function pinned by the layout tests. */
+  const [disconnectTarget, setDisconnectTarget] =
+    useState<DisconnectTarget | null>(null);
+  const disconnectTargetRef = useRef(disconnectTarget);
+  disconnectTargetRef.current = disconnectTarget;
+
+  const requestDisconnect = useCallback(() => {
+    setDisconnectTarget((current) =>
+      current ? { ...current, confirming: true } : current,
+    );
+  }, []);
+
+  const confirmDisconnect = useCallback(() => {
+    const pending = disconnectTargetRef.current;
+    setDisconnectTarget(null);
+    if (!pending) return;
+    /* Re-check at the moment of the write: the graph may have moved on between
+     * the click and the confirmation. */
+    if (
+      !canDisconnectDependency(
+        pending.sourceId,
+        pending.targetId,
+        nodesByIdRef.current,
+      ) ||
+      !canMutateNode(pending.targetId)
+    ) {
+      return;
+    }
+    onDisconnectDependency?.(pending.targetId, pending.sourceId);
+  }, [canMutateNode, onDisconnectDependency]);
+
+  const cancelDisconnect = useCallback(() => setDisconnectTarget(null), []);
+
+  /* Escape backs out of the withdraw gesture, matching the canvas's other
+   * dismissable affordances. Registered only while one is open. */
+  useEffect(() => {
+    if (!disconnectTarget) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setDisconnectTarget(null);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [disconnectTarget]);
+
+  /* Drop the withdraw affordance once its edge is gone from the layout —
+   * withdrawn here, changed in the inspector, or hidden by a collapse. Left
+   * alone it would keep a control floating at the last known label position. */
+  useEffect(() => {
+    setDisconnectTarget((current) => {
+      if (!current) return current;
+      return built.rfEdges.some((edge) => edge.id === current.edgeId)
+        ? current
+        : null;
+    });
+  }, [built.rfEdges]);
+
+  const edgeDisconnect = useMemo<EdgeDisconnectDecoration | null>(
+    () =>
+      disconnectTarget
+        ? {
+            edgeId: disconnectTarget.edgeId,
+            confirming: disconnectTarget.confirming,
+            onRequest: requestDisconnect,
+            onConfirm: confirmDisconnect,
+            onCancel: cancelDisconnect,
+          }
+        : null,
+    [disconnectTarget, requestDisconnect, confirmDisconnect, cancelDisconnect],
+  );
+  /* Resolve a wire release to the durable pair it would write, or to a request
+   * for a new downstream node when it landed on empty canvas. */
+  const resolveDropSurface = useCallback(
+    (
+      clientX: number,
+      clientY: number,
+    ): import("./dependencyWiring").WiringDropSurface => {
+      /* Walk up from whatever is under the cursor to the nearest React Flow
+       * node element, the same way the template-drop path does. The wire
+       * overlay itself is `pointer-events-none`, so it never shadows the hit. */
+      let cursor = document.elementFromPoint(clientX, clientY) as HTMLElement | null;
+      while (cursor) {
+        const dataId = cursor.getAttribute?.("data-id");
+        if (dataId) {
+          const found = builtRef.current.rfNodes.find((n) => n.id === dataId);
+          /* Lanes and group frames are containers, not endpoints: a release
+           * over lane background is a release on empty canvas. */
+          if (
+            !found ||
+            found.type === "planspaceLane" ||
+            found.type === "templateGroup"
+          ) {
+            return found ? { kind: "canvas" } : { kind: "blocked" };
+          }
+          const targetId = resolveConnectableNodeId(dataId, "target");
+          return targetId
+            ? { kind: "target", targetId }
+            : { kind: "blocked" };
+        }
+        if (
+          cursor.classList?.contains("react-flow__pane") ||
+          cursor.classList?.contains("react-flow__renderer")
+        ) {
+          return { kind: "canvas" };
+        }
+        if (cursor === wrapperRef.current) break;
+        cursor = cursor.parentElement;
+      }
+      return { kind: "blocked" };
+    },
+    [resolveConnectableNodeId],
+  );
+
+  /* The wire's lifecycle. Mounted only while one is in flight, so the canvas
+   * carries no pointer listeners at rest.
+   *
+   * Listeners go on the window rather than the canvas: the gesture starts on a
+   * button inside a node and can legitimately travel outside the canvas before
+   * coming back, and a release anywhere has to end it. */
+  useEffect(() => {
+    if (!wiringDrag) return;
+    const onPointerMove = (event: PointerEvent) => {
+      const surface = resolveDropSurface(event.clientX, event.clientY);
+      const action = resolveWiringDrop(
+        wiringDrag.sourceId,
+        surface,
+        nodesByIdRef.current,
+      );
+      /* Only a target that would actually accept the dependency lights up. */
+      moveWiringPointer(
+        { x: event.clientX, y: event.clientY },
+        action.kind === "connect" && canMutateNode(action.targetId)
+          ? action.targetId
+          : null,
+      );
+    };
+    const onPointerUp = (event: PointerEvent) => {
+      const surface = resolveDropSurface(event.clientX, event.clientY);
+      const action = resolveWiringDrop(
+        wiringDrag.sourceId,
+        surface,
+        nodesByIdRef.current,
+      );
+      endWiringDrag();
+      if (action.kind === "connect") {
+        if (!canMutateNode(action.targetId)) return;
+        onConnectDependency?.(action.targetId, action.sourceId);
+        return;
+      }
+      if (action.kind === "create") {
+        /* Empty canvas: a new draft virtual that waits for the source, placed
+         * where the user released so the node appears under the cursor rather
+         * than at the lane's default append slot. */
+        const source = nodesByIdRef.current.get(action.sourceId);
+        const planspaceId = source?.planspace_id ?? null;
+        if (!planspaceId) return;
+        const flowPosition = screenToFlowPosition({
+          x: event.clientX,
+          y: event.clientY,
+        });
+        const lane = rfNodesRef.current.find(
+          (node) => node.id === `planspace:${planspaceId}`,
+        );
+        onCreateDependencyVirtualAt?.(
+          action.sourceId,
+          lane
+            ? snapPlanspaceChildPosition(flowPosition, lane.position)
+            : flowPosition,
+        );
+      }
+    };
+    /* Escape abandons the wire, matching the canvas's other dismissable
+     * affordances. `capture` so it wins over anything else listening. */
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") endWiringDrag();
+    };
+    const onPointerCancel = () => endWiringDrag();
+    window.addEventListener("pointermove", onPointerMove);
+    window.addEventListener("pointerup", onPointerUp);
+    window.addEventListener("pointercancel", onPointerCancel);
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => {
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", onPointerUp);
+      window.removeEventListener("pointercancel", onPointerCancel);
+      window.removeEventListener("keydown", onKeyDown, true);
+    };
+  }, [
+    wiringDrag,
+    resolveDropSurface,
+    canMutateNode,
+    onConnectDependency,
+    onCreateDependencyVirtualAt,
+    screenToFlowPosition,
+  ]);
   const layeredBuiltNodes = useMemo(
     () => decoratePendingGateLayers(built.rfNodes, pendingGateNodeIds),
     [built.rfNodes, pendingGateNodeIds],
@@ -661,8 +936,16 @@ function CanvasInner({
   /* Edges depend on hover (the `loads` lane fades in only for the hovered or
    * selected node), so they get a separate effect. */
   useEffect(() => {
-    setRfEdges(decorateEdges(built.rfEdges, selectedNodeId, hoverGroup));
-  }, [built.rfEdges, selectedNodeId, hoverGroup, setRfEdges]);
+    setRfEdges(
+      decorateEdges(built.rfEdges, selectedNodeId, hoverGroup, edgeDisconnect),
+    );
+  }, [
+    built.rfEdges,
+    selectedNodeId,
+    hoverGroup,
+    edgeDisconnect,
+    setRfEdges,
+  ]);
 
   /* Persist drag positions client-side so they survive node updates. Lane
    * chrome grows during a drag and shrink-fits on drop, but is derived local
@@ -907,6 +1190,7 @@ function CanvasInner({
         target.classList.contains("react-flow__pane") ||
         target.classList.contains("react-flow__renderer");
       if (!isPane) return;
+      setDisconnectTarget(null);
       pendingUserSelectionRef.current = {
         nodeId: null,
         preserveExisting: false,
@@ -914,6 +1198,55 @@ function CanvasInner({
       onSelectionChange({ kind: "none" });
     },
     [onSelectionChange],
+  );
+
+  /* Clicking a dependency edge offers to withdraw it. Two steps, because the
+   * edge's invisible hit path is 20px wide and a single click that rewrites the
+   * graph would fire on a near miss. Left-click only — `onEdgeClick` is React's
+   * onClick, which the right button never triggers, so this cannot interfere
+   * with right-drag panning. */
+  const onEdgeClick = useCallback<EdgeMouseHandler>(
+    (_event, edge) => {
+      /* React Flow has already deselected every node on its way here —
+       * `addSelectedEdges` clears the node selection unless multi-select is
+       * held. That would drop the selected tile's ring and any marquee
+       * selection the user built for save-as-template, so the pre-click flags
+       * are restored. Snapshotting from the ref is safe: the deselect is a
+       * queued state update, so the ref still holds the pre-click nodes. */
+      const selectedBefore = new Set(
+        (rfNodesRef.current as RFNode[])
+          .filter((n) => n.selected)
+          .map((n) => n.id),
+      );
+      setRfNodes((current) =>
+        (current as RFNode[]).map((n) => {
+          const desired = selectedBefore.has(n.id);
+          return n.selected === desired ? n : { ...n, selected: desired };
+        }),
+      );
+
+      if (edge.type !== "dependency") {
+        setDisconnectTarget(null);
+        return;
+      }
+      const sourceId = resolveConnectableNodeId(edge.source, "source");
+      const targetId = resolveConnectableNodeId(edge.target, "target");
+      if (
+        !sourceId ||
+        !targetId ||
+        !canDisconnectDependency(sourceId, targetId, nodesByIdRef.current) ||
+        !canMutateNode(targetId)
+      ) {
+        setDisconnectTarget(null);
+        return;
+      }
+      setDisconnectTarget((current) =>
+        current?.edgeId === edge.id
+          ? current
+          : { edgeId: edge.id, sourceId, targetId, confirming: false },
+      );
+    },
+    [canMutateNode, resolveConnectableNodeId, setRfNodes],
   );
 
   const onCanvasDoubleClick = useCallback(
@@ -978,6 +1311,11 @@ function CanvasInner({
   }, []);
 
   useEffect(() => () => setHoverGroup([]), []);
+
+  /* A wire cannot outlive the canvas that draws it. Switching projects unmounts
+   * mid-gesture if the user is holding one, and the store is a module singleton
+   * that would otherwise hand the next canvas a stale drag to render. */
+  useEffect(() => () => endWiringDrag(), []);
 
   /* Multi-selection observer. React Flow owns its own selection state; we
    * only translate agent-node ids out so callers can drive right-click and
@@ -1104,6 +1442,7 @@ function CanvasInner({
         onNodeContextMenu={onNodeContextMenu}
         onNodeMouseEnter={onNodeMouseEnter}
         onNodeMouseLeave={onNodeMouseLeave}
+        onEdgeClick={onEdgeClick}
         onPaneClick={onPaneClick}
         onMove={onMove}
         onMoveEnd={onMoveEnd}
@@ -1163,6 +1502,10 @@ function CanvasInner({
         nodesRef={rfNodesRef as React.MutableRefObject<RFNode[]>}
         nodesVersion={rfNodes}
       />
+      {/* Drawn over React Flow rather than inside its viewport: the wire is in
+        * screen coordinates, so it needs no transform and survives a pan
+        * mid-gesture without re-running layout. */}
+      {wiringDrag && <WiringOverlay drag={wiringDrag} />}
     </div>
   );
 }

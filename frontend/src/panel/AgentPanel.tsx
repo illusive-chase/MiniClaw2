@@ -708,6 +708,7 @@ const EditableVirtualNodeBody = forwardRef<VirtualNodeBodyHandle, VirtualNodeBod
   const persistedDraftRef = useRef({
     nodeId: node.id,
     signature: persistedDraftSignature,
+    draft: persistedDraft,
   });
   const pendingLocalUpdateRef = useRef<PendingLocalVirtualUpdate | null>(null);
   const savePromiseRef = useRef<Promise<boolean> | null>(null);
@@ -720,13 +721,8 @@ const EditableVirtualNodeBody = forwardRef<VirtualNodeBodyHandle, VirtualNodeBod
   const activeModelPresets = selectableModelPresets(modelPresets);
   const currentPreset = modelPresets.find((preset) => preset.id === draft.modelPresetId);
   const candidateDeps = useMemo(
-    () =>
-      Array.from(nodesById.values()).filter(
-        (candidate) =>
-          candidate.id !== node.id &&
-          (candidate.planspace_id ?? "") === (node.planspace_id ?? ""),
-      ),
-    [nodesById, node.id, node.planspace_id],
+    () => candidateDependencies(node, nodesById, draft.scheduledDeps),
+    [nodesById, node, draft.scheduledDeps],
   );
   const dirty = useMemo(
     () => JSON.stringify(draft) !== persistedDraftSignature,
@@ -749,6 +745,7 @@ const EditableVirtualNodeBody = forwardRef<VirtualNodeBodyHandle, VirtualNodeBod
     persistedDraftRef.current = {
       nodeId: node.id,
       signature: persistedDraftSignature,
+      draft: persistedDraft,
     };
 
     if (
@@ -774,12 +771,21 @@ const EditableVirtualNodeBody = forwardRef<VirtualNodeBodyHandle, VirtualNodeBod
       return;
     }
 
-    draftRef.current = persistedDraft;
-    setDraft(persistedDraft);
-    setError(null);
-    if (previous.nodeId === node.id && !acknowledgedLocalUpdate) {
-      window.alert("此 virtual node 的持久化内容已更新，已重新加载。");
+    if (previous.nodeId !== node.id) {
+      draftRef.current = persistedDraft;
+      setDraft(persistedDraft);
+      setError(null);
+      return;
     }
+
+    const { draft: mergedDraft, conflicts } = mergeVirtualDraft(
+      draftRef.current,
+      previous.draft,
+      persistedDraft,
+    );
+    draftRef.current = mergedDraft;
+    setDraft(mergedDraft);
+    setError(conflicts.length ? externalDraftConflictMessage(conflicts) : null);
   }, [node.id, persistedDraftSignature]);
 
   useEffect(() => {
@@ -1266,7 +1272,7 @@ const EditableVirtualNodeBody = forwardRef<VirtualNodeBodyHandle, VirtualNodeBod
           <div className="space-y-2 px-3 py-3">
             {candidateDeps.length === 0 ? (
               <div className="rounded-md border border-line bg-surface px-3 py-2 text-[11.5px] text-ink-muted">
-                No eligible dependencies in this direction.
+                本方向内没有其它可依赖的节点。
               </div>
             ) : (
               <div className="max-h-44 space-y-1 overflow-auto rounded-md border border-line bg-surface p-2">
@@ -1720,6 +1726,78 @@ export function virtualDraftFromNode(node: NodeInfo): VirtualDraft {
     artifactSpec: node.artifact_spec || "",
     obsoleteReason: node.obsolete_reason || "",
   };
+}
+
+const DRAFT_FIELD_LABELS: Record<keyof VirtualDraft, string> = {
+  promptDraft: "Prompt",
+  motivation: "动机",
+  modelPresetId: "模型",
+  classification: "节点类型",
+  subtype: "评审子类",
+  brief: "评审说明",
+  scheduledDeps: "依赖",
+  pendingExtraPrinciples: "附加准则",
+  pendingExtraSkills: "附加技能",
+  qaMode: "允许提问",
+  artifactMode: "产出物",
+  artifactSpec: "产出物描述",
+  obsoleteReason: "作废原因",
+};
+
+/* Reconciles an external write to this virtual against the user's unsaved
+ * edits, one field at a time. A whole-object reset would be correct only if
+ * every write touched every field, but the canvas writes `scheduled_deps`
+ * alone — resetting on it would silently discard a prompt the user is still
+ * typing.
+ *
+ * A field the remote left alone keeps the local edit. A field the remote moved
+ * adopts the persisted value: it is the only authoritative copy, and letting a
+ * local edit win silently would leave the user believing they were looking at
+ * saved state. Those adoptions that overwrite a real local edit come back in
+ * `conflicts` so the caller can say so rather than swallow it. */
+export function mergeVirtualDraft(
+  local: VirtualDraft,
+  previousPersisted: VirtualDraft,
+  nextPersisted: VirtualDraft,
+): { draft: VirtualDraft; conflicts: (keyof VirtualDraft)[] } {
+  const merged: VirtualDraft = { ...nextPersisted };
+  const conflicts: (keyof VirtualDraft)[] = [];
+  for (const key of Object.keys(nextPersisted) as (keyof VirtualDraft)[]) {
+    const remoteBefore = JSON.stringify(previousPersisted[key]);
+    const remoteAfter = JSON.stringify(nextPersisted[key]);
+    if (remoteBefore === remoteAfter) {
+      (merged as Record<string, unknown>)[key] = local[key];
+      continue;
+    }
+    if (JSON.stringify(local[key]) !== remoteBefore) {
+      conflicts.push(key);
+    }
+  }
+  return { draft: merged, conflicts };
+}
+
+export function externalDraftConflictMessage(
+  conflicts: readonly (keyof VirtualDraft)[],
+): string {
+  const names = conflicts.map((key) => DRAFT_FIELD_LABELS[key]).join("、");
+  return `此 virtual node 已在别处更新，以下字段已采用最新的持久化值，覆盖了你未保存的改动：${names}。其余未保存的改动仍保留。`;
+}
+
+/* Nodes that may be picked as dependencies of `node`. Obsolete nodes are kept
+ * out so they are not newly chosen, but one that is already selected must stay
+ * listed — otherwise it vanishes from the panel while its id remains in the
+ * draft, leaving the user unable to uncheck it. */
+export function candidateDependencies(
+  node: NodeInfo,
+  nodesById: Map<string, NodeInfo>,
+  selectedDepIds: readonly string[],
+): NodeInfo[] {
+  return Array.from(nodesById.values()).filter(
+    (candidate) =>
+      candidate.id !== node.id &&
+      (candidate.planspace_id ?? "") === (node.planspace_id ?? "") &&
+      (!candidate.obsolete_reason || selectedDepIds.includes(candidate.id)),
+  );
 }
 
 export function virtualDraftAfterSave(draft: VirtualDraft): VirtualDraft {

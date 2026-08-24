@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 
 import {
   agentInputText,
+  candidateDependencies,
+  mergeVirtualDraft,
   virtualDraftAfterSave,
   virtualDraftFromNode,
   virtualDraftValidationError,
@@ -214,6 +216,111 @@ function node(over: Partial<NodeInfo> = {}): NodeInfo {
   assert.equal(normalized.artifactMode, "default");
   assert.equal(normalized.artifactSpec, "");
   assert.equal(normalized.qaMode, false);
+}
+
+/* The canvas writes scheduled_deps alone. Reconciling that against a draft
+ * whose prompt is still being typed must keep both: adopting the whole
+ * persisted object would discard the unsaved prompt, which is the data loss
+ * that drag-to-connect would otherwise ship with. */
+{
+  const persistedBefore = virtualDraftFromNode(node());
+  const persistedAfter = { ...persistedBefore, scheduledDeps: ["dep-1"] };
+  const local = { ...persistedBefore, promptDraft: "half-typed prompt" };
+
+  const { draft, conflicts } = mergeVirtualDraft(
+    local,
+    persistedBefore,
+    persistedAfter,
+  );
+  assert.deepEqual(draft.scheduledDeps, ["dep-1"]);
+  assert.equal(draft.promptDraft, "half-typed prompt");
+  assert.deepEqual(conflicts, []);
+}
+
+/* When the remote moved nothing, the merge must be a no-op down to the byte —
+ * this is what makes a canvas write invisible to the side panel. */
+{
+  const persisted = virtualDraftFromNode(node());
+  const local = { ...persisted, promptDraft: "mine", motivation: "why" };
+  const { draft, conflicts } = mergeVirtualDraft(local, persisted, persisted);
+  assert.equal(JSON.stringify(draft), JSON.stringify(local));
+  assert.deepEqual(conflicts, []);
+}
+
+/* A field both sides moved resolves to the persisted value — the only
+ * authoritative copy — but never silently: the field is reported so the panel
+ * can say which edit it replaced. */
+{
+  const persistedBefore = virtualDraftFromNode(node());
+  const persistedAfter = { ...persistedBefore, promptDraft: "theirs" };
+  const local = { ...persistedBefore, promptDraft: "mine" };
+  const { draft, conflicts } = mergeVirtualDraft(
+    local,
+    persistedBefore,
+    persistedAfter,
+  );
+  assert.equal(draft.promptDraft, "theirs");
+  assert.deepEqual(conflicts, ["promptDraft"]);
+}
+
+/* A field the user never touched adopts the remote value quietly: there is no
+ * local edit to warn about. */
+{
+  const persistedBefore = virtualDraftFromNode(node());
+  const persistedAfter = { ...persistedBefore, motivation: "server reason" };
+  const local = { ...persistedBefore, promptDraft: "mine" };
+  const { draft, conflicts } = mergeVirtualDraft(
+    local,
+    persistedBefore,
+    persistedAfter,
+  );
+  assert.equal(draft.motivation, "server reason");
+  assert.equal(draft.promptDraft, "mine");
+  assert.deepEqual(conflicts, []);
+}
+
+/* Object and array fields compare by value, not identity, so a re-fetched but
+ * unchanged brief must not read as a remote edit. */
+{
+  const persistedBefore = virtualDraftFromNode(
+    node({ brief: { check_what: "c", expected: "e", abnormal: "a" } }),
+  );
+  const persistedAfter = virtualDraftFromNode(
+    node({ brief: { check_what: "c", expected: "e", abnormal: "a" } }),
+  );
+  const local = { ...persistedBefore, promptDraft: "mine" };
+  const { draft, conflicts } = mergeVirtualDraft(
+    local,
+    persistedBefore,
+    persistedAfter,
+  );
+  assert.equal(draft.promptDraft, "mine");
+  assert.deepEqual(conflicts, []);
+}
+
+/* Obsolete nodes are kept out of the dependency picker so they are not newly
+ * chosen — but one already in the draft must stay listed, or its id sits in
+ * scheduled_deps with no checkbox left to clear it. */
+{
+  const target = node({ id: "target", planspace_id: "lane-a" });
+  const nodesById = new Map<string, NodeInfo>([
+    ["target", target],
+    ["plain", node({ id: "plain", planspace_id: "lane-a" })],
+    [
+      "stale",
+      node({ id: "stale", planspace_id: "lane-a", obsolete_reason: "gone" }),
+    ],
+    [
+      "picked",
+      node({ id: "picked", planspace_id: "lane-a", obsolete_reason: "gone" }),
+    ],
+    ["other-lane", node({ id: "other-lane", planspace_id: "lane-b" })],
+  ]);
+
+  const ids = candidateDependencies(target, nodesById, ["picked"]).map(
+    (candidate) => candidate.id,
+  );
+  assert.deepEqual(ids.sort(), ["picked", "plain"]);
 }
 
 console.log("agent-panel-draft: ok");

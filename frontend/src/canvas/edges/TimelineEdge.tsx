@@ -1,6 +1,7 @@
 import { memo } from "react";
 import {
   BaseEdge,
+  EdgeLabelRenderer,
   getBezierPath,
   type EdgeProps,
 } from "reactflow";
@@ -12,6 +13,14 @@ type EdgeData = {
   root?: boolean;
   overlapsContinue?: boolean;
   relation?: "available" | "used" | "declared";
+  /** Set by the canvas on the one dependency edge the user clicked, to offer
+   * withdrawing it. `confirming` is the second step of that gesture. */
+  disconnect?: {
+    confirming: boolean;
+    onRequest: () => void;
+    onConfirm: () => void;
+    onCancel: () => void;
+  };
 };
 
 const ACTIVE: NodeState[] = [
@@ -59,12 +68,19 @@ function TimelineEdgeImpl(props: EdgeProps<EdgeData>) {
 
 export const TimelineEdge = memo(TimelineEdgeImpl);
 
+/* Width of the invisible strip along a dependency edge that accepts a click.
+ *
+ * React Flow defaults to 20px and puts `nopan` on every edge, so this strip is
+ * also where right-drag stops panning. 10px still beats a 1.7px stroke as a
+ * target while halving that cost. */
+const DEPENDENCY_INTERACTION_WIDTH = 10;
+
 /** Primary DAG arrow — template/planning dependency from scheduled_deps. */
 function DependencyEdgeImpl(props: EdgeProps<EdgeData>) {
   const { sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, data, selected } =
     props;
   const offsetY = data?.overlapsContinue ? 14 : 0;
-  const [path] = getBezierPath({
+  const [path, labelX, labelY] = getBezierPath({
     sourceX,
     sourceY: sourceY + offsetY,
     targetX,
@@ -75,24 +91,120 @@ function DependencyEdgeImpl(props: EdgeProps<EdgeData>) {
   });
   const state = data?.childState;
   const isActive = state ? ACTIVE.includes(state) : false;
-  const stroke = selected
-    ? "rgb(var(--brand))"
-    : data?.root
-      ? "rgb(var(--border-strong))"
-      : "rgb(var(--state-review))";
+  const disconnect = data?.disconnect;
+  const stroke = disconnect
+    ? "rgb(var(--state-error))"
+    : selected
+      ? "rgb(var(--brand))"
+      : data?.root
+        ? "rgb(var(--border-strong))"
+        : "rgb(var(--state-review))";
 
   return (
-    <BaseEdge
-      path={path}
+    <>
+      <BaseEdge
+        path={path}
+        interactionWidth={DEPENDENCY_INTERACTION_WIDTH}
+        style={{
+          stroke,
+          strokeWidth: disconnect || selected ? 2.3 : isActive ? 1.9 : data?.root ? 1.35 : 1.7,
+          opacity: disconnect || selected ? 1 : isActive ? 0.95 : data?.root ? 0.6 : 0.82,
+          strokeDasharray: isActive ? "3 4" : undefined,
+          animation: isActive ? "edge-march 0.9s linear infinite" : undefined,
+        }}
+        markerEnd={props.markerEnd}
+      />
+      {disconnect && (
+        <EdgeLabelRenderer>
+          <DisconnectControl
+            x={labelX}
+            y={labelY + offsetY}
+            confirming={disconnect.confirming}
+            onRequest={disconnect.onRequest}
+            onConfirm={disconnect.onConfirm}
+            onCancel={disconnect.onCancel}
+          />
+        </EdgeLabelRenderer>
+      )}
+    </>
+  );
+}
+
+/* The withdraw affordance for one dependency edge.
+ *
+ * Two things it must not do. It must not carry `nopan`, and it must not swallow
+ * a non-primary mousedown: right-drag is this canvas's main pan gesture and it
+ * reaches d3-zoom by bubbling, so either one would turn this button into another
+ * patch where panning dies.
+ *
+ * Note this control is genuinely free of `nopan`, unlike the edge it belongs to.
+ * EdgeLabelRenderer portals it into a container outside the edge's own <g>, so
+ * the class React Flow puts on every edge is not an ancestor of it — the pan
+ * filter's `closest('.nopan')` finds nothing here.
+ *
+ * `pointer-events: auto` is required — EdgeLabelRenderer's container sets
+ * `pointer-events: none`, so without it the control paints but cannot be
+ * clicked. */
+function DisconnectControl({
+  x,
+  y,
+  confirming,
+  onRequest,
+  onConfirm,
+  onCancel,
+}: {
+  x: number;
+  y: number;
+  confirming: boolean;
+  onRequest: () => void;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  const swallowPrimaryOnly = (event: React.MouseEvent) => {
+    if (event.button !== 0) return;
+    event.stopPropagation();
+  };
+
+  return (
+    <div
+      className="nodrag absolute flex items-center gap-1"
       style={{
-        stroke,
-        strokeWidth: selected ? 2.3 : isActive ? 1.9 : data?.root ? 1.35 : 1.7,
-        opacity: selected ? 1 : isActive ? 0.95 : data?.root ? 0.6 : 0.82,
-        strokeDasharray: isActive ? "3 4" : undefined,
-        animation: isActive ? "edge-march 0.9s linear infinite" : undefined,
+        transform: `translate(-50%, -50%) translate(${x}px, ${y}px)`,
+        pointerEvents: "auto",
       }}
-      markerEnd={props.markerEnd}
-    />
+      onMouseDown={swallowPrimaryOnly}
+      onClick={swallowPrimaryOnly}
+    >
+      {confirming ? (
+        <>
+          <button
+            type="button"
+            onClick={onConfirm}
+            title="确认断开这条依赖"
+            className="rounded-full border border-state-error/60 bg-state-error-soft px-2 py-0.5 text-[10px] font-medium text-state-error shadow-card transition hover:border-state-error"
+          >
+            断开?
+          </button>
+          <button
+            type="button"
+            onClick={onCancel}
+            title="取消"
+            className="rounded-full border border-line bg-surface-raised px-1.5 py-0.5 text-[10px] text-ink-muted shadow-card transition hover:border-line-strong hover:text-ink"
+          >
+            ×
+          </button>
+        </>
+      ) : (
+        <button
+          type="button"
+          onClick={onRequest}
+          title="断开这条依赖"
+          className="inline-flex h-5 w-5 items-center justify-center rounded-full border border-state-error/55 bg-surface-raised text-[11px] font-semibold leading-none text-state-error shadow-card transition hover:border-state-error hover:bg-state-error-soft"
+        >
+          ×
+        </button>
+      )}
+    </div>
   );
 }
 

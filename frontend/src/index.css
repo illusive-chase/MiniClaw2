@@ -191,10 +191,37 @@ body {
   pointer-events: none;
 }
 
-/* Edges are display-only. React Flow adds a 20px transparent interaction path
- * around each one by default; let canvas gestures pass through that hit area. */
+/* Most edges are display-only. React Flow wraps each one in a 20px transparent
+ * interaction path, and letting every relation claim that strip would lay
+ * cursor-catching bands across the canvas for edges nothing can act on. */
 .react-flow .react-flow__edge {
   pointer-events: none;
+}
+
+/* Dependency edges are the exception: clicking one offers to withdraw it, so
+ * they need React Flow's hit area back. `visibleStroke` is what makes the
+ * transparent interaction path count — it tests the stroke region without
+ * asking whether it was painted.
+ *
+ * This costs a thin ribbon along each dependency edge where right-drag does not
+ * pan: React Flow puts `nopan` on every edge unconditionally, and its d3-zoom
+ * filter refuses to pan whenever the pressed element sits inside one. The
+ * ribbon is narrowed to DEPENDENCY_INTERACTION_WIDTH rather than the default
+ * 20px, and it is the same kind of dead area every node tile already is — tiles
+ * carry `nopan` too, and are far larger targets. Withdrawing a dependency has
+ * to be reachable from the edge itself, so this is the price. */
+.react-flow .react-flow__edge-dependency {
+  pointer-events: visibleStroke;
+}
+
+/* The wire pulled out of a tile's dependency button. Dashed over empty canvas,
+ * where releasing creates a new node; solid once it is over a node that would
+ * accept the dependency, so "this will land" is legible before release. */
+.wiring-overlay path {
+  stroke-dasharray: 5 4;
+}
+.wiring-overlay[data-over="true"] path {
+  stroke-dasharray: none;
 }
 
 /* ───────────── animations (gated by reduced-motion) ───────────── */

@@ -122,6 +122,10 @@ import {
   shouldOpenInteractionNode,
 } from "./nodeUtil";
 import { defaultModelPresetId } from "./modelPresets";
+import {
+  canConnectDependency,
+  ScheduledDepsUpdateQueue,
+} from "./canvas/dependencyWiring";
 
 type Route = "landing" | "project";
 type PendingGateState = {
@@ -845,6 +849,27 @@ export function App() {
     [isNodeNative, nodes],
   );
   const readOnly = session?.read_only ?? false;
+  const canvasNodesById = useMemo(
+    () => new Map(nodes.map((node) => [node.id, node])),
+    [nodes],
+  );
+  const canMutateCanvasNode = useCallback(
+    (nodeId: string) => {
+      const node = nodesRef.current.find((item) => item.id === nodeId);
+      return !readOnly && !!node && isNodeNative(node);
+    },
+    [isNodeNative, readOnly],
+  );
+  const canAcceptCanvasDependency = useCallback(
+    (sourceNodeId: string, targetNodeId: string) => {
+      if (!canMutateCanvasNode(targetNodeId)) return false;
+      return canConnectDependency(
+        { sourceId: sourceNodeId, targetId: targetNodeId },
+        canvasNodesById,
+      );
+    },
+    [canMutateCanvasNode, canvasNodesById],
+  );
   const activeCanvasNodeIds = useMemo(
     () => activeNodesFromList.map((node) => node.id),
     [activeNodesFromList],
@@ -1454,6 +1479,60 @@ export function App() {
     [session?.id],
   );
 
+  /* Dependency PATCHes replace the whole array. Keep one promise chain per
+   * target so rapid edits derive from the preceding response instead of all
+   * racing from the same stale snapshot. Different targets remain parallel. */
+  const dependencyUpdateQueueRef = useRef(new ScheduledDepsUpdateQueue());
+  const enqueueDependencyUpdate = useCallback(
+    (
+      targetNodeId: string,
+      rewrite: (current: string[]) => string[] | null,
+    ) => {
+      void dependencyUpdateQueueRef.current.enqueue(targetNodeId, rewrite, {
+        getTarget: () =>
+          nodesRef.current.find((node) => node.id === targetNodeId),
+        canMutate: (target) =>
+          !readOnly &&
+          isNodeNative(target) &&
+          target.state === "virtual" &&
+          !target.obsolete_reason,
+        write: (scheduledDeps) =>
+          updateVirtualNode(targetNodeId, { scheduled_deps: scheduledDeps }),
+      });
+    },
+    [isNodeNative, readOnly, updateVirtualNode],
+  );
+
+  /* Canvas wiring path: the user drew an edge from `sourceNodeId` to
+   * `targetNodeId`, meaning the target depends on the source. Only the target's
+   * scheduled_deps is sent, so a prompt the user is editing in the inspector
+   * survives — the panel reconciles this write field by field.
+   *
+   * The canvas has already applied the same rules the backend enforces; these
+   * checks are the last read of live state before the write. */
+  const handleConnectDependency = useCallback(
+    (targetNodeId: string, sourceNodeId: string) => {
+      enqueueDependencyUpdate(targetNodeId, (current) => {
+        if (current.includes(sourceNodeId)) return null;
+        return [...current, sourceNodeId];
+      });
+    },
+    [enqueueDependencyUpdate],
+  );
+
+  /* Withdrawing one dependency. `resume_from_node_id` is deliberately untouched:
+   * at runtime the two are independent relations drawn as separate edges, and a
+   * resume edge that outlives its dependency edge is correct. */
+  const handleDisconnectDependency = useCallback(
+    (targetNodeId: string, sourceNodeId: string) => {
+      enqueueDependencyUpdate(targetNodeId, (current) => {
+        if (!current.includes(sourceNodeId)) return null;
+        return current.filter((id) => id !== sourceNodeId);
+      });
+    },
+    [enqueueDependencyUpdate],
+  );
+
   /* Drag-onto-virtual attach path: Canvas hands us (virtualNodeId, principleId)
    * when a principle chip is dropped on a virtual tile. We read the target's
    * current pending_extra_principles, append, and PATCH via updateVirtualNode.
@@ -1620,6 +1699,30 @@ export function App() {
       });
     },
     [createVirtualNode, nodes, session?.model_preset_id, sessionContextSpace?.active_planspace_id],
+  );
+
+  /* Canvas wiring path, empty-canvas release: a new draft virtual that waits for
+   * `sourceNodeId`, placed where the wire was let go. Same write as the "↘"
+   * button's plain click, with an explicit position instead of the lane's
+   * default append slot. */
+  const createDependencyVirtualAt = useCallback(
+    (sourceNodeId: string, position: { x: number; y: number }) => {
+      const parent = nodesRef.current.find((node) => node.id === sourceNodeId);
+      const planspaceId =
+        parent?.planspace_id ?? sessionContextSpace?.active_planspace_id;
+      if (!parent || !planspaceId) return;
+      void createVirtualNode({
+        planspace_id: planspaceId,
+        scheduled_deps: [parent.id],
+        model_preset_id: parent.model_preset_id ?? session?.model_preset_id ?? null,
+        position,
+      });
+    },
+    [
+      createVirtualNode,
+      session?.model_preset_id,
+      sessionContextSpace?.active_planspace_id,
+    ],
   );
 
   /* Attaching downstream of a whole instance (§4.3). The instance declares no
@@ -2555,10 +2658,8 @@ export function App() {
       onInterruptNode: interruptNode,
       onRerunNode: rerunFailedNode,
       canCreateVirtual: !virtualCreateDisabled,
-      canMutateNode: (nodeId) => {
-        const node = nodes.find((item) => item.id === nodeId);
-        return !!node && isNodeNative(node);
-      },
+      canMutateNode: canMutateCanvasNode,
+      canAcceptDependency: canAcceptCanvasDependency,
       canPromoteVirtual: !projectMutationPending && !readOnly,
       canDequeue: !projectMutationPending && !readOnly,
       manualPromotionPlanspaceId,
@@ -2596,6 +2697,8 @@ export function App() {
     modelPresets,
     nodes,
     isNodeNative,
+    canMutateCanvasNode,
+    canAcceptCanvasDependency,
   ]);
 
   /* Canvas layout changes -> serialized backend PATCHes. Best-effort: log on
@@ -3024,6 +3127,10 @@ export function App() {
               onTemplateDrop={onTemplateDrop}
               onAttachPrincipleToVirtual={handleAttachPrincipleToVirtual}
               onAttachSkillToVirtual={handleAttachSkillToVirtual}
+              canMutateNode={canMutateCanvasNode}
+              onConnectDependency={handleConnectDependency}
+              onCreateDependencyVirtualAt={createDependencyVirtualAt}
+              onDisconnectDependency={handleDisconnectDependency}
               onLayoutHintsChange={onLayoutHintsChange}
             />
           ) : (
