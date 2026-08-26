@@ -29,9 +29,17 @@ _CATEGORY_AGENTIC_REVIEW = "category_agentic_review.md"
 _CATEGORY_HUMAN_INTERACT_REVIEW = "category_human_interact_review.md"
 _ANTI_SELF_POISONING = "anti_self_poisoning.md"
 _SHARED_HOST_PROCESSES = "shared_host_processes.md"
+_SUBAGENT_SYNCHRONICITY = "subagent_synchronicity.md"
 _PRINCIPLE_INIT = "principle_init.md"
 _LIBRARY_INIT = "library_init.md"
-_QA_MODE = "qa_mode.md"
+# Each provider reaches ask-user through a different surface: claude has a
+# documented built-in tool, codex gets a self-injected dynamic tool with no
+# documentation of its own. One block cannot serve both without naming a
+# tool that hallucinates on the other provider.
+_QA_MODE_BY_PROVIDER = {
+    "claude": "qa_mode_claude.md",
+    "codex": "qa_mode_codex.md",
+}
 
 
 _ARTIFACT_DEFAULT = """\
@@ -250,11 +258,20 @@ def build_artifact_requirement(node: Node) -> str:
     return _ARTIFACT_REQUIREMENTS[mode]
 
 
-def build_qa_mode_block(node: Node) -> str:
-    """Return the ask-user encouragement block for Q/A-enabled nodes."""
+def build_qa_mode_block(node: Node, *, provider: str) -> str:
+    """Return the provider-specific ask-user block for Q/A-enabled nodes.
+
+    Codex needs the dynamic tool's usage spelled out — MiniClaw2 injects
+    ``ask_user`` itself and the model has no other documentation for it.
+    Claude already documents ``AskUserQuestion``, so restating the schema
+    there only competes with the real thing; a reminder is enough.
+    """
     if node.kind is not NodeKind.AGENT or not node.qa_mode:
         return ""
-    return _load_template(_QA_MODE).strip()
+    template = _QA_MODE_BY_PROVIDER.get((provider or "").lower())
+    if template is None:
+        return ""
+    return _load_template(template).strip()
 
 
 def shared_host_processes_block() -> str:
@@ -267,6 +284,19 @@ def shared_host_processes_block() -> str:
     something an agent did.
     """
     return _load_template(_SHARED_HOST_PROCESSES).strip()
+
+
+def subagent_synchronicity_block() -> str:
+    """Return the guidance ruling out fire-and-forget subagent dispatch.
+
+    A node's turn is reaped when the agent stops calling tools, so a
+    dispatch that reports back through a post-turn notification never
+    lands: the window closes first. Three nodes in one lane each burned
+    their retries re-dispatching background subagents that could not
+    answer, so the constraint is stated rather than left to be
+    rediscovered.
+    """
+    return _load_template(_SUBAGENT_SYNCHRONICITY).strip()
 
 
 def anti_self_poisoning_block() -> str:

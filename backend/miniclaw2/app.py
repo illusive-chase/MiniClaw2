@@ -859,8 +859,26 @@ def create_app(
         node_id = body.get("node_id")
         if not isinstance(node_id, str) or not node_id:
             raise HTTPException(400, "node_id required")
-        hook_runtime.signal_turn_complete(node_id)
-        return JSONResponse({"ok": True})
+        # node_id is inherited by every descendant of the PTY child, so it
+        # names the node but proves nothing. The session id comes from the
+        # Stop payload of the process that is actually stopping; without a
+        # match the signal is dropped rather than trusted.
+        session_id = body.get("session_id")
+        accepted = hook_runtime.signal_turn_complete(
+            node_id,
+            session_id if isinstance(session_id, str) and session_id else None,
+        )
+        if not accepted:
+            # Expected and harmless for a nested CLI. Logged at warning
+            # because the same line is the only symptom if a CLI upgrade
+            # ever stops sending session_id: the check is fail-closed, so
+            # every turn would then run to the stall timeout instead.
+            logger.warning(
+                "refused turn-complete for node %s from unowned session %r",
+                node_id,
+                session_id,
+            )
+        return JSONResponse({"ok": True, "accepted": accepted})
 
     @app.post("/sessions", response_model=SessionInfo)
     def create_session(req: CreateSessionRequest) -> SessionInfo:

@@ -7,8 +7,18 @@ Three behaviors:
   so ``ClaudeNativeSession.start()`` can unblock.
 
 - ``python -m miniclaw2.claude_hook_bridge --turn-complete`` — POSTs
-  ``{"node_id": <MINICLAW_NODE_ID>}`` to ``/hook/turn-complete`` when
-  Claude Code's ``Stop`` hook fires.
+  ``{"node_id": <MINICLAW_NODE_ID>, "session_id": <payload session_id>}``
+  to ``/hook/turn-complete`` when Claude Code's ``Stop`` hook fires.
+
+  ``session_id`` comes from the hook payload, never from the environment,
+  and that distinction is the whole point. ``MINICLAW_NODE_ID`` is
+  inherited by every descendant of the PTY child, so a nested ``claude``
+  session started from a Bash tool call used to end its parent's turn:
+  its ``Stop`` hook announced the *parent's* node id, the backend
+  collected the stream, and the parent lost every tool call still in
+  flight. The payload's ``session_id`` is assigned by the CLI process
+  that is actually stopping, so the backend can tell the node's own PTY
+  from one of its descendants.
 
 - ``python -m miniclaw2.claude_hook_bridge`` (no flag) — reads the
   Claude ``PreToolUse`` payload from stdin, POSTs it to ``/hook/ask``
@@ -121,6 +131,7 @@ def _post_turn_complete() -> int:
         raw = sys.stdin.read()
     except Exception:  # noqa: BLE001
         return 0
+    session_id: str | None = None
     if raw.strip():
         try:
             payload = json.loads(raw)
@@ -128,6 +139,9 @@ def _post_turn_complete() -> int:
             return 0
         if payload.get("hook_event_name") != "Stop":
             return 0
+        claimed = payload.get("session_id")
+        if isinstance(claimed, str) and claimed:
+            session_id = claimed
 
     node_id = os.environ.get("MINICLAW_NODE_ID")
     token = os.environ.get("MINICLAW_HOOK_TOKEN")
@@ -135,7 +149,10 @@ def _post_turn_complete() -> int:
     if not (node_id and token and url):
         return 0
 
-    body = json.dumps({"node_id": node_id}).encode("utf-8")
+    signal: dict[str, str] = {"node_id": node_id}
+    if session_id:
+        signal["session_id"] = session_id
+    body = json.dumps(signal).encode("utf-8")
     req = urlrequest.Request(
         url,
         data=body,

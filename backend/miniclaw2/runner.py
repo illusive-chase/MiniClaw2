@@ -76,6 +76,7 @@ from .launch_prompt import (
     build_principle_init_block,
     build_qa_mode_block,
     shared_host_processes_block,
+    subagent_synchronicity_block,
 )
 from .materialize import (
     GRAPH_RUNS_DIRNAME,
@@ -1199,7 +1200,13 @@ class NodeRunner:
                 store_root=self.store.root,
             ),
             _skill_suggestion_block(self._skill_materialization),
-            build_qa_mode_block(self.node),
+            build_qa_mode_block(
+                self.node,
+                provider=get_model_preset(
+                    self.node.model_preset_id,
+                    store_root=self.store.root,
+                ).provider,
+            ),
             build_dependency_launch_block(
                 self.node,
                 lane_path=self._lane_prompt_path(),
@@ -1210,6 +1217,7 @@ class NodeRunner:
                 project_preferred_language(self.project)
             ),
             shared_host_processes_block(),
+            subagent_synchronicity_block(),
             anti_self_poisoning_block(),
         )
 

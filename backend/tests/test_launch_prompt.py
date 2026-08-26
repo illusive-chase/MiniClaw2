@@ -20,6 +20,7 @@ from miniclaw2.launch_prompt import (
     build_dependency_launch_block,
     build_qa_mode_block,
     shared_host_processes_block,
+    subagent_synchronicity_block,
 )
 from miniclaw2.materialize import GRAPH_DIRNAME
 
@@ -322,37 +323,62 @@ class ArtifactRequirementTests(unittest.TestCase):
 
 class QaModeBlockTests(unittest.TestCase):
     def test_block_is_empty_when_off(self) -> None:
-        self.assertEqual(build_qa_mode_block(_agent_node()), "")
+        self.assertEqual(
+            build_qa_mode_block(_agent_node(), provider="codex"), ""
+        )
+        self.assertEqual(
+            build_qa_mode_block(_agent_node(), provider="claude"), ""
+        )
 
-    def test_block_is_present_when_on(self) -> None:
+    def test_codex_block_documents_the_dynamic_tool(self) -> None:
+        # MiniClaw2 injects ``ask_user`` itself, so this block is the only
+        # place codex learns the schema it must call.
         node = _agent_node()
         node.qa_mode = True
-        block = build_qa_mode_block(node)
-        self.assertIn("Q/A mode", block)
-        self.assertIn("ask-user", block)
-
-    def test_block_names_no_concrete_tool(self) -> None:
-        # claude exposes AskUserQuestion, codex exposes a self-injected
-        # ask_user dynamic tool; naming either one hallucinates on the other.
-        node = _agent_node()
-        node.qa_mode = True
-        block = build_qa_mode_block(node)
+        block = build_qa_mode_block(node, provider="codex")
+        self.assertIn("ask_user", block)
+        for field in ("id", "header", "question", "options", "multiSelect"):
+            with self.subTest(field=field):
+                self.assertIn(f"`{field}`", block)
         self.assertNotIn("AskUserQuestion", block)
+
+    def test_claude_block_points_at_the_builtin_and_stays_short(self) -> None:
+        # Claude already documents AskUserQuestion; restating the schema here
+        # would only compete with the real tool description.
+        node = _agent_node()
+        node.qa_mode = True
+        block = build_qa_mode_block(node, provider="claude")
+        self.assertIn("AskUserQuestion", block)
         self.assertNotIn("ask_user", block)
+        self.assertLess(len(block), len(build_qa_mode_block(node, provider="codex")))
+
+    def test_unknown_provider_yields_no_block(self) -> None:
+        node = _agent_node()
+        node.qa_mode = True
+        self.assertEqual(build_qa_mode_block(node, provider="unknown"), "")
 
     def test_composition_includes_and_omits_the_block(self) -> None:
         from miniclaw2.runner import _compose_launch_instructions
 
         node = _agent_node()
         node.qa_mode = True
-        on = build_qa_mode_block(node)
+        on = build_qa_mode_block(node, provider="codex")
         composed = _compose_launch_instructions("CAT", on, "LANG")
         self.assertIn(on, composed)
         node.qa_mode = False
         composed_off = _compose_launch_instructions(
-            "CAT", build_qa_mode_block(node), "LANG"
+            "CAT", build_qa_mode_block(node, provider="codex"), "LANG"
         )
         self.assertEqual(composed_off, "CAT\n\n---\n\nLANG")
+
+    def test_composition_passes_the_node_preset_provider(self) -> None:
+        import inspect
+
+        from miniclaw2.runner import NodeRunner
+
+        source = inspect.getsource(NodeRunner._build_agent_launch_instructions)
+        self.assertIn("build_qa_mode_block(", source)
+        self.assertIn("provider=get_model_preset(", source)
 
 
 class SharedHostProcessesTests(unittest.TestCase):
@@ -378,6 +404,30 @@ class SharedHostProcessesTests(unittest.TestCase):
         """Unlike qa_mode, this guidance is never node-gated."""
         self.assertEqual(shared_host_processes_block(), shared_host_processes_block())
         self.assertTrue(shared_host_processes_block().strip())
+
+
+class SubagentSynchronicityTests(unittest.TestCase):
+    """Background subagents cannot report back before the node is reaped."""
+
+    def test_block_rules_out_post_turn_reporting(self) -> None:
+        block = subagent_synchronicity_block()
+        self.assertIn("before you hand", block)
+        self.assertIn("notification", block)
+        self.assertIn("launched successfully", block)
+
+    def test_block_is_wired_into_agent_launch_composition(self) -> None:
+        import inspect
+
+        from miniclaw2.runner import NodeRunner
+
+        source = inspect.getsource(NodeRunner._build_agent_launch_instructions)
+        self.assertIn("subagent_synchronicity_block()", source)
+
+    def test_block_is_unconditional(self) -> None:
+        self.assertEqual(
+            subagent_synchronicity_block(), subagent_synchronicity_block()
+        )
+        self.assertTrue(subagent_synchronicity_block().strip())
 
 
 if __name__ == "__main__":

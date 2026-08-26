@@ -39,6 +39,9 @@ AskDispatcher = Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]
 _SESSION_READY_TIMEOUT = 45.0
 _STREAM_POLL_INTERVAL = 0.1
 _STREAM_STALL_TIMEOUT_SECONDS = 30 * 60.0
+# How long a verified turn-complete waits for in-flight tool calls to land
+# their results before the stream closes anyway.
+_TURN_COMPLETE_TOOL_DRAIN_SECONDS = 10.0
 _CLOSE_TIMEOUT = 3.0
 
 
@@ -133,7 +136,7 @@ class ClaudeNativeSession:
             self._session_id
         )
         self._turn_complete_event = hook_runtime.register_turn_complete(
-            self._node_id
+            self._node_id, self._session_id
         )
 
         loop = asyncio.get_running_loop()
@@ -234,6 +237,7 @@ class ClaudeNativeSession:
 
         loop = asyncio.get_running_loop()
         last_transcript_progress_ts = loop.time()
+        drain_deadline: float | None = None
         while not self._closed:
             result = drain(self._jsonl_path, self._jsonl_offset)
             self._jsonl_offset = result.new_offset
@@ -267,16 +271,38 @@ class ClaudeNativeSession:
                 self._turn_complete_event is not None
                 and self._turn_complete_event.is_set()
             ):
-                usage_event = self._final_usage_event()
-                if usage_event is not None:
-                    yield usage_event
-                yield AgentProviderEvent(
-                    kind="done",
-                    final_state=(
-                        "cancelled" if self._interrupt_requested else "done"
-                    ),
-                )
-                return
+                # A verified Stop can still land a poll or two before the
+                # matching tool_result reaches the transcript, so hold the
+                # stream open briefly rather than dropping the tail of the
+                # turn. The wait is bounded: a tool_result that never
+                # arrives must not strand the node, and the stall check
+                # below is itself skipped while tools are pending.
+                if not self._translator.has_pending_tools:
+                    drain_deadline = None
+                else:
+                    if drain_deadline is None:
+                        drain_deadline = (
+                            loop.time() + _TURN_COMPLETE_TOOL_DRAIN_SECONDS
+                        )
+                    if loop.time() >= drain_deadline:
+                        logger.warning(
+                            "turn-complete signaled with tool calls still "
+                            "pending after %.0fs; closing the stream",
+                            _TURN_COMPLETE_TOOL_DRAIN_SECONDS,
+                        )
+                        drain_deadline = None
+
+                if drain_deadline is None:
+                    usage_event = self._final_usage_event()
+                    if usage_event is not None:
+                        yield usage_event
+                    yield AgentProviderEvent(
+                        kind="done",
+                        final_state=(
+                            "cancelled" if self._interrupt_requested else "done"
+                        ),
+                    )
+                    return
 
             if not _pty_child_alive(self._pty):
                 usage_event = self._final_usage_event()
@@ -407,6 +433,13 @@ class ClaudeNativeSession:
         self._session_id = new_session_id
         self._jsonl_path = new_jsonl
         self._jsonl_offset = _retarget_offset(new_jsonl, stream_offset)
+        # A rotated session id is still this node's own PTY, so its Stop
+        # signal has to keep counting as ours — otherwise the turn-complete
+        # check would reject the very session we are now streaming.
+        if self._turn_complete_event is not None:
+            hook_runtime.claim_turn_complete_session(
+                self._node_id, new_session_id, self._turn_complete_event
+            )
         if self._input is not None:
             self._input.update_jsonl_path(new_jsonl)
 

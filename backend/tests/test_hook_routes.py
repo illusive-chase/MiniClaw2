@@ -141,7 +141,12 @@ class HookBridgeTest(unittest.TestCase):
             patch.object(
                 claude_hook_bridge.sys,
                 "stdin",
-                io.StringIO(json.dumps({"hook_event_name": "Stop"})),
+                io.StringIO(
+                    json.dumps({
+                        "hook_event_name": "Stop",
+                        "session_id": "session-1",
+                    })
+                ),
             ),
             patch.object(claude_hook_bridge.urlrequest, "urlopen") as urlopen,
         ):
@@ -153,7 +158,46 @@ class HookBridgeTest(unittest.TestCase):
             request.full_url,
             "http://127.0.0.1:43123/hook/turn-complete",
         )
-        self.assertEqual(json.loads(request.data), {"node_id": "node-1"})
+        self.assertEqual(
+            json.loads(request.data),
+            {"node_id": "node-1", "session_id": "session-1"},
+        )
+
+    def test_turn_complete_reports_payload_session_not_env_session(self) -> None:
+        """The proof of identity must come from the payload.
+
+        ``MINICLAW_SESSION_ID`` is inherited by a nested CLI just as
+        ``MINICLAW_NODE_ID`` is, so reading the session from the
+        environment would hand the impostor both halves of the credential.
+        """
+        from miniclaw2 import claude_hook_bridge
+
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "MINICLAW_HOOK_URL": "http://127.0.0.1:43123/hook/ask",
+                    "MINICLAW_HOOK_TOKEN": "token",
+                    "MINICLAW_NODE_ID": "node-1",
+                    "MINICLAW_SESSION_ID": "parent-session",
+                },
+            ),
+            patch.object(
+                claude_hook_bridge.sys,
+                "stdin",
+                io.StringIO(
+                    json.dumps({
+                        "hook_event_name": "Stop",
+                        "session_id": "nested-session",
+                    })
+                ),
+            ),
+            patch.object(claude_hook_bridge.urlrequest, "urlopen") as urlopen,
+        ):
+            claude_hook_bridge.main(["--turn-complete"])
+
+        body = json.loads(urlopen.call_args.args[0].data)
+        self.assertEqual(body["session_id"], "nested-session")
 
 
 class HookRegistrySupersedeTest(unittest.TestCase):
@@ -168,11 +212,11 @@ class HookRegistrySupersedeTest(unittest.TestCase):
 
     def test_superseded_turn_complete_release_keeps_successor(self) -> None:
         node_id = "node-supersede"
-        first = hook_runtime.register_turn_complete(node_id)
-        hook_runtime.signal_turn_complete(node_id)
+        first = hook_runtime.register_turn_complete(node_id, "session-1")
+        hook_runtime.signal_turn_complete(node_id, "session-1")
         self.assertTrue(first.is_set())
 
-        second = hook_runtime.register_turn_complete(node_id)
+        second = hook_runtime.register_turn_complete(node_id, "session-2")
         self.addCleanup(hook_runtime.unregister_turn_complete, node_id)
         self.assertIsNot(second, first)
         self.assertFalse(second.is_set())
@@ -180,16 +224,89 @@ class HookRegistrySupersedeTest(unittest.TestCase):
         # Turn 1's late teardown must be a no-op now.
         hook_runtime.unregister_turn_complete(node_id, first)
 
-        self.assertTrue(hook_runtime.signal_turn_complete(node_id))
+        self.assertTrue(hook_runtime.signal_turn_complete(node_id, "session-2"))
         self.assertTrue(second.is_set())
 
     def test_owner_release_clears_turn_complete_slot(self) -> None:
         node_id = "node-owner-release"
-        event = hook_runtime.register_turn_complete(node_id)
+        event = hook_runtime.register_turn_complete(node_id, "session-1")
 
         hook_runtime.unregister_turn_complete(node_id, event)
 
-        self.assertFalse(hook_runtime.signal_turn_complete(node_id))
+        self.assertFalse(hook_runtime.signal_turn_complete(node_id, "session-1"))
+
+
+class TurnCompleteOwnershipTest(unittest.TestCase):
+    """A descendant process must not be able to end its parent's turn.
+
+    ``MINICLAW_NODE_ID`` is inherited through ``os.environ.copy()`` in
+    ``build_env``, so a nested ``claude`` session launched from a Bash
+    tool call announces its parent's node id when it stops. The payload's
+    session id is the half of the credential it cannot forge.
+    """
+
+    def test_nested_session_signal_is_refused(self) -> None:
+        node_id = "node-nested"
+        event = hook_runtime.register_turn_complete(node_id, "owned-session")
+        self.addCleanup(hook_runtime.unregister_turn_complete, node_id)
+
+        accepted = hook_runtime.signal_turn_complete(node_id, "nested-session")
+
+        self.assertFalse(accepted)
+        self.assertFalse(event.is_set())
+
+    def test_owned_session_signal_is_accepted(self) -> None:
+        node_id = "node-owned"
+        event = hook_runtime.register_turn_complete(node_id, "owned-session")
+        self.addCleanup(hook_runtime.unregister_turn_complete, node_id)
+
+        accepted = hook_runtime.signal_turn_complete(node_id, "owned-session")
+
+        self.assertTrue(accepted)
+        self.assertTrue(event.is_set())
+
+    def test_signal_without_session_is_refused(self) -> None:
+        """Missing proof is failed proof — fail closed, never fall back."""
+        node_id = "node-no-session"
+        event = hook_runtime.register_turn_complete(node_id, "owned-session")
+        self.addCleanup(hook_runtime.unregister_turn_complete, node_id)
+
+        accepted = hook_runtime.signal_turn_complete(node_id, None)
+
+        self.assertFalse(accepted)
+        self.assertFalse(event.is_set())
+
+    def test_rotated_session_claim_honors_earlier_signal(self) -> None:
+        """A Stop that arrives before we learn the rotated id is retained.
+
+        The child can rotate its session id and stop before MiniClaw2 has
+        observed the new id in the transcript. Discarding that signal
+        outright would strand the node until the stall timeout.
+        """
+        node_id = "node-rotate"
+        event = hook_runtime.register_turn_complete(node_id, "original-session")
+        self.addCleanup(hook_runtime.unregister_turn_complete, node_id)
+
+        self.assertFalse(hook_runtime.signal_turn_complete(node_id, "rotated-session"))
+        self.assertFalse(event.is_set())
+
+        hook_runtime.claim_turn_complete_session(node_id, "rotated-session")
+
+        self.assertTrue(event.is_set())
+
+    def test_claim_from_superseded_event_is_ignored(self) -> None:
+        node_id = "node-claim-supersede"
+        first = hook_runtime.register_turn_complete(node_id, "session-1")
+        second = hook_runtime.register_turn_complete(node_id, "session-2")
+        self.addCleanup(hook_runtime.unregister_turn_complete, node_id)
+
+        # Turn 1 retargets late; it must not widen turn 2's owned set.
+        hook_runtime.claim_turn_complete_session(node_id, "session-1-rotated", first)
+
+        self.assertFalse(
+            hook_runtime.signal_turn_complete(node_id, "session-1-rotated")
+        )
+        self.assertFalse(second.is_set())
 
     def test_superseded_session_ready_release_keeps_successor(self) -> None:
         session_id = "session-supersede"
@@ -230,7 +347,7 @@ class HookRegistrySupersedeTest(unittest.TestCase):
 class HookAskRouteTest(unittest.TestCase):
     def test_hook_turn_complete_signals_active_node(self) -> None:
         node_id = "node-complete"
-        event = hook_runtime.register_turn_complete(node_id)
+        event = hook_runtime.register_turn_complete(node_id, "session-owned")
         try:
             with (
                 tempfile.TemporaryDirectory() as raw,
@@ -243,14 +360,41 @@ class HookAskRouteTest(unittest.TestCase):
             ):
                 res = client.post(
                     "/hook/turn-complete",
-                    json={"node_id": node_id},
+                    json={"node_id": node_id, "session_id": "session-owned"},
                     headers={"Authorization": f"Bearer {hook_runtime.token()}"},
                 )
         finally:
             hook_runtime.unregister_turn_complete(node_id)
 
         self.assertEqual(res.status_code, 200)
+        self.assertTrue(res.json()["accepted"])
         self.assertTrue(event.is_set())
+
+    def test_hook_turn_complete_refuses_foreign_session(self) -> None:
+        """The nested-CLI case, end to end through the endpoint."""
+        node_id = "node-foreign"
+        event = hook_runtime.register_turn_complete(node_id, "session-owned")
+        try:
+            with (
+                tempfile.TemporaryDirectory() as raw,
+                patch.dict(
+                    os.environ,
+                    {"MINICLAW_HOME": str(Path(raw) / "store")},
+                ),
+                patch.object(app_module, "install_hooks", return_value=Path(raw)),
+                TestClient(app_module.create_app()) as client,
+            ):
+                res = client.post(
+                    "/hook/turn-complete",
+                    json={"node_id": node_id, "session_id": "session-nested"},
+                    headers={"Authorization": f"Bearer {hook_runtime.token()}"},
+                )
+        finally:
+            hook_runtime.unregister_turn_complete(node_id)
+
+        self.assertEqual(res.status_code, 200)
+        self.assertFalse(res.json()["accepted"])
+        self.assertFalse(event.is_set())
 
     def test_hook_ask_waits_for_dispatcher(self) -> None:
         async def slow_dispatcher(_payload: dict) -> dict:

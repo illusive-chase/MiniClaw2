@@ -650,6 +650,143 @@ class SubmitConfirmationFallbackTest(unittest.TestCase):
 
 
 class ClaudeNativeStreamTerminalTest(unittest.IsolatedAsyncioTestCase):
+    async def test_turn_complete_waits_for_in_flight_tool_result(self) -> None:
+        """A verified Stop must not truncate a tool call still in flight.
+
+        Second line of defense behind the ownership check: even a genuine
+        turn-complete can land a poll before the matching ``tool_result``
+        is written, and collecting the stream there loses the tail of the
+        turn.
+        """
+        with tempfile.TemporaryDirectory() as raw:
+            session = _stream_session(raw, _FakePty(alive=True))
+            _write_jsonl(
+                session._jsonl_path,
+                {
+                    "type": "assistant",
+                    "message": {
+                        "content": [
+                            {
+                                "type": "tool_use",
+                                "id": "tool-1",
+                                "name": "Bash",
+                                "input": {"command": "echo hi"},
+                            }
+                        ],
+                    },
+                },
+            )
+            session._turn_complete_event = asyncio.Event()
+            session._turn_complete_event.set()
+
+            async def land_result() -> None:
+                # The result arrives after the signal, as it does when a
+                # nested process stops mid-tool-call.
+                with session._jsonl_path.open("a", encoding="utf-8") as f:
+                    f.write(
+                        json.dumps({
+                            "type": "user",
+                            "message": {
+                                "role": "user",
+                                "content": [
+                                    {
+                                        "type": "tool_result",
+                                        "tool_use_id": "tool-1",
+                                        "content": "hi",
+                                    }
+                                ],
+                            },
+                        })
+                        + "\n"
+                    )
+
+            with patch(
+                "miniclaw2.providers.claude_native._STREAM_POLL_INTERVAL", 0
+            ):
+                collector = asyncio.ensure_future(
+                    _collect(session.stream_events())
+                )
+                await asyncio.sleep(0)
+                await land_result()
+                events = await asyncio.wait_for(collector, timeout=5)
+
+        activities = [
+            event.event
+            for event in events
+            if (
+                event.kind == "event"
+                and event.event is not None
+                and event.event.type == "activity"
+            )
+        ]
+        self.assertTrue(
+            any(a.status == "finish" for a in activities),
+            "the tool_result that landed after the signal must be streamed",
+        )
+        self.assertEqual(events[-1].kind, "done")
+        self.assertEqual(events[-1].final_state, "done")
+
+    async def test_turn_complete_tool_drain_is_bounded(self) -> None:
+        """A tool_result that never arrives must not strand the node.
+
+        The stall check is skipped while tools are pending, so the drain
+        window is the only bound on this path.
+        """
+        with tempfile.TemporaryDirectory() as raw:
+            session = _stream_session(raw, _FakePty(alive=True))
+            _write_jsonl(
+                session._jsonl_path,
+                {
+                    "type": "assistant",
+                    "message": {
+                        "content": [
+                            {
+                                "type": "tool_use",
+                                "id": "tool-orphan",
+                                "name": "Bash",
+                                "input": {"command": "sleep 999"},
+                            }
+                        ],
+                    },
+                },
+            )
+            session._turn_complete_event = asyncio.Event()
+            session._turn_complete_event.set()
+
+            with (
+                patch(
+                    "miniclaw2.providers.claude_native._STREAM_POLL_INTERVAL", 0
+                ),
+                patch(
+                    "miniclaw2.providers.claude_native."
+                    "_TURN_COMPLETE_TOOL_DRAIN_SECONDS",
+                    0.05,
+                ),
+            ):
+                events = await asyncio.wait_for(
+                    _collect(session.stream_events()), timeout=5
+                )
+
+        self.assertEqual(events[-1].kind, "done")
+        self.assertEqual(events[-1].final_state, "done")
+
+    async def test_retarget_keeps_rotated_session_signalable(self) -> None:
+        """Rotation must not lock the node out of its own turn-complete."""
+        with tempfile.TemporaryDirectory() as raw:
+            session = _stream_session(raw, _FakePty(alive=True))
+            node_id = session._node_id
+            session._turn_complete_event = hook_runtime.register_turn_complete(
+                node_id, session.session_id
+            )
+            self.addCleanup(hook_runtime.unregister_turn_complete, node_id)
+
+            session._retarget("rotated-session", Path(raw) / "rotated.jsonl")
+
+            self.assertTrue(
+                hook_runtime.signal_turn_complete(node_id, "rotated-session")
+            )
+            self.assertTrue(session._turn_complete_event.is_set())
+
     async def test_submit_retarget_without_marker_offset_seeks_to_eof(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             session = _stream_session(raw, _FakePty(alive=True))
@@ -1097,8 +1234,12 @@ class ClaudeNativeStreamTerminalTest(unittest.IsolatedAsyncioTestCase):
                 first.session_id
             )
             first._session_ready_key = first.session_id
-            first._turn_complete_event = hook_runtime.register_turn_complete(node_id)
-            self.assertTrue(hook_runtime.signal_turn_complete(node_id))
+            first._turn_complete_event = hook_runtime.register_turn_complete(
+                node_id, first.session_id
+            )
+            self.assertTrue(
+                hook_runtime.signal_turn_complete(node_id, first.session_id)
+            )
 
             # The repair turn spawns while turn 1's generator is still
             # awaiting finalization.
@@ -1116,12 +1257,16 @@ class ClaudeNativeStreamTerminalTest(unittest.IsolatedAsyncioTestCase):
                 second.session_id
             )
             second._session_ready_key = second.session_id
-            second._turn_complete_event = hook_runtime.register_turn_complete(node_id)
+            second._turn_complete_event = hook_runtime.register_turn_complete(
+                node_id, second.session_id
+            )
             self.addCleanup(hook_runtime.unregister_turn_complete, node_id)
 
             await first.close()
 
-            self.assertTrue(hook_runtime.signal_turn_complete(node_id))
+            self.assertTrue(
+                hook_runtime.signal_turn_complete(node_id, second.session_id)
+            )
             self.assertTrue(second._turn_complete_event.is_set())
 
             with patch(

@@ -150,6 +150,41 @@ and both surfaces show the ref's own update time instead, which is a
 different and honest fact.
 
 
+### 2.10 Node identity is inherited by every descendant of the PTY child
+
+`build_env` seeds the child from `os.environ.copy()`, so `MINICLAW_NODE_ID`
+reaches not just the `claude` process MiniClaw2 spawned but every process
+descended from it. Any of them running the user-level hooks in
+`~/.claude/settings.json` therefore reports **the node's** id as its own —
+including a `claude` session an agent starts from a Bash tool call, and
+including one a human starts in a shell that happens to have inherited the
+variable.
+
+`turn_complete` no longer trusts that id alone: the `Stop` payload's
+`session_id` must match a session the node's PTY is known to own, and an
+unproven claim is dropped rather than accepted. The check is **fail-closed
+on purpose**, and that choice has a visible failure mode worth stating: if
+a CLI upgrade ever stops sending `session_id` in the `Stop` payload, no
+signal can ever be proven, and every node runs to the 30-minute stall
+timeout instead of ending. The single symptom is a `refused turn-complete`
+warning per turn. Do not "repair" that by falling back to accepting an
+unproven signal — that restores the original defect, in which a nested
+session ended its parent's turn and stranded every tool call still in
+flight.
+
+The same inheritance reaches `session_ready`, which still reads
+`MINICLAW_SESSION_ID` from the environment. That one is currently harmless
+rather than fixed: its event is awaited once inside `start()`, before the
+agent can run any tool, so a descendant's late duplicate only re-sets an
+event that is already set. It stops being harmless the moment anything
+awaits session-ready **after** the first submit — at that point it needs
+the same payload-derived proof.
+
+The general rule the two cases share: an inherited environment variable
+names a node, it never proves one. Any future hook that lets the child
+influence node lifecycle needs a credential the child cannot inherit.
+
+
 ## 3. Open directions
 
 Design work argued through and not built. Each names the philosophical
