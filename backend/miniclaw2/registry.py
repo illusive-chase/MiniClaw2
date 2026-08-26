@@ -88,6 +88,10 @@ _STARTUP_INTERRUPT_REASON = "interrupted by backend restart"
 _RUNTIME_OWNER_FILENAME = ".runtime-owner.json"
 
 
+class PlanspaceModePreconditionError(ValueError):
+    """The planspace mode changed before a conditional virtual edit."""
+
+
 def _process_is_alive(pid: int) -> bool:
     """Whether ``pid`` still names a live process owned by this user."""
     if pid <= 0:
@@ -2581,6 +2585,7 @@ class ProjectRegistry:
         pid: str,
         vid: str,
         *,
+        expected_planspace_mode: str | PlanspaceMode | None | object = _UNSET,
         prompt_draft: str | None | object = _UNSET,
         category: str | Category | None | object = _UNSET,
         subtype: str | ReviewSubtype | None | object = _UNSET,
@@ -2614,6 +2619,20 @@ class ProjectRegistry:
         self.require_native_node(rt.project, existing)
         if existing.kind is not NodeKind.AGENT or existing.state is not NodeState.VIRTUAL:
             return None
+
+        if expected_planspace_mode is not _UNSET:
+            if expected_planspace_mode is None:
+                raise ValueError("expected_planspace_mode is required")
+            expected_mode = normalize_planspace_mode(str(expected_planspace_mode))
+            current_mode = read_planspace_mode(
+                rt.project,
+                existing.planspace_id or "",
+                store_root=self.store.root,
+            )
+            if current_mode is not expected_mode:
+                raise PlanspaceModePreconditionError(
+                    "planspace mode changed before the virtual node was saved"
+                )
 
         update: dict[str, Any] = {}
         if prompt_draft is not _UNSET:

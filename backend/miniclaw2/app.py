@@ -57,7 +57,12 @@ from .language import normalize_preferred_language, project_preferred_language
 from .model_catalog import list_model_presets
 from .providers.claude_native import hook_runtime
 from .providers.claude_native.hook_installer import install_hooks
-from .registry import NonNativeNodeError, NonNativeProjectError, ProjectRegistry
+from .registry import (
+    NonNativeNodeError,
+    NonNativeProjectError,
+    PlanspaceModePreconditionError,
+    ProjectRegistry,
+)
 from .replay import LiveReplayBuffer
 from .skills import (
     SkillError,
@@ -276,6 +281,7 @@ class UpdatePlanspaceModeRequest(BaseModel):
 class UpdateVirtualRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    expected_planspace_mode: Literal["manual", "auto"] | None = None
     prompt_draft: str | None = None
     category: str | None = None
     subtype: str | None = None
@@ -1641,6 +1647,8 @@ def create_app(
             kwargs[field] = getattr(req, field)
         try:
             node = registry.update_virtual(sid, vid, **kwargs)
+        except PlanspaceModePreconditionError as exc:
+            raise HTTPException(409, str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
         if node is None:

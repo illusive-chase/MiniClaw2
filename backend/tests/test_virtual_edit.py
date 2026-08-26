@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
-from miniclaw2.contextspace import create_planspace
+from miniclaw2.contextspace import create_planspace, set_planspace_mode
 from miniclaw2.domain import (
     ArtifactMode,
     Category,
@@ -20,7 +20,7 @@ from miniclaw2.domain import (
     ReviewBrief,
     ReviewSubtype,
 )
-from miniclaw2.registry import ProjectRegistry
+from miniclaw2.registry import PlanspaceModePreconditionError, ProjectRegistry
 from miniclaw2.store import Store
 
 
@@ -113,6 +113,29 @@ class VirtualEditRegistryTests(unittest.TestCase):
         assert preview is not None
         self.assertIn('"prompt_draft": "new draft"', preview)
         self.assertIn('"obsolete_reason": "superseded"', preview)
+
+    def test_update_virtual_mode_precondition_prevents_auto_lane_write(self) -> None:
+        node = self._virtual("conditional")
+
+        set_planspace_mode(
+            self.project,
+            self.lane,
+            "auto",
+            store_root=self.store.root,
+        )
+
+        with self.assertRaises(PlanspaceModePreconditionError):
+            self.registry.update_virtual(
+                self.project.id,
+                node.id,
+                expected_planspace_mode="manual",
+                prompt_draft="must not be persisted",
+            )
+
+        unchanged = self.store.load_node(self.project.id, node.id)
+        assert unchanged is not None
+        self.assertEqual(unchanged.prompt_draft, node.prompt_draft)
+        self.assertNotIn(node.id, self.registry._runtimes[self.project.id].runner_tasks)
 
     def test_update_virtual_can_change_model_preset(self) -> None:
         node = self._virtual("provider-node")
@@ -809,6 +832,10 @@ class VirtualEditApiTests(unittest.TestCase):
                         return node if sid == project.id and nid == node.id else None
 
                     def update_virtual(self, sid: str, vid: str, **kwargs: object) -> Node | None:
+                        if kwargs.get("expected_planspace_mode") == "auto":
+                            raise PlanspaceModePreconditionError(
+                                "planspace mode changed before the virtual node was saved"
+                            )
                         calls.append({"sid": sid, "vid": vid, **kwargs})
                         return node
 
@@ -818,18 +845,28 @@ class VirtualEditApiTests(unittest.TestCase):
                         res = client.patch(
                             f"/sessions/{project.id}/virtuals/{node.id}",
                             json={
+                                "expected_planspace_mode": "manual",
                                 "prompt_draft": "updated",
                                 "motivation": "new motivation",
                                 "obsolete_reason": None,
+                            },
+                        )
+                        conflict = client.patch(
+                            f"/sessions/{project.id}/virtuals/{node.id}",
+                            json={
+                                "expected_planspace_mode": "auto",
+                                "prompt_draft": "must not be saved",
                             },
                         )
                     finally:
                         client.close()
 
             self.assertEqual(res.status_code, 200, res.text)
+            self.assertEqual(conflict.status_code, 409, conflict.text)
             self.assertEqual(calls, [{
                 "sid": project.id,
                 "vid": node.id,
+                "expected_planspace_mode": "manual",
                 "prompt_draft": "updated",
                 "motivation": "new motivation",
                 "obsolete_reason": None,

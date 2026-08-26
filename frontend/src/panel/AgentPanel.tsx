@@ -60,6 +60,15 @@ import {
   providerLabel,
   selectableModelPresets,
 } from "../modelPresets";
+import {
+  clearStashedDraft,
+  draftShapeMatches,
+  draftStashKey,
+  readStashedDraft,
+  shouldAutosaveDraft,
+  stashRestoreDecision,
+  writeStashedDraft,
+} from "../draftStash";
 
 export type AgentPanelProps = {
   sessionId: string;
@@ -189,6 +198,19 @@ export function AgentPanel({
     },
     [],
   );
+
+  /* Autosaving to the server is only safe on a manual lane. `update_virtual`
+   * finishes by running an auto-promotion pass, so on an auto lane a saved
+   * prompt is a launched agent — a periodic push there would start the run
+   * mid-sentence, which is not undoable. On those lanes the local stash is the
+   * whole protection.
+   *
+   * Deliberately wider than the backend's own gate, which only promotes when
+   * the lane is also the active one: an inactive auto lane would be safe to
+   * push to, but it can be activated from elsewhere at any moment and the
+   * stash already loses nothing there. */
+  const autosaveToServer =
+    canMutate && node.state === "virtual" && isManualPlanspace(node.planspace_id);
 
   const promote = async () => {
     if (promoting) return;
@@ -419,6 +441,8 @@ export function AgentPanel({
               onUpdateVirtual={onUpdateVirtual}
               onPromotabilityChange={handleDraftPromotabilityChange}
               focusRequestVersion={canMutate ? focusRequestVersion : 0}
+              sessionId={sessionId}
+              autosaveToServer={autosaveToServer}
             />
           </fieldset>
         ) : (
@@ -615,6 +639,12 @@ const ARTIFACT_MODE_HINTS: Record<ArtifactMode, string> = {
   custom: "在下方描述你想要的产出物。这段文字会原样进入 agent 的提示。",
 };
 
+/* 10s: the interval the user asked for. Short enough that a lost tick costs
+ * one sentence, long enough that a sustained edit is a handful of writes rather
+ * than one per keystroke — each save is a node-file write plus a debounced git
+ * commit on the metadata store. */
+const AUTOSAVE_INTERVAL_MS = 10_000;
+
 export type VirtualDraft = {
   promptDraft: string;
   motivation: string;
@@ -664,6 +694,10 @@ type VirtualNodeBodyProps = {
   ) => Promise<NodeInfo | undefined>;
   onPromotabilityChange: (nodeId: string, ready: boolean) => void;
   focusRequestVersion: number;
+  sessionId: string;
+  /* False on auto lanes and read-only nodes: the draft is stashed locally but
+   * never pushed on a timer. See `autosaveToServer` in AgentPanel. */
+  autosaveToServer: boolean;
 };
 
 const VirtualNodeBody = forwardRef<VirtualNodeBodyHandle, VirtualNodeBodyProps>(function VirtualNodeBody({
@@ -675,6 +709,8 @@ const VirtualNodeBody = forwardRef<VirtualNodeBodyHandle, VirtualNodeBodyProps>(
   onUpdateVirtual,
   onPromotabilityChange,
   focusRequestVersion,
+  sessionId,
+  autosaveToServer,
 }, ref) {
   if (node.kind === "verifier") {
     return <VerifierVirtualBody node={node} nodesById={nodesById} />;
@@ -690,6 +726,8 @@ const VirtualNodeBody = forwardRef<VirtualNodeBodyHandle, VirtualNodeBodyProps>(
       onUpdateVirtual={onUpdateVirtual}
       onPromotabilityChange={onPromotabilityChange}
       focusRequestVersion={focusRequestVersion}
+      sessionId={sessionId}
+      autosaveToServer={autosaveToServer}
     />
   );
 });
@@ -703,6 +741,8 @@ const EditableVirtualNodeBody = forwardRef<VirtualNodeBodyHandle, VirtualNodeBod
   onUpdateVirtual,
   onPromotabilityChange,
   focusRequestVersion,
+  sessionId,
+  autosaveToServer,
 }, ref) {
 
   const persistedDraft = virtualDraftFromNode(node);
@@ -719,6 +759,23 @@ const EditableVirtualNodeBody = forwardRef<VirtualNodeBodyHandle, VirtualNodeBod
   draftRef.current = draft;
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [autosavedAt, setAutosavedAt] = useState<number | null>(null);
+  const [stashWriteState, setStashWriteState] = useState<
+    "idle" | "saved" | "failed"
+  >("idle");
+  const lastAutosaveAttemptRef = useRef<string | null>(null);
+  const drainSaveRequestedRef = useRef(false);
+  /* Which node this instance has already run its stash restore for. A ref, not
+   * state: the restore must happen inside the same reconcile effect that owns
+   * `draft`, before any other branch can reset it. */
+  const restoredNodeIdRef = useRef<string | null>(null);
+  /* Signature the restore branch decided on. Effects run before the state it
+   * queued is rendered, so the stash writer would otherwise see the
+   * pre-restore draft, read it as clean, and delete the very entry the restore
+   * just read. Holding the signature lets the writer wait one render for the
+   * draft it is supposed to persist. */
+  const pendingRestoreSignatureRef = useRef<string | null>(null);
   const promptDraftRef = useRef<HTMLTextAreaElement | null>(null);
   const activeModelPresets = selectableModelPresets(modelPresets);
   const currentPreset = modelPresets.find((preset) => preset.id === draft.modelPresetId);
@@ -730,6 +787,7 @@ const EditableVirtualNodeBody = forwardRef<VirtualNodeBodyHandle, VirtualNodeBod
     () => JSON.stringify(draft) !== persistedDraftSignature,
     [draft, persistedDraftSignature],
   );
+  const draftValidationError = virtualDraftValidationError(draft, node);
 
   useEffect(() => {
     onPromotabilityChange(
@@ -737,6 +795,61 @@ const EditableVirtualNodeBody = forwardRef<VirtualNodeBodyHandle, VirtualNodeBod
       virtualDraftReadyToPromote(draft, node, nodesById),
     );
   }, [draft, node, nodesById, onPromotabilityChange]);
+
+  /* Selecting this node again — after a switch, a panel unmount, or a reload —
+   * reads back whatever local draft was stashed for it. `drop` means the stash
+   * has nothing the saved node lacks. `adopt` means nobody moved the node
+   * since, so the draft is restored as typed. `merge` means the node did move,
+   * and the stash is reconciled against it field by field exactly the way a
+   * live external write is, so a remote change is never silently undone by a
+   * draft that predates it. */
+  const restoreStashedDraft = useCallback(
+    (persisted: VirtualDraft): { draft: VirtualDraft; notice: string } | null => {
+      const key = draftStashKey(sessionId, node.id);
+      const record = readStashedDraft(key);
+      if (!record) return null;
+      /* A stash written by an older build can disagree with today's draft
+       * shape, and sending that back would post fields the API rejects. */
+      if (
+        !draftShapeMatches(record.draft, persisted as unknown as Record<string, unknown>) ||
+        !draftShapeMatches(record.baseline, persisted as unknown as Record<string, unknown>)
+      ) {
+        clearStashedDraft(key);
+        return null;
+      }
+      const stashed = record.draft as VirtualDraft;
+      const baseline = record.baseline as VirtualDraft;
+      const persistedSignature = JSON.stringify(persisted);
+      const decision = stashRestoreDecision({
+        stashedSignature: JSON.stringify(stashed),
+        baselineSignature: JSON.stringify(baseline),
+        persistedSignature,
+      });
+      if (decision === "drop") {
+        clearStashedDraft(key);
+        return null;
+      }
+      if (decision === "adopt") {
+        return { draft: stashed, notice: stashedDraftRestoredMessage(record.savedAt) };
+      }
+      const { draft: merged, conflicts } = mergeVirtualDraft(
+        stashed,
+        baseline,
+        persisted,
+      );
+      if (JSON.stringify(merged) === persistedSignature) {
+        clearStashedDraft(key);
+        return null;
+      }
+      return {
+        draft: merged,
+        notice:
+          stashedDraftRestoredMessage(record.savedAt) +
+          (conflicts.length ? ` ${stashedDraftConflictMessage(conflicts)}` : ""),
+      };
+    },
+    [node.id, sessionId],
+  );
 
   useEffect(() => {
     const previous = persistedDraftRef.current;
@@ -750,6 +863,25 @@ const EditableVirtualNodeBody = forwardRef<VirtualNodeBodyHandle, VirtualNodeBod
       draft: persistedDraft,
     };
 
+    /* Ahead of every other branch, and exactly once per node: a first mount
+     * takes this path too, which is what makes a restore survive the panel
+     * being unmounted or the page reloaded — neither of those looks like a
+     * node switch from here. */
+    if (restoredNodeIdRef.current !== node.id) {
+      restoredNodeIdRef.current = node.id;
+      pendingLocalUpdateRef.current = null;
+      lastAutosaveAttemptRef.current = null;
+      setAutosavedAt(null);
+      setError(null);
+      const restored = restoreStashedDraft(persistedDraft);
+      const nextDraft = restored?.draft ?? persistedDraft;
+      pendingRestoreSignatureRef.current = JSON.stringify(nextDraft);
+      draftRef.current = nextDraft;
+      setDraft(nextDraft);
+      setNotice(restored?.notice ?? null);
+      return;
+    }
+
     if (
       previous.nodeId === node.id &&
       previous.signature === persistedDraftSignature
@@ -757,9 +889,7 @@ const EditableVirtualNodeBody = forwardRef<VirtualNodeBodyHandle, VirtualNodeBod
       return;
     }
 
-    if (previous.nodeId !== node.id) {
-      pendingLocalUpdateRef.current = null;
-    } else if (pendingLocalUpdate?.nodeId === node.id) {
+    if (pendingLocalUpdate?.nodeId === node.id) {
       if (acknowledgedLocalUpdate) {
         pendingLocalUpdateRef.current = null;
         const latestSignature = JSON.stringify(
@@ -773,13 +903,6 @@ const EditableVirtualNodeBody = forwardRef<VirtualNodeBodyHandle, VirtualNodeBod
       return;
     }
 
-    if (previous.nodeId !== node.id) {
-      draftRef.current = persistedDraft;
-      setDraft(persistedDraft);
-      setError(null);
-      return;
-    }
-
     const { draft: mergedDraft, conflicts } = mergeVirtualDraft(
       draftRef.current,
       previous.draft,
@@ -788,7 +911,7 @@ const EditableVirtualNodeBody = forwardRef<VirtualNodeBodyHandle, VirtualNodeBod
     draftRef.current = mergedDraft;
     setDraft(mergedDraft);
     setError(conflicts.length ? externalDraftConflictMessage(conflicts) : null);
-  }, [node.id, persistedDraftSignature]);
+  }, [node.id, persistedDraftSignature, restoreStashedDraft]);
 
   useEffect(() => {
     if (focusRequestVersion <= 0) return;
@@ -799,14 +922,61 @@ const EditableVirtualNodeBody = forwardRef<VirtualNodeBodyHandle, VirtualNodeBod
     return () => window.clearTimeout(timer);
   }, [node.id, focusRequestVersion]);
 
-  const save = (): Promise<boolean> => {
-    if (savePromiseRef.current) return savePromiseRef.current;
+  /* Every keystroke lands in browser storage, keyed on (session, node), paired
+   * with the persisted draft it was based on. Cheap enough to do per edit, and
+   * it means the protected window is the keystroke rather than the autosave
+   * tick. Cleared once the draft matches what is saved, so a reopened node does
+   * not announce a restore of nothing. */
+  useEffect(() => {
+    if (restoredNodeIdRef.current !== node.id) return;
+    const pendingRestore = pendingRestoreSignatureRef.current;
+    if (pendingRestore !== null) {
+      if (JSON.stringify(draft) !== pendingRestore) return;
+      pendingRestoreSignatureRef.current = null;
+    }
+    const key = draftStashKey(sessionId, node.id);
+    if (!dirty) {
+      clearStashedDraft(key);
+      setStashWriteState("idle");
+      return;
+    }
+    const written = writeStashedDraft(
+      key,
+      {
+        savedAt: Date.now(),
+        baseline: persistedDraftRef.current.draft,
+        draft,
+      },
+    );
+    setStashWriteState(written ? "saved" : "failed");
+    /* `persistedDraftSignature` is a dependency so the stored baseline tracks
+     * external writes that leave the local draft untouched. A stale baseline
+     * still restores safely — it just forces the merge path and can report a
+     * conflict the user does not have — so keeping it current is what makes an
+     * ordinary reopen adopt the draft verbatim. */
+  }, [dirty, draft, node.id, persistedDraftSignature, sessionId]);
+
+  const save = (
+    options: {
+      singleSnapshot?: boolean;
+      expectedPlanspaceMode?: "manual";
+    } = {},
+  ): Promise<boolean> => {
+    if (savePromiseRef.current) {
+      /* Promote and explicit Save must include edits made during an autosave
+       * already in flight. Upgrade that operation to its normal draining
+       * behavior instead of starting a concurrent PATCH. */
+      if (!options.singleSnapshot) drainSaveRequestedRef.current = true;
+      return savePromiseRef.current;
+    }
     if (JSON.stringify(draftRef.current) === persistedDraftSignature) {
       return Promise.resolve(true);
     }
+    drainSaveRequestedRef.current = false;
     const operation = (async () => {
       setSaving(true);
       setError(null);
+      setNotice(null);
       try {
         while (true) {
           const draftToSave = draftRef.current;
@@ -825,10 +995,11 @@ const EditableVirtualNodeBody = forwardRef<VirtualNodeBodyHandle, VirtualNodeBod
             draftAfterAck: predictedDraft,
           };
           pendingLocalUpdateRef.current = pendingLocalUpdate;
-          const updatedNode = await onUpdateVirtual(
-            node.id,
-            virtualPayloadFromDraft(draftToSave, node),
-          );
+          const payload = virtualPayloadFromDraft(draftToSave, node);
+          if (options.expectedPlanspaceMode) {
+            payload.expected_planspace_mode = options.expectedPlanspaceMode;
+          }
+          const updatedNode = await onUpdateVirtual(node.id, payload);
           if (updatedNode) {
             const serverDraft = virtualDraftFromNode(updatedNode);
             pendingLocalUpdate.persistedSignature = JSON.stringify(serverDraft);
@@ -838,10 +1009,14 @@ const EditableVirtualNodeBody = forwardRef<VirtualNodeBodyHandle, VirtualNodeBod
           const latestSignature = JSON.stringify(
             virtualDraftAfterSave(draftRef.current),
           );
-          if (latestSignature !== pendingLocalUpdate.sentSignature) {
+          if (
+            latestSignature !== pendingLocalUpdate.sentSignature &&
+            (!options.singleSnapshot || drainSaveRequestedRef.current)
+          ) {
             continue;
           }
           if (
+            latestSignature === pendingLocalUpdate.sentSignature &&
             pendingLocalUpdateRef.current === pendingLocalUpdate &&
             persistedDraftRef.current.signature === pendingLocalUpdate.persistedSignature
           ) {
@@ -857,6 +1032,7 @@ const EditableVirtualNodeBody = forwardRef<VirtualNodeBodyHandle, VirtualNodeBod
         return false;
       } finally {
         setSaving(false);
+        drainSaveRequestedRef.current = false;
         savePromiseRef.current = null;
       }
     })();
@@ -864,7 +1040,64 @@ const EditableVirtualNodeBody = forwardRef<VirtualNodeBodyHandle, VirtualNodeBod
     return operation;
   };
 
-  useImperativeHandle(ref, () => ({ saveChanges: save }));
+  useImperativeHandle(ref, () => ({ saveChanges: () => save() }));
+
+  const autosaveRef = useRef(() =>
+    save({ singleSnapshot: true, expectedPlanspaceMode: "manual" }),
+  );
+  autosaveRef.current = () =>
+    save({ singleSnapshot: true, expectedPlanspaceMode: "manual" });
+  const nodeRef = useRef(node);
+  nodeRef.current = node;
+
+  /* Periodic push to the server, on manual lanes only. The interval is fixed
+   * rather than debounced per keystroke so a long uninterrupted burst of typing
+   * still reaches the server: a debounce that resets on every character never
+   * fires while someone is actually writing, which is exactly when the work is
+   * worth protecting.
+   *
+   * The tick re-reads eligibility itself instead of restarting the timer on
+   * every edit — a timer with `draft` in its dependencies would be cancelled
+   * and recreated per keystroke and, again, never fire mid-burst. */
+  useEffect(() => {
+    if (!autosaveToServer) return;
+    const timer = window.setInterval(() => {
+      const currentDraft = draftRef.current;
+      const signature = JSON.stringify(currentDraft);
+      if (
+        !shouldAutosaveDraft({
+          enabled: true,
+          dirty: signature !== persistedDraftRef.current.signature,
+          saving: savePromiseRef.current !== null,
+          incomplete: Boolean(
+            virtualDraftValidationError(currentDraft, nodeRef.current),
+          ),
+          signature,
+          lastAttemptSignature: lastAutosaveAttemptRef.current,
+        })
+      ) {
+        return;
+      }
+      /* Recorded before the await so a write that fails is not retried every
+       * tick against unchanged text; the next edit clears it and re-arms. */
+      lastAutosaveAttemptRef.current = signature;
+      void autosaveRef.current().then((ok) => {
+        if (ok) {
+          setAutosavedAt(Date.now());
+          setNotice(null);
+        }
+      });
+    }, AUTOSAVE_INTERVAL_MS);
+    return () => window.clearInterval(timer);
+  }, [autosaveToServer, node.id]);
+
+  /* An edit after a failed autosave re-arms the timer for the new text. */
+  useEffect(() => {
+    if (lastAutosaveAttemptRef.current === null) return;
+    if (JSON.stringify(draft) !== lastAutosaveAttemptRef.current) {
+      lastAutosaveAttemptRef.current = null;
+    }
+  }, [draft]);
 
   const toggleObsolete = async () => {
     const nextReason = draft.obsoleteReason.trim()
@@ -923,17 +1156,27 @@ const EditableVirtualNodeBody = forwardRef<VirtualNodeBodyHandle, VirtualNodeBod
           <div className="border-b border-line px-3 py-2">
             <SectionHeading
               right={
-                dirty ? (
-                  <span className="text-[10px] font-normal normal-case tracking-normal text-state-waiting">
-                    unsaved
-                  </span>
-                ) : null
+                <DraftSaveStatus
+                  dirty={dirty}
+                  saving={saving}
+                  autosaveToServer={autosaveToServer}
+                  autosavedAt={autosavedAt}
+                  stashWriteState={stashWriteState}
+                />
               }
             >
               Draft
             </SectionHeading>
           </div>
           <div className="space-y-3 px-3 py-3">
+            {/* Sits with the fields it restored rather than in the State card
+                below: a restore the user scrolls past is a restore they will
+                mistake for their own typing. */}
+            {notice && (
+              <div className="rounded-md border border-state-waiting/30 bg-state-waiting-soft px-3 py-2 text-[11.5px] leading-relaxed text-state-waiting">
+                {notice}
+              </div>
+            )}
             <KVGrid
               rows={[
                 ["Proposed by", node.proposed_by ?? "-"],
@@ -1348,18 +1591,21 @@ const EditableVirtualNodeBody = forwardRef<VirtualNodeBodyHandle, VirtualNodeBod
               <button
                 type="button"
                 onClick={() => void save()}
-                disabled={
-                  saving ||
-                  !dirty ||
-                  Boolean(virtualDraftValidationError(draft, node))
-                }
+                disabled={saving || !dirty || Boolean(draftValidationError)}
                 className="rounded-md bg-brand px-3 py-1.5 text-[12px] font-medium text-white shadow-card transition hover:brightness-[0.95] disabled:cursor-not-allowed disabled:opacity-40"
               >
                 {saving ? "Saving..." : "Save changes"}
               </button>
               <button
                 type="button"
-                onClick={() => setDraft(virtualDraftFromNode(node))}
+                onClick={() => {
+                  setDraft(virtualDraftFromNode(node));
+                  clearStashedDraft(draftStashKey(sessionId, node.id));
+                  lastAutosaveAttemptRef.current = null;
+                  setStashWriteState("idle");
+                  setNotice(null);
+                  setError(null);
+                }}
                 disabled={saving || !dirty}
                 className="rounded-md border border-line bg-surface px-3 py-1.5 text-[12px] font-medium text-ink-muted transition hover:border-line-strong hover:text-ink disabled:cursor-not-allowed disabled:opacity-40"
               >
@@ -1453,6 +1699,75 @@ function VerifierVirtualBody({
       </section>
     </>
   );
+}
+
+/* One line telling the user which of the three states the draft is in: written
+ * to the server, held only in this browser, or clean. The distinction matters
+ * because on an auto lane the draft is deliberately never pushed — leaving that
+ * as a bare "unsaved" would read as a bug. */
+function DraftSaveStatus({
+  dirty,
+  saving,
+  autosaveToServer,
+  autosavedAt,
+  stashWriteState,
+}: {
+  dirty: boolean;
+  saving: boolean;
+  autosaveToServer: boolean;
+  autosavedAt: number | null;
+  stashWriteState: "idle" | "saved" | "failed";
+}) {
+  const baseClassName = "text-[10px] font-normal normal-case tracking-normal";
+  const className = `${baseClassName} ${
+    stashWriteState === "failed"
+      ? "text-state-error"
+      : dirty
+        ? "text-state-waiting"
+        : "text-ink-subtle"
+  }`;
+  if (saving) {
+    return <span className={className}>保存中…</span>;
+  }
+  if (dirty) {
+    if (stashWriteState === "failed") {
+      return (
+        <span
+          className={className}
+          title="浏览器未能写入本地草稿。请保持页面开启，或点击 Save changes 提交到服务端。"
+        >
+          未保存 · 本地留存失败
+        </span>
+      );
+    }
+    if (stashWriteState === "idle") {
+      return <span className={className}>未保存</span>;
+    }
+    return (
+      <span
+        className={className}
+        title={
+          autosaveToServer
+            ? "每 10 秒自动保存到服务端；期间的改动也实时留存在本浏览器。"
+            : "此方向为 auto 模式，保存即会启动节点，因此不自动上传；改动实时留存在本浏览器，由你点击 Save changes 决定何时提交。"
+        }
+      >
+        {autosaveToServer ? "未保存 · 本地已留存" : "未保存 · 仅本地留存"}
+      </span>
+    );
+  }
+  if (autosavedAt !== null) {
+    return (
+      <span className={className}>
+        已自动保存{" "}
+        {new Date(autosavedAt).toLocaleTimeString([], {
+          hour: "2-digit",
+          minute: "2-digit",
+        })}
+      </span>
+    );
+  }
+  return null;
 }
 
 function BriefBlock({ label, text }: { label: string; text: string }) {
@@ -1784,6 +2099,21 @@ export function mergeVirtualDraft(
     }
   }
   return { draft: merged, conflicts };
+}
+
+export function stashedDraftRestoredMessage(savedAt: number): string {
+  const at = new Date(savedAt).toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+  return `已恢复 ${at} 的未保存草稿（保存在本浏览器）。`;
+}
+
+export function stashedDraftConflictMessage(
+  conflicts: readonly (keyof VirtualDraft)[],
+): string {
+  const names = conflicts.map((key) => DRAFT_FIELD_LABELS[key]).join("、");
+  return `其中这些字段在别处已被改动，已采用最新的持久化值：${names}。`;
 }
 
 export function externalDraftConflictMessage(

@@ -544,6 +544,7 @@ export async function rerunNode(
 }
 
 export type UpdateVirtualPayload = {
+  expected_planspace_mode?: PlanspaceMode;
   prompt_draft?: string;
   category?: NodeCategory;
   subtype?: ReviewSubtype | null;
