@@ -40,6 +40,8 @@ AskDispatcher = Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]
 _SESSION_READY_TIMEOUT = 45.0
 _SESSION_READY_POLL_INTERVAL = 0.1
 _PTY_OUTPUT_TAIL_LIMIT = 16 * 1024
+_WORKSPACE_TRUST_PROMPT_SETTLE_SECONDS = 0.25
+_WORKSPACE_TRUST_KEY_INTERVAL_SECONDS = 0.1
 _STREAM_POLL_INTERVAL = 0.1
 _STREAM_STALL_TIMEOUT_SECONDS = 30 * 60.0
 # How long a verified turn-complete waits for in-flight tool calls to land
@@ -88,6 +90,7 @@ class ClaudeNativeSession:
         self._last_pty_output_ts: float = 0.0
         self._pty_output_tail = bytearray()
         self._pty_output_event: asyncio.Event | None = None
+        self._workspace_trust_response_sent = False
         self._input: InputWriter | None = None
         self._jsonl_path: Path = jsonl_path(
             cwd, self._session_id, self._data_dir
@@ -469,6 +472,8 @@ class ClaudeNativeSession:
         loop = asyncio.get_running_loop()
         deadline = loop.time() + _SESSION_READY_TIMEOUT
         while not ready.is_set():
+            if await self._accept_workspace_trust_if_requested():
+                continue
             startup_error = self._startup_error()
             if startup_error is not None:
                 await self.close()
@@ -492,14 +497,30 @@ class ClaudeNativeSession:
             except asyncio.TimeoutError:
                 pass
 
+    async def _accept_workspace_trust_if_requested(self) -> bool:
+        if self._workspace_trust_response_sent:
+            return False
+        output = _clean_terminal_output(self._pty_output_tail)
+        if not _is_workspace_trust_prompt(output):
+            return False
+
+        # MiniClaw2 launches Claude with bypassPermissions after the user has
+        # explicitly selected a project. Confirm Claude's separate first-run
+        # workspace prompt through its UI so Claude owns the persisted state.
+        self._workspace_trust_response_sent = True
+        # The prompt text arrives before Ink has finished enabling its input
+        # mode. Let that setup settle or the first key can be discarded.
+        await asyncio.sleep(_WORKSPACE_TRUST_PROMPT_SETTLE_SECONDS)
+        self._pty_write(b"\x1b[B")
+        # Ink processes one key event per PTY write. Sending Down and Enter in
+        # one write moves the selection but can leave the dialog unconfirmed.
+        await asyncio.sleep(_WORKSPACE_TRUST_KEY_INTERVAL_SECONDS)
+        self._pty_write(b"\r")
+        logger.info("accepted Claude workspace trust prompt for %s", self._cwd)
+        return True
+
     def _startup_error(self) -> str | None:
         output = _clean_terminal_output(self._pty_output_tail)
-        if _is_workspace_trust_prompt(output):
-            return (
-                f"claude requires workspace trust for {self._cwd!r}; open that "
-                "directory in Claude Code once and choose 'Yes, I trust this "
-                "folder', then retry"
-            )
         if not _pty_child_alive(self._pty):
             return self._startup_exit_error(output)
         return None

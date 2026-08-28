@@ -100,7 +100,7 @@ class _FakeInput:
 
 
 class ClaudeNativeStartupTest(unittest.IsolatedAsyncioTestCase):
-    async def test_workspace_trust_prompt_fails_with_actionable_error(self) -> None:
+    async def test_workspace_trust_prompt_is_accepted_and_startup_continues(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             session = _stream_session(raw, _FakePty(alive=True))
             session._session_ready_event = asyncio.Event()
@@ -112,13 +112,21 @@ class ClaudeNativeStartupTest(unittest.IsolatedAsyncioTestCase):
                 b"\x1b[22Gfolder\r\n"
             )
 
-            with self.assertRaisesRegex(
-                RuntimeError,
-                "requires workspace trust.*Yes, I trust this folder",
-            ):
-                await session._wait_for_session_ready()
+            waiter = asyncio.create_task(session._wait_for_session_ready())
+            for _ in range(30):
+                if len(session._pty.writes) == 2:
+                    break
+                await asyncio.sleep(0.02)
+            self.assertEqual(session._pty.writes, [b"\x1b[B", b"\r"])
 
-        self.assertTrue(session._closed)
+            # The rendered prompt remains in the bounded output tail. Ensure
+            # polling it again does not send another acceptance sequence.
+            await asyncio.sleep(0.15)
+            self.assertEqual(session._pty.writes, [b"\x1b[B", b"\r"])
+            session._session_ready_event.set()
+            await waiter
+
+        self.assertFalse(session._closed)
 
     async def test_startup_child_exit_reports_status_and_terminal_output(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
