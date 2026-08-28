@@ -17,7 +17,10 @@ from miniclaw2.providers.base import (
     ReviewSpec,
 )
 from miniclaw2.providers.claude import ClaudeProvider, _unknown_code_review_command
-from miniclaw2.providers.claude_native import ClaudeNativeSession
+from miniclaw2.providers.claude_native import (
+    ClaudeNativeSession,
+    _clean_terminal_output,
+)
 from miniclaw2.providers.claude_native import hook_runtime
 from miniclaw2.providers.claude_native.ask_payload import (
     format_ask_directive,
@@ -94,6 +97,61 @@ class _FakeInput:
 
     def update_jsonl_path(self, path: Path) -> None:
         self.jsonl_path = path
+
+
+class ClaudeNativeStartupTest(unittest.IsolatedAsyncioTestCase):
+    async def test_workspace_trust_prompt_fails_with_actionable_error(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            session = _stream_session(raw, _FakePty(alive=True))
+            session._session_ready_event = asyncio.Event()
+            session._pty_output_event = asyncio.Event()
+            session._pty_output_tail.extend(
+                b"\x1b[2GQuick\x1b[8Gsafety\x1b[15Gcheck:\r\n"
+                b"\x1b[2GNo,\x1b[8Gexit\r\n"
+                b"\x1b[4GYes,\x1b[9GI\x1b[11Gtrust\x1b[17Gthis"
+                b"\x1b[22Gfolder\r\n"
+            )
+
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "requires workspace trust.*Yes, I trust this folder",
+            ):
+                await session._wait_for_session_ready()
+
+        self.assertTrue(session._closed)
+
+    async def test_startup_child_exit_reports_status_and_terminal_output(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            session = _stream_session(
+                raw,
+                _FakePty(alive=False, exitstatus=2),
+            )
+            session._session_ready_event = asyncio.Event()
+            session._pty_output_event = asyncio.Event()
+            session._pty_output_tail.extend(b"\x1b[31mAuthentication failed\x1b[0m\r\n")
+
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "exit status 2.*Authentication failed",
+            ):
+                await session._wait_for_session_ready()
+
+    async def test_session_ready_wins_without_startup_error(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            session = _stream_session(raw, _FakePty(alive=True))
+            session._session_ready_event = asyncio.Event()
+            session._session_ready_event.set()
+            session._pty_output_event = asyncio.Event()
+
+            await session._wait_for_session_ready()
+
+        self.assertFalse(session._closed)
+
+    def test_terminal_output_cleanup_removes_escape_sequences(self) -> None:
+        self.assertEqual(
+            _clean_terminal_output(b"\x1b[2GNo,\x1b[8Gexit\r\n"),
+            "No,exit",
+        )
 
 
 def _stream_session(raw: str, pty: _FakePty) -> ClaudeNativeSession:

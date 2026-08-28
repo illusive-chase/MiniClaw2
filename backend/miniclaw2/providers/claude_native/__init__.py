@@ -11,6 +11,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
 from typing import Any
@@ -37,6 +38,8 @@ logger = logging.getLogger(__name__)
 AskDispatcher = Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]
 
 _SESSION_READY_TIMEOUT = 45.0
+_SESSION_READY_POLL_INTERVAL = 0.1
+_PTY_OUTPUT_TAIL_LIMIT = 16 * 1024
 _STREAM_POLL_INTERVAL = 0.1
 _STREAM_STALL_TIMEOUT_SECONDS = 30 * 60.0
 # How long a verified turn-complete waits for in-flight tool calls to land
@@ -83,6 +86,8 @@ class ClaudeNativeSession:
         self._pty: Any = None
         self._pty_reader_task: asyncio.Task[None] | None = None
         self._last_pty_output_ts: float = 0.0
+        self._pty_output_tail = bytearray()
+        self._pty_output_event: asyncio.Event | None = None
         self._input: InputWriter | None = None
         self._jsonl_path: Path = jsonl_path(
             cwd, self._session_id, self._data_dir
@@ -167,22 +172,13 @@ class ClaudeNativeSession:
             data_dir=self._data_dir,
             enter_is_newline=submit_result.enter_is_newline,
         )
+        self._pty_output_event = asyncio.Event()
         self._pty_reader_task = asyncio.create_task(self._drain_pty_output())
 
         hook_runtime.register_ask_dispatcher(self._node_id, self._ask_dispatcher)
         self._dispatch_registered = True
 
-        try:
-            await asyncio.wait_for(
-                self._session_ready_event.wait(),
-                timeout=_SESSION_READY_TIMEOUT,
-            )
-        except asyncio.TimeoutError:
-            logger.warning(
-                "claude SessionStart hook did not fire within %.0fs; "
-                "proceeding with a best-effort submit",
-                _SESSION_READY_TIMEOUT,
-            )
+        await self._wait_for_session_ready()
 
     async def send(
         self,
@@ -418,6 +414,8 @@ class ClaudeNativeSession:
         pty = self._pty
         if pty is None:
             raise ClaudeNativeError("PTY is closed")
+        if not _pty_child_alive(pty):
+            raise ClaudeNativeError(self._startup_exit_error())
         try:
             pty.write(data)
         except Exception as exc:  # noqa: BLE001
@@ -451,9 +449,66 @@ class ClaudeNativeSession:
             except Exception:  # noqa: BLE001
                 return
             if not chunk:
-                await asyncio.sleep(0.05)
-                continue
+                if self._pty_output_event is not None:
+                    self._pty_output_event.set()
+                return
             self._last_pty_output_ts = loop.time()
+            self._pty_output_tail.extend(chunk)
+            overflow = len(self._pty_output_tail) - _PTY_OUTPUT_TAIL_LIMIT
+            if overflow > 0:
+                del self._pty_output_tail[:overflow]
+            if self._pty_output_event is not None:
+                self._pty_output_event.set()
+
+    async def _wait_for_session_ready(self) -> None:
+        ready = self._session_ready_event
+        output_event = self._pty_output_event
+        if ready is None or output_event is None:
+            raise ClaudeNativeError("claude startup waiters were not initialized")
+
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + _SESSION_READY_TIMEOUT
+        while not ready.is_set():
+            startup_error = self._startup_error()
+            if startup_error is not None:
+                await self.close()
+                raise ClaudeNativeError(startup_error)
+
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                logger.warning(
+                    "claude SessionStart hook did not fire within %.0fs; "
+                    "proceeding with a best-effort submit",
+                    _SESSION_READY_TIMEOUT,
+                )
+                return
+
+            output_event.clear()
+            try:
+                await asyncio.wait_for(
+                    output_event.wait(),
+                    timeout=min(_SESSION_READY_POLL_INTERVAL, remaining),
+                )
+            except asyncio.TimeoutError:
+                pass
+
+    def _startup_error(self) -> str | None:
+        output = _clean_terminal_output(self._pty_output_tail)
+        if _is_workspace_trust_prompt(output):
+            return (
+                f"claude requires workspace trust for {self._cwd!r}; open that "
+                "directory in Claude Code once and choose 'Yes, I trust this "
+                "folder', then retry"
+            )
+        if not _pty_child_alive(self._pty):
+            return self._startup_exit_error(output)
+        return None
+
+    def _startup_exit_error(self, output: str | None = None) -> str:
+        detail = _pty_exit_detail(self._pty)
+        terminal_output = output or _clean_terminal_output(self._pty_output_tail)
+        suffix = f"; terminal output: {terminal_output}" if terminal_output else ""
+        return f"claude PTY exited before SessionStart hook{detail}{suffix}"
 
     def _resolve_from_pid_state(self):
         if self._pty is None:
@@ -565,6 +620,28 @@ def _pty_exit_detail(pty: Any) -> str:
     if signalstatus is not None:
         parts.append(f"signal {signalstatus}")
     return f" ({', '.join(parts)})" if parts else ""
+
+
+_ANSI_ESCAPE_RE = re.compile(
+    r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\)?|.)"
+)
+_TERMINAL_CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
+
+def _clean_terminal_output(raw: bytes | bytearray) -> str:
+    text = bytes(raw).decode("utf-8", errors="replace")
+    text = _ANSI_ESCAPE_RE.sub("", text)
+    text = _TERMINAL_CONTROL_RE.sub("", text)
+    return " ".join(text.split())
+
+
+def _is_workspace_trust_prompt(output: str) -> bool:
+    normalized = "".join(output.casefold().split())
+    return (
+        "quicksafetycheck" in normalized
+        and "yes,itrustthisfolder" in normalized
+        and "no,exit" in normalized
+    )
 
 
 def _stream_stall_timeout_seconds() -> float:
