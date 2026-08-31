@@ -118,10 +118,13 @@ import { useActiveNodes, useReadKeys } from "./activeNodes";
 import { useNotices } from "./notices";
 import {
   canResumeNode,
+  extraPrinciplesAvailable,
   nodeBelongsToHost,
+  nodeClassification,
   nodeIdsByRecentActivityInLane,
   nodeIdsNeedingEventReplay,
   preferNewerNode,
+  scheduledDepsAvailable,
   shouldAutoSelectEventNode,
   shouldOpenCreatedPlanspace,
   shouldOpenInteractionNode,
@@ -1570,7 +1573,8 @@ export function App() {
           !readOnly &&
           isNodeNative(target) &&
           target.state === "virtual" &&
-          !target.obsolete_reason,
+          !target.obsolete_reason &&
+          scheduledDepsAvailable(nodeClassification(target)),
         write: (scheduledDeps) =>
           updateVirtualNode(targetNodeId, { scheduled_deps: scheduledDeps }),
       });
@@ -1615,7 +1619,12 @@ export function App() {
   const handleAttachPrincipleToVirtual = useCallback(
     (virtualNodeId: string, principleId: string) => {
       const target = nodesRef.current.find((n) => n.id === virtualNodeId);
-      if (!target || target.state !== "virtual" || target.obsolete_reason) {
+      if (
+        !target ||
+        target.state !== "virtual" ||
+        target.obsolete_reason ||
+        !extraPrinciplesAvailable(nodeClassification(target))
+      ) {
         return;
       }
       const current = target.pending_extra_principles ?? [];
@@ -1658,7 +1667,11 @@ export function App() {
     const label = firstLine.length > 0
       ? (firstLine.length > 36 ? `${firstLine.slice(0, 36)}…` : firstLine)
       : nodeId.slice(0, 8);
-    return { nodeId, label };
+    return {
+      nodeId,
+      label,
+      acceptsPrinciples: extraPrinciplesAvailable(nodeClassification(node)),
+    };
   }, [isNodeNative, nodes, readOnly, selection]);
 
   const handleAttachLibraryEntryToSelection = useCallback(
@@ -3367,6 +3380,9 @@ export function App() {
                   libraryAttachTarget ? handleAttachLibraryEntryToSelection : undefined
                 }
                 attachTargetLabel={libraryAttachTarget?.label ?? null}
+                principleAttachmentEnabled={
+                  libraryAttachTarget?.acceptsPrinciples ?? true
+                }
                 onClose={closePanel}
               />
             ) : (

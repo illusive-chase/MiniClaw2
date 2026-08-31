@@ -61,6 +61,9 @@ type Props = {
   onAttachToVirtual?: (entryId: string) => void;
   /** Label of the node `onAttachToVirtual` would target. */
   attachTargetLabel?: string | null;
+  /** Cold-start nodes accept skills but not principles because principles are
+   * injected into the launch prompt. */
+  principleAttachmentEnabled?: boolean;
   onError?: (message: string) => void;
   onClose: () => void;
 };
@@ -88,6 +91,7 @@ export function LibraryDock({
   onApplyTemplate,
   onAttachToVirtual,
   attachTargetLabel,
+  principleAttachmentEnabled = true,
   onError,
   onClose,
 }: Props) {
@@ -435,7 +439,8 @@ export function LibraryDock({
           onEditTemplate(slug);
         }}
         onAttachToVirtual={
-          onAttachToVirtual
+          onAttachToVirtual &&
+          (preview?.kind !== "principle" || principleAttachmentEnabled)
             ? (entryId) => {
                 setPreview(null);
                 onAttachToVirtual(entryId);
@@ -443,6 +448,11 @@ export function LibraryDock({
             : undefined
         }
         attachTargetLabel={attachTargetLabel}
+        attachDisabledReason={
+          preview?.kind === "principle" && !principleAttachmentEnabled
+            ? "冷启动节点不能附加 principle；它会向 prompt 注入文本。"
+            : null
+        }
       />
     </div>
   );

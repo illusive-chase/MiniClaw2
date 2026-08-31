@@ -17,7 +17,14 @@ import json
 from functools import lru_cache
 from pathlib import Path
 
-from .domain import ArtifactMode, Category, Node, NodeKind, ReviewSubtype
+from .domain import (
+    COLD_START_AGENT_OP_KIND,
+    ArtifactMode,
+    Category,
+    Node,
+    NodeKind,
+    ReviewSubtype,
+)
 from .materialize import GRAPH_DIRNAME
 from .model_catalog import list_model_presets
 
@@ -100,6 +107,10 @@ def _load_template(name: str) -> str:
 
 def _template_for_node(node: Node) -> str | None:
     if node.kind is not NodeKind.AGENT:
+        return None
+    # Checked ahead of the category so a cold start cannot pick up the regular
+    # block by virtue of being category=regular.
+    if node.agent_op_kind == COLD_START_AGENT_OP_KIND:
         return None
     if node.category is Category.PLANNING:
         return _load_template(_CATEGORY_PLANNING)

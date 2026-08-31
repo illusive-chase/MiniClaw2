@@ -118,28 +118,38 @@ export function lastActiveNodeInLane(
   return id ? nodes.find((node) => node.id === id) ?? null : null;
 }
 
-/** The four mutually exclusive kinds a virtual node can be classified as.
- * `library` is carried by `agent_op_kind` rather than `category`, so every
- * reader must consult both fields; this helper is the single place that does.
- * Historical `principle_edit` nodes read as `library` too — they are the same
- * authoring operation under an older name. */
-export type NodeClassification = "work" | "planning" | "review" | "library";
+/** The five mutually exclusive kinds a virtual node can be classified as.
+ * `library` and `cold` are carried by `agent_op_kind` rather than `category`,
+ * so every reader must consult both fields; this helper is the single place
+ * that does. Historical `principle_edit` nodes read as `library` too — they are
+ * the same authoring operation under an older name. */
+export type NodeClassification =
+  | "work"
+  | "planning"
+  | "review"
+  | "library"
+  | "cold";
 
 export function isLibraryOpKind(opKind?: string | null): boolean {
   return opKind === "library_edit" || opKind === "principle_edit";
+}
+
+export function isColdStartOpKind(opKind?: string | null): boolean {
+  return opKind === "cold_start";
 }
 
 export function nodeClassification(
   node: Pick<NodeInfo, "category" | "agent_op_kind">,
 ): NodeClassification {
   if (isLibraryOpKind(node.agent_op_kind)) return "library";
+  if (isColdStartOpKind(node.agent_op_kind)) return "cold";
   if (node.category === "planning") return "planning";
   if (node.category === "review") return "review";
   return "work";
 }
 
-/** The wire `category` a classification maps onto. `library` and `work` share
- * `regular`; the librarian is distinguished by `agent_op_kind`, not category. */
+/** The wire `category` a classification maps onto. `library`, `cold` and `work`
+ * all share `regular`; those two are distinguished by `agent_op_kind`. */
 export function categoryForClassification(
   classification: NodeClassification,
 ): NodeCategory {
@@ -153,11 +163,28 @@ export function categoryForClassification(
   }
 }
 
+/** The `agent_op_kind` a classification maps onto, or `null` for the kinds that
+ * carry none. Cold start and library are the only two that use this axis. */
+export function opKindForClassification(
+  classification: NodeClassification,
+): string | null {
+  switch (classification) {
+    case "library":
+      return "library_edit";
+    case "cold":
+      return "cold_start";
+    default:
+      return null;
+  }
+}
+
 /** Artifact intent is only available on work and planning nodes. Review nodes
  * have their own deliverable contract (the brief plus the handoff text); a
- * library node's deliverable is one library entry, not an artifact. Q/A mode
- * follows the same boundary minus the library exclusion — the librarian may
- * still need to ask which entry the user meant. */
+ * library node's deliverable is one library entry, not an artifact. A cold
+ * start is told nothing at all, the artifact contract included — it may still
+ * write to the outputs directory, and the framework publishes what it finds.
+ * Q/A mode follows the same boundary minus the library exclusion — the
+ * librarian may still need to ask which entry the user meant. */
 export function artifactModeAvailable(
   classification: NodeClassification,
 ): boolean {
@@ -167,12 +194,28 @@ export function artifactModeAvailable(
 export function qaModeAvailable(
   classification: NodeClassification,
 ): boolean {
-  return classification !== "review";
+  return classification !== "review" && classification !== "cold";
+}
+
+/** Dependencies and extra principles both reach the agent as injected prompt
+ * text, which is exactly what a cold start excludes. Skills stay available:
+ * mounting one supplies a capability without telling the model about it. */
+export function scheduledDepsAvailable(
+  classification: NodeClassification,
+): boolean {
+  return classification !== "cold";
+}
+
+export function extraPrinciplesAvailable(
+  classification: NodeClassification,
+): boolean {
+  return classification !== "cold";
 }
 
 /** Short label for the canvas tile chip. */
 export function nodeClassificationChipLabel(node: NodeInfo): string {
   if (isLibraryOpKind(node.agent_op_kind)) return "library";
+  if (isColdStartOpKind(node.agent_op_kind)) return "cold";
   if (node.kind === "verifier") return "verify";
   switch (nodeClassification(node)) {
     case "planning":
@@ -191,6 +234,7 @@ export function nodeClassificationChipLabel(node: NodeInfo): string {
 /** Long label for panel headers and tooltips. */
 export function nodeClassificationLabel(node: NodeInfo): string {
   if (isLibraryOpKind(node.agent_op_kind)) return "librarian";
+  if (isColdStartOpKind(node.agent_op_kind)) return "cold start";
   if (node.kind === "verifier") return "programmatic";
   switch (nodeClassification(node)) {
     case "planning":
@@ -211,6 +255,8 @@ export function nodeClassificationTone(node: NodeInfo): string {
   switch (nodeClassification(node)) {
     case "library":
       return "border-state-library/30 bg-state-library-soft text-state-library";
+    case "cold":
+      return "border-line-strong bg-surface-sunken text-ink-muted";
     case "planning":
       return "border-brand/30 bg-brand-soft text-brand-ink";
     case "review":

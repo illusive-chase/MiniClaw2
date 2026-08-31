@@ -54,6 +54,7 @@ from .git_state import (
 from .skills import expand_skill_selections
 from .domain import (
     AUTHORING_AGENT_OP_KINDS,
+    COLD_START_AGENT_OP_KIND,
     KNOWN_AGENT_OP_KINDS,
     TERMINAL_NODE_STATES,
     ArtifactMode,
@@ -1415,6 +1416,14 @@ class ProjectRegistry:
             return None
         self.require_native(pid)
 
+        if agent_op_kind == COLD_START_AGENT_OP_KIND and resume_from_node_id:
+            # The Node invariant catches a persisted resume_from_node_id, but a
+            # direct launch resumes by carrying the source's provider session
+            # instead, which would reach the provider without tripping it.
+            raise ValueError(
+                f"{COLD_START_AGENT_OP_KIND} nodes must not resume a prior session"
+            )
+
         resume_source: Node | None = None
         if resume_from_node_id:
             resume_source = self.store.load_node(pid, resume_from_node_id)
@@ -2541,12 +2550,19 @@ class ProjectRegistry:
         )
         if self.store.load_node(pid, node.id) is not None:
             raise ValueError(f"node id {node.id!r} already exists")
-        node.scheduled_deps = self._normalize_virtual_scheduled_deps(
+        normalized_deps = self._normalize_virtual_scheduled_deps(
             pid,
             virtual_id=node.id,
             lane_id=lane_id,
             scheduled_deps=scheduled_deps,
         )
+        # Dependency normalization needs the generated node id, so it happens
+        # after the first construction. Revalidate the completed record before
+        # persistence: model assignment itself does not rerun Node invariants.
+        node = Node.model_validate({
+            **node.model_dump(exclude={"provider", "owner_host_id"}),
+            "scheduled_deps": normalized_deps,
+        }).bind_owner_host(node.owner_host_id)
         lane_nodes = self._lane_nodes_with(pid, lane_id, node)
         if has_cycle(lane_nodes):
             raise ValueError("scheduled_deps would introduce a cycle in the lane DAG")

@@ -99,11 +99,17 @@ TERMINAL_NODE_STATES: frozenset[NodeState] = frozenset({
 UNBOUND_ROOT_PATH = "/nonexistent/miniclaw2-unbound"
 
 
+# Agents launched with zero framework prompt injection: no context bundle, no
+# category block, no preview contract. Named here so the runner, the API, and
+# the tests share one spelling.
+COLD_START_AGENT_OP_KIND = "cold_start"
+
 # Whitelist of ``agent_op_kind`` values. Kept here as a plain set rather
 # than a StrEnum so a new variant can be added without a schema migration.
 KNOWN_AGENT_OP_KINDS: frozenset[str] = frozenset({
     "principle_edit",
     "library_edit",
+    COLD_START_AGENT_OP_KIND,
 })
 
 # Op kinds that author user-wide library entries. Their launch block replaces
@@ -336,6 +342,43 @@ class Node(BaseModel):
             raise ValueError(
                 f"{self.agent_op_kind} requires category=regular"
             )
+        if self.agent_op_kind == COLD_START_AGENT_OP_KIND:
+            # Every field rejected here is a channel through which the
+            # framework would put text in front of the agent. The point of a
+            # cold start is that none of them do.
+            if self.category is not None and self.category is not Category.REGULAR:
+                raise ValueError(
+                    f"{COLD_START_AGENT_OP_KIND} requires category=regular"
+                )
+            if self.scheduled_deps:
+                raise ValueError(
+                    f"{COLD_START_AGENT_OP_KIND} nodes must not carry "
+                    "scheduled_deps: the dependency block injects upstream "
+                    "conclusions; use parent_node_id for ordering"
+                )
+            if self.resume_from_node_id is not None:
+                raise ValueError(
+                    f"{COLD_START_AGENT_OP_KIND} nodes must not resume a "
+                    "prior session"
+                )
+            if self.artifact_mode is not ArtifactMode.DEFAULT:
+                raise ValueError(
+                    f"artifact_mode is not available on "
+                    f"{COLD_START_AGENT_OP_KIND} nodes"
+                )
+            if self.pending_extra_principles:
+                raise ValueError(
+                    f"pending_extra_principles is not available on "
+                    f"{COLD_START_AGENT_OP_KIND} nodes"
+                )
+            if self.qa_mode:
+                # Not because the ask-user tool is absent — it is present on
+                # both providers — but because the Q/A block is itself a layer
+                # of injected prompt.
+                raise ValueError(
+                    f"qa_mode is not available on "
+                    f"{COLD_START_AGENT_OP_KIND} nodes"
+                )
         if self.qa_mode and self.category is Category.REVIEW:
             raise ValueError("qa_mode is not available on review nodes")
         if self.artifact_mode is ArtifactMode.CUSTOM:

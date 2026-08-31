@@ -27,6 +27,7 @@ import type {
   TemplateInstanceRecord,
 } from "../types";
 import { artifactRawUrl } from "../api";
+import { extraPrinciplesAvailable, nodeClassification } from "../nodeUtil";
 import {
   appendBelowLanePosition,
   availableLaneJumps,
@@ -1630,7 +1631,11 @@ function CanvasInner({
          * cursor gives no feedback, but the drop is simply ignored. */
         if (anchorNode?.type === "agent") {
           const data = anchorNode.data as import("./layout").AgentNodeData;
-          if (data.node.state === "virtual" && !data.node.obsolete_reason) {
+          if (
+            data.node.state === "virtual" &&
+            !data.node.obsolete_reason &&
+            extraPrinciplesAvailable(nodeClassification(data.node))
+          ) {
             onAttachPrincipleToVirtual?.(data.node.id, principleId);
           }
         }

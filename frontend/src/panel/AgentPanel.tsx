@@ -45,10 +45,13 @@ import {
   artifactModeAvailable,
   canResumeNode,
   categoryForClassification,
+  extraPrinciplesAvailable,
   isLibraryOpKind,
   nodeClassification,
   nodeClassificationLabel,
+  opKindForClassification,
   qaModeAvailable,
+  scheduledDepsAvailable,
   type NodeClassification,
   type NodeMutationLock,
 } from "../nodeUtil";
@@ -1272,18 +1275,24 @@ const EditableVirtualNodeBody = forwardRef<VirtualNodeBodyHandle, VirtualNodeBod
                 ["planning", "Plan"],
                 ["review", "Review"],
                 ["library", "Library"],
+                ["cold", "Cold"],
               ] as const).map(([value, label]) => (
                 <button
                   key={value}
                   type="button"
+                  disabled={value === "cold" && Boolean(node.resume_from_node_id)}
+                  title={
+                    value === "cold" && node.resume_from_node_id
+                      ? "延续节点不能使用冷启动。"
+                      : undefined
+                  }
                   onClick={() =>
-                    setDraft((current) => ({
-                      ...current,
-                      classification: value,
-                    }))
+                    setDraft((current) =>
+                      virtualDraftWithClassification(current, value),
+                    )
                   }
                   className={
-                    "rounded px-3 py-1.5 text-[12px] font-medium transition " +
+                    "rounded px-3 py-1.5 text-[12px] font-medium transition disabled:cursor-not-allowed disabled:opacity-35 " +
                     (draft.classification === value
                       ? "bg-surface-raised text-ink-strong shadow-card"
                       : "text-ink-muted hover:text-ink")
@@ -1303,6 +1312,25 @@ const EditableVirtualNodeBody = forwardRef<VirtualNodeBodyHandle, VirtualNodeBod
                 </p>
                 <p className="text-[11px] leading-relaxed text-ink-muted">
                   在下方 Prompt 里描述这个可复用的准则或流程即可，无需自己先分类。
+                </p>
+              </div>
+            )}
+
+            {draft.classification === "cold" && (
+              <div className="space-y-2 rounded-md border border-line-strong bg-surface-sunken p-3">
+                <p className="text-[11px] leading-relaxed text-ink-muted">
+                  冷启动节点。框架不注入任何 prompt：没有 ContextSpace 文本、没有节点类型说明、
+                  没有 preview 契约、也不物化 lane。它只拿到你在下方写的 Prompt 和项目工作目录。
+                </p>
+                <p className="text-[11px] leading-relaxed text-ink-muted">
+                  这是<span className="font-medium text-ink">框架零 prompt 注入</span>，不是裸模型：
+                  provider 自带的 system prompt、工作目录里的文件（含 CONTEXT.md，agent 仍可主动读）、
+                  以及 codex 自行加载的 AGENTS.md 都还在。摘要由框架截取本回合文本尾部生成；
+                  写进 outputs 目录的 .md / .json / .html 会被自动发布，无需声明。
+                </p>
+                <p className="text-[11px] leading-relaxed text-ink-muted">
+                  依赖、附加准则、允许提问和产出物约定都不可用——它们本身就是注入。
+                  技能仍可挂载：那是提供能力，而非告诉模型该用什么。
                 </p>
               </div>
             )}
@@ -1493,13 +1521,15 @@ const EditableVirtualNodeBody = forwardRef<VirtualNodeBodyHandle, VirtualNodeBod
         </section>
       )}
 
-      <PrinciplesAttachSection
-        principles={principles}
-        attached={draft.pendingExtraPrinciples}
-        onChange={(next) =>
-          setDraft((current) => ({ ...current, pendingExtraPrinciples: next }))
-        }
-      />
+      {extraPrinciplesAvailable(draft.classification) && (
+        <PrinciplesAttachSection
+          principles={principles}
+          attached={draft.pendingExtraPrinciples}
+          onChange={(next) =>
+            setDraft((current) => ({ ...current, pendingExtraPrinciples: next }))
+          }
+        />
+      )}
 
       <SkillsAttachSection
         skills={skills}
@@ -1509,7 +1539,8 @@ const EditableVirtualNodeBody = forwardRef<VirtualNodeBodyHandle, VirtualNodeBod
         }
       />
 
-      <section className="mb-5">
+      {scheduledDepsAvailable(draft.classification) && (
+        <section className="mb-5">
         <div className="overflow-hidden rounded-md border border-line bg-surface-sunken">
           <div className="border-b border-line px-3 py-2">
             <SectionHeading>Dependencies</SectionHeading>
@@ -1561,7 +1592,8 @@ const EditableVirtualNodeBody = forwardRef<VirtualNodeBodyHandle, VirtualNodeBod
             )}
           </div>
         </div>
-      </section>
+        </section>
+      )}
 
       <section className="mb-2">
         <div className="overflow-hidden rounded-md border border-line bg-surface-sunken">
@@ -2141,17 +2173,24 @@ export function candidateDependencies(
 }
 
 export function virtualDraftAfterSave(draft: VirtualDraft): VirtualDraft {
-  const artifactMode = artifactModeAvailable(draft.classification)
-    ? draft.artifactMode
+  const classified = virtualDraftWithClassification(
+    draft,
+    draft.classification,
+  );
+  const artifactMode = artifactModeAvailable(classified.classification)
+    ? classified.artifactMode
     : "default";
   const normalized: VirtualDraft = {
-    ...draft,
-    qaMode: qaModeAvailable(draft.classification) ? draft.qaMode : false,
+    ...classified,
+    qaMode: qaModeAvailable(classified.classification)
+      ? classified.qaMode
+      : false,
     artifactMode,
-    artifactSpec: artifactMode === "custom" ? draft.artifactSpec.trim() : "",
-    obsoleteReason: draft.obsoleteReason.trim(),
+    artifactSpec:
+      artifactMode === "custom" ? classified.artifactSpec.trim() : "",
+    obsoleteReason: classified.obsoleteReason.trim(),
   };
-  if (draft.classification === "review") {
+  if (classified.classification === "review") {
     return normalized;
   }
   return {
@@ -2162,6 +2201,32 @@ export function virtualDraftAfterSave(draft: VirtualDraft): VirtualDraft {
       expected: "",
       abnormal: "",
     },
+  };
+}
+
+/** Apply a classification and immediately discard settings that classification
+ * cannot persist. This keeps hidden controls out of readiness checks and makes
+ * the local draft match the payload the server will receive. */
+export function virtualDraftWithClassification(
+  draft: VirtualDraft,
+  classification: NodeClassification,
+): VirtualDraft {
+  return {
+    ...draft,
+    classification,
+    scheduledDeps: scheduledDepsAvailable(classification)
+      ? draft.scheduledDeps
+      : [],
+    pendingExtraPrinciples: extraPrinciplesAvailable(classification)
+      ? draft.pendingExtraPrinciples
+      : [],
+    qaMode: qaModeAvailable(classification) ? draft.qaMode : false,
+    artifactMode: artifactModeAvailable(classification)
+      ? draft.artifactMode
+      : "default",
+    artifactSpec: artifactModeAvailable(classification)
+      ? draft.artifactSpec
+      : "",
   };
 }
 
@@ -2176,6 +2241,9 @@ export function virtualDraftValidationError(
   }
   if (!node.resume_from_node_id && !draft.modelPresetId) {
     return "请先选择模型档位。";
+  }
+  if (node.resume_from_node_id && draft.classification === "cold") {
+    return "延续节点不能使用冷启动。";
   }
   if (
     artifactModeAvailable(draft.classification) &&
@@ -2195,12 +2263,14 @@ function virtualDraftReadyToPromote(
   if (draft.obsoleteReason.trim() || virtualDraftValidationError(draft, node)) {
     return false;
   }
-  for (const depId of draft.scheduledDeps) {
-    const dep = byId.get(depId);
-    if (!dep) continue;
-    if (isTerminal(dep.state)) continue;
-    if (dep.state === "virtual" && dep.obsolete_reason) continue;
-    return false;
+  if (scheduledDepsAvailable(draft.classification)) {
+    for (const depId of draft.scheduledDeps) {
+      const dep = byId.get(depId);
+      if (!dep) continue;
+      if (isTerminal(dep.state)) continue;
+      if (dep.state === "virtual" && dep.obsolete_reason) continue;
+      return false;
+    }
   }
   return true;
 }
@@ -2209,24 +2279,26 @@ export function virtualPayloadFromDraft(
   draft: VirtualDraft,
   node: NodeInfo,
 ): UpdateVirtualPayload {
-  const isLibrary = draft.classification === "library";
   const payload: UpdateVirtualPayload = {
     prompt_draft: draft.promptDraft,
     motivation: draft.motivation,
     category: categoryForClassification(draft.classification),
-    scheduled_deps: draft.scheduledDeps,
-    pending_extra_principles: draft.pendingExtraPrinciples,
+    scheduled_deps: scheduledDepsAvailable(draft.classification)
+      ? draft.scheduledDeps
+      : [],
+    pending_extra_principles: extraPrinciplesAvailable(draft.classification)
+      ? draft.pendingExtraPrinciples
+      : [],
     pending_extra_skills: draft.pendingExtraSkills,
     obsolete_reason: draft.obsoleteReason.trim() || null,
   };
   /* Only send agent_op_kind when it actually changes. Leaving a historical
    * principle_edit node untouched keeps it replaying under its original op
    * kind rather than silently migrating it to library_edit. */
-  const nextOpKind = isLibrary
-    ? isLibraryOpKind(node.agent_op_kind)
+  const nextOpKind =
+    draft.classification === "library" && isLibraryOpKind(node.agent_op_kind)
       ? node.agent_op_kind ?? "library_edit"
-      : "library_edit"
-    : null;
+      : opKindForClassification(draft.classification);
   if (nextOpKind !== (node.agent_op_kind ?? null)) {
     payload.agent_op_kind = nextOpKind;
   }

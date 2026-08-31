@@ -169,6 +169,15 @@ function graph(...nodes: NodeInfo[]): Map<string, NodeInfo> {
       expect: "target-obsolete",
     },
     {
+      why: "cold starts cannot receive injected dependency context",
+      attempt: { sourceId: "src", targetId: "dst" },
+      nodes: graph(
+        node({ id: "src" }),
+        node({ id: "dst", agent_op_kind: "cold_start" }),
+      ),
+      expect: "target-cold-start",
+    },
+    {
       why: "dependencies stay within one lane",
       attempt: { sourceId: "src", targetId: "dst" },
       nodes: graph(

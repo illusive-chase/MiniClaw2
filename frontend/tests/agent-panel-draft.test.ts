@@ -6,6 +6,7 @@ import {
   mergeVirtualDraft,
   virtualDraftAfterSave,
   virtualDraftFromNode,
+  virtualDraftWithClassification,
   virtualDraftValidationError,
   virtualPayloadFromDraft,
 } from "../src/panel/AgentPanel";
@@ -321,6 +322,97 @@ function node(over: Partial<NodeInfo> = {}): NodeInfo {
     (candidate) => candidate.id,
   );
   assert.deepEqual(ids.sort(), ["picked", "plain"]);
+}
+
+/* A cold start is carried by agent_op_kind while its category stays regular.
+ * Editing one must preserve that marker: the earlier payload builder sent
+ * agent_op_kind: null for everything that was not a library node, which would
+ * have silently turned a cold start into an ordinary work node on the first
+ * unrelated edit. */
+{
+  const cold = node({ agent_op_kind: "cold_start" });
+  const draft = virtualDraftFromNode(cold);
+  assert.equal(draft.classification, "cold");
+  const payload = virtualPayloadFromDraft(draft, cold);
+  assert.equal(payload.category, "regular");
+  assert.equal(payload.agent_op_kind, undefined);
+}
+
+/* The three fields a cold start rejects are all injected prompt. The payload
+ * zeroes them rather than forwarding a draft the backend would 400 on. */
+{
+  const draft = {
+    ...virtualDraftFromNode(node()),
+    classification: "cold" as const,
+    scheduledDeps: ["upstream"],
+    pendingExtraPrinciples: ["principles.evidence"],
+    pendingExtraSkills: [{ id: "skills.release" }],
+    qaMode: true,
+    artifactMode: "markdown" as const,
+    artifactSpec: "leftover",
+  };
+  const payload = virtualPayloadFromDraft(draft, node());
+  assert.equal(payload.agent_op_kind, "cold_start");
+  assert.equal(payload.category, "regular");
+  assert.deepEqual(payload.scheduled_deps, []);
+  assert.deepEqual(payload.pending_extra_principles, []);
+  assert.equal(payload.qa_mode, false);
+  assert.equal(payload.artifact_mode, "default");
+  assert.equal(payload.artifact_spec, "");
+  // Skills stay: mounting one supplies a capability, it injects no prompt.
+  assert.deepEqual(payload.pending_extra_skills, [{ id: "skills.release" }]);
+}
+
+/* Classification changes clear every hidden prompt-injection setting at the
+ * point of interaction, so stale dependencies cannot block promotion and a
+ * switch back to Work cannot resurrect values that were saved as empty. */
+{
+  const draft = {
+    ...virtualDraftFromNode(node()),
+    scheduledDeps: ["upstream"],
+    pendingExtraPrinciples: ["principles.evidence"],
+    qaMode: true,
+    artifactMode: "custom" as const,
+    artifactSpec: "report",
+  };
+  const cold = virtualDraftWithClassification(draft, "cold");
+  assert.deepEqual(cold.scheduledDeps, []);
+  assert.deepEqual(cold.pendingExtraPrinciples, []);
+  assert.equal(cold.qaMode, false);
+  assert.equal(cold.artifactMode, "default");
+  assert.equal(cold.artifactSpec, "");
+  assert.deepEqual(cold.pendingExtraSkills, draft.pendingExtraSkills);
+}
+
+/* A stale/restored draft cannot bypass the disabled Cold control on a
+ * continuation virtual. Validation blocks autosave, Save, and Promote too. */
+{
+  const continuation = node({ resume_from_node_id: "source" });
+  const cold = virtualDraftWithClassification(
+    virtualDraftFromNode(continuation),
+    "cold",
+  );
+  assert.match(
+    virtualDraftValidationError(cold, continuation) ?? "",
+    /延续节点不能使用冷启动/,
+  );
+}
+
+/* Turning a cold start back into ordinary work must clear the marker, and a
+ * historical principle_edit node must not be migrated to library_edit by an
+ * unrelated edit. */
+{
+  const cold = node({ agent_op_kind: "cold_start" });
+  const toWork = { ...virtualDraftFromNode(cold), classification: "work" as const };
+  assert.equal(virtualPayloadFromDraft(toWork, cold).agent_op_kind, null);
+
+  const legacy = node({ agent_op_kind: "principle_edit" });
+  const legacyDraft = virtualDraftFromNode(legacy);
+  assert.equal(legacyDraft.classification, "library");
+  assert.equal(
+    virtualPayloadFromDraft(legacyDraft, legacy).agent_op_kind,
+    undefined,
+  );
 }
 
 console.log("agent-panel-draft: ok");

@@ -12,6 +12,7 @@
  */
 
 import type { NodeInfo } from "../types";
+import { isColdStartOpKind } from "../nodeUtil";
 
 /** Why a dragged connection cannot become a dependency. */
 export type ConnectionRejection =
@@ -20,6 +21,7 @@ export type ConnectionRejection =
   | "target-not-agent"
   | "target-not-virtual"
   | "target-obsolete"
+  | "target-cold-start"
   | "cross-lane"
   | "already-declared"
   | "would-cycle";
@@ -70,6 +72,7 @@ export function dependencyConnectionRejection(
   if (target.kind !== "agent") return "target-not-agent";
   if (target.state !== "virtual") return "target-not-virtual";
   if (target.obsolete_reason) return "target-obsolete";
+  if (isColdStartOpKind(target.agent_op_kind)) return "target-cold-start";
   if ((source.planspace_id ?? "") !== (target.planspace_id ?? "")) {
     return "cross-lane";
   }

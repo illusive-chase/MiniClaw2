@@ -27,6 +27,7 @@ import yaml
 from pydantic import BaseModel
 
 from .artifacts import (
+    ALLOWED_ARTIFACT_SUFFIXES,
     clear_published_artifacts,
     publish_artifacts,
     workspace_artifacts_dir,
@@ -38,6 +39,7 @@ from .contextspace import (
     require_resolvable_active_planspace,
 )
 from .domain import (
+    COLD_START_AGENT_OP_KIND,
     Category,
     GateKind,
     GateState,
@@ -56,6 +58,7 @@ from .events import (
     InteractionRequest,
     NodeStarted,
     NodeUpdated,
+    TextDelta,
     TurnDone,
     Usage,
 )
@@ -129,6 +132,18 @@ _CODEX_FOCUS_WARNING = (
 _CLEAN_REVIEW_PATCH = "# Working tree clean - nothing to review.\n"
 _LIBRARY_SLUG_RE = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
 
+# A cold-start agent is never told that previews exist, so the framework writes
+# the three prose fields itself. Motivation and implications are fixed: they are
+# the same for every cold start, and the agent has no channel to express them.
+_COLD_START_MOTIVATION = "冷启动节点：框架未注入任何上下文"
+_COLD_START_IMPLICATIONS = (
+    "产物见节点 artifacts 与项目工作树；本节点无框架撰写的分析"
+)
+_COLD_START_EMPTY_SUMMARY = "冷启动回合结束但没有产生最终文本"
+# Tail of the turn's assistant text kept for the summary. Same order of
+# magnitude as the summaries agents write for themselves.
+_COLD_START_SUMMARY_LIMIT = 4000
+
 
 class LibraryAuthoringError(ValueError):
     """A librarian turn produced no single valid library entry."""
@@ -162,6 +177,7 @@ class NodeRunner:
         self._lane_root: Path | None = None
         self._pre_snapshot: dict[str, str] = {}
         self._skill_materialization: SkillMaterialization | None = None
+        self._cold_start_text = ""
 
     # ---- public surface (used by the WS layer via ProjectRuntime) ----
 
@@ -224,16 +240,39 @@ class NodeRunner:
 
     async def _run_agent(self) -> None:
         self.node.commit_before = git_head(self.project.root_path)
+        # A cold start runs this same state machine — the transitions, commit
+        # bookkeeping, gate plumbing and cancellation handling are all shared.
+        # Only the framework's four injection points are short-circuited, and
+        # the preview is written by the framework instead of the agent.
+        is_cold_start = self._is_cold_start()
         try:
-            context_bundle = self._snapshot_context_bundle()
+            context_bundle = (
+                None if is_cold_start else self._snapshot_context_bundle()
+            )
+            if is_cold_start:
+                self._clear_context_snapshot()
             self._snapshot_launch_settings(context_bundle)
             self._materialize_skills()
             self._validate_launch_settings()
-            self._materialize_lane()
-            launch_instructions = self._build_agent_launch_instructions(
-                context_bundle
+            if is_cold_start:
+                # No lane is materialized, but the outputs directory is still
+                # the node's artifact channel. _materialize_lane() would have
+                # created it on the way past.
+                workspace_artifacts_dir(self.project, self.node.id).mkdir(
+                    parents=True,
+                    exist_ok=True,
+                )
+            else:
+                self._materialize_lane()
+            launch_instructions = (
+                ""
+                if is_cold_start
+                else self._build_agent_launch_instructions(context_bundle)
             )
             self.node.launch_instructions_snapshot = launch_instructions
+            system_context = (
+                "" if context_bundle is None else context_bundle.system_text
+            )
 
             is_human_review = self._is_human_interact_review()
             first_state = (
@@ -269,7 +308,7 @@ class NodeRunner:
                         final_state, error_msg = await self._run_provider_turn(
                             self.node.prompt,
                             launch_instructions=launch_instructions,
-                            system_context=context_bundle.system_text,
+                            system_context=system_context,
                         )
                         if (
                             final_state is NodeState.DONE
@@ -300,10 +339,16 @@ class NodeRunner:
                 if error_msg is not None:
                     self.node.error = error_msg
                 self.node.commit_after = git_head(self.project.root_path)
-                if final_state is NodeState.DONE and self._lane_root is not None:
+                if is_cold_start:
+                    # No reap: the agent was never told the lane or the preview
+                    # contract exists, so there is nothing of its own to fold in.
+                    self._write_cold_start_preview(
+                        final_state, reason=error_msg or ""
+                    )
+                elif final_state is NodeState.DONE and self._lane_root is not None:
                     try:
                         final_state = await self._reap_with_preview_repairs(
-                            context_bundle.system_text
+                            system_context
                         )
                     except asyncio.CancelledError:
                         final_state = NodeState.CANCELLED
@@ -915,6 +960,66 @@ class NodeRunner:
             and self.node.subtype is ReviewSubtype.HUMAN_INTERACT_REVIEW
         )
 
+    def _is_cold_start(self) -> bool:
+        return (
+            self.node.kind is NodeKind.AGENT
+            and self.node.agent_op_kind == COLD_START_AGENT_OP_KIND
+        )
+
+    def _clear_context_snapshot(self) -> None:
+        """Record that no ContextSpace text was composed for this node.
+
+        The audit must say "nothing was injected", not merely omit the fields —
+        a stale bundle id from an earlier attempt would otherwise read as one.
+        """
+        self.node.context_bundle_id = None
+        self.node.context_bundle_path = None
+        self.node.system_context_snapshot = ""
+        self.store.update_node(self.node)
+
+    def _scan_workspace_artifacts(self) -> list[str]:
+        """Return publishable filenames the agent left in its outputs directory.
+
+        A cold-start agent is not told to declare artifacts, so the framework
+        declares whatever it finds. Sorting keeps the published set stable when
+        the directory holds more files than ``MAX_ARTIFACTS_PER_NODE``.
+        """
+        output_dir = workspace_artifacts_dir(self.project, self.node.id)
+        try:
+            entries = sorted(output_dir.iterdir())
+        except OSError:
+            return []
+        return [
+            entry.name
+            for entry in entries
+            if entry.is_file()
+            and entry.suffix in ALLOWED_ARTIFACT_SUFFIXES
+        ]
+
+    def _write_cold_start_preview(
+        self, final_state: NodeState, *, reason: str = ""
+    ) -> None:
+        if final_state is not NodeState.DONE:
+            self._write_stub_preview(final_state, reason=reason)
+            return
+        summary = _tail_text(
+            self._cold_start_text.strip(), _COLD_START_SUMMARY_LIMIT
+        )
+        self.node.summary = summary or _COLD_START_EMPTY_SUMMARY
+        declared = self._scan_workspace_artifacts()
+        publish_artifacts(self.project, self.node, declared, self.store)
+        self._persist_executed_preview(
+            final_state,
+            motivation=_COLD_START_MOTIVATION,
+            summary=self.node.summary,
+            next_implications=_COLD_START_IMPLICATIONS,
+            artifacts=[
+                ref.name
+                for ref in self.node.artifacts
+                if ref.status == "published"
+            ],
+        )
+
     async def _request_human_review_prose(self) -> str:
         """Emit a ``human_review_prose`` interaction and await the user's
         free-form prose.
@@ -1478,6 +1583,16 @@ class NodeRunner:
         if ev.kind == "event" and ev.event is not None:
             if isinstance(ev.event, Usage):
                 self._record_usage(ev.event)
+            elif isinstance(ev.event, TextDelta) and self._is_cold_start():
+                # Both providers reach TextDelta through this one channel, so a
+                # tail kept here is provider-neutral. This is the turn's text
+                # tail rather than its last assistant message — for a summary
+                # that is the better approximation anyway, since the closing
+                # conclusion is always at the end.
+                self._cold_start_text = _tail_text(
+                    self._cold_start_text + ev.event.text,
+                    _COLD_START_SUMMARY_LIMIT,
+                )
             skill_used = (
                 self._record_skill_use(ev.event)
                 if isinstance(ev.event, Activity)
