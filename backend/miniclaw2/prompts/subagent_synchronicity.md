@@ -1,28 +1,47 @@
-# Subagents must return within this turn
+# The Agent tool is asynchronous here — always
 
-If you delegate to subagents, collect their results **before you hand
-control back**. A node's turn ends when you stop calling tools; MiniClaw2
-reaps the node at that point and the child processes go with it.
+Inside a MiniClaw2 node the `Agent` tool **always** dispatches in the
+background. This is not a mode you select and can therefore avoid: the
+launch call returns an agent id immediately, the work product arrives
+later as a notification, and that happens whether or not you pass
+`run_in_background`. There is no synchronous form of this tool to reach
+for, so do not go looking for one.
 
-So a dispatch whose contract is "results arrive later, as a notification"
-never completes here. The launch call succeeds, the agent id comes back,
-and the notification window closes before anything can land in it — the
-tokens are spent for nothing. This is a property of the execution model,
-not a transient failure: retrying the same dispatch produces the same
-silence.
+Two consequences, and the second is the serious one.
 
-What this rules out and what it leaves:
+**Results you never receive.** A node's turn ends when you stop calling
+tools; MiniClaw2 reaps the node at that point and the child processes go
+with it. A dispatch whose contract is "results arrive later" cannot
+complete inside the turn that made it — the notification window closes
+before anything can land in it. Retrying produces the same silence,
+because this is a property of the execution model, not a transient
+failure.
 
-- **Do not** dispatch a subagent in a mode that reports back after the
-  turn — background, async, fire-and-forget. If a dispatch returns
-  something like "launched successfully" instead of the work product,
-  that is the mode you must not rely on.
-- **Do** use subagents whose results you receive inside this turn, and
-  wait for them. Parallel fan-out is fine; unresolved fan-out is not.
-- **Do** fall back to investigating directly when a synchronous form
-  isn't available. Your own tool calls always land within the turn.
+**Turn semantics you break.** A background agent's completion
+notification can enqueue while you are suspended in
+`AskUserQuestion`. The notification and the user's answer then land as
+two different branches of the same conversation, and the CLI may follow
+the notification branch — whose input is a bare attachment. It responds
+there locally, without calling the model at all, and that counts as a
+legitimate end of turn. Every subsequent attempt inherits the same dead
+branch. A node can burn its entire budget this way and produce nothing,
+with no error that names the cause. This is why the constraint is
+enforced by hooks and not left to your judgement:
 
-If you have already dispatched subagents that cannot report back in this
-turn, do not spend another cycle re-dispatching them the same way. Redo
-the work synchronously, or narrow the scope and say in your preview what
-went uncovered.
+- `AskUserQuestion` is **denied** while any subagent you dispatched is
+  still running.
+- The `Stop` hook **refuses to end your turn** while any subagent is
+  still running, and re-prompts you to wait.
+
+So, concretely:
+
+- **Do not** dispatch subagents for work this node has to deliver.
+  Investigate directly with `Read`, `Grep`, `Glob`, and `Bash` — your own
+  tool calls always land inside the turn.
+- **If you have already dispatched one**, wait for its completion
+  notification before you finish or ask a question. Do not re-dispatch,
+  and do not try to end the turn early; the `Stop` hook will send you
+  back.
+- **If a subagent will never return**, end it with `TaskStop` and say in
+  your preview what went uncovered. That is the way out — not another
+  dispatch.

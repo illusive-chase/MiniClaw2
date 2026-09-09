@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from ...events import TextDelta
 from ..base import AgentProviderEvent
 from . import hook_runtime
 from .input import InputWriter, SubmitResult
@@ -146,6 +147,10 @@ class ClaudeNativeSession:
         self._turn_complete_event = hook_runtime.register_turn_complete(
             self._node_id, self._session_id
         )
+        # Each turn is a fresh ``claude --resume`` process, so a previous
+        # turn's subagents are already gone with it. Clearing the ledger
+        # keeps their ids from refusing a turn that owes nothing.
+        hook_runtime.reset_subagent_ledger(self._node_id)
 
         loop = asyncio.get_running_loop()
         try:
@@ -295,6 +300,15 @@ class ClaudeNativeSession:
                     usage_event = self._final_usage_event()
                     if usage_event is not None:
                         yield usage_event
+                    # A turn that ran its Stop-block budget out and ended
+                    # anyway lost subagent work. Report it as node output,
+                    # not just a log line: the node still succeeded, so
+                    # this is the only place the loss becomes visible.
+                    abandoned = hook_runtime.abandoned_subagent_note(self._node_id)
+                    if abandoned:
+                        yield AgentProviderEvent(
+                            kind="event", event=TextDelta(text=abandoned + "\n")
+                        )
                     yield AgentProviderEvent(
                         kind="done",
                         final_state=(

@@ -24,6 +24,9 @@ the plan.
 
 ## What you must write
 
+If you dispatched any subagent, wait for it to finish before you write
+your preview — the turn cannot end while one is still running.
+
 ### 1. Your own preview (required)
 
     <<lane_path>>/nodes/<<node_id>>/preview.json

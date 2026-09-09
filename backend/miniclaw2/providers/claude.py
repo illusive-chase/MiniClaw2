@@ -23,9 +23,26 @@ from .base import (
     ReviewSpec,
 )
 from .claude_native import ClaudeNativeError, ClaudeNativeSession
-from .claude_native.ask_payload import format_ask_directive, parse_ask_payload
+from .claude_native import hook_runtime
+from .claude_native.ask_payload import (
+    deny_ask_directive,
+    format_ask_directive,
+    parse_ask_payload,
+)
 
 logger = logging.getLogger(__name__)
+
+
+def _pending_subagent_ask_reason(pending: list[str]) -> str:
+    listed = "、".join(pending)
+    return (
+        f"本轮还有 {len(pending)} 个子代理在运行（{listed}），现在不能向用户提问。"
+        "在等待用户回答期间，子代理的完成通知会入队并与用户的回答分叉，"
+        "使 CLI 在通知那一支上本地合成回复、完全不调用模型，"
+        "整个节点会静默失败。\n\n"
+        "请先等待子代理的完成通知，收下结果之后再提问。"
+        "如果确认某个子代理不会返回，用 TaskStop 终止它。"
+    )
 
 class ClaudeProvider:
     name = "claude"
@@ -198,6 +215,15 @@ class ClaudeProvider:
     ) -> dict[str, Any]:
         """Route a hook-forwarded AskUserQuestion payload through the runner's
         gate machinery and return the directive Claude expects."""
+        pending = hook_runtime.running_subagents(context.node.id)
+        if pending:
+            # Suspending here while a subagent is still running is what
+            # breaks a node: the completion notification enqueues during
+            # the wait, forks the conversation against the user's answer,
+            # and the CLI can then synthesize replies on the notification
+            # branch without ever calling the model. Deny instead — the
+            # agent has to collect its subagents first.
+            return deny_ask_directive(_pending_subagent_ask_reason(pending))
         parsed = parse_ask_payload(payload)
         if parsed is None:
             # Passthrough shape: an empty dict signals the bridge to fall back

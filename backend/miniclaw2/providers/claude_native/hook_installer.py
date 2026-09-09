@@ -25,12 +25,15 @@ _HOOK_MARKER = "miniclaw2.claude_hook_bridge"
 _HOOK_SCRIPT_NAME = "claude_hook_bridge.py"
 _SESSION_READY_MARKER = "--session-ready"
 _TURN_COMPLETE_MARKER = "--turn-complete"
+_SUBAGENT_START_MARKER = "--subagent-start"
+_SUBAGENT_STOP_MARKER = "--subagent-stop"
 # Claude requires a numeric hook timeout. Use the largest duration that stays
 # within the common 32-bit millisecond timer ceiling (about 24.8 days), while
 # the MiniClaw2 request itself has no user-decision deadline.
 _ASK_HOOK_TIMEOUT_SECONDS = 2_147_000
 _SESSION_READY_HOOK_TIMEOUT_SECONDS = 15
 _TURN_COMPLETE_HOOK_TIMEOUT_SECONDS = 15
+_SUBAGENT_HOOK_TIMEOUT_SECONDS = 15
 
 
 def install_hooks(settings_path: Path | None = None) -> Path:
@@ -48,6 +51,8 @@ def install_hooks(settings_path: Path | None = None) -> Path:
     ask_command = _bridge_command(target.parent)
     ready_command = ask_command + f" {_SESSION_READY_MARKER}"
     turn_complete_command = ask_command + f" {_TURN_COMPLETE_MARKER}"
+    subagent_start_command = ask_command + f" {_SUBAGENT_START_MARKER}"
+    subagent_stop_command = ask_command + f" {_SUBAGENT_STOP_MARKER}"
 
     ask_entry = {
         "type": "command",
@@ -64,17 +69,23 @@ def install_hooks(settings_path: Path | None = None) -> Path:
         "command": turn_complete_command,
         "timeout": _TURN_COMPLETE_HOOK_TIMEOUT_SECONDS,
     }
+    subagent_start_entry = {
+        "type": "command",
+        "command": subagent_start_command,
+        "timeout": _SUBAGENT_HOOK_TIMEOUT_SECONDS,
+    }
+    subagent_stop_entry = {
+        "type": "command",
+        "command": subagent_stop_command,
+        "timeout": _SUBAGENT_HOOK_TIMEOUT_SECONDS,
+    }
 
     _replace_group(
         hooks,
         "PreToolUse",
         matcher="AskUserQuestion",
         entry=ask_entry,
-        is_ours=lambda e: (
-            _is_bridge_command(_entry_command(e))
-            and _SESSION_READY_MARKER not in _entry_command(e)
-            and _TURN_COMPLETE_MARKER not in _entry_command(e)
-        ),
+        is_ours=lambda e: _is_bare_bridge_command(_entry_command(e)),
     )
     _replace_group(
         hooks,
@@ -94,6 +105,26 @@ def install_hooks(settings_path: Path | None = None) -> Path:
         is_ours=lambda e: (
             _is_bridge_command(_entry_command(e))
             and _TURN_COMPLETE_MARKER in _entry_command(e)
+        ),
+    )
+    _replace_group(
+        hooks,
+        "SubagentStart",
+        matcher=None,
+        entry=subagent_start_entry,
+        is_ours=lambda e: (
+            _is_bridge_command(_entry_command(e))
+            and _SUBAGENT_START_MARKER in _entry_command(e)
+        ),
+    )
+    _replace_group(
+        hooks,
+        "SubagentStop",
+        matcher=None,
+        entry=subagent_stop_entry,
+        is_ours=lambda e: (
+            _is_bridge_command(_entry_command(e))
+            and _SUBAGENT_STOP_MARKER in _entry_command(e)
         ),
     )
 
@@ -124,6 +155,26 @@ def _bridge_command(settings_dir: Path) -> str:
 
 def _is_bridge_command(command: str) -> bool:
     return _HOOK_MARKER in command or _HOOK_SCRIPT_NAME in command
+
+
+_ALL_MARKERS = (
+    _SESSION_READY_MARKER,
+    _TURN_COMPLETE_MARKER,
+    _SUBAGENT_START_MARKER,
+    _SUBAGENT_STOP_MARKER,
+)
+
+
+def _is_bare_bridge_command(command: str) -> bool:
+    """Match our flagless ``PreToolUse`` entry only.
+
+    Identified by the absence of every flag rather than by naming the
+    ones that exist, so adding a new hook flag cannot leave a stale
+    duplicate of a previous version's entry behind.
+    """
+    if not _is_bridge_command(command):
+        return False
+    return all(marker not in command for marker in _ALL_MARKERS)
 
 
 def _read_json(path: Path) -> dict[str, Any] | None:

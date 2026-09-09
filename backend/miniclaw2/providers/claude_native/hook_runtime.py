@@ -12,6 +12,10 @@ Each ``ClaudeNativeSession`` registers:
   when Claude Code's ``Stop`` hook fires, but only when the signal proves
   it came from the session that node's PTY owns (see
   ``register_turn_complete``).
+- a subagent ledger keyed by node id — ``SubagentStart`` adds an agent
+  id, ``SubagentStop`` removes it. A node's turn must not end, and must
+  not suspend in ``AskUserQuestion``, while that ledger is non-empty
+  (see ``_SubagentLedger``).
 
 The token is generated on first access via ``secrets.token_urlsafe`` and
 kept in memory for the daemon's lifetime.
@@ -54,12 +58,38 @@ class _TurnCompleteSlot:
 
 
 @dataclass(slots=True)
+class _SubagentLedger:
+    """One node's set of dispatched-but-unreturned subagents.
+
+    The ``Agent`` tool is always asynchronous inside a node: its result
+    arrives as a queued notification, never as the tool's return value.
+    Two things must therefore not happen while a subagent is still
+    running — the node must not suspend in ``AskUserQuestion`` (the
+    completion notification and the user's answer then fork the
+    conversation, and the CLI can follow the notification branch and
+    synthesize a reply without calling the model at all), and the node
+    must not end its turn (the subagent's work is discarded when the
+    node is reaped).
+
+    ``SubagentStart``/``SubagentStop`` are the CLI's own lifecycle
+    events, so membership needs no transcript parsing. ``blocks`` counts
+    how many times ``Stop`` has already been refused for this node, so a
+    subagent that never returns cannot hold the turn open forever.
+    """
+
+    running: dict[str, str] = field(default_factory=dict)
+    blocks: int = 0
+    abandoned: str = ""
+
+
+@dataclass(slots=True)
 class _State:
     token: str = ""
     port: int = 0
     ask_dispatchers: dict[str, AskDispatch] = field(default_factory=dict)
     session_ready_events: dict[str, asyncio.Event] = field(default_factory=dict)
     turn_complete_slots: dict[str, _TurnCompleteSlot] = field(default_factory=dict)
+    subagent_ledgers: dict[str, _SubagentLedger] = field(default_factory=dict)
 
 
 _STATE = _State()
@@ -239,3 +269,106 @@ def signal_turn_complete(node_id: str, session_id: str | None = None) -> bool:
     if not slot.event.is_set():
         slot.event.set()
     return True
+
+
+# ---- subagent ledger -----------------------------------------------------
+
+# How many times ``Stop`` may be refused for one node before the turn is
+# allowed to end anyway. A subagent that never returns must not strand the
+# node: past this budget MiniClaw2 accepts the turn and records the loss
+# instead. Kept below Claude Code's own cap of 8 consecutive continuations
+# so the decision stays ours — once the CLI overrides the hook, it ends the
+# turn without telling us, and the node would wait out the stall timeout.
+_MAX_STOP_BLOCKS = 5
+
+
+def reset_subagent_ledger(node_id: str) -> None:
+    """Clear ``node_id``'s ledger at the start of a turn.
+
+    Each turn is a fresh ``claude --resume`` process, so subagents from a
+    previous turn are already gone. Carrying their ids over would refuse a
+    turn that has nothing outstanding.
+    """
+    _STATE.subagent_ledgers.pop(node_id, None)
+
+
+def record_subagent_start(node_id: str, agent_id: str, agent_type: str = "") -> None:
+    if not node_id or not agent_id:
+        return
+    ledger = _STATE.subagent_ledgers.setdefault(node_id, _SubagentLedger())
+    ledger.running[agent_id] = agent_type
+
+
+def record_subagent_stop(node_id: str, agent_id: str) -> None:
+    """Retire one subagent.
+
+    A ``SubagentStop`` for an unknown id is ignored rather than treated as
+    an error: the ledger only has to end up empty, and an id we never saw
+    start is already absent.
+    """
+    if not node_id or not agent_id:
+        return
+    ledger = _STATE.subagent_ledgers.get(node_id)
+    if ledger is None:
+        return
+    ledger.running.pop(agent_id, None)
+
+
+def running_subagents(node_id: str) -> list[str]:
+    """Agent types still running for ``node_id``, for a human-readable reason."""
+    ledger = _STATE.subagent_ledgers.get(node_id)
+    if ledger is None:
+        return []
+    return [agent_type or agent_id for agent_id, agent_type in ledger.running.items()]
+
+
+def has_running_subagents(node_id: str) -> bool:
+    ledger = _STATE.subagent_ledgers.get(node_id)
+    return bool(ledger and ledger.running)
+
+
+def should_block_stop(node_id: str) -> bool:
+    """Whether this ``Stop`` must be refused so the node waits.
+
+    Consumes one unit of the block budget when it returns True, so the
+    caller must ask exactly once per ``Stop``. Returning False when
+    subagents are still running is the deliberate give-up path: the turn
+    ends and the caller records what was lost.
+    """
+    ledger = _STATE.subagent_ledgers.get(node_id)
+    if ledger is None or not ledger.running:
+        return False
+    if ledger.blocks >= _MAX_STOP_BLOCKS:
+        return False
+    ledger.blocks += 1
+    return True
+
+
+def is_owned_session(node_id: str, session_id: str) -> bool:
+    """Whether ``session_id`` is this node's own PTY rather than a descendant.
+
+    The subagent checks consult this first so a nested ``claude`` session's
+    ``Stop`` can neither hold the node's turn open nor spend its budget.
+    """
+    slot = _STATE.turn_complete_slots.get(node_id)
+    if slot is None:
+        return False
+    return session_id in slot.owned
+
+
+def note_abandoned_subagents(node_id: str, note: str) -> None:
+    """Record that the turn ended with subagents still running.
+
+    Held on the ledger rather than written to the node here: the hook
+    route has no node record, and the runner reads this when the turn's
+    stream closes.
+    """
+    ledger = _STATE.subagent_ledgers.get(node_id)
+    if ledger is None:
+        return
+    ledger.abandoned = note
+
+
+def abandoned_subagent_note(node_id: str) -> str:
+    ledger = _STATE.subagent_ledgers.get(node_id)
+    return ledger.abandoned if ledger is not None else ""

@@ -101,6 +101,22 @@ def format_ask_directive(
     }
 
 
+def deny_ask_directive(reason: str) -> dict[str, Any]:
+    """Refuse an ``AskUserQuestion`` call, telling Claude why.
+
+    ``permissionDecisionReason`` is the only channel that reaches the
+    model on a deny, so the caller's text has to be self-explanatory and
+    name a way forward.
+    """
+    return {
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": reason,
+        },
+    }
+
+
 def _extract_answers(
     response: dict[str, Any],
     parsed: ParsedAsk,

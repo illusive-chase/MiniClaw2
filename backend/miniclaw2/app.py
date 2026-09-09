@@ -870,10 +870,52 @@ def create_app(
         # Stop payload of the process that is actually stopping; without a
         # match the signal is dropped rather than trusted.
         session_id = body.get("session_id")
-        accepted = hook_runtime.signal_turn_complete(
-            node_id,
-            session_id if isinstance(session_id, str) and session_id else None,
+        owned_session = (
+            session_id if isinstance(session_id, str) and session_id else None
         )
+
+        # A subagent still running means this turn must not end: its result
+        # would be discarded when the node is reaped, and its completion
+        # notification could fork the conversation on a later turn. Refuse
+        # the Stop and leave turn-complete unrecorded, so the CLI and the
+        # backend agree the turn is still live. The budget inside
+        # should_block_stop bounds this, and it is only consulted for the
+        # node's own PTY: a descendant's Stop can neither end the turn nor
+        # spend the budget.
+        if owned_session is not None and hook_runtime.is_owned_session(
+            node_id, owned_session
+        ):
+            if hook_runtime.should_block_stop(node_id):
+                pending = hook_runtime.running_subagents(node_id)
+                logger.info(
+                    "refusing turn end for node %s: %d subagent(s) still running",
+                    node_id,
+                    len(pending),
+                )
+                return JSONResponse(
+                    {
+                        "decision": "block",
+                        "reason": _pending_subagent_reason(pending),
+                    }
+                )
+            if hook_runtime.has_running_subagents(node_id):
+                # Budget spent. Ending the turn loses those results, which
+                # is the lesser harm versus holding the node open forever,
+                # but it must not be silent.
+                pending = hook_runtime.running_subagents(node_id)
+                logger.warning(
+                    "node %s is ending its turn with %d subagent(s) still "
+                    "running; their results are lost",
+                    node_id,
+                    len(pending),
+                )
+                hook_runtime.note_abandoned_subagents(
+                    node_id,
+                    f"本轮结束时仍有 {len(pending)} 个子代理未结束"
+                    f"（{', '.join(pending)}），其结果已丢失。",
+                )
+
+        accepted = hook_runtime.signal_turn_complete(node_id, owned_session)
         if not accepted:
             # Expected and harmless for a nested CLI. Logged at warning
             # because the same line is the only symptom if a CLI upgrade
@@ -885,6 +927,30 @@ def create_app(
                 session_id,
             )
         return JSONResponse({"ok": True, "accepted": accepted})
+
+    @app.post("/hook/subagent")
+    async def hook_subagent(request: Request) -> JSONResponse:
+        _require_hook_token(request)
+        body = await request.json()
+        node_id = body.get("node_id")
+        agent_id = body.get("agent_id")
+        phase = body.get("phase")
+        if not isinstance(node_id, str) or not node_id:
+            raise HTTPException(400, "node_id required")
+        if not isinstance(agent_id, str) or not agent_id:
+            raise HTTPException(400, "agent_id required")
+        agent_type = body.get("agent_type")
+        if phase == "start":
+            hook_runtime.record_subagent_start(
+                node_id,
+                agent_id,
+                agent_type if isinstance(agent_type, str) else "",
+            )
+        elif phase == "stop":
+            hook_runtime.record_subagent_stop(node_id, agent_id)
+        else:
+            raise HTTPException(400, "phase must be 'start' or 'stop'")
+        return JSONResponse({"ok": True})
 
     @app.post("/sessions", response_model=SessionInfo)
     def create_session(req: CreateSessionRequest) -> SessionInfo:
@@ -2411,6 +2477,27 @@ async def _send(
 
 def _context_task_running(project_id: str) -> bool:
     return bool(context_refresh_status(project_id).get("running"))
+
+
+def _pending_subagent_reason(pending: list[str]) -> str:
+    """The instruction Claude receives when its turn is held open.
+
+    It is the only thing the agent sees about why it could not stop, so it
+    has to name the outstanding work, the reason waiting matters, and the
+    way out — otherwise a subagent that never returns turns into a node
+    that cannot finish.
+    """
+    listed = "、".join(pending) if pending else "未知"
+    return (
+        f"本轮还有 {len(pending)} 个子代理在运行（{listed}），现在不能结束轮次。"
+        "子代理的结果通过通知异步返回；如果轮次在此结束，节点会被回收，"
+        "它们的工作会全部丢失，且其完成通知可能污染后续轮次的会话分支。\n\n"
+        "请等待它们的完成通知到达，收下结果后再写 preview 收场。"
+        "如果确认某个子代理不会返回，用 TaskStop 终止它，"
+        "然后在 preview 里说明哪部分工作没有覆盖。"
+        "不要重新派发子代理——在本环境下 Agent 工具恒为异步，"
+        "需要并行调查时请自己直接调用 Read/Grep/Bash。"
+    )
 
 
 def _set_hook_port_from_env() -> None:

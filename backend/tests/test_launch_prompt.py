@@ -407,13 +407,20 @@ class SharedHostProcessesTests(unittest.TestCase):
 
 
 class SubagentSynchronicityTests(unittest.TestCase):
-    """Background subagents cannot report back before the node is reaped."""
+    """The Agent tool is always asynchronous inside a node."""
 
-    def test_block_rules_out_post_turn_reporting(self) -> None:
+    def test_block_rules_out_looking_for_a_synchronous_form(self) -> None:
+        """The old wording promised a synchronous mode that does not exist.
+
+        An agent that read "use subagents whose results you receive inside
+        this turn" and did not pass ``run_in_background`` believed it was
+        compliant. The block has to deny the premise, not the parameter.
+        """
         block = subagent_synchronicity_block()
-        self.assertIn("before you hand", block)
+        self.assertIn("always", block)
         self.assertIn("notification", block)
-        self.assertIn("launched successfully", block)
+        self.assertIn("TaskStop", block)
+        self.assertNotIn("results you receive inside this turn", block)
 
     def test_block_is_wired_into_agent_launch_composition(self) -> None:
         import inspect

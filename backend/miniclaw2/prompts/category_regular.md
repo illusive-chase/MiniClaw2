@@ -21,6 +21,9 @@ recent previews **are** the current state.
 
 ## What you must write
 
+If you dispatched any subagent, wait for it to finish before you write
+your preview — the turn cannot end while one is still running.
+
 Before you finish, write your own preview at:
 
     <<lane_path>>/nodes/<<node_id>>/preview.json

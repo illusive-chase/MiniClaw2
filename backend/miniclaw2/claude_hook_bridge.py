@@ -1,6 +1,6 @@
 """Subprocess entrypoint invoked by Claude Code as a hook.
 
-Three behaviors:
+Five behaviors:
 
 - ``python -m miniclaw2.claude_hook_bridge --session-ready`` — POSTs
   ``{"session_id": <MINICLAW_SESSION_ID>}`` to ``/hook/session-ready``
@@ -19,6 +19,18 @@ Three behaviors:
   flight. The payload's ``session_id`` is assigned by the CLI process
   that is actually stopping, so the backend can tell the node's own PTY
   from one of its descendants.
+
+  The backend's reply decides whether the turn may end. When subagents
+  the node dispatched are still running it answers with a ``Stop``
+  block directive, which we echo to stdout: Claude keeps the turn open
+  and receives ``reason`` as its next instruction. In that case the
+  backend has *not* recorded turn-complete, so the two sides agree the
+  turn is still live.
+
+- ``python -m miniclaw2.claude_hook_bridge --subagent-start`` and
+  ``--subagent-stop`` — POST the payload's ``agent_id`` to
+  ``/hook/subagent`` so the backend can track which subagents the node
+  has outstanding. Output is never used; these hooks only observe.
 
 - ``python -m miniclaw2.claude_hook_bridge`` (no flag) — reads the
   Claude ``PreToolUse`` payload from stdin, POSTs it to ``/hook/ask``
@@ -41,6 +53,7 @@ from urllib import request as urlrequest
 
 _READY_TIMEOUT_SECONDS = 10
 _TURN_COMPLETE_TIMEOUT_SECONDS = 10
+_SUBAGENT_TIMEOUT_SECONDS = 10
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -49,6 +62,10 @@ def main(argv: list[str] | None = None) -> int:
         return _post_turn_complete()
     if "--session-ready" in args:
         return _post_session_ready()
+    if "--subagent-start" in args:
+        return _post_subagent("start")
+    if "--subagent-stop" in args:
+        return _post_subagent("stop")
     return _handle_ask()
 
 
@@ -132,6 +149,7 @@ def _post_turn_complete() -> int:
     except Exception:  # noqa: BLE001
         return 0
     session_id: str | None = None
+    stop_hook_active = False
     if raw.strip():
         try:
             payload = json.loads(raw)
@@ -142,6 +160,7 @@ def _post_turn_complete() -> int:
         claimed = payload.get("session_id")
         if isinstance(claimed, str) and claimed:
             session_id = claimed
+        stop_hook_active = bool(payload.get("stop_hook_active"))
 
     node_id = os.environ.get("MINICLAW_NODE_ID")
     token = os.environ.get("MINICLAW_HOOK_TOKEN")
@@ -149,9 +168,10 @@ def _post_turn_complete() -> int:
     if not (node_id and token and url):
         return 0
 
-    signal: dict[str, str] = {"node_id": node_id}
+    signal: dict[str, object] = {"node_id": node_id}
     if session_id:
         signal["session_id"] = session_id
+    signal["stop_hook_active"] = stop_hook_active
     body = json.dumps(signal).encode("utf-8")
     req = urlrequest.Request(
         url,
@@ -163,7 +183,89 @@ def _post_turn_complete() -> int:
         },
     )
     try:
-        urlrequest.urlopen(req, timeout=_TURN_COMPLETE_TIMEOUT_SECONDS).close()
+        with urlrequest.urlopen(req, timeout=_TURN_COMPLETE_TIMEOUT_SECONDS) as resp:
+            resp_body = resp.read()
+    except (urlerror.URLError, TimeoutError, OSError):
+        # Fail open: let the turn end. Holding it open on a failed request
+        # would strand the node, and the backend has its own stall timeout.
+        return 0
+
+    directive = _stop_directive(resp_body)
+    if directive is not None:
+        sys.stdout.write(json.dumps(directive))
+    return 0
+
+
+def _stop_directive(resp_body: bytes) -> dict[str, object] | None:
+    """Extract a ``Stop`` block directive from the backend's reply.
+
+    Only a well-formed block is echoed. Anything else — an ordinary
+    acknowledgement, a malformed body, a block with no reason — lets the
+    turn end, because Claude requires ``reason`` whenever ``decision`` is
+    ``"block"`` and a half-formed directive is worse than none.
+    """
+    try:
+        data = json.loads(resp_body.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    if data.get("decision") != "block":
+        return None
+    reason = data.get("reason")
+    if not isinstance(reason, str) or not reason.strip():
+        return None
+    return {"decision": "block", "reason": reason}
+
+
+def _post_subagent(phase: str) -> int:
+    """Report a ``SubagentStart``/``SubagentStop`` to the backend's ledger.
+
+    Purely observational: the return value is ignored, and any failure is
+    silent. ``agent_id`` comes from the payload — the CLI's own identifier
+    for the subagent — so start and stop pair up without transcript
+    parsing.
+    """
+    try:
+        raw = sys.stdin.read()
+    except Exception:  # noqa: BLE001
+        return 0
+    if not raw.strip():
+        return 0
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return 0
+    agent_id = payload.get("agent_id")
+    if not isinstance(agent_id, str) or not agent_id:
+        return 0
+    agent_type = payload.get("agent_type")
+
+    node_id = os.environ.get("MINICLAW_NODE_ID")
+    token = os.environ.get("MINICLAW_HOOK_TOKEN")
+    url = _derive_hook_url("subagent")
+    if not (node_id and token and url):
+        return 0
+
+    body = json.dumps(
+        {
+            "node_id": node_id,
+            "phase": phase,
+            "agent_id": agent_id,
+            "agent_type": agent_type if isinstance(agent_type, str) else "",
+        }
+    ).encode("utf-8")
+    req = urlrequest.Request(
+        url,
+        data=body,
+        method="POST",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        },
+    )
+    try:
+        urlrequest.urlopen(req, timeout=_SUBAGENT_TIMEOUT_SECONDS).close()
     except (urlerror.URLError, TimeoutError, OSError):
         pass
     return 0

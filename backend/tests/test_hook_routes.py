@@ -20,6 +20,20 @@ from miniclaw2.providers.claude_native import hook_runtime
 from miniclaw2.providers.claude_native.hook_installer import install_hooks
 
 
+def _urlopen_returning(payload: dict) -> MagicMock:
+    """A ``urlopen`` stub whose context manager yields ``payload`` as JSON.
+
+    The ``--turn-complete`` branch reads the backend's reply to learn
+    whether the turn may end, so a stub that returns a bare ``MagicMock``
+    is no longer enough.
+    """
+    response = MagicMock()
+    response.read.return_value = json.dumps(payload).encode("utf-8")
+    response.__enter__ = MagicMock(return_value=response)
+    response.__exit__ = MagicMock(return_value=False)
+    return MagicMock(return_value=response)
+
+
 class HookInstallerTest(unittest.TestCase):
     def test_installed_hooks_include_explicit_timeouts(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -82,7 +96,13 @@ class HookInstallerTest(unittest.TestCase):
             install_hooks(settings)
 
             data = json.loads(settings.read_text(encoding="utf-8"))
-            for event_name in ("PreToolUse", "SessionStart", "Stop"):
+            for event_name in (
+                "PreToolUse",
+                "SessionStart",
+                "Stop",
+                "SubagentStart",
+                "SubagentStop",
+            ):
                 entries = [
                     entry
                     for group in data["hooks"][event_name]
@@ -90,6 +110,45 @@ class HookInstallerTest(unittest.TestCase):
                     if "claude_hook_bridge.py" in entry.get("command", "")
                 ]
                 self.assertEqual(len(entries), 1, event_name)
+
+    def test_subagent_hooks_are_installed_with_distinct_flags(self) -> None:
+        """The ledger is fed by the CLI's own subagent lifecycle events.
+
+        Each entry has to carry its own flag: the bridge dispatches on
+        them, and the installer identifies its own entries by them.
+        """
+        with tempfile.TemporaryDirectory() as raw:
+            settings = Path(raw) / "settings.json"
+
+            install_hooks(settings)
+
+            data = json.loads(settings.read_text(encoding="utf-8"))
+            start = data["hooks"]["SubagentStart"][0]["hooks"][0]
+            stop = data["hooks"]["SubagentStop"][0]["hooks"][0]
+            self.assertIn("--subagent-start", start["command"])
+            self.assertIn("--subagent-stop", stop["command"])
+
+    def test_pretooluse_entry_never_carries_another_hooks_flag(self) -> None:
+        """The flagless entry is identified by the absence of every flag.
+
+        Matching it by naming the flags that exist would leave a stale
+        duplicate behind the moment a new flag is added, and Claude would
+        then run the ask bridge twice per question.
+        """
+        with tempfile.TemporaryDirectory() as raw:
+            settings = Path(raw) / "settings.json"
+
+            install_hooks(settings)
+
+            data = json.loads(settings.read_text(encoding="utf-8"))
+            command = data["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+            for flag in (
+                "--session-ready",
+                "--turn-complete",
+                "--subagent-start",
+                "--subagent-stop",
+            ):
+                self.assertNotIn(flag, command)
 
 
 class HookBridgeTest(unittest.TestCase):
@@ -148,7 +207,11 @@ class HookBridgeTest(unittest.TestCase):
                     })
                 ),
             ),
-            patch.object(claude_hook_bridge.urlrequest, "urlopen") as urlopen,
+            patch.object(
+                claude_hook_bridge.urlrequest,
+                "urlopen",
+                _urlopen_returning({"ok": True, "accepted": True}),
+            ) as urlopen,
         ):
             result = claude_hook_bridge.main(["--turn-complete"])
 
@@ -160,7 +223,11 @@ class HookBridgeTest(unittest.TestCase):
         )
         self.assertEqual(
             json.loads(request.data),
-            {"node_id": "node-1", "session_id": "session-1"},
+            {
+                "node_id": "node-1",
+                "session_id": "session-1",
+                "stop_hook_active": False,
+            },
         )
 
     def test_turn_complete_reports_payload_session_not_env_session(self) -> None:
@@ -192,7 +259,11 @@ class HookBridgeTest(unittest.TestCase):
                     })
                 ),
             ),
-            patch.object(claude_hook_bridge.urlrequest, "urlopen") as urlopen,
+            patch.object(
+                claude_hook_bridge.urlrequest,
+                "urlopen",
+                _urlopen_returning({"ok": True, "accepted": False}),
+            ) as urlopen,
         ):
             claude_hook_bridge.main(["--turn-complete"])
 

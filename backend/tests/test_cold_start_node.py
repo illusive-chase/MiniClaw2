@@ -374,7 +374,7 @@ class ColdStartRunnerTests(unittest.IsolatedAsyncioTestCase):
             "What you must write",
             "Publishing artifacts",
             "Long-running processes on a shared host",
-            "Subagents must return within this turn",
+            "The Agent tool is asynchronous here",
             "Anti-self-poisoning guidance",
         ):
             self.assertIn(marker, instructions)

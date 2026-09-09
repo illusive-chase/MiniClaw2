@@ -11,6 +11,7 @@ Event mapping mirrors the SDK-based provider's behavior (per §9.2).
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -18,8 +19,15 @@ from typing import Any
 from ...events import Activity, TextDelta, Thinking, Usage
 from ..base import AgentProviderEvent
 
+logger = logging.getLogger(__name__)
+
 
 _STDOUT_TOOLS = {"Bash", "BashOutput"}
+# Tools that dispatch a subagent. ``Task`` is the historical name and
+# ``Agent`` the current one; both are classified as agent activity so the
+# rename does not silently reclassify subagent calls as ordinary tools.
+_SUBAGENT_TOOLS = {"Task", "Agent"}
+_SYNTHETIC_MODEL = "<synthetic>"
 
 
 @dataclass(slots=True)
@@ -152,6 +160,30 @@ def _api_error_text(record: dict[str, Any]) -> str:
     return "Claude API 错误"
 
 
+def _is_synthetic_message(message: dict[str, Any]) -> bool:
+    """Whether the CLI produced this assistant message without the model.
+
+    Both halves are required. The model marker alone also covers locally
+    rendered API-error notices, which are a different and already-handled
+    condition; pairing it with all-zero token counts isolates the case
+    where a reply was manufactured for a branch the model never saw.
+    """
+    if message.get("model") != _SYNTHETIC_MODEL:
+        return False
+    usage = message.get("usage")
+    if not isinstance(usage, dict):
+        return False
+    return not any(
+        _int(usage, key)
+        for key in (
+            "input_tokens",
+            "output_tokens",
+            "cache_read_input_tokens",
+            "cache_creation_input_tokens",
+        )
+    )
+
+
 class TranscriptTranslator:
     """Stateful translator: JSONL records → ``AgentProviderEvent`` stream.
 
@@ -165,6 +197,22 @@ class TranscriptTranslator:
         self._usage_by_message_id: dict[str, Usage] = {}
         self._session_id_emitted = False
         self._last_assistant_text = ""
+        self._synthetic_turns = 0
+
+    @property
+    def synthetic_turns(self) -> int:
+        """Assistant records the CLI produced without calling the model.
+
+        A conversation branch whose input is a bare attachment — which is
+        what a background subagent's completion notification looks like
+        when it forks against a suspended question — gets answered
+        locally: ``model`` is ``<synthetic>`` and every usage counter is
+        zero, yet it ends the turn as though the model had replied. The
+        count is diagnostic only. It never changes the turn's outcome,
+        because the guardrails that prevent the fork sit upstream and a
+        detector that judged turns could kill healthy ones instead.
+        """
+        return self._synthetic_turns
 
     def translate(self, record: dict[str, Any]) -> list[AgentProviderEvent]:
         rtype = record.get("type")
@@ -221,6 +269,14 @@ class TranscriptTranslator:
         message = record.get("message")
         if not isinstance(message, dict):
             return []
+        if _is_synthetic_message(message):
+            self._synthetic_turns += 1
+            logger.warning(
+                "assistant record synthesized locally by the CLI "
+                "(model=%r, zero usage): the model was not called for this "
+                "turn, which points at a forked conversation branch",
+                message.get("model"),
+            )
         self._record_usage(message)
         content = message.get("content")
         if not isinstance(content, list):
@@ -263,8 +319,8 @@ class TranscriptTranslator:
                 block_id = str(block.get("id") or f"tool:{len(self._pending_tools)}")
                 tool_input = block.get("input")
                 summary = _truncate(_stringify_input(tool_input))
-                is_task = name == "Task"
-                kind = "agent" if is_task else "tool"
+                is_subagent = name in _SUBAGENT_TOOLS
+                kind = "agent" if is_subagent else "tool"
                 activity = Activity(
                     kind=kind,  # type: ignore[arg-type]
                     status="start",
@@ -274,8 +330,9 @@ class TranscriptTranslator:
                     parameters=_stringify_input(tool_input),
                     command=_tool_command(name, tool_input),
                 )
-                if not is_task:
-                    # Task progress is many events over one tool call — no cache.
+                if not is_subagent:
+                    # Subagent progress is many events over one tool call —
+                    # no cache.
                     self._pending_tools[block_id] = activity
                 out.append(AgentProviderEvent(kind="event", event=activity))
         return out
