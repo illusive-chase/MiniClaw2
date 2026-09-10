@@ -2422,6 +2422,45 @@ export function agentInputText(
   };
 }
 
+const ARTIFACT_MODE_ROW_LABELS: Record<ArtifactMode, string> = {
+  default: "不要求产出物",
+  markdown: "Markdown",
+  html: "HTML",
+  custom: "自定义",
+};
+
+/* The two draft-time intents that shape what a node is asked to deliver:
+ * the artifact contract and whether it may stop to ask the user. Both are
+ * read straight off the node at launch and survive promotion, so on an
+ * executed node they are the only record of what it was told to produce —
+ * which is the question asked whenever a finished node published no file.
+ *
+ * Virtual nodes are excluded: the draft editor a few hundred pixels below
+ * renders both as live controls, and the card reads the persisted node
+ * rather than the draft, so a copy here would contradict the form for as
+ * long as an edit stayed unsaved.
+ *
+ * Each row is omitted where the axis does not exist rather than shown as a
+ * zero value: a review node has no artifact contract at all, and printing
+ * `不要求产出物` there would read as a setting someone could have chosen. */
+export function nodeIntentRows(node: NodeInfo): Array<[string, string]> {
+  if (node.state === "virtual") return [];
+  const classification = nodeClassification(node);
+  const rows: Array<[string, string]> = [];
+  if (artifactModeAvailable(classification)) {
+    const mode: ArtifactMode = node.artifact_mode || "default";
+    rows.push(["Artifact", ARTIFACT_MODE_ROW_LABELS[mode]]);
+    const spec = (node.artifact_spec || "").trim();
+    if (mode === "custom" && spec) {
+      rows.push(["Artifact spec", oneLine(spec)]);
+    }
+  }
+  if (qaModeAvailable(classification)) {
+    rows.push(["Q/A mode", node.qa_mode ? "开启" : "关闭"]);
+  }
+  return rows;
+}
+
 function BasicInformationCard({
   node,
   modelPresets,
@@ -2447,6 +2486,7 @@ function BasicInformationCard({
             ["Provider", providerLabel(node.provider)],
             ["Planspace", node.planspace_id || "-"],
             ["Continues from", resumeSource],
+            ...nodeIntentRows(node),
             ["Created", formatTimestamp(node.created_at)],
             ["Started", formatTimestamp(node.started_at)],
             ["Finished", formatTimestamp(node.finished_at)],

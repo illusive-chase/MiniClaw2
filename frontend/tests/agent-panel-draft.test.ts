@@ -4,6 +4,7 @@ import {
   agentInputText,
   candidateDependencies,
   mergeVirtualDraft,
+  nodeIntentRows,
   virtualDraftAfterSave,
   virtualDraftFromNode,
   virtualDraftWithClassification,
@@ -412,6 +413,89 @@ function node(over: Partial<NodeInfo> = {}): NodeInfo {
   assert.equal(
     virtualPayloadFromDraft(legacyDraft, legacy).agent_op_kind,
     undefined,
+  );
+}
+
+/* The artifact contract and Q/A mode decide what a node was asked to deliver,
+ * but on an executed node the draft form is gone and they were previously
+ * unreadable anywhere in the UI. Basic information carries them so a finished
+ * node that published nothing can be told apart from one never asked to. */
+{
+  assert.deepEqual(nodeIntentRows(node({ state: "done" })), [
+    ["Artifact", "不要求产出物"],
+    ["Q/A mode", "关闭"],
+  ]);
+  assert.deepEqual(
+    nodeIntentRows(node({ state: "done", artifact_mode: "html", qa_mode: true })),
+    [
+      ["Artifact", "HTML"],
+      ["Q/A mode", "开启"],
+    ],
+  );
+}
+
+/* A custom spec is agent-facing prose that may run to several lines. It is
+ * flattened to a single line because the row sits in a 120px/1fr grid whose
+ * other values are single tokens. */
+{
+  assert.deepEqual(
+    nodeIntentRows(
+      node({
+        state: "done",
+        artifact_mode: "custom",
+        artifact_spec: " a summary\nand  a risk list ",
+      }),
+    ),
+    [
+      ["Artifact", "自定义"],
+      ["Artifact spec", "a summary and a risk list"],
+      ["Q/A mode", "关闭"],
+    ],
+  );
+  // Custom without a spec is unreachable on a saved node; no empty row either way.
+  assert.deepEqual(
+    nodeIntentRows(node({ state: "done", artifact_mode: "custom" })),
+    [
+      ["Artifact", "自定义"],
+      ["Q/A mode", "关闭"],
+    ],
+  );
+}
+
+/* Each axis is dropped where the classification has none, rather than shown
+ * as a zero value the user might read as a choice. Review has neither;
+ * library has no artifact contract but may still ask; cold start has neither. */
+{
+  assert.deepEqual(
+    nodeIntentRows(
+      node({ state: "done", category: "review", subtype: "agentic_review" }),
+    ),
+    [],
+  );
+  assert.deepEqual(
+    nodeIntentRows(node({ state: "done", agent_op_kind: "library_edit" })),
+    [["Q/A mode", "关闭"]],
+  );
+  assert.deepEqual(
+    nodeIntentRows(node({ state: "done", agent_op_kind: "cold_start" })),
+    [],
+  );
+  assert.deepEqual(
+    nodeIntentRows(node({ state: "done", category: "planning", qa_mode: true })),
+    [
+      ["Artifact", "不要求产出物"],
+      ["Q/A mode", "开启"],
+    ],
+  );
+}
+
+/* A virtual node renders both fields as live controls in the draft editor
+ * below. The card reads the persisted node, so repeating them here would
+ * contradict the form for as long as an edit stayed unsaved. */
+{
+  assert.deepEqual(
+    nodeIntentRows(node({ artifact_mode: "markdown", qa_mode: true })),
+    [],
   );
 }
 

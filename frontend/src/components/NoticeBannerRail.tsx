@@ -100,6 +100,11 @@ export function mergeRailItems(previous: RailItem[], notices: Notice[]): RailIte
   return [...arrived, ...held];
 }
 
+/** Derive the banner's time-sensitive context from its immutable event row. */
+export function noticeContext(notice: Notice, now: number): string {
+  return rowContext(notice.entry, now);
+}
+
 /**
  * Keep dismissed banners mounted long enough to animate away.
  *
@@ -150,6 +155,18 @@ function useRailItems(notices: Notice[]): RailItem[] {
 export function NoticeBannerRail({ notices, onJump, onDismiss, onExpire }: Props) {
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const items = useRailItems(notices);
+  const hasItems = items.length > 0;
+
+  /* Persistent result banners can remain visible indefinitely, so their
+   * relative timestamp must advance independently of incoming events. One
+   * shared clock keeps every banner in sync and stops when the rail is empty. */
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!hasItems) return;
+    setNow(Date.now());
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [hasItems]);
 
   /* Prompting for system-notification permission is offered, never forced: an
    * unsolicited dialog is the one most likely to be denied, and a denial is
@@ -222,6 +239,7 @@ export function NoticeBannerRail({ notices, onJump, onDismiss, onExpire }: Props
           <NoticeBanner
             key={notice.id}
             notice={notice}
+            now={now}
             leaving={leaving}
             offerPermission={offerPermission && notice.kind === "blocking"}
             onRequestPermission={requestPermission}
@@ -249,6 +267,7 @@ export function NoticeBannerRail({ notices, onJump, onDismiss, onExpire }: Props
 
 function NoticeBanner({
   notice,
+  now,
   leaving,
   offerPermission,
   onRequestPermission,
@@ -257,6 +276,7 @@ function NoticeBanner({
   onExpire,
 }: {
   notice: Notice;
+  now: number;
   leaving: boolean;
   offerPermission: boolean;
   onRequestPermission: () => void;
@@ -266,10 +286,9 @@ function NoticeBanner({
 }) {
   const persistent = isPersistentKind(notice.kind);
   const meta = stateMeta(notice.entry.state);
-  /* The meta line is frozen at creation time on purpose — the banner reports
-   * what was true when the event happened, so a live clock here would be
-   * re-reading state the banner does not track. */
-  const context = rowContext(notice.entry, notice.createdAt);
+  /* The event row stays frozen, while its relative timestamp advances against
+   * the live clock. This preserves what happened without pinning it at 0s. */
+  const context = noticeContext(notice, now);
   const body = noticeBody(notice);
 
   const onExpireRef = useRef(onExpire);

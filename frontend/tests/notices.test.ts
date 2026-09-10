@@ -17,7 +17,10 @@ import {
   systemNotificationPermission,
   type Notice,
 } from "../src/notices";
-import { mergeRailItems } from "../src/components/NoticeBannerRail";
+import {
+  mergeRailItems,
+  noticeContext,
+} from "../src/components/NoticeBannerRail";
 import {
   isNotificationEligible,
   isUnread,
@@ -424,7 +427,22 @@ function push(notices: Notice[], event: WorkspaceEvent, now = 1000): Notice[] {
   assert.ok(noticeBody(bare).length > 0);
 }
 
-/* ---- T11: the rail holds dismissed banners in place while they exit ---- */
+/* ---- T11: banner-relative time advances while the event stays immutable ---- */
+
+{
+  /* A persistent completion banner often first renders in the same second as
+   * finished_at. Its context must be recomputed from the rail's live clock,
+   * rather than remaining pinned to the notice creation time forever. */
+  const createdAt = 1_000_000;
+  const event = updated("finished", "done", "running");
+  event.entry.finished_at = createdAt / 1000;
+  const notice = derive(event, createdAt);
+  assert.ok(notice);
+  assert.equal(noticeContext(notice, createdAt), "0s前完成");
+  assert.equal(noticeContext(notice, createdAt + 61_000), "1m01s前完成");
+}
+
+/* ---- T12: the rail holds dismissed banners in place while they exit ---- */
 
 {
   /* Presentation-only bookkeeping: the reducer drops a notice the instant it
