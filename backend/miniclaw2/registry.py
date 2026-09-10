@@ -972,8 +972,8 @@ class ProjectRegistry:
         Returns ``(True, [])`` on success. A non-empty second element lists
         node ids that are still queued or running in the lane, which the
         caller should report as a conflict. ``(False, [])`` means the project
-        or the planspace does not exist. A lane with live work is the only
-        refusal now — there is no project cursor to move off first.
+        or the planspace does not exist. A lane with live work cannot be
+        deleted, and an embedded template session must retain its only lane.
         """
         rt = self._runtimes.get(pid)
         if rt is None:
@@ -987,6 +987,19 @@ class ProjectRegistry:
         binding = resolve_project_binding(rt.project, root)
         if binding is None or not any(ref.id == lane_id for ref in binding.plugs):
             return False, []
+
+        # Embedded template definitions serialize exactly one lane. Keep that
+        # invariant intact, while still allowing an old multi-lane session to
+        # delete its extras and become saveable again. Imported lazily because
+        # `templates.launcher` imports this module.
+        from .templates.launcher import embedded_session_slug
+
+        lane_ids = list_project_planspace_ids(rt.project, root)
+        if (
+            embedded_session_slug(rt.project.template_id) is not None
+            and len(lane_ids) <= 1
+        ):
+            raise ValueError("模板编辑会话必须保留一个方向，无法删除唯一方向")
 
         nodes = self.store.list_nodes(pid)
         lane_nodes = [n for n in nodes if (n.planspace_id or "") == lane_id]
@@ -1866,13 +1879,34 @@ class ProjectRegistry:
         provider: str | None = None,
         model_preset_id: str | None = None,
     ) -> PlanspaceCreationResult | None:
-        """Create a planspace and seed it with one empty editable virtual."""
+        """Create a planspace and seed it with one empty editable virtual.
+
+        Refused when an embedded template editing session already has its one
+        lane; an empty session left by an older version may create a recovery
+        lane.
+        """
         rt = self._runtimes.get(pid)
         if rt is None:
             return None
         self.require_native(pid)
         if not seed.strip():
             raise ValueError("seed must be non-empty")
+        # An embedded template editing session owns exactly one lane, and its
+        # ports and node slugs are recorded against that lane by id. A second
+        # lane has nowhere to live in a template definition, so it would either
+        # be dropped on save or take the ports down with it. Imported lazily:
+        # `templates.launcher` imports this module.
+        from .templates.launcher import embedded_session_slug
+
+        if (
+            embedded_session_slug(rt.project.template_id) is not None
+            and list_project_planspace_ids(
+                rt.project, contextspace_root(self.store.root)
+            )
+        ):
+            raise ValueError(
+                "模板编辑会话只有一个方向，无法新建方向"
+            )
         if provider is not None:
             raise ValueError("provider is no longer accepted; use model_preset_id")
         next_model_preset_id = (

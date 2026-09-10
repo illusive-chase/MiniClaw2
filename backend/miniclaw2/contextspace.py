@@ -425,23 +425,31 @@ def describe_project_contextspace(
     binding = resolve_project_binding(project, root)
     all_bindings = list_project_bindings(root)
     bindings = [binding] if binding is not None else []
-    #: Only an embedded template session has ports, and it owns exactly one
-    #: lane by construction. A project with any other shape — zero lanes, or
-    #: several — is never an embedded session, so it reports an empty list,
-    #: which is what keeps the canvas addition invisible there.
+    #: Ports live on one lane's manifest, and only an embedded template session
+    #: declares any — every ordinary project reports an empty list, which is
+    #: what keeps the canvas addition invisible there. The owning lane is found
+    #: by asking the manifests rather than by counting the project's lanes: a
+    #: project-wide count answers a question about lanes the ports have nothing
+    #: to do with, so a second direction would silently erase the ports of the
+    #: first. Reporting the lane id alongside the ports also spares the
+    #: frontend from re-deriving it and reaching a different answer.
     template_ports: list[dict[str, Any]] = []
-    lane_ids = list_project_planspace_ids(project, root)
-    if len(lane_ids) == 1:
+    template_port_lane_id: str | None = None
+    for lane_id in list_project_planspace_ids(project, root):
         try:
-            template_ports = read_template_ports(
+            lane_ports = read_template_ports(
                 project,
-                lane_ids[0],
+                lane_id,
                 store_root=store_root,
             )
         except ValueError:
             # A corrupt or unreachable manifest must not make the whole
             # contextspace summary unreadable — the lane still renders.
-            template_ports = []
+            continue
+        if lane_ports:
+            template_ports = lane_ports
+            template_port_lane_id = lane_id
+            break
     return {
         "root": str(root),
         "exists": root.exists(),
@@ -449,6 +457,7 @@ def describe_project_contextspace(
         "resolved_binding_id": binding.id if binding else None,
         "planspace_view": project.planspace_view,
         "template_ports": template_ports,
+        "template_port_lane_id": template_port_lane_id,
         "context_file": {
             "exists": (Path(project.root_path) / "CONTEXT.md").exists(),
         },

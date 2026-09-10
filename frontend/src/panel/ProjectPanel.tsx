@@ -28,6 +28,7 @@ import type {
   SessionInfo,
   Tag,
 } from "../types";
+import { EMBEDDED_SESSION_PREFIX } from "../types";
 
 export type ProjectPanelProps = {
   session: SessionInfo | null;
@@ -122,6 +123,14 @@ export function ProjectPanel({
    * does not gate on a save in flight elsewhere in the panel. */
   const tagsLocked = !!session?.read_only;
   const activeModelPresets = selectableModelPresets(modelPresets);
+  /* A template editing session owns one lane, so it may create only when an
+   * older persisted session is already empty. This preserves a recovery path
+   * without offering a second lane that the template format cannot save. */
+  const isEmbeddedTemplateSession =
+    session?.template_id?.startsWith(EMBEDDED_SESSION_PREFIX) ?? false;
+  const canCreateDirection =
+    !isEmbeddedTemplateSession ||
+    (contextSpace !== null && directions.length === 0);
 
   useEffect(() => {
     setNewDirectionModelPresetId(
@@ -187,10 +196,19 @@ export function ProjectPanel({
     }
     if (newDirectionRequestVersion === lastRequestVersionRef.current) return;
     lastRequestVersionRef.current = newDirectionRequestVersion;
-    setComposerOpen(true);
-    window.setTimeout(() => seedRef.current?.focus(), 30);
+    /* The toolbar raises this to open the panel and the composer. Embedded
+     * sessions acknowledge it without opening a composer unless they need to
+     * recover from an already-empty persisted state. */
+    if (canCreateDirection) {
+      setComposerOpen(true);
+      window.setTimeout(() => seedRef.current?.focus(), 30);
+    }
     onNewDirectionRequestHandled();
-  }, [newDirectionRequestVersion, onNewDirectionRequestHandled]);
+  }, [
+    newDirectionRequestVersion,
+    onNewDirectionRequestHandled,
+    canCreateDirection,
+  ]);
 
   if (!session) {
     return (
@@ -367,14 +385,16 @@ export function ProjectPanel({
             </div>
           )}
           <div className="mt-2 grid grid-cols-1 gap-2">
-            <button
-              type="button"
-              onClick={() => setComposerOpen((v) => !v)}
-              disabled={busy}
-              className="rounded-md bg-brand px-3 py-2 text-left text-[12px] font-medium text-white shadow-card transition hover:brightness-[0.95] disabled:opacity-40"
-            >
-              + New direction
-            </button>
+            {canCreateDirection && (
+              <button
+                type="button"
+                onClick={() => setComposerOpen((v) => !v)}
+                disabled={busy}
+                className="rounded-md bg-brand px-3 py-2 text-left text-[12px] font-medium text-white shadow-card transition hover:brightness-[0.95] disabled:opacity-40"
+              >
+                + New direction
+              </button>
+            )}
             <button
               type="button"
               onClick={notesExist ? onContextRefresh : onContextInit}
@@ -425,7 +445,7 @@ export function ProjectPanel({
             </div>
           )}
 
-          {composerOpen && (
+          {composerOpen && canCreateDirection && (
             <div className="mt-3 rounded-md border border-line bg-surface-sunken p-3">
               <label className="block text-[10px] font-medium uppercase tracking-[0.14em] text-ink-subtle">
                 Direction
@@ -517,6 +537,9 @@ export function ProjectPanel({
                   <DirectionRow
                     plug={item.plug}
                     saving={busy}
+                    canDelete={
+                      !isEmbeddedTemplateSession || directions.length > 1
+                    }
                     onTogglePlanspaceVisibility={onTogglePlanspaceVisibility}
                     onDeletePlanspace={onDeletePlanspace}
                   />
@@ -570,11 +593,13 @@ export function ProjectPanel({
 function DirectionRow({
   plug,
   saving,
+  canDelete,
   onTogglePlanspaceVisibility,
   onDeletePlanspace,
 }: {
   plug: ContextSpacePlugSummary;
   saving: boolean;
+  canDelete: boolean;
   onTogglePlanspaceVisibility: (planspaceId: string, hidden: boolean) => void;
   onDeletePlanspace: (planspaceId: string) => Promise<void>;
 }) {
@@ -622,18 +647,20 @@ function DirectionRow({
         >
           {hidden ? "Show" : "Hide"}
         </button>
-        <button
-          type="button"
-          disabled={saving || deleting}
-          title="删除此方向及其全部节点"
-          onClick={() => {
-            setDeleteError(null);
-            setConfirmOpen((open) => !open);
-          }}
-          className="flex-none rounded border border-line bg-surface px-2 py-1 text-[11px] text-ink-muted transition hover:border-state-error hover:text-state-error disabled:opacity-40 disabled:hover:border-line disabled:hover:text-ink-muted"
-        >
-          删除
-        </button>
+        {canDelete && (
+          <button
+            type="button"
+            disabled={saving || deleting}
+            title="删除此方向及其全部节点"
+            onClick={() => {
+              setDeleteError(null);
+              setConfirmOpen((open) => !open);
+            }}
+            className="flex-none rounded border border-line bg-surface px-2 py-1 text-[11px] text-ink-muted transition hover:border-state-error hover:text-state-error disabled:opacity-40 disabled:hover:border-line disabled:hover:text-ink-muted"
+          >
+            删除
+          </button>
+        )}
       </div>
       {confirmOpen && (
         <div className="mt-2 rounded border border-state-error/40 bg-state-error-soft px-2.5 py-2 text-[11.5px] text-ink">

@@ -652,6 +652,11 @@ export type SessionContextSpaceInfo = {
   /** Input ports of the template being edited, when this project is an embedded
    * template session. Empty for every ordinary project. */
   template_ports?: TemplatePortInfo[];
+  /** The lane whose manifest declared `template_ports`, and therefore the only
+   * lane they may be drawn in. Null whenever `template_ports` is empty. The
+   * backend resolves it, so the canvas never has to guess which lane owns the
+   * ports. */
+  template_port_lane_id?: string | null;
   context_file?: {
     exists: boolean;
   };

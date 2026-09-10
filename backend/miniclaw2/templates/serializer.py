@@ -327,9 +327,10 @@ def serialize_embedded_session(
     the rewrite path already accepts ``inputs`` and ``motivation`` and already
     validates a candidate directory before replacing the live one, whereas
     ``serialize_selection`` hardcodes ``inputs: []`` and would drop every port.
-    An embedded editing session owns exactly one lane by construction (see
-    ``launcher.materialize_embedded_session``), so the lane is derived from the
-    session itself rather than read off a project-level cursor.
+    An embedded editing session owns exactly one lane: ``launcher`` creates one,
+    ``registry.create_blank_planspace`` refuses to add another, and the registry
+    refuses to delete the last one. The zero- and multi-lane checks below remain
+    backstops for sessions stored before those guards existed.
     """
     lane_ids = list_project_planspace_ids(
         project, contextspace_root(registry.store.root)
@@ -338,7 +339,7 @@ def serialize_embedded_session(
         raise SerializerError("embedded session has no direction")
     if len(lane_ids) > 1:
         raise SerializerError(
-            "embedded session has more than one direction; cannot save"
+            "模板编辑会话有多个方向，无法保存；请先删除多余的方向"
         )
     lane_id = lane_ids[0]
 

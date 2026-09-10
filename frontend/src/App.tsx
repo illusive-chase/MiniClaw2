@@ -1138,24 +1138,18 @@ export function App() {
     () => sessionContextSpace?.template_ports ?? [],
     [sessionContextSpace?.template_ports],
   );
-  /* The lane those ports belong to. The backend reads them off a single
-   * lane's manifest — only an embedded session, which owns exactly one lane,
-   * has any — so the ports may only be drawn in that same lane. Deriving it
-   * the same way here keeps a port and the node that declares it in one lane;
-   * drawing ports wherever the user happened to look would let a consumer
-   * edge cross lanes. */
-  const templatePortLaneId = useMemo(() => {
-    if (templatePorts.length === 0) return null;
-    const lanes: string[] = [];
-    for (const binding of sessionContextSpace?.bindings ?? []) {
-      for (const plug of binding.plugs) {
-        if (plug.kind === "planspace" && !lanes.includes(plug.id)) {
-          lanes.push(plug.id);
-        }
-      }
-    }
-    return lanes.length === 1 ? lanes[0] : null;
-  }, [sessionContextSpace?.bindings, templatePorts.length]);
+  /* The lane those ports belong to. The backend reads them off one lane's
+   * manifest and reports that lane by id, so the canvas draws them exactly
+   * where they were declared. Deriving it here instead — by counting lanes, or
+   * by picking the focused one — would let a port and the node that declares it
+   * land in different lanes, and a consumer edge would cross lanes. */
+  const templatePortLaneId = useMemo(
+    () =>
+      templatePorts.length > 0
+        ? sessionContextSpace?.template_port_lane_id ?? null
+        : null,
+    [sessionContextSpace?.template_port_lane_id, templatePorts.length],
+  );
   /* The backend marks an embedded editing session with an `embedded:` prefix;
    * a bundled template test run carries a bare template name. A port-less
    * template is still an editing session, so the marker — not the port list —

@@ -668,6 +668,119 @@ class EmbeddedSessionHttpTests(unittest.TestCase):
 
         described = self.client.get(f"/sessions/{sid}/contextspace")
         self.assertEqual(described.json()["template_ports"], [])
+        self.assertIsNone(described.json()["template_port_lane_id"])
+
+    def test_the_summary_names_the_lane_that_owns_the_ports(self) -> None:
+        """The canvas draws ports in the lane the backend names, not a guess."""
+        opened = self.client.post("/user-templates/review-flow/session")
+        sid = opened.json()["id"]
+
+        described = self.client.get(f"/sessions/{sid}/contextspace").json()
+        lane_ids = [
+            plug["id"]
+            for binding in described["bindings"]
+            for plug in binding["plugs"]
+            if plug["kind"] == "planspace"
+        ]
+        self.assertEqual(described["template_port_lane_id"], lane_ids[0])
+
+    def test_a_session_refuses_a_second_direction(self) -> None:
+        """A template definition has nowhere to put a second lane.
+
+        Before this was refused, creating one flipped the project out of the
+        "exactly one lane" shape the port lookup keyed on, and every port
+        silently vanished from the canvas.
+        """
+        opened = self.client.post("/user-templates/review-flow/session")
+        sid = opened.json()["id"]
+
+        created = self.client.post(
+            f"/sessions/{sid}/planspaces/blank",
+            json={"seed": "another direction", "mode": "manual"},
+        )
+        self.assertEqual(created.status_code, 400, created.text)
+
+        described = self.client.get(f"/sessions/{sid}/contextspace").json()
+        self.assertEqual([p["name"] for p in described["template_ports"]], ["spec"])
+        self.assertIsNotNone(described["template_port_lane_id"])
+
+    def test_a_session_refuses_to_delete_its_only_direction(self) -> None:
+        """Deleting the sole lane would leave the editor unable to save."""
+        opened = self.client.post("/user-templates/review-flow/session")
+        sid = opened.json()["id"]
+        described = self.client.get(f"/sessions/{sid}/contextspace").json()
+        lane_id = described["template_port_lane_id"]
+
+        removed = self.client.delete(f"/sessions/{sid}/planspaces/{lane_id}")
+        self.assertEqual(removed.status_code, 400, removed.text)
+        self.assertIn("无法删除唯一方向", removed.text)
+
+        committed = self.client.post("/user-templates/review-flow/session/commit")
+        self.assertEqual(committed.status_code, 200, committed.text)
+        self.assertEqual(
+            [port["name"] for port in committed.json()["inputs"]], ["spec"]
+        )
+
+    def test_an_empty_legacy_session_can_recreate_its_direction(self) -> None:
+        """A session deleted by an older version must not remain trapped."""
+        opened = self.client.post("/user-templates/review-flow/session")
+        sid = opened.json()["id"]
+        project = self.registry.get_project(sid)
+        assert project is not None
+        binding = resolve_project_binding(
+            project, contextspace_root(self.registry.store.root)
+        )
+        assert binding is not None
+        lane_id = next(
+            ref.id for ref in binding.plugs if ref.id.startswith("planspaces.")
+        )
+        self.assertTrue(remove_planspace_from_binding(binding, lane_id))
+
+        created = self.client.post(
+            f"/sessions/{sid}/planspaces/blank",
+            json={"seed": "replacement direction", "mode": "manual"},
+        )
+        self.assertEqual(created.status_code, 200, created.text)
+        self.assertNotEqual(created.json()["planspace_id"], lane_id)
+
+    def test_ports_survive_an_extra_lane_that_predates_the_guard(self) -> None:
+        """Ports are found by asking the manifests, not by counting lanes.
+
+        A session stored before the guard existed can still carry a second
+        lane; its ports must keep reaching the canvas.
+        """
+        opened = self.client.post("/user-templates/review-flow/session")
+        sid = opened.json()["id"]
+        project = self.registry.get_project(sid)
+        assert project is not None
+
+        from miniclaw2.contextspace import create_planspace
+
+        extra = create_planspace(
+            project,
+            title="Smuggled in",
+            store_root=self.registry.store.root,
+            seed_text="extra",
+        )
+        self.registry.store.update_project(project)
+
+        described = self.client.get(f"/sessions/{sid}/contextspace").json()
+        self.assertEqual([p["name"] for p in described["template_ports"]], ["spec"])
+        self.assertNotEqual(described["template_port_lane_id"], extra)
+
+        # Saving is refused while the extra lane exists, and deleting it — the
+        # way out the refusal names — makes the session saveable again.
+        blocked = self.client.post("/user-templates/review-flow/session/commit")
+        self.assertEqual(blocked.status_code, 400, blocked.text)
+
+        removed = self.client.delete(f"/sessions/{sid}/planspaces/{extra}")
+        self.assertEqual(removed.status_code, 200, removed.text)
+
+        committed = self.client.post("/user-templates/review-flow/session/commit")
+        self.assertEqual(committed.status_code, 200, committed.text)
+        self.assertEqual(
+            [port["name"] for port in committed.json()["inputs"]], ["spec"]
+        )
 
 
 if __name__ == "__main__":
