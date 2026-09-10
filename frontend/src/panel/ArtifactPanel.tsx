@@ -1,10 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
-import ReactMarkdown from "react-markdown";
-import rehypeHighlight from "rehype-highlight";
-import remarkGfm from "remark-gfm";
 
 import { artifactRawUrl, getNodeArtifact } from "../api";
 import { writeClipboard } from "../clipboard";
+import { MarkdownView } from "../components/MarkdownView";
 import { ZoomableText } from "../components/TextZoom";
 import type { ArtifactFile, ArtifactRef } from "../types";
 
@@ -169,16 +167,29 @@ export function ArtifactPanel({ sessionId, nodeId, artifact, ext }: ArtifactPane
                 subtitle={`node ${nodeId.slice(0, 8)}`}
                 text={file.text}
                 defaultView="markdown"
+                sessionId={sessionId}
+                linkBase={{
+                  kind: "artifact",
+                  path: `.miniclaw2/outputs/${nodeId}`,
+                }}
+                route={{
+                  src: "artifact",
+                  sessionId,
+                  nodeId,
+                  name: artifact.name,
+                }}
                 className="rounded-md border border-line bg-surface-raised shadow-card"
               >
-                <div className="md-prose px-4 py-3 text-[13px] leading-relaxed text-ink-strong">
-                  <ReactMarkdown
-                    remarkPlugins={[remarkGfm]}
-                    rehypePlugins={[[rehypeHighlight, { detect: true, ignoreMissing: true }]]}
-                  >
-                    {file.text || "_Empty file._"}
-                  </ReactMarkdown>
-                </div>
+                <MarkdownView
+                  text={file.text || "_Empty file._"}
+                  density="panel"
+                  sessionId={sessionId}
+                  linkBase={{
+                    kind: "artifact",
+                    path: `.miniclaw2/outputs/${nodeId}`,
+                  }}
+                  className="px-4 py-3 leading-relaxed text-ink-strong"
+                />
               </ZoomableText>
             ) : (
               <ZoomableText
@@ -188,13 +199,12 @@ export function ArtifactPanel({ sessionId, nodeId, artifact, ext }: ArtifactPane
                 rawOnly
                 className="rounded-md border border-line bg-surface-raised shadow-card"
               >
-                <div className="md-prose px-3 py-2 text-[12px]">
-                  <ReactMarkdown
-                    rehypePlugins={[[rehypeHighlight, { detect: true, ignoreMissing: true }]]}
-                  >
-                    {`~~~json\n${jsonPreview}\n~~~`}
-                  </ReactMarkdown>
-                </div>
+                <MarkdownView
+                  text={`~~~json\n${jsonPreview}\n~~~`}
+                  density="panel"
+                  fontPx={12}
+                  className="px-3 py-2"
+                />
               </ZoomableText>
             )}
             {file?.truncated && (

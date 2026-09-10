@@ -7,15 +7,20 @@ import {
   useState,
 } from "react";
 import type { ReactNode } from "react";
-import ReactMarkdown from "react-markdown";
-import rehypeHighlight from "rehype-highlight";
-import remarkGfm from "remark-gfm";
 
 import { writeClipboard } from "../clipboard";
 import { googleTranslateCode } from "../languages";
+import { FontSizeControl } from "./FontSizeControl";
+import { MarkdownView } from "./MarkdownView";
+import { defaultFontIndex, fontPxAt } from "../markdownFont";
+import type { MarkdownRoute } from "../markdownRoute";
+import { markdownRouteUrl } from "../markdownRoute";
+import { stashMarkdown } from "../mdHandoff";import type { MarkdownLinkBase } from "../types";
 
 /** Google Translate silently drops text past roughly this length. */
 const TRANSLATE_TEXT_LIMIT = 4500;
+
+const OVERLAY_DEFAULT_INDEX = defaultFontIndex("overlay");
 
 export type TextZoomView = "markdown" | "raw";
 
@@ -29,6 +34,13 @@ export type TextZoomRequest = {
   defaultView?: TextZoomView;
   /** Set for sources that only ever make sense as raw text (diffs, prompts). */
   rawOnly?: boolean;
+  /** Session for in-app link resolution; null for sources with none. */
+  sessionId?: string | null;
+  /** What relative links in this text resolve against. */
+  linkBase?: MarkdownLinkBase | null;
+  /** A ready URL for the "new tab" button (artifact / project-file sources).
+   *  In-memory sources leave this unset and are handed off via sessionStorage. */
+  route?: MarkdownRoute;
 };
 
 type TextZoomContextValue = {
@@ -139,11 +151,15 @@ function TextZoomOverlay({
   );
   const [copyState, setCopyState] = useState<"idle" | "copied" | "error">("idle");
   const [translateNote, setTranslateNote] = useState<string | null>(null);
+  const [fontIndex, setFontIndex] = useState(OVERLAY_DEFAULT_INDEX);
+  const [openNote, setOpenNote] = useState<string | null>(null);
 
   useEffect(() => {
     setView(rawOnly ? "raw" : (request.defaultView ?? "markdown"));
     setCopyState("idle");
     setTranslateNote(null);
+    setFontIndex(OVERLAY_DEFAULT_INDEX);
+    setOpenNote(null);
   }, [request, rawOnly]);
 
   useEffect(() => {
@@ -210,6 +226,31 @@ function TextZoomOverlay({
       });
   };
 
+  const openInNewTab = () => {
+    /* Sources with a URL (artifact, project file) just navigate. In-memory
+     * text has no URL, so it is parked in sessionStorage first — and if that
+     * write fails we must NOT open a blank tab; Copy is the real fallback. */
+    if (request.route) {
+      window.open(markdownRouteUrl(request.route), "_blank", "noopener");
+      return;
+    }
+    const key = stashMarkdown({
+      title: request.title,
+      subtitle: request.subtitle,
+      text: request.text,
+      linkBase: request.linkBase,
+    });
+    if (!key) {
+      setOpenNote("无法在新标签页打开：浏览器存储不可用，可先用 Copy 复制全文。");
+      return;
+    }
+    window.open(
+      markdownRouteUrl({ src: "stash", key }),
+      "_blank",
+      "noopener",
+    );
+  };
+
   return (
     <div
       className="fixed inset-0 z-[60] flex items-center justify-center bg-surface-scrim/60 p-6 backdrop-blur-sm"
@@ -258,6 +299,23 @@ function TextZoomOverlay({
                 ))}
               </div>
             )}
+            {view === "markdown" && (
+              <FontSizeControl
+                index={fontIndex}
+                onChange={setFontIndex}
+                defaultIndex={OVERLAY_DEFAULT_INDEX}
+              />
+            )}
+            {!rawOnly && (
+              <button
+                type="button"
+                onClick={openInNewTab}
+                className="inline-flex h-7 items-center rounded-md border border-line bg-surface px-2.5 text-[11px] font-medium text-ink-muted transition hover:border-line-strong hover:text-ink-strong"
+                title="在新标签页中打开"
+              >
+                新标签页
+              </button>
+            )}
             <button
               type="button"
               onClick={() => void copy()}
@@ -304,17 +362,22 @@ function TextZoomOverlay({
             {translateNote}
           </div>
         )}
+        {openNote && (
+          <div className="border-b border-state-error/30 bg-state-error-soft px-5 py-2 text-[11px] text-state-error">
+            {openNote}
+          </div>
+        )}
 
         <div className="min-h-0 flex-1 overflow-y-auto bg-surface px-6 py-5">
           {view === "markdown" ? (
-            <div className="md-prose text-[14px] leading-relaxed text-ink-strong">
-              <ReactMarkdown
-                remarkPlugins={[remarkGfm]}
-                rehypePlugins={[[rehypeHighlight, { detect: true, ignoreMissing: true }]]}
-              >
-                {request.text || "_Empty text._"}
-              </ReactMarkdown>
-            </div>
+            <MarkdownView
+              text={request.text}
+              density="overlay"
+              fontPx={fontPxAt(fontIndex)}
+              sessionId={request.sessionId}
+              linkBase={request.linkBase}
+              className="text-ink-strong"
+            />
           ) : (
             <pre className="whitespace-pre-wrap break-words font-mono text-[12.5px] leading-relaxed text-ink">
               {request.text}

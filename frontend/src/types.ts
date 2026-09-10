@@ -732,3 +732,24 @@ export type SkillSummary = {
 export type SkillDetail = SkillSummary & {
   body: string;
 };
+
+/** Where a relative Markdown href resolves from; mirrors the backend model. */
+export type MarkdownLinkBase =
+  | { kind: "project-root" }
+  | { kind: "project-file"; path: string }
+  | { kind: "artifact"; path: string };
+
+/** The backend's ruling on one Markdown link. */
+export type MarkdownLinkVerdict = {
+  verdict: "markdown" | "reveal" | "missing";
+  path: string | null;
+  relative_path: string | null;
+  reason: string | null;
+};
+
+export type MarkdownFile = {
+  path: string;
+  absolute_path: string;
+  text: string;
+  truncated: boolean;
+};

@@ -1,40 +1,16 @@
 import { useCallback, useEffect, useState } from "react";
 
-type ThemePref = "light" | "dark" | "system";
-
-const STORAGE_KEY = "miniclaw2:theme";
-
-function readStored(): ThemePref {
-  try {
-    const v = localStorage.getItem(STORAGE_KEY);
-    if (v === "light" || v === "dark" || v === "system") return v;
-  } catch {
-    /* ignore */
-  }
-  return "light";
-}
-
-function systemPrefersDark(): boolean {
-  return (
-    typeof window !== "undefined" &&
-    !!window.matchMedia &&
-    window.matchMedia("(prefers-color-scheme: dark)").matches
-  );
-}
-
-function applyDOM(pref: ThemePref) {
-  const dark = pref === "dark" || (pref === "system" && systemPrefersDark());
-  document.documentElement.classList.toggle("dark", dark);
-}
+import type { ThemePref } from "../theme";
+import { THEME_STORAGE_KEY, applyTheme, readStoredTheme } from "../theme";
 
 export function ThemeToggle() {
-  const [pref, setPref] = useState<ThemePref>(() => readStored());
+  const [pref, setPref] = useState<ThemePref>(() => readStoredTheme());
 
   // Apply on mount + whenever pref changes.
   useEffect(() => {
-    applyDOM(pref);
+    applyTheme(pref);
     try {
-      localStorage.setItem(STORAGE_KEY, pref);
+      localStorage.setItem(THEME_STORAGE_KEY, pref);
     } catch {
       /* ignore */
     }
@@ -44,7 +20,7 @@ export function ThemeToggle() {
   useEffect(() => {
     if (pref !== "system") return;
     const mq = window.matchMedia("(prefers-color-scheme: dark)");
-    const onChange = () => applyDOM("system");
+    const onChange = () => applyTheme("system");
     mq.addEventListener("change", onChange);
     return () => mq.removeEventListener("change", onChange);
   }, [pref]);

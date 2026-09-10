@@ -1,7 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
 import {
   getPrinciple,
   getSkill,
@@ -12,6 +10,7 @@ import {
   type SkillSummary,
 } from "../api";
 import type { ModelPreset, TemplateDetail, TemplateSummary } from "../types";
+import { MarkdownView } from "./MarkdownView";
 import { modelPresetLabel } from "../modelPresets";
 import { resolvedTemplateNodeModelPresetId } from "../templateModels";
 
@@ -74,11 +73,16 @@ function Note({ children }: { children: React.ReactNode }) {
 }
 
 /** Long text (SKILL.md, CONTEXT.md) — scrolls inside the modal body so the
- * header and the action bar stay put. */
+ * header and the action bar stay put.
+ *
+ * This used to render without `rehypeHighlight`, so library previews were the
+ * one place code blocks came out unhighlighted; going through `MarkdownView`
+ * fixes that by construction. Library entries are user-wide, not tied to a
+ * project, so there is no session to resolve file links against. */
 function Body({ text }: { text: string }) {
   return (
-    <div className="md-prose max-h-[42vh] overflow-y-auto rounded-md border border-line bg-surface-sunken px-3 py-2.5 text-[12px] leading-relaxed text-ink">
-      <ReactMarkdown remarkPlugins={[remarkGfm]}>{text}</ReactMarkdown>
+    <div className="max-h-[42vh] overflow-y-auto rounded-md border border-line bg-surface-sunken px-3 py-2.5 leading-relaxed text-ink">
+      <MarkdownView text={text} density="panel" fontPx={12} />
     </div>
   );
 }

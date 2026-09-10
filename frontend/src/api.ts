@@ -31,6 +31,9 @@ import type {
   SkillSummary,
   SkillDetail,
   Tag,
+  MarkdownLinkBase,
+  MarkdownLinkVerdict,
+  MarkdownFile,
 } from "./types";
 import type { TemplateRewritePayload } from "./templateEditor";
 
@@ -1239,4 +1242,56 @@ export async function deleteSkill(slug: string): Promise<void> {
   if (!res.ok && res.status !== 204) {
     throw new Error(`deleteSkill failed: ${res.status}`);
   }
+}
+
+export async function resolveMarkdownLink(
+  sessionId: string,
+  href: string,
+  base?: MarkdownLinkBase | null,
+): Promise<MarkdownLinkVerdict> {
+  const res = await fetch(
+    `/sessions/${encodeURIComponent(sessionId)}/files/resolve`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ href, base: base ?? null }),
+    },
+  );
+  if (!res.ok) {
+    throw new ApiError("resolveMarkdownLink", res.status, await readErrorDetail(res));
+  }
+  return res.json();
+}
+
+export async function readMarkdownFile(
+  sessionId: string,
+  path: string,
+): Promise<MarkdownFile> {
+  const params = new URLSearchParams({ path });
+  const res = await fetch(
+    `/sessions/${encodeURIComponent(sessionId)}/files/read?${params.toString()}`,
+  );
+  if (!res.ok) {
+    throw new ApiError("readMarkdownFile", res.status, await readErrorDetail(res));
+  }
+  return res.json();
+}
+
+/** Ask the host file manager to show `path`. Files are selected, not opened. */
+export async function revealPath(
+  sessionId: string,
+  path: string,
+): Promise<{ path: string }> {
+  const res = await fetch(
+    `/sessions/${encodeURIComponent(sessionId)}/files/reveal`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path }),
+    },
+  );
+  if (!res.ok) {
+    throw new ApiError("revealPath", res.status, await readErrorDetail(res));
+  }
+  return res.json();
 }

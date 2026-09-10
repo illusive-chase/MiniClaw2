@@ -8,9 +8,6 @@ import {
   useRef,
   useState,
 } from "react";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
-import rehypeHighlight from "rehype-highlight";
 
 import { getNodePreview } from "../api";
 import type {
@@ -55,6 +52,7 @@ import {
   type NodeClassification,
   type NodeMutationLock,
 } from "../nodeUtil";
+import { MarkdownView } from "../components/MarkdownView";
 import { GateReviewForm } from "./gateReview";
 import { InspectDrawer } from "./InspectDrawer";
 import {
@@ -459,6 +457,7 @@ export function AgentPanel({
                     pending={pendingReview}
                     onSubmit={onResolveReview}
                     variant="panel"
+                    sessionId={sessionId}
                   />
                 </div>
               </section>
@@ -489,6 +488,7 @@ export function AgentPanel({
               <PreviewCard
                 preview={preview}
                 loading={previewLoading}
+                sessionId={sessionId}
               />
             </section>
 
@@ -575,6 +575,7 @@ export function AgentPanel({
                   <ActivityTranscript
                     items={transcriptItems}
                     streaming={node.state === "running"}
+                    sessionId={sessionId}
                   />
                   <div ref={latestActivityRef} aria-hidden="true" />
                 </div>
@@ -2532,9 +2533,11 @@ function escapeRegExp(s: string): string {
 function PreviewCard({
   preview,
   loading,
+  sessionId,
 }: {
   preview: string | null;
   loading: boolean;
+  sessionId: string;
 }) {
   const fields = useMemo(() => parsePreviewFields(preview), [preview]);
 
@@ -2567,16 +2570,19 @@ function PreviewCard({
               label="运行原因"
               value={fields.motivation}
               tone="motivation"
+              sessionId={sessionId}
             />
             <PreviewField
               label="结果摘要"
               value={fields.summary}
               tone="summary"
+              sessionId={sessionId}
             />
             <PreviewField
               label="后续影响"
               value={fields.nextImplications}
               tone="implications"
+              sessionId={sessionId}
             />
           </dl>
         ) : (
@@ -2625,10 +2631,12 @@ function PreviewField({
   label,
   value,
   tone,
+  sessionId,
 }: {
   label: string;
   value: string;
   tone: PreviewFieldTone;
+  sessionId: string;
 }) {
   const styles = {
     motivation: {
@@ -2650,6 +2658,8 @@ function PreviewField({
       title={label}
       text={value === PREVIEW_FIELD_EMPTY ? "" : value}
       defaultView="markdown"
+      sessionId={sessionId}
+      linkBase={{ kind: "project-root" }}
       className={`flex items-start gap-2.5 rounded-md border px-2.5 py-2 ${styles.panel}`}
     >
       <span
@@ -2783,9 +2793,11 @@ function flattenTranscript(turns: ReturnType<typeof buildTurnsFromEvents>): Tran
 function ActivityTranscript({
   items,
   streaming,
+  sessionId,
 }: {
   items: TranscriptItem[];
   streaming: boolean;
+  sessionId: string;
 }) {
   if (items.length === 0) {
     return (
@@ -2811,7 +2823,7 @@ function ActivityTranscript({
   return (
     <div className="space-y-2">
       {items.map((item) => (
-        <TranscriptItemView key={item.id} item={item} />
+        <TranscriptItemView key={item.id} item={item} sessionId={sessionId} />
       ))}
     </div>
   );
@@ -2819,8 +2831,10 @@ function ActivityTranscript({
 
 const TranscriptItemView = memo(function TranscriptItemView({
   item,
+  sessionId,
 }: {
   item: TranscriptItem;
+  sessionId: string;
 }) {
   if (item.kind === "user") {
     return (
@@ -2840,16 +2854,17 @@ const TranscriptItemView = memo(function TranscriptItemView({
         title="Agent output"
         text={item.text}
         defaultView="markdown"
+        sessionId={sessionId}
+        linkBase={{ kind: "project-root" }}
         className="rounded-md border border-line bg-surface-raised"
       >
-        <div className="md-prose px-3 py-2 text-[13px] leading-relaxed text-ink-strong">
-          <ReactMarkdown
-            remarkPlugins={[remarkGfm]}
-            rehypePlugins={[[rehypeHighlight, { detect: true, ignoreMissing: true }]]}
-          >
-            {item.text}
-          </ReactMarkdown>
-        </div>
+        <MarkdownView
+          text={item.text}
+          density="panel"
+          sessionId={sessionId}
+          linkBase={{ kind: "project-root" }}
+          className="px-3 py-2 leading-relaxed text-ink-strong"
+        />
       </ZoomableText>
     );
   }

@@ -1,9 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
-import rehypeHighlight from "rehype-highlight";
-
 import type { InteractionRequest, NodeInfo } from "../types";
+import { MarkdownView } from "../components/MarkdownView";
 import { ZoomableText } from "../components/TextZoom";
 
 export type GateReviewSubmit = (payload: {
@@ -16,6 +13,8 @@ export type GateReviewFormProps = {
   pending: InteractionRequest | null;
   onSubmit: GateReviewSubmit;
   variant: "panel" | "inline";
+  /** Enables in-app handling of file links inside the handoff prose. */
+  sessionId?: string | null;
 };
 
 /** Shared review form for human-interact review agents. */
@@ -24,6 +23,7 @@ export function GateReviewForm({
   pending,
   onSubmit,
   variant,
+  sessionId,
 }: GateReviewFormProps) {
   const [judgment, setJudgment] = useState("");
 
@@ -54,16 +54,19 @@ export function GateReviewForm({
   if (variant === "inline") {
     return (
       <div className="flex h-full w-full flex-col gap-1.5 overflow-hidden text-[11px]">
-        <div className="md-prose nodrag flex-1 overflow-y-auto rounded border border-line bg-surface-raised/95 px-2 py-1.5 text-[11px] leading-snug text-ink-strong">
+        <div className="nodrag flex-1 overflow-y-auto rounded border border-line bg-surface-raised/95 px-2 py-1.5 leading-snug text-ink-strong">
           {guidance ? (
-            <ReactMarkdown
-              remarkPlugins={[remarkGfm]}
-              rehypePlugins={[[rehypeHighlight, { detect: true, ignoreMissing: true }]]}
-            >
-              {guidance}
-            </ReactMarkdown>
+            <MarkdownView
+              text={guidance}
+              density="panel"
+              fontPx={11}
+              sessionId={sessionId}
+              linkBase={{ kind: "project-root" }}
+            />
           ) : (
-            <span className="text-ink-muted">No review handoff was written.</span>
+            <span className="text-[11px] text-ink-muted">
+              No review handoff was written.
+            </span>
           )}
         </div>
 
@@ -115,16 +118,17 @@ export function GateReviewForm({
             subtitle={`node ${node.id.slice(0, 8)}`}
             text={guidance}
             defaultView="markdown"
+            sessionId={sessionId}
+            linkBase={{ kind: "project-root" }}
             className="mt-2 rounded-md border border-line bg-surface-raised shadow-card"
           >
-            <div className="md-prose px-4 py-3 text-[13px] leading-relaxed text-ink-strong">
-              <ReactMarkdown
-                remarkPlugins={[remarkGfm]}
-                rehypePlugins={[[rehypeHighlight, { detect: true, ignoreMissing: true }]]}
-              >
-                {guidance}
-              </ReactMarkdown>
-            </div>
+            <MarkdownView
+              text={guidance}
+              density="panel"
+              sessionId={sessionId}
+              linkBase={{ kind: "project-root" }}
+              className="px-4 py-3 leading-relaxed text-ink-strong"
+            />
           </ZoomableText>
         ) : (
           <div className="mt-2 rounded-md border border-line bg-surface-sunken px-3 py-3 text-[12px] text-ink-muted">

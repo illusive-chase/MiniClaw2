@@ -392,14 +392,19 @@ body {
   margin-top: 1em;
   letter-spacing: -0.01em;
 }
+/* Heading sizes are `em`, not `rem`, because the reader can change the
+ * container font size. `rem` resolves against the root and would leave
+ * headings fixed while body text grew past them — at the larger steps the
+ * hierarchy inverts outright. The multipliers are picked to look the same as
+ * the old `rem` values did at the 13px panel default. */
 .md-prose h1 {
-  font-size: 1.2rem;
+  font-size: 1.5em;
 }
 .md-prose h2 {
-  font-size: 1.08rem;
+  font-size: 1.3em;
 }
 .md-prose h3 {
-  font-size: 0.96rem;
+  font-size: 1.12em;
 }
 .md-prose p {
   line-height: 1.6;
@@ -451,7 +456,7 @@ body {
   padding: 0.75rem 0.85rem;
   border-radius: 6px;
   overflow-x: auto;
-  font-size: 0.78rem;
+  font-size: 0.86em;
   line-height: 1.5;
 }
 .md-prose pre code {

@@ -1,10 +1,7 @@
 import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
-import ReactMarkdown from "react-markdown";
-import rehypeHighlight from "rehype-highlight";
-import remarkGfm from "remark-gfm";
-
 import { getSessionFile } from "../api";
+import { MarkdownView } from "../components/MarkdownView";
 import { ZoomableText } from "../components/TextZoom";
 import type { NodeInfo, SessionFile } from "../types";
 
@@ -93,16 +90,18 @@ export function PlanspaceFilePanel({
               subtitle={file.path}
               text={file.text}
               defaultView="markdown"
+              sessionId={sessionId}
+              linkBase={{ kind: "project-file", path: "CONTEXT.md" }}
+              route={{ src: "project-file", sessionId, path: "CONTEXT.md" }}
               className="rounded-md border border-line bg-surface-raised shadow-card"
             >
-              <div className="md-prose px-4 py-3 text-[13px] leading-relaxed text-ink-strong">
-                <ReactMarkdown
-                  remarkPlugins={[remarkGfm]}
-                  rehypePlugins={[[rehypeHighlight, { detect: true, ignoreMissing: true }]]}
-                >
-                  {file.text || "_Empty file._"}
-                </ReactMarkdown>
-              </div>
+              <MarkdownView
+                text={file.text || "_Empty file._"}
+                density="panel"
+                sessionId={sessionId}
+                linkBase={{ kind: "project-file", path: "CONTEXT.md" }}
+                className="px-4 py-3 leading-relaxed text-ink-strong"
+              />
             </ZoomableText>
           )}
         </section>

@@ -42,7 +42,12 @@ from .events import (
     ReplayRequest,
     UserMessage,
 )
-from .file_manager import RevealError, RevealUnsupportedError, reveal_directory
+from .file_manager import (
+    RevealError,
+    RevealUnsupportedError,
+    reveal_directory,
+    reveal_path,
+)
 from .git_state import commit_graph, node_diff
 from .global_config import (
     CodeReviewSettings,
@@ -55,6 +60,7 @@ from .global_config import (
 )
 from .language import normalize_preferred_language, project_preferred_language
 from .model_catalog import list_model_presets
+from .path_resolve import LinkBase, resolve_markdown_href
 from .providers.claude_native import hook_runtime
 from .providers.claude_native.hook_installer import install_hooks
 from .registry import (
@@ -99,6 +105,12 @@ from .templates import (
 )
 
 logger = logging.getLogger(__name__)
+
+# The reading page is not boxed into the 380px side panel the way an inline
+# artifact preview is, so it can carry a longer document than the artifact
+# inline cap allows. Four times INLINE_TEXT_CAP keeps the two in the same
+# family while giving long design docs room to render whole.
+MARKDOWN_READ_CAP = 4 * INLINE_TEXT_CAP
 
 class CreateSessionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -342,6 +354,36 @@ class NodeDiffResponse(BaseModel):
 class GitCommitRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     message: str = ""
+
+
+class LinkBaseModel(BaseModel):
+    """Where the frontend wants a relative href resolved from."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["project-root", "project-file", "artifact"] = "project-root"
+    path: str | None = None
+
+
+class ResolveLinkRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    href: str
+    base: LinkBaseModel | None = None
+
+
+class RevealPathRequest(BaseModel):
+    """Ask the file manager to show a path.
+
+    ``path`` is deliberately unconstrained: this endpoint neither reads the
+    target nor executes it (see ``file_manager.select_command``), so a path
+    outside the project leaks nothing. The read endpoint, which does return
+    bytes, is the one that stays inside the root.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    path: str
 
 
 class TemplateArgumentMeta(BaseModel):
@@ -1439,6 +1481,87 @@ def create_app(
         if result is None:
             raise HTTPException(404, "file not found")
         return result
+
+    def _project_root(sid: str) -> Path:
+        """The bound project root, failing the way the file endpoints do."""
+        project = registry.get_project(sid)
+        if project is None:
+            raise HTTPException(404, "session not found")
+        require_native_project(sid)
+        return Path(project.root_path)
+
+    @app.post("/sessions/{sid}/files/resolve", response_model=dict[str, Any])
+    def resolve_session_link(sid: str, req: ResolveLinkRequest) -> dict[str, Any]:
+        """Say what a Markdown link points at: read it, reveal it, or neither.
+
+        The browser cannot answer this - it does not know the base directory,
+        whether the target exists, or where the project ends. Returning one
+        verdict keeps the frontend from probing with three separate requests.
+        """
+        root = _project_root(sid)
+        base = (
+            LinkBase(kind=req.base.kind, path=req.base.path)
+            if req.base is not None
+            else None
+        )
+        verdict = resolve_markdown_href(root, base, req.href)
+        return {
+            "verdict": verdict.verdict,
+            "path": verdict.path,
+            "relative_path": verdict.relative_path,
+            "reason": verdict.reason,
+        }
+
+    @app.get("/sessions/{sid}/files/read", response_model=dict[str, Any])
+    def read_session_markdown(sid: str, path: str) -> dict[str, Any]:
+        """Return the text of a Markdown file inside the project root.
+
+        This re-runs the whole verdict rather than trusting what the client
+        learned from ``/files/resolve``. It has to: a client may call this
+        endpoint directly, and even a well-behaved one races against a path
+        being swapped for a symlink between the two calls. This is the only
+        place where "may these bytes leave the machine" is decided, so the
+        check has to be self-sufficient.
+        """
+        root = _project_root(sid)
+        if Path(path).is_absolute():
+            # The verdict below would refuse these anyway once they resolve
+            # outside the root, but refusing here keeps the reason honest and
+            # stops the endpoint being used to probe for existence.
+            raise HTTPException(403, "path must be relative to the project root")
+        verdict = resolve_markdown_href(root, LinkBase(kind="project-root"), path)
+        if verdict.verdict == "missing":
+            raise HTTPException(404, verdict.reason or "file not found")
+        if verdict.verdict != "markdown" or verdict.path is None:
+            raise HTTPException(403, "只能读取项目内的 Markdown 文件")
+        try:
+            content = Path(verdict.path).read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            raise HTTPException(400, f"读取文件失败：{exc}") from exc
+        return {
+            "path": verdict.relative_path,
+            "absolute_path": verdict.path,
+            "text": content[:MARKDOWN_READ_CAP],
+            "truncated": len(content) > MARKDOWN_READ_CAP,
+        }
+
+    @app.post("/sessions/{sid}/files/reveal", response_model=dict[str, Any])
+    def reveal_session_path(sid: str, req: RevealPathRequest) -> dict[str, Any]:
+        """Show any local path in the file manager, without opening it.
+
+        Unlike the read endpoint this accepts paths outside the project. It
+        can afford to: a file is only *selected* (``open -R`` and friends), so
+        nothing is read, returned, or executed. The native-project guard stays
+        because an unbound project has no local context to speak of.
+        """
+        _project_root(sid)
+        try:
+            resolved = reveal_path(req.path)
+        except RevealUnsupportedError as exc:
+            raise HTTPException(501, str(exc)) from exc
+        except RevealError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        return {"path": resolved}
 
     @app.post("/sessions/{sid}/context/init", response_model=dict[str, Any])
     async def init_project_context(sid: str) -> dict[str, Any]:
