@@ -73,6 +73,32 @@ class StopBranchTest(unittest.TestCase):
         body = json.loads(urlopen.call_args.args[0].data)
         self.assertIs(body["stop_hook_active"], True)
 
+    def test_stop_forwards_the_in_flight_subagent_snapshot(self) -> None:
+        """The backend decides on the registry as it stands right now.
+
+        A ledger accumulated from earlier hook calls cannot answer this:
+        a subagent reports itself as running in its own ``SubagentStop``,
+        so only the parent's ``Stop`` snapshot shows the registry empty.
+        """
+        urlopen = _urlopen_returning({"ok": True, "accepted": True})
+
+        self._run(
+            {
+                "hook_event_name": "Stop",
+                "session_id": "session-1",
+                "background_tasks": [
+                    {"id": "agent-7", "type": "subagent", "status": "running"},
+                    {"id": "sh-1", "type": "shell", "status": "running"},
+                ],
+            },
+            urlopen,
+        )
+
+        body = json.loads(urlopen.call_args.args[0].data)
+        # A leftover shell task is an ordinary pattern (a spawned server,
+        # a tail) and must not hold the node's turn open.
+        self.assertEqual(body["running_agent_ids"], ["agent-7"])
+
     def test_ordinary_acknowledgement_prints_nothing(self) -> None:
         code, out = self._run(
             {"hook_event_name": "Stop", "session_id": "session-1"},
@@ -132,9 +158,12 @@ class SubagentBranchTest(unittest.TestCase):
             with self.subTest(flag=flag):
                 payload = {
                     "hook_event_name": event,
+                    "session_id": "session-1",
                     "agent_id": "agent-7",
                     "agent_type": "Explore",
                 }
+                if phase == "stop":
+                    payload["background_tasks"] = []
                 with (
                     patch.dict(os.environ, _ENV),
                     patch.object(
@@ -152,15 +181,71 @@ class SubagentBranchTest(unittest.TestCase):
                 self.assertEqual(
                     request.full_url, "http://127.0.0.1:43123/hook/subagent"
                 )
-                self.assertEqual(
-                    json.loads(request.data),
-                    {
-                        "node_id": "node-1",
-                        "phase": phase,
-                        "agent_id": "agent-7",
-                        "agent_type": "Explore",
-                    },
-                )
+                expected = {
+                    "node_id": "node-1",
+                    "phase": phase,
+                    "agent_id": "agent-7",
+                    "agent_type": "Explore",
+                    "session_id": "session-1",
+                }
+                if phase == "stop":
+                    expected["running_agent_ids"] = []
+                self.assertEqual(json.loads(request.data), expected)
+
+    def test_stop_forwards_the_in_flight_subagent_snapshot(self) -> None:
+        """The snapshot is what distinguishes yielding from finishing.
+
+        A subagent that backgrounds a shell command fires ``SubagentStop``
+        while still listed as running, and is resumed under the same
+        ``agent_id``. Only ``subagent`` entries are forwarded: a leftover
+        ``shell`` task is an ordinary pattern and must not hold the node's
+        turn open.
+        """
+        payload = {
+            "hook_event_name": "SubagentStop",
+            "session_id": "session-1",
+            "agent_id": "agent-7",
+            "agent_type": "Explore",
+            "background_tasks": [
+                {"id": "agent-7", "type": "subagent", "status": "running"},
+                {"id": "sh-1", "type": "shell", "status": "running"},
+            ],
+        }
+        with (
+            patch.dict(os.environ, _ENV),
+            patch.object(
+                claude_hook_bridge.sys, "stdin", io.StringIO(json.dumps(payload))
+            ),
+            patch.object(claude_hook_bridge.urlrequest, "urlopen") as urlopen,
+        ):
+            claude_hook_bridge.main(["--subagent-stop"])
+
+        body = json.loads(urlopen.call_args.args[0].data)
+        self.assertEqual(body["running_agent_ids"], ["agent-7"])
+
+    def test_a_payload_with_no_snapshot_sends_null_not_empty(self) -> None:
+        """``None`` and ``[]`` mean different things downstream.
+
+        The array is documented as present only when the task registry is
+        reachable. Reporting a missing snapshot as an empty one would
+        retire every tracked subagent at once.
+        """
+        payload = {
+            "hook_event_name": "SubagentStop",
+            "session_id": "session-1",
+            "agent_id": "agent-7",
+        }
+        with (
+            patch.dict(os.environ, _ENV),
+            patch.object(
+                claude_hook_bridge.sys, "stdin", io.StringIO(json.dumps(payload))
+            ),
+            patch.object(claude_hook_bridge.urlrequest, "urlopen") as urlopen,
+        ):
+            claude_hook_bridge.main(["--subagent-stop"])
+
+        body = json.loads(urlopen.call_args.args[0].data)
+        self.assertIsNone(body["running_agent_ids"])
 
     def test_payload_without_an_agent_id_posts_nothing(self) -> None:
         """``agent_id`` is what pairs a start with its stop.

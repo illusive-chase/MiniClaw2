@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -28,6 +29,90 @@ _STDOUT_TOOLS = {"Bash", "BashOutput"}
 # rename does not silently reclassify subagent calls as ordinary tools.
 _SUBAGENT_TOOLS = {"Task", "Agent"}
 _SYNTHETIC_MODEL = "<synthetic>"
+
+# A completion notification's opening tag, and the fields we read out of
+# it. The CLI's own terminal set for a task is completed/failed/killed
+# (see the eviction pass in its task registry); ``stopped`` appears in
+# the orphan notice a restarted worker emits for agents whose completion
+# record was lost. ``blocked`` is deliberately absent — a blocked agent
+# is waiting on input and will notify again, so it is still outstanding.
+_TASK_NOTIFICATION_OPEN = "<task-notification>"
+_TASK_ID_PATTERN = re.compile(r"<task-id>([^<]+)</task-id>")
+_TASK_STATUS_PATTERN = re.compile(r"<status>([^<]+)</status>")
+_TERMINAL_TASK_STATUSES = {"completed", "failed", "killed", "stopped"}
+
+
+def finished_task_ids(record: dict[str, Any]) -> list[str]:
+    """Task ids a completion notification in ``record`` reports as done.
+
+    The subagent ledger cannot retire an agent on its own
+    ``SubagentStop``: that hook fires from inside the agent's query loop,
+    while the task is still ``running``, so the agent lists *itself* in
+    the ``background_tasks`` snapshot that travels with the stop. The
+    status only flips to ``completed`` afterwards, and the sole hook
+    carrying a fresh snapshot is the parent's own ``Stop`` — which is
+    exactly the gate the ledger is supposed to be able to answer before.
+
+    The completion notification is the missing signal. The CLI enqueues
+    it when the agent's result is ready to be delivered, its
+    ``<task-id>`` is the same ``agent_id`` the ledger is keyed by (a
+    subagent registers under its ``agentId``), and it is visible in the
+    parent's transcript, which MiniClaw2 already tails.
+
+    Only the two carriers the CLI itself writes are trusted:
+
+    - ``queue-operation`` — the enqueue/remove bookkeeping records;
+    - an ``attachment`` whose ``commandMode`` is ``task-notification``.
+
+    A ``user`` or ``assistant`` record can also contain this XML — the
+    model quotes it when reasoning about notifications, and a restart
+    notice is delivered as a plain user prompt. Reading those would let
+    the model retire its own subagents by talking about them, so they
+    are ignored here. The one real signal lost that way (the restart
+    orphan notice) concerns agents from a *previous* session, which this
+    turn's ledger never held.
+    """
+    if not _is_task_notification_record(record):
+        return []
+    text = _task_notification_text(record)
+    if _TASK_NOTIFICATION_OPEN not in text:
+        return []
+    statuses = _TASK_STATUS_PATTERN.findall(text)
+    # Retire only on an unambiguous terminal status. A notification with
+    # no status, or one still working, leaves the ledger alone.
+    if not statuses or not all(
+        status.strip().lower() in _TERMINAL_TASK_STATUSES for status in statuses
+    ):
+        return []
+    return [
+        task_id.strip()
+        for task_id in _TASK_ID_PATTERN.findall(text)
+        if task_id.strip()
+    ]
+
+
+def _is_task_notification_record(record: dict[str, Any]) -> bool:
+    rtype = record.get("type")
+    if rtype == "queue-operation":
+        return True
+    if rtype != "attachment":
+        return False
+    attachment = record.get("attachment")
+    if not isinstance(attachment, dict):
+        return False
+    return attachment.get("commandMode") == "task-notification"
+
+
+def _task_notification_text(record: dict[str, Any]) -> str:
+    content = record.get("content")
+    if isinstance(content, str) and content:
+        return content
+    attachment = record.get("attachment")
+    if isinstance(attachment, dict):
+        prompt = attachment.get("prompt")
+        if isinstance(prompt, str):
+            return prompt
+    return ""
 
 
 @dataclass(slots=True)

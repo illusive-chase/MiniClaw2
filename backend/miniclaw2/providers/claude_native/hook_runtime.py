@@ -13,9 +13,12 @@ Each ``ClaudeNativeSession`` registers:
   it came from the session that node's PTY owns (see
   ``register_turn_complete``).
 - a subagent ledger keyed by node id — ``SubagentStart`` adds an agent
-  id, ``SubagentStop`` removes it. A node's turn must not end, and must
-  not suspend in ``AskUserQuestion``, while that ledger is non-empty
-  (see ``_SubagentLedger``).
+  id, and an entry is retired either by the completion notification the
+  runner reads off the transcript (``retire_subagents``) or by an
+  authoritative ``background_tasks`` snapshot (``reconcile_subagents``).
+  A node's turn must not end, and must not suspend in
+  ``AskUserQuestion``, while that ledger is non-empty (see
+  ``_SubagentLedger``).
 
 The token is generated on first access via ``secrets.token_urlsafe`` and
 kept in memory for the daemon's lifetime.
@@ -72,9 +75,18 @@ class _SubagentLedger:
     node is reaped).
 
     ``SubagentStart``/``SubagentStop`` are the CLI's own lifecycle
-    events, so membership needs no transcript parsing. ``blocks`` counts
-    how many times ``Stop`` has already been refused for this node, so a
-    subagent that never returns cannot hold the turn open forever.
+    events, so membership needs no transcript parsing. They are not,
+    however, a matched pair of "began" and "finished": ``SubagentStop``
+    fires from inside the agent's query loop while its task is still
+    ``running``, and one subagent yields and resumes under the same
+    ``agent_id``. So a stop is reconciled against the payload's
+    ``background_tasks`` snapshot rather than trusted on its own (see
+    ``record_subagent_stop``), and the entry is actually retired by the
+    agent's completion notification (``retire_subagents``) or by a
+    later authoritative snapshot (``reconcile_subagents``).
+    ``blocks`` counts how many times ``Stop`` has already been refused
+    for this node, so a subagent that never returns cannot hold the turn
+    open forever.
     """
 
     running: dict[str, str] = field(default_factory=dict)
@@ -299,19 +311,117 @@ def record_subagent_start(node_id: str, agent_id: str, agent_type: str = "") -> 
     ledger.running[agent_id] = agent_type
 
 
-def record_subagent_stop(node_id: str, agent_id: str) -> None:
-    """Retire one subagent.
+def record_subagent_stop(
+    node_id: str,
+    agent_id: str,
+    running_agent_ids: list[str] | None = None,
+) -> None:
+    """Retire subagents that the CLI no longer reports as in flight.
 
-    A ``SubagentStop`` for an unknown id is ignored rather than treated as
-    an error: the ledger only has to end up empty, and an id we never saw
-    start is already absent.
+    ``SubagentStop`` is not a completion event. It fires whenever the
+    subagent yields control — after backgrounding a shell command, for
+    instance — and the same ``agent_id`` is started again when the
+    subagent is woken to finish. Retiring on the stop alone therefore
+    reports a still-working subagent as done, and the node is free to end
+    its turn or ask a question while the result is still coming.
+
+    ``running_agent_ids`` is the payload's own parent-scoped registry of
+    in-flight subagents, so it is authoritative in a way this hook call
+    is not: it also stays correct when another configured ``SubagentStop``
+    hook blocks the stop, which ``install_hooks`` deliberately allows.
+    The ledger is reconciled against it — an id absent from the snapshot
+    is finished, one still listed keeps its entry.
+
+    ``None`` means the payload carried no snapshot (an older CLI, or a
+    task registry that was unreachable), and only then does the stopped
+    id alone retire the entry.
     """
     if not node_id or not agent_id:
         return
     ledger = _STATE.subagent_ledgers.get(node_id)
     if ledger is None:
         return
-    ledger.running.pop(agent_id, None)
+    if running_agent_ids is None:
+        ledger.running.pop(agent_id, None)
+        return
+    still_running = set(running_agent_ids)
+    for known in list(ledger.running):
+        if known not in still_running:
+            ledger.running.pop(known, None)
+
+
+def reconcile_subagents(node_id: str, running_agent_ids: list[str] | None) -> None:
+    """Fold an authoritative in-flight snapshot into ``node_id``'s ledger.
+
+    ``running_agent_ids`` comes from a hook payload's ``background_tasks``,
+    the CLI's own parent-scoped task registry. Sampled at the moment a
+    ``Stop`` wants to end the turn, it answers "is anything still running"
+    directly, where the ledger only accumulates what earlier hook calls
+    happened to report.
+
+    That matters because ``SubagentStop`` is not a completion event: a
+    subagent still lists itself as running in its own stop payload, and
+    is resumed under the same ``agent_id`` after yielding. Only the
+    parent's ``Stop`` snapshot shows the registry actually empty, so the
+    ledger has to be reconcilable at that point or its entries would
+    never retire — spending the whole block budget and then reporting
+    work as lost that had in fact finished.
+
+    ``None`` is "no snapshot" (an older CLI, or a registry that was
+    unreachable), which is not "nothing running": the ledger is left
+    alone. Ids in the snapshot that the ledger never saw start are added,
+    so a subagent whose ``SubagentStart`` was missed still holds the turn.
+    """
+    if not node_id or running_agent_ids is None:
+        return
+    ledger = _STATE.subagent_ledgers.get(node_id)
+    still_running = set(running_agent_ids)
+    if ledger is None:
+        if not still_running:
+            return
+        ledger = _STATE.subagent_ledgers.setdefault(node_id, _SubagentLedger())
+    for known in list(ledger.running):
+        if known not in still_running:
+            ledger.running.pop(known, None)
+    for agent_id in still_running:
+        ledger.running.setdefault(agent_id, "")
+
+
+def retire_subagents(node_id: str, finished_agent_ids: list[str]) -> None:
+    """Retire agents a completion notification reports as finished.
+
+    This is the ledger's only in-turn retirement path, and it exists
+    because neither hook event can close one out mid-turn:
+
+    - ``SubagentStop`` fires from inside the agent's own query loop while
+      its task is still ``running``, so the agent appears in the
+      ``background_tasks`` snapshot that travels with its own stop —
+      ``record_subagent_stop`` therefore keeps the entry, by design.
+    - The status flips to terminal only afterwards, and the next hook
+      carrying a fresh snapshot is the parent's ``Stop``. That is the
+      gate ``reconcile_subagents`` serves, but it runs when the turn is
+      already trying to end.
+
+    Between those two points the agent is finished and the ledger still
+    lists it. A parent that responds to the completion notification by
+    asking a question is refused by a gate whose whole justification —
+    an unretired notification that could fork the conversation — has
+    already been settled. The notification MiniClaw2 reads from the
+    transcript is the signal that closes that window.
+
+    Ids the ledger never held are ignored: a notification for a shell
+    task or a previous session's orphan is simply not ours to retire.
+    Nothing is ever *added* here, which keeps this strictly a narrowing
+    of the ledger — a spurious notification can only free a subagent the
+    parent had already dispatched, never invent one.
+    """
+    if not node_id or not finished_agent_ids:
+        return
+    ledger = _STATE.subagent_ledgers.get(node_id)
+    if ledger is None:
+        return
+    for agent_id in finished_agent_ids:
+        ledger.running.pop(agent_id, None)
 
 
 def running_subagents(node_id: str) -> list[str]:

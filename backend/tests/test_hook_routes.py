@@ -227,6 +227,7 @@ class HookBridgeTest(unittest.TestCase):
                 "node_id": "node-1",
                 "session_id": "session-1",
                 "stop_hook_active": False,
+                "running_agent_ids": None,
             },
         )
 

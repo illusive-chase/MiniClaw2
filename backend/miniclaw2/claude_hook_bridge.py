@@ -27,10 +27,29 @@ Five behaviors:
   backend has *not* recorded turn-complete, so the two sides agree the
   turn is still live.
 
+  ``background_tasks`` travels with the signal for that decision. It is
+  the CLI's own parent-scoped registry of in-flight work, sampled at
+  the moment the turn wants to end, which makes it a better answer to
+  "is anything still running" than a ledger accumulated from earlier
+  hook calls.
+
 - ``python -m miniclaw2.claude_hook_bridge --subagent-start`` and
   ``--subagent-stop`` — POST the payload's ``agent_id`` to
   ``/hook/subagent`` so the backend can track which subagents the node
   has outstanding. Output is never used; these hooks only observe.
+
+  Both forward the payload's ``session_id`` for the same reason
+  ``--turn-complete`` does: a nested ``claude`` inherits
+  ``MINICLAW_NODE_ID``, so without it a descendant's subagents land in
+  this node's ledger and hold its turn open on a stranger's behalf.
+
+  ``--subagent-stop`` also forwards ``background_tasks``, the CLI's own
+  parent-scoped registry of in-flight work. ``SubagentStop`` does not
+  mean the subagent is finished: it fires whenever the subagent yields —
+  after backgrounding a shell command, for instance — and the same
+  ``agent_id`` starts again when the subagent is woken to finish. At
+  that first stop the payload still lists the agent as ``running``, so
+  the snapshot is what says whether it is really done.
 
 - ``python -m miniclaw2.claude_hook_bridge`` (no flag) — reads the
   Claude ``PreToolUse`` payload from stdin, POSTs it to ``/hook/ask``
@@ -150,6 +169,7 @@ def _post_turn_complete() -> int:
         return 0
     session_id: str | None = None
     stop_hook_active = False
+    running_agent_ids: list[str] | None = None
     if raw.strip():
         try:
             payload = json.loads(raw)
@@ -161,6 +181,7 @@ def _post_turn_complete() -> int:
         if isinstance(claimed, str) and claimed:
             session_id = claimed
         stop_hook_active = bool(payload.get("stop_hook_active"))
+        running_agent_ids = _running_subagent_ids(payload)
 
     node_id = os.environ.get("MINICLAW_NODE_ID")
     token = os.environ.get("MINICLAW_HOOK_TOKEN")
@@ -172,6 +193,7 @@ def _post_turn_complete() -> int:
     if session_id:
         signal["session_id"] = session_id
     signal["stop_hook_active"] = stop_hook_active
+    signal["running_agent_ids"] = running_agent_ids
     body = json.dumps(signal).encode("utf-8")
     req = urlrequest.Request(
         url,
@@ -225,6 +247,12 @@ def _post_subagent(phase: str) -> int:
     silent. ``agent_id`` comes from the payload — the CLI's own identifier
     for the subagent — so start and stop pair up without transcript
     parsing.
+
+    ``session_id`` is forwarded so the backend can reject a descendant's
+    subagents, and on stop so is ``background_tasks``: that array is the
+    CLI's parent-scoped registry of in-flight work, and it is the only
+    thing that distinguishes a subagent that has finished from one that
+    merely yielded and will be resumed under the same ``agent_id``.
     """
     try:
         raw = sys.stdin.read()
@@ -240,6 +268,7 @@ def _post_subagent(phase: str) -> int:
     if not isinstance(agent_id, str) or not agent_id:
         return 0
     agent_type = payload.get("agent_type")
+    session_id = payload.get("session_id")
 
     node_id = os.environ.get("MINICLAW_NODE_ID")
     token = os.environ.get("MINICLAW_HOOK_TOKEN")
@@ -247,14 +276,17 @@ def _post_subagent(phase: str) -> int:
     if not (node_id and token and url):
         return 0
 
-    body = json.dumps(
-        {
-            "node_id": node_id,
-            "phase": phase,
-            "agent_id": agent_id,
-            "agent_type": agent_type if isinstance(agent_type, str) else "",
-        }
-    ).encode("utf-8")
+    signal: dict[str, object] = {
+        "node_id": node_id,
+        "phase": phase,
+        "agent_id": agent_id,
+        "agent_type": agent_type if isinstance(agent_type, str) else "",
+    }
+    if isinstance(session_id, str) and session_id:
+        signal["session_id"] = session_id
+    if phase == "stop":
+        signal["running_agent_ids"] = _running_subagent_ids(payload)
+    body = json.dumps(signal).encode("utf-8")
     req = urlrequest.Request(
         url,
         data=body,
@@ -269,6 +301,34 @@ def _post_subagent(phase: str) -> int:
     except (urlerror.URLError, TimeoutError, OSError):
         pass
     return 0
+
+
+def _running_subagent_ids(payload: dict) -> list[str] | None:
+    """Ids of subagents the payload still reports as in flight.
+
+    ``None`` means the payload carried no usable ``background_tasks``
+    array — the CLI documents it as present only when the task registry
+    is reachable — and the backend then falls back to retiring the id
+    that stopped. An empty list is a real answer, not a missing one: it
+    says the registry was reachable and nothing is running.
+
+    Only ``type == "subagent"`` entries are collected. A ``shell`` task
+    left running is an ordinary pattern (a spawned server, a tail) and
+    must not hold the node's turn open.
+    """
+    tasks = payload.get("background_tasks")
+    if not isinstance(tasks, list):
+        return None
+    running: list[str] = []
+    for task in tasks:
+        if not isinstance(task, dict):
+            continue
+        if task.get("type") != "subagent":
+            continue
+        task_id = task.get("id")
+        if isinstance(task_id, str) and task_id:
+            running.append(task_id)
+    return running
 
 
 def _derive_ready_url() -> str | None:

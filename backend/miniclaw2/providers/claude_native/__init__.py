@@ -32,7 +32,7 @@ from .spawn import (
     build_env,
     resolve_claude_binary,
 )
-from .transcript import TranscriptTranslator, drain
+from .transcript import TranscriptTranslator, drain, finished_task_ids
 
 logger = logging.getLogger(__name__)
 
@@ -249,6 +249,17 @@ class ClaudeNativeSession:
                 last_transcript_progress_ts = loop.time()
 
             for record in result.events:
+                # A subagent's completion notification is the only signal
+                # that retires its ledger entry mid-turn: its own
+                # SubagentStop fires while the task is still running, and
+                # the next authoritative snapshot arrives with the
+                # parent's Stop. Without this the parent stays gated
+                # against asking a question even after collecting the
+                # result the notification delivered.
+                finished = finished_task_ids(record)
+                if finished:
+                    hook_runtime.retire_subagents(self._node_id, finished)
+
                 sid = self._translator.observed_session_id(record)
                 if sid and sid != self._session_id:
                     new_jsonl = jsonl_path(self._cwd, sid, self._data_dir)

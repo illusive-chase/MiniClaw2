@@ -885,6 +885,18 @@ def create_app(
         if owned_session is not None and hook_runtime.is_owned_session(
             node_id, owned_session
         ):
+            # The Stop payload carries the CLI's own registry of in-flight
+            # work, sampled right now. That is the authoritative answer to
+            # what is still running: SubagentStop fires when a subagent
+            # merely yields, and reports itself as running when it does,
+            # so a ledger built from those events alone never empties.
+            raw_running = body.get("running_agent_ids")
+            hook_runtime.reconcile_subagents(
+                node_id,
+                [item for item in raw_running if isinstance(item, str) and item]
+                if isinstance(raw_running, list)
+                else None,
+            )
             if hook_runtime.should_block_stop(node_id):
                 pending = hook_runtime.running_subagents(node_id)
                 logger.info(
@@ -939,18 +951,52 @@ def create_app(
             raise HTTPException(400, "node_id required")
         if not isinstance(agent_id, str) or not agent_id:
             raise HTTPException(400, "agent_id required")
+        if phase not in ("start", "stop"):
+            raise HTTPException(400, "phase must be 'start' or 'stop'")
         agent_type = body.get("agent_type")
+
+        # Same credential problem as turn-complete: MINICLAW_NODE_ID is
+        # inherited by every descendant of the PTY child, so a nested
+        # claude's subagents would otherwise be charged to this node —
+        # holding its turn open, and denying its questions, on behalf of
+        # a session it does not own. Only the node's own PTY may write
+        # to its ledger.
+        session_id = body.get("session_id")
+        if not isinstance(session_id, str) or not session_id:
+            logger.warning(
+                "ignoring subagent %s for node %s: no session id",
+                phase,
+                node_id,
+            )
+            return JSONResponse({"ok": True, "accepted": False})
+        if not hook_runtime.is_owned_session(node_id, session_id):
+            logger.info(
+                "ignoring subagent %s for node %s from unowned session %r",
+                phase,
+                node_id,
+                session_id,
+            )
+            return JSONResponse({"ok": True, "accepted": False})
+
         if phase == "start":
             hook_runtime.record_subagent_start(
                 node_id,
                 agent_id,
                 agent_type if isinstance(agent_type, str) else "",
             )
-        elif phase == "stop":
-            hook_runtime.record_subagent_stop(node_id, agent_id)
         else:
-            raise HTTPException(400, "phase must be 'start' or 'stop'")
-        return JSONResponse({"ok": True})
+            # The bridge forwards the payload's own registry of in-flight
+            # subagents. A SubagentStop is not proof of completion — the
+            # agent may merely have yielded — so the ledger is reconciled
+            # against that snapshot when one is present.
+            raw_running = body.get("running_agent_ids")
+            running = (
+                [item for item in raw_running if isinstance(item, str) and item]
+                if isinstance(raw_running, list)
+                else None
+            )
+            hook_runtime.record_subagent_stop(node_id, agent_id, running)
+        return JSONResponse({"ok": True, "accepted": True})
 
     @app.post("/sessions", response_model=SessionInfo)
     def create_session(req: CreateSessionRequest) -> SessionInfo:

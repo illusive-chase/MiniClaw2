@@ -1232,6 +1232,83 @@ class ClaudeNativeStreamTerminalTest(unittest.IsolatedAsyncioTestCase):
             )
         )
 
+    async def test_a_completion_notification_retires_the_ledger_entry(self) -> None:
+        """The gate must reopen once the result has actually landed.
+
+        A subagent's own ``SubagentStop`` cannot retire it — that hook
+        fires while the task is still ``running`` — and the next
+        authoritative snapshot rides on the parent's ``Stop``, which is
+        the gate itself. The completion notification the runner reads
+        off the transcript is what closes that window, so a parent that
+        collects its result can ask a question in the same turn.
+        """
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            session = _stream_session(raw, _FakePty(alive=True))
+            hook_runtime.reset_subagent_ledger("node-1")
+            self.addCleanup(hook_runtime.reset_subagent_ledger, "node-1")
+            hook_runtime.record_subagent_start("node-1", "agent-7", "Explore")
+
+            _write_jsonl(
+                root / "turn.jsonl",
+                {
+                    "type": "queue-operation",
+                    "operation": "enqueue",
+                    "content": (
+                        "<task-notification>\n<task-id>agent-7</task-id>\n"
+                        "<status>completed</status>\n"
+                        "<summary>Agent \"Investigate\" finished</summary>\n"
+                        "</task-notification>"
+                    ),
+                },
+            )
+
+            self.assertTrue(hook_runtime.has_running_subagents("node-1"))
+            session._turn_complete_event = asyncio.Event()
+            session._turn_complete_event.set()
+            await _collect(session.stream_events())
+
+        self.assertFalse(hook_runtime.has_running_subagents("node-1"))
+
+    async def test_a_quoted_notification_does_not_retire_anything(self) -> None:
+        """The model reproduces this XML when it reasons about a result.
+
+        Trusting a model-authored record would let an agent free its own
+        subagents by describing one, defeating the gate entirely.
+        """
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            session = _stream_session(raw, _FakePty(alive=True))
+            hook_runtime.reset_subagent_ledger("node-1")
+            self.addCleanup(hook_runtime.reset_subagent_ledger, "node-1")
+            hook_runtime.record_subagent_start("node-1", "agent-7", "Explore")
+
+            _write_jsonl(
+                root / "turn.jsonl",
+                {
+                    "type": "assistant",
+                    "message": {
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": (
+                                    "<task-notification>\n"
+                                    "<task-id>agent-7</task-id>\n"
+                                    "<status>completed</status>\n"
+                                    "</task-notification>"
+                                ),
+                            }
+                        ],
+                    },
+                },
+            )
+
+            session._turn_complete_event = asyncio.Event()
+            session._turn_complete_event.set()
+            await _collect(session.stream_events())
+
+        self.assertTrue(hook_runtime.has_running_subagents("node-1"))
+
     async def test_child_death_before_terminal_record_emits_error(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             session = _stream_session(
