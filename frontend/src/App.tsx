@@ -52,6 +52,7 @@ import {
 } from "./canvas/Canvas";
 import {
   artifactNodeId,
+  nodeLaneResolver,
   resolveNodePlanspaceId,
   templateGroupNodeId,
   templateInstanceBoxNodeId,
@@ -1423,6 +1424,23 @@ export function App() {
           mode,
           model_preset_id: modelPresetId,
         });
+        /* Refresh before focusing, in this order, for two separate reasons.
+         *
+         * The contextspace must land first because the focus-resolution
+         * effect only accepts lanes present in `knownPlanspaceIds`: focusing
+         * a lane the contextspace has not reported yet makes the current
+         * focus look unusable, and the effect re-resolves straight back to
+         * the old lane — and then never reconsiders, because that lane is
+         * perfectly valid.
+         *
+         * The nodes must land before `selectAndOpenNode`, which derives the
+         * lane by looking the node up in `nodesRef`; called on a node the
+         * list has not seen, it selects without moving focus. Focusing from
+         * `created.planspace_id` here does not depend on that lookup, so the
+         * new lane is current either way. */
+        await refreshContextSpace();
+        await refreshNodes();
+        focusPlanspace(created.planspace_id);
         if (shouldOpenCreatedPlanspace(created.activated)) {
           selectAndOpenNode(created.node_id);
         } else {
@@ -1433,8 +1451,6 @@ export function App() {
             kind: "concierge",
           });
         }
-        await refreshContextSpace();
-        await refreshNodes();
       } catch (err) {
         setSessionContextSpaceError(String(err));
       } finally {
@@ -1445,6 +1461,7 @@ export function App() {
     [
       session?.id,
       projectMutationPending,
+      focusPlanspace,
       refreshContextSpace,
       refreshNodes,
       selectAndOpenNode,
@@ -1463,6 +1480,13 @@ export function App() {
           mode,
           model_preset_id: modelPresetId,
         });
+        /* Refresh-then-focus, for the reasons spelled out in
+         * `startNewDirection`: the contextspace must know the lane before
+         * focus may land on it, and the node list must be hydrated before
+         * `selectAndOpenNode` can resolve anything from it. */
+        await refreshContextSpace();
+        await refreshNodes();
+        focusPlanspace(created.planspace_id);
         if (shouldOpenCreatedPlanspace(created.activated)) {
           selectAndOpenNode(created.node_id);
           setFocusRequestVersion((version) => version + 1);
@@ -1474,8 +1498,6 @@ export function App() {
             kind: "blank",
           });
         }
-        await refreshContextSpace();
-        await refreshNodes();
       } catch (err) {
         setSessionContextSpaceError(String(err));
       } finally {
@@ -1486,6 +1508,7 @@ export function App() {
     [
       session?.id,
       projectMutationPending,
+      focusPlanspace,
       refreshContextSpace,
       refreshNodes,
       selectAndOpenNode,
@@ -2590,12 +2613,35 @@ export function App() {
      * would otherwise burn this project's one resolution on a null answer,
      * and the real lanes arriving a moment later would never be considered. */
     if (visible.length === 0) return;
+    /* Nodes and the contextspace are fetched in parallel, so the lane list can
+     * arrive first. Resolving now would rank recency against an empty node
+     * list, fall through to "first visible lane", and persist that guess —
+     * and the guard above then prevents the correct answer from ever being
+     * computed, because the wrong lane is perfectly usable. Waiting for
+     * hydration costs one render and makes the recency step real.
+     *
+     * `initialLoadComplete` is the escape hatch: if `listNodes` failed
+     * outright, hydration never happens, and holding out for it forever would
+     * leave the canvas with no focused lane and therefore no `+` at all.
+     * Once the initial fetches have all settled, resolve with whatever we
+     * have rather than not at all.
+     *
+     * Only the initial resolution waits. A later re-resolution (the focused
+     * lane was deleted or hidden) already has nodes, and gating it on this
+     * would be a no-op. */
+    if (nodesHydratedSessionId !== projectId && !initialLoadComplete) return;
 
     const resolved = resolveFocusedLane({
       stored: readFocusedLane(projectId),
       active: sessionContextSpace?.active_planspace_id ?? null,
       visible,
-      recentlyActive: lanesByRecentActivity(nodesRef.current, visible),
+      recentlyActive: lanesByRecentActivity(
+        nodesRef.current,
+        visible,
+        /* Same attribution the canvas draws with, so a lane whose only nodes
+         * predate `planspace_id` still counts as used. */
+        nodeLaneResolver(nodesRef.current),
+      ),
     });
     focusResolvedForProjectRef.current = projectId;
     setFocusedPlanspaceId(resolved);
@@ -2606,7 +2652,9 @@ export function App() {
   }, [
     focusedPlanspaceId,
     hiddenPlanspaceIds,
+    initialLoadComplete,
     knownPlanspaceIds,
+    nodesHydratedSessionId,
     session?.id,
     sessionContextSpace?.active_planspace_id,
   ]);
@@ -2728,6 +2776,12 @@ export function App() {
      * working in B, so B is where the `+`, the double-click create and the
      * vertical jumps belong.
      *
+     * A template instance carries no lane of its own — it is a frame drawn
+     * around member nodes — so its lane comes from one of those members. A
+     * stamped instance never straddles lanes, so the first resolvable member
+     * answers for all of them; sinks are consulted first because a collapsed
+     * box is selected by its outputs.
+     *
      * Empty canvas (`kind: "none"`) deliberately does NOT clear focus. A
      * click on the background is how the user dismisses the panel, and
      * dropping focus there would leave the canvas with no create target
@@ -2737,6 +2791,16 @@ export function App() {
       const node = nodesRef.current.find((item) => item.id === sel.nodeId);
       if (node) {
         focusPlanspace(resolveNodePlanspaceId(node, nodesRef.current));
+      }
+    } else if (sel.kind === "templateInstance") {
+      const laneOf = nodeLaneResolver(nodesRef.current);
+      for (const nodeId of [...sel.sinkNodeIds, ...sel.memberNodeIds]) {
+        const member = nodesRef.current.find((item) => item.id === nodeId);
+        const laneId = member ? laneOf(member) : null;
+        if (laneId) {
+          focusPlanspace(laneId);
+          break;
+        }
       }
     }
     /* Node clicks open the panel in details mode (overriding the library
@@ -2820,7 +2884,12 @@ export function App() {
 
   /* select a specific node id (used by panel "jump to" affordances and the
    * pending-node banner). Unlike a bare canvas click, these are explicit
-   * user asks to *inspect* the node, so we also open the panel. */
+   * user asks to *inspect* the node, so we also open the panel.
+   *
+   * Focus follows for the same reason it follows `selectAndOpenNode`: jumping
+   * to a commit epoch member or a pending node in another lane puts the user
+   * in that lane, and leaving focus behind would send their next unanchored
+   * create back to the lane they just left. */
   const onSelectNode = useCallback(
     (nodeId: string) => {
       const node = nodes.find((n) => n.id === nodeId);
@@ -2831,8 +2900,9 @@ export function App() {
       });
       inspectNode(nodeId);
       openDetails();
+      focusPlanspace(resolveNodePlanspaceId(node, nodes));
     },
-    [inspectNode, nodes, openDetails],
+    [focusPlanspace, inspectNode, nodes, openDetails],
   );
 
   const onSelectArtifact = useCallback(

@@ -8,6 +8,7 @@ import {
   writeFocusedLane,
   writeFocusedLanes,
 } from "../src/focusedLane";
+import { nodeLaneResolver } from "../src/canvas/layout";
 import { lanesByRecentActivity } from "../src/nodeUtil";
 import type { NodeInfo } from "../src/types";
 
@@ -256,6 +257,43 @@ function testLaneRecencyRanksByNewestNode(): void {
   );
 }
 
+/* Lane attribution must match what the canvas draws. A node predating the
+ * `planspace_id` column is placed by its launch snapshot or by its parent, and
+ * ranking that reads only the column reports those lanes as never used.
+ *
+ * The consequence is not cosmetic: with no stored focus and no active lane, a
+ * project whose recent work is all legacy nodes would rank every lane as
+ * unused, fall through to "first visible lane", and persist that — sending the
+ * user somewhere other than where they last worked, permanently. */
+function testLaneRecencyUsesTheCanvasLaneAttribution(): void {
+  const nodes = [
+    /* Legacy: no planspace_id, lane carried by the launch snapshot. */
+    node({
+      id: "legacy",
+      created_at: 100,
+      settings_snapshot: { active_planspace_id: "lane.legacy" },
+    }),
+    /* Legacy child: lane inherited from its parent. */
+    node({ id: "child", created_at: 120, parent_node_id: "legacy" }),
+    node({ id: "modern", planspace_id: "lane.modern", created_at: 50 }),
+  ];
+  const lanes = ["lane.legacy", "lane.modern"];
+
+  /* The plain-column default cannot see the legacy lane at all. */
+  assert.deepEqual(
+    lanesByRecentActivity(nodes, lanes),
+    ["lane.modern"],
+    "reading only the column hides lanes whose nodes predate it",
+  );
+
+  /* With the canvas resolver, the legacy lane is both visible and correctly
+   * ranked ahead of the older modern one. */
+  assert.deepEqual(
+    lanesByRecentActivity(nodes, lanes, nodeLaneResolver(nodes)),
+    ["lane.legacy", "lane.modern"],
+  );
+}
+
 /* The end-to-end shape App.tsx relies on: remember a lane, come back to the
  * project, land on it — and once it is gone, land somewhere usable instead
  * of nowhere. */
@@ -298,6 +336,7 @@ testStoredLanesAreScopedPerProject();
 testCorruptRecordsDegradeToNoMemory();
 testStorageFailuresAreContained();
 testLaneRecencyRanksByNewestNode();
+testLaneRecencyUsesTheCanvasLaneAttribution();
 testReturningToAProjectRestoresItsLane();
 
 delete (globalThis as { window?: unknown }).window;

@@ -2791,6 +2791,7 @@ function testTemplatePortsRenderNodesAndEdges(): void {
     ],
     knownPlanspaceIds: [TEMPLATE_LANE],
     focusedPlanspaceId: TEMPLATE_LANE,
+    executionTargetPlanspaceId: TEMPLATE_LANE,
     templatePorts: [
       { name: "spec", description: "the spec node", consumers: ["consumer"] },
     ],
@@ -2822,6 +2823,7 @@ function testUnreferencedPortIsFlagged(): void {
     nodes: [node("solo", { planspace_id: TEMPLATE_LANE, created_at: 1 })],
     knownPlanspaceIds: [TEMPLATE_LANE],
     focusedPlanspaceId: TEMPLATE_LANE,
+    executionTargetPlanspaceId: TEMPLATE_LANE,
     templatePorts: [{ name: "orphan", consumers: [] }],
   }));
 
@@ -2843,6 +2845,7 @@ function testPortConsumerOffCanvasDoesNotDangle(): void {
     nodes: [node("present", { planspace_id: TEMPLATE_LANE, created_at: 1 })],
     knownPlanspaceIds: [TEMPLATE_LANE],
     focusedPlanspaceId: TEMPLATE_LANE,
+    executionTargetPlanspaceId: TEMPLATE_LANE,
     templatePorts: [
       { name: "spec", consumers: ["deleted-node", "present"] },
     ],
@@ -2865,11 +2868,13 @@ function testPortsFlowIntoLaneSizing(): void {
     nodes: [node("only", { planspace_id: TEMPLATE_LANE, created_at: 1 })],
     knownPlanspaceIds: [TEMPLATE_LANE],
     focusedPlanspaceId: TEMPLATE_LANE,
+    executionTargetPlanspaceId: TEMPLATE_LANE,
   }));
   const withManyPorts = buildGraph(args({
     nodes: [node("only", { planspace_id: TEMPLATE_LANE, created_at: 1 })],
     knownPlanspaceIds: [TEMPLATE_LANE],
     focusedPlanspaceId: TEMPLATE_LANE,
+    executionTargetPlanspaceId: TEMPLATE_LANE,
     templatePorts: [
       { name: "a", consumers: ["only"] },
       { name: "b", consumers: ["only"] },
@@ -2896,6 +2901,7 @@ function testPortsHonourLayoutHints(): void {
     nodes: [node("consumer", { planspace_id: TEMPLATE_LANE, created_at: 1 })],
     knownPlanspaceIds: [TEMPLATE_LANE],
     focusedPlanspaceId: TEMPLATE_LANE,
+    executionTargetPlanspaceId: TEMPLATE_LANE,
     layoutHints: { [portId]: { x: 640, y: 24 } },
     templatePorts: [{ name: "spec", consumers: ["consumer"] }],
   }));
@@ -2906,21 +2912,62 @@ function testPortsHonourLayoutHints(): void {
   );
 }
 
-function testPortsOnlyRenderInTheActiveLane(): void {
-  /* Ports belong to the template being edited, which is the active lane. A
-   * port has no meaning in a lane that is not the write target. */
+function testPortsOnlyRenderInTheExecutionTargetLane(): void {
+  /* Ports belong to the template being edited, and the backend reads them off
+   * ONE lane's manifest — `active_planspace_id`, the execution target. With
+   * no execution target there is no manifest they could have come from, so
+   * there is no lane that may claim them. */
   const built = buildGraph(args({
     nodes: [node("elsewhere", { planspace_id: TEMPLATE_LANE, created_at: 1 })],
     knownPlanspaceIds: [TEMPLATE_LANE],
-    focusedPlanspaceId: null,
+    focusedPlanspaceId: TEMPLATE_LANE,
+    executionTargetPlanspaceId: null,
     templatePorts: [{ name: "spec", consumers: ["elsewhere"] }],
   }));
 
   assert.equal(
     built.rfNodes.some((item) => item.type === "templatePort"),
     false,
-    "no active lane means no port row",
+    "no execution target means no port row",
   );
+}
+
+/* The regression this guards is subtle and was live in Phase 1: ports were
+ * drawn in the FOCUSED lane, but the backend loads them from the execution
+ * target. Focus another lane in an embedded session and that lane sprouted a
+ * port manifest it does not own, with consumer edges pointing back across the
+ * canvas into the lane that actually declares them. Focus must not move a
+ * port. */
+function testPortsStayOnTheirSourceLaneWhenFocusMovesAway(): void {
+  const OTHER_LANE = "planspaces.beta";
+  const built = buildGraph(args({
+    nodes: [
+      node("consumer", { planspace_id: TEMPLATE_LANE, created_at: 1 }),
+      node("bystander", { planspace_id: OTHER_LANE, created_at: 2 }),
+    ],
+    knownPlanspaceIds: [TEMPLATE_LANE, OTHER_LANE],
+    /* The user is looking at the other lane... */
+    focusedPlanspaceId: OTHER_LANE,
+    /* ...but the ports were read from this one. */
+    executionTargetPlanspaceId: TEMPLATE_LANE,
+    templatePorts: [{ name: "spec", consumers: ["consumer"] }],
+  }));
+
+  const port = built.rfNodes.find(
+    (item) => item.id === templatePortNodeId("spec"),
+  );
+  assert.ok(port, "the port must still render");
+  assert.equal(
+    port?.parentNode,
+    `planspace:${TEMPLATE_LANE}`,
+    "the port belongs to the lane its manifest came from, not the focused one",
+  );
+
+  /* And the consumer edge stays within that lane rather than crossing back. */
+  const edge = built.rfEdges.find(
+    (item) => item.source === templatePortNodeId("spec"),
+  );
+  assert.equal(edge?.target, "consumer");
 }
 
 function testArgumentChipsGrowTheNodeHeight(): void {
@@ -2974,6 +3021,7 @@ function testPortRowDoesNotOverlapContextOrAgentRows(): void {
     nodes: [node("consumer", { planspace_id: TEMPLATE_LANE, created_at: 1 })],
     knownPlanspaceIds: [TEMPLATE_LANE],
     focusedPlanspaceId: TEMPLATE_LANE,
+    executionTargetPlanspaceId: TEMPLATE_LANE,
     templatePorts: [{ name: "spec", consumers: ["consumer"] }],
   }));
   assert.equal(
@@ -3042,7 +3090,8 @@ testUnreferencedPortIsFlagged();
 testPortConsumerOffCanvasDoesNotDangle();
 testPortsFlowIntoLaneSizing();
 testPortsHonourLayoutHints();
-testPortsOnlyRenderInTheActiveLane();
+testPortsOnlyRenderInTheExecutionTargetLane();
+testPortsStayOnTheirSourceLaneWhenFocusMovesAway();
 testArgumentChipsGrowTheNodeHeight();
 testPortRowDoesNotOverlapContextOrAgentRows();
 testPortIdHelpersRoundTrip();

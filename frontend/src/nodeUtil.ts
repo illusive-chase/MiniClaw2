@@ -117,15 +117,27 @@ export function nodeIdsByRecentActivityInLane(
  * ranking.
  *
  * This is how focus finds a home when nothing was remembered: the lane the
- * user last worked in is the best available guess at where they left off. */
+ * user last worked in is the best available guess at where they left off.
+ *
+ * `laneOf` must be the same attribution the canvas draws with — a node that
+ * predates the `planspace_id` column is placed by its launch snapshot or its
+ * parent, and reading only the column here would report those lanes as never
+ * used. A project whose entire history is legacy nodes would then fall
+ * through to "first visible lane" while its real most-recent work sits
+ * somewhere else. Callers pass `resolveNodePlanspaceId` from the canvas
+ * layout; the default is the plain column, for callers that have no node
+ * list to resolve ancestry against.
+ */
 export function lanesByRecentActivity(
   nodes: readonly NodeInfo[],
   laneIds: readonly string[],
+  laneOf: (node: NodeInfo) => string | null = (node) =>
+    node.planspace_id ?? null,
 ): string[] {
   const allowed = new Set(laneIds.filter(Boolean));
   const latest = new Map<string, number>();
   for (const node of nodes) {
-    const laneId = node.planspace_id;
+    const laneId = laneOf(node);
     if (!laneId || !allowed.has(laneId)) continue;
     const at = nodeActivityAt(node);
     if (at > (latest.get(laneId) ?? -Infinity)) latest.set(laneId, at);

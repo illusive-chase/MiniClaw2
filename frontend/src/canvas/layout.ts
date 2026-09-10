@@ -671,12 +671,14 @@ export type BuildGraphArgs = {
   activatablePlanspaceIds: string[];
   /** planspaces hidden by per-project view state */
   hiddenPlanspaceIds: string[];
-  /** The lane the user is looking at: gets the accent border, the header `+`,
-   * and the embedded template session's port row. Purely a view choice. */
+  /** The lane the user is looking at: gets the accent border and the header
+   * `+`. Purely a view choice. */
   focusedPlanspaceId: string | null;
   /** The backend's execution target (`active_planspace_id`), drawn as a
-   * secondary badge only. Keeping it visible while it still gates Promote is
-   * what makes the focus/execution split legible; Phase 3 removes both. */
+   * secondary badge — and the lane the embedded template session's ports are
+   * loaded from, so it is also where they are drawn. Keeping it visible while
+   * it still gates Promote is what makes the focus/execution split legible;
+   * Phase 3 removes the badge. */
   executionTargetPlanspaceId?: string | null;
   /** planspaces configured to auto-promote when active */
   autoPlanspaceIds: string[];
@@ -1153,8 +1155,15 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
   const nodeRelativePositions = new Map<string, { x: number; y: number }>();
   const nodeRenderedHeights = new Map<string, number>();
   const branchSiblingCounts = new Map<string, number>();
+  /* Ports are read off ONE lane's manifest — the backend loads them from
+   * `active_planspace_id` (`contextspace.py`), not from whatever the user is
+   * looking at. Drawing them in the focused lane would put another lane's
+   * port manifest under the wrong header and let a consumer edge run from a
+   * port in lane A to the node in lane B that actually declares it. So the
+   * port row belongs to the execution target, independent of focus. */
+  const portLaneId = executionTargetPlanspaceId;
   const hasTemplatePortRow = (laneId: string): boolean =>
-    templatePorts.length > 0 && laneId === focusedPlanspaceId;
+    templatePorts.length > 0 && laneId === portLaneId;
   const agentRowY = (laneId: string): number =>
     hasTemplatePortRow(laneId)
       ? LANE.templateSessionAgentRowY
@@ -2286,16 +2295,16 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
     });
   }
 
-  /* Input ports of an embedded template session. Emitted into the focused lane
-   * only, and only when the caller supplies ports at all — an ordinary project
-   * passes none, so every rfNode and rfEdge below is skipped and the output is
-   * byte-identical to what it was before this existed.
+  /* Input ports of an embedded template session. Emitted into the lane the
+   * backend loaded them from (the execution target) only, and only when the
+   * caller supplies ports at all — an ordinary project passes none, so every
+   * rfNode and rfEdge below is skipped and the output is byte-identical to
+   * what it was before this existed.
    *
    * The port→node edge is built from the manifest's consumer lists, not from
    * `scheduled_deps`: the backend cannot store an `in:<port>` literal there
    * (it resolves every dep through `load_node`), so the manifest is the only
    * place the edge exists. */
-  const portLaneId = focusedPlanspaceId;
   if (templatePorts.length > 0 && portLaneId && planspaceOrder.includes(portLaneId)) {
     let portCursorX = LANE.planspaceLanePaddingX;
     for (const port of templatePorts) {
@@ -2668,9 +2677,18 @@ export function resolveNodePlanspaceId(
   node: NodeInfo,
   nodes: readonly NodeInfo[],
 ): string | null {
+  return nodeLaneResolver(nodes)(node);
+}
+
+/** The same attribution as `resolveNodePlanspaceId`, with the id index built
+ * once. Use this when attributing a whole node list — the single-node form
+ * rebuilds the index per call, which turns a list-wide pass quadratic. */
+export function nodeLaneResolver(
+  nodes: readonly NodeInfo[],
+): (node: NodeInfo) => string | null {
   const byId = new Map<string, NodeInfo>();
   for (const candidate of nodes) byId.set(candidate.id, candidate);
-  return resolvePlanspaceId(node, byId);
+  return (node: NodeInfo) => resolvePlanspaceId(node, byId);
 }
 
 function resolvePlanspaceId(
