@@ -244,7 +244,6 @@ class CodeReviewVirtualTests(unittest.TestCase):
                 project, title="Work", mode="manual", store_root=store.root
             )
             runtime = registry._runtimes[project.id]
-            runtime.project.active_planspace_id = lane
             store.update_project(runtime.project)
 
             virtual = registry.create_virtual(
@@ -337,6 +336,38 @@ class CodeReviewSchedulerTests(unittest.IsolatedAsyncioTestCase):
 
             assert review is not None
             self.assertIsNone(review.planspace_id)
+
+    async def test_spawn_rejects_a_lane_outside_the_project(self) -> None:
+        """A lane this project cannot reach must not become a review's lane.
+
+        The focused lane can be deleted between the UI request and this
+        call, and an API caller can name another project's lane. Either
+        would file the review under a lane absent from this project's
+        binding, where nothing can manage it.
+        """
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            repo = root / "repo"
+            repo.mkdir()
+            _init_repo(repo)
+            store = Store(root=root / "store")
+            project = Project(root_path=str(repo))
+            store.create_project(project)
+            registry = ProjectRegistry(store=store)
+            create_planspace(
+                project, title="Mine", mode="manual", store_root=store.root
+            )
+            store.update_project(registry._runtimes[project.id].project)
+
+            before = len(store.list_nodes(project.id))
+            with self.assertRaisesRegex(ValueError, "unknown planspace"):
+                await registry.spawn_code_review(
+                    project.id, planspace_id="planspaces.other-project.lane"
+                )
+
+            # The rejection happens before the node is persisted, so no
+            # orphan review is left behind for the caller to clean up.
+            self.assertEqual(len(store.list_nodes(project.id)), before)
 
     async def test_spawn_is_idempotent_while_review_is_in_flight(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

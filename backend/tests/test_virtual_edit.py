@@ -34,7 +34,6 @@ class VirtualEditRegistryTests(unittest.TestCase):
         self.registry = ProjectRegistry(store=self.store)
         self.lane = create_planspace(self.project, title="Work", mode="manual")
         runtime = self.registry._runtimes[self.project.id]
-        runtime.project.active_planspace_id = self.lane
         self.store.update_project(runtime.project)
 
     def tearDown(self) -> None:
@@ -245,6 +244,7 @@ class VirtualEditRegistryTests(unittest.TestCase):
         self.store.create_node(source)
         created = self.registry.create_virtual(
             self.project.id,
+            planspace_id=self.lane,
             prompt_draft="continue",
             resume_from_node_id=source.id,
         )
@@ -341,8 +341,8 @@ class VirtualEditRegistryTests(unittest.TestCase):
     def test_metadata_only_edit_allows_blank_regular_virtual(self) -> None:
         node = self.registry.create_virtual(
             self.project.id,
-            prompt_draft="",
             planspace_id=self.lane,
+            prompt_draft="",
         )
         assert node is not None
 
@@ -358,10 +358,10 @@ class VirtualEditRegistryTests(unittest.TestCase):
     def test_code_review_to_regular_rejects_empty_prompt_immediately(self) -> None:
         node = self.registry.create_virtual(
             self.project.id,
+            planspace_id=self.lane,
             prompt_draft="",
             category=Category.REVIEW,
             subtype=ReviewSubtype.CODE_REVIEW,
-            planspace_id=self.lane,
         )
         assert node is not None
 
@@ -375,10 +375,10 @@ class VirtualEditRegistryTests(unittest.TestCase):
     def test_switching_away_from_code_review_discards_default_target(self) -> None:
         node = self.registry.create_virtual(
             self.project.id,
+            planspace_id=self.lane,
             prompt_draft="review this",
             category=Category.REVIEW,
             subtype=ReviewSubtype.CODE_REVIEW,
-            planspace_id=self.lane,
         )
         assert node is not None and node.review_target is not None
 
@@ -400,10 +400,10 @@ class VirtualEditRegistryTests(unittest.TestCase):
     def test_non_code_review_rejects_explicit_non_null_target(self) -> None:
         node = self.registry.create_virtual(
             self.project.id,
+            planspace_id=self.lane,
             prompt_draft="review this",
             category=Category.REVIEW,
             subtype=ReviewSubtype.CODE_REVIEW,
-            planspace_id=self.lane,
         )
         assert node is not None
 
@@ -547,11 +547,12 @@ class VirtualEditRegistryTests(unittest.TestCase):
 
         self.assertIsNone(updated)
 
-    def test_create_virtual_uses_active_lane_and_writes_preview(self) -> None:
+    def test_create_virtual_uses_the_named_lane_and_writes_preview(self) -> None:
         parent = self._virtual("parent")
 
         created = self.registry.create_virtual(
             self.project.id,
+            planspace_id=self.lane,
             prompt_draft="new planned work",
             motivation="user wants this",
             scheduled_deps=[parent.id],
@@ -578,6 +579,7 @@ class VirtualEditRegistryTests(unittest.TestCase):
     def test_create_virtual_can_select_model_preset(self) -> None:
         created = self.registry.create_virtual(
             self.project.id,
+            planspace_id=self.lane,
             prompt_draft="claude planned work",
             model_preset_id="opus-4-7",
         )
@@ -591,6 +593,7 @@ class VirtualEditRegistryTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "compatibility-only"):
             self.registry.create_virtual(
                 self.project.id,
+                planspace_id=self.lane,
                 prompt_draft="old preset",
                 model_preset_id="gpt-5.5",
             )
@@ -599,6 +602,7 @@ class VirtualEditRegistryTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "does not resolve"):
             self.registry.create_virtual(
                 self.project.id,
+                planspace_id=self.lane,
                 prompt_draft="new planned work",
                 scheduled_deps=["missing"],
             )
@@ -616,6 +620,7 @@ class VirtualEditRegistryTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "outside this lane"):
             self.registry.create_virtual(
                 self.project.id,
+                planspace_id=self.lane,
                 prompt_draft="new planned work",
                 scheduled_deps=[parent.id],
             )
@@ -629,6 +634,7 @@ class VirtualEditRegistryTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "must not include"):
             self.registry.create_virtual(
                 self.project.id,
+                planspace_id=self.lane,
                 node_id="new-node",
                 prompt_draft="new planned work",
                 scheduled_deps=["new-node"],
@@ -642,6 +648,7 @@ class VirtualEditRegistryTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "cycle"):
             self.registry.create_virtual(
                 self.project.id,
+                planspace_id=self.lane,
                 node_id="new-node",
                 prompt_draft="new planned work",
                 scheduled_deps=[parent.id],
@@ -652,6 +659,7 @@ class VirtualEditRegistryTests(unittest.TestCase):
     def test_create_virtual_allows_empty_draft_but_does_not_promote_it(self) -> None:
         created = self.registry.create_virtual(
             self.project.id,
+            planspace_id=self.lane,
             prompt_draft="",
         )
 
@@ -676,6 +684,7 @@ class VirtualEditRegistryTests(unittest.TestCase):
 
         created = self.registry.create_virtual(
             self.project.id,
+            planspace_id=self.lane,
             prompt_draft="continue",
             resume_from_node_id=source.id,
         )
@@ -703,6 +712,7 @@ class VirtualEditRegistryTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "inherit model_preset_id"):
             self.registry.create_virtual(
                 self.project.id,
+                planspace_id=self.lane,
                 prompt_draft="continue",
                 resume_from_node_id=source.id,
                 model_preset_id="opus-4-7",
@@ -724,6 +734,7 @@ class VirtualEditRegistryTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "not resumable"):
             self.registry.create_virtual(
                 self.project.id,
+                planspace_id=self.lane,
                 prompt_draft="continue",
                 resume_from_node_id=source.id,
             )

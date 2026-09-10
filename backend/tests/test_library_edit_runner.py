@@ -144,7 +144,6 @@ class LibraryEditRunnerTests(unittest.IsolatedAsyncioTestCase):
             title="library-lane",
             mode="manual",
         )
-        self.project.active_planspace_id = self.plug_id
         self.store.update_project(self.project)
         self.context_root = contextspace_root(self.store_root)
 

@@ -52,16 +52,15 @@ function node(overrides: Partial<NodeInfo> & { id: string }): NodeInfo {
   } as NodeInfo;
 }
 
-/* The four-step ladder is the whole contract of this module, and step 2 is
- * scaffolding: Phase 3 deletes `active`, so every step below it has to be a
- * correct standalone answer today, not a placeholder. */
+/* The three-step ladder is the whole contract of this module: an explicit
+ * past choice, then where work most recently ran, then the first lane there
+ * is. Nothing here consults the backend. */
 function testResolutionPrefersTheMostDeliberateSignal(): void {
   const visible = ["lane.a", "lane.b", "lane.c"];
 
   assert.equal(
     resolveFocusedLane({
       stored: "lane.c",
-      active: "lane.a",
       visible,
       recentlyActive: ["lane.b"],
     }),
@@ -72,29 +71,16 @@ function testResolutionPrefersTheMostDeliberateSignal(): void {
   assert.equal(
     resolveFocusedLane({
       stored: null,
-      active: "lane.a",
-      visible,
-      recentlyActive: ["lane.b"],
-    }),
-    "lane.a",
-    "the backend's execution target is the compatibility fallback",
-  );
-
-  assert.equal(
-    resolveFocusedLane({
-      stored: null,
-      active: null,
       visible,
       recentlyActive: ["lane.b", "lane.c"],
     }),
     "lane.b",
-    "recency is what remains once the active field is gone",
+    "recency decides when the user has made no explicit choice",
   );
 
   assert.equal(
     resolveFocusedLane({
       stored: null,
-      active: null,
       visible,
       recentlyActive: [],
     }),
@@ -105,7 +91,6 @@ function testResolutionPrefersTheMostDeliberateSignal(): void {
   assert.equal(
     resolveFocusedLane({
       stored: "lane.a",
-      active: "lane.b",
       visible: [],
       recentlyActive: ["lane.c"],
     }),
@@ -121,7 +106,6 @@ function testResolutionSkipsLanesThatCannotBeSeen(): void {
   assert.equal(
     resolveFocusedLane({
       stored: "lane.deleted",
-      active: null,
       visible: ["lane.a"],
       recentlyActive: [],
     }),
@@ -132,18 +116,16 @@ function testResolutionSkipsLanesThatCannotBeSeen(): void {
   assert.equal(
     resolveFocusedLane({
       stored: "lane.hidden",
-      active: "lane.hidden",
       visible: ["lane.a", "lane.b"],
       recentlyActive: ["lane.b"],
     }),
     "lane.b",
-    "hidden lanes are absent from `visible`, so both top steps fall through",
+    "a hidden lane is absent from `visible`, so the stored step falls through",
   );
 
   assert.equal(
     resolveFocusedLane({
       stored: null,
-      active: null,
       visible: ["lane.a"],
       recentlyActive: ["lane.gone", "lane.a"],
     }),
@@ -217,11 +199,10 @@ function testStorageFailuresAreContained(): void {
   assert.doesNotThrow(() => writeFocusedLanes({ "proj-a": "lane.one" }));
 
   /* And resolution still works with no storage at all — it just starts at
-   * the `active`/recency steps instead. */
+   * the recency step instead. */
   assert.equal(
     resolveFocusedLane({
       stored: readFocusedLane("proj-a"),
-      active: null,
       visible: ["lane.a", "lane.b"],
       recentlyActive: ["lane.b"],
     }),
@@ -261,8 +242,8 @@ function testLaneRecencyRanksByNewestNode(): void {
  * `planspace_id` column is placed by its launch snapshot or by its parent, and
  * ranking that reads only the column reports those lanes as never used.
  *
- * The consequence is not cosmetic: with no stored focus and no active lane, a
- * project whose recent work is all legacy nodes would rank every lane as
+ * The consequence is not cosmetic: with no stored focus, a project whose
+ * recent work is all legacy nodes would rank every lane as
  * unused, fall through to "first visible lane", and persist that — sending the
  * user somewhere other than where they last worked, permanently. */
 function testLaneRecencyUsesTheCanvasLaneAttribution(): void {
@@ -309,7 +290,6 @@ function testReturningToAProjectRestoresItsLane(): void {
   assert.equal(
     resolveFocusedLane({
       stored: readFocusedLane("proj"),
-      active: null,
       visible,
       recentlyActive: lanesByRecentActivity(nodes, visible),
     }),
@@ -322,7 +302,6 @@ function testReturningToAProjectRestoresItsLane(): void {
   assert.equal(
     resolveFocusedLane({
       stored: readFocusedLane("proj"),
-      active: null,
       visible: ["lane.b"],
       recentlyActive: lanesByRecentActivity(nodes, ["lane.b"]),
     }),

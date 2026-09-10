@@ -177,7 +177,6 @@ class RunnerPreviewRepairTests(unittest.IsolatedAsyncioTestCase):
         self.plug_id = create_planspace(
             self.project, title="repair-lane", mode="manual"
         )
-        self.project.active_planspace_id = self.plug_id
         self.store.update_project(self.project)
 
     async def asyncTearDown(self) -> None:
@@ -247,7 +246,6 @@ class RunnerPreviewRepairTests(unittest.IsolatedAsyncioTestCase):
         other_planspace_id = create_planspace(
             self.project, title="other-lane", mode="manual"
         )
-        self.project.active_planspace_id = other_planspace_id
         runner = NodeRunner(node, self.project, self.store, lambda _event: None)
 
         context_bundle = runner._snapshot_context_bundle()
@@ -379,7 +377,7 @@ class RunnerPreviewRepairTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(provider.prompts, [])
         self.assertEqual(node.state, NodeState.ERROR)
         self.assertIn("Stale launch settings", node.error or "")
-        self.assertIn("active_planspace_id", node.error or "")
+        self.assertIn("planspaces.deleted", node.error or "")
         preview = self.store.read_node_preview(self.project.id, node.id)
         self.assertIsNotNone(preview)
         assert preview is not None
@@ -388,7 +386,7 @@ class RunnerPreviewRepairTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(
             any(
                 ev.get("type") == "error"
-                and "active_planspace_id" in ev.get("message", "")
+                and "planspaces.deleted" in ev.get("message", "")
                 for ev in emitted
             )
         )
@@ -401,7 +399,6 @@ class RunnerPreviewRepairTests(unittest.IsolatedAsyncioTestCase):
         current_planspace_id = create_planspace(
             self.project, title="current-lane", mode="manual"
         )
-        self.project.active_planspace_id = current_planspace_id
         self.store.update_project(self.project)
 
         binding = resolve_project_binding(

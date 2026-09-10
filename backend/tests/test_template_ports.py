@@ -31,7 +31,6 @@ def _project_with_lane(registry: ProjectRegistry):
         title="ports-lane",
         store_root=registry.store.root,
     )
-    project.active_planspace_id = lane
     registry.store.update_project(project)
     return project, lane
 

@@ -36,7 +36,7 @@ from .contextspace import (
     StaleLaunchSettingsError,
     compose_context_bundle,
     contextspace_root,
-    require_resolvable_active_planspace,
+    require_resolvable_planspace,
 )
 from .domain import (
     COLD_START_AGENT_OP_KIND,
@@ -1532,11 +1532,9 @@ class NodeRunner:
         self.store.update_node(self.node)
 
     def _validate_launch_settings(self) -> None:
-        launch_project = self.project.model_copy(
-            update={"active_planspace_id": self.node.planspace_id}
-        )
-        require_resolvable_active_planspace(
-            launch_project,
+        require_resolvable_planspace(
+            self.project,
+            self.node.planspace_id,
             store_root=self.store.root,
         )
 

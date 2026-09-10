@@ -4,11 +4,12 @@
  * which lane the canvas draws as current, and which lane a double-click
  * creates into — and nothing else. The backend never sees it.
  *
- * It exists because `active_planspace_id` was doing this job while also
+ * It exists because a single backend field was doing this job while also
  * gating Promote and arming auto lanes. Those are execution concerns that
  * happen to need a lane; this one is purely "what am I looking at". Splitting
  * them lets focus follow the user's clicks freely, which a field the backend
- * reads for scheduling could never safely do.
+ * read for scheduling could never safely do. Execution now reads each node's
+ * own lane, and that field is gone.
  *
  * Same read/write shape as `projectSort.ts` and `libraryTreeState.ts`: total
  * functions that fall back rather than throw, because localStorage can be
@@ -83,10 +84,6 @@ export function writeFocusedLane(
 export type FocusedLaneResolution = {
   /** What localStorage remembered for this project, if anything. */
   stored: string | null;
-  /** `active_planspace_id` from the contextspace. A compatibility input only:
-   * Phase 3 deletes the field, and this argument goes with it. Everything
-   * below it must therefore already be a correct standalone answer. */
-  active: string | null;
   /** Lanes that exist and are not hidden. The only lanes focus may land on:
    * a hidden lane draws no nodes, so focusing it would put the `+` and the
    * double-click target somewhere the user cannot see. */
@@ -97,19 +94,14 @@ export type FocusedLaneResolution = {
 };
 
 /** Pick the lane to focus, in descending order of how much it reflects an
- * actual choice by the user.
- *
- * The `active` step is scaffolding: while the backend field still exists it
- * keeps a returning user on the lane they last executed in. Every step after
- * it must stand on its own, because Phase 3 removes that step and what is
- * left here becomes the whole answer.
+ * actual choice by the user: what they last looked at, then where work most
+ * recently ran, then the first lane there is.
  */
 export function resolveFocusedLane(args: FocusedLaneResolution): string | null {
   const visible = new Set(args.visible.filter(Boolean));
   if (visible.size === 0) return null;
 
   if (args.stored && visible.has(args.stored)) return args.stored;
-  if (args.active && visible.has(args.active)) return args.active;
 
   for (const laneId of args.recentlyActive) {
     if (visible.has(laneId)) return laneId;

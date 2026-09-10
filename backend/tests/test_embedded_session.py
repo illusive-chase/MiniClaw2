@@ -550,7 +550,7 @@ class EmbeddedSessionRoundTripTests(unittest.TestCase):
         """The lane comes from the session's own binding, not a cursor.
 
         Dropping the plug is what "no direction" now means; clearing
-        ``active_planspace_id`` no longer has any bearing on the save path.
+        a project-level cursor no longer has any bearing on the save path.
         """
         with tempfile.TemporaryDirectory() as tmp:
             registry = ProjectRegistry(store=Store(root=Path(tmp)))

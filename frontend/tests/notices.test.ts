@@ -51,7 +51,6 @@ function entry(
     op_kind: opts.op_kind ?? null,
     planspace_id: null,
     planspace_title: null,
-    is_active_planspace: false,
     label: "",
     started_at: 0,
     finished_at: null,

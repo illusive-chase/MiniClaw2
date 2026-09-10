@@ -94,9 +94,9 @@ not what it currently supports. Read the code for behavior.
 - **ContextSpace** — user-wide reusable context (global, principles,
   planspace manifests) plus the native skill library, connected to projects
   through editable bindings and snapshotted per launch for audit.
-- **Graph projection** — each launch materializes the active planspace as a
-  real filesystem subtree the agent reads and writes; reap validates what
-  came back and folds it into durable state.
+- **Graph projection** — each launch materializes the launching node's own
+  planspace as a real filesystem subtree the agent reads and writes; reap
+  validates what came back and folds it into durable state.
 - **Templates** — capture a subgraph, declare its arguments and input
   ports, stamp it into a planspace. Bundled templates are the test
   catalogue; user templates live in ContextSpace.

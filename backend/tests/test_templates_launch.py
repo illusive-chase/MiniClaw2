@@ -4,6 +4,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from miniclaw2.contextspace import (
+    contextspace_root,
+    list_project_planspace_ids,
+)
 from miniclaw2.registry import ProjectRegistry
 from miniclaw2.templates import TemplateError, launch_template
 from miniclaw2.store import Store
@@ -27,17 +31,19 @@ class LaunchTemplateTest(unittest.TestCase):
                     project.settings_override.get("permission_mode"),
                     "bypassPermissions",
                 )
-                self.assertTrue(project.active_planspace_id)
+                # A launched template owns exactly one lane, and every stamped node
+                # belongs to it. There is no project cursor to point at it.
+                lanes = list_project_planspace_ids(
+                    project, contextspace_root(store.root)
+                )
+                self.assertEqual(len(lanes), 1, lanes)
 
                 nodes = store.list_nodes(project.id)
                 self.assertEqual(len(nodes), 3)
                 first = nodes[0]
                 self.assertEqual(first.kind, "agent")
                 self.assertEqual(first.state, "virtual")
-                self.assertEqual(
-                    first.planspace_id,
-                    project.active_planspace_id,
-                )
+                self.assertEqual(first.planspace_id, lanes[0])
                 self.assertIn("[OK]", first.prompt_draft or "")
                 self.assertIsNotNone(store.read_node_preview(project.id, first.id))
                 self.assertEqual(nodes[1].kind, "verifier")

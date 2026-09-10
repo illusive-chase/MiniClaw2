@@ -93,7 +93,6 @@ class RunnerGateTimeoutTests(unittest.IsolatedAsyncioTestCase):
         self.plug_id = create_planspace(
             self.project, title="gate-lane", mode="manual"
         )
-        self.project.active_planspace_id = self.plug_id
         self.store.update_project(self.project)
 
     async def asyncTearDown(self) -> None:

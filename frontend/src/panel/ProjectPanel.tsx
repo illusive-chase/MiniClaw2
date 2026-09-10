@@ -39,7 +39,6 @@ export type ProjectPanelProps = {
   contextSpaceError: string | null;
   settingsSaving: boolean;
   settingsError: string | null;
-  onActivatePlanspace: (binding_id: string, planspace_id: string) => void;
   onSelectContextBinding: (binding_id: string) => void;
   onPreferredLanguageChange: (preferredLanguage: string | null) => void;
   onConcurrencyChange: (concurrency: number) => void;
@@ -75,7 +74,6 @@ export function ProjectPanel({
   contextSpaceError,
   settingsSaving,
   settingsError,
-  onActivatePlanspace,
   onSelectContextBinding,
   onPreferredLanguageChange,
   onConcurrencyChange,
@@ -517,10 +515,8 @@ export function ProjectPanel({
               {directions.map((item) => (
                 <li key={item.plug.id}>
                   <DirectionRow
-                    binding={item.binding}
                     plug={item.plug}
                     saving={busy}
-                    onActivatePlanspace={onActivatePlanspace}
                     onTogglePlanspaceVisibility={onTogglePlanspaceVisibility}
                     onDeletePlanspace={onDeletePlanspace}
                   />
@@ -572,17 +568,13 @@ export function ProjectPanel({
 }
 
 function DirectionRow({
-  binding,
   plug,
   saving,
-  onActivatePlanspace,
   onTogglePlanspaceVisibility,
   onDeletePlanspace,
 }: {
-  binding: ContextSpaceBindingSummary;
   plug: ContextSpacePlugSummary;
   saving: boolean;
-  onActivatePlanspace: (binding_id: string, planspace_id: string) => void;
   onTogglePlanspaceVisibility: (planspaceId: string, hidden: boolean) => void;
   onDeletePlanspace: (planspaceId: string) => Promise<void>;
 }) {
@@ -590,12 +582,6 @@ function DirectionRow({
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
-
-  /* The active lane is rejected by the backend, so the control explains the
-   * prerequisite instead of offering a call that is certain to fail. */
-  const blockedReason = plug.active
-    ? "当前方向正在使用中，请先激活其他方向再删除。"
-    : null;
 
   const runDelete = async () => {
     setDeleting(true);
@@ -611,21 +597,9 @@ function DirectionRow({
   };
 
   return (
-    <div
-      className={
-        "rounded-md border px-3 py-2 text-[12px] transition " +
-        (plug.active
-          ? "border-brand bg-brand-soft text-brand-ink"
-          : "border-line bg-surface-raised text-ink")
-      }
-    >
+    <div className="rounded-md border border-line bg-surface-raised px-3 py-2 text-[12px] text-ink">
       <div className="flex items-center gap-2">
-        <button
-          type="button"
-          disabled={saving}
-          onClick={() => onActivatePlanspace(binding.id, plug.id)}
-          className="flex min-w-0 flex-1 items-center gap-2 text-left disabled:opacity-50"
-        >
+        <div className="flex min-w-0 flex-1 items-center gap-2 text-left">
           <span
             className="h-2.5 w-2.5 flex-none rounded-full border border-line"
             style={{ background: colorSwatch(plug) }}
@@ -636,11 +610,10 @@ function DirectionRow({
             <span className="mt-0.5 block truncate font-mono text-[10.5px] text-ink-muted">
               {plug.slug}
               {plug.mode ? ` · ${plug.mode}` : ""}
-              {plug.active ? " · active" : ""}
               {hidden ? " · hidden" : ""}
             </span>
           </span>
-        </button>
+        </div>
         <button
           type="button"
           disabled={saving}
@@ -651,8 +624,8 @@ function DirectionRow({
         </button>
         <button
           type="button"
-          disabled={saving || deleting || !!blockedReason}
-          title={blockedReason ?? "删除此方向及其全部节点"}
+          disabled={saving || deleting}
+          title="删除此方向及其全部节点"
           onClick={() => {
             setDeleteError(null);
             setConfirmOpen((open) => !open);

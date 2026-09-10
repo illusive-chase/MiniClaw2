@@ -12,9 +12,11 @@ import yaml
 
 from miniclaw2.contextspace import (
     add_planspace_to_binding,
+    contextspace_root,
     create_planspace,
     describe_project_contextspace,
     ensure_project_binding,
+    list_project_planspace_ids,
     read_planspace_mode,
     resolve_project_binding,
     set_planspace_mode,
@@ -164,19 +166,20 @@ class ReadPlanspaceModeTests(unittest.TestCase):
         plug_id = create_planspace(
             self.project, title="Auto lane", mode="auto"
         )
-        self.project.active_planspace_id = plug_id
 
         summary = describe_project_contextspace(self.project)
 
-        self.assertEqual(summary["active_planspace_id"], plug_id)
         self.assertEqual(len(summary["bindings"]), 1)
         binding = summary["bindings"][0]
-        self.assertEqual(binding["active_planspace_id"], plug_id)
         plugs = {plug["id"]: plug for plug in binding["plugs"]}
         self.assertIn(plug_id, plugs)
         self.assertEqual(plugs[plug_id]["slug"], "auto-lane")
         self.assertEqual(plugs[plug_id]["mode"], "auto")
-        self.assertTrue(plugs[plug_id]["active"])
+        # No lane is privileged in the summary any more: the client decides
+        # which one it is looking at.
+        self.assertNotIn("active", plugs[plug_id])
+        self.assertNotIn("active_planspace_id", summary)
+        self.assertNotIn("active_planspace_id", binding)
 
     def test_describe_project_contextspace_only_returns_current_project_binding(self) -> None:
         other = Project(
@@ -311,12 +314,14 @@ class BlankPlanspaceRegistryTests(unittest.TestCase):
                 mode="manual",
             )
 
-    def test_create_blank_planspace_while_running_does_not_move_the_cursor(self) -> None:
-        """Creating a lane never moves the execution cursor, busy or idle.
+    def test_create_blank_planspace_while_running_creates_an_independent_lane(
+        self,
+    ) -> None:
+        """Creating a lane works the same whether the project is busy or idle.
 
         Before the focus refactor, an idle project would activate the new lane
-        and a busy one would not. Creation is now cursor-neutral in both
-        cases: the client focuses the returned lane locally.
+        and a busy one would defer. Creation now just makes a lane and hands
+        it back; the client focuses it locally, and nothing global moves.
         """
         first = self.registry.create_blank_planspace(
             self.project.id,
@@ -342,41 +347,14 @@ class BlankPlanspaceRegistryTests(unittest.TestCase):
         assert result is not None
         self.assertEqual(result.node.state, NodeState.VIRTUAL)
         self.assertNotEqual(result.node.planspace_id, old_lane)
-        project = self.registry.get_project(self.project.id)
-        assert project is not None
-        self.assertEqual(project.active_planspace_id, old_lane)
-
-    def test_creation_preserves_implicit_single_active_lane(self) -> None:
-        """An implicit single-lane selection is made durable before a 2nd lane.
-
-        While ``active_planspace_id`` still exists on the model, adding a lane
-        must not change which lane an existing project resolves to.
-        """
-        first = self.registry.create_blank_planspace(
-            self.project.id,
-            title="Implicit",
-            seed="Implicit work",
-            mode="manual",
+        # The earlier lane is untouched: both exist, and neither is privileged.
+        lane_ids = list_project_planspace_ids(
+            self.project, contextspace_root(self.store.root)
         )
-        assert first is not None
-        old_lane = first.node.planspace_id
-        self.project.active_planspace_id = None
-        self.project.planspace_selection_explicit = False
-        self.store.update_project(self.project)
+        self.assertIn(old_lane, lane_ids)
+        self.assertIn(result.node.planspace_id, lane_ids)
 
-        result = self.registry.create_blank_planspace(
-            self.project.id,
-            title="Second",
-            seed="Second work",
-            mode="manual",
-        )
-
-        assert result is not None
-        project = self.registry.get_project(self.project.id)
-        assert project is not None
-        self.assertEqual(project.active_planspace_id, old_lane)
-
-    def test_first_blank_lane_does_not_become_the_cursor(self) -> None:
+    def test_creating_a_lane_persists_the_binding(self) -> None:
         result = self.registry.create_blank_planspace(
             self.project.id,
             title="Queued first lane",
@@ -387,7 +365,6 @@ class BlankPlanspaceRegistryTests(unittest.TestCase):
         assert result is not None
         project = self.registry.get_project(self.project.id)
         assert project is not None
-        self.assertIsNone(project.active_planspace_id)
         persisted = {
             item.id: item for item in Store(root=self.store.root).list_projects()
         }[self.project.id]
@@ -396,30 +373,6 @@ class BlankPlanspaceRegistryTests(unittest.TestCase):
             project.project_context_binding_id,
         )
         self.assertIsNotNone(persisted.project_context_binding_id)
-
-    def test_changing_the_cursor_no_longer_triggers_auto_promotion(self) -> None:
-        """Auto lanes advance on their own, not because the cursor moved.
-
-        The cursor is a view concept now; coupling execution to it is exactly
-        what the focus refactor removes.
-        """
-        result = self.registry.create_blank_planspace(
-            self.project.id,
-            title="Auto",
-            seed="Auto work",
-            mode="auto",
-        )
-        assert result is not None
-
-        with patch.object(
-            self.registry, "_auto_promote_eligible_virtuals"
-        ) as promote:
-            self.registry.update_project_context(
-                self.project.id,
-                active_planspace_id=result.node.planspace_id,
-            )
-
-        promote.assert_not_called()
 
 
 class _PendingTask:

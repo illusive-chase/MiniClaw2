@@ -46,7 +46,6 @@ function entry(
     category: "regular",
     planspace_id: null,
     planspace_title: null,
-    is_active_planspace: false,
     label: "",
     started_at: opts.started_at ?? 0,
     finished_at: opts.finished_at ?? null,

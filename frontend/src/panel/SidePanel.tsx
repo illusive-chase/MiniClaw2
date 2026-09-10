@@ -78,10 +78,6 @@ export type SidePanelProps = {
   onSessionChange: (session: SessionInfo) => void;
   onPreferredLanguageChange: (preferredLanguage: string | null) => void;
   onConcurrencyChange: (concurrency: number) => void;
-  /* Still needed while `delete_planspace` refuses to delete the cursor lane:
-   * the user has to be able to move the cursor off a lane to remove it.
-   * Phase 3 drops the guard and this prop together. */
-  onActivatePlanspace: (binding_id: string, planspace_id: string) => void;
   onSelectContextBinding: (binding_id: string) => void;
   onStartBlankDirection: (
     userSeed: string,
@@ -198,7 +194,6 @@ function Inner(props: SidePanelProps & { nodesById: Map<string, NodeInfo> }) {
     onSessionChange,
     onPreferredLanguageChange,
     onConcurrencyChange,
-    onActivatePlanspace,
     onSelectContextBinding,
     onStartBlankDirection,
     onImportSkill,
@@ -253,7 +248,6 @@ function Inner(props: SidePanelProps & { nodesById: Map<string, NodeInfo> }) {
         onSelectContextBinding={onSelectContextBinding}
         onPreferredLanguageChange={onPreferredLanguageChange}
         onConcurrencyChange={onConcurrencyChange}
-        onActivatePlanspace={onActivatePlanspace}
         onStartBlankDirection={onStartBlankDirection}
         onImportSkill={onImportSkill}
         onContextInit={onContextInit}

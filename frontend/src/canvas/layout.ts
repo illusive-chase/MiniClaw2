@@ -142,11 +142,6 @@ export type PlanspaceLaneData = {
   /** The lane the user is looking at: accent border, header `+`, create
    * target. One lane at most carries this. */
   focused: boolean;
-  /** The lane the backend will actually execute in (`active_planspace_id`).
-   * Drawn as a quiet badge, deliberately separate from `focused` so a
-   * mismatch between the two is visible rather than silent. Phase 2 makes
-   * every manual lane executable and Phase 3 deletes this. */
-  executionTarget: boolean;
   auto: boolean;
   canCreateVirtual: boolean;
 };
@@ -671,12 +666,11 @@ export type BuildGraphArgs = {
   /** The lane the user is looking at: gets the accent border and the header
    * `+`. Purely a view choice. */
   focusedPlanspaceId: string | null;
-  /** The backend's execution target (`active_planspace_id`), drawn as a
-   * secondary badge — and the lane the embedded template session's ports are
-   * loaded from, so it is also where they are drawn. Keeping it visible while
-   * it still gates Promote is what makes the focus/execution split legible;
-   * Phase 3 removes the badge. */
-  executionTargetPlanspaceId?: string | null;
+  /** The lane whose manifest supplied `templatePorts`, and therefore the only
+   * lane they may be drawn in. Set only for an embedded template session,
+   * which owns exactly one lane; every other project supplies no ports and
+   * leaves this null. */
+  templatePortLaneId?: string | null;
   /** planspaces configured to auto-promote when active */
   autoPlanspaceIds: string[];
   /** true when the focused lane's virtual create button should be enabled */
@@ -1051,7 +1045,7 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
     knownPlanspaceIds,
     hiddenPlanspaceIds,
     focusedPlanspaceId,
-    executionTargetPlanspaceId = null,
+    templatePortLaneId = null,
     autoPlanspaceIds,
     canCreateVirtual,
     templateInstances: templateInstanceRecords = [],
@@ -1151,13 +1145,12 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
   const nodeRelativePositions = new Map<string, { x: number; y: number }>();
   const nodeRenderedHeights = new Map<string, number>();
   const branchSiblingCounts = new Map<string, number>();
-  /* Ports are read off ONE lane's manifest — the backend loads them from
-   * `active_planspace_id` (`contextspace.py`), not from whatever the user is
-   * looking at. Drawing them in the focused lane would put another lane's
+  /* Ports are read off ONE lane's manifest, the lane the backend loaded them
+   * from. Drawing them in the focused lane instead would put another lane's
    * port manifest under the wrong header and let a consumer edge run from a
    * port in lane A to the node in lane B that actually declares it. So the
-   * port row belongs to the execution target, independent of focus. */
-  const portLaneId = executionTargetPlanspaceId;
+   * port row stays with its own lane, independent of focus. */
+  const portLaneId = templatePortLaneId;
   const hasTemplatePortRow = (laneId: string): boolean =>
     templatePorts.length > 0 && laneId === portLaneId;
   const agentRowY = (laneId: string): number =>
@@ -2292,10 +2285,10 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
   }
 
   /* Input ports of an embedded template session. Emitted into the lane the
-   * backend loaded them from (the execution target) only, and only when the
-   * caller supplies ports at all — an ordinary project passes none, so every
-   * rfNode and rfEdge below is skipped and the output is byte-identical to
-   * what it was before this existed.
+   * backend loaded them from only, and only when the caller supplies ports at
+   * all — an ordinary project passes none, so every rfNode and rfEdge below is
+   * skipped and the output is byte-identical to what it was before this
+   * existed.
    *
    * The port→node edge is built from the manifest's consumer lists, not from
    * `scheduled_deps`: the backend cannot store an `in:<port>` literal there
@@ -2407,7 +2400,6 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
         height,
         color,
         focused: planspaceId === focusedPlanspaceId,
-        executionTarget: planspaceId === executionTargetPlanspaceId,
         auto: autoPlanspaceIds.includes(planspaceId),
         canCreateVirtual,
       },
@@ -2660,9 +2652,10 @@ function collectPlanspaceOrder(
  * `planspace_id` column.
  *
  * Three sources, in descending order of reliability: the column itself; the
- * lane stamped into the launch snapshot (a historical on-disk key — see
- * `runner.py`, which still writes it under the old `active_planspace_id`
- * name); and failing both, the lane of whatever the node was spawned from.
+ * lane stamped into the launch snapshot (a frozen on-disk key — `runner.py`
+ * writes the node's own lane under the name `active_planspace_id`, which
+ * outlived the project cursor it was named for); and failing both, the lane
+ * of whatever the node was spawned from.
  *
  * Exported because lane attribution must have exactly one implementation.
  * The canvas uses it to decide which swimlane draws a node, and focus uses

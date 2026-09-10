@@ -392,7 +392,6 @@ export async function updateSessionContextSpace(
   sessionId: string,
   body: {
     project_context_binding_id?: string | null;
-    active_planspace_id?: string | null;
   },
 ): Promise<SessionContextSpaceInfo> {
   const res = await fetch(`/sessions/${sessionId}/contextspace`, {

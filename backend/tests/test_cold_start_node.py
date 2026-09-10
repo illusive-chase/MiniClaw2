@@ -186,7 +186,6 @@ class ColdStartRunnerTests(unittest.IsolatedAsyncioTestCase):
         self.lane_id = create_planspace(
             self.project, title="cold-lane", mode="manual"
         )
-        self.project.active_planspace_id = self.lane_id
         self.store.update_project(self.project)
         self.context_root = contextspace_root(self.store_root)
 
@@ -397,6 +396,18 @@ class ColdStartApiTests(unittest.TestCase):
         )
         self.assertEqual(launched.status_code, 200, launched.text)
         self.sid = launched.json()["id"]
+        # Creation names its target lane; there is no project cursor to fall
+        # back on. A real client reads the lane from the same describe call.
+        contextspace = self.client.get(f"/sessions/{self.sid}/contextspace")
+        self.assertEqual(contextspace.status_code, 200, contextspace.text)
+        lanes = [
+            plug["id"]
+            for binding in contextspace.json()["bindings"]
+            for plug in binding["plugs"]
+            if plug["kind"] == "planspace"
+        ]
+        self.assertEqual(len(lanes), 1, lanes)
+        self.lane = lanes[0]
 
     def tearDown(self) -> None:
         self.client.close()
@@ -408,6 +419,7 @@ class ColdStartApiTests(unittest.TestCase):
             "prompt_draft": "Investigate with no framework context.",
             "category": "regular",
             "agent_op_kind": COLD_START_AGENT_OP_KIND,
+            "planspace_id": self.lane,
         }
         payload.update(extra)
         return self.client.post(f"/sessions/{self.sid}/virtuals", json=payload)

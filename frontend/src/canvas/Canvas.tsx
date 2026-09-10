@@ -183,10 +183,10 @@ export type CanvasProps = {
    * the double-click create target and the vertical jump controls. View
    * state only — the backend never sees it. */
   focusedPlanspaceId: string | null;
-  /** The backend's `active_planspace_id`, shown as a secondary badge so the
-   * gap between "what I am looking at" and "what can actually run" stays
-   * visible until Phase 2 closes it. Removed with the field in Phase 3. */
-  executionTargetPlanspaceId?: string | null;
+  /** The lane an embedded template session's ports were loaded from, and so
+   * the only lane they may be drawn in. Null for every ordinary project,
+   * which supplies no ports. */
+  templatePortLaneId?: string | null;
   autoPlanspaceIds: string[];
   canCreateVirtual: boolean;
   /** Stamped instance records, for the group header's name and arguments. */
@@ -299,7 +299,7 @@ function CanvasInner({
   knownPlanspaceIds,
   hiddenPlanspaceIds,
   focusedPlanspaceId,
-  executionTargetPlanspaceId = null,
+  templatePortLaneId = null,
   autoPlanspaceIds,
   canCreateVirtual,
   templateInstances,
@@ -439,7 +439,7 @@ function CanvasInner({
         knownPlanspaceIds,
               hiddenPlanspaceIds,
         focusedPlanspaceId,
-        executionTargetPlanspaceId,
+        templatePortLaneId,
         autoPlanspaceIds,
         canCreateVirtual,
         templateInstances,
@@ -460,7 +460,7 @@ function CanvasInner({
       knownPlanspaceIds,
           hiddenPlanspaceIds,
       focusedPlanspaceId,
-      executionTargetPlanspaceId,
+      templatePortLaneId,
       autoPlanspaceIds,
       canCreateVirtual,
       templateInstances,

@@ -58,7 +58,6 @@ def _make_project_with_lane(registry: ProjectRegistry) -> tuple[str, str]:
         store_root=registry.store.root,
         seed_text="seed",
     )
-    project.active_planspace_id = lane
     registry.store.update_project(project)
     return project.id, lane
 

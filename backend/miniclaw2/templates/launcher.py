@@ -67,7 +67,6 @@ def launch_template(
             store_root=registry.store.root,
             seed_text=template.brief,
         )
-        project.active_planspace_id = planspace_id
         registry.store.update_project(project)
 
         _stamp_lane(
@@ -207,7 +206,6 @@ def materialize_embedded_session(
             store_root=registry.store.root,
             seed_text=template.brief,
         )
-        project.active_planspace_id = planspace_id
         registry.store.update_project(project)
 
         stamped = _stamp_lane(

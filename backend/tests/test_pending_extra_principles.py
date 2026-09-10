@@ -70,7 +70,6 @@ class UpdateVirtualPendingPrinciplesTests(unittest.TestCase):
             store_root=self.store.root,
             seed_text="seed",
         )
-        self.project.active_planspace_id = lane
         self.store.update_project(self.project)
         self.registry = ProjectRegistry(store=self.store)
         self.lane = lane
@@ -81,7 +80,7 @@ class UpdateVirtualPendingPrinciplesTests(unittest.TestCase):
 
     def test_update_virtual_accepts_pending_extra_principles(self) -> None:
         virtual = self.registry.create_virtual(
-            self.project.id, prompt_draft="draft"
+            self.project.id, prompt_draft="draft", planspace_id=self.lane
         )
         assert virtual is not None
         updated = self.registry.update_virtual(
@@ -96,7 +95,7 @@ class UpdateVirtualPendingPrinciplesTests(unittest.TestCase):
 
     def test_update_virtual_drops_bad_principle_ids(self) -> None:
         virtual = self.registry.create_virtual(
-            self.project.id, prompt_draft="draft"
+            self.project.id, prompt_draft="draft", planspace_id=self.lane
         )
         assert virtual is not None
         updated = self.registry.update_virtual(
@@ -118,7 +117,7 @@ class UpdateVirtualPendingPrinciplesTests(unittest.TestCase):
             )
         import_agent_skill(str(source), store_root=self.store.root)
         virtual = self.registry.create_virtual(
-            self.project.id, prompt_draft="draft"
+            self.project.id, prompt_draft="draft", planspace_id=self.lane
         )
         assert virtual is not None
 
@@ -159,7 +158,6 @@ class PromotePendingPrinciplesTests(unittest.IsolatedAsyncioTestCase):
             store_root=self.store.root,
             seed_text="seed",
         )
-        self.project.active_planspace_id = lane
         self.store.update_project(self.project)
         self.registry = ProjectRegistry(store=self.store)
         self.lane = lane
@@ -171,7 +169,7 @@ class PromotePendingPrinciplesTests(unittest.IsolatedAsyncioTestCase):
     async def test_promotion_moves_pending_to_settings_snapshot(self) -> None:
         _write_principle(self.ctx_root, "vim")
         virtual = self.registry.create_virtual(
-            self.project.id, prompt_draft="do the thing"
+            self.project.id, prompt_draft="do the thing", planspace_id=self.lane
         )
         assert virtual is not None
         self.registry.update_virtual(

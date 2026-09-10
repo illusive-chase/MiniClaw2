@@ -132,10 +132,6 @@ class DeletePlanspaceRegistryTests(unittest.TestCase):
     def test_delete_removes_lane_nodes_and_plug(self) -> None:
         keep_lane = self._make_lane("Keep")
         drop_lane = self._make_lane("Drop")
-        # Creating a second lane while idle activates it; move back to the first.
-        self.registry.update_project_context(
-            self.project.id, active_planspace_id=keep_lane
-        )
         executed = self._add_node(drop_lane, NodeState.DONE, prompt="ran already")
 
         deleted, busy = self.registry.delete_planspace(self.project.id, drop_lane)
@@ -156,27 +152,35 @@ class DeletePlanspaceRegistryTests(unittest.TestCase):
         self.assertNotIn(drop_lane, plug_ids)
         self.assertIn(keep_lane, plug_ids)
 
-    def test_delete_active_planspace_is_rejected(self) -> None:
-        # Lane creation no longer moves the cursor, so set it explicitly.
-        # The active-delete guard itself is removed in Phase 3.
+    def test_deleting_a_projects_only_lane_is_allowed(self) -> None:
+        """The lane a user is looking at is no longer protected from deletion.
+
+        The old guard refused whichever lane the project cursor pointed at, so
+        removing it meant activating some other lane first — and a project with
+        exactly one lane could never delete it at all. Live work is the only
+        thing worth refusing for, and that check is separate.
+        """
         lane = self._make_lane("Only")
-        self.registry.update_project_context(
-            self.project.id, active_planspace_id=lane
+        idle = self._add_node(lane, NodeState.DONE, prompt="already finished")
+
+        deleted, busy = self.registry.delete_planspace(self.project.id, lane)
+
+        self.assertTrue(deleted)
+        self.assertEqual(busy, [])
+        self.assertIsNone(self.store.load_node(self.project.id, idle.id))
+        summary = describe_project_contextspace(
+            self._runtime_project(), store_root=self.store.root
         )
-        active = self._runtime_project().active_planspace_id or ""
-        self.assertEqual(active, lane)
-
-        with self.assertRaises(ValueError):
-            self.registry.delete_planspace(self.project.id, active)
-
-        self.assertTrue(self.store.list_nodes(self.project.id))
+        plug_ids = {
+            plug["id"]
+            for binding in summary["bindings"]
+            for plug in binding["plugs"]
+        }
+        self.assertNotIn(lane, plug_ids)
 
     def test_delete_reports_busy_nodes_without_mutating(self) -> None:
         keep_lane = self._make_lane("Keep")
         drop_lane = self._make_lane("Drop")
-        self.registry.update_project_context(
-            self.project.id, active_planspace_id=keep_lane
-        )
         running = self._add_node(drop_lane, NodeState.RUNNING, prompt="in flight")
 
         deleted, busy = self.registry.delete_planspace(self.project.id, drop_lane)
@@ -197,9 +201,6 @@ class DeletePlanspaceRegistryTests(unittest.TestCase):
     def test_delete_allowed_while_another_lane_runs(self) -> None:
         keep_lane = self._make_lane("Keep")
         drop_lane = self._make_lane("Drop")
-        self.registry.update_project_context(
-            self.project.id, active_planspace_id=keep_lane
-        )
         running_elsewhere = self._add_node(
             keep_lane, NodeState.RUNNING, prompt="busy in the other lane"
         )
@@ -215,9 +216,6 @@ class DeletePlanspaceRegistryTests(unittest.TestCase):
     def test_delete_strips_dangling_scheduled_deps_in_other_lanes(self) -> None:
         keep_lane = self._make_lane("Keep")
         drop_lane = self._make_lane("Drop")
-        self.registry.update_project_context(
-            self.project.id, active_planspace_id=keep_lane
-        )
         doomed = self._add_node(
             drop_lane, NodeState.VIRTUAL, prompt_draft="will be deleted"
         )
@@ -239,9 +237,6 @@ class DeletePlanspaceRegistryTests(unittest.TestCase):
     def test_delete_clears_view_prefs_and_layout_hints(self) -> None:
         keep_lane = self._make_lane("Keep")
         drop_lane = self._make_lane("Drop")
-        self.registry.update_project_context(
-            self.project.id, active_planspace_id=keep_lane
-        )
         node = self._add_node(
             drop_lane, NodeState.VIRTUAL, prompt_draft="placed by the user"
         )
@@ -263,9 +258,6 @@ class DeletePlanspaceRegistryTests(unittest.TestCase):
     def test_delete_removes_materialized_lane_directory(self) -> None:
         keep_lane = self._make_lane("Keep")
         drop_lane = self._make_lane("Drop")
-        self.registry.update_project_context(
-            self.project.id, active_planspace_id=keep_lane
-        )
         project = self._runtime_project()
         projection = lane_root(project, drop_lane)
         (projection / "nodes" / "abc").mkdir(parents=True, exist_ok=True)
@@ -295,9 +287,6 @@ class DeletePlanspaceRegistryTests(unittest.TestCase):
     def test_delete_removes_workspace_artifacts_of_lane_nodes(self) -> None:
         keep_lane = self._make_lane("Keep")
         drop_lane = self._make_lane("Drop")
-        self.registry.update_project_context(
-            self.project.id, active_planspace_id=keep_lane
-        )
         doomed = self._add_node(drop_lane, NodeState.DONE, prompt="published a report")
         survivor = self._add_node(keep_lane, NodeState.DONE, prompt="still here")
         project = self._runtime_project()
@@ -319,9 +308,6 @@ class DeletePlanspaceRegistryTests(unittest.TestCase):
     def test_delete_tolerates_nodes_without_workspace_artifacts(self) -> None:
         keep_lane = self._make_lane("Keep")
         drop_lane = self._make_lane("Drop")
-        self.registry.update_project_context(
-            self.project.id, active_planspace_id=keep_lane
-        )
         node = self._add_node(drop_lane, NodeState.DONE, prompt="published nothing")
         self.assertFalse(
             workspace_artifacts_dir(self._runtime_project(), node.id).exists()
@@ -393,9 +379,6 @@ class DeletePlanspaceFinalizationTests(unittest.IsolatedAsyncioTestCase):
     async def test_terminal_node_still_in_runner_tasks_reads_as_busy(self) -> None:
         keep_lane = self._make_lane("Keep")
         drop_lane = self._make_lane("Drop")
-        self.registry.update_project_context(
-            self.project.id, active_planspace_id=keep_lane
-        )
         # A runner persists its terminal state before its final broadcasts, so
         # the store says DONE while rt.runner_tasks still owns the node.
         finishing = Node(

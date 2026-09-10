@@ -74,7 +74,7 @@ providers) and permission (Codex) interactions, on-disk persistence per
 project and node, interrupt, extended-thinking surface, WebSocket
 reconnect replay, Claude and Codex provider adapters, provider-neutral
 project context via `CONTEXT.md`, ContextSpace bootstrap / binding /
-active planspace / bundle snapshots, virtual-node lanes, review agents,
+planspace resolution / bundle snapshots, virtual-node lanes, review agents,
   programmatic verifier nodes, bundled dashboard-launched templates, and
   opt-in auto-commit op nodes with two-commit per-node diffs.
 
@@ -315,7 +315,8 @@ Planspace IDs are project-scoped as
 inside its project binding, so two projects can both have an unnumbered
 `direction` lane.
 
-The active lane is materialized in the project workspace before a run:
+The launching node's own lane is materialized in the project workspace
+before a run:
 
 ```
 <project_root>/.miniclaw2/graph/lanes/<planspace-id>/nodes/<nid>/
@@ -350,7 +351,6 @@ is a project id, and each `user_message` spawns a fresh agent node.
   `POST /sessions/{sid}/context/refresh`,
   `POST /sessions/{sid}/context/cancel`,
   `GET /sessions/{sid}/files`,
-  `POST /sessions/{sid}/planspaces`,
   `POST /sessions/{sid}/planspaces/blank`,
   `PATCH /sessions/{sid}/planspaces/{planspace_id}/mode`, and
   `GET /sessions/{sid}/nodes/{nid}/context-bundle`.
@@ -372,7 +372,9 @@ is a project id, and each `user_message` spawns a fresh agent node.
   multi-skill source with no explicit slug is imported as one skill package.
 - Client -> server:
   `user_message {text, resume_from_node_id?, extra_principles?, extra_skills?,
-  agent_op_kind?, model_preset_id?}`,
+  agent_op_kind?, model_preset_id?}` (the node it spawns carries no
+  planspace lane; lane-scoped work is created through the REST
+  endpoints above, which name their target lane explicitly),
   `interaction_response`, `interrupt`, and
   `replay_request {node_id, since_seq}`.
 - Server -> client:

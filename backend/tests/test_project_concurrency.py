@@ -151,7 +151,6 @@ class ProjectConcurrencySchedulerTests(unittest.IsolatedAsyncioTestCase):
             store_root=self.store.root,
         )
         runtime = self.registry._runtimes[self.project.id]
-        runtime.project.active_planspace_id = self.lane
         self.store.update_project(runtime.project)
         _ControlledRunner.instances.clear()
         self.runner_patch = patch("miniclaw2.registry.NodeRunner", _ControlledRunner)
@@ -174,6 +173,7 @@ class ProjectConcurrencySchedulerTests(unittest.IsolatedAsyncioTestCase):
     def _virtual(self, node_id: str, deps: list[str] | None = None) -> Node:
         node = self.registry.create_virtual(
             self.project.id,
+            planspace_id=self.lane,
             node_id=node_id,
             prompt_draft=f"run {node_id}",
             scheduled_deps=deps or [],
@@ -280,6 +280,7 @@ class ProjectConcurrencySchedulerTests(unittest.IsolatedAsyncioTestCase):
 
         queued = self.registry.create_virtual(
             self.project.id,
+            planspace_id=self.lane,
             node_id="auto-dequeue-target",
             prompt_draft="keep this queued",
             model_preset_id="gpt-5.5",
@@ -305,6 +306,7 @@ class ProjectConcurrencySchedulerTests(unittest.IsolatedAsyncioTestCase):
 
         third = self.registry.create_virtual(
             self.project.id,
+            planspace_id=self.lane,
             node_id="auto-third",
             prompt_draft="run automatically",
             model_preset_id="gpt-5.5",

@@ -32,7 +32,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .contextspace import contextspace_root, planspace_display_title, resolve_active_planspace
+from .contextspace import contextspace_root, planspace_display_title
 from .domain import NodeState, Project
 
 logger = logging.getLogger(__name__)
@@ -103,7 +103,6 @@ class ActiveEntry:
     op_kind: str | None
     planspace_id: str | None
     planspace_title: str | None
-    is_active_planspace: bool
     label: str
     started_at: float | None
     #: When the node reached its terminal state. Only set for terminal rows,
@@ -272,14 +271,6 @@ def collect_active_entries(
         if not visible:
             continue
 
-        active_planspace_id: str | None = None
-        try:
-            active = resolve_active_planspace(project, context_root)
-            active_planspace_id = active[1].id if active is not None else None
-        except Exception:  # noqa: BLE001
-            logger.debug(
-                "active planspace unresolved for %s", project.id, exc_info=True
-            )
         titles: dict[str, str | None] = {}
         for facts in visible:
             if facts.planspace_id and facts.planspace_id not in titles:
@@ -294,7 +285,6 @@ def collect_active_entries(
                 project,
                 facts,
                 now=moment,
-                active_planspace_id=active_planspace_id,
                 planspace_title=titles.get(facts.planspace_id),
             )
             if entry is not None:
@@ -336,7 +326,6 @@ def active_entry_from_facts(
     facts: NodeFacts,
     *,
     now: float | None = None,
-    active_planspace_id: str | None = None,
     planspace_title: str | None = None,
     resolve_context: bool = False,
 ) -> ActiveEntry | None:
@@ -349,13 +338,6 @@ def active_entry_from_facts(
 
     if resolve_context:
         root = contextspace_root(registry.store.root)
-        try:
-            active = resolve_active_planspace(project, root)
-            active_planspace_id = active[1].id if active is not None else None
-        except Exception:  # noqa: BLE001
-            logger.debug(
-                "active planspace unresolved for %s", project.id, exc_info=True
-            )
         if facts.planspace_id:
             try:
                 planspace_title = planspace_display_title(root, facts.planspace_id)
@@ -375,9 +357,6 @@ def active_entry_from_facts(
         op_kind=facts.op_kind,
         planspace_id=facts.planspace_id,
         planspace_title=planspace_title,
-        is_active_planspace=bool(
-            facts.planspace_id and facts.planspace_id == active_planspace_id
-        ),
         label=facts.label,
         started_at=facts.started_at or facts.created_at,
         finished_at=facts.finished_at,

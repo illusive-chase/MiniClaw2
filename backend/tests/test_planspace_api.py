@@ -29,8 +29,8 @@ class PlanspaceApiTest(unittest.TestCase):
                     self, sid: str, **kwargs: object
                 ) -> Project | None:
                     asyncio.get_running_loop()
-                    project.active_planspace_id = str(
-                        kwargs["active_planspace_id"]
+                    project.project_context_binding_id = str(
+                        kwargs["project_context_binding_id"]
                     )
                     return project
 
@@ -38,19 +38,19 @@ class PlanspaceApiTest(unittest.TestCase):
                 with patch.object(
                     app_module,
                     "describe_project_contextspace",
-                    return_value={"active_planspace_id": "planspaces.auto"},
+                    return_value={"resolved_binding_id": "project.demo"},
                 ):
                     client = TestClient(app_module.create_app())
                     try:
                         res = client.patch(
                             f"/sessions/{project.id}/contextspace",
-                            json={"active_planspace_id": "planspaces.auto"},
+                            json={"project_context_binding_id": "project.demo"},
                         )
                     finally:
                         client.close()
 
             self.assertEqual(res.status_code, 200, res.text)
-            self.assertEqual(res.json()["active_planspace_id"], "planspaces.auto")
+            self.assertEqual(res.json()["resolved_binding_id"], "project.demo")
 
     def test_concierge_planspace_endpoint_is_gone(self) -> None:
         """``POST /planspaces`` was the concierge path; only blank remains.
@@ -135,7 +135,6 @@ class PlanspaceApiTest(unittest.TestCase):
                             "root": raw,
                             "exists": True,
                             "resolved_binding_id": "project.project",
-                            "active_planspace_id": "planspaces.blank",
                             "bindings": [],
                         },
                     ):
@@ -229,14 +228,12 @@ class PlanspaceApiTest(unittest.TestCase):
                         "root": raw,
                         "exists": True,
                         "resolved_binding_id": "project.project",
-                        "active_planspace_id": "planspaces.auth",
                         "bindings": [
                             {
                                 "id": "project.project",
                                 "path": "bindings/projects/project.project.yaml",
                                 "title": "Project",
-                                "active_planspace_id": "planspaces.auth",
-                                "plugs": [
+                                        "plugs": [
                                     {
                                         "id": "planspaces.auth",
                                         "kind": "planspace",
@@ -270,7 +267,7 @@ class PlanspaceApiTest(unittest.TestCase):
                 "mode": "auto",
             }])
             body = res.json()
-            self.assertEqual(body["active_planspace_id"], "planspaces.auth")
+            self.assertEqual(body["resolved_binding_id"], "project.project")
             self.assertEqual(body["bindings"][0]["plugs"][0]["mode"], "auto")
 
     def test_promote_virtual_returns_node_payload(self) -> None:
@@ -460,7 +457,7 @@ class PlanspaceApiTest(unittest.TestCase):
                 with patch.object(
                     app_module,
                     "describe_project_contextspace",
-                    return_value={"active_planspace_id": "planspaces.keep"},
+                    return_value={"resolved_binding_id": "project.keep"},
                 ):
                     client = TestClient(app_module.create_app())
                     try:
@@ -471,7 +468,7 @@ class PlanspaceApiTest(unittest.TestCase):
                         client.close()
 
             self.assertEqual(res.status_code, 200, res.text)
-            self.assertEqual(res.json()["active_planspace_id"], "planspaces.keep")
+            self.assertEqual(res.json()["resolved_binding_id"], "project.keep")
             self.assertEqual(calls, [(project.id, "planspaces.drop")])
 
     def test_delete_planspace_maps_registry_outcomes_to_status_codes(self) -> None:

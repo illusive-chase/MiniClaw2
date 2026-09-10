@@ -52,7 +52,7 @@ export function InspectDrawer({
             ["origin machine", node.origin_machine_id || "-"],
             ["context bundle", contextBundle?.bundle_id ?? node.context_bundle_id ?? "-"],
             ["project binding", contextBundle?.project_binding_id ?? "-"],
-            ["active planspace", contextBundle?.active_planspace_id ?? "-"],
+            ["node lane", node.planspace_id ?? contextBundle?.active_planspace_id ?? "-"],
             ["commit before", short(node.commit_before)],
             ["commit after", short(node.commit_after)],
             ["proposed by", node.proposed_by ?? "-"],

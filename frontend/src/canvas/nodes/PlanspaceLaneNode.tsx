@@ -40,15 +40,6 @@ function PlanspaceLaneNodeImpl({ data }: NodeProps<PlanspaceLaneData>) {
             当前
           </span>
         )}
-        {/* The lane the backend would actually run in, shown only while it can
-          * differ from the focused one. Two badges look redundant precisely
-          * when they agree — and the point is to make the case where they do
-          * NOT agree impossible to miss. Removed with the field in Phase 3. */}
-        {data.executionTarget && !data.focused && (
-          <span className="flex-none rounded border border-current/30 px-1 py-px text-[9px] opacity-60">
-            执行目标
-          </span>
-        )}
         {/* Auto lanes advance on their own, whether or not anyone is looking
           * at them, so this is a permanent property of the lane rather than
           * a "waiting to be activated" state. */}

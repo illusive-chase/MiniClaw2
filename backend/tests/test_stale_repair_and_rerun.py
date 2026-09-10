@@ -223,7 +223,6 @@ class RerunNodeTests(unittest.TestCase):
         self.registry = ProjectRegistry(store=self.store)
         self.lane = create_planspace(self.project, title="Work", mode="manual")
         runtime = self.registry._runtimes[self.project.id]
-        runtime.project.active_planspace_id = self.lane
         self.store.update_project(runtime.project)
 
     def tearDown(self) -> None:
@@ -359,7 +358,6 @@ class RerunNodeTests(unittest.TestCase):
         before ``rerun_node`` returns."""
         auto_lane = create_planspace(self.project, title="Auto", mode="auto")
         runtime = self.registry._runtimes[self.project.id]
-        runtime.project.active_planspace_id = auto_lane
         self.store.update_project(runtime.project)
         failed = Node(
             id="auto-failed",

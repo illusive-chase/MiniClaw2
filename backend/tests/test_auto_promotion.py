@@ -307,7 +307,6 @@ class AutoPromoteOnRunnerDoneTests(unittest.IsolatedAsyncioTestCase):
             self.project, title="manual", mode="manual"
         )
         rt = self.registry._runtimes[self.project.id]
-        rt.project.active_planspace_id = plug_id
         self.store.update_project(rt.project)
 
         finished = self._make_finished_agent(plug_id)
@@ -327,7 +326,6 @@ class AutoPromoteOnRunnerDoneTests(unittest.IsolatedAsyncioTestCase):
             self.project, title="auto", mode="auto"
         )
         rt = self.registry._runtimes[self.project.id]
-        rt.project.active_planspace_id = plug_id
         self.store.update_project(rt.project)
 
         finished = self._make_finished_agent(plug_id)
@@ -423,15 +421,11 @@ class AutoPromoteOnRunnerDoneTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(snapshots.get(virtual_b.id), lane_b)
         self.assertNotEqual(snapshots[virtual_a.id], snapshots[virtual_b.id])
 
-    async def test_auto_lanes_advance_without_being_the_cursor(self) -> None:
+    async def test_auto_lanes_advance_without_being_focused(self) -> None:
         """Every auto lane is autonomous, including ones nobody is viewing."""
-        lane_manual = create_planspace(
-            self.project, title="cursor-manual", mode="manual"
-        )
+        create_planspace(self.project, title="other-manual", mode="manual")
         lane_auto = create_planspace(self.project, title="elsewhere", mode="auto")
         rt = self.registry._runtimes[self.project.id]
-        # The cursor points at an unrelated manual lane.
-        rt.project.active_planspace_id = lane_manual
         self.store.update_project(rt.project)
         virtual = self._make_virtual(lane_auto, prompt_draft="auto work")
 
@@ -447,7 +441,6 @@ class AutoPromoteOnRunnerDoneTests(unittest.IsolatedAsyncioTestCase):
             self.project, title="manual-first", mode="manual"
         )
         rt = self.registry._runtimes[self.project.id]
-        rt.project.active_planspace_id = plug_id
         self.store.update_project(rt.project)
         virtual = self._make_virtual(plug_id, prompt_draft="already ready")
 
@@ -470,7 +463,6 @@ class AutoPromoteOnRunnerDoneTests(unittest.IsolatedAsyncioTestCase):
             self.project, title="manual-first", mode="manual"
         )
         rt = self.registry._runtimes[self.project.id]
-        rt.project.active_planspace_id = plug_id
         self.store.update_project(rt.project)
         finished = self._make_finished_agent(plug_id)
         virtual = self._make_virtual(
@@ -493,7 +485,6 @@ class AutoPromoteOnRunnerDoneTests(unittest.IsolatedAsyncioTestCase):
             self.project, title="manual", mode="manual"
         )
         rt = self.registry._runtimes[self.project.id]
-        rt.project.active_planspace_id = plug_id
         self.store.update_project(rt.project)
         running = self._make_finished_agent(plug_id, finished=False)
         virtual = self._make_virtual(plug_id, deps=[running.id])
@@ -504,21 +495,18 @@ class AutoPromoteOnRunnerDoneTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.code, "dependencies_not_terminal")
         self.assertEqual(result.blockers, (running.id,))
 
-    async def test_promote_virtual_succeeds_outside_the_cursor_lane(self) -> None:
-        """Promotion is decided by the node's own lane, not a global cursor.
+    async def test_promote_virtual_succeeds_in_any_manual_lane(self) -> None:
+        """Promotion is decided by the node's own lane, and nothing else.
 
-        Semantics reversed by the focus refactor: the cursor is a view
-        concept, so a virtual in any manual lane is promotable regardless of
-        where the cursor happens to point.
+        Semantics reversed by the focus refactor: there is no longer a
+        global cursor a lane could fail to be, so a virtual in any manual
+        lane is promotable, including one in a lane nobody is viewing.
         """
-        cursor_lane = create_planspace(
-            self.project, title="active", mode="manual"
-        )
+        create_planspace(self.project, title="elsewhere", mode="manual")
         other_lane = create_planspace(
             self.project, title="other", mode="manual"
         )
         rt = self.registry._runtimes[self.project.id]
-        rt.project.active_planspace_id = cursor_lane
         self.store.update_project(rt.project)
         virtual = self._make_virtual(other_lane, prompt_draft="other lane")
 
@@ -530,12 +518,46 @@ class AutoPromoteOnRunnerDoneTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(reloaded.state, NodeState.QUEUED)
         self.assertEqual(reloaded.planspace_id, other_lane)
 
+    async def test_start_node_rejects_a_lane_outside_the_project(self) -> None:
+        """``start_node`` takes the lane from its caller, so it must check it.
+
+        With the cursor fallback gone, an unlaned node is a legitimate
+        outcome, but a named lane the project's binding cannot reach is
+        not: the node would run against a lane no projection or reap step
+        can resolve.
+        """
+        own_lane = create_planspace(self.project, title="mine", mode="manual")
+        rt = self.registry._runtimes[self.project.id]
+        self.store.update_project(rt.project)
+
+        with patch.object(self.registry, "_schedule_queued"):
+            before = len(self.store.list_nodes(self.project.id))
+            with self.assertRaisesRegex(ValueError, "unknown planspace"):
+                self.registry.start_node(
+                    self.project.id,
+                    "work",
+                    planspace_id="planspaces.other-project.lane",
+                )
+            self.assertEqual(
+                len(self.store.list_nodes(self.project.id)), before
+            )
+
+            # The project's own lane still passes through untouched, and
+            # naming no lane at all stays legitimate.
+            laned = self.registry.start_node(
+                self.project.id, "work", planspace_id=own_lane
+            )
+            assert laned is not None
+            self.assertEqual(laned.planspace_id, own_lane)
+            unlaned = self.registry.start_node(self.project.id, "work")
+            assert unlaned is not None
+            self.assertIsNone(unlaned.planspace_id)
+
     async def test_promote_virtual_preserves_virtual_preview(self) -> None:
         plug_id = create_planspace(
             self.project, title="active", mode="manual"
         )
         rt = self.registry._runtimes[self.project.id]
-        rt.project.active_planspace_id = plug_id
         self.store.update_project(rt.project)
         parent = self._make_finished_agent(plug_id)
         virtual = self._make_virtual(
@@ -562,7 +584,6 @@ class AutoPromoteOnRunnerDoneTests(unittest.IsolatedAsyncioTestCase):
             self.project, title="auto-deps", mode="auto"
         )
         rt = self.registry._runtimes[self.project.id]
-        rt.project.active_planspace_id = plug_id
         self.store.update_project(rt.project)
 
         finished = self._make_finished_agent(plug_id)
@@ -588,7 +609,6 @@ class AutoPromoteOnRunnerDoneTests(unittest.IsolatedAsyncioTestCase):
             self.project, title="auto-edit", mode="auto"
         )
         rt = self.registry._runtimes[self.project.id]
-        rt.project.active_planspace_id = plug_id
         self.store.update_project(rt.project)
 
         blocking = self._make_finished_agent(plug_id, finished=False)

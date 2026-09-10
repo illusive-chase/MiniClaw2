@@ -336,10 +336,12 @@ shapes behavior on every turn and must be present; a skill is consulted
 only when the task calls for it, and injecting it would spend context on
 knowledge the model may not need.
 
-**At each node launch, exactly one active planspace is selected.** The
-project may have multiple planspaces bound, but only one contributes
-its STATUS/PLAN to the node's context. This avoids merging conflicting
-directions into the same context window.
+**Each node launch materializes exactly one planspace: the node's
+own.** A project may have many planspaces bound, but a node belongs to
+one lane and sees only that lane. This avoids merging conflicting
+directions into the same context window, and it needs no global
+selection — the lane is a property of the node, decided when it was
+created, not a cursor the user has to aim first.
 
 Project root `CONTEXT.md` is the one piece of context that lives in the
 code repo. Its role is narrow: codebase-facing guidance for any agent
@@ -427,17 +429,18 @@ into other previews.
 ### 8.3 The LLM projection
 
 Each agent launch sees a **real filesystem subtree** at
-`.miniclaw2/graph/lanes/<active-lane>/` containing every node in
-the active lane: `nodes/<id>/preview.json` for every node,
+`.miniclaw2/graph/lanes/<node-lane>/` containing every node in
+that node's own lane: `nodes/<id>/preview.json` for every node,
 `nodes/<id>/transcript.json` and `nodes/<id>/artifacts/` for
 executed ones, and (for promoted human-interact reviews)
 `nodes/<id>/human-review.md`. The agent reads with the native
 `Read` tool — no inlining into the system prompt, no new tools.
 
-**Active lane only.** Cross-lane previews are not materialized.
-One direction at a time, per §7. Multi-lane coordination is the
-user's job (switching active lane); the agent works in isolation
-within one direction.
+**One lane only.** Cross-lane previews are not materialized.
+One direction at a time, per §7 — the agent works in isolation
+within the lane its node belongs to. Lanes stay separated because
+each node carries its own, so two lanes can run at once without
+either one seeing the other's plan.
 
 **CONTEXT.md is injected via system prompt** (not materialized into
 the graph subtree). It surfaces as a context node in the canvas
@@ -612,8 +615,8 @@ a prompt_draft and category, and is editable in place.
   an implicit dep on the spawn tile.
 - Tap empty canvas → a virtual node appears at the click position
   with no deps.
-- A brand new lane → the concierge planning node runs and drops
-  three to five starter virtuals.
+- A brand new lane → one empty virtual node is seeded for the user
+  to fill in.
 
 Resume source is **implicit in which tile spawned the virtual node**:
 if spawned from a finished agent, promotion resumes from that
@@ -650,11 +653,12 @@ visual container. Containment fights the graph because:
 
 Three render layers driven from planspace membership: a translucent
 lane background, a tile left-edge accent, and a neutral top stripe
-for project CONTEXT (orthogonal to the planspace palette). At any
-moment exactly one planspace is `active` — the one being
-materialized into the agent's filesystem projection. The active lane
-carries a clear "active" badge or palette emphasis so the user knows
-which direction the next agent launch will run against.
+for project CONTEXT (orthogonal to the planspace palette). One lane
+at a time is **focused** — the one the user is currently looking at,
+which is where a new node lands and where the `+` sits. Focus follows
+the user's clicks and is local view state: it never decides what runs.
+Which lane a launch materializes is settled by the node's own lane, so
+the accent marks where the user is, not what the backend will do.
 
 
 ## 11. Templates are functions
@@ -668,7 +672,8 @@ The interface is what makes it a function rather than a snapshot. A
 template declares **arguments** (string parameters substituted into prompt
 drafts) and **inputs** (named ports for upstream nodes it must be wired
 to). Applying one resolves both and stamps ordinary virtual nodes into the
-active planspace — nothing about a stamped node is special afterwards.
+planspace the caller names — nothing about a stamped node is special
+afterwards.
 
 Four commitments, each of which was tempting to violate:
 
@@ -832,10 +837,10 @@ The non-obvious commitments, restated as one-liners:
   semantics rather than hidden isolation.
 - **Sessions, not turns.** The smallest unit a researcher delegates
   without checking in.
-- **One active planspace per node launch.** Avoids merging
-  conflicting directions into the same context window; only the
-  active lane is materialized into the agent's filesystem
-  projection.
+- **One planspace per node launch.** Avoids merging conflicting
+  directions into the same context window; a node belongs to one lane
+  and only that lane is materialized into its filesystem projection.
+  No global cursor decides this — the lane rides on the node.
 - **Category enforces who may plan.** Planning and review may write
   virtuals; regular may not (hard-failed at reap). Regular agents
   focus on execution; planning and review reshape the plan.

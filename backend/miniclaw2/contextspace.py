@@ -65,6 +65,10 @@ class ComposedContextBundle:
     project_binding_id: str | None
     context_root: Path
     bundle_path: Path
+    #: The lane this node belongs to, resolved to its canonical plug id. The
+    #: ``active_planspace_id`` name is a frozen on-disk/wire format — persisted
+    #: snapshots and the frontend `InspectDrawer` read it — so it outlived the
+    #: project cursor it was named for. It never held a project-level cursor.
     active_planspace_id: str | None = None
 
 
@@ -89,10 +93,10 @@ def compose_context_bundle(
     """Compose and persist the context bundle seen at node launch.
 
     Loads project-root ``CONTEXT.md`` and any markdown from bound
-    ``global`` / ``principle`` plugs. The active planspace id is carried in
-    the returned bundle so the runner can materialize the lane;
-    planspace plug content itself is no longer injected into the LLM
-    projection (the materialized filesystem subtree replaces that).
+    ``global`` / ``principle`` plugs. The lane the node belongs to is carried in
+    the returned bundle so the runner can materialize it; planspace plug content
+    itself is no longer injected into the LLM projection (the materialized
+    filesystem subtree replaces that).
     """
     root = contextspace_root(store_root)
     binding = resolve_project_binding(project, root)
@@ -120,14 +124,11 @@ def compose_context_bundle(
     binding_principle_ids: set[str] = set()
     if binding is not None:
         plug_refs = _expand_required_plugs(root, binding.plugs)
-        launch_project = project.model_copy(
-            update={"active_planspace_id": node.planspace_id}
-        )
-        active_planspace = _select_active_planspace(
-            launch_project, binding, plug_refs
-        )
-        if active_planspace is not None:
-            active_planspace_id = active_planspace.id
+        # The lane comes from the node, resolved against the binding so the
+        # recorded id is the canonical plug id even when the node stored a slug.
+        node_lane = _select_planspace(node.planspace_id, plug_refs)
+        if node_lane is not None:
+            active_planspace_id = node_lane.id
 
         for ref in plug_refs:
             kind = _plug_kind(ref.id)
@@ -422,18 +423,19 @@ def describe_project_contextspace(
 
     root = contextspace_root(store_root)
     binding = resolve_project_binding(project, root)
-    active = resolve_active_planspace(project, root)
-    active_planspace_id = active[1].id if active is not None else None
     all_bindings = list_project_bindings(root)
     bindings = [binding] if binding is not None else []
-    #: Only an embedded template session has these; every other project reports
-    #: an empty list, which is what keeps the canvas addition invisible there.
+    #: Only an embedded template session has ports, and it owns exactly one
+    #: lane by construction. A project with any other shape — zero lanes, or
+    #: several — is never an embedded session, so it reports an empty list,
+    #: which is what keeps the canvas addition invisible there.
     template_ports: list[dict[str, Any]] = []
-    if active_planspace_id:
+    lane_ids = list_project_planspace_ids(project, root)
+    if len(lane_ids) == 1:
         try:
             template_ports = read_template_ports(
                 project,
-                active_planspace_id,
+                lane_ids[0],
                 store_root=store_root,
             )
         except ValueError:
@@ -445,7 +447,6 @@ def describe_project_contextspace(
         "exists": root.exists(),
         "project_context_binding_id": project.project_context_binding_id,
         "resolved_binding_id": binding.id if binding else None,
-        "active_planspace_id": active_planspace_id,
         "planspace_view": project.planspace_view,
         "template_ports": template_ports,
         "context_file": {
@@ -453,23 +454,11 @@ def describe_project_contextspace(
         },
         "context_refresh": context_refresh_status(project.id),
         "bindings": [
-            _binding_summary(
-                root,
-                project,
-                item,
-                resolved_binding_id=binding.id if binding else None,
-                active_planspace_id=active_planspace_id,
-            )
+            _binding_summary(root, project, item)
             for item in bindings
         ],
         "selectable_bindings": [
-            _binding_summary(
-                root,
-                project,
-                item,
-                resolved_binding_id=binding.id if binding else None,
-                active_planspace_id=active_planspace_id,
-            )
+            _binding_summary(root, project, item)
             for item in all_bindings
         ],
     }
@@ -979,9 +968,9 @@ def planspace_display_title(root: Path, planspace_id: str) -> str | None:
 def list_project_planspace_ids(project: Project, root: Path) -> list[str]:
     """Every planspace plug id reachable from ``project``'s binding.
 
-    Same expansion as :func:`resolve_active_planspace` (disabled plugs
+    Same expansion as :func:`resolve_planspace_lane` (disabled plugs
     dropped, ``requires`` followed) but without selecting one — callers that
-    act on all lanes rather than a single cursor use this. Binding order is
+    act on all lanes rather than a single named lane use this. Binding order is
     preserved so sweeps over the result are deterministic.
     """
     binding = resolve_project_binding(project, root)
@@ -994,15 +983,23 @@ def list_project_planspace_ids(project: Project, root: Path) -> list[str]:
     ]
 
 
-def resolve_active_planspace(
+def resolve_planspace_lane(
     project: Project,
+    lane_id: str | None,
     root: Path,
 ) -> tuple[ProjectBinding, PlugRef, Path] | None:
+    """Resolve one named lane to its binding, plug ref, and plug directory.
+
+    ``lane_id`` is the lane a node itself belongs to — there is no project
+    cursor to consult. Returns ``None`` when the project has no binding, names
+    no lane, or names one the binding cannot reach; a caller that needs the
+    unreachable case to be an error uses :func:`require_resolvable_planspace`.
+    """
     binding = resolve_project_binding(project, root)
     if binding is None:
         return None
     refs = _expand_required_plugs(root, binding.plugs)
-    ref = _select_active_planspace(project, binding, refs)
+    ref = _select_planspace(lane_id, refs)
     if ref is None:
         return None
     plug_dir = _plug_dir(root, ref.id)
@@ -1011,40 +1008,37 @@ def resolve_active_planspace(
     return binding, ref, plug_dir
 
 
-def require_resolvable_active_planspace(
+def require_resolvable_planspace(
     project: Project,
+    lane_id: str | None,
     *,
     store_root: Path | None = None,
 ) -> None:
-    """Reject stale persisted active-planspace launch settings.
+    """Reject a launch whose lane its binding cannot reach.
 
-    A missing active setting is allowed: older projects and free-form
-    launches can run without a planspace lane. A present setting is stricter:
-    if it no longer matches an enabled planspace in the resolved binding, the
-    launch must fail visibly instead of silently dropping the preview contract.
+    A node without a lane is allowed: free-form launches run without a
+    planspace projection. A node that names a lane is stricter — if the id no
+    longer matches an enabled planspace in the resolved binding, the launch
+    must fail visibly instead of silently dropping the preview contract.
     """
     root = contextspace_root(store_root)
-    project_requested = project.active_planspace_id
-    binding = resolve_project_binding(project, root)
-    if binding is None:
-        if project_requested:
-            _raise_stale_active_planspace(
-                project=project,
-                binding=None,
-                requested=project_requested,
-                available=[],
-            )
-        return
-
-    refs = _expand_required_plugs(root, binding.plugs)
-    requested = _requested_active_planspace_id(project, binding)
+    requested = (lane_id or "").strip()
     if not requested:
         return
-    selected = _select_active_planspace(project, binding, refs)
-    if selected is not None:
+    binding = resolve_project_binding(project, root)
+    if binding is None:
+        _raise_stale_planspace(
+            project=project,
+            binding=None,
+            requested=requested,
+            available=[],
+        )
+        return
+    refs = _expand_required_plugs(root, binding.plugs)
+    if _select_planspace(requested, refs) is not None:
         return
     available = [ref.id for ref in refs if _plug_kind(ref.id) == "planspace"]
-    _raise_stale_active_planspace(
+    _raise_stale_planspace(
         project=project,
         binding=binding,
         requested=requested,
@@ -1318,35 +1312,30 @@ def _expand_required_plugs(root: Path, plugs: list[PlugRef]) -> list[PlugRef]:
     return out
 
 
-def _select_active_planspace(
-    project: Project,
-    binding: ProjectBinding,
+def _select_planspace(
+    lane_id: str | None,
     plugs: list[PlugRef],
 ) -> PlugRef | None:
-    planspaces = [plug for plug in plugs if _plug_kind(plug.id) == "planspace"]
-    if not planspaces:
+    """Find the plug for ``lane_id`` among a binding's expanded plugs.
+
+    Accepts either the full plug id or the bare slug, because both spellings
+    reach this code: node records store the full id, while a hand-written
+    manifest may name the slug. Returns ``None`` when the lane is absent from
+    the binding — the caller decides whether that is a stale setting worth
+    failing on or simply an unlaned launch.
+    """
+    requested = (lane_id or "").strip()
+    if not requested:
         return None
-    requested = _requested_active_planspace_id(project, binding)
-    if requested:
-        for plug in planspaces:
-            if plug.id == requested or _plug_slug(plug.id) == requested:
-                return plug
-        return None
-    if project.planspace_selection_explicit:
-        return None
-    if len(planspaces) == 1:
-        return planspaces[0]
+    for plug in plugs:
+        if _plug_kind(plug.id) != "planspace":
+            continue
+        if plug.id == requested or _plug_slug(plug.id) == requested:
+            return plug
     return None
 
 
-def _requested_active_planspace_id(
-    project: Project,
-    binding: ProjectBinding,
-) -> str | None:
-    return project.active_planspace_id
-
-
-def _raise_stale_active_planspace(
+def _raise_stale_planspace(
     *,
     project: Project,
     binding: ProjectBinding | None,
@@ -1356,10 +1345,10 @@ def _raise_stale_active_planspace(
     available_text = ", ".join(available) if available else "none"
     binding_text = binding.id if binding is not None else "none"
     message = (
-        "Stale launch settings: active_planspace_id "
+        "Stale launch settings: planspace "
         f"{requested!r} does not resolve for project {project.id!r} "
         f"in binding {binding_text!r}. Available planspaces: {available_text}. "
-        "Clear active_planspace_id or select a valid planspace before launching."
+        "The node names a lane its project's binding cannot reach."
     )
     logger.warning(message)
     raise StaleLaunchSettingsError(message)
@@ -1369,15 +1358,10 @@ def _binding_summary(
     root: Path,
     project: Project,
     binding: ProjectBinding,
-    *,
-    resolved_binding_id: str | None,
-    active_planspace_id: str | None,
 ) -> dict[str, Any]:
     project_raw = binding.raw.get("project")
     if not isinstance(project_raw, dict):
         project_raw = {}
-    is_resolved = binding.id == resolved_binding_id
-    active_for_binding = active_planspace_id if is_resolved else None
     plug_refs = _expand_required_plugs(root, binding.plugs)
     return {
         "id": binding.id,
@@ -1388,14 +1372,8 @@ def _binding_summary(
             or binding.id
         ),
         "project_name": _string_value(project_raw.get("name")),
-        "active_planspace_id": active_for_binding,
         "plugs": [
-            _plug_summary(
-                root,
-                project,
-                ref,
-                active=(ref.id == active_for_binding),
-            )
+            _plug_summary(root, project, ref)
             for ref in plug_refs
         ],
     }
@@ -1405,8 +1383,6 @@ def _plug_summary(
     root: Path,
     project: Project,
     ref: PlugRef,
-    *,
-    active: bool,
 ) -> dict[str, Any]:
     kind = _plug_kind(ref.id)
     storage_slug = _plug_slug(ref.id)
@@ -1440,7 +1416,6 @@ def _plug_summary(
         "enabled": ref.enabled,
         "auto_update": False,
         "source": ref.source,
-        "active": active,
         "hidden": bool(project.planspace_view.get(ref.id, {}).get("hidden")),
         "exists": bool(plug_dir and plug_dir.exists()),
         "path": _display_path(plug_dir, root) if plug_dir is not None else None,

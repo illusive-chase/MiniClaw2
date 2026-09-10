@@ -35,7 +35,6 @@ from .contextspace import (
     read_template_instances,
     remove_template_instance,
     resolve_project_binding,
-    resolve_active_planspace,
     set_planspace_mode,
 )
 from .events import (
@@ -858,7 +857,6 @@ class ProjectRegistry:
         pid: str,
         *,
         project_context_binding_id: str | None | object = _UNSET,
-        active_planspace_id: str | None | object = _UNSET,
     ) -> Project | None:
         rt = self._runtimes.get(pid)
         if rt is None:
@@ -871,14 +869,6 @@ class ProjectRegistry:
                 and project_context_binding_id.strip()
                 else None
             )
-        if active_planspace_id is not _UNSET:
-            rt.project.active_planspace_id = (
-                active_planspace_id.strip()
-                if isinstance(active_planspace_id, str)
-                and active_planspace_id.strip()
-                else None
-            )
-            rt.project.planspace_selection_explicit = True
         self.store.update_project(rt.project)
         return rt.project
 
@@ -982,8 +972,8 @@ class ProjectRegistry:
         Returns ``(True, [])`` on success. A non-empty second element lists
         node ids that are still queued or running in the lane, which the
         caller should report as a conflict. ``(False, [])`` means the project
-        or the planspace does not exist. Deleting the active lane raises
-        ``ValueError`` — the caller must activate another lane first.
+        or the planspace does not exist. A lane with live work is the only
+        refusal now — there is no project cursor to move off first.
         """
         rt = self._runtimes.get(pid)
         if rt is None:
@@ -997,13 +987,6 @@ class ProjectRegistry:
         binding = resolve_project_binding(rt.project, root)
         if binding is None or not any(ref.id == lane_id for ref in binding.plugs):
             return False, []
-
-        active = resolve_active_planspace(rt.project, root)
-        active_lane = active[1].id if active is not None else ""
-        if lane_id == active_lane:
-            raise ValueError(
-                "cannot delete the active planspace; activate another one first"
-            )
 
         nodes = self.store.list_nodes(pid)
         lane_nodes = [n for n in nodes if (n.planspace_id or "") == lane_id]
@@ -1453,8 +1436,10 @@ class ProjectRegistry:
             settings_snapshot["extra_skills"] = skill_selections
 
         # The caller states the lane; a resumed node inherits its source's
-        # lane so a continuation never jumps directions.
-        target_lane = (planspace_id or "").strip() or None
+        # lane so a continuation never jumps directions. A named lane is
+        # validated against this project's binding: an unlaned node is
+        # legitimate, one filed under a foreign lane is not.
+        target_lane = self._require_project_lane(rt, planspace_id)
         if target_lane is None and resume_source is not None:
             target_lane = resume_source.planspace_id
         resume_locally = bool(
@@ -1835,7 +1820,12 @@ class ProjectRegistry:
                 return existing
         # The caller states the lane. An unlaned review is legitimate (no lane
         # in focus), so a missing lane stays None rather than silently
-        # guessing the first lane.
+        # guessing the first lane. A named lane is still checked against
+        # this project's binding: the focused lane can be deleted between
+        # the request and this call, and an API caller can name another
+        # project's lane, either of which files the review under a lane
+        # this project cannot manage.
+        review_lane = self._require_project_lane(rt, planspace_id)
         node = Node(
             project_id=pid,
             kind=NodeKind.AGENT,
@@ -1843,7 +1833,7 @@ class ProjectRegistry:
             subtype=ReviewSubtype.CODE_REVIEW,
             review_target=ReviewTarget(),
             state=NodeState.QUEUED,
-            planspace_id=(planspace_id or "").strip() or None,
+            planspace_id=review_lane,
             model_preset_id=default_code_review_model_preset_id(
                 store_root=self.store.root
             ),
@@ -1895,11 +1885,7 @@ class ProjectRegistry:
         normalized_mode = normalize_planspace_mode(mode)
         # Creating a direction no longer depends on whether the project is
         # idle, and no longer moves a global cursor: the new lane is simply
-        # created, and the client focuses it. The implicit single-lane
-        # selection is still made durable first so that adding a second lane
-        # cannot silently change which lane an existing project resolves to
-        # while ``active_planspace_id`` remains on the model.
-        self._preserve_implicit_active_planspace(rt)
+        # created, and the client focuses it.
         plug_id = create_planspace(
             rt.project,
             title=title or seed.strip() or "Direction",
@@ -1922,21 +1908,6 @@ class ProjectRegistry:
         if node is None:
             return None
         return PlanspaceCreationResult(node=node)
-
-    def _preserve_implicit_active_planspace(
-        self,
-        rt: ProjectRuntime,
-    ) -> None:
-        """Make a single-lane implicit selection durable before adding a lane."""
-        if rt.project.active_planspace_id:
-            return
-        active = resolve_active_planspace(
-            rt.project, contextspace_root(self.store.root)
-        )
-        if active is None:
-            return
-        rt.project.active_planspace_id = active[1].id
-        self.store.update_project(rt.project)
 
     # ---- auto-promotion ----
 
@@ -3045,32 +3016,46 @@ class ProjectRegistry:
             return None
         return self.store.load_node(pid, virtual.id) or virtual
 
+    def _require_project_lane(
+        self,
+        rt: ProjectRuntime,
+        planspace_id: str | None,
+    ) -> str | None:
+        """Normalize a caller-supplied lane, rejecting one this project lacks.
+
+        ``None`` is returned when the caller names no lane — an unlaned node
+        is legitimate. A named lane must be reachable from the project's
+        binding: the focused lane can be deleted between the user's click and
+        this call, and an API caller can name another project's lane
+        outright. Persisting either files the node under a lane this project
+        cannot manage, and nothing downstream recovers it.
+        """
+        requested = (planspace_id or "").strip()
+        if not requested:
+            return None
+        reachable = list_project_planspace_ids(
+            rt.project, contextspace_root(self.store.root)
+        )
+        if requested not in reachable:
+            raise ValueError(f"unknown planspace: {requested}")
+        return requested
+
     def _resolve_virtual_create_lane(
         self,
         rt: ProjectRuntime,
         planspace_id: str | None,
     ) -> str:
-        active = resolve_active_planspace(
-            rt.project, contextspace_root(self.store.root)
-        )
-        active_lane = active[1].id if active is not None else ""
-        requested = planspace_id.strip() if isinstance(planspace_id, str) else ""
-        if not requested:
-            if not active_lane:
-                raise ValueError("active planspace is required")
-            return active_lane
-        if not requested.startswith("planspaces."):
-            raise ValueError(f"unknown planspace: {requested}")
-        if requested == active_lane:
-            return requested
-        binding = resolve_project_binding(
-            rt.project, contextspace_root(self.store.root)
-        )
-        if binding is None:
-            raise ValueError(f"unknown planspace: {requested}")
-        if any(ref.id == requested for ref in binding.plugs):
-            return requested
-        raise ValueError(f"unknown planspace: {requested}")
+        """The lane a new virtual is filed under. The caller must name it.
+
+        Every creation path now states its target lane, so there is no cursor
+        left to fall back on: a missing lane is a caller bug, not a request to
+        guess. Guessing is what let a template or a virtual land in a lane the
+        user was not looking at.
+        """
+        lane_id = self._require_project_lane(rt, planspace_id)
+        if lane_id is None:
+            raise ValueError("planspace id is required")
+        return lane_id
 
     def _normalize_virtual_scheduled_deps(
         self,

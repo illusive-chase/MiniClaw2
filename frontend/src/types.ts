@@ -466,7 +466,6 @@ export type ActiveNodeEntry = {
   op_kind?: string | null;
   planspace_id?: string | null;
   planspace_title?: string | null;
-  is_active_planspace: boolean;
   label: string;
   started_at?: number | null;
   /* Terminal timestamp; used by every terminal row instead of a still-growing
@@ -590,6 +589,8 @@ export type ContextBundle = {
   project_id?: string;
   node_id?: string;
   project_binding_id?: string | null;
+  /** The lane the node belonged to at launch. A frozen key name that outlived
+   * the project cursor it was named for; the backend writes the node's lane. */
   active_planspace_id?: string | null;
   active_planspace?: ContextBundlePlugRef | null;
   sources: ContextBundleSource[];
@@ -606,7 +607,6 @@ export type ContextSpacePlugSummary = {
   enabled: boolean;
   auto_update: boolean;
   source: string;
-  active: boolean;
   hidden?: boolean;
   exists: boolean;
   path?: string | null;
@@ -621,7 +621,6 @@ export type ContextSpaceBindingSummary = {
   path: string;
   title: string;
   project_name?: string | null;
-  active_planspace_id?: string | null;
   plugs: ContextSpacePlugSummary[];
 };
 
@@ -649,7 +648,6 @@ export type SessionContextSpaceInfo = {
   exists: boolean;
   project_context_binding_id?: string | null;
   resolved_binding_id?: string | null;
-  active_planspace_id?: string | null;
   planspace_view?: Record<string, { hidden?: boolean }>;
   /** Input ports of the template being edited, when this project is an embedded
    * template session. Empty for every ordinary project. */

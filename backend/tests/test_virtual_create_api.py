@@ -20,7 +20,7 @@ class VirtualCreateApiTest(unittest.TestCase):
         os.environ.pop("MINICLAW_HOME", None)
         self._home.cleanup()
 
-    def test_create_virtual_in_template_active_lane(self) -> None:
+    def test_create_virtual_in_template_lane(self) -> None:
         launched = self.client.post(
             "/templates/hello-text/run",
             json={"model_preset_id": "gpt-5.6"},
@@ -41,6 +41,7 @@ class VirtualCreateApiTest(unittest.TestCase):
                 "category": "regular",
                 "model_preset_id": "opus-4-8",
                 "scheduled_deps": [first["id"]],
+                "planspace_id": self._only_lane(sid),
             },
         )
 
@@ -82,6 +83,7 @@ class VirtualCreateApiTest(unittest.TestCase):
             json={
                 "prompt_draft": "Invalid self dependency.",
                 "scheduled_deps": ["missing"],
+                "planspace_id": self._only_lane(sid),
             },
         )
 
@@ -111,20 +113,34 @@ class VirtualCreateApiTest(unittest.TestCase):
         self.assertEqual(created.status_code, 422, created.text)
         self.assertIn("provider", created.text)
 
-    def _lane_session(self) -> str:
+    def _lane_session(self) -> tuple[str, str]:
+        """A template session and the id of the one lane it owns."""
         launched = self.client.post(
             "/templates/hello-text/run",
             json={"model_preset_id": "gpt-5.6"},
         )
         self.assertEqual(launched.status_code, 200, launched.text)
-        return launched.json()["id"]
+        sid = launched.json()["id"]
+        return sid, self._only_lane(sid)
+
+    def _only_lane(self, sid: str) -> str:
+        contextspace = self.client.get(f"/sessions/{sid}/contextspace")
+        self.assertEqual(contextspace.status_code, 200, contextspace.text)
+        lanes = [
+            plug["id"]
+            for binding in contextspace.json()["bindings"]
+            for plug in binding["plugs"]
+            if plug["kind"] == "planspace"
+        ]
+        self.assertEqual(len(lanes), 1, lanes)
+        return lanes[0]
 
     def test_create_virtual_defaults_artifact_and_qa_off(self) -> None:
-        sid = self._lane_session()
+        sid, lane = self._lane_session()
 
         created = self.client.post(
             f"/sessions/{sid}/virtuals",
-            json={"prompt_draft": "plain node"},
+            json={"prompt_draft": "plain node", "planspace_id": lane},
         )
 
         self.assertEqual(created.status_code, 200, created.text)
@@ -134,7 +150,7 @@ class VirtualCreateApiTest(unittest.TestCase):
         self.assertFalse(node["qa_mode"])
 
     def test_create_virtual_accepts_artifact_and_qa_mode(self) -> None:
-        sid = self._lane_session()
+        sid, lane = self._lane_session()
 
         created = self.client.post(
             f"/sessions/{sid}/virtuals",
@@ -142,6 +158,7 @@ class VirtualCreateApiTest(unittest.TestCase):
                 "prompt_draft": "write the report",
                 "artifact_mode": "markdown",
                 "qa_mode": True,
+                "planspace_id": lane,
             },
         )
 
@@ -159,18 +176,22 @@ class VirtualCreateApiTest(unittest.TestCase):
         self.assertTrue(stored["qa_mode"])
 
     def test_create_virtual_custom_requires_spec(self) -> None:
-        sid = self._lane_session()
+        sid, lane = self._lane_session()
 
         created = self.client.post(
             f"/sessions/{sid}/virtuals",
-            json={"prompt_draft": "x", "artifact_mode": "custom"},
+            json={
+                "prompt_draft": "x",
+                "artifact_mode": "custom",
+                "planspace_id": lane,
+            },
         )
 
         self.assertEqual(created.status_code, 400, created.text)
         self.assertIn("artifact_spec", created.json()["detail"])
 
     def test_create_virtual_drops_spec_when_mode_is_not_custom(self) -> None:
-        sid = self._lane_session()
+        sid, lane = self._lane_session()
 
         created = self.client.post(
             f"/sessions/{sid}/virtuals",
@@ -178,6 +199,7 @@ class VirtualCreateApiTest(unittest.TestCase):
                 "prompt_draft": "x",
                 "artifact_mode": "markdown",
                 "artifact_spec": "ignored",
+                "planspace_id": lane,
             },
         )
 
@@ -185,18 +207,22 @@ class VirtualCreateApiTest(unittest.TestCase):
         self.assertEqual(created.json()["node"]["artifact_spec"], "")
 
     def test_create_virtual_rejects_unknown_artifact_mode(self) -> None:
-        sid = self._lane_session()
+        sid, lane = self._lane_session()
 
         created = self.client.post(
             f"/sessions/{sid}/virtuals",
-            json={"prompt_draft": "x", "artifact_mode": "pdf"},
+            json={
+                "prompt_draft": "x",
+                "artifact_mode": "pdf",
+                "planspace_id": lane,
+            },
         )
 
         self.assertEqual(created.status_code, 400, created.text)
         self.assertIn("artifact_mode", created.json()["detail"])
 
     def test_create_review_virtual_rejects_artifact_mode(self) -> None:
-        sid = self._lane_session()
+        sid, lane = self._lane_session()
 
         created = self.client.post(
             f"/sessions/{sid}/virtuals",
@@ -210,6 +236,7 @@ class VirtualCreateApiTest(unittest.TestCase):
                     "abnormal": "a",
                 },
                 "artifact_mode": "markdown",
+                "planspace_id": lane,
             },
         )
 

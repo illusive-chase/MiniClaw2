@@ -357,9 +357,9 @@ function testKnownLaneOrderSurvivesNodeCreationOrder(): void {
 }
 
 /* Auto is a permanent property of the lane, not a "waiting to be activated"
- * state: an auto lane advances on its own whether or not it is the execution
- * target or the focused lane. The badge must therefore not depend on either. */
-function testAutoLaneIsMarkedRegardlessOfFocusOrExecutionTarget(): void {
+ * state: an auto lane advances on its own whether or not anyone is looking at
+ * it. The badge must therefore not depend on focus. */
+function testAutoLaneIsMarkedRegardlessOfFocus(): void {
   const graph = buildGraph(args({
     knownPlanspaceIds: ["planspaces.auto"],
     autoPlanspaceIds: ["planspaces.auto"],
@@ -368,7 +368,6 @@ function testAutoLaneIsMarkedRegardlessOfFocusOrExecutionTarget(): void {
   const lane = graph.rfNodes.find((item) => item.id === "planspace:planspaces.auto");
   assert.equal(lane?.type, "planspaceLane");
   if (lane?.type !== "planspaceLane") throw new Error("missing planspace lane");
-  assert.equal(lane.data.executionTarget, false);
   assert.equal(lane.data.focused, false);
   assert.equal(lane.data.auto, true);
   assert.deepEqual(lane.style, { pointerEvents: "none" });
@@ -377,51 +376,12 @@ function testAutoLaneIsMarkedRegardlessOfFocusOrExecutionTarget(): void {
     knownPlanspaceIds: ["planspaces.auto"],
     autoPlanspaceIds: ["planspaces.auto"],
     focusedPlanspaceId: "planspaces.auto",
-    executionTargetPlanspaceId: "planspaces.auto",
   }));
   const focusedLane = focused.rfNodes.find(
     (item) => item.id === "planspace:planspaces.auto",
   );
   if (focusedLane?.type !== "planspaceLane") throw new Error("missing lane");
   assert.equal(focusedLane.data.auto, true);
-}
-
-/* The Phase 1 split: the lane the user looks at and the lane the backend
- * would execute in are separate inputs, and the lane data must report them
- * separately. Collapsing them back into one flag is exactly the regression
- * this guards — the `+` would follow the backend's cursor again. */
-function testFocusAndExecutionTargetAreIndependent(): void {
-  const graph = buildGraph(args({
-    knownPlanspaceIds: ["planspaces.looking", "planspaces.running"],
-    focusedPlanspaceId: "planspaces.looking",
-    executionTargetPlanspaceId: "planspaces.running",
-  }));
-  const laneData = (id: string) => {
-    const lane = graph.rfNodes.find((item) => item.id === `planspace:${id}`);
-    if (lane?.type !== "planspaceLane") throw new Error(`missing lane ${id}`);
-    return lane.data;
-  };
-
-  assert.equal(laneData("planspaces.looking").focused, true);
-  assert.equal(laneData("planspaces.looking").executionTarget, false);
-  assert.equal(laneData("planspaces.running").focused, false);
-  assert.equal(laneData("planspaces.running").executionTarget, true);
-}
-
-/* Omitting the execution target must not make every lane look like one.
- * Phase 3 deletes the prop outright, so the default has to be "no lane is
- * the execution target" rather than something that reads as a match. */
-function testExecutionTargetDefaultsToNoLane(): void {
-  const graph = buildGraph(args({
-    knownPlanspaceIds: ["planspaces.alpha"],
-    focusedPlanspaceId: "planspaces.alpha",
-  }));
-  const lane = graph.rfNodes.find(
-    (item) => item.id === "planspace:planspaces.alpha",
-  );
-  if (lane?.type !== "planspaceLane") throw new Error("missing planspace lane");
-  assert.equal(lane.data.focused, true);
-  assert.equal(lane.data.executionTarget, false);
 }
 
 function testPlanspaceChildPositionUsesLaneRelativeSnapGrid(): void {
@@ -2708,9 +2668,7 @@ function testCollapsingKeepsTheInstanceInPlace(): void {
 testNoRootOrFabricatedDependencies();
 testPromotedNodeDoesNotUseTransientParentFallback();
 testKnownLaneOrderSurvivesNodeCreationOrder();
-testAutoLaneIsMarkedRegardlessOfFocusOrExecutionTarget();
-testFocusAndExecutionTargetAreIndependent();
-testExecutionTargetDefaultsToNoLane();
+testAutoLaneIsMarkedRegardlessOfFocus();
 testPlanspaceChildPositionUsesLaneRelativeSnapGrid();
 testExplicitCreationPositionBeatsExistingRuntimePosition();
 testProjectScopedLaneLabelShowsOnlyDirectionName();
@@ -2791,7 +2749,7 @@ function testTemplatePortsRenderNodesAndEdges(): void {
     ],
     knownPlanspaceIds: [TEMPLATE_LANE],
     focusedPlanspaceId: TEMPLATE_LANE,
-    executionTargetPlanspaceId: TEMPLATE_LANE,
+    templatePortLaneId: TEMPLATE_LANE,
     templatePorts: [
       { name: "spec", description: "the spec node", consumers: ["consumer"] },
     ],
@@ -2823,7 +2781,7 @@ function testUnreferencedPortIsFlagged(): void {
     nodes: [node("solo", { planspace_id: TEMPLATE_LANE, created_at: 1 })],
     knownPlanspaceIds: [TEMPLATE_LANE],
     focusedPlanspaceId: TEMPLATE_LANE,
-    executionTargetPlanspaceId: TEMPLATE_LANE,
+    templatePortLaneId: TEMPLATE_LANE,
     templatePorts: [{ name: "orphan", consumers: [] }],
   }));
 
@@ -2845,7 +2803,7 @@ function testPortConsumerOffCanvasDoesNotDangle(): void {
     nodes: [node("present", { planspace_id: TEMPLATE_LANE, created_at: 1 })],
     knownPlanspaceIds: [TEMPLATE_LANE],
     focusedPlanspaceId: TEMPLATE_LANE,
-    executionTargetPlanspaceId: TEMPLATE_LANE,
+    templatePortLaneId: TEMPLATE_LANE,
     templatePorts: [
       { name: "spec", consumers: ["deleted-node", "present"] },
     ],
@@ -2868,13 +2826,13 @@ function testPortsFlowIntoLaneSizing(): void {
     nodes: [node("only", { planspace_id: TEMPLATE_LANE, created_at: 1 })],
     knownPlanspaceIds: [TEMPLATE_LANE],
     focusedPlanspaceId: TEMPLATE_LANE,
-    executionTargetPlanspaceId: TEMPLATE_LANE,
+    templatePortLaneId: TEMPLATE_LANE,
   }));
   const withManyPorts = buildGraph(args({
     nodes: [node("only", { planspace_id: TEMPLATE_LANE, created_at: 1 })],
     knownPlanspaceIds: [TEMPLATE_LANE],
     focusedPlanspaceId: TEMPLATE_LANE,
-    executionTargetPlanspaceId: TEMPLATE_LANE,
+    templatePortLaneId: TEMPLATE_LANE,
     templatePorts: [
       { name: "a", consumers: ["only"] },
       { name: "b", consumers: ["only"] },
@@ -2901,7 +2859,7 @@ function testPortsHonourLayoutHints(): void {
     nodes: [node("consumer", { planspace_id: TEMPLATE_LANE, created_at: 1 })],
     knownPlanspaceIds: [TEMPLATE_LANE],
     focusedPlanspaceId: TEMPLATE_LANE,
-    executionTargetPlanspaceId: TEMPLATE_LANE,
+    templatePortLaneId: TEMPLATE_LANE,
     layoutHints: { [portId]: { x: 640, y: 24 } },
     templatePorts: [{ name: "spec", consumers: ["consumer"] }],
   }));
@@ -2921,7 +2879,7 @@ function testPortsOnlyRenderInTheExecutionTargetLane(): void {
     nodes: [node("elsewhere", { planspace_id: TEMPLATE_LANE, created_at: 1 })],
     knownPlanspaceIds: [TEMPLATE_LANE],
     focusedPlanspaceId: TEMPLATE_LANE,
-    executionTargetPlanspaceId: null,
+    templatePortLaneId: null,
     templatePorts: [{ name: "spec", consumers: ["elsewhere"] }],
   }));
 
@@ -2949,7 +2907,7 @@ function testPortsStayOnTheirSourceLaneWhenFocusMovesAway(): void {
     /* The user is looking at the other lane... */
     focusedPlanspaceId: OTHER_LANE,
     /* ...but the ports were read from this one. */
-    executionTargetPlanspaceId: TEMPLATE_LANE,
+    templatePortLaneId: TEMPLATE_LANE,
     templatePorts: [{ name: "spec", consumers: ["consumer"] }],
   }));
 
@@ -3021,7 +2979,7 @@ function testPortRowDoesNotOverlapContextOrAgentRows(): void {
     nodes: [node("consumer", { planspace_id: TEMPLATE_LANE, created_at: 1 })],
     knownPlanspaceIds: [TEMPLATE_LANE],
     focusedPlanspaceId: TEMPLATE_LANE,
-    executionTargetPlanspaceId: TEMPLATE_LANE,
+    templatePortLaneId: TEMPLATE_LANE,
     templatePorts: [{ name: "spec", consumers: ["consumer"] }],
   }));
   assert.equal(

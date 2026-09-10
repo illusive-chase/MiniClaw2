@@ -186,7 +186,6 @@ class UpdateSessionPreferencesRequest(BaseModel):
 
 class UpdateSessionContextRequest(BaseModel):
     project_context_binding_id: str | None = None
-    active_planspace_id: str | None = None
 
 
 class SessionInfo(BaseModel):
@@ -238,7 +237,6 @@ class ActiveNodeEntry(BaseModel):
     op_kind: str | None = None
     planspace_id: str | None = None
     planspace_title: str | None = None
-    is_active_planspace: bool = False
     label: str = ""
     started_at: float | None = None
     finished_at: float | None = None
@@ -1132,7 +1130,6 @@ def create_app(
                     op_kind=entry.op_kind,
                     planspace_id=entry.planspace_id,
                     planspace_title=entry.planspace_title,
-                    is_active_planspace=entry.is_active_planspace,
                     label=entry.label,
                     started_at=entry.started_at,
                     finished_at=entry.finished_at,
@@ -1471,8 +1468,6 @@ def create_app(
         kwargs: dict[str, Any] = {}
         if "project_context_binding_id" in req.model_fields_set:
             kwargs["project_context_binding_id"] = req.project_context_binding_id
-        if "active_planspace_id" in req.model_fields_set:
-            kwargs["active_planspace_id"] = req.active_planspace_id
         project = registry.update_project_context(sid, **kwargs)
         if project is None:
             raise HTTPException(404, "session not found")

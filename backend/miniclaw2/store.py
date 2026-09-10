@@ -659,8 +659,21 @@ class Store:
             raise StoreReadOnlyError(reason)
 
 
+#: Keys written by versions that still carried a project-level lane cursor.
+#: ``Project`` is ``extra="forbid"``, so leaving them in the payload makes
+#: ``model_validate`` raise — and :meth:`Store.list_projects` answers a
+#: ``ValidationError`` by logging and *skipping* the record. The project would
+#: not error, it would silently vanish from the user's list. Dropping the keys
+#: on read is what lets a store written before the cursor was removed still
+#: open. Never re-add them to the model: a resurrected field would start
+#: reading these stale values as if they meant something.
+_RETIRED_PROJECT_KEYS = ("active_planspace_id", "planspace_selection_explicit")
+
+
 def _validate_project_record(path: Path, payload: dict[str, Any]) -> Project:
     preset_id = payload.get("model_preset_id")
     if not isinstance(preset_id, str) or not preset_id.strip():
         raise ValueError(f"{path}: project requires model_preset_id")
+    for key in _RETIRED_PROJECT_KEYS:
+        payload.pop(key, None)
     return Project.model_validate(payload)

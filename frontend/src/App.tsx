@@ -327,9 +327,9 @@ export function App() {
 
   /* The lane the user is currently looking at. Purely a view concern: it
    * decides where the `+` sits, which lane the canvas accents, and where an
-   * unanchored create lands. It is deliberately NOT the backend's
-   * `active_planspace_id` — that field also gates Promote and arms auto lanes,
-   * so it cannot be allowed to move every time the user clicks a node.
+   * unanchored create lands, and nothing else — the backend never sees it.
+   * Execution reads each node's own `planspace_id`, so focus is free to
+   * follow every click without touching what can run.
    *
    * Resolved from storage by the effect below rather than in the initializer,
    * because the lane list arrives with the contextspace, one render later. */
@@ -1132,12 +1132,30 @@ export function App() {
     [collapsedTemplateInstancesBySession, session?.id],
   );
 
-  /* An embedded template session, identified by the ports its active lane
+  /* An embedded template session, identified by the ports its one lane
    * declares. Everything below degrades to empty for an ordinary project. */
   const templatePorts = useMemo(
     () => sessionContextSpace?.template_ports ?? [],
     [sessionContextSpace?.template_ports],
   );
+  /* The lane those ports belong to. The backend reads them off a single
+   * lane's manifest — only an embedded session, which owns exactly one lane,
+   * has any — so the ports may only be drawn in that same lane. Deriving it
+   * the same way here keeps a port and the node that declares it in one lane;
+   * drawing ports wherever the user happened to look would let a consumer
+   * edge cross lanes. */
+  const templatePortLaneId = useMemo(() => {
+    if (templatePorts.length === 0) return null;
+    const lanes: string[] = [];
+    for (const binding of sessionContextSpace?.bindings ?? []) {
+      for (const plug of binding.plugs) {
+        if (plug.kind === "planspace" && !lanes.includes(plug.id)) {
+          lanes.push(plug.id);
+        }
+      }
+    }
+    return lanes.length === 1 ? lanes[0] : null;
+  }, [sessionContextSpace?.bindings, templatePorts.length]);
   /* The backend marks an embedded editing session with an `embedded:` prefix;
    * a bundled template test run carries a bare template name. A port-less
    * template is still an editing session, so the marker — not the port list —
@@ -1355,36 +1373,6 @@ export function App() {
     }
     prevContextRefreshRunningRef.current = running;
   }, [sessionContextSpace?.context_refresh?.running]);
-
-  /* Moves the backend's execution cursor. No longer a gate on anything the
-   * user does — Promote and auto-promotion both read the node's own lane now.
-   * It survives Phase 2 only because `delete_planspace` still refuses to
-   * delete the cursor lane, so the user needs a way to move it off. Phase 3
-   * removes that guard and this callback with it. */
-  const activatePlanspace = useCallback(
-    async (binding_id: string, planspace_id: string) => {
-      if (!session?.id) return;
-      setSessionContextSpaceSaving(true);
-      setSessionContextSpaceError(null);
-      try {
-        const next = await updateSessionContextSpace(session.id, {
-          project_context_binding_id: binding_id,
-          active_planspace_id: planspace_id,
-        });
-        setSessionContextSpace(next);
-        setSession((current) =>
-          current && current.id === session.id
-            ? { ...current, project_context_binding_id: next.project_context_binding_id ?? null }
-            : current,
-        );
-      } catch (err) {
-        setSessionContextSpaceError(String(err));
-      } finally {
-        setSessionContextSpaceSaving(false);
-      }
-    },
-    [session?.id],
-  );
 
   const selectContextBinding = useCallback(
     async (binding_id: string) => {
@@ -2547,7 +2535,6 @@ export function App() {
 
     const resolved = resolveFocusedLane({
       stored: readFocusedLane(projectId),
-      active: sessionContextSpace?.active_planspace_id ?? null,
       visible,
       recentlyActive: lanesByRecentActivity(
         nodesRef.current,
@@ -2570,7 +2557,6 @@ export function App() {
     knownPlanspaceIds,
     nodesHydratedSessionId,
     session?.id,
-    sessionContextSpace?.active_planspace_id,
   ]);
 
   const interruptNode = useCallback(
@@ -3353,9 +3339,7 @@ export function App() {
               knownPlanspaceIds={knownPlanspaceIds}
               hiddenPlanspaceIds={hiddenPlanspaceIds}
               focusedPlanspaceId={focusedPlanspaceId}
-              executionTargetPlanspaceId={
-                sessionContextSpace?.active_planspace_id ?? null
-              }
+              templatePortLaneId={templatePortLaneId}
               autoPlanspaceIds={Array.from(autoPlanspaceIds)}
               canCreateVirtual={!virtualCreateDisabled}
               templateInstances={templateInstances}
@@ -3545,7 +3529,6 @@ export function App() {
                 }}
                 onPreferredLanguageChange={updatePreferredLanguage}
                 onConcurrencyChange={updateConcurrency}
-                onActivatePlanspace={activatePlanspace}
                 onSelectContextBinding={selectContextBinding}
                 onStartBlankDirection={startBlankDirection}
                 onImportSkill={handleImportSkill}
