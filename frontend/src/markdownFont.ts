@@ -7,8 +7,11 @@
  * visibly breaks. Seven rungs cover the real range: cramped in a 380px side
  * panel at one end, projected on a wall at the other.
  *
- * Scope is deliberately per-block and per-mount: no context, no persistence.
- * Each rendering surface owns its own rung and forgets it on close.
+ * Scope: the embedded surfaces (side panel, zoom overlay) are fixed at their
+ * density default and expose no control, because a rung chosen while reading a
+ * full document is usually wrong for a 380px panel. Only the standalone reading
+ * page lets the reader move off the default, and it persists that choice —
+ * see `markdownReader.ts`.
  */
 
 export const FONT_STEPS = [12, 13, 14, 16, 18, 20, 24] as const;

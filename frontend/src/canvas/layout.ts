@@ -139,7 +139,14 @@ export type PlanspaceLaneData = {
   width: number;
   height: number;
   color: PlanspaceColor;
-  active: boolean;
+  /** The lane the user is looking at: accent border, header `+`, create
+   * target. One lane at most carries this. */
+  focused: boolean;
+  /** The lane the backend will actually execute in (`active_planspace_id`).
+   * Drawn as a quiet badge, deliberately separate from `focused` so a
+   * mismatch between the two is visible rather than silent. Phase 2 makes
+   * every manual lane executable and Phase 3 deletes this. */
+  executionTarget: boolean;
   auto: boolean;
   canActivate: boolean;
   canCreateVirtual: boolean;
@@ -664,11 +671,16 @@ export type BuildGraphArgs = {
   activatablePlanspaceIds: string[];
   /** planspaces hidden by per-project view state */
   hiddenPlanspaceIds: string[];
-  /** active write target */
-  activePlanspaceId: string | null;
+  /** The lane the user is looking at: gets the accent border, the header `+`,
+   * and the embedded template session's port row. Purely a view choice. */
+  focusedPlanspaceId: string | null;
+  /** The backend's execution target (`active_planspace_id`), drawn as a
+   * secondary badge only. Keeping it visible while it still gates Promote is
+   * what makes the focus/execution split legible; Phase 3 removes both. */
+  executionTargetPlanspaceId?: string | null;
   /** planspaces configured to auto-promote when active */
   autoPlanspaceIds: string[];
-  /** true when the active lane's virtual create button should be enabled */
+  /** true when the focused lane's virtual create button should be enabled */
   canCreateVirtual: boolean;
   /** Stamped template instances for the visible planspaces. Supplies the group
    * header's template name and argument values; nodes carry only the id. */
@@ -1040,7 +1052,8 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
     knownPlanspaceIds,
     activatablePlanspaceIds,
     hiddenPlanspaceIds,
-    activePlanspaceId,
+    focusedPlanspaceId,
+    executionTargetPlanspaceId = null,
     autoPlanspaceIds,
     canCreateVirtual,
     templateInstances: templateInstanceRecords = [],
@@ -1141,7 +1154,7 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
   const nodeRenderedHeights = new Map<string, number>();
   const branchSiblingCounts = new Map<string, number>();
   const hasTemplatePortRow = (laneId: string): boolean =>
-    templatePorts.length > 0 && laneId === activePlanspaceId;
+    templatePorts.length > 0 && laneId === focusedPlanspaceId;
   const agentRowY = (laneId: string): number =>
     hasTemplatePortRow(laneId)
       ? LANE.templateSessionAgentRowY
@@ -2273,7 +2286,7 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
     });
   }
 
-  /* Input ports of an embedded template session. Emitted into the active lane
+  /* Input ports of an embedded template session. Emitted into the focused lane
    * only, and only when the caller supplies ports at all — an ordinary project
    * passes none, so every rfNode and rfEdge below is skipped and the output is
    * byte-identical to what it was before this existed.
@@ -2282,7 +2295,7 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
    * `scheduled_deps`: the backend cannot store an `in:<port>` literal there
    * (it resolves every dep through `load_node`), so the manifest is the only
    * place the edge exists. */
-  const portLaneId = activePlanspaceId;
+  const portLaneId = focusedPlanspaceId;
   if (templatePorts.length > 0 && portLaneId && planspaceOrder.includes(portLaneId)) {
     let portCursorX = LANE.planspaceLanePaddingX;
     for (const port of templatePorts) {
@@ -2388,7 +2401,8 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
         width,
         height,
         color,
-        active: planspaceId === activePlanspaceId,
+        focused: planspaceId === focusedPlanspaceId,
+        executionTarget: planspaceId === executionTargetPlanspaceId,
         auto: autoPlanspaceIds.includes(planspaceId),
         canActivate: activatablePlanspaceIds.includes(planspaceId),
         canCreateVirtual,
@@ -2636,6 +2650,27 @@ function collectPlanspaceOrder(
     out.push(id);
   }
   return out;
+}
+
+/** Which lane a node belongs to, including nodes that predate the
+ * `planspace_id` column.
+ *
+ * Three sources, in descending order of reliability: the column itself; the
+ * lane stamped into the launch snapshot (a historical on-disk key — see
+ * `runner.py`, which still writes it under the old `active_planspace_id`
+ * name); and failing both, the lane of whatever the node was spawned from.
+ *
+ * Exported because lane attribution must have exactly one implementation.
+ * The canvas uses it to decide which swimlane draws a node, and focus uses
+ * it to decide which lane a click lands in; a second derivation could put a
+ * node in one lane visually while focusing another. */
+export function resolveNodePlanspaceId(
+  node: NodeInfo,
+  nodes: readonly NodeInfo[],
+): string | null {
+  const byId = new Map<string, NodeInfo>();
+  for (const candidate of nodes) byId.set(candidate.id, candidate);
+  return resolvePlanspaceId(node, byId);
 }
 
 function resolvePlanspaceId(

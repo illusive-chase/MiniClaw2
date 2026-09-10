@@ -5,10 +5,13 @@
  * installs global shortcuts on mount, none of which a read-only view needs —
  * and it may be opened with no session at all.
  *
- * The column is capped at 78ch, which is the one deliberate difference from
- * the embedded views. Those are boxed into a 380px panel; this one would
- * otherwise run 200+ characters per line on a wide display, which is the
- * problem it exists to solve. Everything that makes it *look* the same —
+ * The column is capped, which is the one deliberate difference from the
+ * embedded views. Those are boxed into a 380px panel; this one would otherwise
+ * run 200+ characters per line on a wide display, which is the problem it
+ * exists to solve. Where the cap sits is the reader's to choose here, and it
+ * and the font size persist across tabs and reloads — this is the only surface
+ * with those controls, so a preference set for a full-width document can never
+ * leak into a narrow panel. Everything that makes it *look* the same —
  * `.md-prose`, the theme tokens, the highlight theme, the plugin set — is
  * shared through `MarkdownView` and `index.css`.
  */
@@ -19,7 +22,14 @@ import { getNodeArtifact, readMarkdownFile } from "../api";
 import { writeClipboard } from "../clipboard";
 import { FontSizeControl } from "../components/FontSizeControl";
 import { MarkdownView } from "../components/MarkdownView";
+import { WidthControl } from "../components/WidthControl";
 import { defaultFontIndex, fontPxAt } from "../markdownFont";
+import {
+  defaultWidthIndex,
+  readReaderPrefs,
+  widthChAt,
+  writeReaderPrefs,
+} from "../markdownReader";
 import type { MarkdownRoute } from "../markdownRoute";
 import { readStashedMarkdown } from "../mdHandoff";
 import { applyStoredTheme } from "../theme";
@@ -37,16 +47,29 @@ type Loaded = {
 };
 
 const PAGE_DEFAULT_INDEX = defaultFontIndex("page");
+const WIDTH_DEFAULT_INDEX = defaultWidthIndex();
 
 export function MarkdownViewerPage({ route }: { route: MarkdownRoute }) {
   const [doc, setDoc] = useState<Loaded | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [fontIndex, setFontIndex] = useState(PAGE_DEFAULT_INDEX);
+  /* Read once at mount rather than on every render: the initializer runs in
+   * render, and a second tab writing the key must not yank the column out from
+   * under someone mid-read. */
+  const [prefs, setPrefs] = useState(readReaderPrefs);
   const [copied, setCopied] = useState(false);
 
   useEffect(() => {
     applyStoredTheme();
   }, []);
+
+  useEffect(() => {
+    writeReaderPrefs(prefs);
+  }, [prefs]);
+
+  /* One cap for the header bar and the body, so they stay aligned. `ch` here
+   * resolves against the page font, not the prose font, which is what keeps
+   * the two controls independent of each other. */
+  const columnStyle = { maxWidth: `${widthChAt(prefs.width)}ch` };
 
   useEffect(() => {
     let cancelled = false;
@@ -121,7 +144,10 @@ export function MarkdownViewerPage({ route }: { route: MarkdownRoute }) {
   return (
     <div className="min-h-screen bg-surface text-ink">
       <header className="sticky top-0 z-10 border-b border-line bg-surface-raised/95 backdrop-blur">
-        <div className="mx-auto flex max-w-[78ch] items-center justify-between gap-4 px-5 py-3">
+        <div
+          className="mx-auto flex items-center justify-between gap-4 px-5 py-3"
+          style={columnStyle}
+        >
           <div className="min-w-0">
             <div className="truncate font-display text-sm font-semibold text-ink-strong">
               {doc?.title ?? (error ? "无法打开" : "加载中…")}
@@ -132,9 +158,14 @@ export function MarkdownViewerPage({ route }: { route: MarkdownRoute }) {
           </div>
           <div className="flex flex-none items-center gap-2">
             <FontSizeControl
-              index={fontIndex}
-              onChange={setFontIndex}
+              index={prefs.font}
+              onChange={(font) => setPrefs((prev) => ({ ...prev, font }))}
               defaultIndex={PAGE_DEFAULT_INDEX}
+            />
+            <WidthControl
+              index={prefs.width}
+              onChange={(width) => setPrefs((prev) => ({ ...prev, width }))}
+              defaultIndex={WIDTH_DEFAULT_INDEX}
             />
             <button
               type="button"
@@ -152,7 +183,7 @@ export function MarkdownViewerPage({ route }: { route: MarkdownRoute }) {
         </div>
       </header>
 
-      <main className="mx-auto max-w-[78ch] px-5 py-6">
+      <main className="mx-auto px-5 py-6" style={columnStyle}>
         {error ? (
           <div className="rounded-md border border-state-error/30 bg-state-error-soft px-4 py-3 text-[12.5px] text-state-error">
             {error}
@@ -171,7 +202,7 @@ export function MarkdownViewerPage({ route }: { route: MarkdownRoute }) {
             <MarkdownView
               text={doc.text}
               density="page"
-              fontPx={fontPxAt(fontIndex)}
+              fontPx={fontPxAt(prefs.font)}
               sessionId={doc.sessionId}
               linkBase={doc.linkBase}
               className="leading-relaxed text-ink-strong"

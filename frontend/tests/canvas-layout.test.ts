@@ -252,7 +252,7 @@ function args(overrides: Partial<BuildGraphArgs> = {}): BuildGraphArgs {
     knownPlanspaceIds: [],
     activatablePlanspaceIds: [],
     hiddenPlanspaceIds: [],
-    activePlanspaceId: null,
+    focusedPlanspaceId: null,
     autoPlanspaceIds: [],
     canCreateVirtual: true,
     principles: [principle],
@@ -374,15 +374,54 @@ function testInactiveAutoLaneIsMarkedForActivation(): void {
     knownPlanspaceIds: ["planspaces.auto"],
     activatablePlanspaceIds: ["planspaces.auto"],
     autoPlanspaceIds: ["planspaces.auto"],
-    activePlanspaceId: null,
+    focusedPlanspaceId: null,
   }));
   const lane = graph.rfNodes.find((item) => item.id === "planspace:planspaces.auto");
   assert.equal(lane?.type, "planspaceLane");
   if (lane?.type !== "planspaceLane") throw new Error("missing planspace lane");
-  assert.equal(lane.data.active, false);
+  assert.equal(lane.data.executionTarget, false);
+  assert.equal(lane.data.focused, false);
   assert.equal(lane.data.auto, true);
   assert.equal(lane.data.canActivate, true);
   assert.deepEqual(lane.style, { pointerEvents: "none" });
+}
+
+/* The Phase 1 split: the lane the user looks at and the lane the backend
+ * would execute in are separate inputs, and the lane data must report them
+ * separately. Collapsing them back into one flag is exactly the regression
+ * this guards — the `+` would follow the backend's cursor again. */
+function testFocusAndExecutionTargetAreIndependent(): void {
+  const graph = buildGraph(args({
+    knownPlanspaceIds: ["planspaces.looking", "planspaces.running"],
+    focusedPlanspaceId: "planspaces.looking",
+    executionTargetPlanspaceId: "planspaces.running",
+  }));
+  const laneData = (id: string) => {
+    const lane = graph.rfNodes.find((item) => item.id === `planspace:${id}`);
+    if (lane?.type !== "planspaceLane") throw new Error(`missing lane ${id}`);
+    return lane.data;
+  };
+
+  assert.equal(laneData("planspaces.looking").focused, true);
+  assert.equal(laneData("planspaces.looking").executionTarget, false);
+  assert.equal(laneData("planspaces.running").focused, false);
+  assert.equal(laneData("planspaces.running").executionTarget, true);
+}
+
+/* Omitting the execution target must not make every lane look like one.
+ * Phase 3 deletes the prop outright, so the default has to be "no lane is
+ * the execution target" rather than something that reads as a match. */
+function testExecutionTargetDefaultsToNoLane(): void {
+  const graph = buildGraph(args({
+    knownPlanspaceIds: ["planspaces.alpha"],
+    focusedPlanspaceId: "planspaces.alpha",
+  }));
+  const lane = graph.rfNodes.find(
+    (item) => item.id === "planspace:planspaces.alpha",
+  );
+  if (lane?.type !== "planspaceLane") throw new Error("missing planspace lane");
+  assert.equal(lane.data.focused, true);
+  assert.equal(lane.data.executionTarget, false);
 }
 
 function testPlanspaceChildPositionUsesLaneRelativeSnapGrid(): void {
@@ -2670,6 +2709,8 @@ testNoRootOrFabricatedDependencies();
 testPromotedNodeDoesNotUseTransientParentFallback();
 testKnownLaneOrderSurvivesNodeCreationOrder();
 testInactiveAutoLaneIsMarkedForActivation();
+testFocusAndExecutionTargetAreIndependent();
+testExecutionTargetDefaultsToNoLane();
 testPlanspaceChildPositionUsesLaneRelativeSnapGrid();
 testExplicitCreationPositionBeatsExistingRuntimePosition();
 testProjectScopedLaneLabelShowsOnlyDirectionName();
@@ -2749,7 +2790,7 @@ function testTemplatePortsRenderNodesAndEdges(): void {
       }),
     ],
     knownPlanspaceIds: [TEMPLATE_LANE],
-    activePlanspaceId: TEMPLATE_LANE,
+    focusedPlanspaceId: TEMPLATE_LANE,
     templatePorts: [
       { name: "spec", description: "the spec node", consumers: ["consumer"] },
     ],
@@ -2780,7 +2821,7 @@ function testUnreferencedPortIsFlagged(): void {
   const built = buildGraph(args({
     nodes: [node("solo", { planspace_id: TEMPLATE_LANE, created_at: 1 })],
     knownPlanspaceIds: [TEMPLATE_LANE],
-    activePlanspaceId: TEMPLATE_LANE,
+    focusedPlanspaceId: TEMPLATE_LANE,
     templatePorts: [{ name: "orphan", consumers: [] }],
   }));
 
@@ -2801,7 +2842,7 @@ function testPortConsumerOffCanvasDoesNotDangle(): void {
   const built = buildGraph(args({
     nodes: [node("present", { planspace_id: TEMPLATE_LANE, created_at: 1 })],
     knownPlanspaceIds: [TEMPLATE_LANE],
-    activePlanspaceId: TEMPLATE_LANE,
+    focusedPlanspaceId: TEMPLATE_LANE,
     templatePorts: [
       { name: "spec", consumers: ["deleted-node", "present"] },
     ],
@@ -2823,12 +2864,12 @@ function testPortsFlowIntoLaneSizing(): void {
   const withoutPorts = buildGraph(args({
     nodes: [node("only", { planspace_id: TEMPLATE_LANE, created_at: 1 })],
     knownPlanspaceIds: [TEMPLATE_LANE],
-    activePlanspaceId: TEMPLATE_LANE,
+    focusedPlanspaceId: TEMPLATE_LANE,
   }));
   const withManyPorts = buildGraph(args({
     nodes: [node("only", { planspace_id: TEMPLATE_LANE, created_at: 1 })],
     knownPlanspaceIds: [TEMPLATE_LANE],
-    activePlanspaceId: TEMPLATE_LANE,
+    focusedPlanspaceId: TEMPLATE_LANE,
     templatePorts: [
       { name: "a", consumers: ["only"] },
       { name: "b", consumers: ["only"] },
@@ -2854,7 +2895,7 @@ function testPortsHonourLayoutHints(): void {
   const built = buildGraph(args({
     nodes: [node("consumer", { planspace_id: TEMPLATE_LANE, created_at: 1 })],
     knownPlanspaceIds: [TEMPLATE_LANE],
-    activePlanspaceId: TEMPLATE_LANE,
+    focusedPlanspaceId: TEMPLATE_LANE,
     layoutHints: { [portId]: { x: 640, y: 24 } },
     templatePorts: [{ name: "spec", consumers: ["consumer"] }],
   }));
@@ -2871,7 +2912,7 @@ function testPortsOnlyRenderInTheActiveLane(): void {
   const built = buildGraph(args({
     nodes: [node("elsewhere", { planspace_id: TEMPLATE_LANE, created_at: 1 })],
     knownPlanspaceIds: [TEMPLATE_LANE],
-    activePlanspaceId: null,
+    focusedPlanspaceId: null,
     templatePorts: [{ name: "spec", consumers: ["elsewhere"] }],
   }));
 
@@ -2888,12 +2929,12 @@ function testArgumentChipsGrowTheNodeHeight(): void {
   const plain = buildGraph(args({
     nodes: [node("n", { planspace_id: TEMPLATE_LANE, created_at: 1 })],
     knownPlanspaceIds: [TEMPLATE_LANE],
-    activePlanspaceId: TEMPLATE_LANE,
+    focusedPlanspaceId: TEMPLATE_LANE,
   }));
   const chipped = buildGraph(args({
     nodes: [node("n", { planspace_id: TEMPLATE_LANE, created_at: 1 })],
     knownPlanspaceIds: [TEMPLATE_LANE],
-    activePlanspaceId: TEMPLATE_LANE,
+    focusedPlanspaceId: TEMPLATE_LANE,
     templateArgumentsByNodeId: {
       n: ["focus", "audience", "scope", "format", "constraints"],
     },
@@ -2932,7 +2973,7 @@ function testPortRowDoesNotOverlapContextOrAgentRows(): void {
   const built = buildGraph(args({
     nodes: [node("consumer", { planspace_id: TEMPLATE_LANE, created_at: 1 })],
     knownPlanspaceIds: [TEMPLATE_LANE],
-    activePlanspaceId: TEMPLATE_LANE,
+    focusedPlanspaceId: TEMPLATE_LANE,
     templatePorts: [{ name: "spec", consumers: ["consumer"] }],
   }));
   assert.equal(
@@ -2965,12 +3006,12 @@ function testOrdinaryProjectLayoutIsUnchangedByPortSupport(): void {
   const baseline = buildGraph(args({
     nodes: plainNodes(),
     knownPlanspaceIds: [TEMPLATE_LANE],
-    activePlanspaceId: TEMPLATE_LANE,
+    focusedPlanspaceId: TEMPLATE_LANE,
   }));
   const withEmptyPortInputs = buildGraph(args({
     nodes: plainNodes(),
     knownPlanspaceIds: [TEMPLATE_LANE],
-    activePlanspaceId: TEMPLATE_LANE,
+    focusedPlanspaceId: TEMPLATE_LANE,
     templatePorts: [],
     templateArgumentsByNodeId: {},
   }));

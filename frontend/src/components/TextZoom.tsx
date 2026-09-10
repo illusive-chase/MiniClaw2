@@ -10,9 +10,7 @@ import type { ReactNode } from "react";
 
 import { writeClipboard } from "../clipboard";
 import { googleTranslateCode } from "../languages";
-import { FontSizeControl } from "./FontSizeControl";
 import { MarkdownView } from "./MarkdownView";
-import { defaultFontIndex, fontPxAt } from "../markdownFont";
 import type { MarkdownRoute } from "../markdownRoute";
 import { markdownRouteUrl } from "../markdownRoute";
 import { stashMarkdown } from "../mdHandoff";
@@ -20,8 +18,6 @@ import type { MarkdownLinkBase } from "../types";
 
 /** Google Translate silently drops text past roughly this length. */
 const TRANSLATE_TEXT_LIMIT = 4500;
-
-const OVERLAY_DEFAULT_INDEX = defaultFontIndex("overlay");
 
 export type TextZoomView = "markdown" | "raw";
 
@@ -152,14 +148,12 @@ function TextZoomOverlay({
   );
   const [copyState, setCopyState] = useState<"idle" | "copied" | "error">("idle");
   const [translateNote, setTranslateNote] = useState<string | null>(null);
-  const [fontIndex, setFontIndex] = useState(OVERLAY_DEFAULT_INDEX);
   const [openNote, setOpenNote] = useState<string | null>(null);
 
   useEffect(() => {
     setView(rawOnly ? "raw" : (request.defaultView ?? "markdown"));
     setCopyState("idle");
     setTranslateNote(null);
-    setFontIndex(OVERLAY_DEFAULT_INDEX);
     setOpenNote(null);
   }, [request, rawOnly]);
 
@@ -301,13 +295,6 @@ function TextZoomOverlay({
                 ))}
               </div>
             )}
-            {view === "markdown" && (
-              <FontSizeControl
-                index={fontIndex}
-                onChange={setFontIndex}
-                defaultIndex={OVERLAY_DEFAULT_INDEX}
-              />
-            )}
             {!rawOnly && (
               <button
                 type="button"
@@ -375,7 +362,6 @@ function TextZoomOverlay({
             <MarkdownView
               text={request.text}
               density="overlay"
-              fontPx={fontPxAt(fontIndex)}
               sessionId={request.sessionId}
               linkBase={request.linkBase}
               className="text-ink-strong"

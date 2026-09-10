@@ -180,7 +180,14 @@ export type CanvasProps = {
   knownPlanspaceIds: string[];
   activatablePlanspaceIds: string[];
   hiddenPlanspaceIds: string[];
-  activePlanspaceId: string | null;
+  /** The lane the user is looking at. Drives the lane accent, the header `+`,
+   * the double-click create target and the vertical jump controls. View
+   * state only — the backend never sees it. */
+  focusedPlanspaceId: string | null;
+  /** The backend's `active_planspace_id`, shown as a secondary badge so the
+   * gap between "what I am looking at" and "what can actually run" stays
+   * visible until Phase 2 closes it. Removed with the field in Phase 3. */
+  executionTargetPlanspaceId?: string | null;
   autoPlanspaceIds: string[];
   canCreateVirtual: boolean;
   /** Stamped instance records, for the group header's name and arguments. */
@@ -293,7 +300,8 @@ function CanvasInner({
   knownPlanspaceIds,
   activatablePlanspaceIds,
   hiddenPlanspaceIds,
-  activePlanspaceId,
+  focusedPlanspaceId,
+  executionTargetPlanspaceId = null,
   autoPlanspaceIds,
   canCreateVirtual,
   templateInstances,
@@ -433,7 +441,8 @@ function CanvasInner({
         knownPlanspaceIds,
         activatablePlanspaceIds,
         hiddenPlanspaceIds,
-        activePlanspaceId,
+        focusedPlanspaceId,
+        executionTargetPlanspaceId,
         autoPlanspaceIds,
         canCreateVirtual,
         templateInstances,
@@ -454,7 +463,8 @@ function CanvasInner({
       knownPlanspaceIds,
       activatablePlanspaceIds,
       hiddenPlanspaceIds,
-      activePlanspaceId,
+      focusedPlanspaceId,
+      executionTargetPlanspaceId,
       autoPlanspaceIds,
       canCreateVirtual,
       templateInstances,
@@ -1450,7 +1460,7 @@ function CanvasInner({
       if (
         event.button !== 0 ||
         !canCreateVirtual ||
-        !activePlanspaceId ||
+        !focusedPlanspaceId ||
         !onCreateVirtualAt
       ) {
         return;
@@ -1463,7 +1473,7 @@ function CanvasInner({
         y: event.clientY,
       });
       const lane = rfNodesRef.current.find(
-        (node) => node.id === `planspace:${activePlanspaceId}`,
+        (node) => node.id === `planspace:${focusedPlanspaceId}`,
       );
       if (!lane || lane.type !== "planspaceLane") return;
       const data = lane.data as import("./layout").PlanspaceLaneData;
@@ -1480,13 +1490,13 @@ function CanvasInner({
 
       event.preventDefault();
       onCreateVirtualAt(
-        activePlanspaceId,
+        focusedPlanspaceId,
         snapPlanspaceChildPosition(flowPosition, lane.position),
       );
     },
     [
-      activePlanspaceId,
       canCreateVirtual,
+      focusedPlanspaceId,
       onCreateVirtualAt,
       screenToFlowPosition,
     ],
@@ -1729,7 +1739,7 @@ function CanvasInner({
         />
       </ReactFlow>
       <LaneVerticalJumpControls
-        activePlanspaceId={activePlanspaceId}
+        focusedPlanspaceId={focusedPlanspaceId}
         wrapperRef={wrapperRef}
         liveViewportRef={liveViewportRef}
         nodesRef={rfNodesRef as React.MutableRefObject<RFNode[]>}
@@ -1827,18 +1837,18 @@ function FitOnInit({ enabled }: { enabled: boolean }) {
  * `Controls`: the bottom-right belongs to the node details panel, which is
  * 380px wide at z-20 and would bury these whenever it is open.
  *
- * Only mounted for the active lane. It is where new work lands, and "current
+ * Only mounted for the focused lane. It is where new work lands, and "current
  * lane" cannot be derived from a viewport-fixed button's position — a pointer
  * hovering the canvas may be over any lane, or none.
  */
 function LaneVerticalJumpControls({
-  activePlanspaceId,
+  focusedPlanspaceId,
   wrapperRef,
   liveViewportRef,
   nodesRef,
   nodesVersion,
 }: {
-  activePlanspaceId: string | null;
+  focusedPlanspaceId: string | null;
   wrapperRef: React.RefObject<HTMLDivElement>;
   liveViewportRef: React.MutableRefObject<Viewport>;
   nodesRef: React.MutableRefObject<RFNode[]>;
@@ -1860,7 +1870,7 @@ function LaneVerticalJumpControls({
 
   const measure = useCallback(() => {
     const wrapper = wrapperRef.current;
-    const span = resolveLaneVerticalSpan(nodesRef.current, activePlanspaceId);
+    const span = resolveLaneVerticalSpan(nodesRef.current, focusedPlanspaceId);
     spanRef.current = span;
     if (!wrapper || !span) {
       setVisible(false);
@@ -1885,7 +1895,7 @@ function LaneVerticalJumpControls({
     setJumps(
       availableLaneJumps(span, flowTop, flowTop + height / viewport.zoom),
     );
-  }, [activePlanspaceId, liveViewportRef, nodesRef, wrapperRef]);
+  }, [focusedPlanspaceId, liveViewportRef, nodesRef, wrapperRef]);
 
   /* One debounced recompute drives both the visibility test and the two
    * enabled states. Viewport transforms fire continuously during pans, zooms,

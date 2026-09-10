@@ -19,7 +19,10 @@ type Props = {
   sessionId: string | null;
   template: TemplateSummary | null;
   nodes: NodeInfo[];
-  activePlanspaceId: string | null;
+  /** Lane whose nodes may be bound to the template's input ports. Phase 2
+   * widens this to a target lane derived from the drop object; today it is
+   * simply the lane the user is looking at. */
+  focusedPlanspaceId: string | null;
   /** Node the card was dropped onto, prefilled into the first input port. */
   anchorNodeId: string | null;
   onCancel: () => void;
@@ -36,7 +39,7 @@ export function InstantiateTemplateModal({
   sessionId,
   template,
   nodes,
-  activePlanspaceId,
+  focusedPlanspaceId,
   anchorNodeId,
   onCancel,
   onApplied,
@@ -49,8 +52,8 @@ export function InstantiateTemplateModal({
   const firstFieldRef = useRef<HTMLInputElement | HTMLSelectElement | null>(null);
 
   const candidates = useMemo(
-    () => inputCandidates(nodes, activePlanspaceId),
-    [nodes, activePlanspaceId],
+    () => inputCandidates(nodes, focusedPlanspaceId),
+    [nodes, focusedPlanspaceId],
   );
 
   /* Reset per opening, not per render: the dialog keeps whatever the user

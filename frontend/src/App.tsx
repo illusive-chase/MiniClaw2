@@ -52,10 +52,16 @@ import {
 } from "./canvas/Canvas";
 import {
   artifactNodeId,
+  resolveNodePlanspaceId,
   templateGroupNodeId,
   templateInstanceBoxNodeId,
 } from "./canvas/layout";
 import { resolveLaneAppendPosition } from "./canvas/lanePlacement";
+import {
+  readFocusedLane,
+  resolveFocusedLane,
+  writeFocusedLane,
+} from "./focusedLane";
 import { setAgentNodeContext } from "./canvas/nodes/AgentNode";
 import { setPlanspaceLaneContext } from "./canvas/nodes/PlanspaceLaneNode";
 import { setTemplateGroupContext } from "./canvas/nodes/TemplateGroupNode";
@@ -119,6 +125,7 @@ import { useNotices } from "./notices";
 import {
   canResumeNode,
   extraPrinciplesAvailable,
+  lanesByRecentActivity,
   nodeBelongsToHost,
   nodeClassification,
   nodeIdsByRecentActivityInLane,
@@ -324,6 +331,46 @@ export function App() {
   const [selection, setSelection] = useState<CanvasSelection>({ kind: "none" });
   const selectionRef = useRef<CanvasSelection>(selection);
   selectionRef.current = selection;
+
+  /* The lane the user is currently looking at. Purely a view concern: it
+   * decides where the `+` sits, which lane the canvas accents, and where an
+   * unanchored create lands. It is deliberately NOT the backend's
+   * `active_planspace_id` — that field also gates Promote and arms auto lanes,
+   * so it cannot be allowed to move every time the user clicks a node.
+   *
+   * Resolved from storage by the effect below rather than in the initializer,
+   * because the lane list arrives with the contextspace, one render later. */
+  const [focusedPlanspaceId, setFocusedPlanspaceId] = useState<string | null>(
+    null,
+  );
+  /* Focus is remembered per project, so switching projects must re-resolve
+   * rather than carry the previous project's lane over. */
+  const focusResolvedForProjectRef = useRef<string | null>(null);
+
+  /* Single writer for the focused lane: keeps in-memory state and the
+   * persisted record from drifting, and makes "focus never lands on a hidden
+   * lane" one rule in one place rather than a precondition repeated at every
+   * call site. A hidden lane draws no nodes, so focusing it would put the `+`
+   * and the double-click target somewhere the user cannot see.
+   *
+   * Ignoring a null id is deliberate: a node with no resolvable lane (one
+   * predating lanes entirely) should leave focus where it is, not clear it.
+   *
+   * Reads `hiddenPlanspaceIdsRef` and `currentSessionIdRef`, both declared
+   * below — legal because the body runs after render, and keeping the
+   * dependency list empty is what lets every caller depend on this without
+   * being re-created whenever lane visibility changes. */
+  const focusPlanspace = useCallback(
+    (planspaceId: string | null | undefined) => {
+      if (!planspaceId) return;
+      if (hiddenPlanspaceIdsRef.current.includes(planspaceId)) return;
+      setFocusedPlanspaceId((current) =>
+        current === planspaceId ? current : planspaceId,
+      );
+      writeFocusedLane(currentSessionIdRef.current, planspaceId);
+    },
+    [],
+  );
   const [activityFocusRequestVersion, setActivityFocusRequestVersion] =
     useState(0);
   /* For data-fetching purposes we track the "currently inspected nodeId" — the
@@ -581,8 +628,14 @@ export function App() {
       setSelection(nextSelection);
       inspectNode(nodeId);
       setPanelState({ open: true, mode: "details" });
+      /* Focus follows a programmatic jump for the same reason it follows a
+       * click: arriving at a node from a notice, a search result or the
+       * cross-project bar puts the user in that node's lane, and the create
+       * affordances should already be there when they look. */
+      const node = nodesRef.current.find((item) => item.id === nodeId);
+      if (node) focusPlanspace(resolveNodePlanspaceId(node, nodesRef.current));
     },
-    [inspectNode],
+    [focusPlanspace, inspectNode],
   );
 
   const selectEventNodeIfIdle = useCallback(
@@ -1778,7 +1831,7 @@ export function App() {
   const createDependencyVirtual = useCallback(
     (parentNodeId: string) => {
       const parent = nodes.find((node) => node.id === parentNodeId);
-      const planspaceId = parent?.planspace_id ?? sessionContextSpace?.active_planspace_id;
+      const planspaceId = parent?.planspace_id ?? focusedPlanspaceId;
       if (!parent || !planspaceId) return;
       void createVirtualNode({
         planspace_id: planspaceId,
@@ -1786,7 +1839,7 @@ export function App() {
         model_preset_id: parent.model_preset_id ?? session?.model_preset_id ?? null,
       });
     },
-    [createVirtualNode, nodes, session?.model_preset_id, sessionContextSpace?.active_planspace_id],
+    [createVirtualNode, focusedPlanspaceId, nodes, session?.model_preset_id],
   );
 
   /* Canvas wiring path, empty-canvas release: a new draft virtual that waits for
@@ -1796,8 +1849,7 @@ export function App() {
   const createDependencyVirtualAt = useCallback(
     (sourceNodeId: string, position: { x: number; y: number }) => {
       const parent = nodesRef.current.find((node) => node.id === sourceNodeId);
-      const planspaceId =
-        parent?.planspace_id ?? sessionContextSpace?.active_planspace_id;
+      const planspaceId = parent?.planspace_id ?? focusedPlanspaceId;
       if (!parent || !planspaceId) return;
       void createVirtualNode({
         planspace_id: planspaceId,
@@ -1808,8 +1860,8 @@ export function App() {
     },
     [
       createVirtualNode,
+      focusedPlanspaceId,
       session?.model_preset_id,
-      sessionContextSpace?.active_planspace_id,
     ],
   );
 
@@ -1825,8 +1877,7 @@ export function App() {
         .map((nodeId) => nodes.find((node) => node.id === nodeId))
         .filter((node): node is NodeInfo => !!node);
       if (sinks.length === 0) return;
-      const planspaceId =
-        sinks[0].planspace_id ?? sessionContextSpace?.active_planspace_id;
+      const planspaceId = sinks[0].planspace_id ?? focusedPlanspaceId;
       if (!planspaceId) return;
       void createVirtualNode({
         planspace_id: planspaceId,
@@ -1837,16 +1888,16 @@ export function App() {
     },
     [
       createVirtualNode,
+      focusedPlanspaceId,
       nodes,
       session?.model_preset_id,
-      sessionContextSpace?.active_planspace_id,
     ],
   );
 
   const createContinuationVirtual = useCallback(
     (parentNodeId: string) => {
       const parent = nodes.find((node) => node.id === parentNodeId);
-      const planspaceId = parent?.planspace_id ?? sessionContextSpace?.active_planspace_id;
+      const planspaceId = parent?.planspace_id ?? focusedPlanspaceId;
       if (!parent || !planspaceId || !canResumeNode(parent)) return;
       void createVirtualNode({
         planspace_id: planspaceId,
@@ -1854,7 +1905,7 @@ export function App() {
         resume_from_node_id: parent.id,
       });
     },
-    [createVirtualNode, nodes, sessionContextSpace?.active_planspace_id],
+    [createVirtualNode, focusedPlanspaceId, nodes],
   );
 
   const deleteVirtualNode = useCallback(
@@ -2513,6 +2564,53 @@ export function App() {
   }, [sessionContextSpace]);
   hiddenPlanspaceIdsRef.current = hiddenPlanspaceIds;
 
+  /* Resolve the focused lane once per project, and re-resolve whenever the
+   * current focus stops being a valid target — the lane was deleted, or the
+   * user hid it. Both cases would otherwise leave focus pointing at a lane
+   * that draws nothing, with no `+` anywhere on the canvas.
+   *
+   * This does not run on every lane-list change, only when focus is actually
+   * unusable. Re-resolving eagerly would fight the user: `resolveFocusedLane`
+   * prefers the stored lane, so a fresh resolution after every contextspace
+   * refresh would keep yanking focus back from wherever they just clicked. */
+  useEffect(() => {
+    const projectId = session?.id ?? null;
+    if (!projectId) {
+      focusResolvedForProjectRef.current = null;
+      setFocusedPlanspaceId(null);
+      return;
+    }
+    const hidden = new Set(hiddenPlanspaceIds);
+    const visible = knownPlanspaceIds.filter((id) => id && !hidden.has(id));
+    const sameProject = focusResolvedForProjectRef.current === projectId;
+    const stillUsable =
+      focusedPlanspaceId !== null && visible.includes(focusedPlanspaceId);
+    if (sameProject && stillUsable) return;
+    /* Nothing to focus yet: an empty contextspace during the initial load
+     * would otherwise burn this project's one resolution on a null answer,
+     * and the real lanes arriving a moment later would never be considered. */
+    if (visible.length === 0) return;
+
+    const resolved = resolveFocusedLane({
+      stored: readFocusedLane(projectId),
+      active: sessionContextSpace?.active_planspace_id ?? null,
+      visible,
+      recentlyActive: lanesByRecentActivity(nodesRef.current, visible),
+    });
+    focusResolvedForProjectRef.current = projectId;
+    setFocusedPlanspaceId(resolved);
+    /* Persist the resolution so the next open of this project is a storage
+     * hit rather than a re-derivation — which matters once Phase 3 removes
+     * the `active` step and recency becomes the only inference left. */
+    if (resolved) writeFocusedLane(projectId, resolved);
+  }, [
+    focusedPlanspaceId,
+    hiddenPlanspaceIds,
+    knownPlanspaceIds,
+    session?.id,
+    sessionContextSpace?.active_planspace_id,
+  ]);
+
   const interruptNode = useCallback(
     (nodeId: string) => {
       if (status !== "open") return;
@@ -2549,6 +2647,9 @@ export function App() {
       onSelectPlanspace: (planspaceId) => {
         setSelection({ kind: "planspace", planspaceId });
         inspectNode(null);
+        /* Clicking a lane header is the most explicit focus request there
+         * is — the user named the lane itself, not a node inside it. */
+        focusPlanspace(planspaceId);
       },
       onTogglePlanspaceVisibility: togglePlanspaceVisibility,
       onCreateVirtual: createUnparentedVirtual,
@@ -2560,6 +2661,7 @@ export function App() {
   }, [
     activatePlanspace,
     createUnparentedVirtual,
+    focusPlanspace,
     inspectNode,
     sessionContextSpace?.resolved_binding_id,
     togglePlanspaceVisibility,
@@ -2622,6 +2724,21 @@ export function App() {
     } else if (sel.kind === "none") {
       inspectNode(null);
     }
+    /* Focus follows the click: selecting a node in lane B means the user is
+     * working in B, so B is where the `+`, the double-click create and the
+     * vertical jumps belong.
+     *
+     * Empty canvas (`kind: "none"`) deliberately does NOT clear focus. A
+     * click on the background is how the user dismisses the panel, and
+     * dropping focus there would leave the canvas with no create target
+     * until they clicked a node again. A node with no resolvable lane leaves
+     * focus alone too — `focusPlanspace` ignores a null id. */
+    if (sel.kind === "agent" || sel.kind === "op" || sel.kind === "artifact") {
+      const node = nodesRef.current.find((item) => item.id === sel.nodeId);
+      if (node) {
+        focusPlanspace(resolveNodePlanspaceId(node, nodesRef.current));
+      }
+    }
     /* Node clicks open the panel in details mode (overriding the library
      * if that was showing). Empty-canvas click closes it. */
     if (sel.kind === "none") {
@@ -2639,7 +2756,7 @@ export function App() {
     ) {
       setActivityFocusRequestVersion((version) => version + 1);
     }
-  }, [inspectNode]);
+  }, [focusPlanspace, inspectNode]);
 
   const onMultiSelectionChange = useCallback((ids: string[]) => {
     setMultiSelectedNodeIds(ids);
@@ -3225,7 +3342,10 @@ export function App() {
               knownPlanspaceIds={knownPlanspaceIds}
               activatablePlanspaceIds={activatablePlanspaceIds}
               hiddenPlanspaceIds={hiddenPlanspaceIds}
-              activePlanspaceId={sessionContextSpace?.active_planspace_id ?? null}
+              focusedPlanspaceId={focusedPlanspaceId}
+              executionTargetPlanspaceId={
+                sessionContextSpace?.active_planspace_id ?? null
+              }
               autoPlanspaceIds={Array.from(autoPlanspaceIds)}
               canCreateVirtual={!virtualCreateDisabled}
               templateInstances={templateInstances}
@@ -3527,7 +3647,7 @@ export function App() {
       sessionId={session?.id ?? null}
       template={instantiateTarget?.template ?? null}
       nodes={nodes}
-      activePlanspaceId={sessionContextSpace?.active_planspace_id ?? null}
+      focusedPlanspaceId={focusedPlanspaceId}
       anchorNodeId={instantiateTarget?.anchorNodeId ?? null}
       onCancel={() => setInstantiateTarget(null)}
       onApplied={(result) => {

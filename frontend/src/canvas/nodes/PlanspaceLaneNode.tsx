@@ -13,8 +13,8 @@ function PlanspaceLaneNodeImpl({ data }: NodeProps<PlanspaceLaneData>) {
         width: data.width,
         height: data.height,
         background: data.color.bg,
-        borderColor: data.active ? data.color.accent : data.color.border,
-        boxShadow: data.active ? `0 0 0 1px ${data.color.accent}` : undefined,
+        borderColor: data.focused ? data.color.accent : data.color.border,
+        boxShadow: data.focused ? `0 0 0 1px ${data.color.accent}` : undefined,
       }}
     >
       {/* The whole header is the drag handle (no inner buttons that would
@@ -35,18 +35,29 @@ function PlanspaceLaneNodeImpl({ data }: NodeProps<PlanspaceLaneData>) {
           aria-hidden="true"
         />
         <span className="truncate">{data.label}</span>
-        {data.active && (
-          <span className="flex-none rounded border border-current/30 px-1 py-px font-mono text-[9px] opacity-80">
-            active
+        {data.focused && (
+          <span className="flex-none rounded border border-current/30 px-1 py-px text-[9px] opacity-80">
+            当前
           </span>
         )}
-        {!data.active && data.auto && (
+        {/* The lane the backend would actually run in, shown only while it can
+          * differ from the focused one. Two badges look redundant precisely
+          * when they agree — and the point is to make the case where they do
+          * NOT agree impossible to miss, because that gap is what Phase 2
+          * removes. Both this badge and the `激活` button below go away with
+          * the field in Phase 3. */}
+        {data.executionTarget && !data.focused && (
+          <span className="flex-none rounded border border-current/30 px-1 py-px text-[9px] opacity-60">
+            执行目标
+          </span>
+        )}
+        {!data.executionTarget && data.auto && (
           <span className="flex-none rounded border border-current/30 px-1 py-px text-[9px] opacity-80">
             待激活
           </span>
         )}
         <span className="ml-auto flex-none font-mono opacity-70">{data.nodeCount} nodes</span>
-        {!data.active && data.canActivate && (
+        {!data.executionTarget && data.canActivate && (
           <button
             type="button"
             onClick={(e) => {
@@ -60,7 +71,9 @@ function PlanspaceLaneNodeImpl({ data }: NodeProps<PlanspaceLaneData>) {
             激活
           </button>
         )}
-        {data.active && (
+        {/* Create lands where the user is looking, not where the backend
+          * happens to point. This is the whole of Phase 1 in one line. */}
+        {data.focused && (
           <button
             type="button"
             onClick={(e) => {

@@ -85,6 +85,13 @@ export function shouldOpenCreatedPlanspace(activated: boolean): boolean {
   return activated;
 }
 
+/** When a node last did anything: finished, started, or failing both, when it
+ * was created. Shared by every "most recent first" ordering so a lane and the
+ * nodes inside it are never ranked by different clocks. */
+function nodeActivityAt(node: NodeInfo): number {
+  return Math.max(node.finished_at ?? 0, node.started_at ?? 0, node.created_at);
+}
+
 /** Lane nodes ordered from most to least recently active. Canvas placement
  * consumes the full list because the newest durable node is not necessarily
  * rendered: completed op nodes are omitted and collapsed template members are
@@ -93,20 +100,39 @@ export function nodeIdsByRecentActivityInLane(
   nodes: readonly NodeInfo[],
   planspaceId: string,
 ): string[] {
-  const activityOf = (node: NodeInfo): number =>
-    Math.max(
-      node.finished_at ?? 0,
-      node.started_at ?? 0,
-      node.created_at,
-    );
   return nodes
     .filter((node) => node.planspace_id === planspaceId)
     .sort((left, right) => {
-      const activityDelta = activityOf(right) - activityOf(left);
+      const activityDelta = nodeActivityAt(right) - nodeActivityAt(left);
       if (activityDelta !== 0) return activityDelta;
       return right.created_at - left.created_at;
     })
     .map((node) => node.id);
+}
+
+/** Lanes ordered from most to least recently active, restricted to `laneIds`.
+ * A lane's activity is that of its most recent node, so a lane with no nodes
+ * at all is absent from the result rather than sorted to the end — the caller
+ * is choosing where to put the user, and "never used" is not an answer worth
+ * ranking.
+ *
+ * This is how focus finds a home when nothing was remembered: the lane the
+ * user last worked in is the best available guess at where they left off. */
+export function lanesByRecentActivity(
+  nodes: readonly NodeInfo[],
+  laneIds: readonly string[],
+): string[] {
+  const allowed = new Set(laneIds.filter(Boolean));
+  const latest = new Map<string, number>();
+  for (const node of nodes) {
+    const laneId = node.planspace_id;
+    if (!laneId || !allowed.has(laneId)) continue;
+    const at = nodeActivityAt(node);
+    if (at > (latest.get(laneId) ?? -Infinity)) latest.set(laneId, at);
+  }
+  return [...latest.entries()]
+    .sort((left, right) => right[1] - left[1])
+    .map(([laneId]) => laneId);
 }
 
 /** The lane's most recently active durable node, independent of rendering. */

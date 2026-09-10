@@ -102,6 +102,11 @@ export type AgentPanelProps = {
   canMutate: boolean;
   mutationLock: NodeMutationLock;
   manualPromotionPlanspaceId: string | null;
+  /* Deliberately still the backend's `active_planspace_id`, not the focused
+   * lane: this drives the "该方向未激活" notice, which describes whether the
+   * node can actually be promoted. Focus is where the user is looking and
+   * has no bearing on that. Phase 2 removes the gate and this prop with it;
+   * pointing it at focus now would only hide the gate without lifting it. */
   activePlanspaceId: string | null;
   knownPlanspaceIds: string[];
   onActivatePlanspace: (planspaceId: string) => void;

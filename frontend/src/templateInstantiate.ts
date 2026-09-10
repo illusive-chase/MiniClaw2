@@ -191,18 +191,22 @@ export function pruneStaleBindings(
   return changed ? pruned : bindings;
 }
 
-/** Nodes in the active lane that may be bound to an input port.
+/** Nodes in the target lane that may be bound to an input port.
  *
  * Mirrors the backend's binding check, which loads the node and rejects
- * anything outside the active planspace. Obsolete nodes are filtered out
- * because depending on one is never what the user means.
+ * anything outside the lane being stamped into. Obsolete nodes are filtered
+ * out because depending on one is never what the user means.
+ *
+ * The lane is a parameter rather than a global: the caller knows which lane
+ * the stamp is going into (today, the focused one), and the filter must agree
+ * with that choice rather than with a separate cursor.
  */
 export function inputCandidates(
   nodes: NodeInfo[],
-  activePlanspaceId: string | null,
+  targetPlanspaceId: string | null,
 ): InputCandidate[] {
   return nodes
-    .filter((node) => (node.planspace_id ?? "") === (activePlanspaceId ?? ""))
+    .filter((node) => (node.planspace_id ?? "") === (targetPlanspaceId ?? ""))
     .filter((node) => !node.obsolete_reason)
     .map((node) => ({
       id: node.id,
