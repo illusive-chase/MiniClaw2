@@ -19,7 +19,12 @@ import yaml
 
 from fastapi.testclient import TestClient
 
-from miniclaw2.contextspace import read_template_ports
+from miniclaw2.contextspace import (
+    contextspace_root,
+    read_template_ports,
+    remove_planspace_from_binding,
+    resolve_project_binding,
+)
 from miniclaw2.domain import NodeState
 from miniclaw2.registry import ProjectRegistry
 from miniclaw2.store import Store
@@ -542,14 +547,22 @@ class EmbeddedSessionRoundTripTests(unittest.TestCase):
         )
 
     def test_session_without_a_direction_is_rejected(self) -> None:
+        """The lane comes from the session's own binding, not a cursor.
+
+        Dropping the plug is what "no direction" now means; clearing
+        ``active_planspace_id`` no longer has any bearing on the save path.
+        """
         with tempfile.TemporaryDirectory() as tmp:
             registry = ProjectRegistry(store=Store(root=Path(tmp)))
             _write_user_template(registry.store.root, "review-flow")
-            project, _lane = materialize_embedded_session(
+            project, lane = materialize_embedded_session(
                 load_user_template("review-flow", registry.store.root), registry
             )
-            project.active_planspace_id = None
-            registry.store.update_project(project)
+            binding = resolve_project_binding(
+                project, contextspace_root(registry.store.root)
+            )
+            assert binding is not None
+            self.assertTrue(remove_planspace_from_binding(binding, lane))
 
             with self.assertRaises(SerializerError):
                 serialize_embedded_session(registry, project, "review-flow")

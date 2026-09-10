@@ -976,6 +976,24 @@ def planspace_display_title(root: Path, planspace_id: str) -> str | None:
     )
 
 
+def list_project_planspace_ids(project: Project, root: Path) -> list[str]:
+    """Every planspace plug id reachable from ``project``'s binding.
+
+    Same expansion as :func:`resolve_active_planspace` (disabled plugs
+    dropped, ``requires`` followed) but without selecting one — callers that
+    act on all lanes rather than a single cursor use this. Binding order is
+    preserved so sweeps over the result are deterministic.
+    """
+    binding = resolve_project_binding(project, root)
+    if binding is None:
+        return []
+    return [
+        plug.id
+        for plug in _expand_required_plugs(root, binding.plugs)
+        if _plug_kind(plug.id) == "planspace"
+    ]
+
+
 def resolve_active_planspace(
     project: Project,
     root: Path,

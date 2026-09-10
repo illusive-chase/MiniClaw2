@@ -14,7 +14,6 @@ import sys
 import time
 from dataclasses import asdict, dataclass
 from collections.abc import Awaitable, Callable
-from functools import lru_cache
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -30,6 +29,7 @@ from .contextspace import (
     create_planspace,
     delete_planspace,
     delete_project_contextspace,
+    list_project_planspace_ids,
     normalize_principle_ids,
     read_planspace_mode,
     read_template_instances,
@@ -219,7 +219,6 @@ class VirtualPromotionResult:
 @dataclass(frozen=True)
 class PlanspaceCreationResult:
     node: Node
-    activated: bool
 
 
 @dataclass(frozen=True)
@@ -242,16 +241,6 @@ class NonNativeNodeError(PermissionError):
         self.node = node
 
 _PROMPTS_DIR = Path(__file__).with_name("prompts")
-_CONCIERGE_TEMPLATE = "concierge_bootstrap.md"
-
-
-@lru_cache(maxsize=1)
-def _concierge_template() -> str:
-    return (_PROMPTS_DIR / _CONCIERGE_TEMPLATE).read_text(encoding="utf-8")
-
-
-def _render_concierge_prompt(seed: str) -> str:
-    return _concierge_template().replace("<<user_seed>>", seed)
 
 
 def _normalize_project_root(cwd: str, *, create_missing: bool = False) -> str:
@@ -293,7 +282,6 @@ class ProjectRuntime:
         self.runner_tasks: dict[str, asyncio.Task[None]] = {}
         self.background_tasks: set[asyncio.Task[Any]] = set()
         self.priority_node_ids: list[str] = []
-        self.deferred_until_idle_node_ids: set[str] = set()
         self.closed = False
         self.reap_lock = asyncio.Lock()
         self.observers: dict[str, Callable[[dict[str, Any]], Awaitable[None]]] = {}
@@ -892,8 +880,6 @@ class ProjectRegistry:
             )
             rt.project.planspace_selection_explicit = True
         self.store.update_project(rt.project)
-        if active_planspace_id is not _UNSET:
-            self._auto_promote_eligible_virtuals(rt)
         return rt.project
 
     def update_layout_hints(
@@ -983,14 +969,9 @@ class ProjectRegistry:
             mode,
             store_root=self.store.root,
         )
-        active = resolve_active_planspace(
-            rt.project, contextspace_root(self.store.root)
-        )
-        active_lane = active[1].id if active is not None else ""
-        if (
-            written is PlanspaceMode.AUTO
-            and planspace_id == active_lane
-        ):
+        # Switching a lane to auto starts advancing it immediately; it no
+        # longer has to also be the lane the user is looking at.
+        if written is PlanspaceMode.AUTO:
             self._auto_promote_eligible_virtuals(rt)
         self.store.sync.schedule_commit(f"update planspace {planspace_id}")
         return written
@@ -1070,7 +1051,6 @@ class ProjectRegistry:
                 removed.append(node.id)
                 self._schedule_workspace_removed(rt.project, node)
             self._remove_workspace_artifacts(rt.project, node.id)
-            rt.deferred_until_idle_node_ids.discard(node.id)
         rt.priority_node_ids = [
             node_id for node_id in rt.priority_node_ids if node_id not in doomed
         ]
@@ -1408,6 +1388,7 @@ class ProjectRegistry:
         subtype: ReviewSubtype | None = None,
         brief: ReviewBrief | None = None,
         parent_node_id: str | None = None,
+        planspace_id: str | None = None,
         scheduled_deps: list[str] | None = None,
     ) -> Node | None:
         """Persist a queued agent node and schedule it when capacity exists."""
@@ -1471,10 +1452,11 @@ class ProjectRegistry:
         if skill_selections:
             settings_snapshot["extra_skills"] = skill_selections
 
-        active = resolve_active_planspace(
-            rt.project, contextspace_root(self.store.root)
-        )
-        active_lane = active[1].id if active is not None else None
+        # The caller states the lane; a resumed node inherits its source's
+        # lane so a continuation never jumps directions.
+        target_lane = (planspace_id or "").strip() or None
+        if target_lane is None and resume_source is not None:
+            target_lane = resume_source.planspace_id
         resume_locally = bool(
             resume_source is not None
             and self._can_resume_provider_session(resume_source)
@@ -1489,7 +1471,7 @@ class ProjectRegistry:
             brief=brief,
             state=NodeState.QUEUED,
             parent_node_id=actual_parent_id,
-            planspace_id=active_lane,
+            planspace_id=target_lane,
             model_preset_id=next_model_preset_id,
             provider_session_id=(
                 resume_source.provider_session_id if resume_locally else None
@@ -1553,7 +1535,6 @@ class ProjectRegistry:
         task = asyncio.create_task(coro if coro is not None else runner.run())
         rt.runners[node.id] = runner
         rt.runner_tasks[node.id] = task
-        rt.deferred_until_idle_node_ids.discard(node.id)
         task.add_done_callback(
             lambda _task, _rt=rt, _node_id=node.id: self._on_runner_done(
                 _rt, _node_id, _task
@@ -1564,8 +1545,6 @@ class ProjectRegistry:
     def _schedule_queued(self, rt: ProjectRuntime) -> None:
         if self._self_update_pending or not self.is_native_project(rt.project):
             return
-        if not rt.is_running():
-            rt.deferred_until_idle_node_ids.clear()
         while rt.has_capacity():
             if self._exclusive_node_active(rt):
                 return
@@ -1601,7 +1580,6 @@ class ProjectRegistry:
                     for node in self.store.list_nodes(rt.project.id)
                     if node.state is NodeState.QUEUED
                     and node.id not in rt.runner_tasks
-                    and node.id not in rt.deferred_until_idle_node_ids
                     and self.is_native_node(rt.project, node)
                 ),
                 key=lambda node: (node.created_at, node.id),
@@ -1832,7 +1810,9 @@ class ProjectRegistry:
         self._schedule_queued(rt)
         return self.store.load_node(pid, node.id) or node
 
-    async def spawn_code_review(self, pid: str) -> Node | None:
+    async def spawn_code_review(
+        self, pid: str, *, planspace_id: str | None = None
+    ) -> Node | None:
         rt = self._runtimes.get(pid)
         if rt is None:
             return None
@@ -1853,10 +1833,9 @@ class ProjectRegistry:
                 and existing.state in {NodeState.QUEUED, NodeState.RUNNING}
             ):
                 return existing
-        active = resolve_active_planspace(
-            rt.project, contextspace_root(self.store.root)
-        )
-        active_lane = active[1].id if active is not None else None
+        # The caller states the lane. An unlaned review is legitimate (no lane
+        # in focus), so a missing lane stays None rather than silently
+        # guessing the first lane.
         node = Node(
             project_id=pid,
             kind=NodeKind.AGENT,
@@ -1864,7 +1843,7 @@ class ProjectRegistry:
             subtype=ReviewSubtype.CODE_REVIEW,
             review_target=ReviewTarget(),
             state=NodeState.QUEUED,
-            planspace_id=active_lane,
+            planspace_id=(planspace_id or "").strip() or None,
             model_preset_id=default_code_review_model_preset_id(
                 store_root=self.store.root
             ),
@@ -1886,75 +1865,6 @@ class ProjectRegistry:
             return await asyncio.to_thread(read_git_status, rt.project.root_path), "pull in progress"
         from .git_state import git_push
         return await asyncio.to_thread(git_push, rt.project.root_path)
-
-    def create_planspace_and_launch_concierge(
-        self,
-        pid: str,
-        *,
-        title: str,
-        seed: str,
-        mode: str | None = None,
-        provider: str | None = None,
-        model_preset_id: str | None = None,
-    ) -> PlanspaceCreationResult | None:
-        """Create a new planspace and launch its concierge.
-
-        The concierge is a planning-category agent node whose prompt is
-        the rendered ``concierge_bootstrap.md`` template with the user's
-        free-form ``seed`` substituted in. A new lane is activated only when
-        the project is idle; otherwise the concierge remains queued without
-        changing the current lane.
-        """
-        rt = self._runtimes.get(pid)
-        if rt is None:
-            return None
-        self.require_native(pid)
-        if not seed.strip():
-            raise ValueError("seed must be non-empty")
-        if provider is not None:
-            raise ValueError("provider is no longer accepted; use model_preset_id")
-        next_model_preset_id = (
-            normalize_active_model_preset_id(
-                model_preset_id, store_root=self.store.root
-            )
-            if model_preset_id is not None
-            else rt.project.model_preset_id
-        )
-        normalized_mode = normalize_planspace_mode(mode)
-        activated = not rt.is_running()
-        self._preserve_implicit_active_planspace(rt, activated=activated)
-        plug_id = create_planspace(
-            rt.project,
-            title=title or "Direction",
-            mode=normalized_mode,
-            store_root=self.store.root,
-            seed_text=seed,
-        )
-        if activated:
-            rt.project.active_planspace_id = plug_id
-        rt.project.planspace_selection_explicit = True
-        self.store.update_project(rt.project)
-
-        prompt_text = _render_concierge_prompt(seed.strip())
-        node = Node(
-            project_id=pid,
-            kind=NodeKind.AGENT,
-            category=Category.PLANNING,
-            state=NodeState.QUEUED,
-            planspace_id=plug_id,
-            model_preset_id=next_model_preset_id,
-            prompt=prompt_text,
-        )
-        self.store.create_node(node)
-        self._schedule_workspace_node(rt.project, node, None, created=True)
-
-        if not activated:
-            rt.deferred_until_idle_node_ids.add(node.id)
-        self._schedule_queued(rt)
-        return PlanspaceCreationResult(
-            node=self.store.load_node(pid, node.id) or node,
-            activated=activated,
-        )
 
     def create_blank_planspace(
         self,
@@ -1983,8 +1893,13 @@ class ProjectRegistry:
             else rt.project.model_preset_id
         )
         normalized_mode = normalize_planspace_mode(mode)
-        activated = not rt.is_running()
-        self._preserve_implicit_active_planspace(rt, activated=activated)
+        # Creating a direction no longer depends on whether the project is
+        # idle, and no longer moves a global cursor: the new lane is simply
+        # created, and the client focuses it. The implicit single-lane
+        # selection is still made durable first so that adding a second lane
+        # cannot silently change which lane an existing project resolves to
+        # while ``active_planspace_id`` remains on the model.
+        self._preserve_implicit_active_planspace(rt)
         plug_id = create_planspace(
             rt.project,
             title=title or seed.strip() or "Direction",
@@ -1992,9 +1907,6 @@ class ProjectRegistry:
             store_root=self.store.root,
             seed_text=seed,
         )
-        if activated:
-            rt.project.active_planspace_id = plug_id
-        rt.project.planspace_selection_explicit = True
         self.store.update_project(rt.project)
 
         node = self.create_virtual(
@@ -2009,16 +1921,14 @@ class ProjectRegistry:
         )
         if node is None:
             return None
-        return PlanspaceCreationResult(node=node, activated=activated)
+        return PlanspaceCreationResult(node=node)
 
     def _preserve_implicit_active_planspace(
         self,
         rt: ProjectRuntime,
-        *,
-        activated: bool,
     ) -> None:
         """Make a single-lane implicit selection durable before adding a lane."""
-        if activated or rt.project.active_planspace_id:
+        if rt.project.active_planspace_id:
             return
         active = resolve_active_planspace(
             rt.project, contextspace_root(self.store.root)
@@ -2031,27 +1941,48 @@ class ProjectRegistry:
     # ---- auto-promotion ----
 
     def _auto_promote_eligible_virtuals(self, rt: ProjectRuntime) -> None:
-        """Queue every currently eligible virtual on an auto planspace."""
+        """Queue every currently eligible virtual on every auto planspace.
+
+        Auto lanes are autonomous: each one advances on its own, with no
+        project-level armed state. Concurrency is bounded by the project's
+        ``concurrency`` setting and the global deterministic queue, not by
+        letting only one lane make progress at a time.
+        """
         project = rt.project
-        active_lane = project.active_planspace_id or ""
-        if not active_lane:
-            return
+        for lane_id in self._auto_lane_ids(project):
+            while True:
+                candidate = self._next_promotion_candidate(project.id, lane_id)
+                if candidate is None:
+                    break
+                if self.promote_virtual(project.id, candidate.id) is None:
+                    break
+        self._schedule_queued(rt)
+
+    def _auto_lane_ids(self, project: Project) -> list[str]:
+        """Return every planspace on ``project`` whose mode is ``auto``.
+
+        Lanes whose mode cannot be read are skipped rather than treated as
+        auto — an unreadable mode must never cause unattended execution.
+        """
+        out: list[str] = []
         try:
-            mode = read_planspace_mode(
-                project, active_lane, store_root=self.store.root
+            lane_ids = list_project_planspace_ids(
+                project, contextspace_root(self.store.root)
             )
         except Exception:  # noqa: BLE001
-            logger.exception("planspace mode lookup failed")
-            return
-        if mode is not PlanspaceMode.AUTO:
-            return
-        while True:
-            candidate = self._next_promotion_candidate(project.id, active_lane)
-            if candidate is None:
-                break
-            if self.promote_virtual(project.id, candidate.id) is None:
-                break
-        self._schedule_queued(rt)
+            logger.exception("binding lookup failed during auto-promotion sweep")
+            return out
+        for lane_id in lane_ids:
+            try:
+                mode = read_planspace_mode(
+                    project, lane_id, store_root=self.store.root
+                )
+            except Exception:  # noqa: BLE001
+                logger.exception("planspace mode lookup failed")
+                continue
+            if mode is PlanspaceMode.AUTO:
+                out.append(lane_id)
+        return out
 
     def promote_next_virtual(self, pid: str) -> None:
         """Run one auto-promotion pass for callers that just seeded a lane."""
@@ -2164,17 +2095,9 @@ class ProjectRegistry:
                 "prompt_required",
                 "Virtual node needs a prompt before it can be promoted.",
             )
-        active = resolve_active_planspace(
-            rt.project, contextspace_root(self.store.root)
-        )
-        active_lane = active[1].id if active is not None else ""
-        node_lane = node.planspace_id or ""
-        if node_lane != active_lane:
-            return VirtualPromotionResult(
-                None,
-                "outside_active_planspace",
-                "Virtual node is outside the active planspace.",
-            )
+        # Promotion is decided by the node's own lane, not by a global cursor.
+        # ``scheduled_deps`` are constrained to the same lane at create/edit
+        # time, so cross-lane promotion cannot leak dependencies either way.
         blockers: list[str] = []
         for dep in node.scheduled_deps:
             parent = self.store.load_node(pid, dep)
@@ -2582,11 +2505,13 @@ class ProjectRegistry:
         except RuntimeError:
             pass
 
-        active_lane = rt.project.active_planspace_id or ""
-        if not _defer_auto_promotion and active_lane == lane_id:
+        # Only this node's own lane mode decides whether creating it starts
+        # execution. Auto lanes are autonomous regardless of what the user is
+        # looking at.
+        if not _defer_auto_promotion and lane_id:
             try:
                 mode = read_planspace_mode(
-                    rt.project, active_lane, store_root=self.store.root
+                    rt.project, lane_id, store_root=self.store.root
                 )
             except Exception:  # noqa: BLE001
                 logger.exception("planspace mode lookup failed")
@@ -2879,11 +2804,11 @@ class ProjectRegistry:
             }))
         except RuntimeError:
             pass
-        active_lane = rt.project.active_planspace_id or ""
-        if active_lane == lane_id:
+        # As in ``create_virtual``: the edited node's own lane mode decides.
+        if lane_id:
             try:
                 mode = read_planspace_mode(
-                    rt.project, active_lane, store_root=self.store.root
+                    rt.project, lane_id, store_root=self.store.root
                 )
             except Exception:  # noqa: BLE001
                 logger.exception("planspace mode lookup failed")
@@ -3033,7 +2958,6 @@ class ProjectRegistry:
                 removed.append(member.id)
                 self._schedule_workspace_removed(rt.project, member)
             self._remove_workspace_artifacts(rt.project, member.id)
-            rt.deferred_until_idle_node_ids.discard(member.id)
         rt.priority_node_ids = [
             node_id for node_id in rt.priority_node_ids if node_id not in doomed
         ]

@@ -223,7 +223,7 @@ class BlankPlanspaceRegistryTests(unittest.TestCase):
         os.environ.pop("MINICLAW_CONTEXT_HOME", None)
         self.tmp.cleanup()
 
-    def test_create_blank_planspace_seeds_empty_virtual_and_activates_lane(self) -> None:
+    def test_create_blank_planspace_seeds_empty_virtual(self) -> None:
         result = self.registry.create_blank_planspace(
             self.project.id,
             title="Auth flow",
@@ -233,7 +233,6 @@ class BlankPlanspaceRegistryTests(unittest.TestCase):
 
         self.assertIsNotNone(result)
         assert result is not None
-        self.assertTrue(result.activated)
         node = result.node
         self.assertEqual(node.state, NodeState.VIRTUAL)
         self.assertEqual(node.prompt_draft, "")
@@ -244,10 +243,6 @@ class BlankPlanspaceRegistryTests(unittest.TestCase):
 
         project = self.registry.get_project(self.project.id)
         assert project is not None
-        self.assertEqual(
-            project.active_planspace_id,
-            "planspaces.blank-project.auth-flow",
-        )
 
         root = Path(os.environ["MINICLAW_CONTEXT_HOME"])
         manifest_path = (
@@ -316,7 +311,13 @@ class BlankPlanspaceRegistryTests(unittest.TestCase):
                 mode="manual",
             )
 
-    def test_create_blank_planspace_while_running_preserves_active_lane(self) -> None:
+    def test_create_blank_planspace_while_running_does_not_move_the_cursor(self) -> None:
+        """Creating a lane never moves the execution cursor, busy or idle.
+
+        Before the focus refactor, an idle project would activate the new lane
+        and a busy one would not. Creation is now cursor-neutral in both
+        cases: the client focuses the returned lane locally.
+        """
         first = self.registry.create_blank_planspace(
             self.project.id,
             title="Current",
@@ -339,14 +340,18 @@ class BlankPlanspaceRegistryTests(unittest.TestCase):
 
         self.assertIsNotNone(result)
         assert result is not None
-        self.assertFalse(result.activated)
         self.assertEqual(result.node.state, NodeState.VIRTUAL)
         self.assertNotEqual(result.node.planspace_id, old_lane)
         project = self.registry.get_project(self.project.id)
         assert project is not None
         self.assertEqual(project.active_planspace_id, old_lane)
 
-    def test_running_creation_preserves_implicit_single_active_lane(self) -> None:
+    def test_creation_preserves_implicit_single_active_lane(self) -> None:
+        """An implicit single-lane selection is made durable before a 2nd lane.
+
+        While ``active_planspace_id`` still exists on the model, adding a lane
+        must not change which lane an existing project resolves to.
+        """
         first = self.registry.create_blank_planspace(
             self.project.id,
             title="Implicit",
@@ -359,48 +364,30 @@ class BlankPlanspaceRegistryTests(unittest.TestCase):
         self.project.planspace_selection_explicit = False
         self.store.update_project(self.project)
 
-        runtime = self.registry._runtimes[self.project.id]
-        runtime.runner_tasks["busy"] = _PendingTask()  # type: ignore[assignment]
-        try:
-            result = self.registry.create_blank_planspace(
-                self.project.id,
-                title="Second",
-                seed="Second work",
-                mode="manual",
-            )
-        finally:
-            runtime.runner_tasks["busy"].cancel()
+        result = self.registry.create_blank_planspace(
+            self.project.id,
+            title="Second",
+            seed="Second work",
+            mode="manual",
+        )
 
         assert result is not None
-        self.assertFalse(result.activated)
         project = self.registry.get_project(self.project.id)
         assert project is not None
         self.assertEqual(project.active_planspace_id, old_lane)
 
-    def test_busy_first_blank_lane_stays_inactive_and_persists_binding(self) -> None:
-        runtime = self.registry._runtimes[self.project.id]
-        runtime.runner_tasks["busy"] = _PendingTask()  # type: ignore[assignment]
-        try:
-            result = self.registry.create_blank_planspace(
-                self.project.id,
-                title="Queued first lane",
-                seed="Prepare queued work",
-                mode="auto",
-            )
-        finally:
-            runtime.runner_tasks["busy"].cancel()
+    def test_first_blank_lane_does_not_become_the_cursor(self) -> None:
+        result = self.registry.create_blank_planspace(
+            self.project.id,
+            title="Queued first lane",
+            seed="Prepare queued work",
+            mode="auto",
+        )
 
         assert result is not None
-        self.assertFalse(result.activated)
         project = self.registry.get_project(self.project.id)
         assert project is not None
         self.assertIsNone(project.active_planspace_id)
-        self.assertTrue(project.planspace_selection_explicit)
-        self.assertIsNone(
-            describe_project_contextspace(
-                project, store_root=self.store.root
-            )["active_planspace_id"]
-        )
         persisted = {
             item.id: item for item in Store(root=self.store.root).list_projects()
         }[self.project.id]
@@ -410,7 +397,12 @@ class BlankPlanspaceRegistryTests(unittest.TestCase):
         )
         self.assertIsNotNone(persisted.project_context_binding_id)
 
-    def test_activating_planspace_runs_auto_promotion_pass(self) -> None:
+    def test_changing_the_cursor_no_longer_triggers_auto_promotion(self) -> None:
+        """Auto lanes advance on their own, not because the cursor moved.
+
+        The cursor is a view concept now; coupling execution to it is exactly
+        what the focus refactor removes.
+        """
         result = self.registry.create_blank_planspace(
             self.project.id,
             title="Auto",
@@ -418,7 +410,6 @@ class BlankPlanspaceRegistryTests(unittest.TestCase):
             mode="auto",
         )
         assert result is not None
-        runtime = self.registry._runtimes[self.project.id]
 
         with patch.object(
             self.registry, "_auto_promote_eligible_virtuals"
@@ -428,7 +419,7 @@ class BlankPlanspaceRegistryTests(unittest.TestCase):
                 active_planspace_id=result.node.planspace_id,
             )
 
-        promote.assert_called_once_with(runtime)
+        promote.assert_not_called()
 
 
 class _PendingTask:

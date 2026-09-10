@@ -148,7 +148,6 @@ export type PlanspaceLaneData = {
    * every manual lane executable and Phase 3 deletes this. */
   executionTarget: boolean;
   auto: boolean;
-  canActivate: boolean;
   canCreateVirtual: boolean;
 };
 
@@ -667,8 +666,6 @@ export type BuildGraphArgs = {
   contextBundlesByNodeId: Record<string, ContextBundle | null | undefined>;
   /** planspaces known from the project binding, including empty lanes */
   knownPlanspaceIds: string[];
-  /** planspaces in the currently resolved binding */
-  activatablePlanspaceIds: string[];
   /** planspaces hidden by per-project view state */
   hiddenPlanspaceIds: string[];
   /** The lane the user is looking at: gets the accent border and the header
@@ -1052,7 +1049,6 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
     layoutHints,
     contextBundlesByNodeId,
     knownPlanspaceIds,
-    activatablePlanspaceIds,
     hiddenPlanspaceIds,
     focusedPlanspaceId,
     executionTargetPlanspaceId = null,
@@ -2413,7 +2409,6 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
         focused: planspaceId === focusedPlanspaceId,
         executionTarget: planspaceId === executionTargetPlanspaceId,
         auto: autoPlanspaceIds.includes(planspaceId),
-        canActivate: activatablePlanspaceIds.includes(planspaceId),
         canCreateVirtual,
       },
       selectable: true,

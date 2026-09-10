@@ -43,11 +43,6 @@ export type ProjectPanelProps = {
   onSelectContextBinding: (binding_id: string) => void;
   onPreferredLanguageChange: (preferredLanguage: string | null) => void;
   onConcurrencyChange: (concurrency: number) => void;
-  onNewDirection: (
-    userSeed: string,
-    mode: PlanspaceMode,
-    modelPresetId: string,
-  ) => void;
   onStartBlankDirection: (
     userSeed: string,
     mode: PlanspaceMode,
@@ -66,8 +61,9 @@ export type ProjectPanelProps = {
 /**
  * Side panel when the project root is selected.
  *
- * Project-root actions are concierge-style: creating a direction launches the
- * bootstrap agent node, while CONTEXT.md init/refresh stay out of the timeline.
+ * Creating a direction seeds one empty virtual for the user to fill in; no
+ * agent is launched by the act of creating it. CONTEXT.md init/refresh stay
+ * out of the timeline.
  */
 export function ProjectPanel({
   session,
@@ -83,7 +79,6 @@ export function ProjectPanel({
   onSelectContextBinding,
   onPreferredLanguageChange,
   onConcurrencyChange,
-  onNewDirection,
   onStartBlankDirection,
   onImportSkill,
   onContextInit,
@@ -207,7 +202,7 @@ export function ProjectPanel({
     );
   }
 
-  const submitNewDirection = (kind: "concierge" | "blank") => {
+  const submitNewDirection = () => {
     const trimmed = seed.trim();
     if (!trimmed || busy) return;
     const modelPresetId = defaultModelPresetId(
@@ -215,11 +210,7 @@ export function ProjectPanel({
       newDirectionModelPresetId || session.model_preset_id,
     );
     if (!modelPresetId) return;
-    if (kind === "concierge") {
-      onNewDirection(trimmed, newDirectionMode, modelPresetId);
-    } else {
-      onStartBlankDirection(trimmed, newDirectionMode, modelPresetId);
-    }
+    onStartBlankDirection(trimmed, newDirectionMode, modelPresetId);
     setSeed("");
     setNewDirectionMode("manual");
     setNewDirectionModelPresetId(defaultModelPresetId(modelPresets, session.model_preset_id));
@@ -499,19 +490,11 @@ export function ProjectPanel({
                 <button
                   type="button"
                   disabled={busy || seed.trim().length === 0 || !newDirectionModelPresetId}
-                  onClick={() => submitNewDirection("concierge")}
+                  onClick={submitNewDirection}
+                  title="新方向以一个空节点开始，由你自己填写。"
                   className="rounded-md bg-brand px-2.5 py-1 text-[11px] font-medium text-white shadow-card transition hover:brightness-[0.95] disabled:cursor-not-allowed disabled:opacity-40"
                 >
-                  Draft with concierge
-                </button>
-                <button
-                  type="button"
-                  disabled={busy || seed.trim().length === 0 || !newDirectionModelPresetId}
-                  onClick={() => submitNewDirection("blank")}
-                  title="Skip the concierge - start with one empty virtual you'll fill in yourself."
-                  className="rounded-md border border-line-strong bg-surface-raised px-2.5 py-1 text-[11px] font-medium text-ink transition hover:border-brand hover:text-ink-strong disabled:cursor-not-allowed disabled:opacity-40"
-                >
-                  Start blank
+                  Create direction
                 </button>
               </div>
             </div>
@@ -654,7 +637,6 @@ function DirectionRow({
               {plug.slug}
               {plug.mode ? ` · ${plug.mode}` : ""}
               {plug.active ? " · active" : ""}
-              {plug.mode === "auto" && !plug.active ? " · 待激活" : ""}
               {hidden ? " · hidden" : ""}
             </span>
           </span>

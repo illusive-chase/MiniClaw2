@@ -236,7 +236,7 @@ class Node(BaseModel):
     kind: NodeKind = NodeKind.AGENT
     op_kind: str | None = None
     # Marks agent-node variants that need special launch handling (e.g.
-    # ``"principle_edit"`` for the concierge that authors principles). Kept
+    # ``"principle_edit"`` for the agent that authors principles). Kept
     # as ``str | None`` — see ``KNOWN_AGENT_OP_KINDS`` for the whitelist.
     agent_op_kind: str | None = None
     state: NodeState = NodeState.QUEUED

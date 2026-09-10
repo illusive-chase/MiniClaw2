@@ -81,10 +81,6 @@ export function shouldOpenInteractionNode(
   );
 }
 
-export function shouldOpenCreatedPlanspace(activated: boolean): boolean {
-  return activated;
-}
-
 /** When a node last did anything: finished, started, or failing both, when it
  * was created. Shared by every "most recent first" ordering so a lane and the
  * nodes inside it are never ranked by different clocks. */

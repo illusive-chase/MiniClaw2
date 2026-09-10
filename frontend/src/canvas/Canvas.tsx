@@ -178,7 +178,6 @@ export type CanvasProps = {
   pendingGateNodeIds?: string[];
   contextBundlesByNodeId: Record<string, ContextBundle | null | undefined>;
   knownPlanspaceIds: string[];
-  activatablePlanspaceIds: string[];
   hiddenPlanspaceIds: string[];
   /** The lane the user is looking at. Drives the lane accent, the header `+`,
    * the double-click create target and the vertical jump controls. View
@@ -298,7 +297,6 @@ function CanvasInner({
   pendingGateNodeIds = [],
   contextBundlesByNodeId,
   knownPlanspaceIds,
-  activatablePlanspaceIds,
   hiddenPlanspaceIds,
   focusedPlanspaceId,
   executionTargetPlanspaceId = null,
@@ -439,8 +437,7 @@ function CanvasInner({
         layoutHints: layoutHintsRef.current,
         contextBundlesByNodeId,
         knownPlanspaceIds,
-        activatablePlanspaceIds,
-        hiddenPlanspaceIds,
+              hiddenPlanspaceIds,
         focusedPlanspaceId,
         executionTargetPlanspaceId,
         autoPlanspaceIds,
@@ -461,8 +458,7 @@ function CanvasInner({
       activeNodeIds,
       contextBundlesByNodeId,
       knownPlanspaceIds,
-      activatablePlanspaceIds,
-      hiddenPlanspaceIds,
+          hiddenPlanspaceIds,
       focusedPlanspaceId,
       executionTargetPlanspaceId,
       autoPlanspaceIds,

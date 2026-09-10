@@ -19,10 +19,11 @@ type Props = {
   sessionId: string | null;
   template: TemplateSummary | null;
   nodes: NodeInfo[];
-  /** Lane whose nodes may be bound to the template's input ports. Phase 2
-   * widens this to a target lane derived from the drop object; today it is
-   * simply the lane the user is looking at. */
-  focusedPlanspaceId: string | null;
+  /** The lane the template will be stamped into: the drop object's lane when
+   * the card was dropped onto something, otherwise the focused lane. Both the
+   * input-port candidates and the apply request derive from it, so the
+   * candidates a user can pick are exactly the ones the backend will accept. */
+  planspaceId: string | null;
   /** Node the card was dropped onto, prefilled into the first input port. */
   anchorNodeId: string | null;
   onCancel: () => void;
@@ -39,7 +40,7 @@ export function InstantiateTemplateModal({
   sessionId,
   template,
   nodes,
-  focusedPlanspaceId,
+  planspaceId,
   anchorNodeId,
   onCancel,
   onApplied,
@@ -52,8 +53,8 @@ export function InstantiateTemplateModal({
   const firstFieldRef = useRef<HTMLInputElement | HTMLSelectElement | null>(null);
 
   const candidates = useMemo(
-    () => inputCandidates(nodes, focusedPlanspaceId),
-    [nodes, focusedPlanspaceId],
+    () => inputCandidates(nodes, planspaceId),
+    [nodes, planspaceId],
   );
 
   /* Reset per opening, not per render: the dialog keeps whatever the user
@@ -106,7 +107,13 @@ export function InstantiateTemplateModal({
       const res = await applyUserTemplate(
         sessionId,
         template.slug,
-        buildInstantiateRequest(template, values, bindings, anchorNodeId),
+        buildInstantiateRequest(
+          template,
+          values,
+          bindings,
+          anchorNodeId,
+          planspaceId ?? "",
+        ),
       );
       onApplied({ instanceId: res.instance_id, nodeIds: res.node_ids });
     } catch (err) {

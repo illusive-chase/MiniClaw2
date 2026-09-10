@@ -32,7 +32,11 @@ from uuid import uuid4
 
 import yaml
 
-from ..contextspace import read_template_ports
+from ..contextspace import (
+    contextspace_root,
+    list_project_planspace_ids,
+    read_template_ports,
+)
 from ..domain import (
     ArtifactMode,
     Category,
@@ -323,10 +327,20 @@ def serialize_embedded_session(
     the rewrite path already accepts ``inputs`` and ``motivation`` and already
     validates a candidate directory before replacing the live one, whereas
     ``serialize_selection`` hardcodes ``inputs: []`` and would drop every port.
+    An embedded editing session owns exactly one lane by construction (see
+    ``launcher.materialize_embedded_session``), so the lane is derived from the
+    session itself rather than read off a project-level cursor.
     """
-    lane_id = project.active_planspace_id or ""
-    if not lane_id:
-        raise SerializerError("embedded session has no active direction")
+    lane_ids = list_project_planspace_ids(
+        project, contextspace_root(registry.store.root)
+    )
+    if not lane_ids:
+        raise SerializerError("embedded session has no direction")
+    if len(lane_ids) > 1:
+        raise SerializerError(
+            "embedded session has more than one direction; cannot save"
+        )
+    lane_id = lane_ids[0]
 
     store = registry.store
     nodes = [

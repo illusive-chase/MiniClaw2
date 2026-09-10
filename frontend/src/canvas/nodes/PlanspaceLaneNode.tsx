@@ -43,34 +43,25 @@ function PlanspaceLaneNodeImpl({ data }: NodeProps<PlanspaceLaneData>) {
         {/* The lane the backend would actually run in, shown only while it can
           * differ from the focused one. Two badges look redundant precisely
           * when they agree — and the point is to make the case where they do
-          * NOT agree impossible to miss, because that gap is what Phase 2
-          * removes. Both this badge and the `激活` button below go away with
-          * the field in Phase 3. */}
+          * NOT agree impossible to miss. Removed with the field in Phase 3. */}
         {data.executionTarget && !data.focused && (
           <span className="flex-none rounded border border-current/30 px-1 py-px text-[9px] opacity-60">
             执行目标
           </span>
         )}
-        {!data.executionTarget && data.auto && (
-          <span className="flex-none rounded border border-current/30 px-1 py-px text-[9px] opacity-80">
-            待激活
+        {/* Auto lanes advance on their own, whether or not anyone is looking
+          * at them, so this is a permanent property of the lane rather than
+          * a "waiting to be activated" state. */}
+        {data.auto && (
+          <span
+            className="flex-none rounded border px-1 py-px text-[9px] font-medium"
+            style={{ borderColor: data.color.accent, color: data.color.accent }}
+            title="自动方向：依赖满足后自动开始执行"
+          >
+            ⟳ 自动
           </span>
         )}
         <span className="ml-auto flex-none font-mono opacity-70">{data.nodeCount} nodes</span>
-        {!data.executionTarget && data.canActivate && (
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              planspaceLaneContext.onActivatePlanspace(data.planspaceId);
-            }}
-            onMouseDown={(e) => e.stopPropagation()}
-            className="nodrag -mr-1 inline-flex h-5 flex-none items-center justify-center rounded border border-current/30 bg-surface-raised/70 px-1.5 text-[9px] opacity-90 transition hover:bg-surface-raised"
-            title="激活此方向"
-          >
-            激活
-          </button>
-        )}
         {/* Create lands where the user is looking, not where the backend
           * happens to point. This is the whole of Phase 1 in one line. */}
         {data.focused && (
@@ -100,14 +91,12 @@ export type PlanspaceLaneContext = {
   onSelectPlanspace: (planspaceId: string) => void;
   onTogglePlanspaceVisibility: (planspaceId: string, hidden: boolean) => void;
   onCreateVirtual: (planspaceId: string) => void;
-  onActivatePlanspace: (planspaceId: string) => void;
 };
 
 let planspaceLaneContext: PlanspaceLaneContext = {
   onSelectPlanspace: () => {},
   onTogglePlanspaceVisibility: () => {},
   onCreateVirtual: () => {},
-  onActivatePlanspace: () => {},
 };
 
 export function setPlanspaceLaneContext(ctx: PlanspaceLaneContext): void {

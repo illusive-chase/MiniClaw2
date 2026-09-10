@@ -8,6 +8,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from miniclaw2.contextspace import create_planspace
 from miniclaw2.domain import (
@@ -359,6 +360,88 @@ class AutoPromoteOnRunnerDoneTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotEqual(reloaded.state, NodeState.VIRTUAL)
         self.assertEqual(reloaded.prompt, "follow up")
 
+    async def test_parallel_promotion_across_lanes_is_not_serialized(self) -> None:
+        """Two manual lanes each promote; neither blocks the other.
+
+        The Phase 2 safety net for removing the Promote gate: lanes are
+        limited by project concurrency, not by taking turns being "active".
+        """
+        lane_a = create_planspace(self.project, title="a", mode="manual")
+        lane_b = create_planspace(self.project, title="b", mode="manual")
+        rt = self.registry._runtimes[self.project.id]
+        # Enough capacity for both so a queue limit cannot mask serialization.
+        rt.project.concurrency = 2
+        self.store.update_project(rt.project)
+        virtual_a = self._make_virtual(lane_a, prompt_draft="lane a work")
+        virtual_b = self._make_virtual(lane_b, prompt_draft="lane b work")
+
+        with patch.object(self.registry, "_launch_node", return_value=None):
+            result_a = self.registry.promote_virtual(self.project.id, virtual_a.id)
+            result_b = self.registry.promote_virtual(self.project.id, virtual_b.id)
+
+        self.assertIsNotNone(result_a)
+        self.assertIsNotNone(result_b)
+        for virtual, lane in ((virtual_a, lane_a), (virtual_b, lane_b)):
+            reloaded = self.store.load_node(self.project.id, virtual.id)
+            assert reloaded is not None
+            self.assertEqual(reloaded.state, NodeState.QUEUED)
+            self.assertEqual(reloaded.planspace_id, lane)
+
+    async def test_each_lane_launches_with_its_own_context_snapshot(self) -> None:
+        """Removing the gate must not remove per-lane context isolation.
+
+        Each launched node's snapshot must name its own lane. If these ever
+        collide, two directions are sharing one context — the exact failure
+        the Promote gate used to mask.
+        """
+        lane_a = create_planspace(self.project, title="ctx-a", mode="manual")
+        lane_b = create_planspace(self.project, title="ctx-b", mode="manual")
+        rt = self.registry._runtimes[self.project.id]
+        rt.project.concurrency = 2
+        self.store.update_project(rt.project)
+        virtual_a = self._make_virtual(lane_a, prompt_draft="a")
+        virtual_b = self._make_virtual(lane_b, prompt_draft="b")
+
+        snapshots: dict[str, str | None] = {}
+
+        def _capture(runtime: object, node: Node, *args: object, **kwargs: object):
+            # Mirrors runner.py's own rule: the snapshot records the node's
+            # own lane, under the frozen `active_planspace_id` key.
+            snapshots[node.id] = node.planspace_id
+            # Register the "launch" so the scheduler moves on to the next
+            # queued node instead of retrying this one.
+            done = asyncio.get_running_loop().create_future()
+            done.set_result(None)
+            runtime.runner_tasks[node.id] = done  # type: ignore[attr-defined]
+            return self._stub_runner(node)
+
+        with patch.object(self.registry, "_launch_node", side_effect=_capture):
+            self.registry.promote_virtual(self.project.id, virtual_a.id)
+            self.registry.promote_virtual(self.project.id, virtual_b.id)
+
+        self.assertEqual(snapshots.get(virtual_a.id), lane_a)
+        self.assertEqual(snapshots.get(virtual_b.id), lane_b)
+        self.assertNotEqual(snapshots[virtual_a.id], snapshots[virtual_b.id])
+
+    async def test_auto_lanes_advance_without_being_the_cursor(self) -> None:
+        """Every auto lane is autonomous, including ones nobody is viewing."""
+        lane_manual = create_planspace(
+            self.project, title="cursor-manual", mode="manual"
+        )
+        lane_auto = create_planspace(self.project, title="elsewhere", mode="auto")
+        rt = self.registry._runtimes[self.project.id]
+        # The cursor points at an unrelated manual lane.
+        rt.project.active_planspace_id = lane_manual
+        self.store.update_project(rt.project)
+        virtual = self._make_virtual(lane_auto, prompt_draft="auto work")
+
+        with patch.object(self.registry, "_launch_node", return_value=None):
+            self.registry._auto_promote_eligible_virtuals(rt)
+
+        reloaded = self.store.load_node(self.project.id, virtual.id)
+        assert reloaded is not None
+        self.assertEqual(reloaded.state, NodeState.QUEUED)
+
     async def test_enabling_auto_mode_promotes_existing_eligible_virtual(self) -> None:
         plug_id = create_planspace(
             self.project, title="manual-first", mode="manual"
@@ -421,24 +504,31 @@ class AutoPromoteOnRunnerDoneTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.code, "dependencies_not_terminal")
         self.assertEqual(result.blockers, (running.id,))
 
-    async def test_promote_virtual_rejects_non_active_lane(self) -> None:
-        active_lane = create_planspace(
+    async def test_promote_virtual_succeeds_outside_the_cursor_lane(self) -> None:
+        """Promotion is decided by the node's own lane, not a global cursor.
+
+        Semantics reversed by the focus refactor: the cursor is a view
+        concept, so a virtual in any manual lane is promotable regardless of
+        where the cursor happens to point.
+        """
+        cursor_lane = create_planspace(
             self.project, title="active", mode="manual"
         )
         other_lane = create_planspace(
             self.project, title="other", mode="manual"
         )
         rt = self.registry._runtimes[self.project.id]
-        rt.project.active_planspace_id = active_lane
+        rt.project.active_planspace_id = cursor_lane
         self.store.update_project(rt.project)
-        virtual = self._make_virtual(other_lane, prompt_draft="wrong lane")
+        virtual = self._make_virtual(other_lane, prompt_draft="other lane")
 
         runner = self.registry.promote_virtual(self.project.id, virtual.id)
 
-        self.assertIsNone(runner)
+        self.assertIsNotNone(runner)
         reloaded = self.store.load_node(self.project.id, virtual.id)
         assert reloaded is not None
-        self.assertEqual(reloaded.state, NodeState.VIRTUAL)
+        self.assertEqual(reloaded.state, NodeState.QUEUED)
+        self.assertEqual(reloaded.planspace_id, other_lane)
 
     async def test_promote_virtual_preserves_virtual_preview(self) -> None:
         plug_id = create_planspace(

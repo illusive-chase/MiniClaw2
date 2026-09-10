@@ -12,6 +12,9 @@ import type {
 } from "./types";
 
 export type TemplateInstantiateRequest = {
+  /** The lane to stamp into. The backend no longer infers one, so an empty
+   * value is a caller bug rather than "use the current direction". */
+  planspace_id: string;
   anchor_node_id: string | null;
   arguments: Record<string, string>;
   input_bindings: Record<string, string>;
@@ -198,8 +201,9 @@ export function pruneStaleBindings(
  * out because depending on one is never what the user means.
  *
  * The lane is a parameter rather than a global: the caller knows which lane
- * the stamp is going into (today, the focused one), and the filter must agree
- * with that choice rather than with a separate cursor.
+ * the stamp is going into (the drop object's lane, else the focused one), and
+ * the same value is sent as the request's `planspace_id`, so every candidate
+ * offered here is one the backend will accept.
  */
 export function inputCandidates(
   nodes: NodeInfo[],
@@ -248,6 +252,7 @@ export function buildInstantiateRequest(
   values: Record<string, string>,
   bindings: Record<string, string>,
   anchorNodeId: string | null,
+  planspaceId: string,
 ): TemplateInstantiateRequest {
   const argumentPayload: Record<string, string> = {};
   for (const spec of template.arguments) {
@@ -261,6 +266,7 @@ export function buildInstantiateRequest(
   }
 
   return {
+    planspace_id: planspaceId,
     anchor_node_id: template.inputs.length > 0 ? null : anchorNodeId,
     arguments: argumentPayload,
     input_bindings: bindingPayload,

@@ -285,7 +285,7 @@ class _ControlledRunner:
 
 
 class CodeReviewSchedulerTests(unittest.IsolatedAsyncioTestCase):
-    async def test_spawn_assigns_review_to_active_planspace(self) -> None:
+    async def test_spawn_assigns_review_to_the_requested_planspace(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
             repo = root / "repo"
@@ -298,20 +298,45 @@ class CodeReviewSchedulerTests(unittest.IsolatedAsyncioTestCase):
             first_lane = create_planspace(
                 project, title="First", mode="manual", store_root=store.root
             )
-            active_lane = create_planspace(
-                project, title="Active", mode="manual", store_root=store.root
+            target_lane = create_planspace(
+                project, title="Target", mode="manual", store_root=store.root
             )
-            runtime = registry._runtimes[project.id]
-            runtime.project.active_planspace_id = active_lane
-            runtime.project.planspace_selection_explicit = True
-            store.update_project(runtime.project)
+            store.update_project(registry._runtimes[project.id].project)
+
+            with patch.object(registry, "_schedule_queued"):
+                review = await registry.spawn_code_review(
+                    project.id, planspace_id=target_lane
+                )
+
+            assert review is not None
+            self.assertNotEqual(review.planspace_id, first_lane)
+            self.assertEqual(review.planspace_id, target_lane)
+
+    async def test_spawn_without_a_planspace_leaves_the_review_unlaned(self) -> None:
+        """No lane in focus is a legitimate state; do not guess a lane.
+
+        Silently picking the first lane would file the review under a
+        direction the user was not looking at.
+        """
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            repo = root / "repo"
+            repo.mkdir()
+            _init_repo(repo)
+            store = Store(root=root / "store")
+            project = Project(root_path=str(repo))
+            store.create_project(project)
+            registry = ProjectRegistry(store=store)
+            create_planspace(
+                project, title="First", mode="manual", store_root=store.root
+            )
+            store.update_project(registry._runtimes[project.id].project)
 
             with patch.object(registry, "_schedule_queued"):
                 review = await registry.spawn_code_review(project.id)
 
             assert review is not None
-            self.assertNotEqual(review.planspace_id, first_lane)
-            self.assertEqual(review.planspace_id, active_lane)
+            self.assertIsNone(review.planspace_id)
 
     async def test_spawn_is_idempotent_while_review_is_in_flight(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

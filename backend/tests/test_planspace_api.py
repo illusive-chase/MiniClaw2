@@ -52,17 +52,14 @@ class PlanspaceApiTest(unittest.TestCase):
             self.assertEqual(res.status_code, 200, res.text)
             self.assertEqual(res.json()["active_planspace_id"], "planspaces.auto")
 
-    def test_create_planspace_uses_seed_and_marks_user_seed_deprecated(self) -> None:
+    def test_concierge_planspace_endpoint_is_gone(self) -> None:
+        """``POST /planspaces`` was the concierge path; only blank remains.
+
+        New directions are created empty and filled in by the user, so the
+        route that launched a planning agent no longer exists.
+        """
         with tempfile.TemporaryDirectory() as raw:
             project = Project(root_path=raw, name="Project")
-            node = Node(
-                id="node-123",
-                project_id=project.id,
-                model_preset_id="gpt-5.5",
-                planspace_id="planspaces.auth",
-                prompt="bootstrap",
-            )
-            calls: list[dict[str, object]] = []
 
             class _Registry:
                 store = SimpleNamespace(root=Path(raw) / "store")
@@ -73,82 +70,17 @@ class PlanspaceApiTest(unittest.TestCase):
                 def is_running(self, sid: str) -> bool:
                     return False
 
-                def create_planspace_and_launch_concierge(
-                    self,
-                    sid: str,
-                    *,
-                    title: str,
-                    seed: str,
-                    mode: str | None = None,
-                    model_preset_id: str | None = None,
-                ) -> object:
-                    calls.append({
-                        "sid": sid,
-                        "title": title,
-                        "seed": seed,
-                        "mode": mode,
-                        "model_preset_id": model_preset_id,
-                    })
-                    return PlanspaceCreationResult(node=node, activated=False)
-
             with patch.object(app_module, "ProjectRegistry", return_value=_Registry()):
-                with patch.object(
-                    app_module,
-                    "describe_project_contextspace",
-                    return_value={
-                        "root": raw,
-                        "exists": True,
-                        "resolved_binding_id": "project.project",
-                        "active_planspace_id": "planspaces.auth",
-                        "bindings": [],
-                    },
-                ):
-                    client = TestClient(app_module.create_app())
-                    try:
-                        res = client.post(
-                            f"/sessions/{project.id}/planspaces",
-                            json={
-                                "seed": "Build auth",
-                                "mode": "manual",
-                                "model_preset_id": "gpt-5.5",
-                            },
-                        )
-                        deprecated = client.post(
-                            f"/sessions/{project.id}/planspaces",
-                            json={
-                                "user_seed": "Legacy auth",
-                                "mode": "manual",
-                                "model_preset_id": "gpt-5.5",
-                            },
-                        )
-                    finally:
-                        client.close()
+                client = TestClient(app_module.create_app())
+                try:
+                    res = client.post(
+                        f"/sessions/{project.id}/planspaces",
+                        json={"seed": "Build auth", "mode": "manual"},
+                    )
+                finally:
+                    client.close()
 
-            self.assertEqual(res.status_code, 200, res.text)
-            self.assertEqual(deprecated.status_code, 200, deprecated.text)
-            self.assertEqual(deprecated.headers["deprecation"], "true")
-            self.assertIn("user_seed is deprecated", deprecated.headers["warning"])
-            self.assertEqual(calls, [
-                {
-                    "sid": project.id,
-                    "title": "",
-                    "seed": "Build auth",
-                    "mode": "manual",
-                    "model_preset_id": "gpt-5.5",
-                },
-                {
-                    "sid": project.id,
-                    "title": "",
-                    "seed": "Legacy auth",
-                    "mode": "manual",
-                    "model_preset_id": "gpt-5.5",
-                },
-            ])
-            body = res.json()
-            self.assertEqual(body["node_id"], "node-123")
-            self.assertEqual(body["planspace_id"], "planspaces.auth")
-            self.assertEqual(body["binding_id"], "project.project")
-            self.assertFalse(body["activated"])
+            self.assertEqual(res.status_code, 404, res.text)
 
     def test_create_blank_planspace_returns_seeded_virtual(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -188,7 +120,7 @@ class PlanspaceApiTest(unittest.TestCase):
                         "mode": mode,
                         "model_preset_id": model_preset_id,
                     })
-                    return PlanspaceCreationResult(node=node, activated=True)
+                    return PlanspaceCreationResult(node=node)
 
             with patch.object(app_module, "ProjectRegistry", return_value=_Registry()):
                 with patch.object(
@@ -233,7 +165,9 @@ class PlanspaceApiTest(unittest.TestCase):
             self.assertEqual(body["node_id"], "blank-1")
             self.assertEqual(body["planspace_id"], "planspaces.blank")
             self.assertEqual(body["binding_id"], "project.project")
-            self.assertTrue(body["activated"])
+            # No "activated" field: creation no longer moves an execution
+            # cursor, so there is nothing for the client to react to.
+            self.assertNotIn("activated", body)
 
     def test_create_blank_planspace_refuses_context_refresh_running(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

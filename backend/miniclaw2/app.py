@@ -267,16 +267,6 @@ class UpdatePlanspaceViewRequest(BaseModel):
     planspaces: dict[str, dict[str, bool]] = Field(default_factory=dict)
 
 
-class CreatePlanspaceRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    title: str = ""
-    seed: str | None = None
-    user_seed: str | None = None
-    mode: str | None = None
-    model_preset_id: str | None = None
-
-
 class CreateBlankPlanspaceRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -528,9 +518,23 @@ class RewriteUserTemplateRequest(BaseModel):
     inputs: list[UserTemplateInputWrite] = Field(default_factory=list)
 
 
+class GitReviewRequest(BaseModel):
+    """Optional body for ``POST /sessions/{sid}/git/review``.
+
+    ``planspace_id`` is the lane the review node should live in. It stays
+    optional because an unlaned review is legitimate when no lane is in
+    focus; the backend must not guess a lane in that case.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    planspace_id: str | None = None
+
+
 class ApplyUserTemplateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    planspace_id: str
     anchor_node_id: str | None = None
     arguments: dict[str, str] = Field(default_factory=dict)
     input_bindings: dict[str, str] = Field(default_factory=dict)
@@ -1340,12 +1344,17 @@ def create_app(
         return {"node": node.model_dump()}
 
     @app.post("/sessions/{sid}/git/review", response_model=dict[str, Any])
-    async def git_review(sid: str) -> dict[str, Any]:
+    async def git_review(
+        sid: str,
+        req: GitReviewRequest | None = None,
+    ) -> dict[str, Any]:
         project = registry.get_project(sid)
         if project is None:
             raise HTTPException(404, "session not found")
         try:
-            node = await registry.spawn_code_review(sid)
+            node = await registry.spawn_code_review(
+                sid, planspace_id=req.planspace_id if req else None
+            )
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
         if node is None:
@@ -1624,53 +1633,6 @@ def create_app(
             raise HTTPException(400, str(exc)) from exc
         return describe_project_contextspace(project, store_root=registry.store.root)
 
-    @app.post("/sessions/{sid}/planspaces", response_model=dict[str, Any])
-    async def create_planspace(
-        sid: str,
-        req: CreatePlanspaceRequest,
-        response: Response,
-    ) -> dict[str, Any]:
-        project = registry.get_project(sid)
-        if project is None:
-            raise HTTPException(404, "session not found")
-        if _context_task_running(project.id):
-            raise HTTPException(409, "context refresh in progress")
-        if (
-            req.seed is not None
-            and req.user_seed is not None
-            and req.seed != req.user_seed
-        ):
-            raise HTTPException(400, "seed and deprecated user_seed disagree")
-        seed = req.seed if req.seed is not None else req.user_seed
-        if req.user_seed is not None:
-            response.headers["Deprecation"] = "true"
-            response.headers["Warning"] = (
-                '299 MiniClaw2 "user_seed is deprecated; use seed"'
-            )
-        if seed is None or not seed.strip():
-            raise HTTPException(400, "seed must be non-empty")
-        try:
-            result = registry.create_planspace_and_launch_concierge(
-                sid,
-                title=req.title.strip(),
-                seed=seed,
-                mode=req.mode,
-                model_preset_id=req.model_preset_id,
-            )
-        except ValueError as exc:
-            raise HTTPException(400, str(exc)) from exc
-        if result is None:
-            raise HTTPException(409, "project runtime is unavailable")
-        node = result.node
-        contextspace = describe_project_contextspace(
-            project, store_root=registry.store.root
-        )
-        contextspace["node_id"] = node.id
-        contextspace["planspace_id"] = node.planspace_id
-        contextspace["binding_id"] = contextspace.get("resolved_binding_id")
-        contextspace["activated"] = result.activated
-        return contextspace
-
     @app.post("/sessions/{sid}/planspaces/blank", response_model=dict[str, Any])
     async def create_blank_planspace(
         sid: str,
@@ -1702,7 +1664,6 @@ def create_app(
         contextspace["node_id"] = node.id
         contextspace["planspace_id"] = node.planspace_id
         contextspace["binding_id"] = contextspace.get("resolved_binding_id")
-        contextspace["activated"] = result.activated
         return contextspace
 
     @app.patch("/sessions/{sid}/planspaces/{planspace_id}/mode", response_model=dict[str, Any])
@@ -2352,6 +2313,7 @@ def create_app(
                 template,
                 project,
                 registry,
+                planspace_id=req.planspace_id,
                 anchor_node_id=req.anchor_node_id,
                 arguments=req.arguments,
                 input_bindings=req.input_bindings,

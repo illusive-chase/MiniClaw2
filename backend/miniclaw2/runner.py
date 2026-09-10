@@ -1367,11 +1367,16 @@ class NodeRunner:
             if context_bundle is not None
             else self.project.project_context_binding_id
         )
-        active_planspace_id = self.node.planspace_id
+        # This records the lane the node itself belongs to — never a
+        # project-level cursor. The `active_planspace_id` key name is a frozen
+        # on-disk format: frontend `layout.ts` (`resolvePlanspaceId`) reads it
+        # to attribute historical nodes to a lane, so renaming it would strand
+        # every already-written snapshot.
+        node_planspace_id = self.node.planspace_id
         if project_binding_id:
             snapshot["project_context_binding_id"] = project_binding_id
-        if active_planspace_id:
-            snapshot["active_planspace_id"] = active_planspace_id
+        if node_planspace_id:
+            snapshot["active_planspace_id"] = node_planspace_id
         if self.node.context_bundle_id:
             snapshot["context_bundle_id"] = self.node.context_bundle_id
         preferred_language = project_preferred_language(self.project)

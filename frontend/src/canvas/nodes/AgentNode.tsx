@@ -135,7 +135,7 @@ function AgentNodeImpl({ data, selected }: NodeProps<AgentNodeData>) {
       isVirtual &&
       readyToPromote &&
       !node.obsolete_reason &&
-      node.planspace_id === agentNodeContext.manualPromotionPlanspaceId &&
+      agentNodeContext.isManualPlanspace(node.planspace_id) &&
       agentNodeContext.canMutateNode(node.id)
     ) {
       items.push({
@@ -544,7 +544,6 @@ export type AgentNodeContext = {
   canAcceptDependency: (sourceNodeId: string, targetNodeId: string) => boolean;
   canPromoteVirtual: boolean;
   canDequeue: boolean;
-  manualPromotionPlanspaceId: string | null;
   isManualPlanspace: (planspaceId: string | null | undefined) => boolean;
   canInterrupt: boolean;
   canRerun: boolean;
@@ -567,7 +566,6 @@ let agentNodeContext: AgentNodeContext = {
   canAcceptDependency: () => false,
   canPromoteVirtual: false,
   canDequeue: false,
-  manualPromotionPlanspaceId: null,
   isManualPlanspace: () => false,
   canInterrupt: false,
   canRerun: false,

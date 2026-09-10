@@ -344,8 +344,21 @@ export async function gitCommit(
   return res.json();
 }
 
-export async function gitReview(sessionId: string): Promise<{ node: NodeInfo }> {
-  const res = await fetch(`/sessions/${sessionId}/git/review`, { method: "POST" });
+/** Spawn a code-review node.
+ *
+ * `planspaceId` is the lane to file the review in. Passing `null` is
+ * meaningful, not a fallback: with no lane in focus the review is created
+ * unlaned rather than guessed into an arbitrary direction.
+ */
+export async function gitReview(
+  sessionId: string,
+  planspaceId: string | null,
+): Promise<{ node: NodeInfo }> {
+  const res = await fetch(`/sessions/${sessionId}/git/review`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ planspace_id: planspaceId }),
+  });
   if (!res.ok) throw new ApiError("gitReview", res.status, await readErrorDetail(res));
   return res.json();
 }
@@ -391,28 +404,6 @@ export async function updateSessionContextSpace(
   return res.json();
 }
 
-export async function createPlanspace(
-  sessionId: string,
-  body: {
-    seed: string;
-    mode?: PlanspaceMode;
-    model_preset_id?: string;
-  },
-): Promise<{
-  planspace_id: string;
-  binding_id: string;
-  node_id: string;
-  activated: boolean;
-}> {
-  const res = await fetch(`/sessions/${sessionId}/planspaces`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) throw new Error(`createPlanspace failed: ${res.status}`);
-  return res.json();
-}
-
 export type CreateBlankPlanspacePayload = {
   title?: string;
   seed: string;
@@ -427,7 +418,6 @@ export async function createBlankPlanspace(
   planspace_id: string;
   binding_id: string;
   node_id: string;
-  activated: boolean;
 }> {
   const res = await fetch(`/sessions/${sessionId}/planspaces/blank`, {
     method: "POST",
@@ -996,6 +986,10 @@ export async function saveUserTemplate(
 }
 
 export type ApplyUserTemplatePayload = {
+  /** The lane to stamp into. Explicit rather than inferred from a backend
+   * cursor: the user's drop target or focused lane is the only thing that
+   * knows which direction they meant. */
+  planspace_id: string;
   anchor_node_id: string | null;
   arguments: Record<string, string>;
   input_bindings: Record<string, string>;

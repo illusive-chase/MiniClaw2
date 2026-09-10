@@ -93,11 +93,12 @@ def apply_user_template(
     project: Project,
     registry: ProjectRegistry,
     *,
+    planspace_id: str,
     anchor_node_id: str | None = None,
     arguments: dict[str, str] | None = None,
     input_bindings: dict[str, str] | None = None,
 ) -> list[Node]:
-    """Stamp ``template`` into ``project``'s active planspace.
+    """Stamp ``template`` into ``planspace_id``.
 
     Unlike :func:`launch_template`, this does not create a project, seed a
     workspace, or touch project settings. Like ordinary virtual creation, it
@@ -105,18 +106,22 @@ def apply_user_template(
     every root virtual (one with no in-template deps) gets an implicit
     ``scheduled_deps=[anchor_node_id]``.
 
+    The target lane is explicit: the caller states which lane it is modifying
+    rather than relying on a global cursor that can move elsewhere between the
+    user's click and this call.
+
     Returns the list of newly-stamped nodes in slug order.
     """
-    active_lane = project.active_planspace_id or ""
-    if not active_lane:
-        raise TemplateError("activate a direction first")
+    target_lane = (planspace_id or "").strip()
+    if not target_lane:
+        raise TemplateError("a target direction is required")
 
     if anchor_node_id and not template.inputs:
         anchor = registry.store.load_node(project.id, anchor_node_id)
         if anchor is None:
             raise TemplateError(f"anchor node {anchor_node_id!r} does not exist")
-        if (anchor.planspace_id or "") != active_lane:
-            # Anchor lives in another lane — collapse into the active lane by
+        if (anchor.planspace_id or "") != target_lane:
+            # Anchor lives in another lane — collapse into the target lane by
             # dropping the anchor (matches "cross-lane collapse" semantics).
             anchor_node_id = None
 
@@ -124,7 +129,7 @@ def apply_user_template(
         template,
         project,
         None,
-        active_lane,
+        target_lane,
         registry,
         anchor_node_id=anchor_node_id,
         arguments=arguments or {},
@@ -525,7 +530,7 @@ def _validate_input_bindings(
             raise TemplateError(f"input binding node {node_id!r} does not exist")
         if (node.planspace_id or "") != planspace_id:
             raise TemplateError(
-                f"input binding node {node_id!r} is outside the active planspace"
+                f"input binding node {node_id!r} is outside the target direction"
             )
         resolved[template_input.name] = node.id
     return resolved

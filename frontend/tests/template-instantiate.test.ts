@@ -270,6 +270,7 @@ function testRequestBodySendsEveryShownArgument() {
     { topic: "支付重构", style: "简洁", suffix: "" },
     { alpha: "n1", beta: "n2" },
     "n1",
+    "lane-a",
   );
   // Substitution is frozen into prompt_draft at stamp time, so what the form
   // displayed is what the nodes get — including untouched defaults.
@@ -284,9 +285,23 @@ function testRequestBodySendsEveryShownArgument() {
   assert.equal(request.anchor_node_id, null);
 }
 
+/* The backend infers no lane, so the request must always name one — and it
+ * must be the lane captured at drop time, not whatever is focused later. */
+function testRequestBodyCarriesTheTargetLane() {
+  const tpl = template({ arguments: [argument("topic")] });
+  const request = buildInstantiateRequest(
+    tpl,
+    { topic: "t" },
+    {},
+    null,
+    "planspaces.dropped-here",
+  );
+  assert.equal(request.planspace_id, "planspaces.dropped-here");
+}
+
 function testRequestBodyKeepsTheAnchorWhenThereAreNoPorts() {
   const tpl = template({ arguments: [argument("topic")] });
-  const request = buildInstantiateRequest(tpl, { topic: "t" }, {}, "n7");
+  const request = buildInstantiateRequest(tpl, { topic: "t" }, {}, "n7", "lane-a");
   assert.equal(request.anchor_node_id, "n7");
   assert.deepEqual(request.input_bindings, {});
   assert.deepEqual(request.arguments, { topic: "t" });
@@ -304,6 +319,7 @@ function testRequestBodyOmitsUnknownKeys() {
     { topic: "t", removed: "stale" },
     { alpha: "n1", gone: "n2" },
     null,
+    "lane-a",
   );
   assert.deepEqual(request.arguments, { topic: "t" });
   assert.deepEqual(request.input_bindings, { alpha: "n1" });
@@ -364,6 +380,7 @@ testCandidateLabelFallsBackAndTruncates();
 testStaleBindingsAreCleared();
 testSubmitNeedsBothHalves();
 testRequestBodySendsEveryShownArgument();
+testRequestBodyCarriesTheTargetLane();
 testRequestBodyKeepsTheAnchorWhenThereAreNoPorts();
 testRequestBodyOmitsUnknownKeys();
 testWarningTextLocalizesKnownCodes();

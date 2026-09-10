@@ -41,7 +41,6 @@ import {
   nodeIdsNeedingEventReplay,
   preferNewerNode,
   shouldAutoSelectEventNode,
-  shouldOpenCreatedPlanspace,
   shouldOpenInteractionNode,
 } from "../src/nodeUtil";
 
@@ -117,17 +116,6 @@ assert.equal(
   false,
   "an interaction must preserve a non-execution selection",
 );
-assert.equal(
-  shouldOpenCreatedPlanspace(true),
-  true,
-  "an idle planspace creation should open its seeded node",
-);
-assert.equal(
-  shouldOpenCreatedPlanspace(false),
-  false,
-  "a background planspace creation must preserve the current selection",
-);
-
 assert.equal(
   preferNewerNode(
     node("same", { rev: 3, state: "running" }),
@@ -250,7 +238,6 @@ function args(overrides: Partial<BuildGraphArgs> = {}): BuildGraphArgs {
     layoutHints: {},
     contextBundlesByNodeId: {},
     knownPlanspaceIds: [],
-    activatablePlanspaceIds: [],
     hiddenPlanspaceIds: [],
     focusedPlanspaceId: null,
     autoPlanspaceIds: [],
@@ -369,10 +356,12 @@ function testKnownLaneOrderSurvivesNodeCreationOrder(): void {
   assert.ok(lanes(populated)[1].position.y > lanes(populated)[0].position.y);
 }
 
-function testInactiveAutoLaneIsMarkedForActivation(): void {
+/* Auto is a permanent property of the lane, not a "waiting to be activated"
+ * state: an auto lane advances on its own whether or not it is the execution
+ * target or the focused lane. The badge must therefore not depend on either. */
+function testAutoLaneIsMarkedRegardlessOfFocusOrExecutionTarget(): void {
   const graph = buildGraph(args({
     knownPlanspaceIds: ["planspaces.auto"],
-    activatablePlanspaceIds: ["planspaces.auto"],
     autoPlanspaceIds: ["planspaces.auto"],
     focusedPlanspaceId: null,
   }));
@@ -382,8 +371,19 @@ function testInactiveAutoLaneIsMarkedForActivation(): void {
   assert.equal(lane.data.executionTarget, false);
   assert.equal(lane.data.focused, false);
   assert.equal(lane.data.auto, true);
-  assert.equal(lane.data.canActivate, true);
   assert.deepEqual(lane.style, { pointerEvents: "none" });
+
+  const focused = buildGraph(args({
+    knownPlanspaceIds: ["planspaces.auto"],
+    autoPlanspaceIds: ["planspaces.auto"],
+    focusedPlanspaceId: "planspaces.auto",
+    executionTargetPlanspaceId: "planspaces.auto",
+  }));
+  const focusedLane = focused.rfNodes.find(
+    (item) => item.id === "planspace:planspaces.auto",
+  );
+  if (focusedLane?.type !== "planspaceLane") throw new Error("missing lane");
+  assert.equal(focusedLane.data.auto, true);
 }
 
 /* The Phase 1 split: the lane the user looks at and the lane the backend
@@ -2708,7 +2708,7 @@ function testCollapsingKeepsTheInstanceInPlace(): void {
 testNoRootOrFabricatedDependencies();
 testPromotedNodeDoesNotUseTransientParentFallback();
 testKnownLaneOrderSurvivesNodeCreationOrder();
-testInactiveAutoLaneIsMarkedForActivation();
+testAutoLaneIsMarkedRegardlessOfFocusOrExecutionTarget();
 testFocusAndExecutionTargetAreIndependent();
 testExecutionTargetDefaultsToNoLane();
 testPlanspaceChildPositionUsesLaneRelativeSnapGrid();

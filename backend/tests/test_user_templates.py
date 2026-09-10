@@ -639,7 +639,9 @@ class ApplyUserTemplateTest(unittest.TestCase):
             "create_virtual",
             wraps=self.registry.create_virtual,
         ) as create_virtual:
-            created = apply_user_template(template, target_project, self.registry)
+            created = apply_user_template(
+                template, target_project, self.registry, planspace_id=target_lane
+            )
         self.assertEqual(len(created), 2)
         self.assertEqual(create_virtual.call_count, 2)
         first, second = created
@@ -671,11 +673,13 @@ class ApplyUserTemplateTest(unittest.TestCase):
         )
         template = load_user_template(saved.root.name, self.store.root)
 
-        target_pid, _ = _make_project_with_lane(self.registry)
+        target_pid, target_lane = _make_project_with_lane(self.registry)
         target_project = self.registry.get_project(target_pid)
         assert target_project is not None
 
-        created = apply_user_template(template, target_project, self.registry)
+        created = apply_user_template(
+            template, target_project, self.registry, planspace_id=target_lane
+        )
 
         self.assertEqual(len(created), 1)
         self.assertIs(created[0].artifact_mode, ArtifactMode.CUSTOM)
@@ -696,23 +700,27 @@ class ApplyUserTemplateTest(unittest.TestCase):
         anchor = _add_virtual(self.store, target_pid, target_lane, prompt_draft="Anchor.")
 
         created = apply_user_template(
-            template, target_project, self.registry, anchor_node_id=anchor.id
+            template,
+            target_project,
+            self.registry,
+            planspace_id=target_lane,
+            anchor_node_id=anchor.id,
         )
         first, second = created
         self.assertEqual(first.scheduled_deps, [anchor.id])
         # Non-root virtual keeps its translated in-template dep.
         self.assertEqual(second.scheduled_deps, [first.id])
 
-    def test_apply_rejects_no_active_planspace(self) -> None:
+    def test_apply_rejects_an_empty_target_lane(self) -> None:
+        """The caller must name the lane; there is no cursor to fall back on."""
         slug = self._build_greetings_template()
         template = load_user_template(slug, self.store.root)
 
         project = self.registry.create_project(
             cwd=None, model_preset_id="opus-4-8", temporary=True
         )
-        # active_planspace_id is unset.
-        with self.assertRaises(Exception):
-            apply_user_template(template, project, self.registry)
+        with self.assertRaisesRegex(TemplateError, "target direction"):
+            apply_user_template(template, project, self.registry, planspace_id="")
 
     def test_parameters_and_inputs_are_stamped_once_with_instance_record(self) -> None:
         target_pid, target_lane = _make_project_with_lane(self.registry)
@@ -749,6 +757,7 @@ class ApplyUserTemplateTest(unittest.TestCase):
             template,
             target_project,
             self.registry,
+            planspace_id=target_lane,
             anchor_node_id=anchor.id,
             arguments={"topic": r"literal \1 and \g<0>"},
             input_bindings={"source": source.id},
@@ -804,6 +813,7 @@ class ApplyUserTemplateTest(unittest.TestCase):
                 template,
                 target_project,
                 self.registry,
+                planspace_id=target_lane,
                 arguments={"topic": "{{other}}", "other": "expanded"},
             )
 
@@ -829,7 +839,9 @@ class ApplyUserTemplateTest(unittest.TestCase):
             prompts=["First.", "Second."],
             deps=[None, ["n0"]],
         )
-        created = apply_user_template(template, target_project, self.registry)
+        created = apply_user_template(
+            template, target_project, self.registry, planspace_id=target_lane
+        )
         instance_id = created[0].template_instance_id
         assert instance_id is not None
 
@@ -859,7 +871,9 @@ class ApplyUserTemplateTest(unittest.TestCase):
         target_project = self.registry.get_project(target_pid)
         assert target_project is not None
         template = _function_template(Path("/templates/blocked"), prompts=["First."])
-        created = apply_user_template(template, target_project, self.registry)
+        created = apply_user_template(
+            template, target_project, self.registry, planspace_id=target_lane
+        )
         instance_id = created[0].template_instance_id
         assert instance_id is not None
         child = _add_virtual(
@@ -882,7 +896,7 @@ class ApplyUserTemplateTest(unittest.TestCase):
         self.assertIsNotNone(self.store.load_node(target_pid, created[0].id))
 
     def test_default_empty_string_is_optional_but_required_argument_is_not(self) -> None:
-        target_pid, _ = _make_project_with_lane(self.registry)
+        target_pid, target_lane = _make_project_with_lane(self.registry)
         target_project = self.registry.get_project(target_pid)
         assert target_project is not None
         optional = _function_template(
@@ -890,7 +904,9 @@ class ApplyUserTemplateTest(unittest.TestCase):
             prompts=["Value={{value}}"],
             arguments=[TemplateArgument(name="value", default="")],
         )
-        created = apply_user_template(optional, target_project, self.registry)
+        created = apply_user_template(
+            optional, target_project, self.registry, planspace_id=target_lane
+        )
         self.assertEqual(created[0].prompt_draft, "Value=")
 
         required = _function_template(
@@ -899,7 +915,9 @@ class ApplyUserTemplateTest(unittest.TestCase):
             arguments=[TemplateArgument(name="value")],
         )
         with self.assertRaisesRegex(TemplateError, "missing required"):
-            apply_user_template(required, target_project, self.registry)
+            apply_user_template(
+                required, target_project, self.registry, planspace_id=target_lane
+            )
 
     def test_unknown_argument_and_input_names_are_rejected(self) -> None:
         target_pid, target_lane = _make_project_with_lane(self.registry)
@@ -917,6 +935,7 @@ class ApplyUserTemplateTest(unittest.TestCase):
                 template,
                 target_project,
                 self.registry,
+                planspace_id=target_lane,
                 arguments={"topic": "ok", "extra": "no"},
                 input_bindings={"source": source.id},
             )
@@ -925,6 +944,7 @@ class ApplyUserTemplateTest(unittest.TestCase):
                 template,
                 target_project,
                 self.registry,
+                planspace_id=target_lane,
                 arguments={"topic": "ok"},
                 input_bindings={"source": source.id, "extra": source.id},
             )
@@ -958,6 +978,7 @@ class ApplyUserTemplateTest(unittest.TestCase):
                     template,
                     target_project,
                     self.registry,
+                    planspace_id=target_lane,
                     input_bindings={"source": source.id},
                 )
 
@@ -1017,13 +1038,16 @@ class ApplyUserTemplateTest(unittest.TestCase):
         )
 
         # The target project runs on a third preset entirely.
-        target_pid, _ = _make_project_with_lane(self.registry)
+        target_pid, target_lane = _make_project_with_lane(self.registry)
         target_project = self.registry.get_project(target_pid)
         assert target_project is not None
         self.assertEqual(target_project.model_preset_id, "opus-4-8")
 
         created = apply_user_template(
-            load_user_template(slug, self.store.root), target_project, self.registry
+            load_user_template(slug, self.store.root),
+            target_project,
+            self.registry,
+            planspace_id=target_lane,
         )
         self.assertEqual(
             [node.model_preset_id for node in created], ["opus-4-7", "gpt-5.6-x"]
@@ -1074,11 +1098,13 @@ class ApplyUserTemplateTest(unittest.TestCase):
         template = load_user_template(slug, self.store.root)
         self.assertIsNone(template.nodes[0].model_preset_id)
 
-        target_pid, _ = _make_project_with_lane(self.registry)
+        target_pid, target_lane = _make_project_with_lane(self.registry)
         target_project = self.registry.get_project(target_pid)
         assert target_project is not None
 
-        created = apply_user_template(template, target_project, self.registry)
+        created = apply_user_template(
+            template, target_project, self.registry, planspace_id=target_lane
+        )
         self.assertEqual(
             [node.model_preset_id for node in created],
             [target_project.model_preset_id],
@@ -1103,7 +1129,7 @@ class ApplyUserTemplateTest(unittest.TestCase):
         lane_data["nodes"][0]["model_preset_id"] = "gpt-5.5"
         lane_path.write_text(yaml.safe_dump(lane_data, sort_keys=False), encoding="utf-8")
 
-        target_pid, _ = _make_project_with_lane(self.registry)
+        target_pid, target_lane = _make_project_with_lane(self.registry)
         target_project = self.registry.get_project(target_pid)
         assert target_project is not None
 
@@ -1112,6 +1138,7 @@ class ApplyUserTemplateTest(unittest.TestCase):
                 load_user_template(slug, self.store.root),
                 target_project,
                 self.registry,
+                planspace_id=target_lane,
             )
         self.assertIn("n0", str(ctx.exception))
         self.assertIn("gpt-5.5", str(ctx.exception))
@@ -1178,12 +1205,15 @@ class ApplyUserTemplateTest(unittest.TestCase):
             encoding="utf-8",
         )
 
-        target_pid, _ = _make_project_with_lane(self.registry)
+        target_pid, target_lane = _make_project_with_lane(self.registry)
         target_project = self.registry.get_project(target_pid)
         assert target_project is not None
 
         created = apply_user_template(
-            load_user_template(slug, self.store.root), target_project, self.registry
+            load_user_template(slug, self.store.root),
+            target_project,
+            self.registry,
+            planspace_id=target_lane,
         )
         self.assertEqual(
             [node.model_preset_id for node in created], ["opus-4-7", "opus-4-7"]
@@ -1216,6 +1246,7 @@ class UserTemplateHttpApiTest(unittest.TestCase):
         listed = self.client.get(f"/sessions/{sid}/nodes")
         nodes = listed.json()
         agent_node = next(n for n in nodes if n["kind"] == "agent")
+        lane = agent_node["planspace_id"]
 
         # Save that single agent virtual as a template.
         save_res = self.client.post(
@@ -1239,7 +1270,7 @@ class UserTemplateHttpApiTest(unittest.TestCase):
         # Apply into the same project — should stamp a new virtual.
         apply_res = self.client.post(
             f"/sessions/{sid}/user-templates/hello/apply",
-            json={"anchor_node_id": None},
+            json={"planspace_id": lane, "anchor_node_id": None},
         )
         self.assertEqual(apply_res.status_code, 200, apply_res.text)
         stamped_ids = apply_res.json()["node_ids"]
@@ -1264,7 +1295,7 @@ class UserTemplateHttpApiTest(unittest.TestCase):
         )
         applied = self.client.post(
             f"/sessions/{sid}/user-templates/disposable/apply",
-            json={},
+            json={"planspace_id": lane},
         )
         self.assertEqual(applied.status_code, 200, applied.text)
         body = applied.json()
@@ -1298,7 +1329,7 @@ class UserTemplateHttpApiTest(unittest.TestCase):
         self.assertEqual(res.status_code, 400)
 
     def test_apply_succeeds_while_project_has_a_running_node(self) -> None:
-        sid, _ = _make_project_with_lane(self.registry)
+        sid, lane = _make_project_with_lane(self.registry)
         _write_user_function_template(
             self.store,
             "while-running",
@@ -1308,7 +1339,7 @@ class UserTemplateHttpApiTest(unittest.TestCase):
         with patch.object(self.registry, "is_running", return_value=True):
             response = self.client.post(
                 f"/sessions/{sid}/user-templates/while-running/apply",
-                json={"anchor_node_id": None},
+                json={"planspace_id": lane, "anchor_node_id": None},
             )
 
         self.assertEqual(response.status_code, 200, response.text)
@@ -1516,6 +1547,7 @@ class UserTemplateHttpApiTest(unittest.TestCase):
 
         nodes = self.store.list_nodes(sid)
         agent_node = next(node for node in nodes if node.kind is NodeKind.AGENT)
+        lane = agent_node.planspace_id
         saved = self.client.post(
             f"/sessions/{sid}/user-templates",
             json={
@@ -1540,7 +1572,7 @@ class UserTemplateHttpApiTest(unittest.TestCase):
 
         response = self.client.post(
             f"/sessions/{sid}/user-templates/foreign-guard/apply",
-            json={"anchor_node_id": None},
+            json={"planspace_id": lane, "anchor_node_id": None},
         )
 
         self.assertEqual(response.status_code, 403, response.text)
@@ -1583,20 +1615,21 @@ class UserTemplateHttpApiTest(unittest.TestCase):
 
         missing_argument = self.client.post(
             url,
-            json={"input_bindings": {"source": source.id}},
+            json={"planspace_id": lane, "input_bindings": {"source": source.id}},
         )
         self.assertEqual(missing_argument.status_code, 400, missing_argument.text)
         self.assertIn("missing required", missing_argument.json()["detail"])
 
         missing_binding = self.client.post(
             url,
-            json={"arguments": {"topic": "x"}},
+            json={"planspace_id": lane, "arguments": {"topic": "x"}},
         )
         self.assertEqual(missing_binding.status_code, 400, missing_binding.text)
 
         nonexistent = self.client.post(
             url,
             json={
+                "planspace_id": lane,
                 "arguments": {"topic": "x"},
                 "input_bindings": {"source": "not-a-node"},
             },
@@ -1607,17 +1640,19 @@ class UserTemplateHttpApiTest(unittest.TestCase):
         cross_lane_response = self.client.post(
             url,
             json={
+                "planspace_id": lane,
                 "arguments": {"topic": "x"},
                 "input_bindings": {"source": cross_lane.id},
             },
         )
         self.assertEqual(cross_lane_response.status_code, 400, cross_lane_response.text)
-        self.assertIn("outside the active planspace", cross_lane_response.json()["detail"])
+        self.assertIn("outside the target direction", cross_lane_response.json()["detail"])
         self.assertEqual({node.id for node in self.store.list_nodes(sid)}, before)
 
         applied = self.client.post(
             url,
             json={
+                "planspace_id": lane,
                 "arguments": {"topic": "x"},
                 "input_bindings": {"source": source.id},
             },
@@ -1675,7 +1710,7 @@ class UserTemplateHttpApiTest(unittest.TestCase):
         ):
             response = self.client.post(
                 f"/sessions/{sid}/user-templates/cycle/apply",
-                json={"input_bindings": {"source": source.id}},
+                json={"planspace_id": lane, "input_bindings": {"source": source.id}},
             )
 
         self.assertEqual(response.status_code, 400, response.text)

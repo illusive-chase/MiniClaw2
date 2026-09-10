@@ -78,13 +78,11 @@ export type SidePanelProps = {
   onSessionChange: (session: SessionInfo) => void;
   onPreferredLanguageChange: (preferredLanguage: string | null) => void;
   onConcurrencyChange: (concurrency: number) => void;
+  /* Still needed while `delete_planspace` refuses to delete the cursor lane:
+   * the user has to be able to move the cursor off a lane to remove it.
+   * Phase 3 drops the guard and this prop together. */
   onActivatePlanspace: (binding_id: string, planspace_id: string) => void;
   onSelectContextBinding: (binding_id: string) => void;
-  onNewDirection: (
-    userSeed: string,
-    mode: PlanspaceMode,
-    modelPresetId: string,
-  ) => void;
   onStartBlankDirection: (
     userSeed: string,
     mode: PlanspaceMode,
@@ -102,7 +100,6 @@ export type SidePanelProps = {
   onRerunNode: (nodeId: string) => void;
   canInterrupt: boolean;
   canRerun: boolean;
-  manualPromotionPlanspaceId: string | null;
   isManualPlanspace: (planspaceId: string | null | undefined) => boolean;
   onPlanspaceModeChange: (planspaceId: string, mode: PlanspaceMode) => void;
   onContextInit: () => void;
@@ -203,7 +200,6 @@ function Inner(props: SidePanelProps & { nodesById: Map<string, NodeInfo> }) {
     onConcurrencyChange,
     onActivatePlanspace,
     onSelectContextBinding,
-    onNewDirection,
     onStartBlankDirection,
     onImportSkill,
     onCreateContinuationVirtual,
@@ -214,7 +210,6 @@ function Inner(props: SidePanelProps & { nodesById: Map<string, NodeInfo> }) {
     onRerunNode,
     canInterrupt,
     canRerun,
-    manualPromotionPlanspaceId,
     isManualPlanspace,
     onPlanspaceModeChange,
     onContextInit,
@@ -255,11 +250,10 @@ function Inner(props: SidePanelProps & { nodesById: Map<string, NodeInfo> }) {
         contextSpaceError={contextSpaceError}
         settingsSaving={settingsSaving}
         settingsError={settingsError}
-        onActivatePlanspace={onActivatePlanspace}
         onSelectContextBinding={onSelectContextBinding}
         onPreferredLanguageChange={onPreferredLanguageChange}
         onConcurrencyChange={onConcurrencyChange}
-        onNewDirection={onNewDirection}
+        onActivatePlanspace={onActivatePlanspace}
         onStartBlankDirection={onStartBlankDirection}
         onImportSkill={onImportSkill}
         onContextInit={onContextInit}
@@ -387,20 +381,6 @@ function Inner(props: SidePanelProps & { nodesById: Map<string, NodeInfo> }) {
         canRerun={canRerun && canMutateNode}
         canMutate={canMutateNode}
         mutationLock={mutationLock}
-        manualPromotionPlanspaceId={manualPromotionPlanspaceId}
-        activePlanspaceId={contextSpace?.active_planspace_id ?? null}
-        knownPlanspaceIds={
-          contextSpace?.bindings
-            .find(
-              (binding) => binding.id === contextSpace.resolved_binding_id,
-            )
-            ?.plugs.filter((plug) => plug.kind === "planspace")
-            .map((plug) => plug.id) ?? []
-        }
-        onActivatePlanspace={(planspaceId) => {
-          const bindingId = contextSpace?.resolved_binding_id;
-          if (bindingId) onActivatePlanspace(bindingId, planspaceId);
-        }}
         isManualPlanspace={isManualPlanspace}
         focusRequestVersion={focusRequestVersion}
         activityFocusRequestVersion={activityFocusRequestVersion}

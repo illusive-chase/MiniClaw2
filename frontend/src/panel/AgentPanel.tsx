@@ -101,15 +101,6 @@ export type AgentPanelProps = {
   canRerun: boolean;
   canMutate: boolean;
   mutationLock: NodeMutationLock;
-  manualPromotionPlanspaceId: string | null;
-  /* Deliberately still the backend's `active_planspace_id`, not the focused
-   * lane: this drives the "该方向未激活" notice, which describes whether the
-   * node can actually be promoted. Focus is where the user is looking and
-   * has no bearing on that. Phase 2 removes the gate and this prop with it;
-   * pointing it at focus now would only hide the gate without lifting it. */
-  activePlanspaceId: string | null;
-  knownPlanspaceIds: string[];
-  onActivatePlanspace: (planspaceId: string) => void;
   isManualPlanspace: (planspaceId: string | null | undefined) => boolean;
   focusRequestVersion: number;
   activityFocusRequestVersion: number;
@@ -147,20 +138,11 @@ export function AgentPanel({
   canRerun,
   canMutate,
   mutationLock,
-  manualPromotionPlanspaceId,
-  activePlanspaceId,
-  knownPlanspaceIds,
-  onActivatePlanspace,
   isManualPlanspace,
   focusRequestVersion,
   activityFocusRequestVersion,
   onSelectArtifact,
 }: AgentPanelProps) {
-  const inactiveKnownPlanspace =
-    node.state === "virtual" &&
-    !!node.planspace_id &&
-    node.planspace_id !== activePlanspaceId &&
-    knownPlanspaceIds.includes(node.planspace_id);
   const headline = (
     node.summary ||
     node.prompt_draft ||
@@ -211,10 +193,10 @@ export function AgentPanel({
    * mid-sentence, which is not undoable. On those lanes the local stash is the
    * whole protection.
    *
-   * Deliberately wider than the backend's own gate, which only promotes when
-   * the lane is also the active one: an inactive auto lane would be safe to
-   * push to, but it can be activated from elsewhere at any moment and the
-   * stash already loses nothing there. */
+   * Now exactly the backend's own rule: promotion is decided by the node's
+   * own lane mode, so "manual lane" is the same answer on both sides. On an
+   * auto lane a saved draft starts running, which is why only manual lanes
+   * autosave to the server. */
   const autosaveToServer =
     canMutate && node.state === "virtual" && isManualPlanspace(node.planspace_id);
 
@@ -377,7 +359,7 @@ export function AgentPanel({
             )}
             {node.state === "virtual" &&
             canMutate &&
-            node.planspace_id === manualPromotionPlanspaceId ? (
+            isManualPlanspace(node.planspace_id) ? (
               <button
                 type="button"
                 onClick={() => void promote()}
@@ -418,18 +400,6 @@ export function AgentPanel({
         {mutationLock === "foreign_host" && (
           <div className="mb-3 rounded-md border border-state-waiting/30 bg-state-waiting-soft px-3 py-2 text-[11px] text-state-waiting">
             此节点的记录保存在另一台设备的分区中，本机仅可查看。
-          </div>
-        )}
-        {canMutate && inactiveKnownPlanspace && node.planspace_id && (
-          <div className="mb-3 flex items-center justify-between gap-3 rounded-md border border-state-waiting/30 bg-state-waiting-soft px-3 py-2 text-[11px] text-state-waiting">
-            <span>该方向未激活，节点无法推进。激活后可 Promote。</span>
-            <button
-              type="button"
-              onClick={() => onActivatePlanspace(node.planspace_id!)}
-              className="flex-none rounded border border-state-waiting/40 bg-surface-raised px-2 py-1 font-medium transition hover:border-state-waiting/70"
-            >
-              激活此方向
-            </button>
           </div>
         )}
         <section className="mb-5">
@@ -1620,6 +1590,16 @@ const EditableVirtualNodeBody = forwardRef<VirtualNodeBodyHandle, VirtualNodeBod
                 placeholder="Leave blank to keep promotable"
               />
             </FieldLabel>
+            {/* On an auto lane, saving *is* launching: the backend promotes
+              * an eligible virtual as soon as the edit lands. Shown
+              * unconditionally rather than folded into the dirty-state line,
+              * so the user reads it before pressing Save, not after. */}
+            {!autosaveToServer && (
+              <div className="rounded-md border border-state-waiting/30 bg-state-waiting-soft px-3 py-2 text-[11.5px] text-state-waiting">
+                <span className="font-medium">保存后立即执行</span>
+                ：此方向为自动（auto）模式，保存改动即会启动该节点。
+              </div>
+            )}
             {error && (
               <div className="rounded-md border border-state-error/30 bg-state-error-soft px-3 py-2 text-[11.5px] text-state-error">
                 {error}

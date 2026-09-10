@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   cancelProjectContext,
   createBlankPlanspace,
-  createPlanspace,
   createVirtual,
   dequeueNode,
   deleteTemplateInstance,
@@ -134,7 +133,6 @@ import {
   preferNewerNode,
   scheduledDepsAvailable,
   shouldAutoSelectEventNode,
-  shouldOpenCreatedPlanspace,
   shouldOpenInteractionNode,
 } from "./nodeUtil";
 import { defaultModelPresetId } from "./modelPresets";
@@ -164,12 +162,6 @@ type PendingGateState = {
 type SelectedEventsState = {
   nodeId: string | null;
   records: EventRecord[];
-};
-type LaneCreationNotice = {
-  planspaceId: string;
-  bindingId: string;
-  nodeId: string;
-  kind: "concierge" | "blank";
 };
 
 const TERMINAL_STATES = new Set<NodeInfo["state"]>(["done", "error", "cancelled"]);
@@ -478,8 +470,6 @@ export function App() {
 
   const [projectMutationPending, setProjectMutationPending] = useState(false);
   const [revealPending, setRevealPending] = useState(false);
-  const [laneCreationNotice, setLaneCreationNotice] =
-    useState<LaneCreationNotice | null>(null);
   const [nodePositionTarget, setNodePositionTarget] =
     useState<CanvasNodePositionTarget | null>(null);
 
@@ -529,6 +519,10 @@ export function App() {
   const [instantiateTarget, setInstantiateTarget] = useState<{
     template: TemplateSummary;
     anchorNodeId: string | null;
+    /* Captured at drop time, not read from focus at submit time: the user can
+     * move focus while the dialog is open, and the template must still land
+     * where they dropped it. */
+    planspaceId: string;
   } | null>(null);
   /* Stamped instance records for the active planspace — the group header's
    * template name and argument values. Nodes only carry the instance id. */
@@ -732,7 +726,6 @@ export function App() {
     pendingUiCommitNodeIdsRef.current.clear();
     setUiCommitPositionTargets([]);
     setProjectMutationPending(false);
-    setLaneCreationNotice(null);
     setNodePositionTarget(null);
     setPendingGates({});
     setPendingReviews({});
@@ -1363,6 +1356,11 @@ export function App() {
     prevContextRefreshRunningRef.current = running;
   }, [sessionContextSpace?.context_refresh?.running]);
 
+  /* Moves the backend's execution cursor. No longer a gate on anything the
+   * user does — Promote and auto-promotion both read the node's own lane now.
+   * It survives Phase 2 only because `delete_planspace` still refuses to
+   * delete the cursor lane, so the user needs a way to move it off. Phase 3
+   * removes that guard and this callback with it. */
   const activatePlanspace = useCallback(
     async (binding_id: string, planspace_id: string) => {
       if (!session?.id) return;
@@ -1412,62 +1410,6 @@ export function App() {
     [session?.id],
   );
 
-  const startNewDirection = useCallback(
-    async (userSeed: string, mode: PlanspaceMode, modelPresetId: string) => {
-      if (!session?.id || projectMutationPending) return;
-      setSessionContextSpaceSaving(true);
-      setSessionContextSpaceError(null);
-      setProjectMutationPending(true);
-      try {
-        const created = await createPlanspace(session.id, {
-          seed: userSeed,
-          mode,
-          model_preset_id: modelPresetId,
-        });
-        /* Refresh before focusing, in this order, for two separate reasons.
-         *
-         * The contextspace must land first because the focus-resolution
-         * effect only accepts lanes present in `knownPlanspaceIds`: focusing
-         * a lane the contextspace has not reported yet makes the current
-         * focus look unusable, and the effect re-resolves straight back to
-         * the old lane — and then never reconsiders, because that lane is
-         * perfectly valid.
-         *
-         * The nodes must land before `selectAndOpenNode`, which derives the
-         * lane by looking the node up in `nodesRef`; called on a node the
-         * list has not seen, it selects without moving focus. Focusing from
-         * `created.planspace_id` here does not depend on that lookup, so the
-         * new lane is current either way. */
-        await refreshContextSpace();
-        await refreshNodes();
-        focusPlanspace(created.planspace_id);
-        if (shouldOpenCreatedPlanspace(created.activated)) {
-          selectAndOpenNode(created.node_id);
-        } else {
-          setLaneCreationNotice({
-            planspaceId: created.planspace_id,
-            bindingId: created.binding_id,
-            nodeId: created.node_id,
-            kind: "concierge",
-          });
-        }
-      } catch (err) {
-        setSessionContextSpaceError(String(err));
-      } finally {
-        setProjectMutationPending(false);
-        setSessionContextSpaceSaving(false);
-      }
-    },
-    [
-      session?.id,
-      projectMutationPending,
-      focusPlanspace,
-      refreshContextSpace,
-      refreshNodes,
-      selectAndOpenNode,
-    ],
-  );
-
   const startBlankDirection = useCallback(
     async (userSeed: string, mode: PlanspaceMode, modelPresetId: string) => {
       if (!session?.id || projectMutationPending) return;
@@ -1480,24 +1422,27 @@ export function App() {
           mode,
           model_preset_id: modelPresetId,
         });
-        /* Refresh-then-focus, for the reasons spelled out in
-         * `startNewDirection`: the contextspace must know the lane before
-         * focus may land on it, and the node list must be hydrated before
-         * `selectAndOpenNode` can resolve anything from it. */
+        /* Refresh-then-focus, in this order, for two separate reasons.
+         *
+         * The contextspace must land first because the focus-resolution
+         * effect only accepts lanes present in `knownPlanspaceIds`: focusing
+         * a lane the contextspace has not reported yet makes the current
+         * focus look unusable, and the effect re-resolves straight back to
+         * the old lane — and then never reconsiders, because that lane is
+         * perfectly valid.
+         *
+         * The nodes must land before `selectAndOpenNode`, which derives the
+         * lane by looking the node up in `nodesRef`; called on a node the
+         * list has not seen, it selects without moving focus.
+         *
+         * Creating a direction always opens it now: creation no longer
+         * depends on whether the project is idle, so there is no "queued,
+         * not yet activated" outcome for the user to be notified about. */
         await refreshContextSpace();
         await refreshNodes();
         focusPlanspace(created.planspace_id);
-        if (shouldOpenCreatedPlanspace(created.activated)) {
-          selectAndOpenNode(created.node_id);
-          setFocusRequestVersion((version) => version + 1);
-        } else {
-          setLaneCreationNotice({
-            planspaceId: created.planspace_id,
-            bindingId: created.binding_id,
-            nodeId: created.node_id,
-            kind: "blank",
-          });
-        }
+        selectAndOpenNode(created.node_id);
+        setFocusRequestVersion((version) => version + 1);
       } catch (err) {
         setSessionContextSpaceError(String(err));
       } finally {
@@ -2522,32 +2467,10 @@ export function App() {
     [planspaceOptions],
   );
 
-  const activatablePlanspaceIds = useMemo(() => {
-    if (readOnly) return [];
-    const resolvedBindingId = sessionContextSpace?.resolved_binding_id;
-    const binding = sessionContextSpace?.bindings.find(
-      (candidate) => candidate.id === resolvedBindingId,
-    );
-    return (binding?.plugs ?? [])
-      .filter((plug) => plug.kind === "planspace")
-      .map((plug) => plug.id);
-  }, [readOnly, sessionContextSpace]);
-
-  const manualPromotionPlanspaceId = useMemo(() => {
-    const activeId = sessionContextSpace?.active_planspace_id ?? null;
-    if (!activeId) return null;
-    for (const binding of sessionContextSpace?.bindings ?? []) {
-      const activePlug = binding.plugs.find(
-        (plug) => plug.kind === "planspace" && plug.id === activeId,
-      );
-      if (activePlug) return activePlug.mode === "auto" ? null : activeId;
-    }
-    return activeId;
-  }, [sessionContextSpace]);
-
-  /* Dequeue is decided by the queued node's own lane mode (matching the
-   * backend), not by which lane is active, so track auto lanes as a set.
-   * Lanes without a planspace plug default to manual, like the backend. */
+  /* Dequeue and Promote are both decided by the node's own lane mode
+   * (matching the backend), not by which lane is active, so track auto lanes
+   * as a set. Lanes without a planspace plug default to manual, like the
+   * backend. */
   const autoPlanspaceIds = useMemo(() => {
     const out = new Set<string>();
     for (const binding of sessionContextSpace?.bindings ?? []) {
@@ -2557,15 +2480,6 @@ export function App() {
     }
     return out;
   }, [sessionContextSpace]);
-
-  useEffect(() => {
-    if (
-      laneCreationNotice &&
-      sessionContextSpace?.active_planspace_id === laneCreationNotice.planspaceId
-    ) {
-      setLaneCreationNotice(null);
-    }
-  }, [laneCreationNotice, sessionContextSpace?.active_planspace_id]);
 
   const isManualPlanspace = useCallback(
     (planspaceId: string | null | undefined): boolean =>
@@ -2701,13 +2615,8 @@ export function App() {
       },
       onTogglePlanspaceVisibility: togglePlanspaceVisibility,
       onCreateVirtual: createUnparentedVirtual,
-      onActivatePlanspace: (planspaceId) => {
-        const bindingId = sessionContextSpace?.resolved_binding_id;
-        if (bindingId) void activatePlanspace(bindingId, planspaceId);
-      },
     });
   }, [
-    activatePlanspace,
     createUnparentedVirtual,
     focusPlanspace,
     inspectNode,
@@ -2856,15 +2765,40 @@ export function App() {
        * available on the virtual-creation path, where the frontend owns the
        * whole dependency array (§4.3). */
       const resolvedAnchorNodeId = anchorNodeId ?? anchorSinkNodeIds?.[0] ?? null;
+      /* Prefer the lane of whatever was dropped on: dropping onto a node in
+       * lane B means lane B, even while focus sits on A. Only an unanchored
+       * drop onto empty canvas falls back to the focused lane.
+       *
+       * Resolved through `resolveNodePlanspaceId` (not a bare
+       * `node.planspace_id` read) so the answer matches the lane the canvas
+       * drew the anchor in — legacy nodes get their lane from a settings
+       * snapshot or a parent, and disagreeing here would stamp the template
+       * into a lane the user cannot see the anchor in. */
+      const anchorNode = resolvedAnchorNodeId
+        ? nodesRef.current.find((item) => item.id === resolvedAnchorNodeId)
+        : undefined;
+      const anchorLane = anchorNode
+        ? resolveNodePlanspaceId(anchorNode, nodesRef.current)
+        : null;
+      const targetPlanspaceId = anchorLane ?? focusedPlanspaceId;
+      if (!targetPlanspaceId) {
+        window.alert("请先选择一个方向，再应用模板。");
+        return;
+      }
       try {
         const templates = await listUserTemplates();
         const template = templates.find((item) => item.slug === slug);
         if (!template) throw new Error(`template not found: ${slug}`);
         if (templateNeedsInstantiateDialog(template)) {
-          setInstantiateTarget({ template, anchorNodeId: resolvedAnchorNodeId });
+          setInstantiateTarget({
+            template,
+            anchorNodeId: resolvedAnchorNodeId,
+            planspaceId: targetPlanspaceId,
+          });
           return;
         }
         const applied = await applyUserTemplate(session.id, slug, {
+          planspace_id: targetPlanspaceId,
           anchor_node_id: resolvedAnchorNodeId,
           arguments: {},
           input_bindings: {},
@@ -2879,7 +2813,13 @@ export function App() {
         window.alert(`Could not apply template: ${apiErrorText(err)}`);
       }
     },
-    [readOnly, refreshNodes, session?.id, toggleTemplateInstanceCollapsed],
+    [
+      focusedPlanspaceId,
+      readOnly,
+      refreshNodes,
+      session?.id,
+      toggleTemplateInstanceCollapsed,
+    ],
   );
 
   /* select a specific node id (used by panel "jump to" affordances and the
@@ -2937,7 +2877,6 @@ export function App() {
       canAcceptDependency: canAcceptCanvasDependency,
       canPromoteVirtual: !projectMutationPending && !readOnly,
       canDequeue: !projectMutationPending && !readOnly,
-      manualPromotionPlanspaceId,
       isManualPlanspace,
       canInterrupt: canInterruptRunner && !readOnly,
       canRerun: !projectMutationPending && !readOnly,
@@ -2964,7 +2903,6 @@ export function App() {
     rerunFailedNode,
     virtualCreateDisabled,
     projectMutationPending,
-    manualPromotionPlanspaceId,
     isManualPlanspace,
     readOnly,
     canInterruptRunner,
@@ -3151,15 +3089,18 @@ export function App() {
         const result = await gitCommit(session.id, message);
         pendingUiCommitNodeIdsRef.current.add(result.node.id);
       } else if (action === "review") {
-        const result = await gitReview(session.id);
-        /* The review node is created server-side into the active planspace, so
-         * it arrives with no position of its own and would otherwise take the
-         * lane's default top-row slot. Place it under the lane's current work,
-         * the same way the lane "+" button does. Passing the node id makes this
-         * a no-op when the tile is already on the canvas — `spawn_code_review`
-         * returns an in-flight review rather than creating one, and a WebSocket
-         * refresh can render a genuinely new node before this point. Either way
-         * a tile the user can already see must not jump. */
+        /* The review is filed in the lane the user is looking at. With no
+         * lane focused it stays unlaned rather than landing in a direction
+         * the user never chose. */
+        const result = await gitReview(session.id, focusedPlanspaceId);
+        /* The review node arrives with no position of its own and would
+         * otherwise take the lane's default top-row slot. Place it under the
+         * lane's current work, the same way the lane "+" button does. Passing
+         * the node id makes this a no-op when the tile is already on the
+         * canvas — `spawn_code_review` returns an in-flight review rather
+         * than creating one, and a WebSocket refresh can render a genuinely
+         * new node before this point. Either way a tile the user can already
+         * see must not jump. */
         const laneId = result.node.planspace_id;
         if (laneId) {
           const position = resolveLaneAppendPosition(
@@ -3410,7 +3351,6 @@ export function App() {
               pendingGateNodeIds={pendingGateNodeIds}
               contextBundlesByNodeId={contextBundlesByNodeId}
               knownPlanspaceIds={knownPlanspaceIds}
-              activatablePlanspaceIds={activatablePlanspaceIds}
               hiddenPlanspaceIds={hiddenPlanspaceIds}
               focusedPlanspaceId={focusedPlanspaceId}
               executionTargetPlanspaceId={
@@ -3478,40 +3418,6 @@ export function App() {
               onJump={() => {
                 onSelectNode(pendingNotice.nodeId);
               }}
-            />
-          )}
-
-          {!readOnly && !pendingNotice && !hiddenLaneNotice && laneCreationNotice && (
-            <CanvasNotice
-              label={
-                laneCreationNotice.kind === "concierge"
-                  ? "新方向已创建并排队，将在当前节点跑完后自动开始"
-                  : "新方向已创建，尚未激活"
-              }
-              panelOpen={panelState.open}
-              actions={[
-                {
-                  label: "跳转",
-                  onClick: () => {
-                    selectAndOpenNode(laneCreationNotice.nodeId);
-                    setLaneCreationNotice(null);
-                  },
-                },
-                ...(laneCreationNotice.kind === "blank"
-                  ? [
-                      {
-                        label: "激活",
-                        onClick: () => {
-                          void activatePlanspace(
-                            laneCreationNotice.bindingId,
-                            laneCreationNotice.planspaceId,
-                          );
-                          setLaneCreationNotice(null);
-                        },
-                      },
-                    ]
-                  : []),
-              ]}
             />
           )}
 
@@ -3641,7 +3547,6 @@ export function App() {
                 onConcurrencyChange={updateConcurrency}
                 onActivatePlanspace={activatePlanspace}
                 onSelectContextBinding={selectContextBinding}
-                onNewDirection={startNewDirection}
                 onStartBlankDirection={startBlankDirection}
                 onImportSkill={handleImportSkill}
                 onCreateContinuationVirtual={createContinuationVirtual}
@@ -3662,7 +3567,6 @@ export function App() {
                   !!selectedNode &&
                   isNodeNative(selectedNode)
                 }
-                manualPromotionPlanspaceId={manualPromotionPlanspaceId}
                 isManualPlanspace={isManualPlanspace}
                 onPlanspaceModeChange={changePlanspaceMode}
                 onContextInit={runContextInit}
@@ -3717,7 +3621,7 @@ export function App() {
       sessionId={session?.id ?? null}
       template={instantiateTarget?.template ?? null}
       nodes={nodes}
-      focusedPlanspaceId={focusedPlanspaceId}
+      planspaceId={instantiateTarget?.planspaceId ?? null}
       anchorNodeId={instantiateTarget?.anchorNodeId ?? null}
       onCancel={() => setInstantiateTarget(null)}
       onApplied={(result) => {

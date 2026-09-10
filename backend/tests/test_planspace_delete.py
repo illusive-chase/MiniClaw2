@@ -157,9 +157,14 @@ class DeletePlanspaceRegistryTests(unittest.TestCase):
         self.assertIn(keep_lane, plug_ids)
 
     def test_delete_active_planspace_is_rejected(self) -> None:
-        self._make_lane("Only")
+        # Lane creation no longer moves the cursor, so set it explicitly.
+        # The active-delete guard itself is removed in Phase 3.
+        lane = self._make_lane("Only")
+        self.registry.update_project_context(
+            self.project.id, active_planspace_id=lane
+        )
         active = self._runtime_project().active_planspace_id or ""
-        self.assertTrue(active)
+        self.assertEqual(active, lane)
 
         with self.assertRaises(ValueError):
             self.registry.delete_planspace(self.project.id, active)
