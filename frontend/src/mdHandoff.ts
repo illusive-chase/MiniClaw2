@@ -5,11 +5,22 @@
  * in the current page's memory. This module parks such text where a new tab
  * can pick it up.
  *
- * `sessionStorage`, not `localStorage`: the handoff is single-use, and a tab
- * that closes should take its parked text with it rather than leaving prose
- * in the user's browser storage indefinitely. A tab opened via `window.open`
- * inherits a snapshot of the opener's sessionStorage, which is exactly the
- * lifetime needed — the new tab reads what existed at the moment it opened.
+ * Two stores, because one cannot do both jobs:
+ *
+ * - `localStorage` is the *transfer channel*. It is the only storage both
+ *   tabs can see. `sessionStorage` cannot serve here: a new context clones
+ *   the opener's session store only when it keeps an opener, and these tabs
+ *   are opened with `noopener`, so the reader would find an empty store.
+ * - `sessionStorage` in the *reading* tab holds the copy that tab reads from
+ *   after the first load. Adopting the record there restores what the
+ *   transfer channel cannot give us — text that survives a reload for as long
+ *   as the tab is open, and dies with it rather than sitting in the user's
+ *   browser storage.
+ *
+ * So a record lives in `localStorage` only for the moment between the click
+ * and the new tab's first read: adoption deletes it. Whatever is never picked
+ * up (a tab the user closed before it loaded) is pruned by age and count on
+ * the next stash, since nothing else would ever clean it up.
  *
  * Every entry point degrades to "no handoff" rather than throwing, following
  * draftStash.ts: storage can be unavailable (private windows, disabled site
@@ -19,7 +30,10 @@
 
 import type { MarkdownLinkBase } from "./types";
 
+/** Transfer channel, in `localStorage`. Age-checked and pruned. */
 const KEY_PREFIX = "miniclaw.mdHandoff:";
+/** The reading tab's own copy, in `sessionStorage`. Lives as long as the tab. */
+const TAB_PREFIX = "miniclaw.mdTab:";
 
 /* Bounds on a store the user cannot see or clean up by hand. Ten minutes is
  * generous: the consumer runs milliseconds after `window.open`, and the only
@@ -32,15 +46,25 @@ export type MarkdownHandoff = {
   subtitle?: string;
   text: string;
   linkBase?: MarkdownLinkBase | null;
+  /** The session local links in this text resolve against; null if none. */
+  sessionId?: string | null;
   /** Epoch ms, for pruning. */
   savedAt: number;
 };
 
-function storage(): Storage | null {
+function transferStore(): Storage | null {
+  try {
+    return window.localStorage;
+  } catch {
+    /* Access itself throws when site data is blocked. */
+    return null;
+  }
+}
+
+function tabStore(): Storage | null {
   try {
     return window.sessionStorage;
   } catch {
-    /* Access itself throws when site data is blocked. */
     return null;
   }
 }
@@ -55,7 +79,7 @@ function pruneHandoffs(store: Storage, now: number): void {
       const parsed: unknown = JSON.parse(store.getItem(key) ?? "null");
       const value =
         parsed && typeof parsed === "object"
-        ? (parsed as { savedAt?: unknown }).savedAt
+          ? (parsed as { savedAt?: unknown }).savedAt
           : undefined;
       savedAt = typeof value === "number" && Number.isFinite(value) ? value : 0;
     } catch {
@@ -85,8 +109,9 @@ export function stashMarkdown(payload: {
   subtitle?: string;
   text: string;
   linkBase?: MarkdownLinkBase | null;
+  sessionId?: string | null;
 }): string | null {
-  const store = storage();
+  const store = transferStore();
   if (!store) return null;
   const now = Date.now();
   pruneHandoffs(store, now);
@@ -101,15 +126,12 @@ export function stashMarkdown(payload: {
   }
 }
 
-export function readStashedMarkdown(
-  key: string,
-  now = Date.now(),
-): MarkdownHandoff | null {
-  const store = storage();
+/** Parse and shape-check one stored record. Age is the caller's business. */
+function readRecord(store: Storage | null, key: string): MarkdownHandoff | null {
   if (!store) return null;
   let raw: string | null = null;
   try {
-    raw = store.getItem(`${KEY_PREFIX}${key}`);
+    raw = store.getItem(key);
   } catch {
     return null;
   }
@@ -121,11 +143,7 @@ export function readStashedMarkdown(
     if (typeof record.text !== "string" || typeof record.title !== "string") {
       return null;
     }
-    if (
-      typeof record.savedAt !== "number" ||
-      !Number.isFinite(record.savedAt) ||
-      now - record.savedAt > MAX_AGE_MS
-    ) {
+    if (typeof record.savedAt !== "number" || !Number.isFinite(record.savedAt)) {
       return null;
     }
     return record;
@@ -134,4 +152,38 @@ export function readStashedMarkdown(
   }
 }
 
-export const HANDOFF_LIMITS = { MAX_ENTRIES, MAX_AGE_MS, KEY_PREFIX };
+/** Move the record into this tab's own store, so a reload still finds it. */
+function adopt(key: string, record: MarkdownHandoff): void {
+  const tab = tabStore();
+  if (!tab) return;
+  try {
+    tab.setItem(`${TAB_PREFIX}${key}`, JSON.stringify(record));
+  } catch {
+    /* Keep the transfer copy: it is the only one that exists. */
+    return;
+  }
+  try {
+    transferStore()?.removeItem(`${KEY_PREFIX}${key}`);
+  } catch {
+    /* Pruning will get it. */
+  }
+}
+
+export function readStashedMarkdown(
+  key: string,
+  now = Date.now(),
+): MarkdownHandoff | null {
+  /* This tab's own copy first, and with no age check: it was adopted by this
+   * tab, and it goes away when the tab does. Expiring it would blank a page
+   * the user simply left open. */
+  const adopted = readRecord(tabStore(), `${TAB_PREFIX}${key}`);
+  if (adopted) return adopted;
+
+  const record = readRecord(transferStore(), `${KEY_PREFIX}${key}`);
+  if (!record) return null;
+  if (now - record.savedAt > MAX_AGE_MS) return null;
+  adopt(key, record);
+  return record;
+}
+
+export const HANDOFF_LIMITS = { MAX_ENTRIES, MAX_AGE_MS, KEY_PREFIX, TAB_PREFIX };

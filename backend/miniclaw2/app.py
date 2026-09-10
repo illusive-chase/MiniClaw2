@@ -1535,14 +1535,23 @@ def create_app(
         if verdict.verdict != "markdown" or verdict.path is None:
             raise HTTPException(403, "只能读取项目内的 Markdown 文件")
         try:
-            content = Path(verdict.path).read_text(encoding="utf-8", errors="replace")
+            # Read to the cap and one character past it, rather than reading
+            # the file and slicing. A generated multi-gigabyte .md file would
+            # otherwise be decoded whole into memory to produce half a
+            # megabyte of response. TextIOWrapper.read(n) is bounded in
+            # *characters* and its incremental decoder carries a partial
+            # multi-byte sequence across reads, so the split never manufactures
+            # a replacement character of its own.
+            with open(verdict.path, encoding="utf-8", errors="replace") as handle:
+                content = handle.read(MARKDOWN_READ_CAP)
+                truncated = handle.read(1) != ""
         except OSError as exc:
             raise HTTPException(400, f"读取文件失败：{exc}") from exc
         return {
             "path": verdict.relative_path,
             "absolute_path": verdict.path,
-            "text": content[:MARKDOWN_READ_CAP],
-            "truncated": len(content) > MARKDOWN_READ_CAP,
+            "text": content,
+            "truncated": truncated,
         }
 
     @app.post("/sessions/{sid}/files/reveal", response_model=dict[str, Any])

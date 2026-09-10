@@ -13,7 +13,7 @@
  * shared through `MarkdownView` and `index.css`.
  */
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 
 import { getNodeArtifact, readMarkdownFile } from "../api";
 import { writeClipboard } from "../clipboard";
@@ -30,6 +30,9 @@ type Loaded = {
   subtitle: string;
   text: string;
   linkBase: MarkdownLinkBase | null;
+  /** Session local links resolve against. Stash routes carry it in the
+   *  payload; URL routes have it in the route itself. */
+  sessionId: string | null;
   truncated?: boolean;
 };
 
@@ -58,6 +61,7 @@ export function MarkdownViewerPage({ route }: { route: MarkdownRoute }) {
           subtitle: `node ${route.nodeId.slice(0, 8)}`,
           text: file.text ?? "",
           truncated: file.truncated,
+          sessionId: route.sessionId,
           /* Relative links in an artifact are written by the agent that
            * produced it, so they resolve against its output directory. */
           linkBase: {
@@ -73,6 +77,7 @@ export function MarkdownViewerPage({ route }: { route: MarkdownRoute }) {
           subtitle: file.path,
           text: file.text,
           truncated: file.truncated,
+          sessionId: route.sessionId,
           linkBase: { kind: "project-file", path: file.path },
         };
       }
@@ -87,6 +92,7 @@ export function MarkdownViewerPage({ route }: { route: MarkdownRoute }) {
         subtitle: stashed.subtitle ?? "",
         text: stashed.text,
         linkBase: stashed.linkBase ?? null,
+        sessionId: stashed.sessionId ?? null,
       };
     };
 
@@ -111,11 +117,6 @@ export function MarkdownViewerPage({ route }: { route: MarkdownRoute }) {
     const timer = window.setTimeout(() => setCopied(false), 2000);
     return () => window.clearTimeout(timer);
   }, [copied]);
-
-  const sessionId = useMemo(
-    () => (route.src === "stash" ? null : route.sessionId),
-    [route],
-  );
 
   return (
     <div className="min-h-screen bg-surface text-ink">
@@ -171,7 +172,7 @@ export function MarkdownViewerPage({ route }: { route: MarkdownRoute }) {
               text={doc.text}
               density="page"
               fontPx={fontPxAt(fontIndex)}
-              sessionId={sessionId}
+              sessionId={doc.sessionId}
               linkBase={doc.linkBase}
               className="leading-relaxed text-ink-strong"
             />

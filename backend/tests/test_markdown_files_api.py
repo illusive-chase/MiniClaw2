@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import sys
 import tempfile
+import tracemalloc
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -277,6 +278,54 @@ class MarkdownFileEndpointTest(unittest.TestCase):
         ).json()
         self.assertTrue(body["truncated"])
         self.assertEqual(len(body["text"]), MARKDOWN_READ_CAP)
+
+    def test_read_at_exactly_the_cap_is_not_truncated(self) -> None:
+        # The off-by-one that matters: a file the cap fits exactly has nothing
+        # left to read, so claiming truncation would be a lie shown to the user.
+        (self.root / "exact.md").write_text("x" * MARKDOWN_READ_CAP, encoding="utf-8")
+        body = self.client.get(
+            f"/sessions/{self.sid}/files/read", params={"path": "exact.md"}
+        ).json()
+        self.assertFalse(body["truncated"])
+        self.assertEqual(len(body["text"]), MARKDOWN_READ_CAP)
+
+    def test_read_splits_multibyte_text_cleanly_at_the_cap(self) -> None:
+        # The cap counts characters, not bytes, so a CJK document must come
+        # back as itself rather than with a mangled character at the seam.
+        text = "中" * (MARKDOWN_READ_CAP + 50)
+        (self.root / "cjk.md").write_text(text, encoding="utf-8")
+        body = self.client.get(
+            f"/sessions/{self.sid}/files/read", params={"path": "cjk.md"}
+        ).json()
+        self.assertTrue(body["truncated"])
+        self.assertEqual(body["text"], text[:MARKDOWN_READ_CAP])
+        self.assertNotIn("�", body["text"])
+
+    def test_read_does_not_load_the_whole_file(self) -> None:
+        # The cap is a memory bound, not just a slice of the response: a
+        # generated multi-gigabyte .md file must not be decoded whole to
+        # produce half a megabyte of text.
+        oversize = MARKDOWN_READ_CAP * 8
+        with open(self.root / "huge.md", "w", encoding="utf-8") as handle:
+            written = 0
+            while written < oversize:
+                handle.write("x" * 100_000)
+                written += 100_000
+
+        tracemalloc.start()
+        try:
+            body = self.client.get(
+                f"/sessions/{self.sid}/files/read", params={"path": "huge.md"}
+            ).json()
+            peak = tracemalloc.get_traced_memory()[1]
+        finally:
+            tracemalloc.stop()
+
+        self.assertTrue(body["truncated"])
+        self.assertEqual(len(body["text"]), MARKDOWN_READ_CAP)
+        # Generous headroom over the cap; the point is that peak tracks the
+        # cap rather than the file, which is 8x larger here.
+        self.assertLess(peak, MARKDOWN_READ_CAP * 4)
 
     def test_reveal_selects_a_file_without_opening_it(self) -> None:
         with patch.object(sys, "platform", "darwin"), patch.object(

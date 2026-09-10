@@ -7,6 +7,8 @@
  * and the verdict is obeyed.
  */
 
+import { defaultUrlTransform } from "react-markdown";
+
 export type LinkKind = "external" | "anchor" | "local";
 
 /** Schemes the browser already handles correctly on its own. */
@@ -17,10 +19,25 @@ export function classifyHref(href: string): LinkKind {
   if (!trimmed) return "local";
   if (trimmed.startsWith("#")) return "anchor";
   if (BROWSER_SCHEMES.test(trimmed)) return "external";
+  /* `//host/path` is a scheme-relative URL, which the browser resolves against
+   * the current origin's scheme. Unix would read it as an absolute filesystem
+   * path instead, so the backend must never see it. */
+  if (trimmed.startsWith("//")) return "external";
   /* `file://` is deliberately NOT external: the browser refuses to navigate
    * to it from an http origin, so it has to go through the backend like any
    * other local path. */
   return "local";
+}
+
+/* `react-markdown` blanks the href of any scheme outside its safe list, and
+ * `file:` is outside it. That default is right for a page that lets the
+ * browser follow links, but here every non-browser href is intercepted and
+ * handed to the backend instead, so a blanked href only loses the target
+ * before the click handler can see it. Nothing is navigated to directly, and
+ * `javascript:` and friends stay blanked, so admitting `file:` costs nothing
+ * and is the only way the backend's `file://` support is reachable at all. */
+export function markdownUrlTransform(url: string): string {
+  return /^file:/i.test(url.trim()) ? url : defaultUrlTransform(url);
 }
 
 /* ── the reading page's hash route ──────────────────────────────────────

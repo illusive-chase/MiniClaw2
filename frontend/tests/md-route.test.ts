@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 
 import {
     classifyHref,
+    markdownUrlTransform,
     parseMarkdownRoute,
     markdownRouteUrl,
 } from "../src/markdownRoute";
@@ -22,7 +23,31 @@ import {
     // file:// must NOT be treated as external — the browser refuses it from an
     // http origin, so it has to go through the backend like any local path.
     assert.equal(classifyHref("file:///Users/x/a.md"), "local");
+    // A scheme-relative URL is the browser's business; on Unix the backend
+    // would read it as an absolute filesystem path.
+    assert.equal(classifyHref("//example.com/docs"), "external");
+    assert.equal(classifyHref("//example.com"), "external");
     assert.equal(classifyHref("   "), "local");
+}
+
+// markdownUrlTransform: `file:` must survive sanitization to reach the click
+// handler, without reopening the schemes sanitization exists to block.
+{
+    assert.equal(
+        markdownUrlTransform("file:///Users/x/a.md"),
+        "file:///Users/x/a.md",
+    );
+    assert.equal(
+        markdownUrlTransform("FILE:///Users/x/a.md"),
+        "FILE:///Users/x/a.md",
+    );
+    // Untouched by us, and still permitted by the default.
+    assert.equal(markdownUrlTransform("backend/app.py"), "backend/app.py");
+    assert.equal(markdownUrlTransform("../FUTURES.md"), "../FUTURES.md");
+    assert.equal(markdownUrlTransform("https://example.com"), "https://example.com");
+    assert.equal(markdownUrlTransform("#anchor"), "#anchor");
+    // Still blanked: the reason the default transform exists.
+    assert.equal(markdownUrlTransform("javascript:alert(1)"), "");
 }
 
 // parseMarkdownRoute: the three shapes, plus junk.

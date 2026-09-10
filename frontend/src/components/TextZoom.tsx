@@ -15,7 +15,8 @@ import { MarkdownView } from "./MarkdownView";
 import { defaultFontIndex, fontPxAt } from "../markdownFont";
 import type { MarkdownRoute } from "../markdownRoute";
 import { markdownRouteUrl } from "../markdownRoute";
-import { stashMarkdown } from "../mdHandoff";import type { MarkdownLinkBase } from "../types";
+import { stashMarkdown } from "../mdHandoff";
+import type { MarkdownLinkBase } from "../types";
 
 /** Google Translate silently drops text past roughly this length. */
 const TRANSLATE_TEXT_LIMIT = 4500;
@@ -39,7 +40,7 @@ export type TextZoomRequest = {
   /** What relative links in this text resolve against. */
   linkBase?: MarkdownLinkBase | null;
   /** A ready URL for the "new tab" button (artifact / project-file sources).
-   *  In-memory sources leave this unset and are handed off via sessionStorage. */
+   *  In-memory sources leave this unset and are handed off through storage. */
   route?: MarkdownRoute;
 };
 
@@ -228,8 +229,8 @@ function TextZoomOverlay({
 
   const openInNewTab = () => {
     /* Sources with a URL (artifact, project file) just navigate. In-memory
-     * text has no URL, so it is parked in sessionStorage first — and if that
-     * write fails we must NOT open a blank tab; Copy is the real fallback. */
+     * text has no URL, so it is parked in storage first — and if that write
+     * fails we must NOT open a blank tab; Copy is the real fallback. */
     if (request.route) {
       window.open(markdownRouteUrl(request.route), "_blank", "noopener");
       return;
@@ -239,6 +240,7 @@ function TextZoomOverlay({
       subtitle: request.subtitle,
       text: request.text,
       linkBase: request.linkBase,
+      sessionId: request.sessionId,
     });
     if (!key) {
       setOpenNote("无法在新标签页打开：浏览器存储不可用，可先用 Copy 复制全文。");

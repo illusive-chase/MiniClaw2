@@ -16,7 +16,11 @@ import rehypeHighlight from "rehype-highlight";
 import remarkGfm from "remark-gfm";
 
 import { resolveMarkdownLink, revealPath } from "../api";
-import { classifyHref, markdownRouteUrl } from "../markdownRoute";
+import {
+  classifyHref,
+  markdownRouteUrl,
+  markdownUrlTransform,
+} from "../markdownRoute";
 import type { MarkdownDensity } from "../markdownFont";
 import { defaultFontIndex, fontPxAt } from "../markdownFont";
 import type { MarkdownLinkBase } from "../types";
@@ -63,28 +67,50 @@ export function MarkdownView({
       setNote({ kind: "error", text: "无法解析链接：当前视图没有绑定会话。" });
       return;
     }
+    /* Claim the tab now, while the click is still the user's. Only the
+     * backend knows whether this href is a readable Markdown file, and Safari
+     * in particular drops the click's activation across that await — a
+     * `window.open` afterwards is then blocked. So open a blank tab
+     * synchronously and either point it at the file or close it again. It
+     * keeps an opener, which `noopener` would deny us; the target is this
+     * same app, so there is nothing to protect it from. */
+    const pending = window.open("", "_blank");
+    const settle = (url: string | null) => {
+      /* `markdownRouteUrl` is relative to the current page; the blank tab has
+       * no URL of its own to resolve it against. */
+      const absolute = url ? new URL(url, window.location.href).href : null;
+      if (!pending) {
+        /* Popup blocked outright. Try once more anyway: a browser that
+         * refuses the blank tab may still allow a real URL. */
+        if (absolute) window.open(absolute, "_blank", "noopener");
+        return;
+      }
+      if (absolute) pending.location.replace(absolute);
+      else pending.close();
+    };
     try {
       const verdict = await resolveMarkdownLink(sessionId, href, linkBase);
       if (verdict.verdict === "markdown" && verdict.relative_path) {
-        window.open(
+        settle(
           markdownRouteUrl({
             src: "project-file",
             sessionId,
             path: verdict.relative_path,
           }),
-          "_blank",
-          "noopener",
         );
       } else if (verdict.verdict === "reveal" && verdict.path) {
+        settle(null);
         await revealPath(sessionId, verdict.path);
         setNote({ kind: "info", text: `已在文件管理器中显示：${verdict.path}` });
       } else {
+        settle(null);
         setNote({
           kind: "error",
           text: verdict.reason ?? `找不到该路径：${href}`,
         });
       }
     } catch (err) {
+      settle(null);
       setNote({
         kind: "error",
         text: err instanceof Error ? err.message : `无法打开链接：${href}`,
@@ -98,6 +124,7 @@ export function MarkdownView({
         <ReactMarkdown
           remarkPlugins={[remarkGfm]}
           rehypePlugins={[[rehypeHighlight, { detect: true, ignoreMissing: true }]]}
+          urlTransform={markdownUrlTransform}
           components={{
             a: ({ href, children, ...props }: AnchorHTMLAttributes<HTMLAnchorElement>) => (
               <a
