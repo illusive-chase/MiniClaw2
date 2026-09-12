@@ -27,6 +27,7 @@ class ResolveMarkdownHrefTest(unittest.TestCase):
         (self.root / "docs" / "design.md").write_text("# design", encoding="utf-8")
         (self.root / "notes.markdown").write_text("notes", encoding="utf-8")
         (self.root / "app.py").write_text("print()", encoding="utf-8")
+        (self.root / "literal:12").write_text("colon", encoding="utf-8")
         (self.outside / "external.md").write_text("# external", encoding="utf-8")
 
     def tearDown(self) -> None:
@@ -49,6 +50,31 @@ class ResolveMarkdownHrefTest(unittest.TestCase):
         verdict = self.resolve("app.py")
         self.assertEqual(verdict.verdict, "reveal")
         self.assertIsNone(verdict.relative_path)
+
+    def test_line_suffix_falls_back_to_existing_file(self) -> None:
+        verdict = self.resolve("app.py:12")
+        self.assertEqual(verdict.verdict, "reveal")
+        self.assertEqual(verdict.path, str(self.root / "app.py"))
+
+    def test_encoded_line_suffix_falls_back_to_existing_file(self) -> None:
+        verdict = self.resolve("app.py%3A12")
+        self.assertEqual(verdict.verdict, "reveal")
+        self.assertEqual(verdict.path, str(self.root / "app.py"))
+
+    def test_line_and_column_suffix_falls_back_to_existing_markdown(self) -> None:
+        verdict = self.resolve("docs/design.md:12:4")
+        self.assertEqual(verdict.verdict, "markdown")
+        self.assertEqual(verdict.relative_path, "docs/design.md")
+
+    def test_existing_filename_with_line_like_suffix_wins(self) -> None:
+        verdict = self.resolve("literal:12")
+        self.assertEqual(verdict.verdict, "reveal")
+        self.assertEqual(verdict.path, str(self.root / "literal:12"))
+
+    def test_missing_path_with_line_suffix_remains_missing(self) -> None:
+        verdict = self.resolve("nope.py:12")
+        self.assertEqual(verdict.verdict, "missing")
+        self.assertIn("nope.py:12", verdict.reason or "")
 
     def test_directory_is_revealed(self) -> None:
         self.assertEqual(self.resolve("docs").verdict, "reveal")
@@ -233,6 +259,11 @@ class MarkdownFileEndpointTest(unittest.TestCase):
         self.assertEqual(
             self._resolve(str(self.outside / "external.md"))["verdict"], "reveal"
         )
+
+    def test_resolve_accepts_file_reference_with_line_number(self) -> None:
+        body = self._resolve("app.py:12")
+        self.assertEqual(body["verdict"], "reveal")
+        self.assertEqual(body["path"], str(self.root / "app.py"))
 
     def test_read_returns_markdown_inside_root(self) -> None:
         res = self.client.get(

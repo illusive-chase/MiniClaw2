@@ -24,6 +24,7 @@ does nothing is indistinguishable from a slow file manager.
 
 from __future__ import annotations
 
+import re
 import stat as stat_module
 from dataclasses import dataclass
 from pathlib import Path
@@ -31,6 +32,7 @@ from typing import Literal
 from urllib.parse import unquote, urlparse
 
 MARKDOWN_SUFFIXES = frozenset({".md", ".markdown"})
+LINE_SUFFIX_RE = re.compile(r"^(?P<path>.+?):[1-9]\d*(?::[1-9]\d*)?$")
 
 Verdict = Literal["markdown", "reveal", "missing"]
 
@@ -82,10 +84,13 @@ def strip_href_scheme(href: str) -> str:
         # urlparse puts a leading-slash path in `path` and leaves `netloc`
         # empty for the local-host form file:///a/b.
         return unquote(parsed.path)
-    if len(parsed.scheme) > 1:
-        return ""
     # Fragment-only and query suffixes are display concerns, not path parts.
-    return unquote(candidate.split("#", 1)[0].split("?", 1)[0])
+    path_part = unquote(candidate.split("#", 1)[0].split("?", 1)[0])
+    # ``urlparse`` mistakes ``app.py:12`` for a custom URL scheme. A trailing
+    # source location is still a local path and is resolved below.
+    if len(parsed.scheme) > 1 and path_without_line_suffix(path_part) is None:
+        return ""
+    return path_part
 
 
 def base_directory(root: Path, base: LinkBase | None) -> Path:
@@ -98,6 +103,12 @@ def base_directory(root: Path, base: LinkBase | None) -> Path:
     if base.kind == "project-file":
         return candidate.parent
     return candidate
+
+
+def path_without_line_suffix(raw: str) -> str | None:
+    """Strip a trailing ``:line`` or ``:line:column`` file reference."""
+    match = LINE_SUFFIX_RE.fullmatch(raw)
+    return match.group("path") if match else None
 
 
 def resolve_markdown_href(
@@ -130,6 +141,18 @@ def resolve_markdown_href(
 
     try:
         stat = target.stat()
+    except FileNotFoundError:
+        fallback_raw = path_without_line_suffix(raw)
+        if fallback_raw is None:
+            return LinkVerdict("missing", reason=f"找不到该路径：{raw}")
+        fallback = Path(fallback_raw).expanduser()
+        if not fallback.is_absolute():
+            fallback = base_directory(root_resolved, base) / fallback
+        try:
+            target = fallback.resolve()
+            stat = target.stat()
+        except OSError:
+            return LinkVerdict("missing", reason=f"找不到该路径：{raw}")
     except OSError:
         return LinkVerdict("missing", reason=f"找不到该路径：{raw}")
 

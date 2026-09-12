@@ -44,6 +44,9 @@ import {
     // Untouched by us, and still permitted by the default.
     assert.equal(markdownUrlTransform("backend/app.py"), "backend/app.py");
     assert.equal(markdownUrlTransform("../FUTURES.md"), "../FUTURES.md");
+    assert.equal(markdownUrlTransform("README.md:12"), "README.md%3A12");
+    assert.equal(markdownUrlTransform("README.md:12:4"), "README.md%3A12%3A4");
+    assert.equal(markdownUrlTransform("backend/app.py:12"), "backend/app.py:12");
     assert.equal(markdownUrlTransform("https://example.com"), "https://example.com");
     assert.equal(markdownUrlTransform("#anchor"), "#anchor");
     // Still blanked: the reason the default transform exists.

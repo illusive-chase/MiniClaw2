@@ -13,6 +13,7 @@ export type LinkKind = "external" | "anchor" | "local";
 
 /** Schemes the browser already handles correctly on its own. */
 const BROWSER_SCHEMES = /^(https?|mailto|tel|data|blob):/i;
+const SOURCE_LOCATION_SUFFIX = /:[1-9]\d*(?::[1-9]\d*)?(?:[?#].*)?$/;
 
 export function classifyHref(href: string): LinkKind {
   const trimmed = href.trim();
@@ -37,7 +38,14 @@ export function classifyHref(href: string): LinkKind {
  * `javascript:` and friends stay blanked, so admitting `file:` costs nothing
  * and is the only way the backend's `file://` support is reachable at all. */
 export function markdownUrlTransform(url: string): string {
-  return /^file:/i.test(url.trim()) ? url : defaultUrlTransform(url);
+  if (/^file:/i.test(url.trim())) return url;
+  const safe = defaultUrlTransform(url);
+  if (safe || !SOURCE_LOCATION_SUFFIX.test(url)) return safe;
+  /* A root-level filename such as `README.md:12` looks like an unknown scheme
+   * to the default sanitizer. Encode its colons so the browser keeps it inert
+   * while the click handler passes it to the backend, which decodes local
+   * hrefs before resolving them. */
+  return url.replace(/:/g, "%3A");
 }
 
 /* ── the reading page's hash route ──────────────────────────────────────
