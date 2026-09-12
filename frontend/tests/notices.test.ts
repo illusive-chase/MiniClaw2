@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   NOTICE_TTL_MS,
   badgeCountable,
+  clearNotices,
   countsTowardBadge,
   emitSystemNotification,
   isPersistentKind,
@@ -441,6 +442,61 @@ function push(notices: Notice[], event: WorkspaceEvent, now = 1000): Notice[] {
   assert.equal(noticeContext(notice, createdAt + 61_000), "1m01s前完成");
 }
 
+/* ---- T11b: the banner's corner slot is a duration, never the gate summary ---- */
+
+{
+  /* `rowContext` substitutes the whole gate summary for a blocked row, because
+   * a one-line list row has nowhere else to say what is being asked. The
+   * banner does: it renders the summary in its two-line body. Putting it in
+   * the corner slot too was both a repetition and a layout bug — that slot is
+   * `shrink-0`, so an unbounded string there cannot shrink and forced the
+   * banner wider than the 356px rail, which is what produced the horizontal
+   * scrollbar under a long permission prompt.
+   *
+   * So the banner reads `rowElapsed`, and this asserts the two diverge exactly
+   * where the gate is. */
+  const summary =
+    "Overwrite /Users/kkaiye/Desktop/repo/MiniClaw2/backend/miniclaw2/" +
+    "providers/claude_native/transcript.py with the regenerated version?";
+  const now = 1_000_000;
+  const asking = updated("gated", "waiting", "running");
+  asking.entry.started_at = now / 1000 - 5;
+  asking.entry.gate = { summary } as ActiveNodeEntry["gate"];
+  const notice = derive(asking, now);
+  assert.ok(notice);
+
+  /* The list row still leads with the question. */
+  assert.equal(rowContext(notice.entry, now), `▸ ${summary}`);
+  /* The banner's corner does not, and is bounded — a duration, not a sentence. */
+  assert.equal(noticeContext(notice, now), "已跑 5s");
+  assert.ok(noticeContext(notice, now).length < 20);
+  /* The question is not lost: it is what the body says. */
+  assert.equal(noticeBody(notice), summary);
+
+  /* Without a gate the two agree, so this is a divergence at the gate only. */
+  const plain = derive(updated("plain", "running", "queued"), now);
+  assert.ok(plain);
+  assert.equal(noticeContext(plain, now), rowContext(plain.entry, now));
+
+  /* Every state a banner can hold keeps that slot short, since the rail sizes
+   * it for a duration and cannot scroll horizontally. */
+  for (const state of [
+    "waiting",
+    "awaiting_human_input",
+    "error",
+    "done",
+    "cancelled",
+    "running",
+    "queued",
+  ] as const) {
+    seq += 1;
+    const each = noticeFromEvent(updated("n", state, "virtual"), now, seq);
+    assert.ok(each);
+    each.entry.gate = { summary } as ActiveNodeEntry["gate"];
+    assert.ok(noticeContext(each, now).length < 20);
+  }
+}
+
 /* ---- T12: the rail holds dismissed banners in place while they exit ---- */
 
 {
@@ -500,7 +556,56 @@ function push(notices: Notice[], event: WorkspaceEvent, now = 1000): Notice[] {
   );
 }
 
-/* ---- system notifications: every degradation path stays quiet ---- */
+/* ---- T12b: clearing the rail is a sweep, and it acknowledges what it drops ---- */
+
+{
+  /* "全部清除" removes every banner regardless of kind — a blocking gate, a
+   * failure and some scheduler chatter all go. It is a *stronger*
+   * acknowledgement than closing one banner, so the caller marks the read key
+   * of each banner it actually removed; leaving them unread would have the bell
+   * still claiming N unread for banners the user had just swept away. */
+  const a = derive(updated("n1", "waiting", "running"));
+  const b = derive(updated("n2", "error", "running"));
+  const c = derive(updated("n1", "running", "waiting"));
+  assert.ok(a && b && c);
+  const rail = [c, b, a];
+
+  /* Mixed kinds: a clear must not become a filtered dismissal of one class. */
+  assert.deepEqual(
+    [...new Set(rail.map((notice) => isPersistentKind(notice.kind)))].sort(),
+    [false, true],
+  );
+
+  /* One key per banner. Two banners on the same node carry different keys,
+   * because they record different transitions — settling one must not be
+   * mistaken for settling both. */
+  const keys = rail.map((notice) => notice.readKey);
+  assert.equal(new Set(keys).size, 3);
+  assert.equal(keys.includes(notificationKey(entry("n1", "waiting"))), true);
+  assert.equal(keys.includes(notificationKey(entry("n1", "running"))), true);
+  assert.notEqual(a.readKey, c.readKey);
+
+  /* A workspace event may enqueue another notice after the callback's render
+   * snapshot but before the clear click is reduced. Clearing and acknowledging
+   * the stale `rail` would silently drop this notice while leaving it unread.
+   * The controller therefore clears its synchronous current snapshot and
+   * returns that exact snapshot to the caller for acknowledgement. */
+  const concurrent = derive(updated("n3", "done", "running"));
+  assert.ok(concurrent);
+  const current = pushNotice(rail, concurrent);
+  const { remaining, cleared } = clearNotices(current);
+
+  assert.equal(cleared.includes(concurrent), true);
+  assert.equal(rail.includes(concurrent), false);
+  assert.deepEqual(
+    cleared.map((notice) => notice.readKey),
+    current.map((notice) => notice.readKey),
+  );
+  /* The queue bottoms out at empty, so the rail unmounts rather than holding
+   * an empty viewport. */
+  assert.deepEqual(remaining, []);
+}
+
 {
   const globalScope = globalThis as unknown as {
     window?: unknown;

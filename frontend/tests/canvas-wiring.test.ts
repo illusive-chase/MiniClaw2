@@ -10,8 +10,12 @@ import {
   scheduledDepsAfterConnect,
   scheduledDepsAfterDisconnect,
 } from "../src/canvas/dependencyWiring";
-import { stackTop } from "../src/canvas/nodes/AgentNode";
-import type { NodeInfo } from "../src/types";
+import {
+  canCreateDependencyFromState,
+  dependencyActionAlwaysVisible,
+  stackTop,
+} from "../src/canvas/nodes/AgentNode";
+import type { NodeInfo, NodeState } from "../src/types";
 
 function node(over: Partial<NodeInfo> = {}): NodeInfo {
   return {
@@ -90,6 +94,30 @@ function node(over: Partial<NodeInfo> = {}): NodeInfo {
 
 function graph(...nodes: NodeInfo[]): Map<string, NodeInfo> {
   return new Map(nodes.map((n) => [n.id, n]));
+}
+
+/* A dependency button remains available throughout an active run, including
+ * the two states in which execution is paused for input. A queued node keeps
+ * its dequeue-only behavior until it starts. */
+{
+  const supported: NodeState[] = [
+    "virtual",
+    "running",
+    "waiting",
+    "awaiting_human_input",
+    "done",
+    "error",
+    "cancelled",
+  ];
+  for (const state of supported) {
+    assert.equal(canCreateDependencyFromState(state), true, state);
+  }
+  assert.equal(canCreateDependencyFromState("queued"), false);
+
+  assert.equal(dependencyActionAlwaysVisible("running"), true);
+  for (const state of supported.filter((candidate) => candidate !== "running")) {
+    assert.equal(dependencyActionAlwaysVisible(state), false, state);
+  }
 }
 
 /* The ordinary case: one virtual may depend on an executed node in its lane. */

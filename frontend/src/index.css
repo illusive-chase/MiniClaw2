@@ -292,10 +292,10 @@ body {
       opacity: 0;
       transform: translateX(-115%);
       max-height: 0;
-      /* Cancels the rail's `gap-2` as well as the banner's own height, so the
+      /* Cancels the rail's `gap-3` as well as the banner's own height, so the
        * banners below close the space exactly rather than keeping a stray row
-       * of padding where this one was. */
-      margin-bottom: -0.5rem;
+       * of padding where this one was. Track the gap if it ever changes. */
+      margin-bottom: -0.75rem;
     }
   }
   .notice-banner-leave {

@@ -7,13 +7,13 @@
  * three independent banners.
  *
  * That is the load-bearing decision of this module, so the reducer surface is
- * deliberately narrow: `push`, `dismiss`, `expire`. There is intentionally no
- * action that takes a node's *current* state as input. Adding one would
- * reintroduce retraction, reconciliation against the live node list, and a
- * whole class of races that this design does not have. The cost is that a
- * banner can outlive the situation it describes, which is acceptable: it says
- * "this happened", and that stays true. Live state is expressed by the node
- * tiles, the run-status panel, and the side panel.
+ * deliberately narrow: `push`, `dismiss`, `expire`, `clearAll`. There is
+ * intentionally no action that takes a node's *current* state as input. Adding
+ * one would reintroduce retraction, reconciliation against the live node list,
+ * and a whole class of races that this design does not have. The cost is that
+ * a banner can outlive the situation it describes, which is acceptable: it
+ * says "this happened", and that stays true. Live state is expressed by the
+ * node tiles, the run-status panel, and the side panel.
  */
 
 import { useCallback, useRef, useState } from "react";
@@ -216,6 +216,16 @@ export function removeNotice(notices: Notice[], id: string): Notice[] {
   return notices.filter((notice) => notice.id !== id);
 }
 
+export type ClearedNotices = {
+  remaining: Notice[];
+  cleared: Notice[];
+};
+
+/** Clear one exact queue snapshot and retain it for acknowledgement. */
+export function clearNotices(notices: Notice[]): ClearedNotices {
+  return { remaining: [], cleared: notices };
+}
+
 /**
  * Whether an entry's state is one the unread badge counts.
  *
@@ -337,6 +347,8 @@ export type NoticesController = {
   dismiss: (id: string) => void;
   /** A transient banner's timer ran out. Leaves it unread. */
   expire: (id: string) => void;
+  /** User cleared the whole rail at once. Returns exactly what was removed. */
+  clearAll: () => Notice[];
 };
 
 /**
@@ -357,6 +369,10 @@ export function useNotices(
   onActivate: (notice: Notice) => void,
 ): NoticesController {
   const [notices, setNotices] = useState<Notice[]>([]);
+  /* Event callbacks can interleave before React renders their queued updates.
+   * Keep the latest committed action snapshot synchronously so bulk clearing
+   * can return the same notices it removes, including a just-queued push. */
+  const noticesRef = useRef<Notice[]>([]);
   const seqRef = useRef(0);
   const onActivateRef = useRef(onActivate);
   onActivateRef.current = onActivate;
@@ -365,13 +381,24 @@ export function useNotices(
     seqRef.current += 1;
     const notice = noticeFromEvent(event, Date.now(), seqRef.current);
     if (!notice) return;
-    setNotices((current) => pushNotice(current, notice));
+    const next = pushNotice(noticesRef.current, notice);
+    noticesRef.current = next;
+    setNotices(next);
     emitSystemNotification(notice, (item) => onActivateRef.current(item));
   }, []);
 
   const dismiss = useCallback((id: string) => {
-    setNotices((current) => removeNotice(current, id));
+    const next = removeNotice(noticesRef.current, id);
+    noticesRef.current = next;
+    setNotices(next);
   }, []);
 
-  return { notices, push, dismiss, expire: dismiss };
+  const clearAll = useCallback(() => {
+    const { remaining, cleared } = clearNotices(noticesRef.current);
+    noticesRef.current = remaining;
+    setNotices(remaining);
+    return cleared;
+  }, []);
+
+  return { notices, push, dismiss, expire: dismiss, clearAll };
 }

@@ -176,13 +176,14 @@ function AgentNodeImpl({ data, selected }: NodeProps<AgentNodeData>) {
         onClick: () => agentNodeContext.onCreateContinuationVirtual(node.id),
       });
     }
-    if (isVirtual || (!isVirtual && isTerminal(node.state))) {
+    if (canCreateDependencyFromState(node.state)) {
       items.push({
         key: "dependency",
         icon: <ActionGlyph>↘</ActionGlyph>,
         title: "Dependency - new virtual that waits for this",
         disabled: !canCreateVirtual || !agentNodeContext.canCreateVirtual,
         tone: "neutral",
+        alwaysVisible: dependencyActionAlwaysVisible(node.state),
         onClick: () => agentNodeContext.onCreateDependencyVirtual(node.id),
       });
     }
@@ -771,6 +772,14 @@ function isActiveState(state: NodeInfo["state"]): boolean {
     state === "waiting" ||
     state === "awaiting_human_input"
   );
+}
+
+export function canCreateDependencyFromState(state: NodeState): boolean {
+  return state === "virtual" || isActiveState(state) || isTerminal(state);
+}
+
+export function dependencyActionAlwaysVisible(state: NodeState): boolean {
+  return state === "running";
 }
 
 function StateChip({ state }: { state: NodeState }) {

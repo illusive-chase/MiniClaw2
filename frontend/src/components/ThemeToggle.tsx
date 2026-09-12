@@ -33,10 +33,10 @@ export function ThemeToggle() {
 
   const tooltip =
     pref === "light"
-      ? "Theme: light · click for dark"
+      ? "主题：亮色 · 点击切换到暗色"
       : pref === "dark"
-        ? "Theme: dark · click for system"
-        : "Theme: system · click for light";
+        ? "主题：暗色 · 点击切换到跟随系统"
+        : "主题：跟随系统 · 点击切换到亮色";
 
   return (
     <button
@@ -51,7 +51,7 @@ export function ThemeToggle() {
         className="inline-flex h-4 w-4 items-center justify-center transition-transform duration-300 ease-out"
         style={{ transform: pref === "system" ? "rotate(0deg)" : pref === "dark" ? "rotate(-30deg)" : "rotate(20deg)" }}
       >
-        {pref === "light" ? <SunIcon /> : pref === "dark" ? <MoonIcon /> : <MonitorIcon />}
+        {pref === "light" ? <SunIcon /> : pref === "dark" ? <MoonIcon /> : <AutoThemeIcon />}
       </span>
     </button>
   );
@@ -89,7 +89,16 @@ function MoonIcon() {
   );
 }
 
-function MonitorIcon() {
+/* "Follow the system" drawn as light-vs-dark rather than as a device: the
+ * button's subject is the theme, so all three faces have to stay inside the
+ * sun/moon vocabulary. A monitor made the third state read as a hardware
+ * setting instead of the midpoint between the other two.
+ *
+ * The dark half is hatched rather than filled, so the glyph is pure stroke
+ * like the rest of the top bar. Two hatches, not three: below ~3 units of
+ * pitch they merge into a solid wedge at 16px and the icon is back to being
+ * a filled half-circle. */
+function AutoThemeIcon() {
   return (
     <svg
       viewBox="0 0 16 16"
@@ -99,11 +108,11 @@ function MonitorIcon() {
       stroke="currentColor"
       strokeWidth="1.5"
       strokeLinecap="round"
-      strokeLinejoin="round"
       aria-hidden="true"
     >
-      <rect x="2" y="3" width="12" height="8.5" rx="1.2" />
-      <path d="M5.5 14h5M8 11.5v2.5" />
+      <circle cx="8" cy="8" r="5.6" />
+      <path d="M8 2.4V13.6" />
+      <path d="M9.07 7.38 11.13 5.32M9.07 10.68 11.13 8.62" />
     </svg>
   );
 }

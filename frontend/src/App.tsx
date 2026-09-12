@@ -251,6 +251,7 @@ export function App() {
     push: pushNotice,
     dismiss: dismissNotice,
     expire: expireNotice,
+    clearAll: clearAllNotices,
     /* Clicking a system notification is at least as deliberate as clicking the
      * in-page banner, so it settles the same way: the banner goes and its read
      * key is marked. Without this the user answered a notification and came
@@ -308,6 +309,14 @@ export function App() {
     [dismissNotice, markRead],
   );
   dismissBannerRef.current = dismissBanner;
+
+  /* Clearing the rail is a stronger acknowledgement than closing one banner,
+   * so it settles every read key it removes. Leaving them unread would have
+   * the bell still claiming N unread for banners the user just swept away. */
+  const clearAllBanners = useCallback(() => {
+    const cleared = clearAllNotices();
+    markRead(cleared.map((notice) => notice.readKey));
+  }, [clearAllNotices, markRead]);
 
   const [landingTags, setLandingTags] = useState<Tag[]>([]);
   const [session, setSession] = useState<SessionInfo | null>(null);
@@ -3001,6 +3010,7 @@ export function App() {
               onJump={jumpToActiveNode}
               onDismiss={dismissBanner}
               onExpire={(notice) => expireNotice(notice.id)}
+              onClearAll={clearAllBanners}
             />
           )}
           />
@@ -3123,11 +3133,15 @@ export function App() {
           <button
             type="button"
             onClick={backToLanding}
-            className="inline-flex h-8 items-center gap-1 rounded-md border border-line bg-surface px-2.5 text-[11px] text-ink-muted transition hover:border-line-strong hover:bg-surface-sunken hover:text-ink"
-            title="Back to projects"
+            className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-line bg-surface text-ink-muted transition hover:border-line-strong hover:bg-surface-sunken hover:text-ink"
+            title="返回项目列表"
+            aria-label="返回项目列表"
           >
-            <span aria-hidden="true">←</span>
-            <span className="hidden sm:inline">Projects</span>
+            <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M3.5 10.8 12 4l8.5 6.8" />
+              <path d="M5.8 9.5v9.9a1.5 1.5 0 0 0 1.5 1.5h9.4a1.5 1.5 0 0 0 1.5-1.5V9.5" />
+              <path d="M9.9 20.9v-4.8a1.3 1.3 0 0 1 1.3-1.3h1.6a1.3 1.3 0 0 1 1.3 1.3v4.8" />
+            </svg>
           </button>
           <div className="min-w-0">
             <div className="truncate font-display text-[14px] font-semibold tracking-tight text-ink-strong">
@@ -3290,13 +3304,15 @@ export function App() {
             }}
             disabled={sessionSettingsSaving || projectMutationPending}
             className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-line bg-surface text-ink-muted transition hover:border-line-strong hover:bg-surface-sunken hover:text-ink disabled:cursor-not-allowed disabled:opacity-40"
-            title="Project and new direction"
-            aria-label="Open project panel and new direction composer"
+            title="项目详情与新方向"
+            aria-label="打开项目详情面板与新方向输入框"
           >
+            {/* An info mark, not a house: this button opens the project detail
+              * panel, and a home glyph promised navigation it never performed. */}
             <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-              <path d="M3 12 12 4l9 8" />
-              <path d="M5 10v9a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-9" />
-              <path d="M10 20v-6h4v6" />
+              <circle cx="12" cy="12" r="9" />
+              <path d="M12 11v5" />
+              <path d="M12 7.75h.01" />
             </svg>
           </button>
 
@@ -3305,14 +3321,23 @@ export function App() {
             onClick={toggleLibrary}
             aria-pressed={panelState.open && panelState.mode === "library"}
             className={
-              "inline-flex h-8 items-center rounded-md border px-2.5 text-xs font-medium transition " +
+              "inline-flex h-8 w-8 items-center justify-center rounded-md border transition " +
               (panelState.open && panelState.mode === "library"
-                ? "border-brand bg-brand/10 text-ink-strong"
+                ? "border-line-strong bg-surface-sunken text-ink"
                 : "border-line bg-surface text-ink-muted hover:border-line-strong hover:bg-surface-sunken hover:text-ink")
             }
-            title="Toggle library"
+            title="Library"
+            aria-label="展开 / 收起 library 面板"
           >
-            Library
+            {/* An open book. The shelf of three upright volumes carried four
+              * closed shapes and roughly 1.7x the ink of its neighbours, which
+              * read as a solid block at 17px; two curved leaves and a spine
+              * match the bell and folder beside it. */}
+            <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M12 7.4C10.3 6.1 7.7 5.4 4.2 5.5V17.9C7.7 17.8 10.3 18.5 12 19.8" />
+              <path d="M12 7.4C13.7 6.1 16.3 5.4 19.8 5.5V17.9C16.3 17.8 13.7 18.5 12 19.8" />
+              <path d="M12 7.4V19.8" />
+            </svg>
           </button>
 
           <ThemeToggle />
@@ -3385,6 +3410,7 @@ export function App() {
             onJump={jumpToActiveNode}
             onDismiss={dismissBanner}
             onExpire={(notice) => expireNotice(notice.id)}
+            onClearAll={clearAllBanners}
           />
 
           {/* Hide the banner only while the matching response controls are

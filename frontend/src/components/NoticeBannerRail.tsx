@@ -19,7 +19,7 @@ import {
   useState,
 } from "react";
 
-import { rowContext } from "../activeNodes";
+import { rowElapsed } from "../activeNodes";
 import { stateMeta } from "../canvas/nodes/stateMeta";
 import {
   isPersistentKind,
@@ -28,7 +28,6 @@ import {
   requestSystemNotificationPermission,
   systemNotificationPermission,
   type Notice,
-  type NoticeKind,
   type SystemNotificationPermission,
 } from "../notices";
 import type { ActiveNodeEntry } from "../types";
@@ -40,27 +39,18 @@ type Props = {
   onDismiss: (notice: Notice) => void;
   /** Timer expiry removes the banner but leaves it unread — it was never seen. */
   onExpire: (notice: Notice) => void;
+  /** Clear the whole rail at once. Acknowledges every banner it removes. */
+  onClearAll: () => void;
 };
 
-/* Tone per kind. `stateMeta` owns node-state color, but a banner is keyed on
- * the *class* of event rather than the state, and its border/background pair
- * has no counterpart there — five entries against eight states, and both
- * blocking states share one look. The tokens are the same family. */
-const KIND_FRAME: Record<NoticeKind, string> = {
-  blocking: "border-state-waiting/45 bg-state-waiting-soft",
-  failure: "border-state-error/40 bg-state-error-soft",
-  success: "border-state-done/40 bg-surface-raised",
-  neutral: "border-line bg-surface-raised",
-  progress: "border-line bg-surface-raised",
-};
-
-const KIND_TITLE: Record<NoticeKind, string> = {
-  blocking: "text-state-waiting",
-  failure: "text-state-error",
-  success: "text-ink-strong",
-  neutral: "text-ink",
-  progress: "text-ink",
-};
+/**
+ * Below this many banners the rail clears itself one banner at a time.
+ *
+ * A single notice already carries its own close button directly above it, so a
+ * "clear all" spanning the rail would be a second control for the same action,
+ * one row further from the pointer.
+ */
+const CLEAR_ALL_MIN = 2;
 
 /**
  * How long a dismissed banner stays mounted to play its exit.
@@ -102,7 +92,11 @@ export function mergeRailItems(previous: RailItem[], notices: Notice[]): RailIte
 
 /** Derive the banner's time-sensitive context from its immutable event row. */
 export function noticeContext(notice: Notice, now: number): string {
-  return rowContext(notice.entry, now);
+  /* Deliberately `rowElapsed` and not `rowContext`: the latter substitutes the
+   * gate summary for a blocking row, which this banner already renders in its
+   * body. Repeating it here put an unbounded string into a `shrink-0` slot
+   * sized for a duration, forcing the banner wider than the rail. */
+  return rowElapsed(notice.entry, now);
 }
 
 /**
@@ -152,7 +146,13 @@ function useRailItems(notices: Notice[]): RailItem[] {
   return items;
 }
 
-export function NoticeBannerRail({ notices, onJump, onDismiss, onExpire }: Props) {
+export function NoticeBannerRail({
+  notices,
+  onJump,
+  onDismiss,
+  onExpire,
+  onClearAll,
+}: Props) {
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const items = useRailItems(notices);
   const hasItems = items.length > 0;
@@ -223,17 +223,47 @@ export function NoticeBannerRail({ notices, onJump, onDismiss, onExpire }: Props
 
   return (
     <div
-      className="pointer-events-none absolute left-3 top-3 z-10 w-[356px]"
+      /* Wider than the banners themselves: the viewport's horizontal padding
+       * below is what gives each banner's corner close button somewhere to
+       * overhang into. Without the extra width the banners would narrow by
+       * that padding instead. */
+      className="pointer-events-none absolute left-3 top-3 z-10 w-[376px]"
       role="region"
       aria-label="通知横幅"
       aria-live="polite"
     >
+      {/* Clearing the rail is one action attached to the top edge, the way a
+          notification centre offers it — not a per-banner chore once several
+          have stacked up. Absolute positioning keeps the first banner at the
+          exact same y-coordinate when the count crosses `CLEAR_ALL_MIN`; the
+          button's centre sits on that banner's top border (`pt-2.5` below).
+          Below the threshold the banner's own close button is nearer and says
+          the same thing, so this stays out of the way. */}
+      {notices.length >= CLEAR_ALL_MIN ? (
+        <button
+          type="button"
+          onClick={onClearAll}
+          className="pointer-events-auto absolute left-1/2 top-2.5 z-20 -translate-x-1/2 -translate-y-1/2 rounded-full border border-line bg-surface-raised px-3 py-1 text-[10.5px] font-medium text-ink-muted shadow-card transition hover:border-line-strong hover:text-ink"
+        >
+          全部清除（{notices.length}）
+        </button>
+      ) : null}
       <div
         ref={viewportRef}
         onScroll={(event) => {
           scrollTopRef.current = event.currentTarget.scrollTop;
         }}
-        className="notice-rail-viewport pointer-events-auto flex max-h-[60vh] flex-col gap-2 overflow-y-auto pb-1"
+        /* The padding is structural, not cosmetic: a close button straddling
+         * its banner's top-right corner paints outside the banner box, and a
+         * scroll container clips at its *padding* box — so the overhang needs
+         * padding to live in. `overflow-x-hidden` then guarantees no
+         * horizontal scrollbar can appear no matter what a banner contains;
+         * `overflow-y-auto` alone computes overflow-x to `auto`, which is how
+         * an overlong gate summary used to put one there.
+         *
+         * `gap-3` rather than `gap-2` for the same reason: at an 8px gap a
+         * button overhanging 8px upward would touch the banner above it. */
+        className="notice-rail-viewport pointer-events-auto flex max-h-[60vh] flex-col gap-3 overflow-y-auto overflow-x-hidden px-2.5 pb-2 pt-2.5"
       >
         {items.map(({ notice, leaving }) => (
           <NoticeBanner
@@ -309,9 +339,8 @@ function NoticeBanner({
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
       className={
-        "group relative shrink-0 rounded-lg border shadow-raised " +
-        (leaving ? "notice-banner-leave " : "notice-banner-enter ") +
-        KIND_FRAME[notice.kind]
+        "group relative shrink-0 rounded-lg border border-line bg-surface-raised shadow-raised " +
+        (leaving ? "notice-banner-leave" : "notice-banner-enter")
       }
     >
       <button
@@ -320,29 +349,27 @@ function NoticeBanner({
         className="flex w-full items-start gap-2.5 rounded-lg px-3.5 py-3 text-left transition hover:brightness-[0.98]"
         title="跳转到该节点"
       >
-        {/* The state badge stands in for a macOS notification's app icon:
-            square, colored by state, and the one part of the banner readable
-            at a glance from across the screen. */}
+        {/* The state badge stands in for a macOS notification's app icon, and
+            is now the *only* thing that distinguishes one class of notice from
+            another: the frame around it is identical for every kind, so shape
+            and color carry the whole signal. Slightly larger than the list
+            chip for that reason — at 24px a 8px glyph inside a tinted square
+            was reading as a colored dot rather than as a check or a cross. */}
         <span
           className={
-            "mt-px flex h-6 w-6 shrink-0 items-center justify-center rounded-md " +
+            "mt-px flex h-7 w-7 shrink-0 items-center justify-center rounded-md " +
             meta.chipBg +
             " " +
             meta.chipText
           }
           aria-hidden="true"
         >
-          <meta.Icon />
+          <meta.Icon size={14} />
         </span>
 
         <span className="min-w-0 flex-1">
           <span className="flex items-baseline gap-2">
-            <span
-              className={
-                "truncate text-[12.5px] font-semibold leading-5 " +
-                KIND_TITLE[notice.kind]
-              }
-            >
+            <span className="truncate text-[12.5px] font-semibold leading-5 text-ink-strong">
               {noticeTitle(notice)}
             </span>
             {context ? (
@@ -354,9 +381,17 @@ function NoticeBanner({
 
           {/* The description: what this event is about. Two lines, because a
               gate summary is a sentence and truncating it to one loses the
-              question being asked. */}
+              question being asked.
+            *
+            * No `block` here: Tailwind emits `.block` after `.line-clamp-2`,
+            * so the two together resolve to `display:block` and the clamp is
+            * silently dropped — a long gate summary rendered every line it
+            * had. `break-words` handles the other half: a permission prompt
+            * routinely carries an absolute path longer than the banner, which
+            * would otherwise be laid out at its full width and only then
+            * clipped. */}
           {body ? (
-            <span className="mt-0.5 block line-clamp-2 text-[11.5px] leading-[1.45] text-ink-muted">
+            <span className="mt-0.5 line-clamp-2 break-words text-[11.5px] leading-[1.45] text-ink-muted">
               {body}
             </span>
           ) : null}
@@ -379,21 +414,26 @@ function NoticeBanner({
         </span>
       </button>
 
-      {/* Corner close, macOS-style: out of the text's way, and revealed on
-        * hover so a rail at rest stays quiet. Transient banners leave on their
-        * own, so only persistent ones offer it. */}
+      {/* Straddling the top-right corner, the way iOS and macOS place it: the
+        * badge sits half outside the banner so it never covers the text, and
+        * reads as an affordance attached to the card rather than a control
+        * inside it. It needs a real border and an opaque fill to survive
+        * hanging over the corner — half of it paints against the canvas.
+        *
+        * Revealed on hover so a rail at rest stays quiet. Transient banners
+        * leave on their own, so only persistent ones offer it. */}
       {persistent ? (
         <button
           type="button"
           onClick={onDismiss}
           aria-label="关闭此通知"
           title="关闭"
-          className="absolute right-1.5 top-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-surface-raised/80 text-ink-subtle opacity-0 shadow-card transition hover:text-ink focus-visible:opacity-100 group-hover:opacity-100"
+          className="absolute -right-2 -top-2 z-10 flex h-6 w-6 items-center justify-center rounded-full border border-line bg-surface-raised text-ink-muted opacity-0 shadow-card transition hover:border-line-strong hover:text-ink focus-visible:opacity-100 group-hover:opacity-100"
         >
           <svg
             viewBox="0 0 24 24"
-            width="11"
-            height="11"
+            width="13"
+            height="13"
             fill="none"
             stroke="currentColor"
             strokeWidth="2.5"

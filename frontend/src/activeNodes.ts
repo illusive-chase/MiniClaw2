@@ -404,14 +404,13 @@ export function formatElapsed(startedAt: number | null | undefined, now: number)
 }
 
 /**
- * The trailing hint on a row: what it is blocked on, or how long ago it ended.
+ * How long ago this row last moved, phrased for its state.
  *
  * Terminal rows report time since they *finished*. Measuring a dead node from
  * `started_at` against the live clock would render it as having run
  * continuously, with a duration that keeps climbing forever.
  */
-export function rowContext(entry: ActiveNodeEntry, now: number): string {
-  if (entry.gate) return `▸ ${entry.gate.summary}`;
+export function rowElapsed(entry: ActiveNodeEntry, now: number): string {
   if (isTerminal(entry)) {
     const verb =
       entry.state === "error" ? "失败" : entry.state === "cancelled" ? "取消" : "完成";
@@ -421,6 +420,20 @@ export function rowContext(entry: ActiveNodeEntry, now: number): string {
   if (entry.state === "queued") return "等待槽位";
   const elapsed = formatElapsed(entry.started_at, now);
   return elapsed ? `已跑 ${elapsed}` : "";
+}
+
+/**
+ * The trailing hint on a row: what it is blocked on, or how long ago it ended.
+ *
+ * A gate summary displaces the duration here because a list row has nowhere
+ * else to say what the node is asking. Surfaces that show the summary in their
+ * own body — the banner rail — want `rowElapsed` instead: rendering the
+ * summary twice is both a repetition and, in a fixed-width container, an
+ * unbounded string in a slot sized for "3m21s前开始".
+ */
+export function rowContext(entry: ActiveNodeEntry, now: number): string {
+  if (entry.gate) return `▸ ${entry.gate.summary}`;
+  return rowElapsed(entry, now);
 }
 
 export type ActiveNodesFeed = {

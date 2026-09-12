@@ -1,9 +1,20 @@
 import type { ComponentType } from "react";
 import type { NodeState } from "../../types";
 
+/**
+ * Icons are drawn on an 8×8 grid and default to that size.
+ *
+ * `size` exists because the notice rail leans on the icon far harder than a
+ * node tile does: every banner there shares one frame, so shape and color are
+ * the only thing separating a completion from a failure, and an 8px glyph in a
+ * 28px chip reads as a colored dot rather than as a check or a cross.
+ */
+export type StateIconProps = { size?: number };
+export type StateIcon = ComponentType<StateIconProps>;
+
 export type StateMeta = {
   label: string;
-  Icon: ComponentType;
+  Icon: StateIcon;
   chipBg: string;
   chipText: string;
   railBg: string;
@@ -134,35 +145,59 @@ export function stateStroke(state: NodeState): string {
   }
 }
 
-/* icons */
+/* icons
+ *
+ * Every icon takes the same `size` (default 8, the design grid), and at that
+ * default each one renders exactly as it did before the prop existed — the
+ * node tile's chip is unchanged. The SVGs keep an 8-unit viewBox and scale
+ * whole, stroke weight included, so a glyph enlarged for the notice rail is
+ * the same drawing rather than a thinner one. The two dot icons carry no
+ * stroke, so they size off the box: 3/4 of it, which is the 6px dot in an 8px
+ * slot the tile has always drawn.
+ */
 
-export function DotIcon() {
-  return <span className="block h-1.5 w-1.5 rounded-full bg-current" />;
+export function DotIcon({ size = 8 }: StateIconProps) {
+  return (
+    <span
+      className="block rounded-full bg-current"
+      style={{ width: size * 0.75, height: size * 0.75 }}
+    />
+  );
 }
 
-export function DotPulseIcon() {
+export function DotPulseIcon({ size = 8 }: StateIconProps) {
+  const dot = size * 0.75;
   return (
-    <span className="relative block h-1.5 w-1.5">
+    <span className="relative block" style={{ width: dot, height: dot }}>
       <span className="absolute inset-0 rounded-full bg-current opacity-40 pulse-slow" />
-      <span className="absolute inset-[1px] rounded-full bg-current" />
+      <span
+        className="absolute rounded-full bg-current"
+        style={{ inset: size / 8 }}
+      />
     </span>
   );
 }
 
-export function HourglassIcon() {
+export function HourglassIcon({ size = 8 }: StateIconProps) {
   return (
-    <svg viewBox="0 0 8 8" width="8" height="8" fill="currentColor" aria-hidden="true">
+    <svg
+      viewBox="0 0 8 8"
+      width={size}
+      height={size}
+      fill="currentColor"
+      aria-hidden="true"
+    >
       <path d="M1.5 1h5v.6L4.6 4l1.9 2.4V7h-5v-.6L3.4 4 1.5 1.6V1Z" />
     </svg>
   );
 }
 
-export function RingIcon() {
+export function RingIcon({ size = 8 }: StateIconProps) {
   return (
     <svg
       viewBox="0 0 8 8"
-      width="8"
-      height="8"
+      width={size}
+      height={size}
       fill="none"
       stroke="currentColor"
       strokeWidth="1.5"
@@ -173,12 +208,12 @@ export function RingIcon() {
   );
 }
 
-export function CheckIcon() {
+export function CheckIcon({ size = 8 }: StateIconProps) {
   return (
     <svg
       viewBox="0 0 8 8"
-      width="8"
-      height="8"
+      width={size}
+      height={size}
       fill="none"
       stroke="currentColor"
       strokeWidth="1.6"
@@ -191,12 +226,12 @@ export function CheckIcon() {
   );
 }
 
-export function CrossIcon() {
+export function CrossIcon({ size = 8 }: StateIconProps) {
   return (
     <svg
       viewBox="0 0 8 8"
-      width="8"
-      height="8"
+      width={size}
+      height={size}
       fill="none"
       stroke="currentColor"
       strokeWidth="1.6"
@@ -208,12 +243,12 @@ export function CrossIcon() {
   );
 }
 
-export function SlashIcon() {
+export function SlashIcon({ size = 8 }: StateIconProps) {
   return (
     <svg
       viewBox="0 0 8 8"
-      width="8"
-      height="8"
+      width={size}
+      height={size}
       fill="none"
       stroke="currentColor"
       strokeWidth="1.4"
