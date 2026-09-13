@@ -2,9 +2,10 @@
 
 Two roots are supported:
 
-- **Bundled** templates ship with the backend under
-  ``backend/miniclaw2/templates/bundled/``. They can create fresh temporary
-  projects and are reached via the Tests modal.
+- **Bundled** templates may ship with the backend under
+  ``backend/miniclaw2/templates/bundled/``. The distribution currently ships
+  no bundled test templates; this root remains available for future packaged
+  templates.
 - **User** templates live under
   ``$MINICLAW_CONTEXT_HOME/templates/<slug>/`` and are stamped into an
   existing project's active planspace via drag-and-drop. They are authored

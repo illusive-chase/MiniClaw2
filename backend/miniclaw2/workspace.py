@@ -1,46 +1,23 @@
-"""Temporary workspace helper — general feature, first used by test templates.
+"""Temporary workspace helpers.
 
-Creates a fresh git-initialised tempdir to serve as a Project's ``root_path``.
-The empty initial commit guarantees that downstream commit-op nodes can
-produce real two-commit diffs against it.
+Temporary projects use an OS temporary directory as an execution cache.  The
+directory is deliberately not a repository: ephemeral sessions must not gain
+Git or host binding state as a side effect of creation.
 """
 
 from __future__ import annotations
 
 import shutil
-import subprocess
 import tempfile
 from pathlib import Path
-
-from .git_state import ensure_miniclaw_git_excluded
 
 
 TEMP_PREFIX = "miniclaw2-tmp-"
 
 
 def create_temporary_root() -> str:
-    """Make a fresh tempdir, init git in it, and add an empty initial commit.
-
-    Returns the absolute path. Raises ``RuntimeError`` if git is missing or
-    the init sequence fails — callers should treat that as a hard failure;
-    a half-initialised workspace would silently break commit-op diffs.
-    """
-    root = Path(tempfile.mkdtemp(prefix=TEMP_PREFIX))
-    try:
-        _run(["git", "init", "-q", "--initial-branch=main"], root)
-        _run(["git", "config", "user.email", "miniclaw2@local"], root)
-        _run(["git", "config", "user.name", "miniclaw2"], root)
-        exclude_error = ensure_miniclaw_git_excluded(str(root))
-        if exclude_error:
-            raise RuntimeError(f"failed to write git exclude: {exclude_error}")
-        _run(
-            ["git", "commit", "-q", "--allow-empty", "-m", "miniclaw:init"],
-            root,
-        )
-    except Exception:
-        shutil.rmtree(root, ignore_errors=True)
-        raise
-    return str(root)
+    """Make and return a fresh, non-Git temporary execution directory."""
+    return tempfile.mkdtemp(prefix=TEMP_PREFIX)
 
 
 def remove_temporary_root(path: str) -> None:
@@ -54,13 +31,3 @@ def remove_temporary_root(path: str) -> None:
     if TEMP_PREFIX not in target.name:
         return
     shutil.rmtree(target, ignore_errors=True)
-
-
-def _run(cmd: list[str], cwd: Path) -> None:
-    result = subprocess.run(
-        cmd, cwd=cwd, check=False, capture_output=True, text=True, timeout=10
-    )
-    if result.returncode != 0:
-        raise RuntimeError(
-            f"{' '.join(cmd)} failed: {result.stderr.strip() or result.stdout.strip()}"
-        )

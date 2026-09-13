@@ -218,6 +218,11 @@ class SessionInfo(BaseModel):
     project_context_binding_id: str | None = None
     layout_hints: dict[str, dict[str, float]] = Field(default_factory=dict)
     layout_viewport: dict[str, float] | None = None
+    # Runtime capabilities are explicit so clients can hide workspace/Git
+    # controls for ephemeral sessions.
+    persistence_mode: str = "durable"
+    resumable: bool = True
+    capabilities: dict[str, bool] = Field(default_factory=dict)
 
 
 class ActiveNodeGate(BaseModel):
@@ -2597,6 +2602,21 @@ def _session_info(registry: ProjectRegistry, project: Any) -> SessionInfo:
         project_context_binding_id=project.project_context_binding_id,
         layout_hints=project.layout_hints,
         layout_viewport=project.layout_viewport,
+        persistence_mode="ephemeral" if project.temporary else "durable",
+        resumable=not project.temporary,
+        capabilities=(
+            {
+                "workspace": False,
+                "git_review": False,
+                "artifact_restore": True,
+            }
+            if project.temporary
+            else {
+                "workspace": True,
+                "git_review": True,
+                "artifact_restore": True,
+            }
+        ),
     )
 
 

@@ -3154,7 +3154,7 @@ export function App() {
                 <span className="inline-block h-1.5 w-1.5 rounded-full bg-current" />
                 ws {status}
               </span>
-              <GitWorkspaceStatus
+              {session?.capabilities?.git_review !== false && <GitWorkspaceStatus
                 status={gitStatus}
                 action={gitAction}
                 canCommit={!readOnly && !!gitStatus?.is_repo && !gitAction && !!gitStatus.dirty_count}
@@ -3168,7 +3168,7 @@ export function App() {
                 }}
                 onPull={() => void runGitAction("pull")}
                 onPush={() => void runGitAction("push")}
-              />
+              />}
               {gitError && <span className="max-w-[18rem] truncate text-state-error" title={gitError}>{gitError}</span>}
               {session?.read_only && (
                 <span className="rounded border border-state-waiting/40 bg-state-waiting-soft px-1.5 py-0.5 font-sans text-state-waiting">
@@ -3177,7 +3177,7 @@ export function App() {
                     : "只读 · 此设备尚未配置项目路径"}
                 </span>
               )}
-              {session?.can_bind_here && (
+              {session?.capabilities?.workspace !== false && session?.can_bind_here && (
                 <button
                   type="button"
                   disabled={projectMutationPending}
@@ -3269,7 +3269,7 @@ export function App() {
             onJump={jumpToActiveNode}
           />
 
-          <button
+          {session?.capabilities?.workspace !== false && <button
             type="button"
             onClick={() => {
               if (!session?.id) return;
@@ -3290,7 +3290,7 @@ export function App() {
             <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
               <path d="m6 14 1.45-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.55 6a2 2 0 0 1-1.94 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2" />
             </svg>
-          </button>
+          </button>}
 
           <button
             type="button"

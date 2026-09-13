@@ -231,6 +231,9 @@ export type SessionInfo = {
   layout_hints?: Record<string, { x: number; y: number }>;
   /** Persisted React Flow viewport so pan/zoom survives project reopen. */
   layout_viewport?: CanvasViewport | null;
+  persistence_mode?: "durable" | "ephemeral";
+  resumable?: boolean;
+  capabilities?: Record<string, boolean>;
 };
 
 /** Global project tag (`$MINICLAW_HOME/tags.json`). `color` is a palette key

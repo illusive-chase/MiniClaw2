@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -10,7 +9,7 @@ from miniclaw2.store import Store
 
 
 class TemporaryProjectTest(unittest.TestCase):
-    def test_create_temporary_project_initialises_git_workspace(self) -> None:
+    def test_create_temporary_project_uses_non_git_workspace(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             store = Store(root=Path(raw))
             registry = ProjectRegistry(store=store)
@@ -20,16 +19,7 @@ class TemporaryProjectTest(unittest.TestCase):
             self.assertTrue(project.temporary)
             root = Path(project.root_path)
             self.assertTrue(root.exists())
-            self.assertTrue((root / ".git").exists())
-
-            head = subprocess.run(
-                ["git", "rev-parse", "HEAD"],
-                cwd=root,
-                check=True,
-                capture_output=True,
-                text=True,
-            ).stdout.strip()
-            self.assertEqual(len(head), 40)
+            self.assertFalse((root / ".git").exists())
 
             # Cleanup
             registry.delete_project(project.id)

@@ -1291,7 +1291,16 @@ class NodeRunner:
     # ---- bundle + settings snapshots ----
 
     def _build_agent_launch_instructions(self, context_bundle: Any) -> str:
+        temporary_contract = ""
+        if self.project.temporary:
+            temporary_contract = (
+                "# MiniClaw2 — temporary project contract\n\n"
+                "This is an ephemeral temporary project. Its root directory is an execution cache and is not a Git repository; do not rely on Git history, commits, or host workspace bindings.\n"
+                "The authoritative durable state for this turn is the materialized lane under `.miniclaw2/graph/runs/<node>/lanes/<lane>/`; read upstream `preview.json` files there and write your own preview there before finishing.\n"
+                "Ordinary files in the project root are scratch inputs/outputs only. Publish human-facing files through the declared artifact channel when the prompt asks for them.\n"
+            )
         return _compose_launch_instructions(
+            temporary_contract,
             _authoring_init_block(self.node, self.store.root),
             build_category_launch_block(
                 self.node,

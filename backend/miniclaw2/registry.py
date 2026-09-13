@@ -608,13 +608,14 @@ class ProjectRegistry:
             root_path = _normalize_project_root(
                 cwd, create_missing=create_missing_cwd
             )
-        exclude_error = ensure_miniclaw_git_excluded(root_path)
-        if exclude_error:
-            logger.debug(
-                "failed to add .miniclaw2 to git exclude for %s: %s",
-                root_path,
-                exclude_error,
-            )
+        if not temporary:
+            exclude_error = ensure_miniclaw_git_excluded(root_path)
+            if exclude_error:
+                logger.debug(
+                    "failed to add .miniclaw2 to git exclude for %s: %s",
+                    root_path,
+                    exclude_error,
+                )
         settings: dict[str, Any] = {}
         if auto_commit is not None:
             settings["auto_commit"] = bool(auto_commit)
@@ -1702,6 +1703,7 @@ class ProjectRegistry:
         if (
             finished_node.kind is NodeKind.AGENT
             and finished_node.state is NodeState.DONE
+            and not rt.project.temporary
             and bool(rt.project.settings_override.get("auto_commit"))
         ):
             self._spawn_op_commit(rt, finished_node)

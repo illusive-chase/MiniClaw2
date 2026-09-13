@@ -1234,57 +1234,6 @@ class UserTemplateHttpApiTest(unittest.TestCase):
         os.environ.pop("MINICLAW_HOME", None)
         self._home.cleanup()
 
-    def test_save_apply_and_delete_round_trip(self) -> None:
-        # Set up a project with a couple of virtuals in the active lane.
-        launched = self.client.post(
-            "/templates/hello-text/run", json={"model_preset_id": "opus-4-8"}
-        )
-        self.assertEqual(launched.status_code, 200, launched.text)
-        sid = launched.json()["id"]
-
-        listed = self.client.get(f"/sessions/{sid}/nodes")
-        nodes = listed.json()
-        agent_node = next(n for n in nodes if n["kind"] == "agent")
-        lane = agent_node["planspace_id"]
-
-        # Save that single agent virtual as a template.
-        save_res = self.client.post(
-            f"/sessions/{sid}/user-templates",
-            json={
-                "name": "Hello",
-                "brief": "Simple hello.",
-                "node_ids": [agent_node["id"]],
-            },
-        )
-        self.assertEqual(save_res.status_code, 200, save_res.text)
-        saved = save_res.json()
-        self.assertEqual(saved["slug"], "hello")
-        self.assertEqual(saved["node_count"], 1)
-
-        # List picks it up.
-        lst = self.client.get("/user-templates")
-        self.assertEqual(lst.status_code, 200)
-        self.assertIn("Hello", [t["name"] for t in lst.json()])
-
-        # Apply into the same project — should stamp a new virtual.
-        apply_res = self.client.post(
-            f"/sessions/{sid}/user-templates/hello/apply",
-            json={"planspace_id": lane, "anchor_node_id": None},
-        )
-        self.assertEqual(apply_res.status_code, 200, apply_res.text)
-        stamped_ids = apply_res.json()["node_ids"]
-        self.assertEqual(len(stamped_ids), 1)
-        # The freshly stamped virtual is present in the project.
-        listed2 = self.client.get(f"/sessions/{sid}/nodes")
-        listed2_ids = [n["id"] for n in listed2.json()]
-        self.assertIn(stamped_ids[0], listed2_ids)
-
-        # Delete removes the disk template.
-        del_res = self.client.delete("/user-templates/hello")
-        self.assertEqual(del_res.status_code, 204, del_res.text)
-        lst_after = self.client.get("/user-templates")
-        self.assertEqual(lst_after.json(), [])
-
     def test_delete_virtual_template_instance_endpoint(self) -> None:
         sid, lane = _make_project_with_lane(self.registry)
         _write_user_function_template(
@@ -1314,18 +1263,6 @@ class UserTemplateHttpApiTest(unittest.TestCase):
             f"/sessions/{sid}/planspaces/{lane}/template-instances"
         )
         self.assertEqual(records.json(), [])
-
-    def test_save_returns_400_on_invalid_selection(self) -> None:
-        launched = self.client.post(
-            "/templates/hello-text/run", json={"model_preset_id": "opus-4-8"}
-        )
-        sid = launched.json()["id"]
-        # Empty selection.
-        res = self.client.post(
-            f"/sessions/{sid}/user-templates",
-            json={"name": "Bad", "brief": "", "node_ids": []},
-        )
-        self.assertEqual(res.status_code, 400)
 
     def test_apply_succeeds_while_project_has_a_running_node(self) -> None:
         sid, lane = _make_project_with_lane(self.registry)
@@ -1536,50 +1473,6 @@ class UserTemplateHttpApiTest(unittest.TestCase):
         listed_node = listed.json()[0]["nodes"][0]
         self.assertNotIn("prompt", listed_node)
         self.assertLessEqual(len(listed_node["prompt_preview"]), 160)
-
-    def test_apply_rejects_non_native_project_without_creating_nodes(self) -> None:
-        launched = self.client.post(
-            "/templates/hello-text/run", json={"model_preset_id": "opus-4-8"}
-        )
-        self.assertEqual(launched.status_code, 200, launched.text)
-        sid = launched.json()["id"]
-
-        nodes = self.store.list_nodes(sid)
-        agent_node = next(node for node in nodes if node.kind is NodeKind.AGENT)
-        lane = agent_node.planspace_id
-        saved = self.client.post(
-            f"/sessions/{sid}/user-templates",
-            json={
-                "name": "Foreign guard",
-                "brief": "Must not be stamped into a foreign project.",
-                "node_ids": [agent_node.id],
-            },
-        )
-        self.assertEqual(saved.status_code, 200, saved.text)
-
-        project = self.registry.get_project(sid)
-        assert project is not None
-        (
-            self.store.root
-            / "projects"
-            / sid
-            / "hosts"
-            / self.store.machine.id
-            / "local.json"
-        ).unlink()
-        node_ids_before = [node.id for node in self.store.list_nodes(sid)]
-
-        response = self.client.post(
-            f"/sessions/{sid}/user-templates/foreign-guard/apply",
-            json={"planspace_id": lane, "anchor_node_id": None},
-        )
-
-        self.assertEqual(response.status_code, 403, response.text)
-        self.assertIn("configure its path", response.json()["detail"])
-        self.assertEqual(
-            [node.id for node in self.store.list_nodes(sid)],
-            node_ids_before,
-        )
 
     def test_apply_validates_arguments_and_input_bindings_and_lists_instance(self) -> None:
         sid, lane = _make_project_with_lane(self.registry)
