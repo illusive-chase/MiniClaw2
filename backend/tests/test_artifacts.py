@@ -113,6 +113,10 @@ class ArtifactApiTests(unittest.TestCase):
             "<script>document.body.textContent='ok'</script>",
             encoding="utf-8",
         )
+        (outputs / "diagram.svg").write_text(
+            "<svg xmlns='http://www.w3.org/2000/svg'><circle r='4'/></svg>",
+            encoding="utf-8",
+        )
         (outputs / "large.md").write_text(
             "x" * (INLINE_TEXT_CAP + 10),
             encoding="utf-8",
@@ -121,7 +125,7 @@ class ArtifactApiTests(unittest.TestCase):
         publish_artifacts(
             project,
             self.node,
-            ["demo.html", "large.md"],
+            ["demo.html", "diagram.svg", "large.md"],
             self.registry.store,
         )
         self.registry.store.update_node(self.node)
@@ -154,6 +158,17 @@ class ArtifactApiTests(unittest.TestCase):
                 f"/sessions/{self.sid}/nodes/{self.node.id}/artifacts/{name}"
             )
             self.assertEqual(response.status_code, 404)
+
+    def test_svg_raw_mode_is_sandboxed_and_served(self) -> None:
+        url = f"/sessions/{self.sid}/nodes/{self.node.id}/artifacts/diagram.svg"
+        response = self.client.get(f"{url}?raw=1")
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.headers["content-type"], "image/svg+xml")
+        self.assertEqual(
+            response.headers["content-security-policy"],
+            "sandbox allow-scripts; connect-src 'none'",
+        )
+        self.assertEqual(response.headers["x-content-type-options"], "nosniff")
 
     def test_inline_mode_truncates_but_raw_mode_does_not(self) -> None:
         url = f"/sessions/{self.sid}/nodes/{self.node.id}/artifacts/large.md"

@@ -2015,11 +2015,12 @@ def create_app(
             ".html": "text/html; charset=utf-8",
             ".md": "text/plain; charset=utf-8",
             ".json": "application/json",
+            ".svg": "image/svg+xml",
         }.get(suffix)
         if content_type is None:
             raise HTTPException(404, "published artifact type is not supported")
         headers = {"X-Content-Type-Options": "nosniff"}
-        if suffix == ".html":
+        if suffix in {".html", ".svg"}:
             headers["Content-Security-Policy"] = (
                 "sandbox allow-scripts; connect-src 'none'"
             )

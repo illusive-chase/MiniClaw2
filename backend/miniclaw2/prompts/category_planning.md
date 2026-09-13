@@ -60,7 +60,7 @@ then list its filename in the `artifacts` field of your preview:
 
     "artifacts": ["report.md"]
 
-Only declared files ending in `.md`, `.json`, or `.html` are shown.
+Only declared files ending in `.md`, `.json`, `.html`, or `.svg` are shown.
 An `.html` file must be a single self-contained document — inline
 CSS and JS, no external assets, no companion files. If the intended
 content of a `.md` or `.html` artifact is long, do not write the whole
@@ -128,7 +128,7 @@ must inherit the source node's provider session settings.
 
 `artifact_mode` is optional and declares the deliverable shape the node
 must publish: `"default"` (no artifact expected), `"markdown"`, `"html"`,
-or `"custom"`. `"custom"` additionally requires `"artifact_spec"`, a
+`"svg"`, or `"custom"`. `"custom"` additionally requires `"artifact_spec"`, a
 sentence describing what to produce. Set it when the plan genuinely calls
 for a file the human will read — a report, a rendered comparison — and
 leave it out otherwise.

@@ -1022,6 +1022,7 @@ function NodeInspector({
             <option value="default">（不要求产出物）</option>
             <option value="markdown">markdown</option>
             <option value="html">html</option>
+            <option value="svg">svg</option>
             <option value="custom">custom（自定义描述）</option>
           </select>
           {node.artifact_mode === "custom" && (

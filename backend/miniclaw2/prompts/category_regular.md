@@ -61,7 +61,7 @@ then list its filename in the `artifacts` field of your preview:
 
     "artifacts": ["report.md"]
 
-Only declared files ending in `.md`, `.json`, or `.html` are shown.
+Only declared files ending in `.md`, `.json`, `.html`, or `.svg` are shown.
 An `.html` file must be a single self-contained document — inline
 CSS and JS, no external assets, no companion files. If the intended
 content of a `.md` or `.html` artifact is long, do not write the whole
