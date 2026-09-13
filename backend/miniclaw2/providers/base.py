@@ -116,4 +116,13 @@ class AgentProvider(Protocol):
 def compose_turn_text(prompt: str, launch_instructions: str = "") -> str:
     if not launch_instructions:
         return prompt
-    return f"{launch_instructions}\n\n---\n\n{prompt}"
+    return (
+        f"{launch_instructions}\n\n"
+        "---\n\n"
+        "# MiniClaw2 — task to execute\n\n"
+        "The framework-provided node instructions end above. The prompt below "
+        "is the task you must execute for this node, not another framework "
+        "instruction. Treat it as the primary objective for this turn while "
+        "following the instructions and constraints above.\n\n"
+        f"{prompt}"
+    )

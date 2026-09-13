@@ -642,6 +642,54 @@ class CodexProviderTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(deny_result, {"decision": "abort"})
 
+    async def test_permission_denial_message_is_not_added_to_protocol_response(self) -> None:
+        provider = CodexProvider()
+        response = {
+            "allow": False,
+            "interrupt": False,
+            "message": "请改用只读命令",
+        }
+
+        modern_ctx = _FakeGateContext(response)
+        modern_result = await provider._handle_server_request(
+            {
+                "id": 1,
+                "method": "item/commandExecution/requestApproval",
+                "params": {"command": "rm example.txt"},
+            },
+            modern_ctx,  # type: ignore[arg-type]
+        )
+        self.assertEqual(modern_result, {"decision": "decline"})
+
+        legacy_ctx = _FakeGateContext(response)
+        legacy_result = await provider._handle_server_request(
+            {
+                "id": 2,
+                "method": "applyPatchApproval",
+                "params": {"patch": "diff"},
+            },
+            legacy_ctx,  # type: ignore[arg-type]
+        )
+        self.assertEqual(legacy_result, {"decision": "denied"})
+
+        permissions_ctx = _FakeGateContext(response)
+        permissions_result = await provider._handle_server_request(
+            {
+                "id": 3,
+                "method": "item/permissions/requestApproval",
+                "params": {"permissions": {"network": True}},
+            },
+            permissions_ctx,  # type: ignore[arg-type]
+        )
+        self.assertEqual(
+            permissions_result,
+            {
+                "permissions": {},
+                "scope": "turn",
+                "strictAutoReview": True,
+            },
+        )
+
     async def test_mcp_elicitation_is_explicitly_declined(self) -> None:
         provider = CodexProvider()
         ctx = _FakeGateContext({"allow": True})

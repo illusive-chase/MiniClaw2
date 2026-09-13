@@ -12,6 +12,7 @@ import {
 import { getNodePreview } from "../api";
 import type {
   Activity,
+  ArtifactExtension,
   ArtifactMode,
   ContextBundle,
   ContextBundleSource,
@@ -107,7 +108,7 @@ export type AgentPanelProps = {
   onSelectArtifact: (
     nodeId: string,
     name: string,
-    ext: "md" | "json" | "html" | "svg",
+    ext: ArtifactExtension,
   ) => void;
 };
 
@@ -493,7 +494,7 @@ export function AgentPanel({
                 <SectionHeading>Artifacts</SectionHeading>
                 <ul className="mt-2 space-y-1.5">
                   {(node.artifacts ?? []).map((artifact, index) => {
-                    const ext = artifact.name.split(".").pop() as "md" | "json" | "html" | "svg";
+                    const ext = artifact.name.split(".").pop() as ArtifactExtension;
                     return (
                       <li key={`${artifact.name}:${artifact.status}:${index}`}>
                         {artifact.status === "published" ? (

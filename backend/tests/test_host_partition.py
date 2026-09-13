@@ -1049,6 +1049,14 @@ class HostPartitionSyncTests(unittest.TestCase):
                     ],
                 )
             )
+            node_c = store_b.create_node(
+                Node(
+                    project_id=project_a.id,
+                    model_preset_id=project_b.model_preset_id,
+                    state=NodeState.DONE,
+                    planspace_id="lane-sync",
+                )
+            )
             artifact_b = store_b.node_dir(project_a.id, node_b.id) / "artifacts"
             artifact_b.mkdir()
             (artifact_b / "report.md").write_text(
@@ -1056,10 +1064,25 @@ class HostPartitionSyncTests(unittest.TestCase):
                 encoding="utf-8",
             )
             registry_a.update_layout_hints(
-                project_a.id, {node_a.id: {"x": 10, "y": 20}}
+                project_a.id,
+                {
+                    node_a.id: {"x": 10, "y": 20},
+                    node_b.id: {"x": 300, "y": 400},
+                    "commit:shared": {"x": 110, "y": 120},
+                },
+                layout_viewport={"x": 1, "y": 2, "zoom": 1.1},
             )
             registry_b.update_layout_hints(
-                project_a.id, {node_b.id: {"x": 30, "y": 40}}
+                project_a.id,
+                {
+                    node_b.id: {"x": 30, "y": 40},
+                    node_c.id: {"x": 50, "y": 60},
+                    "commit:remote": {"x": 150, "y": 160},
+                    "commit:shared": {"x": 170, "y": 180},
+                    "commit:ghost": {"x": 190, "y": 200},
+                    "planspace:lane-sync": {"x": 70, "y": 80},
+                },
+                layout_viewport={"x": 9, "y": 8, "zoom": 0.9},
             )
             store_a.write_git_aliases(project_a.id, {"old-a": "new-a"})
             store_b.write_git_aliases(project_a.id, {"old-b": "new-b"})
@@ -1077,8 +1100,8 @@ class HostPartitionSyncTests(unittest.TestCase):
 
             nodes_a = {node.id: node for node in store_a.list_nodes(project_a.id)}
             nodes_b = {node.id: node for node in store_b.list_nodes(project_a.id)}
-            self.assertEqual(set(nodes_a), {node_a.id, node_b.id})
-            self.assertEqual(set(nodes_b), {node_a.id, node_b.id})
+            self.assertEqual(set(nodes_a), {node_a.id, node_b.id, node_c.id})
+            self.assertEqual(set(nodes_b), {node_a.id, node_b.id, node_c.id})
             self.assertEqual(nodes_a[node_a.id].owner_host_id, store_a.machine.id)
             self.assertEqual(nodes_a[node_b.id].owner_host_id, store_b.machine.id)
             synced_project_a = registry_a.get_project(project_a.id)
@@ -1104,8 +1127,44 @@ class HostPartitionSyncTests(unittest.TestCase):
                 {"x": 10.0, "y": 20.0},
             )
             self.assertEqual(
-                registry_b.get_project(project_a.id).layout_hints[node_b.id],
+                synced_project_a.layout_hints[node_b.id],
+                {"x": 300.0, "y": 400.0},
+            )
+            self.assertEqual(
+                synced_project_a.layout_hints[node_c.id],
+                {"x": 50.0, "y": 60.0},
+            )
+            self.assertEqual(
+                synced_project_a.layout_hints["commit:remote"],
+                {"x": 150.0, "y": 160.0},
+            )
+            self.assertEqual(
+                synced_project_a.layout_hints["commit:shared"],
+                {"x": 110.0, "y": 120.0},
+            )
+            self.assertNotIn("commit:ghost", synced_project_a.layout_hints)
+            self.assertNotIn("planspace:lane-sync", synced_project_a.layout_hints)
+            self.assertEqual(
+                synced_project_a.layout_viewport,
+                {"x": 1.0, "y": 2.0, "zoom": 1.1},
+            )
+            synced_project_b = registry_b.get_project(project_a.id)
+            assert synced_project_b is not None
+            self.assertEqual(
+                synced_project_b.layout_hints[node_a.id],
+                {"x": 10.0, "y": 20.0},
+            )
+            self.assertEqual(
+                synced_project_b.layout_hints[node_b.id],
                 {"x": 30.0, "y": 40.0},
+            )
+            self.assertEqual(
+                synced_project_b.layout_hints["commit:shared"],
+                {"x": 170.0, "y": 180.0},
+            )
+            self.assertEqual(
+                synced_project_b.layout_hints["commit:ghost"],
+                {"x": 190.0, "y": 200.0},
             )
             self.assertEqual(
                 store_a.read_git_aliases(project_a.id), {"old-a": "new-a"}

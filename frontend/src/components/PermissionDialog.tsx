@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { InteractionRequest } from "../types";
+import type { AgentProvider, InteractionRequest } from "../types";
 
 type PermissionSuggestion = {
   label: string;
@@ -10,6 +10,7 @@ type PermissionSuggestion = {
 };
 
 type Props = {
+  provider: AgentProvider | null;
   request: InteractionRequest;
   onRespond: (args: {
     allow: boolean;
@@ -21,7 +22,12 @@ type Props = {
   variant?: "panel" | "compact";
 };
 
-export function PermissionDialog({ request, onRespond, variant = "panel" }: Props) {
+export function PermissionDialog({
+  provider,
+  request,
+  onRespond,
+  variant = "panel",
+}: Props) {
   const [reason, setReason] = useState("");
   const [inputText, setInputText] = useState(() =>
     JSON.stringify(request.tool_input, null, 2),
@@ -130,12 +136,17 @@ export function PermissionDialog({ request, onRespond, variant = "panel" }: Prop
           setReason(e.target.value);
           if (selectedSuggestion?.message) setSelectedSuggestion(null);
         }}
-        placeholder="Optional message"
+        placeholder={provider === "codex" ? "可选备注（仅记录）" : "Optional message"}
         className={
           "mb-2 w-full rounded-md border border-line bg-surface-raised px-2 py-1 text-ink-strong placeholder:text-ink-subtle focus:border-brand focus:outline-none " +
           (compact ? "text-[11px]" : "text-xs")
         }
       />
+      {provider === "codex" && (
+        <div className="mb-2 text-[10px] leading-relaxed text-ink-subtle">
+          此备注仅保存在 MiniClaw2 审计记录中，不会发送给 Codex。
+        </div>
+      )}
       <div className="flex flex-wrap gap-2">
         <button
           onClick={() => respondAllow({ message: reason || undefined })}

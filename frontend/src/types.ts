@@ -427,6 +427,7 @@ export type SelfUpdateApplyResult = {
   message: string;
 };
 export type NodeCategory = "planning" | "regular" | "review";
+export type ArtifactExtension = "md" | "json" | "html" | "svg";
 /** Deliverable shape a node must publish. `default` = no artifact expected. */
 export type ArtifactMode = "default" | "markdown" | "html" | "svg" | "custom";
 export type ReviewSubtype =

@@ -299,6 +299,15 @@ class ArtifactRequirementTests(unittest.TestCase):
         self.assertIn("This node must publish an HTML artifact.", rendered)
         self.assertIn("self-contained", rendered)
 
+    def test_svg_mode_uses_the_node_specific_artifact_directory(self) -> None:
+        node = _agent_node()
+        node.artifact_mode = ArtifactMode.SVG
+        rendered = self._render(node)
+        self.assertIn("/tmp/outputs", rendered)
+        self.assertIn("one or more SVG files", rendered)
+        self.assertIn("each bare filename", rendered)
+        self.assertNotIn("files in `outputs/`", rendered)
+
     def test_custom_spec_is_blockquoted_and_outranked(self) -> None:
         node = _agent_node()
         node.artifact_mode = ArtifactMode.CUSTOM

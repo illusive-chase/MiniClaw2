@@ -24,6 +24,7 @@ export function PendingGateInline({
   if (pending.interaction_type === "permission") {
     return (
       <PermissionDialog
+        provider={node.provider}
         request={pending}
         variant={variant}
         onRespond={(args) =>

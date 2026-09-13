@@ -5,7 +5,8 @@ materialized lane filesystem, the preview contract the node must
 satisfy, the category-specific write rights (regular / planning /
 review), and — for review nodes — the brief inline plus a pointer to
 ``human-review.md`` for human-interact reviews. The anti-self-poisoning
-guidance footer is appended last by the runner's launch composition.
+guidance footer is appended last within that instruction block. The provider
+then adds an explicit node-task boundary before the node prompt.
 
 Templates use ``<<TOKEN>>`` placeholders so literal JSON braces in
 the examples render verbatim. Substitution is plain ``str.replace``.
@@ -97,7 +98,11 @@ _ARTIFACT_REQUIREMENTS: dict[ArtifactMode, str] = {
     ArtifactMode.DEFAULT: _ARTIFACT_DEFAULT,
     ArtifactMode.MARKDOWN: _ARTIFACT_MARKDOWN,
     ArtifactMode.HTML: _ARTIFACT_HTML,
-    ArtifactMode.SVG: "Produce one or more SVG files in `outputs/` and declare each filename in your preview's `artifacts`. Keep SVG self-contained with inline styles and no external dependencies.",
+    ArtifactMode.SVG: (
+        "Produce one or more SVG files in the artifact output directory named "
+        "above and declare each bare filename in your preview's `artifacts`. "
+        "Keep SVG self-contained with inline styles and no external dependencies."
+    ),
 }
 
 
@@ -314,8 +319,8 @@ def subagent_synchronicity_block() -> str:
 def anti_self_poisoning_block() -> str:
     """Return the durable-preview guidance footer.
 
-    Appended last in the launch instruction composition so the
-    guidance is fresh in the agent's context when it sits down to
-    write previews.
+    Appended last in the framework instruction block so the guidance is
+    fresh in the agent's context when it sits down to write previews. The
+    provider places the explicit node-task boundary and node prompt after it.
     """
     return _load_template(_ANTI_SELF_POISONING).strip()

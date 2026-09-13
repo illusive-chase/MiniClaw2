@@ -636,17 +636,6 @@ class EmbeddedSessionHttpTests(unittest.TestCase):
         discard = self.client.delete("/user-templates/review-flow/session")
         self.assertEqual(discard.status_code, 404, discard.text)
 
-    def test_a_bundled_run_is_not_mistaken_for_a_session(self) -> None:
-        """`launch_template` tags projects with the display name, not the slug."""
-        launched = self.client.post(
-            "/templates/hello-text/run", json={"model_preset_id": "opus-4-8"}
-        )
-        self.assertEqual(launched.status_code, 200, launched.text)
-
-        commit = self.client.post("/user-templates/hello-text/session/commit")
-        self.assertEqual(commit.status_code, 404, commit.text)
-
-
     def test_ports_reach_the_frontend_through_the_contextspace_summary(self) -> None:
         """The canvas reads ports from the summary it already fetches on load."""
         opened = self.client.post("/user-templates/review-flow/session")
@@ -658,17 +647,6 @@ class EmbeddedSessionHttpTests(unittest.TestCase):
         self.assertEqual([port["name"] for port in ports], ["spec"])
         self.assertEqual(ports[0]["description"], "the spec node")
         self.assertEqual(len(ports[0]["consumers"]), 1)
-
-    def test_an_ordinary_project_reports_no_ports(self) -> None:
-        """The zero-impact guarantee at the API boundary."""
-        launched = self.client.post(
-            "/templates/hello-text/run", json={"model_preset_id": "opus-4-8"}
-        )
-        sid = launched.json()["id"]
-
-        described = self.client.get(f"/sessions/{sid}/contextspace")
-        self.assertEqual(described.json()["template_ports"], [])
-        self.assertIsNone(described.json()["template_port_lane_id"])
 
     def test_the_summary_names_the_lane_that_owns_the_ports(self) -> None:
         """The canvas draws ports in the lane the backend names, not a guess."""

@@ -4,13 +4,13 @@ import { artifactRawUrl, getNodeArtifact } from "../api";
 import { writeClipboard } from "../clipboard";
 import { MarkdownView } from "../components/MarkdownView";
 import { ZoomableText } from "../components/TextZoom";
-import type { ArtifactFile, ArtifactRef } from "../types";
+import type { ArtifactExtension, ArtifactFile, ArtifactRef } from "../types";
 
 export type ArtifactPanelProps = {
   sessionId: string;
   nodeId: string;
   artifact: ArtifactRef;
-  ext: "md" | "json" | "html" | "svg";
+  ext: ArtifactExtension;
 };
 
 export function ArtifactPanel({ sessionId, nodeId, artifact, ext }: ArtifactPanelProps) {

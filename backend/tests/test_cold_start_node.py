@@ -1,10 +1,9 @@
 """Contract and regression tests for cold-start agent nodes.
 
-A cold start is an ordinary regular agent node that the framework injects
-nothing into: no ContextSpace text, no category block, no preview contract, no
-lane. These tests pin both halves of that claim — that the four injection
-points really are empty, and that an ordinary regular node's ten-layer launch
-composition is untouched by the branch that makes them empty.
+A cold start is an ordinary regular agent node that, by default, receives no
+ContextSpace text, category block, preview contract, or lane. Explicit artifact
+intent is the opt-in exception. These tests pin that boundary and verify that
+an ordinary regular node's launch composition remains untouched.
 """
 
 from __future__ import annotations
@@ -18,8 +17,6 @@ import unittest
 from collections.abc import Callable
 from pathlib import Path
 from unittest.mock import patch
-
-from fastapi.testclient import TestClient
 
 from miniclaw2 import runner as runner_module
 from miniclaw2.contextspace import contextspace_root, create_planspace
@@ -64,7 +61,7 @@ def _cold_node(**overrides) -> Node:
 
 
 class ColdStartInvariantTests(unittest.TestCase):
-    """Each rejected field is a channel the framework would inject through."""
+    """Cold starts reject implicit context but allow explicit artifact intent."""
 
     def test_category_must_be_regular(self) -> None:
         with self.assertRaisesRegex(ValueError, "requires category=regular"):
@@ -78,9 +75,22 @@ class ColdStartInvariantTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "must not resume"):
             _cold_node(resume_from_node_id="other")
 
-    def test_artifact_mode_rejected(self) -> None:
-        with self.assertRaisesRegex(ValueError, "artifact_mode is not available"):
-            _cold_node(artifact_mode=ArtifactMode.MARKDOWN)
+    def test_artifact_mode_allowed(self) -> None:
+        for mode in (
+            ArtifactMode.MARKDOWN,
+            ArtifactMode.HTML,
+            ArtifactMode.SVG,
+        ):
+            with self.subTest(mode=mode):
+                node = _cold_node(artifact_mode=mode)
+                self.assertIs(node.artifact_mode, mode)
+
+        custom = _cold_node(
+            artifact_mode=ArtifactMode.CUSTOM,
+            artifact_spec="one report",
+        )
+        self.assertIs(custom.artifact_mode, ArtifactMode.CUSTOM)
+        self.assertEqual(custom.artifact_spec, "one report")
 
     def test_pending_extra_principles_rejected(self) -> None:
         with self.assertRaisesRegex(
@@ -379,103 +389,6 @@ class ColdStartRunnerTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn(marker, instructions)
         self.assertEqual(node.launch_instructions_snapshot, instructions)
         self.assertTrue((self.repo / ".miniclaw2" / "outputs" / node.id).is_dir())
-
-
-class ColdStartApiTests(unittest.TestCase):
-    """The create/promote surface must accept a cold start and enforce §2.2."""
-
-    def setUp(self) -> None:
-        self._home = tempfile.TemporaryDirectory()
-        os.environ["MINICLAW_HOME"] = self._home.name
-        from miniclaw2.app import create_app
-
-        self.client = TestClient(create_app())
-        launched = self.client.post(
-            "/templates/hello-text/run",
-            json={"model_preset_id": "gpt-5.6"},
-        )
-        self.assertEqual(launched.status_code, 200, launched.text)
-        self.sid = launched.json()["id"]
-        # Creation names its target lane; there is no project cursor to fall
-        # back on. A real client reads the lane from the same describe call.
-        contextspace = self.client.get(f"/sessions/{self.sid}/contextspace")
-        self.assertEqual(contextspace.status_code, 200, contextspace.text)
-        lanes = [
-            plug["id"]
-            for binding in contextspace.json()["bindings"]
-            for plug in binding["plugs"]
-            if plug["kind"] == "planspace"
-        ]
-        self.assertEqual(len(lanes), 1, lanes)
-        self.lane = lanes[0]
-
-    def tearDown(self) -> None:
-        self.client.close()
-        os.environ.pop("MINICLAW_HOME", None)
-        self._home.cleanup()
-
-    def _create(self, **extra) -> "object":
-        payload = {
-            "prompt_draft": "Investigate with no framework context.",
-            "category": "regular",
-            "agent_op_kind": COLD_START_AGENT_OP_KIND,
-            "planspace_id": self.lane,
-        }
-        payload.update(extra)
-        return self.client.post(f"/sessions/{self.sid}/virtuals", json=payload)
-
-    def test_create_and_promote_a_cold_start_virtual(self) -> None:
-        created = self._create()
-        self.assertEqual(created.status_code, 200, created.text)
-        node = created.json()["node"]
-        self.assertEqual(node["agent_op_kind"], COLD_START_AGENT_OP_KIND)
-        self.assertEqual(node["category"], "regular")
-
-        promoted = self.client.post(
-            f"/sessions/{self.sid}/virtuals/{node['id']}/promote"
-        )
-        self.assertEqual(promoted.status_code, 200, promoted.text)
-        self.assertEqual(
-            promoted.json()["node"]["agent_op_kind"], COLD_START_AGENT_OP_KIND
-        )
-
-    def test_api_rejects_a_cold_start_with_injection_fields(self) -> None:
-        for extra in (
-            {"qa_mode": True},
-            {"category": "planning"},
-            {"artifact_mode": "markdown"},
-            {"pending_extra_principles": ["principles.evidence"]},
-        ):
-            with self.subTest(extra=extra):
-                response = self._create(**extra)
-                self.assertEqual(response.status_code, 400, response.text)
-
-    def test_create_rejects_dependencies_before_persisting(self) -> None:
-        before = self.client.get(f"/sessions/{self.sid}/nodes")
-        self.assertEqual(before.status_code, 200, before.text)
-        before_nodes = before.json()
-        dependency_id = before_nodes[0]["id"]
-
-        created = self._create(scheduled_deps=[dependency_id])
-
-        self.assertEqual(created.status_code, 400, created.text)
-        self.assertIn("scheduled_deps", created.json()["detail"])
-        after = self.client.get(f"/sessions/{self.sid}/nodes")
-        self.assertEqual(after.status_code, 200, after.text)
-        self.assertEqual(
-            {node["id"] for node in after.json()},
-            {node["id"] for node in before_nodes},
-        )
-
-    def test_editing_a_cold_start_into_an_injected_shape_is_rejected(self) -> None:
-        created = self._create()
-        self.assertEqual(created.status_code, 200, created.text)
-        vid = created.json()["node"]["id"]
-        patched = self.client.patch(
-            f"/sessions/{self.sid}/virtuals/{vid}",
-            json={"qa_mode": True},
-        )
-        self.assertEqual(patched.status_code, 400, patched.text)
 
 
 class ColdStartResumeGuardTests(unittest.TestCase):

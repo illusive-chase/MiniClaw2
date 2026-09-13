@@ -373,8 +373,8 @@ function node(over: Partial<NodeInfo> = {}): NodeInfo {
     scheduledDeps: ["upstream"],
     pendingExtraPrinciples: ["principles.evidence"],
     qaMode: true,
-    artifactMode: "custom" as const,
-    artifactSpec: "report",
+    artifactMode: "svg" as const,
+    artifactSpec: "stale spec",
   };
   const cold = virtualDraftWithClassification(draft, "cold");
   assert.deepEqual(cold.scheduledDeps, []);

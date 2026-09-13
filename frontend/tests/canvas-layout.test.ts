@@ -1037,6 +1037,32 @@ function testPlanspaceChildrenHaveOneSidedExtent(): void {
   }
 }
 
+function testSvgArtifactGetsACanvasNode(): void {
+  const owner = node("svg-owner", {
+    planspace_id: "planspaces.alpha",
+    artifacts: [{
+      name: "diagram.svg",
+      bytes: 42,
+      mtime: 1,
+      sha256: "svg-hash",
+      status: "published",
+    }],
+  });
+  const graph = buildGraph(args({
+    nodes: [owner],
+    knownPlanspaceIds: ["planspaces.alpha"],
+  }));
+  const artifact = graph.rfNodes.find(
+    (item) => item.id === "artifact:svg-owner:diagram.svg",
+  );
+
+  assert.equal(artifact?.type, "artifact");
+  assert.equal(
+    (artifact?.data as { artifact?: { name?: string } }).artifact?.name,
+    "diagram.svg",
+  );
+}
+
 function testNewLaneNodeFollowsActualLayout(): void {
   const planspaceId = "planspaces.alpha";
   const graph = buildGraph(args({
@@ -2697,6 +2723,7 @@ testEpochLinksAndHoverGroups();
 testBindingDrivenContextTiles();
 testFloatingContextDoesNotOverlapFirstLane();
 testPlanspaceChildrenHaveOneSidedExtent();
+testSvgArtifactGetsACanvasNode();
 testNewLaneNodeFollowsActualLayout();
 testExplicitlyCreatedNodeAppendsBelowTheLane();
 testAppendedNodeClearsAHandPlacedBottomNode();

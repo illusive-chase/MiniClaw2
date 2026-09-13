@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { CanvasSelection } from "../canvas/Canvas";
 import type {
+  ArtifactExtension,
   ClientMessage,
   ContextBundle,
   EventRecord,
@@ -73,7 +74,7 @@ export type SidePanelProps = {
   onSelectArtifact: (
     nodeId: string,
     name: string,
-    ext: "md" | "json" | "html" | "svg",
+    ext: ArtifactExtension,
   ) => void;
   onSessionChange: (session: SessionInfo) => void;
   onPreferredLanguageChange: (preferredLanguage: string | null) => void;

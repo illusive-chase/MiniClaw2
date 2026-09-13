@@ -100,9 +100,9 @@ TERMINAL_NODE_STATES: frozenset[NodeState] = frozenset({
 UNBOUND_ROOT_PATH = "/nonexistent/miniclaw2-unbound"
 
 
-# Agents launched with zero framework prompt injection: no context bundle, no
-# category block, no preview contract. Named here so the runner, the API, and
-# the tests share one spelling.
+# Agents launched without the ordinary framework context, category, preview,
+# or dependency injection. Explicit artifact intent may add its deliverable
+# contract. Named here so the runner, the API, and the tests share one spelling.
 COLD_START_AGENT_OP_KIND = "cold_start"
 
 # Whitelist of ``agent_op_kind`` values. Kept here as a plain set rather
@@ -359,11 +359,6 @@ class Node(BaseModel):
                 raise ValueError(
                     f"{COLD_START_AGENT_OP_KIND} nodes must not resume a "
                     "prior session"
-                )
-            if self.artifact_mode is not ArtifactMode.DEFAULT:
-                raise ValueError(
-                    f"artifact_mode is not available on "
-                    f"{COLD_START_AGENT_OP_KIND} nodes"
                 )
             if self.pending_extra_principles:
                 raise ValueError(

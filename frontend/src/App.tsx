@@ -99,6 +99,7 @@ import { GitWorkspaceStatus } from "./components/GitWorkspaceStatus";
 import { TextZoomProvider } from "./components/TextZoom";
 import type {
   ActiveNodeEntry,
+  ArtifactExtension,
   ContextBundle,
   EventRecord,
   InteractionRequest,
@@ -2835,7 +2836,7 @@ export function App() {
   );
 
   const onSelectArtifact = useCallback(
-    (nodeId: string, name: string, ext: "md" | "json" | "html" | "svg") => {
+    (nodeId: string, name: string, ext: ArtifactExtension) => {
       if (!nodes.some((node) => node.id === nodeId)) return;
       if (ext === "html" && session?.id) {
         window.open(artifactRawUrl(session.id, nodeId, name), "_blank", "noopener");

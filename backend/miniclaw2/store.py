@@ -393,6 +393,46 @@ class Store:
         )
         self.sync.schedule_commit(f'update project "{project.name or project.id}"')
 
+    def _layout_with_remote_seeds(
+        self,
+        project_dir: Path,
+        layout_payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Fill missing local work-node and commit positions from peer layouts."""
+        local_hints = layout_payload.get("layout_hints")
+        merged_hints = dict(local_hints) if isinstance(local_hints, dict) else {}
+        hosts_dir = project_dir / "hosts"
+        for host_dir in sorted(hosts_dir.iterdir()):
+            if host_dir.name == self.machine.id:
+                continue
+            nodes_dir = host_dir / "nodes"
+            layout_file = host_dir / "layout.json"
+            if not nodes_dir.is_dir() or not layout_file.is_file():
+                continue
+            try:
+                remote_layout = self._read_json(layout_file)
+            except (OSError, ValueError):
+                continue
+            remote_hints = remote_layout.get("layout_hints")
+            if not isinstance(remote_hints, dict):
+                continue
+            remote_node_ids = {
+                node_file.parent.name for node_file in nodes_dir.glob("*/node.json")
+            }
+            for hint_id, position in remote_hints.items():
+                portable_commit = (
+                    hint_id.startswith("commit:") and hint_id != "commit:ghost"
+                )
+                if (
+                    hint_id not in merged_hints
+                    and (hint_id in remote_node_ids or portable_commit)
+                ):
+                    merged_hints[hint_id] = position
+        return {
+            "layout_hints": merged_hints,
+            "layout_viewport": layout_payload.get("layout_viewport"),
+        }
+
     def list_projects(self) -> list[Project]:
         projects_dir = self.root / "projects"
         out: list[Project] = []
@@ -420,6 +460,10 @@ class Store:
                         local_payload = self._read_json(local_dir / "local.json")
                     if (local_dir / "layout.json").is_file():
                         layout_payload = self._read_json(local_dir / "layout.json")
+                    layout_payload = self._layout_with_remote_seeds(
+                        pdir,
+                        layout_payload,
+                    )
                     payload.update(
                         {
                             "root_path": local_payload.get(
