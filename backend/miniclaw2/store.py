@@ -86,10 +86,6 @@ class Store:
     def read_only_reason(self) -> str | None:
         if schema_is_newer(self.root):
             return "store schema is newer than this MiniClaw2 version"
-        if machine_hostname_mismatch(self.machine):
-            return (
-                "machine hostname changed; resolve rename versus copied store first"
-            )
         return None
 
     # ---- paths ----

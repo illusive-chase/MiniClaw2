@@ -106,7 +106,24 @@ def ensure_machine_identity(root: Path) -> MachineIdentity:
     root.mkdir(parents=True, exist_ok=True)
     path = machine_path(root)
     if path.exists():
-        return load_machine_identity(root)
+        identity = load_machine_identity(root)
+        hostname = current_hostname()
+        if identity.hostname != hostname:
+            previous_hostname = identity.hostname
+            # Hostnames are labels only. Preserve the durable machine id so a
+            # normal OS rename does not make the store appear read-only.
+            identity = MachineIdentity(
+                id=identity.id,
+                hostname=hostname,
+                label=hostname if identity.label == identity.hostname else identity.label,
+                last_sync_at=identity.last_sync_at,
+                last_synced_commit=identity.last_synced_commit,
+                sync_pending=identity.sync_pending,
+            )
+            _write_json(path, identity.payload())
+            _update_owned_project_labels(root, identity)
+            logger.info("machine hostname updated from %s to %s", previous_hostname, hostname)
+        return identity
     hostname = current_hostname()
     identity = MachineIdentity(id=str(uuid4()), hostname=hostname, label=hostname)
     _write_json(path, identity.payload())
@@ -1002,10 +1019,6 @@ class SyncManager:
     def sync_now(self) -> dict[str, Any]:
         if not self.configured:
             raise SyncError("metadata sync is not configured")
-        if machine_hostname_mismatch(self.identity):
-            raise MachineIdentityMismatchError(
-                "machine hostname changed; resolve rename versus copied store before syncing"
-            )
         self._ensure_contextspace_inside_store()
         with self._lock:
             for callback in tuple(self._pre_commit_callbacks):

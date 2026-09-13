@@ -20,14 +20,7 @@ from .global_config import (
     save_global_config,
 )
 from .store import Store
-from .sync import (
-    SyncError,
-    bootstrap_store,
-    ensure_machine_identity,
-    machine_hostname_mismatch,
-    resolve_machine_copy,
-    resolve_machine_rename,
-)
+from .sync import SyncError, bootstrap_store
 
 VITE_HOST = "127.0.0.1"
 VITE_PORT = 5173
@@ -54,8 +47,6 @@ def main() -> None:
     args = parser.parse_args()
 
     logging.basicConfig(level=args.log_level.upper())
-    _resolve_identity_mismatch(miniclaw_home())
-
     # Broadcast the port to child processes (claude hook bridge reads
     # it via MINICLAW_HOOK_URL and MINICLAW_HOOK_TOKEN from its env at
     # spawn time; keeping this here lets the app compute the URL before
@@ -173,28 +164,6 @@ def _sync_cli(argv: list[str]) -> None:
     except SyncError as exc:
         parser.exit(1, f"metadata sync setup failed: {exc}\n")
     print(f"metadata sync configured at {root}")
-
-
-def _resolve_identity_mismatch(root: Path) -> None:
-    identity = ensure_machine_identity(root)
-    if not machine_hostname_mismatch(identity):
-        return
-    if not sys.stdin.isatty():
-        raise SystemExit(
-            "machine hostname differs from machine.json; run MiniClaw2 in a "
-            "terminal once to resolve renamed machine versus copied store"
-        )
-    answer = input(
-        f'machine.json belongs to "{identity.hostname}", but this host is different. '
-        "Was the machine [r]enamed or was the store [c]opied? "
-    ).strip().lower()
-    if answer in {"r", "rename", "renamed"}:
-        resolve_machine_rename(root)
-        return
-    if answer in {"c", "copy", "copied"}:
-        resolve_machine_copy(root)
-        return
-    raise SystemExit("identity not changed; start MiniClaw2 again and choose r or c")
 
 
 if __name__ == "__main__":

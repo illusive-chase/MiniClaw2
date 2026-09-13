@@ -1417,7 +1417,7 @@ const EditableVirtualNodeBody = forwardRef<VirtualNodeBodyHandle, VirtualNodeBod
               <div className="inline-flex rounded-md border border-line bg-surface p-0.5">
                 {([
                   ["default", "Default"],
-                  ["markdown", "Markdown"],
+                  ["markdown", "MD"],
                   ["html", "HTML"],
                   ["svg", "SVG"],
                   ["custom", "Custom"],
