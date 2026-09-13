@@ -1089,6 +1089,12 @@ export function App() {
 
   const refreshGit = useCallback(async () => {
     if (!session?.id) return;
+    if (session.capabilities?.git_review === false) {
+      setGitStatus(null);
+      setGitCommits([]);
+      setGitError(null);
+      return;
+    }
     try {
       const state = await getGitState(session.id);
       setGitStatus(state.status);
@@ -1097,7 +1103,7 @@ export function App() {
     } catch (err) {
       console.warn("get git state failed:", err);
     }
-  }, [session?.id]);
+  }, [session?.id, session?.capabilities?.git_review]);
 
   /* Instance records are stored per planspace, so every lane that owns a
    * stamped node is fetched. Missing records degrade to a generic group label
@@ -2143,7 +2149,10 @@ export function App() {
   }, [session?.id, inspectedNodeId, selectedNode?.state]);
 
   useEffect(() => {
-    if (!session?.id || !inspectedNodeId || selectedNode?.state === "virtual") {
+    if (
+      !session?.id || !inspectedNodeId || selectedNode?.state === "virtual" ||
+      (session.capabilities?.git_review === false && selectedNode?.subtype !== "code_review")
+    ) {
       setSelectedDiff(null);
       setSelectedDiffLoading(false);
       return;
@@ -2195,6 +2204,7 @@ export function App() {
     };
   }, [
     session?.id,
+    session?.capabilities?.git_review,
     inspectedNodeId,
     selectedNode?.commit_before,
     selectedNode?.commit_after,

@@ -926,6 +926,51 @@ class HostPartitionApiTests(unittest.TestCase):
 
 
 class HostPartitionSyncTests(unittest.TestCase):
+    def test_commit_layout_syncs_from_a_peer_without_node_directories(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            base = Path(raw)
+            remote = base / "metadata.git"
+            subprocess.run(["git", "init", "--bare", "-q", str(remote)], check=True)
+            repo_a = _repo(base / "repo-a")
+            commit_id = f"commit:{_git(repo_a, 'rev-parse', 'HEAD')}"
+            store_a = Store(base / "store-a")
+            project_a = store_a.create_project(Project(root_path=str(repo_a)))
+            project_a.layout_hints = {
+                commit_id: {"x": 150, "y": 160},
+                "commit:ghost": {"x": 190, "y": 200},
+                "deleted-node": {"x": 30, "y": 40},
+                "planspace:lane-sync": {"x": 70, "y": 80},
+            }
+            project_a.layout_viewport = {"x": 9, "y": 8, "zoom": 0.9}
+            store_a.update_project(project_a)
+            store_a.sync.setup_existing_store(str(remote))
+            _git(remote, "symbolic-ref", "HEAD", "refs/heads/main")
+
+            root_b = base / "store-b"
+            bootstrap_store(root_b, str(remote))
+            store_b = Store(root_b)
+            remote_host = root_b / "projects" / project_a.id / "hosts" / store_a.machine.id
+            self.assertTrue((remote_host / "layout.json").is_file())
+            self.assertFalse((remote_host / "nodes").exists())
+
+            imported = store_b.list_projects()[0]
+            self.assertEqual(imported.layout_hints, {commit_id: {"x": 150, "y": 160}})
+            self.assertIsNone(imported.layout_viewport)
+            self.assertEqual(store_b.list_nodes(project_a.id), [])
+
+            repo_b = base / "repo-b"
+            subprocess.run(["git", "clone", "-q", str(repo_a), str(repo_b)], check=True)
+            registry_b = ProjectRegistry(store_b)
+            registry_b.bind_project_here(project_a.id, str(repo_b))
+            registry_b.update_layout_hints(
+                project_a.id,
+                {commit_id: {"x": 300, "y": 400}},
+                layout_viewport={"x": 1, "y": 2, "zoom": 1.1},
+            )
+            reloaded = store_b.list_projects()[0]
+            self.assertEqual(reloaded.layout_hints[commit_id], {"x": 300, "y": 400})
+            self.assertEqual(reloaded.layout_viewport, {"x": 1, "y": 2, "zoom": 1.1})
+
     def test_explicit_sync_commits_current_host_head(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             base = Path(raw)

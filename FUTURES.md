@@ -317,6 +317,10 @@ Kept because the reason, not the absence, is the content:
   keeps a stale running state honest. Relaying events host-to-host is a
   different feature, not an increment of sync.
 - **Merging two non-empty stores** at bootstrap stays unsupported.
+- **设备标识完全相同的系统克隆**：操作系统 machine-id 或硬件 UUID 也被复制时，
+  无法仅凭本机标识区分副本；旧版无设备指纹且 hostname 相同的存储也有同样
+  的信息缺口。此类副本须在启动前显式执行 `machine copy`；自动检测需要另建
+  不随系统镜像复制的可信身份来源，而不能把 hostname 当作设备身份。
 - **Per-token streaming** for the transcript-driven provider, whose
   transcript is written block-at-a-time. Revisit only if that provider
   gains a partial-block stream.

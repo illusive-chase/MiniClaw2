@@ -62,6 +62,7 @@ then list its filename in the `artifacts` field of your preview:
     "artifacts": ["report.md"]
 
 Only declared files ending in `.md`, `.json`, `.html`, or `.svg` are shown.
+SVG 仅按图片展示；使用内联样式和 data URI，不依赖脚本、链接交互或外部资源。
 An `.html` file must be a single self-contained document — inline
 CSS and JS, no external assets, no companion files. If the intended
 content of a `.md` or `.html` artifact is long, do not write the whole

@@ -20,17 +20,29 @@ from .global_config import (
     save_global_config,
 )
 from .store import Store
-from .sync import SyncError, bootstrap_store
+from .sync import (
+    SyncError,
+    bootstrap_store,
+    ensure_machine_identity,
+    resolve_machine_copy,
+    resolve_machine_rename,
+)
 
 VITE_HOST = "127.0.0.1"
 VITE_PORT = 5173
 
 
 def main() -> None:
+    if len(sys.argv) > 1 and sys.argv[1] == "machine":
+        _machine_cli(sys.argv[2:])
+        return
     if len(sys.argv) > 1 and sys.argv[1] == "sync":
         _sync_cli(sys.argv[2:])
         return
-    parser = argparse.ArgumentParser(prog="miniclaw2")
+    parser = argparse.ArgumentParser(
+        prog="miniclaw2",
+        epilog="设备身份管理：miniclaw2 machine {rename,copy} [--label 名称]",
+    )
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument(
@@ -47,6 +59,10 @@ def main() -> None:
     args = parser.parse_args()
 
     logging.basicConfig(level=args.log_level.upper())
+    try:
+        ensure_machine_identity(miniclaw_home())
+    except (SyncError, OSError) as exc:
+        parser.exit(1, f"设备身份检查失败：{exc}\n")
     # Broadcast the port to child processes (claude hook bridge reads
     # it via MINICLAW_HOOK_URL and MINICLAW_HOOK_TOKEN from its env at
     # spawn time; keeping this here lets the app compute the URL before
@@ -133,6 +149,22 @@ def _signal_group(pgid: int, signum: int) -> None:
         pass
 
 
+def _machine_cli(argv: list[str]) -> None:
+    parser = argparse.ArgumentParser(
+        prog="miniclaw2 machine",
+        description="请先停止使用此 Store 的进程。rename 确认同一设备；copy 创建新设备身份，不继承原设备的本地绑定。",
+    )
+    parser.add_argument("action", choices=["rename", "copy"])
+    parser.add_argument("--label", help="可选的设备显示名称")
+    args = parser.parse_args(argv)
+    resolve = resolve_machine_rename if args.action == "rename" else resolve_machine_copy
+    try:
+        identity = resolve(miniclaw_home(), label=args.label)
+    except (SyncError, OSError) as exc:
+        parser.exit(1, f"设备身份更新失败：{exc}\n")
+    print(f"设备身份已更新：{identity.label} ({identity.id})")
+
+
 def _sync_cli(argv: list[str]) -> None:
     parser = argparse.ArgumentParser(prog="miniclaw2 sync")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -144,7 +176,6 @@ def _sync_cli(argv: list[str]) -> None:
     try:
         existing = list(root.iterdir()) if root.exists() else []
         if existing:
-            _resolve_identity_mismatch(root)
             store = Store(root)
             store.sync.setup_existing_store(args.git_url)
         else:

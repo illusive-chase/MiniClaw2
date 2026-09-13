@@ -129,12 +129,20 @@ Ctrl-C stops both processes.
 
 ## Metadata Sync
 
-`$MINICLAW_HOME` can be synchronized through any Git remote. Projects have a
-single native machine: the machine that creates a project is its only writer;
-other machines can inspect the graph, transcripts, previews, and history but
-cannot run or edit it. Global settings and ContextSpace files use Git's
-local-hunk-wins merge policy, while a `schema.json` conflict stops sync for
-manual resolution.
+`$MINICLAW_HOME` 可以通过 Git remote 同步。持久项目在当前设备绑定本地目录后
+即可执行，创建者设备只记录来源；每台设备只能修改自己分区中的节点。
+全局设置和 ContextSpace 使用本地差异优先的合并策略，`schema.json` 冲突则
+停止同步，等待人工处理。
+
+临时项目无需绑定目录：同步到新设备后即可继续创建节点，框架自动准备非 Git
+缓存目录，缓存被系统清理后也会重建。图、逐字记录与已发布产物是持久状态，
+缓存中的普通文件不随设备迁移。续接保留图中的来源关系，但始终启动新的
+provider 会话，不复用设备本地 session id。远端节点仍只读，可作为新节点的
+上下文来源；临时项目不提供 Git、工作目录打开或绑定功能。
+
+Session API 的 `capabilities.workspace` 与 `capabilities.git_review` 控制上述
+入口；删除了未实现的 `artifact_restore` 和含义不清的 `resumable` 声明。
+产物仍可从持久记录读取和下载，但不承诺自动还原整个临时工作目录。
 
 Principle files, native skill directories, `skill-imports.json` package and
 dependency provenance, and node attachment selections are all part of this
@@ -157,10 +165,31 @@ manual-only: press **Sync now** in Global settings. Durable changes are
 committed locally in a roughly 30-second coalescing window, but MiniClaw2 does
 not fetch or push on startup, shutdown, or a timer.
 
-Before upgrading MiniClaw2, sync once; after the upgraded process writes a
-store migration, sync again. A copied store whose hostname no longer matches
-`machine.json` prompts once at CLI startup to distinguish a renamed machine
-from a copy. Choosing “copied” creates a new machine ID.
+升级前同步一次，完成存储迁移后再同步一次。`machine.json` 记录本机设备标识的
+哈希（不参与同步），hostname 仅作为显示名称：同一设备改名保留 machine id，
+复制到设备标识不同的机器则自动生成新 id，不继承来源机器的路径绑定。
+设备标识分别取自 macOS 的 `IOPlatformUUID`、Linux 的系统 `machine-id`
+和 Windows 的 `MachineGuid`。自动改名保留同步检查点和自定义显示名称，
+仅随 hostname 设置的默认名称会跟随更新，并修复本机所属项目及 host 的标签。
+
+旧版身份没有设备标识且 hostname 已变化时，框架无法可靠区分改名与复制，
+会要求明确选择。先停止使用此存储的后端，再执行以下命令之一并重启：
+
+```bash
+python -m miniclaw2 machine rename  # 确认只是同一设备改名
+python -m miniclaw2 machine copy    # 确认这是另一设备上的副本
+```
+
+两个命令都支持 `--label`，不依赖交互终端。已记录设备指纹却暂时无法读取系统
+标识时，启动会停止，不会把读取失败当作新设备，也不会允许 `rename` 清除旧指纹。
+身份创建、复制和同步检查点写入使用进程间锁；中断的标签修复会在下次启动重试。
+运行中执行身份切换后，旧 Store 的写入和旧同步管理器会被拒绝，仍须停止并重启
+所有使用该存储的进程。同步状态中的 `hostname_mismatch` 仅是进程内名称变化的
+诊断信息，不再作为只读或禁止同步的依据。
+
+同名的旧版副本、共享系统 machine-id 的克隆镜像无法仅靠本机标识自动区分；
+首次打开此类副本前应主动运行 `machine copy`。新设备优先使用 `sync init`
+克隆远端，不要复制包含本地身份的整个存储目录。
 
 Env:
 
@@ -288,7 +317,8 @@ On-disk layout (under `$MINICLAW_HOME`, default `~/.miniclaw2`):
 ```
 config.json             # global defaults and complete model preset catalog
 schema.json             # canonical store schema version (currently v6)
-machine.json            # local UUID + label + sync checkpoint (gitignored)
+machine.json            # 本地 UUID、设备指纹哈希、标签和同步检查点（不参与同步）
+machine.lock            # 身份写入的进程间锁（不参与同步）
 .gitignore              # excludes machine identity, backups, and temp writes
 projects/<pid>/
   project.json          # includes native machine id + display label

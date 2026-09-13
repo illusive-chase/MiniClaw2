@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server.browser";
 
 import {
+  AgentPanel,
   agentInputText,
   candidateDependencies,
   mergeVirtualDraft,
@@ -27,6 +30,47 @@ function node(over: Partial<NodeInfo> = {}): NodeInfo {
     created_at: 0,
     ...over,
   } as NodeInfo;
+}
+
+{
+  const cold = node({ agent_op_kind: "cold_start", artifact_mode: "svg" });
+  const markup = renderToStaticMarkup(createElement(AgentPanel, {
+    sessionId: "p1",
+    node: cold,
+    nodesById: new Map([[cold.id, cold]]),
+    modelPresets: [],
+    events: [],
+    eventsLoading: false,
+    diff: null,
+    diffLoading: false,
+    contextBundle: null,
+    contextBundleLoading: false,
+    pendingGate: null,
+    pendingReview: null,
+    onResolveReview: () => {},
+    onCreateContinuationVirtual: () => {},
+    onPromoteVirtual: async () => {},
+    onDequeueNode: async () => {},
+    onUpdateVirtual: async () => undefined,
+    onInterruptNode: () => {},
+    onRerunNode: () => {},
+    canInterrupt: false,
+    canRerun: false,
+    canMutate: true,
+    mutationLock: null,
+    isManualPlanspace: () => true,
+    focusRequestVersion: 0,
+    activityFocusRequestVersion: 0,
+    onSelectArtifact: () => {},
+  }));
+  for (const label of ["Default", "MD", "HTML", "SVG", "Custom"]) {
+    assert.match(markup, new RegExp(`<button[^>]*>${label}</button>`));
+  }
+  assert.match(markup, /<button[^>]*class="[^"]*bg-surface-raised[^"]*">SVG<\/button>/);
+  assert.doesNotMatch(markup, />Q\/A 模式</);
+  assert.doesNotMatch(markup, />Dependencies</);
+  assert.match(markup, /你可以显式选择产物模式/);
+  assert.doesNotMatch(markup, /产出物约定都不可用/);
 }
 
 /* The inspector separates provider system context, MiniClaw's per-node rules,
@@ -79,6 +123,13 @@ function node(over: Partial<NodeInfo> = {}): NodeInfo {
     node({ artifact_mode: "custom", artifact_spec: "one table" }),
     node({ qa_mode: true }),
     node({ category: "planning", artifact_mode: "html", qa_mode: true }),
+    ...(["default", "markdown", "html", "svg", "custom"] as const).map(
+      (mode) => node({
+        agent_op_kind: "cold_start",
+        artifact_mode: mode,
+        artifact_spec: mode === "custom" ? "一份风险清单" : "",
+      }),
+    ),
     node({
       category: "review",
       subtype: "agentic_review",
@@ -102,19 +153,22 @@ function node(over: Partial<NodeInfo> = {}): NodeInfo {
   assert.equal(draft.qaMode, false);
 }
 
-/* Work and planning carry the intent through to the wire. */
+/* 工作、规划和冷启动节点的所有产物模式均应原样进入请求。 */
 {
-  for (const classification of ["work", "planning"] as const) {
-    const draft = {
-      ...virtualDraftFromNode(node()),
-      classification,
-      artifactMode: "markdown" as const,
-      qaMode: true,
-    };
-    const payload = virtualPayloadFromDraft(draft, node());
-    assert.equal(payload.artifact_mode, "markdown");
-    assert.equal(payload.artifact_spec, "");
-    assert.equal(payload.qa_mode, true);
+  for (const classification of ["work", "planning", "cold"] as const) {
+    for (const mode of ["default", "markdown", "html", "svg", "custom"] as const) {
+      const draft = {
+        ...virtualDraftFromNode(node()),
+        classification,
+        artifactMode: mode,
+        artifactSpec: "  一份风险清单  ",
+        qaMode: true,
+      };
+      const payload = virtualPayloadFromDraft(draft, node());
+      assert.equal(payload.artifact_mode, mode);
+      assert.equal(payload.artifact_spec, mode === "custom" ? "一份风险清单" : "");
+      assert.equal(payload.qa_mode, classification !== "cold");
+    }
   }
 }
 
@@ -358,15 +412,13 @@ function node(over: Partial<NodeInfo> = {}): NodeInfo {
   assert.deepEqual(payload.scheduled_deps, []);
   assert.deepEqual(payload.pending_extra_principles, []);
   assert.equal(payload.qa_mode, false);
-  assert.equal(payload.artifact_mode, "default");
+  assert.equal(payload.artifact_mode, "markdown");
   assert.equal(payload.artifact_spec, "");
   // Skills stay: mounting one supplies a capability, it injects no prompt.
   assert.deepEqual(payload.pending_extra_skills, [{ id: "skills.release" }]);
 }
 
-/* Classification changes clear every hidden prompt-injection setting at the
- * point of interaction, so stale dependencies cannot block promotion and a
- * switch back to Work cannot resurrect values that were saved as empty. */
+/* 切换到冷启动时清空隐式上下文设置，但保留用户显式选择的产物模式。 */
 {
   const draft = {
     ...virtualDraftFromNode(node()),
@@ -380,9 +432,30 @@ function node(over: Partial<NodeInfo> = {}): NodeInfo {
   assert.deepEqual(cold.scheduledDeps, []);
   assert.deepEqual(cold.pendingExtraPrinciples, []);
   assert.equal(cold.qaMode, false);
-  assert.equal(cold.artifactMode, "default");
-  assert.equal(cold.artifactSpec, "");
+  assert.equal(cold.artifactMode, "svg");
+  assert.equal(virtualDraftAfterSave(cold).artifactSpec, "");
   assert.deepEqual(cold.pendingExtraSkills, draft.pendingExtraSkills);
+}
+
+{
+  const coldNode = node({ agent_op_kind: "cold_start" });
+  const draft = {
+    ...virtualDraftFromNode(node()),
+    artifactMode: "custom" as const,
+    artifactSpec: "  一份风险清单  ",
+  };
+  const cold = virtualDraftWithClassification(draft, "cold");
+  assert.equal(cold.artifactMode, "custom");
+  assert.equal(cold.artifactSpec, draft.artifactSpec);
+  assert.equal(virtualDraftAfterSave(cold).artifactSpec, "一份风险清单");
+  assert.equal(virtualDraftValidationError(cold, coldNode), null);
+  assert.match(
+    virtualDraftValidationError({ ...cold, artifactSpec: "  " }, coldNode) ?? "",
+    /选择 custom 时请先描述期望的产出物/,
+  );
+  const work = virtualDraftWithClassification(cold, "work");
+  assert.equal(work.artifactMode, "custom");
+  assert.equal(work.artifactSpec, draft.artifactSpec);
 }
 
 /* A stale/restored draft cannot bypass the disabled Cold control on a
@@ -462,9 +535,7 @@ function node(over: Partial<NodeInfo> = {}): NodeInfo {
   );
 }
 
-/* Each axis is dropped where the classification has none, rather than shown
- * as a zero value the user might read as a choice. Review has neither;
- * library has no artifact contract but may still ask; cold start has neither. */
+/* 审阅不展示这两项设置；库节点仅展示 Q/A，冷启动仅展示产物要求。 */
 {
   assert.deepEqual(
     nodeIntentRows(
@@ -478,7 +549,20 @@ function node(over: Partial<NodeInfo> = {}): NodeInfo {
   );
   assert.deepEqual(
     nodeIntentRows(node({ state: "done", agent_op_kind: "cold_start" })),
-    [],
+    [["Artifact", "不要求产出物"]],
+  );
+  assert.deepEqual(
+    nodeIntentRows(node({ state: "done", agent_op_kind: "cold_start", artifact_mode: "svg" })),
+    [["Artifact", "SVG"]],
+  );
+  assert.deepEqual(
+    nodeIntentRows(node({
+      state: "done",
+      agent_op_kind: "cold_start",
+      artifact_mode: "custom",
+      artifact_spec: "一份风险清单",
+    })),
+    [["Artifact", "自定义"], ["Artifact spec", "一份风险清单"]],
   );
   assert.deepEqual(
     nodeIntentRows(node({ state: "done", category: "planning", qa_mode: true })),

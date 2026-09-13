@@ -2,15 +2,20 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
+import plistlib
 import shutil
 import socket
 import subprocess
+import sys
 import threading
 import time
-from dataclasses import dataclass
+from collections.abc import Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable
 from uuid import uuid4
@@ -40,7 +45,7 @@ class SchemaConflictError(SyncError):
 
 
 class MachineIdentityMismatchError(SyncError):
-    """The local identity file belongs to a differently named host."""
+    """The local identity cannot safely be used on this device."""
 
 
 @dataclass(frozen=True)
@@ -51,6 +56,7 @@ class MachineIdentity:
     last_sync_at: float | None = None
     last_synced_commit: str | None = None
     sync_pending: bool = False
+    device_fingerprint: str | None = None
 
     def payload(self) -> dict[str, Any]:
         return {
@@ -60,6 +66,7 @@ class MachineIdentity:
             "last_sync_at": self.last_sync_at,
             "last_synced_commit": self.last_synced_commit,
             "sync_pending": self.sync_pending,
+            "device_fingerprint": self.device_fingerprint,
         }
 
 
@@ -67,8 +74,66 @@ def current_hostname() -> str:
     return socket.gethostname() or "unknown-machine"
 
 
+def current_device_fingerprint() -> str | None:
+    try:
+        if sys.platform == "darwin":
+            result = subprocess.run(
+                ["/usr/sbin/ioreg", "-rd1", "-c", "IOPlatformExpertDevice", "-a"],
+                capture_output=True, check=True, timeout=5,
+            )
+            identifier = plistlib.loads(result.stdout)[0]["IOPlatformUUID"]
+        elif sys.platform == "win32":
+            import winreg
+
+            with winreg.OpenKey(
+                winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Cryptography"
+            ) as key:
+                identifier = winreg.QueryValueEx(key, "MachineGuid")[0]
+        else:
+            identifier = ""
+            for path in (Path("/etc/machine-id"), Path("/var/lib/dbus/machine-id")):
+                try:
+                    identifier = path.read_text(encoding="utf-8").strip()
+                except OSError:
+                    continue
+                if identifier:
+                    break
+        if isinstance(identifier, str) and identifier.strip():
+            return hashlib.sha256(identifier.strip().encode("utf-8")).hexdigest()
+    except (OSError, ValueError, TypeError, KeyError, IndexError, subprocess.SubprocessError):
+        pass
+    return None
+
+
 def machine_path(root: Path) -> Path:
     return root / MACHINE_FILENAME
+
+
+@contextmanager
+def _machine_identity_lock(root: Path) -> Iterator[None]:
+    root.mkdir(parents=True, exist_ok=True)
+    with (root / "machine.lock").open("a+b") as lock_file:
+        if sys.platform == "win32":
+            import msvcrt
+
+            if lock_file.tell() == 0:
+                lock_file.write(b"\0")
+                lock_file.flush()
+            lock_file.seek(0)
+            msvcrt.locking(lock_file.fileno(), msvcrt.LK_LOCK, 1)
+            try:
+                yield
+            finally:
+                lock_file.seek(0)
+                msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
 def load_machine_identity(root: Path) -> MachineIdentity:
@@ -99,35 +164,49 @@ def load_machine_identity(root: Path) -> MachineIdentity:
         last_sync_at=float(last_sync_at) if last_sync_at is not None else None,
         last_synced_commit=last_synced_commit,
         sync_pending=payload.get("sync_pending") is True,
+        device_fingerprint=(
+            payload.get("device_fingerprint")
+            if isinstance(payload.get("device_fingerprint"), str)
+            else None
+        ),
     )
 
 
 def ensure_machine_identity(root: Path) -> MachineIdentity:
-    root.mkdir(parents=True, exist_ok=True)
+    with _machine_identity_lock(root):
+        identity = _ensure_machine_identity_locked(root)
+        if not schema_is_newer(root):
+            _update_owned_project_labels(root, identity)
+        return identity
+
+
+def _ensure_machine_identity_locked(root: Path) -> MachineIdentity:
     path = machine_path(root)
+    fingerprint = current_device_fingerprint()
     if path.exists():
         identity = load_machine_identity(root)
         hostname = current_hostname()
-        if identity.hostname != hostname:
-            previous_hostname = identity.hostname
-            # Hostnames are labels only. Preserve the durable machine id so a
-            # normal OS rename does not make the store appear read-only.
-            identity = MachineIdentity(
-                id=identity.id,
+        if identity.device_fingerprint and fingerprint:
+            if identity.device_fingerprint != fingerprint:
+                return _new_machine_identity(root, fingerprint=fingerprint)
+        elif identity.hostname != hostname:
+            raise MachineIdentityMismatchError(
+                "无法区分设备改名与存储副本；请先运行 "
+                "`python -m miniclaw2 machine rename` 确认同一设备，或 "
+                "`python -m miniclaw2 machine copy` 为新设备生成身份"
+            )
+        if identity.device_fingerprint and not fingerprint:
+            raise MachineIdentityMismatchError("无法验证当前设备身份，请恢复系统设备标识读取后重试")
+        if identity.hostname != hostname or identity.device_fingerprint != fingerprint:
+            identity = replace(
+                identity,
                 hostname=hostname,
                 label=hostname if identity.label == identity.hostname else identity.label,
-                last_sync_at=identity.last_sync_at,
-                last_synced_commit=identity.last_synced_commit,
-                sync_pending=identity.sync_pending,
+                device_fingerprint=fingerprint,
             )
             _write_json(path, identity.payload())
-            _update_owned_project_labels(root, identity)
-            logger.info("machine hostname updated from %s to %s", previous_hostname, hostname)
         return identity
-    hostname = current_hostname()
-    identity = MachineIdentity(id=str(uuid4()), hostname=hostname, label=hostname)
-    _write_json(path, identity.payload())
-    return identity
+    return _new_machine_identity(root, fingerprint=fingerprint)
 
 
 def machine_hostname_mismatch(identity: MachineIdentity) -> bool:
@@ -135,27 +214,42 @@ def machine_hostname_mismatch(identity: MachineIdentity) -> bool:
 
 
 def resolve_machine_rename(root: Path, *, label: str | None = None) -> MachineIdentity:
-    identity = load_machine_identity(root)
-    hostname = current_hostname()
-    updated = MachineIdentity(
-        id=identity.id,
-        hostname=hostname,
-        label=(label or hostname).strip() or hostname,
-        last_sync_at=identity.last_sync_at,
-        last_synced_commit=identity.last_synced_commit,
-        sync_pending=identity.sync_pending,
-    )
-    _write_json(machine_path(root), updated.payload())
-    _update_owned_project_labels(root, updated)
-    return updated
+    with _machine_identity_lock(root):
+        identity = load_machine_identity(root)
+        fingerprint = current_device_fingerprint()
+        if identity.device_fingerprint and identity.device_fingerprint != fingerprint:
+            raise MachineIdentityMismatchError(
+                "无法确认是同一设备；请恢复系统设备标识读取，或运行 "
+                "`python -m miniclaw2 machine copy` 为新设备生成身份"
+            )
+        hostname = current_hostname()
+        default_label = hostname if identity.label == identity.hostname else identity.label
+        updated = replace(
+            identity,
+            hostname=hostname,
+            label=(label or default_label).strip() or default_label,
+            device_fingerprint=fingerprint,
+        )
+        _write_json(machine_path(root), updated.payload())
+        if not schema_is_newer(root):
+            _update_owned_project_labels(root, updated)
+        return updated
 
 
 def resolve_machine_copy(root: Path, *, label: str | None = None) -> MachineIdentity:
+    with _machine_identity_lock(root):
+        return _new_machine_identity(root, fingerprint=current_device_fingerprint(), label=label)
+
+
+def _new_machine_identity(
+    root: Path, *, fingerprint: str | None, label: str | None = None,
+) -> MachineIdentity:
     hostname = current_hostname()
     updated = MachineIdentity(
         id=str(uuid4()),
         hostname=hostname,
         label=(label or hostname).strip() or hostname,
+        device_fingerprint=fingerprint,
     )
     _write_json(machine_path(root), updated.payload())
     return updated
@@ -721,6 +815,7 @@ def ensure_store_gitignore(root: Path) -> None:
     path = root / ".gitignore"
     required = [
         "machine.json",
+        "machine.lock",
         "migration-backups/",
         ".update-exit-pending",
         ".runtime-owner.json",
@@ -785,14 +880,13 @@ def bootstrap_store(root: Path, remote_url: str) -> MachineIdentity:
     ensure_store_metadata(root, identity)
     head = _git(root, "rev-parse", "--verify", "HEAD", check=False)
     if clone.returncode == 0 and head.returncode == 0:
-        identity = MachineIdentity(
-            id=identity.id,
-            hostname=identity.hostname,
-            label=identity.label,
-            last_sync_at=time.time(),
-            last_synced_commit=head.stdout.strip(),
-        )
-        _write_json(machine_path(root), identity.payload())
+        with _machine_identity_lock(root):
+            identity = replace(
+                load_machine_identity(root),
+                last_sync_at=time.time(),
+                last_synced_commit=head.stdout.strip(),
+            )
+            _write_json(machine_path(root), identity.payload())
     return identity
 
 
@@ -841,6 +935,7 @@ class SyncManager:
             raise SyncError("git remote URL is required")
         self._ensure_contextspace_inside_store()
         with self._lock:
+            self._refresh_identity()
             remote_refs = _run_raw(
                 ["git", "ls-remote", "--heads", remote_url], check=False
             )
@@ -896,6 +991,7 @@ class SyncManager:
             self._pending_messages = []
             if not (self.root / ".git").exists():
                 return None
+            self._refresh_identity()
             _git(self.root, "add", "-A")
             staged = _git(self.root, "diff", "--cached", "--quiet", check=False)
             if staged.returncode == 0:
@@ -1021,6 +1117,7 @@ class SyncManager:
             raise SyncError("metadata sync is not configured")
         self._ensure_contextspace_inside_store()
         with self._lock:
+            self._refresh_identity()
             for callback in tuple(self._pre_commit_callbacks):
                 try:
                     callback()
@@ -1143,29 +1240,30 @@ class SyncManager:
             "error": None,
         }
 
+    def _refresh_identity(self) -> None:
+        identity = load_machine_identity(self.root)
+        if identity.id != self.identity.id:
+            raise MachineIdentityMismatchError("设备身份已变更，请重启 MiniClaw2 后再同步")
+        self.identity = identity
+
     def _record_success(self) -> None:
-        self.identity = MachineIdentity(
-            id=self.identity.id,
-            hostname=self.identity.hostname,
-            label=self.identity.label,
-            last_sync_at=time.time(),
-            last_synced_commit=self._head(),
-            sync_pending=False,
-        )
-        _write_json(machine_path(self.root), self.identity.payload())
+        with _machine_identity_lock(self.root):
+            self._refresh_identity()
+            self.identity = replace(
+                self.identity,
+                last_sync_at=time.time(),
+                last_synced_commit=self._head(),
+                sync_pending=False,
+            )
+            _write_json(machine_path(self.root), self.identity.payload())
         for callback in tuple(self._success_callbacks):
             callback()
 
     def _record_failure(self) -> None:
-        self.identity = MachineIdentity(
-            id=self.identity.id,
-            hostname=self.identity.hostname,
-            label=self.identity.label,
-            last_sync_at=self.identity.last_sync_at,
-            last_synced_commit=self.identity.last_synced_commit,
-            sync_pending=True,
-        )
-        _write_json(machine_path(self.root), self.identity.payload())
+        with _machine_identity_lock(self.root):
+            self._refresh_identity()
+            self.identity = replace(self.identity, sync_pending=True)
+            _write_json(machine_path(self.root), self.identity.payload())
 
     def _branch(self) -> str:
         upstream = _git(
@@ -1222,9 +1320,12 @@ def get_sync_manager(root: Path, identity: MachineIdentity | None = None) -> Syn
     resolved = root.expanduser().resolve()
     with _MANAGERS_LOCK:
         manager = _MANAGERS.get(resolved)
-        if manager is None:
+        if manager is None or (identity is not None and manager.identity.id != identity.id):
             manager = SyncManager(resolved, identity)
             _MANAGERS[resolved] = manager
+        elif identity is not None:
+            with manager._lock:
+                manager.identity = identity
         return manager
 
 
@@ -1287,11 +1388,22 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
 
 def _update_owned_project_labels(root: Path, identity: MachineIdentity) -> None:
     for project_file in (root / "projects").glob("*/project.json"):
+        host_file = project_file.parent / "hosts" / identity.id / "host.json"
+        if host_file.is_file():
+            try:
+                host_payload = json.loads(host_file.read_text(encoding="utf-8"))
+                if isinstance(host_payload, dict) and host_payload.get("label") != identity.label:
+                    host_payload["label"] = identity.label
+                    _write_json(host_file, host_payload)
+            except (OSError, ValueError):
+                logger.warning("无法更新设备标签：%s", host_file)
         try:
             payload = json.loads(project_file.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             continue
-        if payload.get("machine_id") != identity.id:
+        if not isinstance(payload, dict) or payload.get("machine_id") != identity.id:
+            continue
+        if payload.get("machine_label") == identity.label:
             continue
         payload["machine_label"] = identity.label
         _write_json(project_file, payload)

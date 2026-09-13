@@ -203,7 +203,13 @@ class ColdStartRunnerTests(unittest.IsolatedAsyncioTestCase):
         os.environ.pop("MINICLAW_CONTEXT_HOME", None)
         self.tmp.cleanup()
 
-    def _node(self, *, cold: bool = True) -> Node:
+    def _node(
+        self,
+        *,
+        cold: bool = True,
+        artifact_mode: ArtifactMode = ArtifactMode.DEFAULT,
+        artifact_spec: str = "",
+    ) -> Node:
         node = Node(
             project_id=self.project.id,
             model_preset_id="opus-4-7",
@@ -212,14 +218,23 @@ class ColdStartRunnerTests(unittest.IsolatedAsyncioTestCase):
             planspace_id=self.lane_id,
             prompt="investigate the repo",
             agent_op_kind=COLD_START_AGENT_OP_KIND if cold else None,
+            artifact_mode=artifact_mode,
+            artifact_spec=artifact_spec,
         )
         self.store.create_node(node)
         return node
 
     async def _run(
-        self, provider: _RecordingProvider, *, cold: bool = True
+        self,
+        provider: _RecordingProvider,
+        *,
+        cold: bool = True,
+        artifact_mode: ArtifactMode = ArtifactMode.DEFAULT,
+        artifact_spec: str = "",
     ) -> Node:
-        node = self._node(cold=cold)
+        node = self._node(
+            cold=cold, artifact_mode=artifact_mode, artifact_spec=artifact_spec
+        )
 
         async def on_event(_payload: dict) -> None:
             return None
@@ -241,6 +256,75 @@ class ColdStartRunnerTests(unittest.IsolatedAsyncioTestCase):
         # system prompt needs only the empty system_context above.
         self.assertIs(context.minimal_mode, False)
         self.assertEqual(node.launch_instructions_snapshot, "")
+
+    async def test_explicit_artifact_intent_reaches_provider_without_context(self) -> None:
+        for mode, filename, content, spec in (
+            (ArtifactMode.MARKDOWN, "report.md", "# 结果\n", ""),
+            (ArtifactMode.HTML, "report.html", "<!doctype html><p>结果</p>", ""),
+            (
+                ArtifactMode.SVG,
+                "report.svg",
+                '<svg xmlns="http://www.w3.org/2000/svg"/>',
+                "",
+            ),
+            (
+                ArtifactMode.CUSTOM,
+                "report.json",
+                "{}\n",
+                "生成 JSON 报告。\n包含结果和依据。",
+            ),
+        ):
+            with self.subTest(mode=mode):
+                def write_artifact(context: AgentProviderContext) -> None:
+                    output_dir = self.repo / ".miniclaw2" / "outputs" / context.node.id
+                    (output_dir / filename).write_text(content, encoding="utf-8")
+                    self.assertFalse(
+                        (
+                            self.repo / ".miniclaw2" / "graph"
+                            / "runs" / context.node.id / "lanes"
+                        ).exists()
+                    )
+
+                provider = _RecordingProvider(
+                    text="已完成", side_effect=write_artifact
+                )
+                node = await self._run(
+                    provider, artifact_mode=mode, artifact_spec=spec
+                )
+                self.assertEqual(node.state, NodeState.DONE)
+                self.assertEqual(len(provider.contexts), 1)
+                context = provider.contexts[0]
+                instructions = context.launch_instructions
+                self.assertIn(
+                    str(self.repo / ".miniclaw2" / "outputs" / node.id), instructions
+                )
+                self.assertIn(f"`{mode.value}`", instructions)
+                if mode is ArtifactMode.CUSTOM:
+                    self.assertIn(
+                        "\n".join(f"> {line}" for line in spec.splitlines()), instructions
+                    )
+                self.assertIn("无需另写预览文件或产物声明", instructions)
+                for marker in (
+                    "preview.json",
+                    "regular execution node",
+                    "scheduled dependency index",
+                    "Always do it this way.",
+                    ".miniclaw2/graph",
+                ):
+                    self.assertNotIn(marker, instructions)
+                self.assertEqual(context.system_context, "")
+                self.assertIsNone(node.context_bundle_id)
+                self.assertEqual(node.launch_instructions_snapshot, instructions)
+                persisted = self.store.load_node(self.project.id, node.id)
+                assert persisted is not None
+                self.assertEqual(persisted.launch_instructions_snapshot, instructions)
+                self.assertEqual(
+                    [ref.name for ref in node.artifacts if ref.status == "published"],
+                    [filename],
+                )
+                raw = self.store.read_node_preview(self.project.id, node.id)
+                assert raw is not None
+                self.assertEqual(json.loads(raw)["artifacts"], [filename])
 
     async def test_context_snapshot_is_empty_despite_context_md(self) -> None:
         node = await self._run(_RecordingProvider(text="ok"))

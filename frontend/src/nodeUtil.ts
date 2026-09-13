@@ -212,17 +212,17 @@ export function opKindForClassification(
   }
 }
 
-/** Artifact intent is only available on work and planning nodes. Review nodes
- * have their own deliverable contract (the brief plus the handoff text); a
- * library node's deliverable is one library entry, not an artifact. A cold
- * start is told nothing at all, the artifact contract included — it may still
- * write to the outputs directory, and the framework publishes what it finds.
- * Q/A mode follows the same boundary minus the library exclusion — the
- * librarian may still need to ask which entry the user meant. */
+/** 工作、规划及冷启动节点均可显式选择产物；冷启动仍不注入隐式上下文。
+ * 审阅节点使用自己的交付契约，库节点交付库条目而非产物。
+ * Q/A 模式独立判断：库节点可以提问，冷启动和审阅节点不开放此设置。 */
 export function artifactModeAvailable(
   classification: NodeClassification,
 ): boolean {
-  return classification === "work" || classification === "planning";
+  return (
+    classification === "work" ||
+    classification === "planning" ||
+    classification === "cold"
+  );
 }
 
 export function qaModeAvailable(

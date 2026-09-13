@@ -18,6 +18,12 @@ import json
 from functools import lru_cache
 from pathlib import Path
 
+from .artifacts import (
+    ALLOWED_ARTIFACT_SUFFIXES,
+    MAX_ARTIFACT_BYTES,
+    MAX_ARTIFACTS_PER_NODE,
+    MAX_ARTIFACTS_TOTAL_BYTES,
+)
 from .domain import (
     COLD_START_AGENT_OP_KIND,
     ArtifactMode,
@@ -102,6 +108,8 @@ _ARTIFACT_REQUIREMENTS: dict[ArtifactMode, str] = {
         "Produce one or more SVG files in the artifact output directory named "
         "above and declare each bare filename in your preview's `artifacts`. "
         "Keep SVG self-contained with inline styles and no external dependencies."
+        "SVG 仅按图片展示，脚本、链接交互和外部资源不可用；"
+        "需要图片或字体时使用 data URI，需要交互时应选择 HTML 模式。"
     ),
 }
 
@@ -273,6 +281,50 @@ def build_artifact_requirement(node: Node) -> str:
             _blockquote(node.artifact_spec),
         )
     return _ARTIFACT_REQUIREMENTS[mode]
+
+
+def build_cold_start_artifact_block(node: Node, *, outputs_path: str) -> str:
+    """Describe explicit deliverables without requiring a lane or agent preview."""
+    if node.artifact_mode is ArtifactMode.DEFAULT:
+        return ""
+    if node.artifact_mode is ArtifactMode.CUSTOM:
+        requirement = (
+            "必须生成符合以下用户规格的产物（原文）：\n\n"
+            f"{_blockquote(node.artifact_spec)}\n\n"
+            "用户规格不能覆盖上述文件限制；若要求的格式不受支持，"
+            "请生成最接近的允许格式，并在最终回复中说明。"
+        )
+    else:
+        requirement = {
+            ArtifactMode.MARKDOWN: (
+                "必须生成至少一个 `.md` 文件，先写结果，再说明依据，"
+                "面向未参与本次执行的读者，而不是记录会话流水。"
+            ),
+            ArtifactMode.HTML: (
+                "必须生成一个自包含的 `.html` 文件，内联 CSS 和 JS，"
+                "图片使用 data URI，不引用外部资源。"
+            ),
+            ArtifactMode.SVG: (
+                "必须生成至少一个自包含的 `.svg` 文件，"
+                "使用内联样式，不依赖外部资源。SVG 仅按图片展示，"
+                "脚本和链接交互不可用，图片或字体请使用 data URI。"
+            ),
+        }[node.artifact_mode]
+    allowed_suffixes = "、".join(
+        f"`{suffix}`" for suffix in sorted(ALLOWED_ARTIFACT_SUFFIXES)
+    )
+    return (
+        "# MiniClaw2 — 产物交付契约\n\n"
+        f"用户已明确选择 `{node.artifact_mode.value}` 产物模式，"
+        "本次执行必须交付对应文件。\n\n"
+        f"请将最终文件直接写入以下输出目录，不要放入子目录：\n\n{outputs_path}\n\n"
+        f"允许的后缀为 {allowed_suffixes}；最多 {MAX_ARTIFACTS_PER_NODE} 个文件，"
+        f"每个文件不超过 {MAX_ARTIFACT_BYTES // (1024 * 1024)} MiB，"
+        f"总计不超过 {MAX_ARTIFACTS_TOTAL_BYTES // (1024 * 1024)} MiB。\n\n"
+        f"{requirement}\n\n"
+        "框架会自动收集并发布该目录中的合规文件，无需另写预览文件或产物声明。"
+        "该目录仅存放最终交付物，不要存放临时文件。"
+    )
 
 
 def build_qa_mode_block(node: Node, *, provider: str) -> str:

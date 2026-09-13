@@ -40,7 +40,7 @@ from .sync import (
     ensure_machine_identity,
     ensure_store_metadata,
     get_sync_manager,
-    machine_hostname_mismatch,
+    load_machine_identity,
     schema_is_newer,
 )
 from .tags import (
@@ -86,6 +86,11 @@ class Store:
     def read_only_reason(self) -> str | None:
         if schema_is_newer(self.root):
             return "store schema is newer than this MiniClaw2 version"
+        try:
+            if load_machine_identity(self.root).id != self.machine.id:
+                return "设备身份已变更，请重启 MiniClaw2 后再写入"
+        except SyncError:
+            return "设备身份文件不可用，请恢复后重启 MiniClaw2"
         return None
 
     # ---- paths ----
@@ -161,7 +166,7 @@ class Store:
             self._last_activity_index[pid] = activity_at
 
     def refresh_local_fingerprint(self, project: Project) -> bool:
-        if not self.is_bound_here(project.id):
+        if project.temporary or not self.is_bound_here(project.id):
             return False
         roots = root_commits(project.root_path)
         path = self._host_dir(project.id, self.machine.id) / "host.json"
@@ -344,8 +349,8 @@ class Store:
                 "layout_viewport": project.layout_viewport,
             },
         )
-        roots = root_commits(project.root_path)
-        observed_is_repo = is_git_repo(project.root_path)
+        roots = [] if project.temporary else root_commits(project.root_path)
+        observed_is_repo = not project.temporary and is_git_repo(project.root_path)
         repo: dict[str, Any] = {}
         if roots:
             repo.update(
@@ -370,6 +375,34 @@ class Store:
         self._write_json(self._project_file(project.id), payload)
         self.sync.schedule_commit(f'create project "{project.name or project.id}"')
         return project
+
+    def prepare_temporary_workspace(self, project: Project) -> None:
+        from .workspace import create_temporary_root
+
+        if not project.temporary:
+            return
+        self.assert_writable()
+        host_dir = self._host_dir(project.id, self.machine.id)
+        local_file = host_dir / "local.json"
+        local = self._read_json(local_file) if local_file.is_file() else {}
+        root = local.get("root_path")
+        if not isinstance(root, str) or not Path(root).is_dir():
+            root = create_temporary_root()
+            self._write_json(local_file, {"root_path": root})
+        project.root_path = root
+        (host_dir / "nodes").mkdir(parents=True, exist_ok=True)
+        if not (host_dir / "host.json").is_file():
+            self._write_json(host_dir / "host.json", {
+                "label": self.machine.label,
+                "bound_at": time.time(),
+                "repo": {},
+                "is_repo": False,
+            })
+        if not (host_dir / "layout.json").is_file():
+            self._write_json(host_dir / "layout.json", {
+                "layout_hints": project.layout_hints,
+                "layout_viewport": project.layout_viewport,
+            })
 
     def update_project(self, project: Project) -> None:
         self.assert_writable()
@@ -407,7 +440,7 @@ class Store:
                 continue
             nodes_dir = host_dir / "nodes"
             layout_file = host_dir / "layout.json"
-            if not nodes_dir.is_dir() or not layout_file.is_file():
+            if not layout_file.is_file():
                 continue
             try:
                 remote_layout = self._read_json(layout_file)

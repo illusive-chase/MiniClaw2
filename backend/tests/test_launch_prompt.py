@@ -201,6 +201,8 @@ class ArtifactInstructionsTests(unittest.TestCase):
                 block = build_category_launch_block(node)
                 self.assertIn("`.md` or `.html` artifact is long", block)
                 self.assertIn("one section at a time", block)
+                self.assertIn("`.md`, `.json`, `.html`, or `.svg`", block)
+                self.assertIn("SVG 仅按图片展示", block)
 
 
 class OpAndUnknownTests(unittest.TestCase):
@@ -300,13 +302,17 @@ class ArtifactRequirementTests(unittest.TestCase):
         self.assertIn("self-contained", rendered)
 
     def test_svg_mode_uses_the_node_specific_artifact_directory(self) -> None:
-        node = _agent_node()
-        node.artifact_mode = ArtifactMode.SVG
-        rendered = self._render(node)
-        self.assertIn("/tmp/outputs", rendered)
-        self.assertIn("one or more SVG files", rendered)
-        self.assertIn("each bare filename", rendered)
-        self.assertNotIn("files in `outputs/`", rendered)
+        for category in (Category.REGULAR, Category.PLANNING):
+            with self.subTest(category=category):
+                node = _agent_node(category=category)
+                node.artifact_mode = ArtifactMode.SVG
+                outputs_path = f"/tmp/project/.miniclaw2/outputs/{node.id}"
+                rendered = build_category_launch_block(node, outputs_path=outputs_path)
+                self.assertIn(outputs_path, rendered)
+                self.assertIn("one or more SVG files", rendered)
+                self.assertIn("each bare filename", rendered)
+                self.assertIn("SVG 仅按图片展示", rendered)
+                self.assertNotIn("files in `outputs/`", rendered)
 
     def test_custom_spec_is_blockquoted_and_outranked(self) -> None:
         node = _agent_node()

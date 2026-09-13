@@ -28,6 +28,7 @@ import type {
   TemplateInstanceRecord,
 } from "../types";
 import { artifactRawUrl } from "../api";
+import { artifactSelection } from "../artifactSelection";
 import { extraPrinciplesAvailable, nodeClassification } from "../nodeUtil";
 import {
   appendBelowLanePosition,
@@ -1358,28 +1359,23 @@ function CanvasInner({
         });
       } else if (n.type === "artifact") {
         const data = n.data as import("./layout").ArtifactNodeData;
-        if (!data.artifact) {
-          onSelectionChange({ kind: "agent", nodeId: data.ownerNodeId });
+        const selection = artifactSelection(data.ownerNodeId, data.artifact);
+        if (selection.kind === "agent") {
+          onSelectionChange(selection);
           return;
         }
-        const ext = data.artifact.name.split(".").pop() as ArtifactExtension;
         pendingUserSelectionRef.current = {
           nodeId: n.id,
           preserveExisting: event.shiftKey,
         };
-        if (ext === "html") {
+        if (selection.ext === "html") {
           window.open(
-            artifactRawUrl(sessionId, data.ownerNodeId, data.artifact.name),
+            artifactRawUrl(sessionId, selection.nodeId, selection.name),
             "_blank",
             "noopener",
           );
         }
-        onSelectionChange({
-          kind: "artifact",
-          nodeId: data.ownerNodeId,
-          name: data.artifact.name,
-          ext,
-        });
+        onSelectionChange(selection);
       }
     },
     [onSelectionChange, sessionId],

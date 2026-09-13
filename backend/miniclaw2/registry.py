@@ -359,6 +359,8 @@ class ProjectRegistry:
         store.sync.add_pre_commit_callback(self._record_host_heads)
         sweep = self._claim_runtime_ownership()
         for project in store.list_projects():
+            if project.temporary and store.read_only_reason is None:
+                store.prepare_temporary_workspace(project)
             self._runtimes[project.id] = ProjectRuntime(project)
             if sweep and self.is_native_project(project) and store.read_only_reason is None:
                 self._repair_stale_nodes(project.id)
@@ -474,6 +476,12 @@ class ProjectRegistry:
         loaded = {project.id: project for project in self.store.list_projects()}
         for project_id, project in loaded.items():
             runtime = self._runtimes.get(project_id)
+            if (
+                project.temporary
+                and self.store.read_only_reason is None
+                and (runtime is None or not runtime.is_running())
+            ):
+                self.store.prepare_temporary_workspace(project)
             if runtime is None:
                 self._runtimes[project_id] = ProjectRuntime(project)
             elif not runtime.is_running():
@@ -484,12 +492,15 @@ class ProjectRegistry:
                 self._runtimes.pop(project_id, None)
 
     def is_native_project(self, project: Project) -> bool:
-        return self.store.is_bound_here(project.id)
+        return project.temporary or self.store.is_bound_here(project.id)
 
     def is_native_node(self, project: Project, node: Node) -> bool:
         return node.owner_host_id == self.store.machine.id
 
     def _can_resume_provider_session(self, node: Node) -> bool:
+        project = self.get_project(node.project_id)
+        if project is not None and project.temporary:
+            return False
         if node.origin_machine_id:
             return node.origin_machine_id == self.store.machine.id
         if node.owner_host_id:
@@ -507,6 +518,14 @@ class ProjectRegistry:
             raise KeyError(pid)
         if not self.is_native_project(project):
             raise NonNativeProjectError(project)
+        if project.temporary:
+            self.store.prepare_temporary_workspace(project)
+        return project
+
+    def require_git_project(self, pid: str) -> Project:
+        project = self.require_native(pid)
+        if project.temporary:
+            raise ValueError("临时项目不支持 Git 操作，请使用持久项目")
         return project
 
     def require_native_node(self, project: Project, node: Node) -> Node:
@@ -1394,6 +1413,8 @@ class ProjectRegistry:
             return None
         self.require_native(pid)
 
+        if subtype == ReviewSubtype.CODE_REVIEW:
+            self.require_git_project(pid)
         if agent_op_kind == COLD_START_AGENT_OP_KIND and resume_from_node_id:
             # The Node invariant catches a persisted resume_from_node_id, but a
             # direct launch resumes by carrying the source's provider session
@@ -1752,6 +1773,8 @@ class ProjectRegistry:
 
     def _broadcast_git_status(self, rt: ProjectRuntime) -> None:
         """Schedule a node-less, ephemeral Git status event."""
+        if rt.project.temporary:
+            return
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
@@ -1781,6 +1804,10 @@ class ProjectRegistry:
         rt = self._runtimes.get(pid)
         if rt is None:
             return None
+        if rt.project.temporary:
+            from .git_state import GitStatus as WorkspaceGitStatus
+
+            return WorkspaceGitStatus()
         return git_status(rt.project.root_path)
 
     def quiescent(self, pid: str) -> bool:
@@ -1793,7 +1820,7 @@ class ProjectRegistry:
         rt = self._runtimes.get(pid)
         if rt is None:
             return None
-        self.require_native(pid)
+        self.require_git_project(pid)
         if op_kind not in {"commit", "pull"}:
             raise ValueError(f"unknown git op_kind: {op_kind}")
         node = Node(
@@ -1816,7 +1843,7 @@ class ProjectRegistry:
         rt = self._runtimes.get(pid)
         if rt is None:
             return None
-        self.require_native(pid)
+        self.require_git_project(pid)
         for existing in self.store.list_nodes(pid):
             if (
                 existing.subtype is ReviewSubtype.CODE_REVIEW
@@ -1863,7 +1890,7 @@ class ProjectRegistry:
         rt = self._runtimes.get(pid)
         if rt is None:
             return None
-        self.require_native(pid)
+        self.require_git_project(pid)
         if self._pull_active(rt) or await asyncio.to_thread(self._queued_pull_exists, rt):
             from .git_state import git_status as read_git_status
 
@@ -2075,6 +2102,10 @@ class ProjectRegistry:
                 "Virtual node was not found.",
             )
         self.require_native_node(rt.project, node)
+        if rt.project.temporary and node.subtype is ReviewSubtype.CODE_REVIEW:
+            return VirtualPromotionResult(
+                None, "git_unavailable", "临时项目不支持 Git 审阅",
+            )
         if node.state is not NodeState.VIRTUAL:
             if node.proposed_by:
                 return VirtualPromotionResult(
@@ -2317,6 +2348,8 @@ class ProjectRegistry:
         self.require_native(pid)
         if provider is not None:
             raise ValueError("provider is no longer accepted; use model_preset_id")
+        if subtype == ReviewSubtype.CODE_REVIEW:
+            self.require_git_project(pid)
 
         lane_id = self._resolve_virtual_create_lane(rt, planspace_id)
         normalized_parent_id = self._normalize_virtual_parent(
@@ -2672,6 +2705,7 @@ class ProjectRegistry:
             update["subtype"] = next_subtype
             update["brief"] = next_brief
             if next_subtype is ReviewSubtype.CODE_REVIEW:
+                self.require_git_project(pid)
                 update["review_target"] = next_review_target or ReviewTarget()
             elif next_review_target is not None:
                 if review_target is _UNSET:

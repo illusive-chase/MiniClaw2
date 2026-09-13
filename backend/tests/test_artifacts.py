@@ -166,9 +166,15 @@ class ArtifactApiTests(unittest.TestCase):
         self.assertEqual(response.headers["content-type"], "image/svg+xml")
         self.assertEqual(
             response.headers["content-security-policy"],
-            "sandbox allow-scripts; connect-src 'none'",
+            "sandbox; default-src 'none'; style-src 'unsafe-inline'; "
+            "img-src data:; font-src data:; base-uri 'none'; form-action 'none'",
         )
         self.assertEqual(response.headers["x-content-type-options"], "nosniff")
+        self.assertEqual(
+            response.headers["content-disposition"],
+            "attachment; filename*=UTF-8''diagram.svg",
+        )
+        self.assertEqual(response.headers["referrer-policy"], "no-referrer")
 
     def test_inline_mode_truncates_but_raw_mode_does_not(self) -> None:
         url = f"/sessions/{self.sid}/nodes/{self.node.id}/artifacts/large.md"

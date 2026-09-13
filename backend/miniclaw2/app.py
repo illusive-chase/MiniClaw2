@@ -15,6 +15,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import quote
 
 from fastapi import FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -221,7 +222,6 @@ class SessionInfo(BaseModel):
     # Runtime capabilities are explicit so clients can hide workspace/Git
     # controls for ephemeral sessions.
     persistence_mode: str = "durable"
-    resumable: bool = True
     capabilities: dict[str, bool] = Field(default_factory=dict)
 
 
@@ -1288,6 +1288,8 @@ def create_app(
         project = registry.get_project(sid)
         if project is None:
             raise HTTPException(404, "session not found")
+        if project.temporary:
+            raise HTTPException(400, "临时项目没有持久工作目录")
         if not registry.is_native_project(project):
             raise HTTPException(409, "此设备尚未配置项目路径")
         try:
@@ -1303,6 +1305,8 @@ def create_app(
         project = registry.get_project(sid)
         if project is None:
             raise HTTPException(404, "session not found")
+        if project.temporary:
+            raise HTTPException(400, "临时项目不支持 Git 操作，请使用持久项目")
         status = registry.git_status(sid)
         if status is None:
             raise HTTPException(404, "session not found")
@@ -1371,7 +1375,10 @@ def create_app(
         require_native_project(sid)
         if not registry.quiescent(sid):
             raise HTTPException(409, "project must be idle before pulling")
-        node = registry.spawn_git_op(sid, "pull")
+        try:
+            node = registry.spawn_git_op(sid, "pull")
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
         if node is None:
             raise HTTPException(409, "project unavailable")
         return {"node": node.model_dump()}
@@ -1382,7 +1389,10 @@ def create_app(
         if project is None:
             raise HTTPException(404, "session not found")
         require_native_project(sid)
-        result = await registry.git_push(sid)
+        try:
+            result = await registry.git_push(sid)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
         if result is None:
             raise HTTPException(404, "session not found")
         status, error = result
@@ -1935,6 +1945,8 @@ def create_app(
         project = registry.get_project(sid)
         if project is None:
             raise HTTPException(404, "session not found")
+        if project.temporary:
+            raise HTTPException(400, "临时项目不支持 Git 差异查看")
         require_native_project(sid)
         node = registry.get_node(sid, nid)
         if node is None:
@@ -2020,10 +2032,19 @@ def create_app(
         if content_type is None:
             raise HTTPException(404, "published artifact type is not supported")
         headers = {"X-Content-Type-Options": "nosniff"}
-        if suffix in {".html", ".svg"}:
+        if suffix == ".html":
             headers["Content-Security-Policy"] = (
                 "sandbox allow-scripts; connect-src 'none'"
             )
+        elif suffix == ".svg":
+            headers["Content-Security-Policy"] = (
+                "sandbox; default-src 'none'; style-src 'unsafe-inline'; "
+                "img-src data:; font-src data:; base-uri 'none'; form-action 'none'"
+            )
+            headers["Content-Disposition"] = (
+                f"attachment; filename*=UTF-8''{quote(artifact.name, safe='')}"
+            )
+            headers["Referrer-Policy"] = "no-referrer"
         headers["Content-Type"] = content_type
         return Response(content=content, headers=headers)
 
@@ -2604,18 +2625,15 @@ def _session_info(registry: ProjectRegistry, project: Any) -> SessionInfo:
         layout_hints=project.layout_hints,
         layout_viewport=project.layout_viewport,
         persistence_mode="ephemeral" if project.temporary else "durable",
-        resumable=not project.temporary,
         capabilities=(
             {
                 "workspace": False,
                 "git_review": False,
-                "artifact_restore": True,
             }
             if project.temporary
             else {
                 "workspace": True,
                 "git_review": True,
-                "artifact_restore": True,
             }
         ),
     )

@@ -22,6 +22,7 @@ class MainTest(unittest.TestCase):
         vite_proc.pid = 1234
         with (
             patch.object(sys, "argv", argv),
+            patch.object(cli, "ensure_machine_identity") as ensure_identity,
             patch.object(cli.shutil, "which", return_value="/usr/bin/npm"),
             patch.object(cli.Path, "is_dir", return_value=True),
             patch.object(cli.subprocess, "Popen", return_value=vite_proc) as popen,
@@ -31,6 +32,7 @@ class MainTest(unittest.TestCase):
         ):
             cli.main()
 
+        ensure_identity.assert_called_once()
         signal_group.assert_called_once_with(vite_proc.pid, cli.signal.SIGTERM)
         vite_command = popen.call_args.args[0]
         vite_env = popen.call_args.kwargs["env"]

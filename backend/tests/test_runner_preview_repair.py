@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import subprocess
 import tempfile
 import unittest
@@ -12,17 +13,20 @@ from pathlib import Path
 from unittest.mock import patch
 
 import yaml
+from fastapi.testclient import TestClient
 
 from miniclaw2 import runner as runner_module
+from miniclaw2.app import create_app
 from miniclaw2.artifacts import stored_artifacts_dir, workspace_artifacts_dir
 from miniclaw2.contextspace import (
     contextspace_root,
     create_planspace,
     resolve_project_binding,
 )
-from miniclaw2.domain import Category, Node, NodeKind, NodeState, Project
+from miniclaw2.domain import ArtifactMode, Category, Node, NodeKind, NodeState, Project
 from miniclaw2.providers import AgentProviderContext, AgentProviderEvent
 from miniclaw2.runner import NodeRunner
+from miniclaw2.registry import ProjectRegistry
 from miniclaw2.store import Store
 
 
@@ -123,6 +127,41 @@ class _UnlanedArtifactProvider:
             encoding="utf-8",
         )
         yield AgentProviderEvent(kind="session", session_id="stub-session")
+        yield AgentProviderEvent(kind="done", final_state="done")
+
+    async def interrupt(self) -> None:
+        return None
+
+
+class _SvgArtifactProvider:
+    name = "stub"
+    content = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 80 40"><text y="20">SVG 产物</text></svg>'
+
+    async def run(self, context: AgentProviderContext):
+        prompt = context.launch_instructions
+        assert "one or more SVG files" in prompt
+        outputs_match = re.search(r"To show a file to the human, write it under:\s*\n\s*([^\n]+)", prompt)
+        preview_match = re.search(r"write your own preview at:\s*\n\s*([^\n]+)", prompt)
+        assert outputs_match is not None
+        assert preview_match is not None
+        outputs = Path(outputs_match[1].strip())
+        assert outputs.is_absolute()
+        (outputs / "图表.svg").write_text(self.content, encoding="utf-8")
+        preview = Path(context.project.root_path) / preview_match[1].strip()
+        preview.parent.mkdir(parents=True, exist_ok=True)
+        preview.write_text(json.dumps({
+            "id": context.node.id,
+            "kind": "agent",
+            "category": "regular",
+            "state": "done",
+            "ran_at": "2026-09-13T00:00:00Z",
+            "lane": context.node.planspace_id or "",
+            "motivation": "验证 SVG 发布契约",
+            "summary": "已按提示中的目录生成 SVG",
+            "next_implications": "验证持久副本和 API",
+            "artifacts": ["图表.svg"],
+        }), encoding="utf-8")
+        yield AgentProviderEvent(kind="session", session_id="svg-session")
         yield AgentProviderEvent(kind="done", final_state="done")
 
     async def interrupt(self) -> None:
@@ -359,6 +398,51 @@ class RunnerPreviewRepairTests(unittest.IsolatedAsyncioTestCase):
             (durable / "report.md").read_text(encoding="utf-8"),
             "# Report\n",
         )
+
+    async def test_svg_follows_launch_contract_through_reap_publication_and_api(self) -> None:
+        node = self._node()
+        node.artifact_mode = ArtifactMode.SVG
+        self.store.update_node(node)
+        emitted: list[dict] = []
+
+        async def on_event(payload: dict) -> None:
+            emitted.append(payload)
+
+        runner = NodeRunner(node, self.project, self.store, on_event)
+        with patch.object(runner_module, "_make_provider", return_value=_SvgArtifactProvider()):
+            await asyncio.wait_for(runner.run(), timeout=10.0)
+
+        self.assertEqual(node.state, NodeState.DONE, node.error)
+        self.assertEqual([(ref.name, ref.status) for ref in node.artifacts], [("图表.svg", "published")])
+        self.assertTrue(any(
+            event.get("type") == "node_updated"
+            and event["node"]["state"] == "done"
+            and event["node"]["artifacts"][0]["name"] == "图表.svg"
+            for event in emitted
+        ))
+        durable = stored_artifacts_dir(self.store, self.project.id, node.id)
+        self.assertEqual((durable / "图表.svg").read_text(encoding="utf-8"), _SvgArtifactProvider.content)
+        (workspace_artifacts_dir(self.project, node.id) / "图表.svg").unlink()
+        preview = json.loads(self.store.read_node_preview(self.project.id, node.id) or "{}")
+        self.assertEqual(preview["artifacts"], ["图表.svg"])
+
+        registry = ProjectRegistry(store=self.store)
+        client = TestClient(create_app(registry))
+        try:
+            persisted = registry.get_node(self.project.id, node.id)
+            assert persisted is not None
+            self.assertEqual(persisted.artifacts, node.artifacts)
+            url = f"/sessions/{self.project.id}/nodes/{node.id}/artifacts/图表.svg"
+            inline = client.get(url)
+            self.assertEqual(inline.status_code, 200, inline.text)
+            self.assertEqual(inline.json()["sha256"], node.artifacts[0].sha256)
+            raw = client.get(url, params={"raw": 1})
+            self.assertEqual(raw.status_code, 200, raw.text)
+            self.assertEqual(raw.content, _SvgArtifactProvider.content.encode("utf-8"))
+            self.assertEqual(raw.headers["content-type"], "image/svg+xml")
+            self.assertIn("%E5%9B%BE%E8%A1%A8.svg", raw.headers["content-disposition"])
+        finally:
+            client.close()
 
     async def test_stale_active_planspace_errors_before_provider_launch(self) -> None:
         node = self._node()

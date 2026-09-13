@@ -232,7 +232,6 @@ export type SessionInfo = {
   /** Persisted React Flow viewport so pan/zoom survives project reopen. */
   layout_viewport?: CanvasViewport | null;
   persistence_mode?: "durable" | "ephemeral";
-  resumable?: boolean;
   capabilities?: Record<string, boolean>;
 };
 

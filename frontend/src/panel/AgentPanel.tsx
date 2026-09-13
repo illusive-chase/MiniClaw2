@@ -10,6 +10,7 @@ import {
 } from "react";
 
 import { getNodePreview } from "../api";
+import { artifactExtension } from "../artifactSelection";
 import type {
   Activity,
   ArtifactExtension,
@@ -494,10 +495,10 @@ export function AgentPanel({
                 <SectionHeading>Artifacts</SectionHeading>
                 <ul className="mt-2 space-y-1.5">
                   {(node.artifacts ?? []).map((artifact, index) => {
-                    const ext = artifact.name.split(".").pop() as ArtifactExtension;
+                    const ext = artifactExtension(artifact.name);
                     return (
                       <li key={`${artifact.name}:${artifact.status}:${index}`}>
-                        {artifact.status === "published" ? (
+                        {artifact.status === "published" && ext ? (
                           <button
                             type="button"
                             onClick={() => onSelectArtifact(node.id, artifact.name, ext)}
@@ -1297,17 +1298,18 @@ const EditableVirtualNodeBody = forwardRef<VirtualNodeBodyHandle, VirtualNodeBod
             {draft.classification === "cold" && (
               <div className="space-y-2 rounded-md border border-line-strong bg-surface-sunken p-3">
                 <p className="text-[11px] leading-relaxed text-ink-muted">
-                  冷启动节点。框架不注入任何 prompt：没有 ContextSpace 文本、没有节点类型说明、
-                  没有 preview 契约、也不物化 lane。它只拿到你在下方写的 Prompt 和项目工作目录。
+                  冷启动节点。默认不注入框架 prompt：没有 ContextSpace 文本、没有节点类型说明、
+                  没有 preview 契约、也不物化 lane。默认只拿到你在下方写的 Prompt 和项目工作目录。
                 </p>
                 <p className="text-[11px] leading-relaxed text-ink-muted">
-                  这是<span className="font-medium text-ink">框架零 prompt 注入</span>，不是裸模型：
+                  默认是<span className="font-medium text-ink">框架零 prompt 注入</span>，不是裸模型：
                   provider 自带的 system prompt、工作目录里的文件（含 CONTEXT.md，agent 仍可主动读）、
                   以及 codex 自行加载的 AGENTS.md 都还在。摘要由框架截取本回合文本尾部生成；
                   写进 outputs 目录的 .md / .json / .html / .svg 会被自动发布，无需声明。
                 </p>
                 <p className="text-[11px] leading-relaxed text-ink-muted">
-                  依赖、附加准则、允许提问和产出物约定都不可用——它们本身就是注入。
+                  依赖、附加准则和 Q/A 模式仍不可用。你可以显式选择产物模式；
+                  选择后仅追加产物交付契约和输出目录，不加载其他框架上下文。
                   技能仍可挂载：那是提供能力，而非告诉模型该用什么。
                 </p>
               </div>

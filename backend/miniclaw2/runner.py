@@ -74,6 +74,7 @@ from .language import language_launch_instruction, project_preferred_language
 from .launch_prompt import (
     anti_self_poisoning_block,
     build_category_launch_block,
+    build_cold_start_artifact_block,
     build_dependency_launch_block,
     build_library_init_block,
     build_principle_init_block,
@@ -238,8 +239,13 @@ class NodeRunner:
         finally:
             self._cleanup_lane_projection()
 
+    def _workspace_head(self) -> str | None:
+        return None if self.project.temporary else git_head(self.project.root_path)
+
     async def _run_agent(self) -> None:
-        self.node.commit_before = git_head(self.project.root_path)
+        self.node.commit_before = self._workspace_head()
+        if self.project.temporary:
+            self.node.provider_session_id = None
         # A cold start runs this same state machine — the transitions, commit
         # bookkeeping, gate plumbing and cancellation handling are all shared.
         # Only the framework's four injection points are short-circuited, and
@@ -265,7 +271,10 @@ class NodeRunner:
             else:
                 self._materialize_lane()
             launch_instructions = (
-                ""
+                build_cold_start_artifact_block(
+                    self.node,
+                    outputs_path=str(workspace_artifacts_dir(self.project, self.node.id)),
+                )
                 if is_cold_start
                 else self._build_agent_launch_instructions(context_bundle)
             )
@@ -338,7 +347,7 @@ class NodeRunner:
                 self._resolve_open_gates()
                 if error_msg is not None:
                     self.node.error = error_msg
-                self.node.commit_after = git_head(self.project.root_path)
+                self.node.commit_after = self._workspace_head()
                 if is_cold_start:
                     # No reap: the agent was never told the lane or the preview
                     # contract exists, so there is nothing of its own to fold in.
@@ -382,7 +391,7 @@ class NodeRunner:
             logger.warning("runner refused launch due to stale settings: %s", exc)
             error_msg = str(exc)
             self.node.error = error_msg
-            self.node.commit_after = git_head(self.project.root_path)
+            self.node.commit_after = self._workspace_head()
             self._write_stub_preview(NodeState.ERROR, reason=error_msg)
             self._transition(NodeState.ERROR, started=True, finished=True)
             await self._emit_node_started()
@@ -393,7 +402,7 @@ class NodeRunner:
             logger.exception("runner failed before start")
             error_msg = f"Unexpected runner error: {exc}"
             self.node.error = error_msg
-            self.node.commit_after = git_head(self.project.root_path)
+            self.node.commit_after = self._workspace_head()
             self._write_stub_preview(NodeState.ERROR, reason=error_msg)
             self._transition(NodeState.ERROR, started=True, finished=True)
             await self._emit_node_started()
@@ -408,7 +417,7 @@ class NodeRunner:
         writes its own ``preview.json`` to the durable store directly so
         the lane projection has a complete record.
         """
-        self.node.commit_before = git_head(self.project.root_path)
+        self.node.commit_before = self._workspace_head()
         context_bundle = self._snapshot_context_bundle()
         self._snapshot_launch_settings(context_bundle)
         self._transition(NodeState.RUNNING, started=True)
@@ -420,6 +429,8 @@ class NodeRunner:
 
         try:
             if self.node.op_kind == "commit":
+                if self.project.temporary:
+                    raise ValueError("临时项目不支持 Git 操作")
                 message = self.node.prompt.strip() or f"miniclaw:node:{self.node.parent_node_id or self.node.id}"
                 new_head, err = await asyncio.to_thread(
                     commit_all, self.project.root_path, message
@@ -434,6 +445,8 @@ class NodeRunner:
                     self.node.summary = f"commit {new_head[:8]}"
                     self.node.commit_after = new_head
             elif self.node.op_kind == "pull":
+                if self.project.temporary:
+                    raise ValueError("临时项目不支持 Git 操作")
                 old_local = await asyncio.to_thread(local_only_shas, self.project.root_path)
                 new_head, err = await asyncio.to_thread(
                     git_pull_rebase, self.project.root_path
@@ -464,7 +477,7 @@ class NodeRunner:
         if error_msg is not None:
             self.node.error = error_msg
         if self.node.commit_after is None:
-            self.node.commit_after = git_head(self.project.root_path)
+            self.node.commit_after = self._workspace_head()
         self._write_op_preview(final_state)
         self._transition(final_state, finished=True)
         await self._emit_node_updated()
@@ -472,7 +485,7 @@ class NodeRunner:
 
     async def _run_code_review(self) -> None:
         """Run a provider-native review without lane materialization or reap."""
-        self.node.commit_before = git_head(self.project.root_path)
+        self.node.commit_before = self._workspace_head()
         final_state = NodeState.DONE
         error_msg: str | None = None
         report: ReviewReport | None = None
@@ -482,6 +495,8 @@ class NodeRunner:
         focus_warning: str | None = None
         review_summary: str | None = None
         try:
+            if self.project.temporary:
+                raise ValueError("临时项目不支持 Git 审阅")
             self._snapshot_launch_settings()
             self._materialize_skills()
             snapshot = await asyncio.to_thread(
@@ -539,7 +554,7 @@ class NodeRunner:
 
         if error_msg is not None:
             self.node.error = error_msg
-        self.node.commit_after = git_head(self.project.root_path)
+        self.node.commit_after = self._workspace_head()
         if final_state is NodeState.DONE:
             if report is None:
                 summary = self.node.summary or "working tree clean — nothing to review"
@@ -698,7 +713,7 @@ class NodeRunner:
 
     async def _run_verifier(self) -> None:
         """Run a deterministic verifier script and write an executed preview."""
-        self.node.commit_before = git_head(self.project.root_path)
+        self.node.commit_before = self._workspace_head()
         context_bundle = self._snapshot_context_bundle()
         self._snapshot_launch_settings(context_bundle)
         self._transition(NodeState.RUNNING, started=True)
@@ -822,7 +837,7 @@ class NodeRunner:
 
         if error_msg is not None:
             self.node.error = error_msg
-        self.node.commit_after = git_head(self.project.root_path)
+        self.node.commit_after = self._workspace_head()
         self._write_verifier_preview(
             final_state,
             exit_code=exit_code,
@@ -1299,6 +1314,13 @@ class NodeRunner:
                 "The authoritative durable state for this turn is the materialized lane under `.miniclaw2/graph/runs/<node>/lanes/<lane>/`; read upstream `preview.json` files there and write your own preview there before finishing.\n"
                 "Ordinary files in the project root are scratch inputs/outputs only. Publish human-facing files through the declared artifact channel when the prompt asks for them.\n"
             )
+            source_id = self.node.resume_from_node_id or self.node.parent_node_id
+            if source_id:
+                temporary_contract += (
+                    f"本次执行启动全新会话。来源节点为 `{source_id}`；"
+                    "如需衔接上下文，请读取当前 lane 中该节点的 preview.json 和 transcript.json，"
+                    "不要假定先前会话或临时文件仍然存在。\n"
+                )
         return _compose_launch_instructions(
             temporary_contract,
             _authoring_init_block(self.node, self.store.root),

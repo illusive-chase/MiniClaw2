@@ -5,6 +5,7 @@ import { writeClipboard } from "../clipboard";
 import { MarkdownView } from "../components/MarkdownView";
 import { ZoomableText } from "../components/TextZoom";
 import type { ArtifactExtension, ArtifactFile, ArtifactRef } from "../types";
+import { SvgArtifactPreview } from "./SvgArtifactPreview";
 
 export type ArtifactPanelProps = {
   sessionId: string;
@@ -162,14 +163,7 @@ export function ArtifactPanel({ sessionId, nodeId, artifact, ext }: ArtifactPane
                 {loading ? "Loading artifact..." : "Artifact not loaded."}
               </div>
             ) : ext === "svg" ? (
-              <div className="overflow-hidden rounded-md border border-line bg-white shadow-card">
-                <iframe
-                  title={artifact.name}
-                  src={rawUrl}
-                  sandbox=""
-                  className="h-[min(65vh,560px)] w-full"
-                />
-              </div>
+              <SvgArtifactPreview name={artifact.name} rawUrl={rawUrl} />
             ) : ext === "md" ? (
               <ZoomableText
                 title={artifact.name}
