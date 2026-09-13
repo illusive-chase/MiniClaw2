@@ -73,7 +73,7 @@ export type SidePanelProps = {
   onSelectArtifact: (
     nodeId: string,
     name: string,
-    ext: "md" | "json" | "html",
+    ext: "md" | "json" | "html" | "svg",
   ) => void;
   onSessionChange: (session: SessionInfo) => void;
   onPreferredLanguageChange: (preferredLanguage: string | null) => void;

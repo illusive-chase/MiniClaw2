@@ -86,6 +86,7 @@ class ArtifactMode(StrEnum):
     DEFAULT = "default"
     MARKDOWN = "markdown"
     HTML = "html"
+    SVG = "svg"
     CUSTOM = "custom"
 
 

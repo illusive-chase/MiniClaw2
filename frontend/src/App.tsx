@@ -2835,7 +2835,7 @@ export function App() {
   );
 
   const onSelectArtifact = useCallback(
-    (nodeId: string, name: string, ext: "md" | "json" | "html") => {
+    (nodeId: string, name: string, ext: "md" | "json" | "html" | "svg") => {
       if (!nodes.some((node) => node.id === nodeId)) return;
       if (ext === "html" && session?.id) {
         window.open(artifactRawUrl(session.id, nodeId, name), "_blank", "noopener");
@@ -2976,10 +2976,6 @@ export function App() {
           onGlobalStateChanged={(next) => {
             setGlobalState(next);
             setModelPresets(next.model_presets);
-          }}
-          onTemplateLaunched={(s) => {
-            setLandingSessions((current) => upsertSession(current, s));
-            openProject(s);
           }}
           headerStatus={(
             <>

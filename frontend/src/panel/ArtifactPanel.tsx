@@ -10,7 +10,7 @@ export type ArtifactPanelProps = {
   sessionId: string;
   nodeId: string;
   artifact: ArtifactRef;
-  ext: "md" | "json" | "html";
+  ext: "md" | "json" | "html" | "svg";
 };
 
 export function ArtifactPanel({ sessionId, nodeId, artifact, ext }: ArtifactPanelProps) {
@@ -160,6 +160,15 @@ export function ArtifactPanel({ sessionId, nodeId, artifact, ext }: ArtifactPane
             {!file ? (
               <div className="rounded-md border border-line bg-surface-sunken px-3 py-3 text-[12px] text-ink-muted">
                 {loading ? "Loading artifact..." : "Artifact not loaded."}
+              </div>
+            ) : ext === "svg" ? (
+              <div className="overflow-hidden rounded-md border border-line bg-white shadow-card">
+                <iframe
+                  title={artifact.name}
+                  src={rawUrl}
+                  sandbox=""
+                  className="h-[min(65vh,560px)] w-full"
+                />
               </div>
             ) : ext === "md" ? (
               <ZoomableText

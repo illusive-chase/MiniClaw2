@@ -428,7 +428,7 @@ export type SelfUpdateApplyResult = {
 };
 export type NodeCategory = "planning" | "regular" | "review";
 /** Deliverable shape a node must publish. `default` = no artifact expected. */
-export type ArtifactMode = "default" | "markdown" | "html" | "custom";
+export type ArtifactMode = "default" | "markdown" | "html" | "svg" | "custom";
 export type ReviewSubtype =
   | "agentic_review"
   | "human_interact_review"

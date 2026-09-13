@@ -107,7 +107,7 @@ export type AgentPanelProps = {
   onSelectArtifact: (
     nodeId: string,
     name: string,
-    ext: "md" | "json" | "html",
+    ext: "md" | "json" | "html" | "svg",
   ) => void;
 };
 
@@ -493,7 +493,7 @@ export function AgentPanel({
                 <SectionHeading>Artifacts</SectionHeading>
                 <ul className="mt-2 space-y-1.5">
                   {(node.artifacts ?? []).map((artifact, index) => {
-                    const ext = artifact.name.split(".").pop() as "md" | "json" | "html";
+                    const ext = artifact.name.split(".").pop() as "md" | "json" | "html" | "svg";
                     return (
                       <li key={`${artifact.name}:${artifact.status}:${index}`}>
                         {artifact.status === "published" ? (
@@ -615,6 +615,7 @@ const ARTIFACT_MODE_HINTS: Record<ArtifactMode, string> = {
   default: "不要求产出物。只有 Prompt 里明确要求时才会产出文件。",
   markdown: "要求本轮产出至少一份 Markdown 文件给你看。",
   html: "要求本轮产出一份自包含的 HTML 文件——内联样式与脚本，不引用外部资源。",
+  svg: "要求本轮产出一份自包含的 SVG 文件——内联样式，不引用外部资源。",
   custom: "在下方描述你想要的产出物。这段文字会原样进入 agent 的提示。",
 };
 
@@ -1302,7 +1303,7 @@ const EditableVirtualNodeBody = forwardRef<VirtualNodeBodyHandle, VirtualNodeBod
                   这是<span className="font-medium text-ink">框架零 prompt 注入</span>，不是裸模型：
                   provider 自带的 system prompt、工作目录里的文件（含 CONTEXT.md，agent 仍可主动读）、
                   以及 codex 自行加载的 AGENTS.md 都还在。摘要由框架截取本回合文本尾部生成；
-                  写进 outputs 目录的 .md / .json / .html 会被自动发布，无需声明。
+                  写进 outputs 目录的 .md / .json / .html / .svg 会被自动发布，无需声明。
                 </p>
                 <p className="text-[11px] leading-relaxed text-ink-muted">
                   依赖、附加准则、允许提问和产出物约定都不可用——它们本身就是注入。
@@ -1418,6 +1419,7 @@ const EditableVirtualNodeBody = forwardRef<VirtualNodeBodyHandle, VirtualNodeBod
                   ["default", "Default"],
                   ["markdown", "Markdown"],
                   ["html", "HTML"],
+                  ["svg", "SVG"],
                   ["custom", "Custom"],
                 ] as const).map(([value, label]) => (
                   <button
@@ -2411,6 +2413,7 @@ const ARTIFACT_MODE_ROW_LABELS: Record<ArtifactMode, string> = {
   default: "不要求产出物",
   markdown: "Markdown",
   html: "HTML",
+  svg: "SVG",
   custom: "自定义",
 };
 

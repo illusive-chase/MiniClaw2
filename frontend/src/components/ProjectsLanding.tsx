@@ -21,7 +21,6 @@ import {
 import { languageLabel } from "../languages";
 import type { ModelPreset, SelfUpdateState, SessionInfo, Tag } from "../types";
 import { modelPresetLabel } from "../modelPresets";
-import { TestsPanel } from "./TestsPanel";
 import { ThemeToggle } from "./ThemeToggle";
 import { GlobalSettingsModal } from "./GlobalSettingsModal";
 import { TagChipRow, TagFilterBar } from "./TagFilterBar";
@@ -58,8 +57,6 @@ type Props = {
   modelPresets: ModelPreset[];
   globalState: GlobalState | null;
   onGlobalStateChanged: (state: GlobalState) => void;
-  /** template runner kicks off a new project — open the result */
-  onTemplateLaunched?: (session: SessionInfo, templateName: string) => void;
   /** Header slot: the run-status and notification buttons. */
   headerStatus?: ReactNode;
   /** Overlays the project list, anchored below the header rather than scrolling with it. */
@@ -76,12 +73,10 @@ export function ProjectsLanding({
   modelPresets,
   globalState,
   onGlobalStateChanged,
-  onTemplateLaunched,
   headerStatus,
   noticeRail,
 }: Props) {
   const [error, setError] = useState<string | null>(null);
-  const [testsOpen, setTestsOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [selfUpdate, setSelfUpdate] = useState<SelfUpdateState | null>(null);
   const [sortMode, setSortMode] = useState<ProjectSortMode>(readProjectSort);
@@ -326,14 +321,6 @@ export function ProjectsLanding({
           </button>
           <button
             type="button"
-            onClick={() => setTestsOpen(true)}
-            className="inline-flex h-9 items-center gap-1.5 rounded-md border border-line bg-surface-raised px-3 text-[12.5px] font-medium text-ink-muted shadow-card transition hover:border-line-strong hover:text-ink"
-            title="Run a packaged template test"
-          >
-            Tests
-          </button>
-          <button
-            type="button"
             onClick={onCreate}
             className="inline-flex h-9 items-center gap-1.5 rounded-md bg-brand px-4 text-sm font-medium text-white shadow-card transition hover:brightness-[0.95]"
           >
@@ -504,45 +491,6 @@ export function ProjectsLanding({
         </div>
       </div>
 
-      {testsOpen && (
-        <div
-          className="fixed inset-0 z-40 flex items-center justify-center bg-surface-scrim/60 backdrop-blur-sm"
-          onClick={() => setTestsOpen(false)}
-        >
-          <div
-            className="flex max-h-[90vh] w-[720px] max-w-[95vw] flex-col overflow-hidden rounded-xl border border-line bg-surface-raised shadow-modal"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="flex items-center justify-between gap-3 border-b border-line px-5 py-3.5">
-              <div className="min-w-0">
-                <div className="font-display text-sm font-semibold text-ink-strong">
-                  Tests
-                </div>
-                <div className="text-[11px] text-ink-muted">
-                  Run a packaged template; opens the resulting project on launch.
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={() => setTestsOpen(false)}
-                className="rounded px-2 py-1 text-[11px] font-medium text-ink-muted transition hover:bg-surface-sunken hover:text-ink"
-              >
-                Esc
-              </button>
-            </div>
-            <div className="flex-1 overflow-y-auto">
-              <TestsPanel
-                modelPresets={modelPresets}
-                onLaunched={(s, name) => {
-                  setTestsOpen(false);
-                  if (onTemplateLaunched) onTemplateLaunched(s, name);
-                  else onOpen(s);
-                }}
-              />
-            </div>
-          </div>
-        </div>
-      )}
       <GlobalSettingsModal
         open={settingsOpen}
         state={globalState}

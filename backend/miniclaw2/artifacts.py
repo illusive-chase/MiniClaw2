@@ -15,7 +15,7 @@ MAX_ARTIFACTS_PER_NODE = 16
 MAX_ARTIFACT_BYTES = 2 * 1024 * 1024
 MAX_ARTIFACTS_TOTAL_BYTES = 8 * 1024 * 1024
 INLINE_TEXT_CAP = 512 * 1024
-ALLOWED_ARTIFACT_SUFFIXES = frozenset({".md", ".json", ".html"})
+ALLOWED_ARTIFACT_SUFFIXES = frozenset({".md", ".json", ".html", ".svg"})
 
 
 def workspace_artifacts_dir(project: Project, node_id: str) -> Path:
@@ -168,7 +168,7 @@ def _invalid_name_reason(name: str) -> str | None:
     if Path(name).name != name:
         return "must be a bare filename"
     if Path(name).suffix not in ALLOWED_ARTIFACT_SUFFIXES:
-        return "suffix must be .md, .json, or .html"
+        return "suffix must be .md, .json, .html, or .svg"
     return None
 
 

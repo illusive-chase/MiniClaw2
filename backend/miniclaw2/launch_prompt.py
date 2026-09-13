@@ -87,7 +87,7 @@ The user's specification, verbatim:
 <<artifact_spec_quoted>>
 
 The framework constraints above still bind and outrank the specification:
-declared files must end in `.md`, `.json`, or `.html`; at most 16 files;
+declared files must end in `.md`, `.json`, `.html`, or `.svg`; at most 16 files;
 2 MiB per file; 8 MiB per node. If the specification asks for a format
 outside those suffixes, produce the closest allowed one and say so in
 your preview's `summary` rather than failing silently.\
@@ -97,6 +97,7 @@ _ARTIFACT_REQUIREMENTS: dict[ArtifactMode, str] = {
     ArtifactMode.DEFAULT: _ARTIFACT_DEFAULT,
     ArtifactMode.MARKDOWN: _ARTIFACT_MARKDOWN,
     ArtifactMode.HTML: _ARTIFACT_HTML,
+    ArtifactMode.SVG: "Produce one or more SVG files in `outputs/` and declare each filename in your preview's `artifacts`. Keep SVG self-contained with inline styles and no external dependencies.",
 }
 
 

@@ -153,7 +153,7 @@ export type CanvasSelection =
       memberNodeIds: string[];
       collapsed: boolean;
     }
-  | { kind: "artifact"; nodeId: string; name: string; ext: "md" | "json" | "html" }
+  | { kind: "artifact"; nodeId: string; name: string; ext: "md" | "json" | "html" | "svg" }
   | { kind: "projectRoot" }
   | { kind: "commit"; sha: string | null }
   | { kind: "none" };
@@ -1361,7 +1361,7 @@ function CanvasInner({
           onSelectionChange({ kind: "agent", nodeId: data.ownerNodeId });
           return;
         }
-        const ext = data.artifact.name.split(".").pop() as "md" | "json" | "html";
+        const ext = data.artifact.name.split(".").pop() as "md" | "json" | "html" | "svg";
         pendingUserSelectionRef.current = {
           nodeId: n.id,
           preserveExisting: event.shiftKey,

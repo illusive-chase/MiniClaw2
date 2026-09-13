@@ -113,7 +113,7 @@ class VirtualPreview(BaseModel):
     brief: ExecutedPreviewBrief | None = None
     review_target: ReviewTarget | None = None
     scheduled_deps: list[str] = []
-    artifact_mode: Literal["default", "markdown", "html", "custom"] = "default"
+    artifact_mode: Literal["default", "markdown", "html", "svg", "custom"] = "default"
     artifact_spec: str | None = None
     obsolete_reason: str | None = None
 
