@@ -192,9 +192,10 @@ export function AgentPanel({
   const eventsLoadingRef = useRef(eventsLoading);
   eventsLoadingRef.current = eventsLoading;
   const currentReadyToPromote =
-    draftPromotability?.nodeId === node.id
-      ? draftPromotability.ready
-      : readyToPromote;
+    !!detail && !detailLoading && !detailError &&
+    (node.kind === "verifier"
+      ? readyToPromote
+      : draftPromotability?.nodeId === node.id && draftPromotability.ready);
   const handleDraftPromotabilityChange = useCallback(
     (nodeId: string, ready: boolean) => {
       setDraftPromotability({ nodeId, ready });
@@ -216,11 +217,13 @@ export function AgentPanel({
     canMutate && node.state === "virtual" && isManualPlanspace(node.planspace_id);
 
   const promote = async () => {
-    if (promoting) return;
+    if (promoting || !currentReadyToPromote) return;
     setPromoting(true);
     try {
-      const saved = await virtualNodeBodyRef.current?.saveChanges();
-      if (saved === false) return;
+      if (node.kind !== "verifier") {
+        const editor = virtualNodeBodyRef.current;
+        if (!editor || !(await editor.saveChanges())) return;
+      }
       await onPromoteVirtual(node.id);
     } finally {
       setPromoting(false);
@@ -432,7 +435,7 @@ export function AgentPanel({
         {node.state === "virtual" ? (
           detail ? (
             <fieldset
-              disabled={!canMutate || detailLoading || !!detailError}
+              disabled={!canMutate}
               className={canMutate ? "contents" : "contents opacity-75"}
             >
               <VirtualNodeBody
@@ -802,13 +805,6 @@ const EditableVirtualNodeBody = forwardRef<VirtualNodeBodyHandle, VirtualNodeBod
   );
   const draftValidationError = virtualDraftValidationError(draft, node);
 
-  useEffect(() => {
-    onPromotabilityChange(
-      node.id,
-      virtualDraftReadyToPromote(draft, node, nodesById),
-    );
-  }, [draft, node, nodesById, onPromotabilityChange]);
-
   /* Selecting this node again — after a switch, a panel unmount, or a reload —
    * reads back whatever local draft was stashed for it. `drop` means the stash
    * has nothing the saved node lacks. `adopt` means nobody moved the node
@@ -925,6 +921,13 @@ const EditableVirtualNodeBody = forwardRef<VirtualNodeBodyHandle, VirtualNodeBod
     setDraft(mergedDraft);
     setError(conflicts.length ? externalDraftConflictMessage(conflicts) : null);
   }, [node.id, persistedDraftSignature, restoreStashedDraft]);
+
+  useEffect(() => {
+    onPromotabilityChange(
+      node.id,
+      virtualDraftReadyToPromote(draftRef.current, node, nodesById),
+    );
+  }, [draft, node, nodesById, onPromotabilityChange]);
 
   useEffect(() => {
     if (focusRequestVersion <= 0) return;
@@ -1053,7 +1056,11 @@ const EditableVirtualNodeBody = forwardRef<VirtualNodeBodyHandle, VirtualNodeBod
     return operation;
   };
 
-  useImperativeHandle(ref, () => ({ saveChanges: () => save() }));
+  useImperativeHandle(ref, () => ({
+    saveChanges: () => restoredNodeIdRef.current === node.id
+      ? save()
+      : Promise.resolve(false),
+  }));
 
   const autosaveRef = useRef(() =>
     save({ singleSnapshot: true, expectedPlanspaceMode: "manual" }),

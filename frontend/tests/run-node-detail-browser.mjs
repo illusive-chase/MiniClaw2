@@ -23,7 +23,7 @@ try {
     "--dump-dom", "--virtual-time-budget=10000", pathToFileURL(html).href,
   ], { timeout: 30000, maxBuffer: 8 * 1024 * 1024 });
   assert.match(stdout.replace(/<script[\s\S]*?<\/script>/g, ""), /<body data-test-result="passed">/);
-  console.log("节点详情浏览器回归通过：快速切换、版本失效、缓存隔离、错误重试与取消选择");
+  console.log("节点详情浏览器回归通过：快速切换、版本失效、缓存隔离、错误重试、草稿恢复后提升及自动保存焦点保持");
 } finally {
   await rm(temporary, { recursive: true, force: true });
 }

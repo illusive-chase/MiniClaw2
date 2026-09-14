@@ -86,11 +86,26 @@ function node(over: Partial<NodeDetail> = {}): NodeDetail {
   assert.match(loadingMarkup, /正在读取节点详情/);
   assert.match(loadingMarkup, /do the thing/);
   assert.doesNotMatch(loadingMarkup, /<textarea/);
+  assert.match(loadingMarkup, /<button[^>]*disabled=""[^>]*>Promote<\/button>/);
   const errorMarkup = renderToStaticMarkup(createElement(AgentPanel, {
     ...props, node: toNodeInfo(cold), detail: null, detailError: "详情读取失败",
   }));
   assert.match(errorMarkup, /详情读取失败/);
   assert.match(errorMarkup, /重试/);
+  assert.match(errorMarkup, /<button[^>]*disabled=""[^>]*>Promote<\/button>/);
+  const refreshingMarkup = renderToStaticMarkup(createElement(AgentPanel, {
+    ...props, detailLoading: true,
+  }));
+  assert.match(refreshingMarkup, /<textarea/);
+  assert.doesNotMatch(refreshingMarkup, /<fieldset[^>]*disabled/);
+  const refreshErrorMarkup = renderToStaticMarkup(createElement(AgentPanel, {
+    ...props, detailError: "详情读取失败",
+  }));
+  assert.doesNotMatch(refreshErrorMarkup, /<fieldset[^>]*disabled/);
+  const readOnlyMarkup = renderToStaticMarkup(createElement(AgentPanel, {
+    ...props, canMutate: false,
+  }));
+  assert.match(readOnlyMarkup, /<fieldset[^>]*disabled/);
 }
 
 /* The inspector separates provider system context, MiniClaw's per-node rules,
