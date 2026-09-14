@@ -1,8 +1,23 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from urllib.parse import quote
 
 from .domain import Node
+
+
+def node_layout_owners(nodes: list[Node]) -> dict[str, Node]:
+    owners = {node.id: node for node in nodes}
+    for node in nodes:
+        if node.kind == "op":
+            continue
+        published = [artifact for artifact in node.artifacts if artifact.status == "published"]
+        for artifact in published:
+            name = quote(artifact.name, safe="~!*'()-._")
+            owners[f"artifact:{node.id}:{name}"] = node
+        if len(published) > 4:
+            owners[f"artifact-overflow:{node.id}"] = node
+    return owners
 
 
 def node_coordinate_space(node: Node, nodes: Mapping[str, Node]) -> str:

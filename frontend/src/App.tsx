@@ -60,6 +60,7 @@ import {
   templateInstanceBoxNodeId,
 } from "./canvas/layout";
 import { resolveLaneAppendPosition } from "./canvas/lanePlacement";
+import { captureGitChangesPosition, type CommitPositionTarget } from "./canvas/gitPositions";
 import {
   readFocusedLane,
   resolveFocusedLane,
@@ -333,7 +334,8 @@ export function App() {
   const [gitCommits, setGitCommits] = useState<CommitDescriptor[]>([]);
   const [gitAction, setGitAction] = useState<"commit" | "review" | "pull" | "push" | null>(null);
   const [gitError, setGitError] = useState<string | null>(null);
-  const pendingUiCommitNodeIdsRef = useRef<Set<string>>(new Set());
+  const pendingUiCommitNodeIdsRef = useRef<Map<string, NodePosition | null>>(new Map());
+  const [uiCommitPositionTargets, setUiCommitPositionTargets] = useState<CommitPositionTarget[]>([]);
 
   const [selection, setSelection] = useState<CanvasSelection>({ kind: "none" });
   const selectionRef = useRef<CanvasSelection>(selection);
@@ -745,6 +747,7 @@ export function App() {
     setGitAction(null);
     setGitError(null);
     pendingUiCommitNodeIdsRef.current.clear();
+    setUiCommitPositionTargets([]);
     setProjectMutationPending(false);
     setNodePositionTarget(null);
     setPendingGates({});
@@ -1219,7 +1222,7 @@ export function App() {
 
   useEffect(() => {
     let committed = false;
-    for (const nodeId of [...pendingUiCommitNodeIdsRef.current]) {
+    for (const [nodeId, position] of pendingUiCommitNodeIdsRef.current) {
       const node = nodes.find((candidate) => candidate.id === nodeId);
       if (!node || !TERMINAL_STATES.has(node.state)) continue;
       pendingUiCommitNodeIdsRef.current.delete(nodeId);
@@ -1229,10 +1232,20 @@ export function App() {
         node.commit_after !== node.commit_before
       ) {
         committed = true;
+        if (position) {
+          setUiCommitPositionTargets((current) => [
+            ...current,
+            { sha: node.commit_after!, position },
+          ]);
+        }
       }
     }
     if (committed) void refreshGit();
   }, [nodes, refreshGit]);
+
+  const consumeUiCommitPositionTarget = useCallback((sha: string) => {
+    setUiCommitPositionTargets((current) => current.filter((target) => target.sha !== sha));
+  }, []);
 
   /* context space */
   /* `quiet` is for reconciliation rather than a user-initiated read: it skips
@@ -3120,8 +3133,9 @@ export function App() {
     setGitError(null);
     try {
       if (action === "commit") {
+        const position = captureGitChangesPosition();
         const result = await gitCommit(session.id, message);
-        pendingUiCommitNodeIdsRef.current.add(result.node.id);
+        pendingUiCommitNodeIdsRef.current.set(result.node.id, position);
       } else if (action === "review") {
         /* The review is filed in the lane the user is looking at. With no
          * lane focused it stays unlaned rather than landing in a direction
@@ -3423,6 +3437,8 @@ export function App() {
               gitHead={gitStatus?.head ?? null}
               gitHosts={session?.hosts ?? []}
               gitDirtyCount={gitStatus?.dirty_count ?? 0}
+              commitPositionTarget={uiCommitPositionTargets[0] ?? null}
+              onCommitPositionTransferHandled={consumeUiCommitPositionTarget}
               initialNodePositions={canvasPositions}
               onSelectionChange={onSelectionChange}
               onMultiSelectionChange={onMultiSelectionChange}

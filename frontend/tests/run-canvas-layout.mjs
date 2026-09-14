@@ -20,3 +20,12 @@ await build({
   logLevel: "warning",
 });
 await import(`${pathToFileURL("/tmp/miniclaw2-node-positions.test.mjs").href}?run=${Date.now()}`);
+await build({
+  entryPoints: [new URL("./artifact-positions.test.ts", import.meta.url).pathname],
+  outfile: "/tmp/miniclaw2-artifact-positions.test.mjs",
+  bundle: true,
+  platform: "node",
+  format: "esm",
+  logLevel: "warning",
+});
+await import(`${pathToFileURL("/tmp/miniclaw2-artifact-positions.test.mjs").href}?run=${Date.now()}`);

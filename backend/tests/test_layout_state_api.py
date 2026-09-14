@@ -9,7 +9,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from miniclaw2.app import create_app
-from miniclaw2.domain import Node
+from miniclaw2.domain import ArtifactRef, Node
 from miniclaw2.store import Store
 from miniclaw2.migrations.transaction import atomic_json
 
@@ -56,6 +56,31 @@ class LayoutStateApiTest(unittest.TestCase):
         project = Path(self._home.name) / "projects" / sid
         self.assertNotIn("node_positions", json.loads((project / "project.json").read_text()))
         self.assertEqual(list(project.glob("hosts/*/layout.json")), [])
+
+    def test_artifact_positions_round_trip_with_owner_authority(self) -> None:
+        sid = self._create_session()
+        store = Store(Path(self._home.name))
+        owner = store.create_node(Node(
+            model_preset_id="opus-4-8", project_id=sid, state="done",
+            planspace_id="history", artifacts=[
+                ArtifactRef(name="report.md", bytes=42, mtime=1, sha256="hash", status="published"),
+            ],
+        ))
+        tile_id = f"artifact:{owner.id}:report.md"
+        position = {"x": 830, "y": 760, "space": "planspace:history"}
+        response = self.client.patch(f"/sessions/{sid}/node-layout", json={"updates": {tile_id: position}})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["node_positions"], {tile_id: position})
+        with TestClient(create_app()) as restarted:
+            self.assertEqual(restarted.get(f"/sessions/{sid}").json()["node_positions"], {tile_id: position})
+            sessions = restarted.get("/sessions").json()
+            self.assertEqual(next(item for item in sessions if item["id"] == sid)["node_positions"], {tile_id: position})
+        response = self.client.patch(f"/sessions/{sid}/node-layout", json={"remove": [tile_id]})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["node_positions"], {})
+        for binding in (Path(self._home.name) / "projects" / sid).glob("hosts/*/local.json"):
+            binding.unlink()
+        self.assertEqual(self.client.patch(f"/sessions/{sid}/node-layout", json={"updates": {tile_id: position}}).status_code, 403)
 
     def test_git_positions_survive_restart_and_stay_separate(self) -> None:
         sid = self._create_session()

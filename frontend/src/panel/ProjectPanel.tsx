@@ -6,6 +6,7 @@ import {
   ApiError,
   DeletePlanspaceBusyError,
   createTag,
+  deleteTag,
   listTags,
   updateSessionTags,
   updateTag,
@@ -183,6 +184,31 @@ export function ProjectPanel({
     const updated = await updateTag(tagId, { color });
     setTags((prev) => prev.map((tag) => (tag.id === tagId ? updated : tag)));
   }, []);
+
+  const renameProjectTag = useCallback(async (tagId: string, name: string) => {
+    const updated = await updateTag(tagId, { name });
+    setTags((prev) => prev.map((tag) => (tag.id === tagId ? updated : tag)));
+  }, []);
+
+  /* The server strips the id from every project, including this one, so the
+   * local mirror drops it as well — `assignedTags` filters by `tagIds`, and a
+   * stale id there would keep rendering a chip for a deleted tag. App's copy is
+   * pruned in the same pass, because the effect that mirrors `session.tag_ids`
+   * into `tagIds` would otherwise restore the id on the next render. */
+  const deleteProjectTag = useCallback(
+    async (tagId: string) => {
+      await deleteTag(tagId);
+      setTags((prev) => prev.filter((tag) => tag.id !== tagId));
+      setTagIds((prev) => prev.filter((id) => id !== tagId));
+      if (session && session.tag_ids?.includes(tagId)) {
+        onSessionChange({
+          ...session,
+          tag_ids: session.tag_ids.filter((id) => id !== tagId),
+        });
+      }
+    },
+    [onSessionChange, session],
+  );
 
   const assignedTags = useMemo(() => {
     const owned = new Set(tagIds);
@@ -584,6 +610,8 @@ export function ProjectPanel({
           onApply={applyTags}
           onCreateTag={createProjectTag}
           onRecolorTag={recolorProjectTag}
+          onRenameTag={renameProjectTag}
+          onDeleteTag={deleteProjectTag}
         />
       )}
     </div>

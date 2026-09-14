@@ -902,12 +902,13 @@ class ProjectRegistry:
         updates: dict[str, NodePosition],
         *,
         remove: list[str] | None = None,
+        only_missing: bool = False,
     ) -> Project | None:
         rt = self._runtimes.get(pid)
         if rt is None:
             return None
         self.require_native(pid)
-        rt.project.node_positions = self.store.update_node_positions(pid, updates, remove or [])
+        rt.project.node_positions = self.store.update_node_positions(pid, updates, remove or [], only_missing=only_missing)
         return rt.project
 
     def update_git_layout(

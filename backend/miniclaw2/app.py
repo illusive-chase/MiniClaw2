@@ -263,6 +263,7 @@ class UpdateNodeLayoutRequest(BaseModel):
 
     updates: dict[str, NodePosition] = Field(default_factory=dict)
     remove: list[str] = Field(default_factory=list)
+    only_missing: bool = False
 
 
 class UpdateGitLayoutRequest(BaseModel):
@@ -1535,7 +1536,7 @@ def create_app(
     @app.patch("/sessions/{sid}/node-layout", response_model=SessionInfo)
     def update_node_layout(sid: str, req: UpdateNodeLayoutRequest) -> SessionInfo:
         try:
-            project = registry.update_node_layout(sid, req.updates, remove=req.remove)
+            project = registry.update_node_layout(sid, req.updates, remove=req.remove, only_missing=req.only_missing)
         except ValueError as exc:
             raise HTTPException(409, str(exc)) from exc
         if project is None:

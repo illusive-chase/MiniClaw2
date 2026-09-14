@@ -99,6 +99,39 @@ assert.ok(anchored.rfNodes.filter((item) => item.type === "commit").every((item)
 const readonlyGit = buildGraph({ ...gitArgs, canMutateGitLayout: false });
 assert.ok(readonlyGit.rfNodes.filter((item) => item.type === "commit").every((item) => !item.draggable));
 assert.deepEqual(readonlyGit.rfNodes.find((item) => item.id === gitId)?.position, gitPosition);
+const rebasedSha = "b".repeat(40);
+const rebasedId = `commit:${rebasedSha}`;
+const laterAliasId = `commit:${"d".repeat(40)}`;
+const rebasedArgs: BuildGraphArgs = {
+  ...gitArgs,
+  gitCommits: [{
+    ...gitArgs.gitCommits![0],
+    sha: rebasedSha,
+    aliases: ["c".repeat(40), "a".repeat(40), "d".repeat(40)],
+  }],
+  gitHead: rebasedSha,
+};
+const automaticPosition = buildGraph({ ...rebasedArgs, gitPositions: {} })
+  .rfNodes.find((item) => item.id === rebasedId)?.position;
+for (const { gitPositions, expected } of [
+  { gitPositions: { [gitId]: gitPosition }, expected: gitPosition },
+  {
+    gitPositions: { [gitId]: gitPosition, [laterAliasId]: ghostPosition },
+    expected: gitPosition,
+  },
+  {
+    gitPositions: { [gitId]: gitPosition, [rebasedId]: ghostPosition },
+    expected: ghostPosition,
+  },
+  { gitPositions: { "commit:ghost": ghostPosition }, expected: automaticPosition },
+]) {
+  const rebased = buildGraph({ ...rebasedArgs, gitPositions });
+  assert.deepEqual(
+    rebased.rfNodes.find((item) => item.id === rebasedId)?.position,
+    expected,
+    "变基后的提交应优先使用当前 SHA 的位置，再依次回退到有保存位置的别名，最后自动布局",
+  );
+}
 const reappeared = buildGraph({ ...gitArgs, gitDirtyCount: 0 });
 assert.equal(reappeared.rfNodes.find((item) => item.id === "commit:ghost"), undefined);
 assert.deepEqual(buildGraph(gitArgs).rfNodes.find((item) => item.id === "commit:ghost")?.position, ghostPosition);

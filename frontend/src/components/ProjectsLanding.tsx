@@ -11,6 +11,7 @@ import {
 import {
   createTag,
   deleteSession,
+  deleteTag,
   getSelfUpdate,
   listSessions,
   listTags,
@@ -185,6 +186,29 @@ export function ProjectsLanding({
     setTags((prev) => prev.map((tag) => (tag.id === tagId ? updated : tag)));
   }, []);
 
+  const onRenameTag = useCallback(async (tagId: string, name: string) => {
+    const updated = await updateTag(tagId, { name });
+    setTags((prev) => prev.map((tag) => (tag.id === tagId ? updated : tag)));
+  }, [setTags]);
+
+  /* The server strips the id from every project, so the local session list has
+   * to drop it too — otherwise cards keep rendering a chip for a tag that no
+   * longer resolves until the next refresh. `selectedTagIds` is pruned by the
+   * effect that watches `tags`. */
+  const onDeleteTag = useCallback(async (tagId: string) => {
+    await deleteTag(tagId);
+    setTags((prev) => prev.filter((tag) => tag.id !== tagId));
+    setSessions((prev) =>
+      prev
+        ? prev.map((session) =>
+            session.tag_ids?.includes(tagId)
+              ? { ...session, tag_ids: session.tag_ids.filter((id) => id !== tagId) }
+              : session,
+          )
+        : prev,
+    );
+  }, [setSessions, setTags]);
+
   const onSettingsChanged = useCallback(
     (next: GlobalState) => {
       onGlobalStateChanged(next);
@@ -266,6 +290,8 @@ export function ProjectsLanding({
       onApplyTags={(tagIds) => onApplyTags(session.id, tagIds)}
       onCreateTag={onCreateTag}
       onRecolorTag={onRecolorTag}
+      onRenameTag={onRenameTag}
+      onDeleteTag={onDeleteTag}
     />
   );
 
@@ -512,6 +538,8 @@ function ProjectCard({
   onApplyTags,
   onCreateTag,
   onRecolorTag,
+  onRenameTag,
+  onDeleteTag,
 }: {
   session: SessionInfo;
   tags: Tag[];
@@ -523,6 +551,8 @@ function ProjectCard({
   onApplyTags: (tagIds: string[]) => Promise<void>;
   onCreateTag: (name: string, color: TagColor) => Promise<Tag>;
   onRecolorTag: (tagId: string, color: TagColor) => Promise<void>;
+  onRenameTag: (tagId: string, name: string) => Promise<void>;
+  onDeleteTag: (tagId: string) => Promise<void>;
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(session.name ?? "");
@@ -754,6 +784,8 @@ function ProjectCard({
           onApply={onApplyTags}
           onCreateTag={onCreateTag}
           onRecolorTag={onRecolorTag}
+          onRenameTag={onRenameTag}
+          onDeleteTag={onDeleteTag}
         />
       )}
     </div>

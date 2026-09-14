@@ -21,6 +21,7 @@ import {
   writeProjectSort,
 } from "../src/projectSort";
 import { TAG_COLORS, defaultColorForName, isTagColor } from "../src/tagPalette";
+import { renameConflicts, shouldCommitRename } from "../src/tagEdits";
 
 function tag(id: string, name: string, color = "coral"): Tag {
   return { id, name, color, created_at: 0 };
@@ -316,6 +317,50 @@ function testSortModePersistence(): void {
   writeProjectSort("name");
 }
 
+/* Renaming an existing tag is allowed (the backend has always accepted
+ * `PATCH /tags/{id}` with a name); these two rules are what the popover's
+ * rename editor gates on. Both mirror a backend rule, so a mismatch here turns
+ * into a 400 surfaced in the panel or a write with no effect. */
+function testRenameConflictMatchesBackendUniqueness(): void {
+  /* Casefolded and trimmed, like `_require_unique_name`. */
+  assert.equal(renameConflicts(TAGS, INFRA.id, "work"), true);
+  assert.equal(renameConflicts(TAGS, INFRA.id, "  WoRk  "), true);
+  assert.equal(renameConflicts(TAGS, INFRA.id, "brand new"), false);
+
+  /* A tag never conflicts with itself, so re-casing or re-spacing its own name
+   * stays available rather than being reported as a duplicate. */
+  assert.equal(renameConflicts(TAGS, WORK.id, "work"), false);
+  assert.equal(renameConflicts(TAGS, WORK.id, "Work"), false);
+  assert.equal(renameConflicts(TAGS, WORK.id, "  work "), false);
+
+  /* An empty draft is not a conflict — it is blocked by the commit rule
+   * instead, so the user sees "cannot be empty" behavior, not "already
+   * exists". */
+  assert.equal(renameConflicts(TAGS, WORK.id, ""), false);
+  assert.equal(renameConflicts(TAGS, WORK.id, "   "), false);
+
+  /* Existing names with incidental whitespace still collide: the stored name is
+   * already trimmed, but a tag file written elsewhere need not be. */
+  assert.equal(renameConflicts([tag("t_x", " Spaced ")], "t_y", "spaced"), true);
+
+  assert.equal(renameConflicts([], "t_any", "anything"), false);
+}
+
+function testCommitRenameSkipsNoOpAndEmpty(): void {
+  assert.equal(shouldCommitRename("work", "client"), true);
+  /* Case-only change is a real edit — the backend stores the name verbatim. */
+  assert.equal(shouldCommitRename("work", "Work"), true);
+
+  /* Unchanged after trimming: closing the editor must not issue a PATCH. */
+  assert.equal(shouldCommitRename("work", "work"), false);
+  assert.equal(shouldCommitRename("work", "  work  "), false);
+
+  /* The backend rejects an empty name, so blurring a cleared field cancels
+   * rather than surfacing a 400. */
+  assert.equal(shouldCommitRename("work", ""), false);
+  assert.equal(shouldCommitRename("work", "    "), false);
+}
+
 testActivityFallsBackToCreatedAt();
 testRecentIsGlobalNewestFirst();
 testRecentIgnoresTagFilter();
@@ -327,6 +372,8 @@ testUnknownTagIdsFallIntoUntagged();
 testFlatSorts();
 testResolveTagsFollowsTagOrder();
 testDefaultColorIsStableAndInPalette();
+testRenameConflictMatchesBackendUniqueness();
+testCommitRenameSkipsNoOpAndEmpty();
 testSortModePersistence();
 
 console.log("project-tags tests passed");

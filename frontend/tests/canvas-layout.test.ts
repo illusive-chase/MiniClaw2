@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import "./git-changes-positions.test";
 import { decorateEdges, resolveHoverGroup } from "../src/canvas/edgeVisibility";
 import {
   decoratePendingGateLayers,

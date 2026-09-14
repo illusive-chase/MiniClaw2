@@ -68,9 +68,24 @@ miniclaw2 migrations apply --root /path/to/store --accept-data-loss
 - 跨 host 重复 node id、错误节点路径、非法 owner 坐标会使迁移失败，不猜测归属或悄悄覆盖。
 - 同步在隔离区将本地、远端、共同祖先都规范化到当前版本，再三方合并。同步事务记录输入提交及确认契约；原始输入提交由合并历史保留，未规范化的旧快照不能直接混入活动树。
 
-运行时从所有 owner 分片聚合 `node_positions`；普通项目更新不回写布局，新设备绑定只创建空分片。`PATCH /sessions/{sid}/node-layout` 接受 `updates` 与 `remove`，先完整校验再仅改本机分片；foreign、合成或未知节点及过时坐标空间返回 `409`，非有限坐标或缺失字段返回 `422`。
+运行时从所有 owner 分片聚合 `node_positions`；普通项目更新不回写布局，新设备绑定只创建空分片。`PATCH /sessions/{sid}/node-layout` 接受 `updates` 与 `remove`，先完整校验再仅改本机分片；foreign、不支持的合成图元、未知节点及过时坐标空间返回 `409`，非有限坐标或缺失字段返回 `422`。已发布产出物按下节规则沿用生产节点的 owner。
 
-真实节点只有本机 owner 可拖动。Git 卡片和 lane 按下节的独立持久化规则处理，其他合成图元仍由图结构与成员位置派生；viewport 按 `miniclaw2.canvas-viewport.v1:<project-id>` 保存在浏览器中，不进入 API、项目记录或 Git。只有用户 pan/zoom 保存视角，程序化居中和 fit 不覆盖它。
+真实节点及产出物只有本机 owner 可拖动。Git 卡片和 lane 按下节的独立持久化规则处理，其他合成图元仍由图结构与成员位置派生；viewport 按 `miniclaw2.canvas-viewport.v1:<project-id>` 保存在浏览器中，不进入 API、项目记录或 Git。只有用户 pan/zoom 保存视角，程序化居中和 fit 不覆盖它。
+
+## 产出物布局与备份恢复
+
+产出物的位置以 `artifact:<producer-id>:<encodeURIComponent(filename)>`、`artifact-overflow:<producer-id>` 为键，保存在生产节点 owner 的 `node-layout.json` 中，经 `SessionInfo.node_positions` 返回。坐标空间与生产节点一致；已发布但因折叠或数量聚合而隐藏的文件仍保留位置。已撤回／删除的产出物、已删除的生产节点及过时空间不再生效。“更多产出物”卡片仅在已发布文件超过四个时有效。拖动产出物不移动生产节点，也不修改文件内容或产出关系。
+
+v16 的已发布迁移契约不改写；迁移曾丢弃的产出物坐标可从原始事务备份补回：
+
+```sh
+python -m miniclaw2.restore_artifact_layout --root /path/to/store --transaction TRANSACTION_ID --project PROJECT_ID
+python -m miniclaw2.restore_artifact_layout --root /path/to/store --transaction TRANSACTION_ID --project PROJECT_ID --server http://127.0.0.1:8000 --apply
+```
+
+默认仅预览并列出来源及跳过原因；省略 `--project` 时检查所有仍存在的项目。逐文件校验布局与历史节点摘要，优先本机旧布局，再从其他 host 补缺；用历史生产节点与父链推导旧坐标空间，只恢复空间仍一致、仍已发布且由本机拥有的产出物。其他 owner 的位置需在对应设备恢复，未绑定项目不写入。
+
+`--apply` 通过正在运行的新版服务调用 `node-layout` 接口，不另开 Store、不覆盖活动文件、不回滚迁移或重启服务。请求使用 `only_missing: true`，在存储锁内仅补入当时仍缺失的坐标；预览之后新保存的位置也优先保留。该模式不允许 `remove`，不改变原有 owner 校验。可重复执行；旧服务不识别字段时拒绝请求。API 按正常布局保存流程持久化并安排元数据提交，前端重新读取会话后呈现；文件内容、Git／lane 布局与 viewport 不变。
 
 ## Git 布局与备份恢复
 

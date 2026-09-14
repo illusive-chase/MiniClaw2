@@ -7,6 +7,9 @@ import type {
   SessionHost,
   TemplateInstanceRecord,
 } from "../types";
+import { artifactNodeId, artifactOverflowNodeId, nodeLayoutOwners } from "./nodeLayoutOwners";
+
+export { artifactNodeId, artifactOverflowNodeId } from "./nodeLayoutOwners";
 
 /* ───────── canvas node payloads ───────── */
 
@@ -966,7 +969,8 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
     gitHosts = [],
   } = args;
 
-  const nodePositions = Object.fromEntries(nodes.filter((node) => suppliedPositions[node.id]).map((node) => [node.id, suppliedPositions[node.id]]));
+  const layoutOwners = nodeLayoutOwners(nodes);
+  const nodePositions = Object.fromEntries(Object.entries(suppliedPositions).filter(([nodeId]) => layoutOwners.has(nodeId)));
   const rfNodes: RFNode[] = [];
   const rfEdges: RFEdge[] = [];
   const hiddenPlanspaces = new Set(hiddenPlanspaceIds);
@@ -1102,12 +1106,16 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
   };
   gitCommits.forEach((commit) => {
     const column = commit.column ?? 0;
-    const position = gitPositions[`commit:${commit.sha}`] ?? commitLayoutPosition(
-      commit,
-      commitRows.get(commit.sha) ?? 0,
-      column,
-      commitPlacement,
-    );
+    const position = gitPositions[`commit:${commit.sha}`]
+      ?? (commit.aliases ?? [])
+        .map((alias) => gitPositions[`commit:${alias}`])
+        .find((savedPosition) => savedPosition != null)
+      ?? commitLayoutPosition(
+        commit,
+        commitRows.get(commit.sha) ?? 0,
+        column,
+        commitPlacement,
+      );
     commitPlacement.resolved.set(commit.sha, position);
     commitPlacement.occupied.add(trunkSlotKey(position));
     rfNodes.push({
@@ -1702,7 +1710,7 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
       const tileId = entry.artifact
         ? artifactNodeId(node.id, entry.artifact.name)
         : artifactOverflowNodeId(node.id);
-      const position = {
+      const position = nodePositions[tileId] ?? {
         x: startX + index * 170,
         y: baseY + LANE.artifactOffsetY,
       };
@@ -2326,7 +2334,7 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
       ...node,
       draggable: node.type === "commit" ? canMutateGitLayout
         : node.type === "planspaceLane" ? canMutateLaneLayout
-          : allNodeById.has(node.id) && canMutateNode(node.id),
+          : layoutOwners.has(node.id) && canMutateNode(layoutOwners.get(node.id)!.id),
     })),
     rfEdges,
     epochMembersByCommitSha,
@@ -2454,14 +2462,6 @@ export function classifyPlanspaceLaneResizes(
 
 export function contextIdentityKey(scope: string, kind: string, path: string): string {
   return `${scope}::${kind}::${path}`;
-}
-
-export function artifactNodeId(nodeId: string, name: string): string {
-  return `artifact:${nodeId}:${encodeURIComponent(name)}`;
-}
-
-export function artifactOverflowNodeId(nodeId: string): string {
-  return `artifact-overflow:${nodeId}`;
 }
 
 export function filenameOf(p: string): string {

@@ -1,5 +1,6 @@
 import type { NodeInfo, NodePosition } from "../types";
 import { nodeLaneResolver } from "./layout";
+import { nodeLayoutOwners } from "./nodeLayoutOwners";
 
 export function filterNodePositions(
   nodes: readonly NodeInfo[],
@@ -7,12 +8,12 @@ export function filterNodePositions(
 ): Record<string, NodePosition> {
   const resolveLane = nodeLaneResolver(nodes);
   const result: Record<string, NodePosition> = {};
-  for (const node of nodes) {
-    const position = positions[node.id];
+  for (const [nodeId, node] of nodeLayoutOwners(nodes)) {
+    const position = positions[nodeId];
     const lane = resolveLane(node);
     const space = lane ? `planspace:${lane}` : "canvas";
     if (position && position.space === space && Number.isFinite(position.x) && Number.isFinite(position.y)) {
-      result[node.id] = { ...position };
+      result[nodeId] = { ...position };
     }
   }
   return result;
@@ -24,8 +25,8 @@ export function nodePositionUpdate(
   position: { x: number; y: number },
   canMutate: (nodeId: string) => boolean,
 ): NodePosition | null {
-  const node = nodes.find((candidate) => candidate.id === nodeId);
-  if (!node || !canMutate(nodeId) || !Number.isFinite(position.x) || !Number.isFinite(position.y)) return null;
+  const node = nodeLayoutOwners(nodes).get(nodeId);
+  if (!node || !canMutate(node.id) || !Number.isFinite(position.x) || !Number.isFinite(position.y)) return null;
   const lane = nodeLaneResolver(nodes)(node);
   return { ...position, space: lane ? `planspace:${lane}` : "canvas" };
 }

@@ -29,7 +29,16 @@ import type {
   TemplateInstanceRecord,
 } from "../types";
 import { filterNodePositions, nodePositionUpdate } from "./nodePositions";
-import { filterGitPositions, gitPositionUpdate, isGitPositionId } from "./gitPositions";
+import {
+  filterGitPositions,
+  gitPositionUpdate,
+  isGitPositionId,
+  preserveGitRuntimePosition,
+  resolveCommitPositionTarget,
+  setGitChangesPositionResolver,
+  transferGitPosition,
+  type CommitPositionTarget,
+} from "./gitPositions";
 import { filterLanePositions, isLanePositionId, lanePositionUpdate } from "./lanePositions";
 import { browserViewportStorage, readCanvasViewport, saveCanvasViewport } from "./viewportStorage";
 import { artifactRawUrl } from "../api";
@@ -278,6 +287,8 @@ export type CanvasProps = {
   gitHead?: string | null;
   gitDirtyCount?: number;
   gitHosts?: SessionHost[];
+  commitPositionTarget?: CommitPositionTarget | null;
+  onCommitPositionTransferHandled?: (sha: string) => void;
 };
 
 export function Canvas(props: CanvasProps) {
@@ -329,6 +340,8 @@ function CanvasInner({
   gitHead,
   gitDirtyCount,
   gitHosts,
+  commitPositionTarget = null,
+  onCommitPositionTransferHandled,
 }: CanvasProps) {
   const nodePositionsRef = useRef<Record<string, NodePosition>>(
     { ...filterNodePositions(nodes, initialNodePositions), ...filterGitPositions(initialNodePositions), ...filterLanePositions(initialNodePositions) },
@@ -340,6 +353,8 @@ function CanvasInner({
   const viewportRef = useRef<Viewport | null>(initialViewportRef.current);
   const liveViewportRef = useRef<Viewport>(initialViewportRef.current ?? DEFAULT_VIEWPORT);
   const pendingPositionsRef = useRef<Record<string, NodePosition>>({});
+  const pendingPositionRemovalsRef = useRef(new Set<string>());
+  const removedPositionsRef = useRef(new Set<string>());
   const flushTimerRef = useRef<number | null>(null);
   const wrapperRef = useRef<HTMLDivElement | null>(null);
   const appliedNodePositionTargetRef = useRef<string | null>(null);
@@ -372,11 +387,16 @@ function CanvasInner({
    * update alone is not enough because buildGraph is memoized, and the RF sync
    * pass normally preserves current positions to protect active drags. */
   useEffect(() => {
-    const incoming = hydratedPositionsRef.current === initialNodePositions
-      ? { ...initialNodePositions, ...nodePositionsRef.current }
+    const incomingChanged = hydratedPositionsRef.current !== initialNodePositions;
+    const incoming = !incomingChanged
+      ? nodePositionsRef.current
       : initialNodePositions;
     hydratedPositionsRef.current = initialNodePositions;
     const positions = { ...incoming, ...pendingPositionsRef.current };
+    for (const nodeId of removedPositionsRef.current) {
+      delete positions[nodeId];
+      if (incomingChanged && !incoming?.[nodeId]) removedPositionsRef.current.delete(nodeId);
+    }
     const next = { ...filterNodePositions(nodes, positions), ...filterGitPositions(positions), ...filterLanePositions(positions) };
     if (sameNodePositions(nodePositionsRef.current, next)) return;
     nodePositionsRef.current = next;
@@ -389,9 +409,11 @@ function CanvasInner({
       flushTimerRef.current = null;
     }
     const pending = pendingPositionsRef.current;
-    if (Object.keys(pending).length === 0) return;
+    const remove = [...pendingPositionRemovalsRef.current];
+    if (Object.keys(pending).length === 0 && remove.length === 0) return;
     pendingPositionsRef.current = {};
-    onNodePositionsChange?.(pending);
+    pendingPositionRemovalsRef.current.clear();
+    onNodePositionsChange?.(pending, remove);
   }, [onNodePositionsChange]);
 
   const scheduleFlushLayout = useCallback(
@@ -430,13 +452,17 @@ function CanvasInner({
     scheduleFlushLayout,
   ]);
 
+  const commitPositionTransfer = useMemo(
+    () => resolveCommitPositionTarget(gitCommits ?? [], commitPositionTarget, canMutateGitLayout),
+    [gitCommits, commitPositionTarget, canMutateGitLayout],
+  );
   const built = useMemo(
     () =>
       buildGraph({
         nodes,
         activeNodeIds,
         nodePositions: filterNodePositions(nodes, nodePositionsRef.current),
-        gitPositions: filterGitPositions(nodePositionsRef.current),
+        gitPositions: transferGitPosition(filterGitPositions(nodePositionsRef.current), commitPositionTransfer),
         canMutateGitLayout,
         lanePositions: filterLanePositions(nodePositionsRef.current),
         canMutateLaneLayout,
@@ -484,6 +510,7 @@ function CanvasInner({
       canMutateNode,
       canMutateGitLayout,
       canMutateLaneLayout,
+      commitPositionTransfer,
     ],
   );
   /* Read imperatively by onNodeClick, which must not be re-created on every
@@ -749,6 +776,12 @@ function CanvasInner({
   );
   const rfNodesRef = useRef(rfNodes);
   rfNodesRef.current = rfNodes;
+  useEffect(() => {
+    setGitChangesPositionResolver(() =>
+      rfNodesRef.current.find((node) => node.id === "commit:ghost")?.position ?? null,
+    );
+    return () => setGitChangesPositionResolver(null);
+  }, []);
   /* Publish "where would a new node go in this lane" to the App-level handlers
    * behind the lane "+" and Git Review buttons. Those run outside the canvas but
    * need its live child geometry, which drag can move away from the built
@@ -784,6 +817,15 @@ function CanvasInner({
       appliedLayoutHydrationVersionRef.current !== layoutHydrationVersion;
     if (syncedBuiltNodesRef.current === layeredBuiltNodes && !hydrateFromLayout) return;
     syncedBuiltNodesRef.current = layeredBuiltNodes;
+    if (commitPositionTransfer) {
+      const commitId = `commit:${commitPositionTransfer.sha}`;
+      nodePositionsRef.current = transferGitPosition(nodePositionsRef.current, commitPositionTransfer);
+      pendingPositionsRef.current[commitId] = commitPositionTransfer.position;
+      delete pendingPositionsRef.current["commit:ghost"];
+      pendingPositionRemovalsRef.current.add("commit:ghost");
+      removedPositionsRef.current.add("commit:ghost");
+      scheduleFlushLayout(0);
+    }
     setRfNodes((current) => {
       const runtimeById = new Map(current.map((n) => [n.id, n]));
       // Carry over ``selected`` so React Flow's multi-selection (marquee /
@@ -816,7 +858,8 @@ function CanvasInner({
          * beat an existing runtime position: a websocket refresh can expose a
          * newly-created node at its default position before the create request
          * returns the double-click target to App. */
-        const preserveRuntimePosition = !hydrateFromLayout && n.draggable === true && runtime?.parentNode === n.parentNode;
+        const preserveRuntimePosition = !hydrateFromLayout && n.draggable === true && runtime?.parentNode === n.parentNode
+          && preserveGitRuntimePosition(n.id, nodePositionsRef.current, commitPositionTransfer);
         const syncedPosition = resolveSyncedNodePosition(
           n.position,
           runtime?.position,
@@ -855,11 +898,18 @@ function CanvasInner({
     if (hydrateFromLayout) {
       appliedLayoutHydrationVersionRef.current = layoutHydrationVersion;
     }
+    if (commitPositionTransfer && commitPositionTarget) {
+      onCommitPositionTransferHandled?.(commitPositionTarget.sha);
+    }
   }, [
     layeredBuiltNodes,
     setRfNodes,
     layoutHydrationVersion,
     nodePositionTarget,
+    commitPositionTransfer,
+    commitPositionTarget,
+    onCommitPositionTransferHandled,
+    scheduleFlushLayout,
   ]);
 
   useEffect(() => {
@@ -962,6 +1012,8 @@ function CanvasInner({
           if (!position) continue;
           nodePositionsRef.current[change.id] = position;
           pendingPositionsRef.current[change.id] = position;
+          pendingPositionRemovalsRef.current.delete(change.id);
+          removedPositionsRef.current.delete(change.id);
         }
         if (change.dragging === false) shouldFlush = true;
       }

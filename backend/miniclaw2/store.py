@@ -31,7 +31,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from .domain import GitLayout, GitPosition, HumanGate, LaneLayout, LanePosition, Node, NodeLayout, NodePosition, Project, UNBOUND_ROOT_PATH
-from .node_layout import node_coordinate_space
+from .node_layout import node_coordinate_space, node_layout_owners
 from .git_state import is_git_repo, normalized_origin_url, root_commits
 from .replay import EVENT_SCHEMA_VERSION
 from .migrations.coordinator import open_storage
@@ -432,6 +432,7 @@ class Store:
         if nodes is None:
             nodes = self._list_nodes_for_project(pid, None)
         nodes_by_id = {node.id: node for node in nodes}
+        layout_owners = node_layout_owners(nodes)
         positions: dict[str, NodePosition] = {}
         for path in sorted(self._hosts_dir(pid).glob("*/node-layout.json")):
             try:
@@ -439,7 +440,7 @@ class Store:
             except (OSError, ValueError) as exc:
                 raise MigrationError("migration_failed", str(exc), path) from exc
             for node_id, position in layout.nodes.items():
-                node = nodes_by_id.get(node_id)
+                node = layout_owners.get(node_id)
                 if node is not None and node.owner_host_id == path.parent.name:
                     if position.space == node_coordinate_space(node, nodes_by_id):
                         positions[node_id] = position
@@ -502,26 +503,35 @@ class Store:
         pid: str,
         updates: dict[str, NodePosition],
         remove: list[str],
+        *,
+        only_missing: bool = False,
     ) -> dict[str, NodePosition]:
         self.assert_writable()
         if not self.is_bound_here(pid):
             raise ValueError("项目未绑定到本机，不能修改节点位置")
+        if only_missing and remove:
+            raise ValueError("补回缺失位置时不能删除已有位置")
         node_records = self._list_nodes_for_project(pid, None)
         nodes = {node.id: node for node in node_records}
+        layout_owners = node_layout_owners(node_records)
         for node_id in set(updates) | set(remove):
-            node = nodes.get(node_id)
+            node = layout_owners.get(node_id)
             if node is None or node.owner_host_id != self.machine.id:
-                raise ValueError(f"只能修改本机拥有的真实节点位置：{node_id}")
+                raise ValueError(f"只能修改本机拥有的节点及其已发布产物位置：{node_id}")
         validated = {node_id: NodePosition.model_validate(position) for node_id, position in updates.items()}
         for node_id, position in validated.items():
-            if position.space != node_coordinate_space(nodes[node_id], nodes):
+            if position.space != node_coordinate_space(layout_owners[node_id], nodes):
                 raise ValueError(f"节点坐标空间已改变：{node_id}")
         merged = {
             node_id: position
             for node_id, position in self.read_node_positions(pid, nodes=node_records).items()
-            if nodes[node_id].owner_host_id == self.machine.id
+            if layout_owners[node_id].owner_host_id == self.machine.id
         }
-        merged.update(validated)
+        if only_missing:
+            for node_id, position in validated.items():
+                merged.setdefault(node_id, position)
+        else:
+            merged.update(validated)
         for node_id in remove:
             merged.pop(node_id, None)
         self._write_json(self._host_dir(pid, self.machine.id) / "node-layout.json",
