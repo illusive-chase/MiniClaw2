@@ -23,6 +23,7 @@ from .active_nodes import (
     active_entry_from_node,
 )
 from .artifacts import workspace_artifacts_dir
+from .node_projection import node_event_projection
 from .contextspace import (
     contextspace_root,
     create_planspace,
@@ -317,6 +318,7 @@ class ProjectRuntime:
         self.observers.pop(token, None)
 
     async def broadcast(self, event: dict[str, Any]) -> None:
+        event = node_event_projection(event)
         stale: list[str] = []
         for token, on_event in list(self.observers.items()):
             try:
@@ -1297,7 +1299,20 @@ class ProjectRegistry:
         self, project: Project, *, nodes: list[Node] | None = None
     ) -> ProjectNodeSummary:
         if nodes is None:
-            nodes = self.store.list_nodes(project.id)
+            summaries = self.store.node_summaries(project.id)
+            return ProjectNodeSummary(
+                turns=len(summaries),
+                queued_count=sum(
+                    1
+                    for summary in summaries
+                    if summary.state is NodeState.QUEUED
+                    and summary.owner_host_id == self.store.machine.id
+                ),
+                last_activity_at=max(
+                    (summary.last_activity_at for summary in summaries),
+                    default=project.created_at,
+                ),
+            )
         last_activity_at = max(
             (
                 timestamp
@@ -1379,7 +1394,10 @@ class ProjectRegistry:
                 and not isinstance(event.get("node"), dict)
             ):
                 event["node"] = snapshot
-        return records
+        return [
+            {**record, "event": node_event_projection(record["event"])}
+            for record in records
+        ]
 
     # ---- node lifecycle ----
 

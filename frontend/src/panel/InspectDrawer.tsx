@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { ContextBundle, ModelPreset, NodeInfo } from "../types";
+import type { ContextBundle, ModelPreset, NodeDetail, NodeInfo } from "../types";
 import { UsageStrip } from "../components/UsageStrip";
 import { modelPresetLabel } from "../modelPresets";
 
@@ -11,12 +11,14 @@ import { modelPresetLabel } from "../modelPresets";
  */
 export function InspectDrawer({
   node,
+  detail,
   modelPresets,
   contextBundle,
   contextBundleLoading,
   eventCount,
 }: {
   node: NodeInfo;
+  detail: NodeDetail | null;
   modelPresets: ModelPreset[];
   contextBundle: ContextBundle | null;
   contextBundleLoading: boolean;
@@ -72,13 +74,13 @@ export function InspectDrawer({
           </div>
         )}
 
-        {node.system_context_snapshot && (
+        {detail?.system_context_snapshot && (
           <details className="overflow-hidden rounded-md border border-line bg-surface-raised">
             <summary className="cursor-pointer px-3 py-1.5 text-[10px] font-medium uppercase tracking-[0.14em] text-ink-muted hover:text-ink">
-              System context ({node.system_context_snapshot.length} chars)
+              System context ({detail.system_context_snapshot.length} chars)
             </summary>
             <pre className="whitespace-pre-wrap border-t border-line px-3 py-2 text-[11px] leading-relaxed text-ink">
-              {node.system_context_snapshot}
+              {detail.system_context_snapshot}
             </pre>
           </details>
         )}

@@ -535,6 +535,8 @@ export type NodeInfo = {
   commit_before?: string | null;
   commit_after?: string | null;
   prompt: string;
+  prompt_truncated?: boolean;
+  prompt_argument_names?: string[];
   category?: NodeCategory | null;
   subtype?: ReviewSubtype | null;
   brief?: ReviewBrief | null;
@@ -554,12 +556,16 @@ export type NodeInfo = {
   error?: string | null;
   usage?: TokenUsage | null;
   artifacts?: ArtifactRef[];
-  system_context_snapshot?: string;
-  launch_instructions_snapshot?: string;
   settings_snapshot?: Record<string, unknown>;
   created_at: number;
   started_at?: number | null;
   finished_at?: number | null;
+};
+
+export type NodeDetail = Omit<NodeInfo, "prompt_truncated"> & {
+  system_context_snapshot: string;
+  launch_instructions_snapshot: string;
+  prompt_truncated?: false;
 };
 
 export type ContextBundleSource = {

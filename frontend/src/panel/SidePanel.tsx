@@ -24,6 +24,7 @@ import {
   type SkillAttachmentEntry,
 } from "../canvas/layout";
 import { AgentPanel } from "./AgentPanel";
+import { useNodeDetail } from "../useNodeDetail";
 import { ContextNodePanel } from "./ContextNodePanel";
 import { OpPanel } from "./OpPanel";
 import { PlanspaceFilePanel } from "./PlanspaceFilePanel";
@@ -144,6 +145,10 @@ export type SidePanelProps = {
  */
 export function SidePanel(props: SidePanelProps) {
   const nodesById = new Map(props.nodes.map((n) => [n.id, n]));
+  const detailState = useNodeDetail(
+    props.session?.id,
+    props.selection.kind === "agent" ? nodesById.get(props.selection.nodeId) : undefined,
+  );
 
   return (
     <div className="flex h-full flex-col">
@@ -162,13 +167,16 @@ export function SidePanel(props: SidePanelProps) {
         </button>
       </div>
       <div className="min-h-0 flex-1">
-      <Inner {...props} nodesById={nodesById} />
+      <Inner {...props} nodesById={nodesById} detailState={detailState} />
       </div>
     </div>
   );
 }
 
-function Inner(props: SidePanelProps & { nodesById: Map<string, NodeInfo> }) {
+function Inner(props: SidePanelProps & {
+  nodesById: Map<string, NodeInfo>;
+  detailState: ReturnType<typeof useNodeDetail>;
+}) {
   const {
     selection,
     session,
@@ -352,6 +360,10 @@ function Inner(props: SidePanelProps & { nodesById: Map<string, NodeInfo> }) {
       <AgentPanel
         sessionId={session.id}
         node={node}
+        detail={props.detailState.detail}
+        detailLoading={props.detailState.loading}
+        detailError={props.detailState.error}
+        onRetryDetail={props.detailState.retry}
         nodesById={nodesById}
         modelPresets={modelPresets}
         events={events}

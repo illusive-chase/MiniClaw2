@@ -367,6 +367,26 @@ render artifact graph nodes.
 The HTTP/WS shape is the "session"-based compat layer: each session id
 is a project id, and each `user_message` spawns a fresh agent node.
 
+`GET /sessions` 返回项目摘要，不包含 `node_positions`、`git_positions`、
+`lane_positions`；打开项目时通过 `GET /sessions/{sid}` 获取完整布局。
+列表聚合使用轻量节点索引，正常写入立即更新，同步发布后重建；读取时检查文件签名，
+只重读新增或发生变化的节点，避免陈旧计数。活动时间仍取所有节点创建、开始、完成
+时间的最大值，空项目回落到项目创建时间。
+
+HTTP 响应支持 gzip 协商（`Accept-Encoding: gzip`），仅压缩至少 1024 字节的响应；
+WebSocket 不受影响。
+
+`GET /sessions/{sid}/nodes` 返回精简节点：不含 `system_context_snapshot`、
+`launch_instructions_snapshot`，`prompt` 最多保留 120 个 Unicode 字符，并通过
+`prompt_truncated` 标明是否截断。`settings_snapshot`、`prompt_draft` 保持完整；
+`prompt_argument_names` 保留完整提示词或草稿中的模板参数，避免截断影响画布芯片。
+`node_started`、`node_updated`、`turn_done` 的 `node` 载荷（含历史事件回放）采用
+同一投影；持久化节点、事件日志、单节点详情及变更接口响应仍保留完整内容。
+前端仅在选中节点时调用 `GET /sessions/{sid}/nodes/{nid}`，按项目、节点与 `rev`
+缓存详情（最多 32 条），隔离过期选择的响应，加载失败可重试；详情不写回画布列表。
+可运行 `cd frontend && npm run test:nodes` 检查投影、2000 节点画布一致性和缓存；
+设置 `BROWSER_BIN` 后运行 `npm run test:nodes:browser` 检查真实浏览器切换竞态。
+
 - Project/session REST APIs:
   `GET /sessions`, `POST /sessions`, `PATCH /sessions/{sid}`,
   `PATCH /sessions/{sid}/preferences`,

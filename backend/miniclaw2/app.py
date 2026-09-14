@@ -20,6 +20,7 @@ from urllib.parse import quote
 from anyio import CancelScope
 from fastapi import FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
@@ -40,6 +41,7 @@ from .contextspace import (
 )
 from .context_refresh import cancel_context_task, context_refresh_status, start_context_task
 from .domain import GitNodeId, GitPosition, LaneNodeId, LanePosition, Node, NodePosition
+from .node_projection import node_list_projection
 from .events import (
     ContextRefreshUpdated,
     InteractionResponse,
@@ -644,6 +646,7 @@ def create_app(
     app.state.storage_syncing = False
     app.state.storage_requests = 0
     app.state.update_checker = update_checker
+    app.add_middleware(GZipMiddleware, minimum_size=1024, compresslevel=6)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
@@ -1326,9 +1329,18 @@ def create_app(
             "message": "更新已完成，MiniClaw2 即将退出",
         }
 
-    @app.get("/sessions", response_model=list[SessionInfo])
+    @app.get(
+        "/sessions",
+        response_model=list[SessionInfo],
+        response_model_exclude={
+            "__all__": {"node_positions", "git_positions", "lane_positions"}
+        },
+    )
     def list_sessions() -> list[SessionInfo]:
-        return [_session_info(registry, p) for p in registry.list_projects()]
+        return [
+            _session_info(registry, project, include_positions=False)
+            for project in registry.list_projects()
+        ]
 
     @app.get("/sessions/{sid}", response_model=SessionInfo)
     def get_session(sid: str) -> SessionInfo:
@@ -1997,7 +2009,7 @@ def create_app(
         nodes = registry.list_nodes(sid)
         if nodes is None:
             raise HTTPException(404, "session not found")
-        return [node.model_dump() for node in nodes]
+        return [node_list_projection(node) for node in nodes]
 
     @app.get("/sessions/{sid}/nodes/{nid}", response_model=dict[str, Any])
     def get_node(sid: str, nid: str) -> dict[str, Any]:
@@ -2710,9 +2722,11 @@ def _embedded_session_for(registry: ProjectRegistry, slug: str) -> Any:
     return None
 
 
-def _session_info(registry: ProjectRegistry, project: Any) -> SessionInfo:
+def _session_info(
+    registry: ProjectRegistry, project: Any, *, include_positions: bool = True
+) -> SessionInfo:
     bound_here = registry.is_native_project(project)
-    nodes = registry.store.list_nodes(project.id)
+    nodes = registry.store.list_nodes(project.id) if include_positions else None
     node_summary = registry.node_summary(project, nodes=nodes)
     return SessionInfo(
         id=project.id,
@@ -2747,9 +2761,12 @@ def _session_info(registry: ProjectRegistry, project: Any) -> SessionInfo:
         hosts=registry.store.list_hosts(project.id),
         last_sync_at=registry.store.sync.identity.last_sync_at,
         project_context_binding_id=project.project_context_binding_id,
-        node_positions=registry.store.read_node_positions(project.id, nodes=nodes),
-        git_positions=registry.store.read_git_positions(project.id),
-        lane_positions=registry.store.read_lane_positions(project.id),
+        node_positions=(
+            registry.store.read_node_positions(project.id, nodes=nodes)
+            if include_positions else {}
+        ),
+        git_positions=registry.store.read_git_positions(project.id) if include_positions else {},
+        lane_positions=registry.store.read_lane_positions(project.id) if include_positions else {},
         persistence_mode="ephemeral" if project.temporary else "durable",
         capabilities=(
             {

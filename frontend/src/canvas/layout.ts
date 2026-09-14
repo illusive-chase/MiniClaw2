@@ -1,4 +1,5 @@
 import type { CoordinateExtent, Edge, Node, NodeChange } from "reactflow";
+import { toNodeInfo } from "../nodeProjection";
 import type {
   ArtifactRef,
   CommitDescriptor,
@@ -942,7 +943,7 @@ export function summarizeInstanceArguments(
  */
 export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
   const {
-    nodes,
+    nodes: suppliedNodes,
     activeNodeIds,
     nodePositions: suppliedPositions,
     gitPositions = {},
@@ -969,6 +970,7 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
     gitHosts = [],
   } = args;
 
+  const nodes = suppliedNodes.map(toNodeInfo);
   const layoutOwners = nodeLayoutOwners(nodes);
   const nodePositions = Object.fromEntries(Object.entries(suppliedPositions).filter(([nodeId]) => layoutOwners.has(nodeId)));
   const rfNodes: RFNode[] = [];

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { toNodeInfo } from "./nodeProjection";
 import {
   cancelProjectContext,
   createBlankPlanspace,
@@ -1196,9 +1197,8 @@ export function App() {
     const out: Record<string, string[]> = {};
     for (const node of nodes) {
       if (node.kind !== "agent") continue;
-      const text = node.prompt_draft || node.prompt || "";
-      if (!text.includes("{{")) continue;
-      const { argumentNames } = scanPlaceholders(text);
+      const argumentNames = node.prompt_argument_names ??
+        scanPlaceholders(node.prompt_draft || node.prompt || "").argumentNames;
       if (argumentNames.length > 0) out[node.id] = argumentNames;
     }
     return out;
@@ -1529,7 +1529,6 @@ export function App() {
           return updated;
         });
         selectAndOpenNode(result.node.id);
-        await refreshNodes();
       } catch (err) {
         await refreshNodes().catch(() => {});
         setSessionContextSpaceError(String(err));
@@ -1554,7 +1553,6 @@ export function App() {
           return updated;
         });
         selectAndOpenNode(result.node.id);
-        await refreshNodes();
       } catch (err) {
         await refreshNodes().catch(() => {});
         setSessionContextSpaceError(String(err));
@@ -2005,7 +2003,6 @@ export function App() {
         });
         selectAndOpenNode(result.node.id);
         setFocusRequestVersion((version) => version + 1);
-        await refreshNodes();
       } catch (err) {
         setSessionContextSpaceError(String(err));
       } finally {
@@ -2606,11 +2603,8 @@ export function App() {
           withoutPendingNode(current, activePendingReview.nodeId),
         );
       }
-      window.setTimeout(() => {
-        void refreshNodes();
-      }, 250);
     },
-    [activePendingReview, status, send, refreshNodes],
+    [activePendingReview, status, send],
   );
 
   /* Wire the planspace lane header click → side-panel selection. */
@@ -2675,11 +2669,8 @@ export function App() {
       if (owner) {
         setPendingGates((current) => withoutPendingNode(current, owner.nodeId));
       }
-      window.setTimeout(() => {
-        void refreshNodes();
-      }, 250);
     },
-    [send, refreshNodes, validPendingGates],
+    [send, validPendingGates],
   );
 
   const onSelectionChange = useCallback((sel: CanvasSelection) => {
@@ -3776,7 +3767,8 @@ function CanvasNotice({
   );
 }
 
-function upsertNode(prev: NodeInfo[], node: NodeInfo): NodeInfo[] {
+function upsertNode(prev: NodeInfo[], incoming: NodeInfo): NodeInfo[] {
+  const node = toNodeInfo(incoming);
   const index = prev.findIndex((item) => item.id === node.id);
   if (index < 0) {
     return [...prev, node].sort((a, b) => a.created_at - b.created_at);

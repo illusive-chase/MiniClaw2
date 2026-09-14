@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 
 from miniclaw2.app import create_app
 from miniclaw2.domain import Node, NodePosition, NodeState, Project
+from miniclaw2.migrations.errors import MigrationError
 from miniclaw2.migrations.transaction import atomic_json
 from miniclaw2.registry import ProjectRegistry
 from miniclaw2.store import Store
@@ -161,8 +162,8 @@ def test_layout_update_reads_nodes_once(populated_store: StoreFixture) -> None:
     assert set(positions) == {node.id for node in nodes}
 
 
-@pytest.mark.parametrize("node_counts", [[5, 4, 3, 0], [407, *([26] * 17), 22]])
-def test_sessions_read_each_node_once(tmp_path: Path, node_counts: list[int]) -> None:
+@pytest.mark.parametrize("node_counts", [[5, 4, 3, 0], [407, *([26] * 17), 22], [2000]])
+def test_sessions_read_no_node_bodies_or_layout(tmp_path: Path, node_counts: list[int]) -> None:
     store, projects, nodes_by_project = _populate_store(tmp_path, node_counts)
     registry = ProjectRegistry(store)
     client = TestClient(create_app(registry=registry))
@@ -170,16 +171,16 @@ def test_sessions_read_each_node_once(tmp_path: Path, node_counts: list[int]) ->
         with patch.object(store, "_read_json", wraps=store._read_json) as reader:
             response = client.get("/sessions")
         assert response.status_code == 200, response.text
-        counts = _reads(reader, "node.json")
-        assert len(counts) == sum(node_counts)
-        assert set(counts.values()) == {1}
+        assert not _reads(reader, "node.json")
+        for filename in ("node-layout.json", "git-layout.json", "lane-layout.json"):
+            assert not _reads(reader, filename)
         infos = {info["id"]: info for info in response.json()}
         for project in projects:
             nodes = nodes_by_project[project.id]
             info = infos[project.id]
             assert info["turns"] == len(nodes)
             assert info["queued_count"] == (1 if nodes else 0)
-            assert set(info["node_positions"]) == {node.id for node in nodes}
+            assert not {"node_positions", "git_positions", "lane_positions"} & info.keys()
             assert info["last_activity_at"] == max(
                 (
                     timestamp
@@ -195,7 +196,7 @@ def test_sessions_read_each_node_once(tmp_path: Path, node_counts: list[int]) ->
             target.id, {node.id: NodePosition(x=99, y=77, space="canvas")}, []
         )
         node.state = NodeState.DONE
-        node.finished_at = 1000.0
+        node.finished_at = 10000.0
         store.update_node(node)
         with patch.object(store, "_read_json", wraps=store._read_json) as reader:
             response = client.get(f"/sessions/{target.id}")
@@ -206,6 +207,123 @@ def test_sessions_read_each_node_once(tmp_path: Path, node_counts: list[int]) ->
         info = response.json()
         assert info["node_positions"][node.id] == {"x": 99, "y": 77, "space": "canvas"}
         assert info["queued_count"] == 0
-        assert info["last_activity_at"] == 1000.0
+        assert info["last_activity_at"] == 10000.0
     finally:
         client.close()
+
+
+def test_node_summary_tracks_writes_and_deletions(populated_store: StoreFixture) -> None:
+    store, projects, _ = populated_store
+    registry = ProjectRegistry(store)
+    project = projects[-1]
+    assert registry.node_summary(project).last_activity_at == project.created_at
+    node = store.create_node(
+        Node(
+            project_id=project.id,
+            model_preset_id=project.model_preset_id,
+            created_at=0.0,
+            state=NodeState.QUEUED,
+            origin_machine_id="peer",
+        )
+    )
+    with patch.object(store, "_read_json", wraps=store._read_json) as reader:
+        summary = registry.node_summary(project)
+    assert not _reads(reader, "node.json")
+    assert (summary.turns, summary.queued_count, summary.last_activity_at) == (1, 1, 0.0)
+    node.state = NodeState.RUNNING
+    node.started_at = 200.0
+    assert registry.node_summary(project) == summary
+    store.update_node(node)
+    for state, finished_at, expected_activity in (
+        (NodeState.RUNNING, None, 200.0),
+        (NodeState.DONE, 300.0, 300.0),
+        (NodeState.DONE, 100.0, 200.0),
+    ):
+        node.state = state
+        node.finished_at = finished_at
+        store.update_node(node)
+        with patch.object(store, "_read_json", wraps=store._read_json) as reader:
+            summary = registry.node_summary(project)
+        assert not _reads(reader, "node.json")
+        assert (summary.turns, summary.queued_count) == (1, 0)
+        assert summary.last_activity_at == expected_activity
+    assert store.delete_node(project.id, node.id)
+    summary = registry.node_summary(project)
+    assert (summary.turns, summary.queued_count) == (0, 0)
+    assert summary.last_activity_at == project.created_at
+    assert store.delete_project(project.id)
+    assert project.id not in store._node_summary_index
+
+
+def test_node_summary_rereads_only_externally_changed_nodes(
+    populated_store: StoreFixture,
+) -> None:
+    store, projects, nodes_by_project = populated_store
+    registry = ProjectRegistry(store)
+    project = projects[0]
+    node = nodes_by_project[project.id][0]
+    node.state = NodeState.DONE
+    node.finished_at = 999.0
+    atomic_json(
+        store.node_dir(project.id, node.id) / "node.json",
+        node.model_dump(exclude={"provider", "owner_host_id"}),
+    )
+    with patch.object(store, "_read_json", wraps=store._read_json) as reader:
+        summary = registry.node_summary(project)
+    assert sum(_reads(reader, "node.json").values()) == 1
+    assert summary.turns == len(nodes_by_project[project.id])
+    assert summary.queued_count == 0
+    assert summary.last_activity_at == 999.0
+    with patch.object(store, "_read_json", wraps=store._read_json) as reader:
+        assert registry.node_summary(project) == summary
+    assert not _reads(reader, "node.json")
+
+
+def test_node_summary_rejects_invalid_changed_record(populated_store: StoreFixture) -> None:
+    store, projects, nodes_by_project = populated_store
+    registry = ProjectRegistry(store)
+    project = projects[0]
+    node = nodes_by_project[project.id][0]
+    payload = node.model_dump(exclude={"provider", "owner_host_id"})
+    payload["state"] = "invalid"
+    atomic_json(store.node_dir(project.id, node.id) / "node.json", payload)
+    with pytest.raises(MigrationError):
+        registry.node_summary(project)
+
+
+def test_reopened_store_seeds_node_summaries(populated_store: StoreFixture) -> None:
+    store, projects, nodes_by_project = populated_store
+    reopened = Store(store.root)
+    with patch.object(reopened, "_read_json", wraps=reopened._read_json) as reader:
+        for project in projects:
+            assert len(reopened.node_summaries(project.id)) == len(nodes_by_project[project.id])
+    assert not _reads(reader, "node.json")
+
+
+@pytest.mark.parametrize("callbacks", ["_success_callbacks", "_publication_callbacks"])
+def test_sync_rebuilds_node_summaries(populated_store: StoreFixture, callbacks: str) -> None:
+    store, projects, nodes_by_project = populated_store
+    registry = ProjectRegistry(store)
+    project = projects[0]
+    removed = nodes_by_project[project.id][0]
+    (store.node_dir(project.id, removed.id) / "node.json").unlink()
+    incoming = Node(
+        project_id=project.id,
+        model_preset_id=project.model_preset_id,
+        state=NodeState.QUEUED,
+        created_at=1000.0,
+        origin_machine_id=store.machine.id,
+    )
+    atomic_json(
+        store.root / "projects" / project.id / "hosts" / "peer" / "nodes"
+        / incoming.id / "node.json",
+        incoming.model_dump(exclude={"provider", "owner_host_id"}),
+    )
+    for callback in getattr(store.sync, callbacks):
+        callback()
+    with patch.object(store, "_read_json", wraps=store._read_json) as reader:
+        summary = registry.node_summary(project)
+    assert not _reads(reader, "node.json")
+    assert summary.turns == len(nodes_by_project[project.id])
+    assert summary.queued_count == 0
+    assert summary.last_activity_at == 1000.0

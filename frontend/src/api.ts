@@ -4,6 +4,7 @@ import type {
   EventRecord,
   NodeDiff,
   NodeInfo,
+  NodeDetail,
   ModelPreset,
   GlobalDefaults,
   CodeReviewSettings,
@@ -36,6 +37,7 @@ import type {
   MarkdownFile,
 } from "./types";
 import type { TemplateRewritePayload } from "./templateEditor";
+import { toNodeInfo } from "./nodeProjection";
 
 export class ApiError extends Error {
   readonly status: number;
@@ -340,7 +342,7 @@ export async function getGitState(sessionId: string): Promise<GitState> {
 export async function gitCommit(
   sessionId: string,
   message: string,
-): Promise<{ node: NodeInfo }> {
+): Promise<{ node: NodeDetail }> {
   const res = await fetch(`/sessions/${sessionId}/git/commit`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -359,7 +361,7 @@ export async function gitCommit(
 export async function gitReview(
   sessionId: string,
   planspaceId: string | null,
-): Promise<{ node: NodeInfo }> {
+): Promise<{ node: NodeDetail }> {
   const res = await fetch(`/sessions/${sessionId}/git/review`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -369,7 +371,7 @@ export async function gitReview(
   return res.json();
 }
 
-export async function gitPull(sessionId: string): Promise<{ node: NodeInfo }> {
+export async function gitPull(sessionId: string): Promise<{ node: NodeDetail }> {
   const res = await fetch(`/sessions/${sessionId}/git/pull`, { method: "POST" });
   if (!res.ok) throw new ApiError("gitPull", res.status, await readErrorDetail(res));
   return res.json();
@@ -493,7 +495,7 @@ export async function promoteVirtual(
 ): Promise<{
   ok: boolean;
   node_id: string;
-  node: NodeInfo;
+  node: NodeDetail;
   already_promoted?: boolean;
 }> {
   const res = await fetch(
@@ -509,7 +511,7 @@ export async function promoteVirtual(
 export async function dequeueNode(
   sessionId: string,
   nodeId: string,
-): Promise<{ ok: boolean; node_id: string; node: NodeInfo }> {
+): Promise<{ ok: boolean; node_id: string; node: NodeDetail }> {
   const res = await fetch(
     `/sessions/${sessionId}/nodes/${encodeURIComponent(nodeId)}/dequeue`,
     { method: "POST" },
@@ -523,7 +525,7 @@ export async function dequeueNode(
 export async function rerunNode(
   sessionId: string,
   nodeId: string,
-): Promise<{ ok: boolean; node_id: string; node: NodeInfo }> {
+): Promise<{ ok: boolean; node_id: string; node: NodeDetail }> {
   const res = await fetch(
     `/sessions/${sessionId}/nodes/${encodeURIComponent(nodeId)}/rerun`,
     { method: "POST" },
@@ -583,7 +585,7 @@ export type CreateVirtualPayload = {
 export async function createVirtual(
   sessionId: string,
   body: CreateVirtualPayload,
-): Promise<{ ok: boolean; node_id: string; node: NodeInfo }> {
+): Promise<{ ok: boolean; node_id: string; node: NodeDetail }> {
   const res = await fetch(`/sessions/${sessionId}/virtuals`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -645,7 +647,7 @@ export async function updateVirtual(
   sessionId: string,
   nodeId: string,
   body: UpdateVirtualPayload,
-): Promise<{ ok: boolean; node_id: string; node: NodeInfo }> {
+): Promise<{ ok: boolean; node_id: string; node: NodeDetail }> {
   const res = await fetch(
     `/sessions/${sessionId}/virtuals/${encodeURIComponent(nodeId)}`,
     {
@@ -825,6 +827,16 @@ export async function updateLaneLayout(
 export async function listNodes(sessionId: string): Promise<NodeInfo[]> {
   const res = await fetch(`/sessions/${sessionId}/nodes`);
   if (!res.ok) throw new Error(`listNodes failed: ${res.status}`);
+  const nodes: NodeInfo[] = await res.json();
+  return nodes.map(toNodeInfo);
+}
+
+export async function getNodeDetail(
+  sessionId: string,
+  nodeId: string,
+): Promise<NodeDetail> {
+  const res = await fetch(`/sessions/${sessionId}/nodes/${nodeId}`);
+  if (!res.ok) throw new ApiError("读取节点详情", res.status, await readErrorDetail(res));
   return res.json();
 }
 

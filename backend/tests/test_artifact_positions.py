@@ -63,14 +63,22 @@ def test_artifact_layout_owner_union_and_atomic_validation(tmp_path: Path) -> No
     store.update_node(native)
     assert store.read_node_positions(project.id) == {}
     store.update_node_positions(project.id, {}, [])
-    assert json.loads(local_layout.read_text())["nodes"] == {}
+    assert json.loads(local_layout.read_text())["nodes"] == {tile_id: position.model_dump()}
+    native.planspace_id = None
+    store.update_node(native)
+    assert store.read_node_positions(project.id) == {tile_id: position, foreign_id: position}
 
 
 @pytest.mark.parametrize("change", ["dropped", "removed", "deleted", "overflow", "op"])
-def test_artifact_layout_prunes_unpublished_and_missing_tiles(tmp_path: Path, change: str) -> None:
+@pytest.mark.parametrize("only_missing", [False, True])
+def test_artifact_layout_retains_temporarily_hidden_tiles(
+    tmp_path: Path, change: str, only_missing: bool,
+) -> None:
     store = Store(tmp_path)
     project = store.create_project(Project(root_path=str(tmp_path)))
     owner = store.create_node(Node(model_preset_id="opus-4-8", project_id=project.id, artifacts=published_artifacts()))
+    original = owner.model_copy(deep=True)
+    unrelated = store.create_node(Node(model_preset_id="opus-4-8", project_id=project.id))
     tile_id = f"artifact-overflow:{owner.id}" if change == "overflow" else artifact_id(owner)
     position = NodePosition(x=50, y=60, space="canvas")
     store.update_node_positions(project.id, {tile_id: position}, [])
@@ -90,3 +98,15 @@ def test_artifact_layout_prunes_unpublished_and_missing_tiles(tmp_path: Path, ch
     assert store.read_node_positions(project.id) == {}
     with pytest.raises(ValueError):
         store.update_node_positions(project.id, {tile_id: position}, [])
+    assert store.update_node_positions(
+        project.id, {unrelated.id: position}, [], only_missing=only_missing,
+    ) == {unrelated.id: position}
+    local_layout = tmp_path / "projects" / project.id / "hosts" / store.machine.id / "node-layout.json"
+    assert json.loads(local_layout.read_text())["nodes"][tile_id] == position.model_dump()
+    if change == "deleted":
+        store.create_node(original)
+    else:
+        store.update_node(original)
+    assert Store(tmp_path).read_node_positions(project.id) == {tile_id: position, unrelated.id: position}
+    assert store.update_node_positions(project.id, {}, [tile_id]) == {unrelated.id: position}
+    assert tile_id not in json.loads(local_layout.read_text())["nodes"]

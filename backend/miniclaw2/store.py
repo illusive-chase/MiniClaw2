@@ -25,12 +25,13 @@ import os
 import re
 import shutil
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from pydantic import ValidationError
 
-from .domain import GitLayout, GitPosition, HumanGate, LaneLayout, LanePosition, Node, NodeLayout, NodePosition, Project, UNBOUND_ROOT_PATH
+from .domain import GitLayout, GitPosition, HumanGate, LaneLayout, LanePosition, Node, NodeLayout, NodePosition, NodeState, Project, UNBOUND_ROOT_PATH
 from .node_layout import node_coordinate_space, node_layout_owners
 from .git_state import is_git_repo, normalized_origin_url, root_commits
 from .replay import EVENT_SCHEMA_VERSION
@@ -58,6 +59,18 @@ from .tags import (
 
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class NodeSummary:
+    id: str
+    state: NodeState
+    owner_host_id: str
+    last_activity_at: float
+
+
+NodeSignature = tuple[int, int, int, int]
+NodeSummaryEntry = tuple[NodeSignature, NodeSummary]
 
 
 class StoreReadOnlyError(RuntimeError):
@@ -88,6 +101,7 @@ class Store:
         self.sync: SyncManager = get_sync_manager(self.root, self.machine)
         self._owner_index: dict[str, dict[str, str]] = {}
         self._last_activity_index: dict[str, float] = {}
+        self._node_summary_index: dict[str, dict[Path, NodeSummaryEntry]] = {}
         self.sync.add_success_callback(self.invalidate_owner_index)
         self.sync.add_success_callback(self._refresh_last_activity_after_sync)
         self.sync.add_publication_callback(self.invalidate_owner_index)
@@ -159,6 +173,7 @@ class Store:
     def refresh_last_activity_index(self) -> None:
         """Rebuild project activity timestamps from all persisted nodes."""
         self._last_activity_index.clear()
+        self._node_summary_index.clear()
         for project in self.list_projects(include_node_positions=False):
             self._list_nodes_for_project(project.id, project)
 
@@ -180,6 +195,55 @@ class Store:
         current = self._last_activity_index.get(pid)
         if current is None or activity_at > current:
             self._last_activity_index[pid] = activity_at
+
+    @staticmethod
+    def _node_signature(path: Path) -> NodeSignature:
+        stat = path.stat()
+        return stat.st_ino, stat.st_mtime_ns, stat.st_ctime_ns, stat.st_size
+
+    def _cache_node_summary(
+        self, node: Node, path: Path, signature: NodeSignature
+    ) -> NodeSummaryEntry:
+        summary = NodeSummary(
+            id=node.id,
+            state=node.state,
+            owner_host_id=path.parents[2].name,
+            last_activity_at=max(
+                timestamp
+                for timestamp in (node.finished_at, node.started_at, node.created_at)
+                if timestamp is not None
+            ),
+        )
+        entry = (signature, summary)
+        self._node_summary_index.setdefault(node.project_id, {})[path] = entry
+        return entry
+
+    def node_summaries(self, pid: str) -> list[NodeSummary]:
+        """复用轻量投影；只重读文件签名发生变化的节点。"""
+        cached = self._node_summary_index.get(pid, {})
+        fresh: dict[Path, NodeSummaryEntry] = {}
+        owners: dict[str, str] = {}
+        for path in self._hosts_dir(pid).glob("*/nodes/*/node.json"):
+            signature = self._node_signature(path)
+            entry = cached.get(path)
+            if entry is None or entry[0] != signature:
+                try:
+                    node = self.load_node(pid, path.parent.name)
+                except ValueError as exc:
+                    raise MigrationError("migration_failed", str(exc), path) from exc
+                if node is None:
+                    continue
+                entry = self._node_summary_index[pid][path]
+            summary = entry[1]
+            if summary.id in owners:
+                raise MigrationError(
+                    "migration_failed", "节点出现在多个 host 分区", path
+                )
+            owners[summary.id] = summary.owner_host_id
+            fresh[path] = entry
+        self._owner_index[pid] = owners
+        self._node_summary_index[pid] = fresh
+        return [entry[1] for entry in fresh.values()]
 
     def refresh_local_fingerprint(self, project: Project) -> bool:
         if project.temporary or not self.is_bound_here(project.id):
@@ -426,6 +490,12 @@ class Store:
         )
         self.sync.schedule_commit(f'update project "{project.name or project.id}"')
 
+    def _read_node_layout(self, path: Path) -> dict[str, NodePosition]:
+        try:
+            return NodeLayout.model_validate(self._read_json(path)).nodes
+        except (OSError, ValueError) as exc:
+            raise MigrationError("migration_failed", str(exc), path) from exc
+
     def read_node_positions(
         self, pid: str, *, nodes: list[Node] | None = None
     ) -> dict[str, NodePosition]:
@@ -436,10 +506,13 @@ class Store:
         positions: dict[str, NodePosition] = {}
         for path in sorted(self._hosts_dir(pid).glob("*/node-layout.json")):
             try:
-                layout = NodeLayout.model_validate(self._read_json(path))
-            except (OSError, ValueError) as exc:
-                raise MigrationError("migration_failed", str(exc), path) from exc
-            for node_id, position in layout.nodes.items():
+                layout = self._read_node_layout(path)
+            except MigrationError as exc:
+                if path.parent.name == self.machine.id:
+                    raise
+                logger.warning("跳过无法读取的远端节点布局 %s: %s", path, exc)
+                continue
+            for node_id, position in layout.items():
                 node = layout_owners.get(node_id)
                 if node is not None and node.owner_host_id == path.parent.name:
                     if position.space == node_coordinate_space(node, nodes_by_id):
@@ -522,19 +595,18 @@ class Store:
         for node_id, position in validated.items():
             if position.space != node_coordinate_space(layout_owners[node_id], nodes):
                 raise ValueError(f"节点坐标空间已改变：{node_id}")
-        merged = {
-            node_id: position
-            for node_id, position in self.read_node_positions(pid, nodes=node_records).items()
-            if layout_owners[node_id].owner_host_id == self.machine.id
-        }
+        local_path = self._host_dir(pid, self.machine.id) / "node-layout.json"
+        merged = self._read_node_layout(local_path) if local_path.exists() else {}
         if only_missing:
             for node_id, position in validated.items():
-                merged.setdefault(node_id, position)
+                existing = merged.get(node_id)
+                if existing is None or existing.space != position.space:
+                    merged[node_id] = position
         else:
             merged.update(validated)
         for node_id in remove:
             merged.pop(node_id, None)
-        self._write_json(self._host_dir(pid, self.machine.id) / "node-layout.json",
+        self._write_json(local_path,
                          NodeLayout(schema_version=1, nodes=merged).model_dump())
         self.sync.schedule_commit(f"update node positions {pid}")
         return self.read_node_positions(pid, nodes=node_records)
@@ -593,6 +665,7 @@ class Store:
             return False
         shutil.rmtree(d)
         self._last_activity_index.pop(pid, None)
+        self._node_summary_index.pop(pid, None)
         self.sync.schedule_commit(f"delete project {pid}")
         return True
 
@@ -611,6 +684,8 @@ class Store:
         )
         self._owner_index.setdefault(node.project_id, {})[node.id] = self.machine.id
         node.bind_owner_host(self.machine.id)
+        path = self._node_file(node.project_id, node.id)
+        self._cache_node_summary(node, path, self._node_signature(path))
         self.sync.schedule_commit(f"create node {node.id}")
         return node
 
@@ -621,6 +696,7 @@ class Store:
         if not matches:
             return None
         path = matches[0]
+        signature = self._node_signature(path)
         node = Node.model_validate(self._read_json(path)).bind_model_catalog(self.root)
         if node.id != nid or node.project_id != pid:
             raise MigrationError("migration_failed", "节点 id 或项目归属与路径不一致", path)
@@ -629,6 +705,7 @@ class Store:
         # keeps synchronized provenance fields out of local write authority.
         owner = path.parents[2].name
         self._owner_index.setdefault(pid, {})[nid] = owner
+        self._cache_node_summary(node, path, signature)
         return node.bind_owner_host(owner)
 
     def update_node(self, node: Node) -> None:
@@ -644,6 +721,7 @@ class Store:
             path,
             node.model_dump(exclude={"provider", "owner_host_id"}),
         )
+        self._cache_node_summary(node, path, self._node_signature(path))
         self.sync.schedule_commit(f"node {node.id} {node.state.value}")
 
     def delete_node(self, pid: str, nid: str) -> bool:
@@ -653,6 +731,7 @@ class Store:
             return False
         shutil.rmtree(d)
         self._owner_index.get(pid, {}).pop(nid, None)
+        self._node_summary_index.get(pid, {}).pop(d / "node.json", None)
         self.sync.schedule_commit(f"delete node {nid}")
         return True
 
@@ -668,8 +747,10 @@ class Store:
         node_files = list(self._hosts_dir(pid).glob("*/nodes/*/node.json"))
         out: list[Node] = []
         owners: dict[str, str] = {}
+        summaries: dict[Path, NodeSummaryEntry] = {}
         for nf in node_files:
             try:
+                signature = self._node_signature(nf)
                 node = Node.model_validate(self._read_json(nf)).bind_model_catalog(
                     self.root
                 )
@@ -678,9 +759,11 @@ class Store:
                     raise ValueError("节点路径、项目归属或跨 host 唯一性不满足当前契约")
                 owners[node.id] = owner
                 out.append(node.bind_owner_host(owner))
+                summaries[nf] = self._cache_node_summary(node, nf, signature)
             except (ValueError, ValidationError) as exc:
                 raise MigrationError("migration_failed", str(exc), nf) from exc
         self._owner_index[pid] = owners
+        self._node_summary_index[pid] = summaries
         out.sort(key=lambda n: n.created_at)
         if project is not None:
             self._last_activity_index[pid] = max(

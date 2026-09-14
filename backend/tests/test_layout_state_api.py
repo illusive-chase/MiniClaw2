@@ -50,7 +50,7 @@ class LayoutStateApiTest(unittest.TestCase):
             fetched = restarted.get(f"/sessions/{sid}")
             self.assertEqual(fetched.json()["node_positions"], {node.id: position})
             listed = restarted.get("/sessions").json()
-            self.assertEqual(next(item for item in listed if item["id"] == sid)["node_positions"], {node.id: position})
+            self.assertNotIn("node_positions", next(item for item in listed if item["id"] == sid))
         removed = self.client.patch(f"/sessions/{sid}/node-layout", json={"remove": [node.id]})
         self.assertEqual(removed.json()["node_positions"], {})
         project = Path(self._home.name) / "projects" / sid
@@ -74,13 +74,53 @@ class LayoutStateApiTest(unittest.TestCase):
         with TestClient(create_app()) as restarted:
             self.assertEqual(restarted.get(f"/sessions/{sid}").json()["node_positions"], {tile_id: position})
             sessions = restarted.get("/sessions").json()
-            self.assertEqual(next(item for item in sessions if item["id"] == sid)["node_positions"], {tile_id: position})
+            self.assertNotIn("node_positions", next(item for item in sessions if item["id"] == sid))
         response = self.client.patch(f"/sessions/{sid}/node-layout", json={"remove": [tile_id]})
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.json()["node_positions"], {})
         for binding in (Path(self._home.name) / "projects" / sid).glob("hosts/*/local.json"):
             binding.unlink()
         self.assertEqual(self.client.patch(f"/sessions/{sid}/node-layout", json={"updates": {tile_id: position}}).status_code, 403)
+
+    def test_bad_peer_layout_does_not_block_sessions_or_local_updates(self) -> None:
+        sid = self._create_session()
+        other_sid = self._create_session()
+        native = self._node(sid)
+        hosts = Path(self._home.name) / "projects" / sid / "hosts"
+        position = {"x": 10, "y": 20, "space": "canvas"}
+        response = self.client.patch(f"/sessions/{sid}/node-layout", json={"updates": {native.id: position}})
+        self.assertEqual(response.status_code, 200, response.text)
+        healthy_peer = Node(model_preset_id="opus-4-8", project_id=sid, state="done")
+        bad_peer = Node(model_preset_id="opus-4-8", project_id=sid, state="done")
+        for host_id, node in [("peer-healthy", healthy_peer), ("peer-bad", bad_peer)]:
+            atomic_json(hosts / host_id / "nodes" / node.id / "node.json", node.model_dump(exclude={"provider", "owner_host_id"}))
+            atomic_json(hosts / host_id / "node-layout.json", {"schema_version": 1, "nodes": {node.id: position}})
+        healthy_layout = hosts / "peer-healthy" / "node-layout.json"
+        healthy_before = healthy_layout.read_bytes()
+        bad_layout = hosts / "peer-bad" / "node-layout.json"
+        for payload in [
+            "{",
+            json.dumps({"schema_version": 2, "nodes": {bad_peer.id: position}}),
+            json.dumps({"schema_version": 1, "nodes": {bad_peer.id: {**position, "x": "invalid"}}}),
+        ]:
+            with self.subTest(payload=payload):
+                bad_layout.write_text(payload, encoding="utf-8")
+                with TestClient(create_app()) as restarted:
+                    expected = {native.id: position, healthy_peer.id: position}
+                    listed = restarted.get("/sessions")
+                    self.assertEqual(listed.status_code, 200, listed.text)
+                    sessions = {item["id"]: item for item in listed.json()}
+                    self.assertEqual(set(sessions), {sid, other_sid})
+                    fetched = restarted.get(f"/sessions/{sid}")
+                    self.assertEqual(fetched.status_code, 200, fetched.text)
+                    self.assertEqual(fetched.json()["node_positions"], expected)
+                    updated = {**position, "x": 50}
+                    response = restarted.patch(f"/sessions/{sid}/node-layout", json={"updates": {native.id: updated}})
+                    self.assertEqual(response.status_code, 200, response.text)
+                    self.assertEqual(response.json()["node_positions"], {native.id: updated, healthy_peer.id: position})
+                    restarted.patch(f"/sessions/{sid}/node-layout", json={"updates": {native.id: position}})
+                self.assertEqual(bad_layout.read_text(encoding="utf-8"), payload)
+                self.assertEqual(healthy_layout.read_bytes(), healthy_before)
 
     def test_git_positions_survive_restart_and_stay_separate(self) -> None:
         sid = self._create_session()
@@ -93,7 +133,7 @@ class LayoutStateApiTest(unittest.TestCase):
         with TestClient(create_app()) as restarted:
             self.assertEqual(restarted.get(f"/sessions/{sid}").json()["git_positions"][node_id], position)
             sessions = restarted.get("/sessions").json()
-            self.assertEqual(next(item for item in sessions if item["id"] == sid)["git_positions"][node_id], position)
+            self.assertNotIn("git_positions", next(item for item in sessions if item["id"] == sid))
         project = Path(self._home.name) / "projects" / sid
         before = (project / "git-layout.json").read_bytes()
         for invalid_id, invalid_position in [
@@ -132,7 +172,7 @@ class LayoutStateApiTest(unittest.TestCase):
         with TestClient(create_app()) as restarted:
             self.assertEqual(restarted.get(f"/sessions/{sid}").json()["lane_positions"], {"planspace:lane": position})
             sessions = restarted.get("/sessions").json()
-            self.assertEqual(next(item for item in sessions if item["id"] == sid)["lane_positions"], {"planspace:lane": position})
+            self.assertNotIn("lane_positions", next(item for item in sessions if item["id"] == sid))
         for invalid_id, invalid_position in [
             (node.id, position), ("commit:ghost", position), ("planspace:", position),
             ("planspace:lane", {**position, "space": "planspace:lane"}),

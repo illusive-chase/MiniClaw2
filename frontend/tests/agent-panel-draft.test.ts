@@ -13,10 +13,12 @@ import {
   virtualDraftWithClassification,
   virtualDraftValidationError,
   virtualPayloadFromDraft,
+  type AgentPanelProps,
 } from "../src/panel/AgentPanel";
-import type { NodeInfo } from "../src/types";
+import { toNodeInfo } from "../src/nodeProjection";
+import type { NodeDetail, NodeInfo } from "../src/types";
 
-function node(over: Partial<NodeInfo> = {}): NodeInfo {
+function node(over: Partial<NodeDetail> = {}): NodeDetail {
   return {
     id: "n1",
     project_id: "p1",
@@ -25,18 +27,24 @@ function node(over: Partial<NodeInfo> = {}): NodeInfo {
     provider: "claude",
     model_preset_id: "gpt-5.5",
     prompt: "",
+    system_context_snapshot: "",
+    launch_instructions_snapshot: "",
     prompt_draft: "do the thing",
     category: "regular",
     created_at: 0,
     ...over,
-  } as NodeInfo;
+  } as NodeDetail;
 }
 
 {
   const cold = node({ agent_op_kind: "cold_start", artifact_mode: "svg" });
-  const markup = renderToStaticMarkup(createElement(AgentPanel, {
+  const props: AgentPanelProps = {
     sessionId: "p1",
     node: cold,
+    detail: cold,
+    detailLoading: false,
+    detailError: null,
+    onRetryDetail: () => {},
     nodesById: new Map([[cold.id, cold]]),
     modelPresets: [],
     events: [],
@@ -62,7 +70,8 @@ function node(over: Partial<NodeInfo> = {}): NodeInfo {
     focusRequestVersion: 0,
     activityFocusRequestVersion: 0,
     onSelectArtifact: () => {},
-  }));
+  };
+  const markup = renderToStaticMarkup(createElement(AgentPanel, props));
   for (const label of ["Default", "MD", "HTML", "SVG", "Custom"]) {
     assert.match(markup, new RegExp(`<button[^>]*>${label}</button>`));
   }
@@ -71,6 +80,17 @@ function node(over: Partial<NodeInfo> = {}): NodeInfo {
   assert.doesNotMatch(markup, />Dependencies</);
   assert.match(markup, /你可以显式选择产物模式/);
   assert.doesNotMatch(markup, /产出物约定都不可用/);
+  const loadingMarkup = renderToStaticMarkup(createElement(AgentPanel, {
+    ...props, node: toNodeInfo(cold), detail: null, detailLoading: true,
+  }));
+  assert.match(loadingMarkup, /正在读取节点详情/);
+  assert.match(loadingMarkup, /do the thing/);
+  assert.doesNotMatch(loadingMarkup, /<textarea/);
+  const errorMarkup = renderToStaticMarkup(createElement(AgentPanel, {
+    ...props, node: toNodeInfo(cold), detail: null, detailError: "详情读取失败",
+  }));
+  assert.match(errorMarkup, /详情读取失败/);
+  assert.match(errorMarkup, /重试/);
 }
 
 /* The inspector separates provider system context, MiniClaw's per-node rules,

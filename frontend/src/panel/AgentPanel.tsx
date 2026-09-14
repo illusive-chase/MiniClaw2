@@ -22,6 +22,7 @@ import type {
   ModelPreset,
   NodeDiff,
   NodeInfo,
+  NodeDetail,
   ReviewBrief,
   ReviewSubtype,
   SkillSelection,
@@ -76,6 +77,10 @@ import {
 export type AgentPanelProps = {
   sessionId: string;
   node: NodeInfo;
+  detail: NodeDetail | null;
+  detailLoading: boolean;
+  detailError: string | null;
+  onRetryDetail: () => void;
   nodesById: Map<string, NodeInfo>;
   modelPresets: ModelPreset[];
   events: EventRecord[];
@@ -115,7 +120,11 @@ export type AgentPanelProps = {
 
 export function AgentPanel({
   sessionId,
-  node,
+  node: listNode,
+  detail,
+  detailLoading,
+  detailError,
+  onRetryDetail,
   nodesById,
   modelPresets,
   events,
@@ -145,6 +154,10 @@ export function AgentPanel({
   activityFocusRequestVersion,
   onSelectArtifact,
 }: AgentPanelProps) {
+  const node = useMemo(
+    () => detail ? { ...listNode, prompt: detail.prompt } : listNode,
+    [listNode, detail],
+  );
   const headline = (
     node.summary ||
     node.prompt_draft ||
@@ -407,22 +420,38 @@ export function AgentPanel({
         <section className="mb-5">
           <BasicInformationCard node={node} modelPresets={modelPresets} />
         </section>
+        {detailLoading && (
+          <p role="status" className="mb-3 text-[11px] text-ink-muted">正在读取节点详情…</p>
+        )}
+        {detailError && (
+          <div role="alert" className="mb-3 text-[11px] text-state-error">
+            {detailError}
+            <button type="button" onClick={onRetryDetail} className="ml-2 underline">重试</button>
+          </div>
+        )}
         {node.state === "virtual" ? (
-          <fieldset disabled={!canMutate} className={canMutate ? "contents" : "contents opacity-75"}>
-            <VirtualNodeBody
-              ref={virtualNodeBodyRef}
-              node={node}
-              nodesById={nodesById}
-              modelPresets={modelPresets}
-              principles={principles}
-              skills={skills}
-              onUpdateVirtual={onUpdateVirtual}
-              onPromotabilityChange={handleDraftPromotabilityChange}
-              focusRequestVersion={canMutate ? focusRequestVersion : 0}
-              sessionId={sessionId}
-              autosaveToServer={autosaveToServer}
-            />
-          </fieldset>
+          detail ? (
+            <fieldset
+              disabled={!canMutate || detailLoading || !!detailError}
+              className={canMutate ? "contents" : "contents opacity-75"}
+            >
+              <VirtualNodeBody
+                ref={virtualNodeBodyRef}
+                node={node}
+                nodesById={nodesById}
+                modelPresets={modelPresets}
+                principles={principles}
+                skills={skills}
+                onUpdateVirtual={onUpdateVirtual}
+                onPromotabilityChange={handleDraftPromotabilityChange}
+                focusRequestVersion={canMutate ? focusRequestVersion : 0}
+                sessionId={sessionId}
+                autosaveToServer={autosaveToServer}
+              />
+            </fieldset>
+          ) : (
+            <p className="whitespace-pre-wrap text-[11px] text-ink-muted">{node.prompt_draft || node.prompt}</p>
+          )
         ) : (
           <>
             {pendingReview && (
@@ -456,8 +485,9 @@ export function AgentPanel({
             <section className="mb-5">
               <AgentInputCard
                 node={node}
+                detail={detail}
                 contextBundle={contextBundle}
-                loading={contextBundleLoading}
+                loading={contextBundleLoading || detailLoading}
               />
             </section>
 
@@ -564,6 +594,7 @@ export function AgentPanel({
             <section className="mb-2">
               <InspectDrawer
                 node={node}
+                detail={detail}
                 modelPresets={modelPresets}
                 contextBundle={contextBundle}
                 contextBundleLoading={contextBundleLoading}
@@ -2340,10 +2371,12 @@ function oneLine(s: string): string {
 
 function AgentInputCard({
   node,
+  detail,
   contextBundle,
   loading,
 }: {
   node: NodeInfo;
+  detail: NodeDetail | null;
   contextBundle: ContextBundle | null;
   loading: boolean;
 }) {
@@ -2355,7 +2388,11 @@ function AgentInputCard({
     () => (contextBundle?.sources ?? []).filter((s) => s.injection === "turn"),
     [contextBundle],
   );
-  const input = agentInputText(node, contextBundle);
+  const input = detail ? agentInputText(detail, contextBundle) : {
+    systemText: "",
+    nodeInstructions: "",
+    userPrompt: node.prompt,
+  };
 
   return (
     <div className="overflow-hidden rounded-md border border-line bg-surface-sunken">
@@ -2390,7 +2427,7 @@ function AgentInputCard({
 }
 
 export function agentInputText(
-  node: NodeInfo,
+  node: NodeDetail,
   contextBundle: ContextBundle | null,
 ): {
   systemText: string;
