@@ -21,6 +21,7 @@ from fastapi import FastAPI, HTTPException, Request, Response, WebSocket, WebSoc
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.concurrency import run_in_threadpool
 from .migrations.errors import MigrationError
 from .migrations.catalog import CURRENT_VERSION, MINIMUM_VERSION
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, ValidationError
@@ -622,6 +623,8 @@ def create_app(
 
     app = FastAPI(title="MiniClaw2", lifespan=lifespan)
     app.state.storage_error = None
+    app.state.storage_syncing = False
+    app.state.storage_requests = 0
     app.state.update_checker = update_checker
     app.add_middleware(
         CORSMiddleware,
@@ -633,9 +636,18 @@ def create_app(
     @app.middleware("http")
     async def storage_admission(request: Request, call_next):
         error = app.state.storage_error
-        if error and not request.url.path.startswith(("/migrations/", "/assets/")) and request.url.path not in {"/", "/health"}:
+        exempt = request.url.path.startswith(("/migrations/", "/assets/")) or request.url.path in {"/", "/health"}
+        if error and not exempt:
             return JSONResponse(status_code=503, content=error)
-        return await call_next(request)
+        if exempt:
+            return await call_next(request)
+        if app.state.storage_syncing:
+            return JSONResponse(status_code=503, content={"detail": "元数据正在同步，请稍后重试"})
+        app.state.storage_requests += 1
+        try:
+            return await call_next(request)
+        finally:
+            app.state.storage_requests -= 1
 
     @app.exception_handler(MigrationError)
     async def migration_error(_request: Request, exc: MigrationError) -> JSONResponse:
@@ -643,12 +655,15 @@ def create_app(
 
     @app.get("/migrations/status")
     def migration_status() -> dict[str, Any]:
+        if app.state.storage_syncing:
+            return {"state": "waiting_for_idle", "target": CURRENT_VERSION, "minimum": MINIMUM_VERSION,
+                    "detail": "元数据正在同步，请稍后重试"}
         return {"state": "ready", "target": CURRENT_VERSION, "minimum": MINIMUM_VERSION,
                 "detail": "存储格式已就绪", **(app.state.storage_error or {})}
 
     @app.get("/health")
     def storage_health() -> dict[str, Any]:
-        return {"status": "maintenance" if app.state.storage_error else "ok"}
+        return {"status": "maintenance" if app.state.storage_error or app.state.storage_syncing else "ok"}
 
     @app.exception_handler(NonNativeProjectError)
     async def non_native_project_error(
@@ -679,6 +694,37 @@ def create_app(
     def get_global_state() -> dict[str, Any]:
         return _global_state_payload(registry.store.root)
 
+    async def run_storage_sync(operation: Callable[[], Any]) -> dict[str, Any]:
+        if app.state.storage_syncing or app.state.storage_requests > 1:
+            raise HTTPException(409, "等待其他存储请求完成后再同步")
+        if any(_context_task_running(project.id) for project in registry.list_projects()):
+            raise HTTPException(409, "等待上下文刷新完成后再同步")
+        try:
+            registry.prepare_storage_sync()
+        except SyncError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        app.state.storage_syncing = True
+        generation = registry.store.sync.publication_generation
+        completed = False
+        try:
+            worker = asyncio.create_task(run_in_threadpool(operation))
+            try:
+                await asyncio.shield(worker)
+            except asyncio.CancelledError:
+                await worker
+                raise
+            completed = True
+        except SyncError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        finally:
+            try:
+                if completed or registry.store.sync.publication_generation != generation:
+                    registry.reload_from_store()
+            finally:
+                app.state.storage_syncing = False
+                registry.finish_storage_sync()
+        return await run_in_threadpool(_global_state_payload, registry.store.root)
+
     @app.post("/global-state/sync/setup", response_model=dict[str, Any])
     async def setup_sync(req: SetupSyncRequest) -> dict[str, Any]:
         registry.store.assert_writable()
@@ -690,7 +736,7 @@ def create_app(
         remote_url = req.remote_url.strip()
         if not remote_url:
             raise HTTPException(400, "git remote URL is required")
-        try:
+        def configure() -> None:
             registry.store.sync.setup_existing_store(remote_url)
             config = load_global_config(registry.store.root)
             save_global_config(
@@ -699,18 +745,12 @@ def create_app(
             )
             registry.store.sync.schedule_commit("configure metadata sync")
             registry.store.sync.sync_now()
-        except SyncError as exc:
-            raise HTTPException(409, str(exc)) from exc
-        return _global_state_payload(registry.store.root)
+
+        return await run_storage_sync(configure)
 
     @app.post("/global-state/sync", response_model=dict[str, Any])
     async def sync_now() -> dict[str, Any]:
-        try:
-            registry.store.sync.sync_now()
-            registry.reload_from_store()
-        except SyncError as exc:
-            raise HTTPException(409, str(exc)) from exc
-        return _global_state_payload(registry.store.root)
+        return await run_storage_sync(registry.store.sync.sync_now)
 
     @app.post("/global-state/sync/check", response_model=dict[str, Any])
     def check_sync_remote() -> dict[str, Any]:
@@ -2385,7 +2425,7 @@ def create_app(
 
     @app.websocket("/ws/{sid}")
     async def ws(websocket: WebSocket, sid: str) -> None:
-        if app.state.storage_error is not None:
+        if app.state.storage_error is not None or app.state.storage_syncing:
             await websocket.close(code=1013, reason="存储处于维护模式")
             return
         initialize_registry()
@@ -2445,8 +2485,7 @@ def create_app(
             return
 
         try:
-            while True:
-                raw = await websocket.receive_json()
+            async def handle_message(raw: dict[str, Any]) -> None:
                 msg_type = raw.get("type")
 
                 if msg_type in {"user_message", "interaction_response", "interrupt"} and not project_is_native(sid):
@@ -2455,7 +2494,7 @@ def create_app(
                         "type": "error",
                         "message": str(NonNativeProjectError(project)),
                     })
-                    continue
+                    return
 
                 if msg_type == "user_message":
                     await mark_live_ready()
@@ -2466,13 +2505,13 @@ def create_app(
                             "type": "error",
                             "message": str(exc),
                         })
-                        continue
+                        return
                     if _context_task_running(project.id):
                         await _send(send_now, {
                             "type": "error",
                             "message": "context refresh in progress",
                         })
-                        continue
+                        return
                     try:
                         runner = registry.start_node(
                             sid,
@@ -2488,13 +2527,13 @@ def create_app(
                             "type": "error",
                             "message": str(exc),
                         })
-                        continue
+                        return
                     if runner is None:
                         await _send(send_now, {
                             "type": "error",
                             "message": "invalid resume source or project",
                         })
-                        continue
+                        return
 
                 elif msg_type == "interaction_response":
                     await mark_live_ready()
@@ -2549,6 +2588,17 @@ def create_app(
                         "type": "error",
                         "message": f"unknown type: {msg_type}",
                     })
+
+            while True:
+                raw = await websocket.receive_json()
+                if app.state.storage_syncing:
+                    await _send(send_now, {"type": "error", "message": "元数据正在同步，请稍后重试"})
+                    continue
+                app.state.storage_requests += 1
+                try:
+                    await handle_message(raw)
+                finally:
+                    app.state.storage_requests -= 1
 
         except WebSocketDisconnect:
             pass

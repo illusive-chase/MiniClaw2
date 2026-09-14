@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import subprocess
 import tempfile
 import unittest
+from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
+from threading import Event, get_ident
 from unittest.mock import patch
 
+import pytest
 from fastapi.testclient import TestClient
 
 import miniclaw2.sync as sync_module
@@ -377,6 +381,176 @@ class GitMetadataSyncTests(unittest.TestCase):
             (self.root_a / "projects" / project_b.id / "project.json").exists()
         )
         self.assertEqual(self.store_a.sync.status()["status"], "changed")
+
+    def test_sync_preserves_ignored_files_but_applies_tracked_deletions(self) -> None:
+        ignored = self.root_a / "contextspace" / "private-notes.md"
+        ignored.parent.mkdir(exist_ok=True)
+        ignored.write_text("仅保留在本机\n", encoding="utf-8")
+        with (self.root_a / ".gitignore").open("a", encoding="utf-8") as stream:
+            stream.write("\ncontextspace/private-notes.md\n")
+        tracked = self.root_a / "contextspace" / "obsolete.md"
+        tracked.write_text("待删除\n", encoding="utf-8")
+        self.store_a.sync.sync_now()
+        self.store_b.sync.sync_now()
+        (self.root_b / "contextspace" / "obsolete.md").unlink()
+        incoming = self.store_b.create_project(Project(root_path="/b/new", name="远端项目"))
+        self.store_b.sync.sync_now()
+
+        self.store_a.sync.sync_now()
+
+        self.assertEqual(ignored.read_text(encoding="utf-8"), "仅保留在本机\n")
+        self.assertFalse(tracked.exists())
+        self.assertIn(incoming.id, {project.id for project in self.store_a.list_projects()})
+        self.assertNotIn("contextspace/private-notes.md", _git("ls-files", cwd=self.root_a).stdout)
+
+    def test_remote_cannot_overwrite_ignored_local_file(self) -> None:
+        relative = "contextspace/private-notes.md"
+        for root in (self.root_a, self.root_b):
+            (root / "contextspace").mkdir(exist_ok=True)
+        (self.root_a / relative).write_text("本机私有", encoding="utf-8")
+        with (self.root_a / ".git" / "info" / "exclude").open("a") as stream:
+            stream.write(f"\n{relative}\n")
+        (self.root_b / relative).write_text("远端内容", encoding="utf-8")
+        self.store_b.sync.sync_now()
+
+        with self.assertRaisesRegex(SchemaConflictError, "本机未跟踪文件冲突"):
+            self.store_a.sync.sync_now()
+
+        self.assertEqual((self.root_a / relative).read_text(encoding="utf-8"), "本机私有")
+        self.store_a.assert_writable()
+
+    def test_failed_push_refreshes_live_projects_and_store_indexes(self) -> None:
+        registry = ProjectRegistry(self.store_a)
+        self.store_a.list_nodes(self.project_a.id)
+        self.store_a._last_activity_index[self.project_a.id] = 0.0
+        payload_path = self.root_b / "projects" / self.project_a.id / "project.json"
+        payload = json.loads(payload_path.read_text())
+        payload["name"] = "远端新名称"
+        payload_path.write_text(json.dumps(payload))
+        incoming = self.store_b.create_project(Project(root_path="/b/incoming", name="远端新增"))
+        node = self.store_b.create_node(Node(project_id=self.project_a.id, state=NodeState.DONE, model_preset_id=self.project_a.model_preset_id))
+        self.store_b.sync.sync_now()
+        self.store_a.create_tag("本机未推送", "coral")
+        hook = self.remote / "hooks" / "pre-receive"
+        hook.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+        hook.chmod(0o755)
+
+        with patch("miniclaw2.app.install_hooks"), TestClient(create_app(registry)) as client:
+            response = client.post("/global-state/sync")
+            self.assertEqual(response.status_code, 409, response.text)
+            self.assertEqual(registry.get_project(self.project_a.id).name, "远端新名称")
+            self.assertIsNotNone(registry.get_project(incoming.id))
+            self.assertIsNotNone(self.store_a.load_node(self.project_a.id, node.id))
+            self.assertGreater(self.store_a.project_last_activity_at(self.project_a.id), 0.0)
+            changed = client.patch(f"/sessions/{self.project_a.id}/preferences", json={"concurrency": 2})
+            self.assertEqual(changed.status_code, 200, changed.text)
+        self.assertEqual(json.loads((self.root_a / "projects" / self.project_a.id / "project.json").read_text())["name"], "远端新名称")
+
+
+@pytest.mark.parametrize("endpoint", ["/global-state/sync", "/global-state/sync/setup"])
+def test_sync_worker_keeps_loop_responsive_and_gates_storage(tmp_path: Path, endpoint: str) -> None:
+    registry = ProjectRegistry(Store(tmp_path))
+    project = registry.create_project(name="并发同步", cwd=str(tmp_path))
+    entered, release = Event(), Event()
+    worker_threads: list[int] = []
+
+    def slow_git(*_arguments: object) -> None:
+        worker_threads.append(get_ident())
+        entered.set()
+        assert release.wait(10)
+        raise SyncError("模拟远端失败")
+
+    method = "setup_existing_store" if endpoint.endswith("setup") else "sync_now"
+    app = create_app(registry)
+    with patch.object(registry.store.sync, method, side_effect=slow_git), patch("miniclaw2.app.install_hooks"):
+        with TestClient(app) as client, ThreadPoolExecutor(max_workers=2) as pool:
+            with client.websocket_connect(f"/ws/{project.id}") as websocket:
+                syncing = pool.submit(client.post, endpoint, json={"remote_url": "/unused", "privacy_acknowledged": True})
+                try:
+                    assert entered.wait(5)
+                    health = pool.submit(client.get, "/health").result(timeout=2)
+                    assert health.json()["status"] == "maintenance"
+                    assert client.get("/migrations/status").json()["state"] == "waiting_for_idle"
+                    assert client.patch(f"/sessions/{project.id}", json={"name": "不应写入"}).status_code == 503
+                    assert client.post("/global-state/sync").status_code == 503
+                    websocket.send_json({"type": "user_message", "text": "不应启动"})
+                    assert websocket.receive_json()["type"] == "error"
+                    assert registry._runtimes[project.id].runner_tasks == {}
+                    assert not registry.prepare_self_update()
+                    assert client.portal.call(get_ident) not in worker_threads
+                finally:
+                    release.set()
+                assert syncing.result(timeout=5).status_code == 409
+            assert client.get("/health").json()["status"] == "ok"
+            assert client.get(f"/sessions/{project.id}").json()["name"] == "并发同步"
+            assert not registry._storage_sync_pending
+
+
+@pytest.mark.parametrize("task_done", [False, True])
+def test_sync_waits_for_runner_finalizers(tmp_path: Path, task_done: bool) -> None:
+    registry = ProjectRegistry(Store(tmp_path))
+    project = registry.create_project(name="终结写入", cwd=str(tmp_path))
+    task: Future[None] = Future()
+    if task_done:
+        task.set_result(None)
+    runtime = registry._runtimes[project.id]
+    with patch.object(runtime, "runner_tasks", {"node": task}), patch.object(registry.store.sync, "sync_now") as sync_now:
+        response = TestClient(create_app(registry)).post("/global-state/sync")
+    assert response.status_code == 409
+    sync_now.assert_not_called()
+    assert not registry._storage_sync_pending
+
+
+def test_sync_waits_for_admitted_http_requests(tmp_path: Path) -> None:
+    registry = ProjectRegistry(Store(tmp_path))
+    app = create_app(registry)
+    entered, release = Event(), Event()
+
+    @app.get("/slow-storage-request")
+    def slow_request() -> dict[str, bool]:
+        entered.set()
+        assert release.wait(10)
+        return {"done": True}
+
+    with patch("miniclaw2.app.install_hooks"), patch.object(registry.store.sync, "sync_now") as sync_now:
+        with TestClient(app) as client, ThreadPoolExecutor(max_workers=1) as pool:
+            reading = pool.submit(client.get, "/slow-storage-request")
+            try:
+                assert entered.wait(5)
+                assert client.post("/global-state/sync").status_code == 409
+                sync_now.assert_not_called()
+            finally:
+                release.set()
+            assert reading.result(timeout=5).status_code == 200
+
+
+def test_cancelled_sync_holds_gate_until_worker_finishes(tmp_path: Path) -> None:
+    registry = ProjectRegistry(Store(tmp_path))
+    entered, release = Event(), Event()
+    app = create_app(registry)
+    endpoint = next(route.endpoint for route in app.routes if route.path == "/global-state/sync")
+
+    def slow_sync() -> None:
+        entered.set()
+        assert release.wait(10)
+
+    async def cancel_sync() -> None:
+        syncing = asyncio.create_task(endpoint())
+        try:
+            assert await asyncio.to_thread(entered.wait, 5)
+            syncing.cancel()
+            await asyncio.sleep(0)
+            assert app.state.storage_syncing
+            assert registry._storage_sync_pending
+        finally:
+            release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await syncing
+        assert not app.state.storage_syncing
+        assert not registry._storage_sync_pending
+
+    with patch.object(registry.store.sync, "sync_now", side_effect=slow_sync):
+        asyncio.run(cancel_sync())
 
 
 if __name__ == "__main__":

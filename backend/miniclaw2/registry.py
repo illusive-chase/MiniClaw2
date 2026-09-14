@@ -341,6 +341,7 @@ class ProjectRegistry:
         ] = {}
         self._initialized = False
         self._self_update_pending = False
+        self._storage_sync_pending = False
         if initialize:
             self.initialize()
 
@@ -438,7 +439,7 @@ class ProjectRegistry:
 
     def schedule_all(self) -> None:
         """Fill execution slots for durable queued work after startup."""
-        if self.store.read_only_reason is not None or self._self_update_pending:
+        if self._storage_sync_pending or self._self_update_pending or self.store.read_only_reason is not None:
             return
         for runtime in self._runtimes.values():
             if self.is_native_project(runtime.project):
@@ -451,7 +452,7 @@ class ProjectRegistry:
         flag transition and the subsequent blocker snapshot are serialized
         with all launch paths.
         """
-        if self._self_update_pending:
+        if self._self_update_pending or self._storage_sync_pending:
             return False
         self._self_update_pending = True
         return True
@@ -475,8 +476,20 @@ class ProjectRegistry:
     def require_storage_idle(self) -> None:
         from .sync import SyncError
 
-        if self.finalizing_runner_nodes():
+        if any(runtime.runner_tasks or runtime.runners for runtime in self._runtimes.values()):
             raise SyncError("等待当前任务及终结写入完成后再同步；不会强行停止任务")
+
+    def prepare_storage_sync(self) -> None:
+        from .sync import SyncError
+
+        if self._storage_sync_pending or self._self_update_pending:
+            raise SyncError("存储正在同步或更新，请稍后重试")
+        self.require_storage_idle()
+        self._storage_sync_pending = True
+
+    def finish_storage_sync(self) -> None:
+        self._storage_sync_pending = False
+        self.schedule_all()
 
     def reload_from_store(self) -> None:
         """Refresh project metadata after a successful manual merge."""
@@ -1541,6 +1554,7 @@ class ProjectRegistry:
     ) -> Node | None:
         if (
             self._self_update_pending
+            or self._storage_sync_pending
             or node.id in rt.runner_tasks
             or not rt.has_capacity()
         ):
@@ -1570,7 +1584,7 @@ class ProjectRegistry:
         return runner
 
     def _schedule_queued(self, rt: ProjectRuntime) -> None:
-        if self._self_update_pending or not self.is_native_project(rt.project):
+        if self._storage_sync_pending or self._self_update_pending or not self.is_native_project(rt.project):
             return
         while rt.has_capacity():
             if self._exclusive_node_active(rt):

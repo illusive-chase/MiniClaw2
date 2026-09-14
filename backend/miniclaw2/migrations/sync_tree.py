@@ -75,7 +75,7 @@ def tree(root: Path, directory: Path, index: Path) -> str:
     return git(root, "write-tree", index=index)
 
 
-def merge_remote(root: Path, remote_ref: str) -> None:
+def merge_remote(root: Path, remote_ref: str) -> bool:
     local_head = git(root, "rev-parse", "HEAD")
     remote_head = git(root, "rev-parse", remote_ref)
     with tempfile.TemporaryDirectory(prefix="sync-", dir=root / ".migration-local") as temporary:
@@ -84,15 +84,16 @@ def merge_remote(root: Path, remote_ref: str) -> None:
         extract(root, remote_head, remote)
         normalize(remote)
         extract(root, local_head, local)
+        local_files = files(local)
         normalize(local)
         if local_head == remote_head:
-            return
+            return False
         ancestor = git(root, "merge-base", local_head, remote_head)
         remote_tree = tree(root, remote, directory / "remote.index")
         if ancestor == local_head:
             merged_tree = remote_tree
         elif ancestor == remote_head:
-            return
+            return False
         else:
             extract(root, ancestor, base)
             normalize(base)
@@ -106,12 +107,18 @@ def merge_remote(root: Path, remote_ref: str) -> None:
         target = remote_head if ancestor == local_head and merged_tree == remote_original_tree else git(
             root, "commit-tree", merged_tree, "-p", local_head, "-p", remote_head, input_text="规范化并合并元数据\n",
         )
+        result_files = files(result)
+        for relative, scope in result_files.items():
+            destination = root / relative
+            if scope == "shared" and relative not in local_files and destination.exists():
+                if not destination.is_file() or destination.read_bytes() != (result / relative).read_bytes():
+                    raise MigrationError("schema_conflict", "远端文件与本机未跟踪文件冲突", destination)
         transaction = Transaction(root, [root])
         stage = transaction.stage(0)
-        for relative, scope in files(stage).items():
-            if scope == "shared":
-                (stage / relative).unlink()
-        for relative, scope in files(result).items():
+        for relative, scope in local_files.items():
+            if scope == "shared" and relative not in result_files:
+                (stage / relative).unlink(missing_ok=True)
+        for relative, scope in result_files.items():
             if scope == "shared":
                 durable_copy(result / relative, stage / relative)
         durable_copy(result / "schema.json", stage / "schema.json")
@@ -119,3 +126,4 @@ def merge_remote(root: Path, remote_ref: str) -> None:
         transaction.journal["git"] = {"before": local_head, "after": target}
         transaction.decide()
         transaction.publish()
+        return True

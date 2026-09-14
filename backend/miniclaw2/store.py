@@ -88,6 +88,8 @@ class Store:
         self._last_activity_index: dict[str, float] = {}
         self.sync.add_success_callback(self.invalidate_owner_index)
         self.sync.add_success_callback(self._refresh_last_activity_after_sync)
+        self.sync.add_publication_callback(self.invalidate_owner_index)
+        self.sync.add_publication_callback(self._refresh_last_activity_after_sync)
         self.refresh_last_activity_index()
 
     @property

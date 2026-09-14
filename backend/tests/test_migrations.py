@@ -11,12 +11,13 @@ from types import SimpleNamespace
 import pytest
 from fastapi.testclient import TestClient
 
-from miniclaw2.domain import Project
+from miniclaw2.domain import Node, Project
 from miniclaw2.migrations.catalog import CURRENT_VERSION, MINIMUM_VERSION, check_manifest, marker, steps, version_of
 from miniclaw2.migrations.coordinator import coordinator, open_storage
 from miniclaw2.migrations.errors import MigrationError
 from miniclaw2.migrations.inventory import files
 from miniclaw2.migrations.transaction import Transaction, atomic_json, recover
+from miniclaw2.migrations.validation import validate
 from miniclaw2.store import Store
 
 
@@ -100,6 +101,36 @@ def test_empty_and_repeat_startup_do_not_reapply(tmp_path: Path) -> None:
         Store(tmp_path)
     assert before == {str(path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
     assert store.list_projects() == []
+
+
+@pytest.mark.parametrize("name", ["node.json", "project.json", "local.json", "layout.json", "host.json", "head.json", "git_aliases.json"])
+def test_artifact_metadata_names_survive_validation_and_migration(tmp_path: Path, name: str) -> None:
+    from miniclaw2.artifacts import publish_artifacts, stored_artifact_path, workspace_artifacts_dir
+
+    store = Store(tmp_path / "store")
+    project = store.create_project(Project(root_path=str(tmp_path / "workspace")))
+    node = store.create_node(Node(project_id=project.id, model_preset_id=project.model_preset_id))
+    source = workspace_artifacts_dir(project, node.id)
+    source.mkdir(parents=True)
+    (source / name).write_text('["这是产物，不是元数据"]', encoding="utf-8")
+    assert publish_artifacts(project, node, [name], store)[0].status == "published"
+    validate(store.root)
+    atomic_json(store.root / "schema.json", marker(MINIMUM_VERSION))
+    store.coordinator.ready = False
+    migrated = Store(store.root)
+    assert stored_artifact_path(migrated, project.id, node.id, name).read_text(encoding="utf-8") == '["这是产物，不是元数据"]'
+
+
+@pytest.mark.parametrize("name,payload", [("local.json", {}), ("node.json", {"id": "错误标识"})])
+def test_metadata_records_still_require_valid_content(tmp_path: Path, name: str, payload: dict) -> None:
+    store = Store(tmp_path)
+    project = store.create_project(Project(root_path="/tmp/metadata"))
+    node = store.create_node(Node(project_id=project.id, model_preset_id=project.model_preset_id))
+    host = tmp_path / "projects" / project.id / "hosts" / store.machine.id
+    path = host / name if name == "local.json" else host / "nodes" / node.id / name
+    atomic_json(path, payload)
+    with pytest.raises(MigrationError):
+        validate(tmp_path)
 
 
 

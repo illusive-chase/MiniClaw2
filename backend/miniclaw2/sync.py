@@ -357,6 +357,8 @@ class SyncManager:
         self._pending_messages: list[str] = []
         self._pre_commit_callbacks: list[Callable[[], None]] = []
         self._success_callbacks: list[Callable[[], None]] = []
+        self._publication_callbacks: list[Callable[[], None]] = []
+        self.publication_generation = 0
         self._idle_callbacks: list[Callable[[], None]] = []
         self._file_commit_time_cache_head: str | None = None
         self._file_commit_time_cache: dict[Path, float | None] = {}
@@ -372,6 +374,10 @@ class SyncManager:
     def add_idle_callback(self, callback: Callable[[], None]) -> None:
         if callback not in self._idle_callbacks:
             self._idle_callbacks.append(callback)
+
+    def add_publication_callback(self, callback: Callable[[], None]) -> None:
+        if callback not in self._publication_callbacks:
+            self._publication_callbacks.append(callback)
 
     @property
     def configured(self) -> bool:
@@ -391,7 +397,8 @@ class SyncManager:
         with self._lock:
             self._refresh_identity()
             remote_refs = _run_raw(
-                ["git", "ls-remote", "--heads", remote_url], check=False
+                ["git", "ls-remote", "--heads", remote_url], check=False,
+                timeout=REMOTE_CHECK_TIMEOUT_SECONDS,
             )
             if remote_refs.returncode != 0:
                 raise SyncError(_command_error("cannot access remote", remote_refs))
@@ -417,6 +424,7 @@ class SyncManager:
                 "origin",
                 f"HEAD:{branch}",
                 check=False,
+                timeout=REMOTE_CHECK_TIMEOUT_SECONDS,
             )
             if pushed.returncode != 0:
                 self._record_failure()
@@ -584,7 +592,7 @@ class SyncManager:
             self.commit_now()
             branch = self._branch()
             try:
-                fetched = _git(self.root, "fetch", "origin", check=False)
+                fetched = _git(self.root, "fetch", "origin", check=False, timeout=REMOTE_CHECK_TIMEOUT_SECONDS)
                 if fetched.returncode != 0:
                     raise SyncError(_command_error("fetch failed", fetched))
                 remote_ref = f"origin/{branch}"
@@ -592,7 +600,10 @@ class SyncManager:
                     self.root, "rev-parse", "--verify", remote_ref, check=False
                 ).returncode == 0
                 if remote_exists:
-                    self._merge_remote(remote_ref)
+                    if self._merge_remote(remote_ref):
+                        self.publication_generation += 1
+                        for callback in tuple(self._publication_callbacks):
+                            callback()
                 pushed = _git(
                     self.root,
                     "push",
@@ -600,6 +611,7 @@ class SyncManager:
                     "origin",
                     f"HEAD:{branch}",
                     check=False,
+                    timeout=REMOTE_CHECK_TIMEOUT_SECONDS,
                 )
                 if pushed.returncode != 0:
                     raise SyncError(_command_error("push failed", pushed))
@@ -609,11 +621,11 @@ class SyncManager:
             self._record_success()
             return self.status()
 
-    def _merge_remote(self, remote_ref: str) -> None:
+    def _merge_remote(self, remote_ref: str) -> bool:
         from .migrations.sync_tree import merge_remote
 
         try:
-            merge_remote(self.root, remote_ref)
+            return merge_remote(self.root, remote_ref)
         except MigrationError as exc:
             raise SchemaConflictError(str(exc)) from exc
 

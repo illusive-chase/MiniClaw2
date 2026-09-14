@@ -16,6 +16,7 @@ export default defineConfig({
     proxy: {
       "/active-nodes": backendUrl,
       "/global-state": backendUrl,
+      "/migrations": backendUrl,
       "/model-presets": backendUrl,
       "/principles": backendUrl,
       "/self-update": backendUrl,

@@ -19,6 +19,7 @@ dependencies = [
 test = [
     "httpx2>=2.0",
     "pytest>=8.0",
+    "setuptools>=68.0",
 ]
 
 [project.scripts]
