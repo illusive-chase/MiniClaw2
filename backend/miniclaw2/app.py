@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import quote
 
+from anyio import CancelScope
 from fastapi import FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -711,7 +712,13 @@ def create_app(
             try:
                 await asyncio.shield(worker)
             except asyncio.CancelledError:
-                await worker
+                with CancelScope(shield=True):
+                    while not worker.done():
+                        try:
+                            await asyncio.shield(worker)
+                        except asyncio.CancelledError:
+                            continue
+                    worker.result()
                 raise
             completed = True
         except SyncError as exc:

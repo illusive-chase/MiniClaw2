@@ -11,6 +11,7 @@ from threading import Event, get_ident
 from unittest.mock import patch
 
 import pytest
+from anyio import CancelScope
 from fastapi.testclient import TestClient
 
 import miniclaw2.sync as sync_module
@@ -419,6 +420,37 @@ class GitMetadataSyncTests(unittest.TestCase):
         self.assertEqual((self.root_a / relative).read_text(encoding="utf-8"), "本机私有")
         self.store_a.assert_writable()
 
+    def test_remote_cannot_write_below_ignored_local_file(self) -> None:
+        relative = "contextspace/notes"
+        ignored = self.root_a / relative
+        ignored.parent.mkdir(exist_ok=True)
+        ignored.write_text("本机私有", encoding="utf-8")
+        with (self.root_a / ".git" / "info" / "exclude").open("a") as stream:
+            stream.write(f"\n{relative}\n")
+        incoming = self.root_b / relative / "nested" / "doc.md"
+        incoming.parent.mkdir(parents=True)
+        incoming.write_text("远端内容", encoding="utf-8")
+        self.store_b.sync.sync_now()
+        starting_head = _git("rev-parse", "HEAD", cwd=self.root_a).stdout
+        generation = self.store_a.sync.publication_generation
+
+        with self.assertRaisesRegex(SchemaConflictError, "本机未跟踪文件冲突"):
+            self.store_a.sync.sync_now()
+
+        self.assertEqual(ignored.read_text(encoding="utf-8"), "本机私有")
+        self.assertEqual(_git("rev-parse", "HEAD", cwd=self.root_a).stdout, starting_head)
+        self.assertEqual(self.store_a.sync.publication_generation, generation)
+        self.assertFalse((self.root_a / ".migration-local" / "pending.json").exists())
+        self.store_a.assert_writable()
+
+        ignored.unlink()
+        self.store_a.sync.sync_now()
+        self.assertEqual(
+            (self.root_a / relative / "nested" / "doc.md").read_text(encoding="utf-8"),
+            "远端内容",
+        )
+        self.store_a.assert_writable()
+
     def test_failed_push_refreshes_live_projects_and_store_indexes(self) -> None:
         registry = ProjectRegistry(self.store_a)
         self.store_a.list_nodes(self.project_a.id)
@@ -524,32 +556,74 @@ def test_sync_waits_for_admitted_http_requests(tmp_path: Path) -> None:
             assert reading.result(timeout=5).status_code == 200
 
 
-def test_cancelled_sync_holds_gate_until_worker_finishes(tmp_path: Path) -> None:
+@pytest.mark.parametrize("cancellation", ["once", "repeated", "scope"])
+@pytest.mark.parametrize("publish", [False, True])
+def test_cancelled_sync_holds_gate_until_worker_finishes(
+    tmp_path: Path, cancellation: str, publish: bool,
+) -> None:
     registry = ProjectRegistry(Store(tmp_path))
-    entered, release = Event(), Event()
+    entered, release, finished = Event(), Event(), Event()
+    incoming = Project(root_path=str(tmp_path / "incoming"), name="取消后完成同步的项目")
     app = create_app(registry)
     endpoint = next(route.endpoint for route in app.routes if route.path == "/global-state/sync")
+    reload_from_store = registry.reload_from_store
 
     def slow_sync() -> None:
         entered.set()
         assert release.wait(10)
+        if publish:
+            registry.store.create_project(incoming)
+            registry.store.sync.publication_generation += 1
+        finished.set()
+
+    def reload_after_sync() -> None:
+        assert finished.is_set()
+        assert app.state.storage_syncing
+        assert registry._storage_sync_pending
+        reload_from_store()
 
     async def cancel_sync() -> None:
-        syncing = asyncio.create_task(endpoint())
+        scope = CancelScope()
+
+        async def scoped_sync() -> None:
+            with scope:
+                await endpoint()
+
+        syncing = asyncio.create_task(scoped_sync())
         try:
             assert await asyncio.to_thread(entered.wait, 5)
-            syncing.cancel()
-            await asyncio.sleep(0)
-            assert app.state.storage_syncing
-            assert registry._storage_sync_pending
+            for _attempt in range(3 if cancellation == "repeated" else 1):
+                if cancellation == "scope":
+                    scope.cancel()
+                else:
+                    syncing.cancel()
+                await asyncio.sleep(0.01)
+                assert not syncing.done()
+                assert app.state.storage_syncing
+                assert registry._storage_sync_pending
         finally:
             release.set()
-        with pytest.raises(asyncio.CancelledError):
-            await syncing
+            try:
+                await syncing
+            except asyncio.CancelledError:
+                pass
+            assert await asyncio.to_thread(finished.wait, 5)
+        if cancellation == "scope":
+            assert scope.cancelled_caught
+        else:
+            assert syncing.cancelled()
         assert not app.state.storage_syncing
         assert not registry._storage_sync_pending
+        if publish:
+            assert registry.get_project(incoming.id) is not None
+            reload_mock.assert_called_once_with()
+        else:
+            reload_mock.assert_not_called()
 
-    with patch.object(registry.store.sync, "sync_now", side_effect=slow_sync):
+    with (
+        patch.object(registry.store.sync, "sync_now", side_effect=slow_sync),
+        patch.object(registry, "reload_from_store", side_effect=reload_after_sync) as reload_mock,
+    ):
         asyncio.run(cancel_sync())
 
 

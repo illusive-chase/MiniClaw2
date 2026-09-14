@@ -109,8 +109,14 @@ def merge_remote(root: Path, remote_ref: str) -> bool:
         )
         result_files = files(result)
         for relative, scope in result_files.items():
+            if scope != "shared" or relative in local_files:
+                continue
+            for ancestor in Path(relative).parents:
+                ancestor_path = root / ancestor
+                if ancestor.as_posix() not in local_files and ancestor_path.exists() and not ancestor_path.is_dir():
+                    raise MigrationError("schema_conflict", "远端文件与本机未跟踪文件冲突", ancestor_path)
             destination = root / relative
-            if scope == "shared" and relative not in local_files and destination.exists():
+            if destination.exists():
                 if not destination.is_file() or destination.read_bytes() != (result / relative).read_bytes():
                     raise MigrationError("schema_conflict", "远端文件与本机未跟踪文件冲突", destination)
         transaction = Transaction(root, [root])
