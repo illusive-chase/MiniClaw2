@@ -3,7 +3,7 @@ import { toNodeInfo } from "../nodeProjection";
 import type {
   ArtifactRef,
   CommitDescriptor,
-  ContextBundle,
+  ContextBundleSources,
   NodeInfo,
   SessionHost,
   TemplateInstanceRecord,
@@ -668,7 +668,7 @@ export type BuildGraphArgs = {
   canMutateLaneLayout?: boolean;
   canMutateNode?: (nodeId: string) => boolean;
   /** per-node context bundles, keyed by node id, used to materialize context + loads edges */
-  contextBundlesByNodeId: Record<string, ContextBundle | null | undefined>;
+  contextBundlesByNodeId: Record<string, ContextBundleSources | null | undefined>;
   /** planspaces known from the project binding, including empty lanes */
   knownPlanspaceIds: string[];
   /** planspaces hidden by per-project view state */
@@ -2685,7 +2685,7 @@ function colorForPlanspace(
 }
 
 function collectPlanspaceColorOverrides(
-  contextBundlesByNodeId: Record<string, ContextBundle | null | undefined>,
+  contextBundlesByNodeId: Record<string, ContextBundleSources | null | undefined>,
 ): Map<string, string> {
   const out = new Map<string, string>();
   for (const bundle of Object.values(contextBundlesByNodeId)) {

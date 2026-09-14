@@ -591,7 +591,12 @@ export type ContextBundlePlugRef = {
   title?: string;
 };
 
-export type ContextBundle = {
+export type ContextBundleSources = {
+  sources: ContextBundleSource[];
+  active_planspace?: ContextBundlePlugRef | null;
+};
+
+export type ContextBundle = ContextBundleSources & {
   bundle_id: string;
   created_at: number;
   project_id?: string;
@@ -600,8 +605,6 @@ export type ContextBundle = {
   /** The lane the node belonged to at launch. A frozen key name that outlived
    * the project cursor it was named for; the backend writes the node's lane. */
   active_planspace_id?: string | null;
-  active_planspace?: ContextBundlePlugRef | null;
-  sources: ContextBundleSource[];
   system_text?: string;
   turn_text?: string;
 };

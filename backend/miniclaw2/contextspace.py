@@ -255,6 +255,25 @@ def load_context_bundle_for_node(
         return None
 
 
+def load_context_bundle_sources_for_node(
+    node: Node,
+    *,
+    store_root: Path | None = None,
+) -> dict[str, Any] | None:
+    try:
+        bundle = load_context_bundle_for_node(node, store_root=store_root)
+    except UnicodeError:
+        return None
+    if not isinstance(bundle, dict) or not isinstance(bundle.get("sources"), list):
+        return None
+    if any(not isinstance(source, dict) for source in bundle["sources"]):
+        return None
+    return {
+        "sources": bundle["sources"],
+        "active_planspace": bundle.get("active_planspace"),
+    }
+
+
 @storage_function
 def ensure_contextspace_root(
     store_root: Path | None = None,

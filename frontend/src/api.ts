@@ -1,6 +1,7 @@
 import type {
   ActiveNodesResponse,
   ContextBundle,
+  ContextBundleSources,
   EventRecord,
   NodeDiff,
   NodeInfo,
@@ -867,11 +868,25 @@ export async function getReviewedDiff(
   return res.json();
 }
 
+export async function getContextBundleSources(
+  sessionId: string,
+  nodeIds?: string[],
+  signal?: AbortSignal,
+): Promise<Record<string, ContextBundleSources | null>> {
+  const query = new URLSearchParams();
+  for (const nodeId of nodeIds ?? []) query.append("node_ids", nodeId);
+  const suffix = query.size ? `?${query}` : "";
+  const res = await fetch(`/sessions/${sessionId}/context-bundles${suffix}`, { signal });
+  if (!res.ok) throw new Error(`读取上下文来源失败：${res.status}`);
+  return res.json();
+}
+
 export async function getNodeContextBundle(
   sessionId: string,
   nodeId: string,
+  signal?: AbortSignal,
 ): Promise<ContextBundle | null> {
-  const res = await fetch(`/sessions/${sessionId}/nodes/${nodeId}/context-bundle`);
+  const res = await fetch(`/sessions/${sessionId}/nodes/${nodeId}/context-bundle`, { signal });
   if (res.status === 404) return null;
   if (!res.ok) throw new Error(`getNodeContextBundle failed: ${res.status}`);
   return res.json();

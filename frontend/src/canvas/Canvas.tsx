@@ -22,7 +22,7 @@ import "reactflow/dist/style.css";
 import type {
   ArtifactExtension,
   CommitDescriptor,
-  ContextBundle,
+  ContextBundleSources,
   NodeInfo,
   NodePosition,
   SessionHost,
@@ -189,7 +189,7 @@ export type CanvasProps = {
   activeNodeIds: string[];
   /** Agent nodes whose inline request panel must stay above sibling nodes. */
   pendingGateNodeIds?: string[];
-  contextBundlesByNodeId: Record<string, ContextBundle | null | undefined>;
+  contextBundlesByNodeId: Record<string, ContextBundleSources | null | undefined>;
   knownPlanspaceIds: string[];
   hiddenPlanspaceIds: string[];
   /** The lane the user is looking at. Drives the lane accent, the header `+`,

@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toNodeInfo } from "./nodeProjection";
+import { useContextBundleSources } from "./useContextBundleSources";
+import { useNodeContextBundle } from "./useNodeContextBundle";
 import {
   cancelProjectContext,
   createBlankPlanspace,
@@ -8,7 +10,6 @@ import {
   deleteTemplateInstance,
   deleteVirtual,
   getSession,
-  getNodeContextBundle,
   getNodeDiff,
   getReviewedDiff,
   getSessionContextSpace,
@@ -105,7 +106,6 @@ import { TextZoomProvider } from "./components/TextZoom";
 import type {
   ActiveNodeEntry,
   ArtifactExtension,
-  ContextBundle,
   EventRecord,
   InteractionRequest,
   NodeDiff,
@@ -405,13 +405,6 @@ export function App() {
       : [];
   const [selectedDiff, setSelectedDiff] = useState<NodeDiff | null>(null);
   const [selectedDiffLoading, setSelectedDiffLoading] = useState(false);
-  const [selectedContextBundle, setSelectedContextBundle] = useState<ContextBundle | null>(null);
-  const [selectedContextBundleLoading, setSelectedContextBundleLoading] = useState(false);
-
-  /* Aggregated bundles: fills in as the user explores. Keyed by node id. */
-  const [contextBundlesByNodeId, setContextBundlesByNodeId] = useState<
-    Record<string, ContextBundle | null>
-  >({});
 
   /* User-wide library entries. The canvas uses these only to resolve bound
    * entries; the complete collection lives in LibraryDock. */
@@ -502,6 +495,10 @@ export function App() {
    * nodes never briefly flash visible during the load-order race. */
   const [initialLoadComplete, setInitialLoadComplete] = useState(false);
   const [nodesHydratedSessionId, setNodesHydratedSessionId] = useState<string | null>(null);
+  const contextBundlesByNodeId = useContextBundleSources(
+    session && nodesHydratedSessionId === session.id ? session.id : null,
+    nodes,
+  );
 
   const [focusRequestVersion, setFocusRequestVersion] = useState(0);
   const [newDirectionRequestVersion, setNewDirectionRequestVersion] = useState(0);
@@ -682,11 +679,6 @@ export function App() {
   const lastLayoutSaveRef = useRef<Promise<SessionInfo> | null>(null);
   const layoutSaveChainRef = useRef<Promise<void>>(Promise.resolve());
   const openProjectRequestRef = useRef(0);
-  /* Node ids whose bundle prefetch is currently in flight. Each fetch
-   * resolution updates contextBundlesByNodeId, which retriggers the prefetch
-   * effect; without this guard the still-in-flight nodes would be refetched
-   * on every resolution. */
-  const inflightBundleFetchRef = useRef<Set<string>>(new Set());
 
   /* Keyboard focus must not enter the panel while it's translated offscreen —
    * pointer-events-none only blocks the mouse, and aria-hidden without inert
@@ -734,9 +726,6 @@ export function App() {
       selectedEventsFlushTimerRef.current = null;
     }
     setSelectedDiff(null);
-    setSelectedContextBundle(null);
-    setSelectedContextBundleLoading(false);
-    setContextBundlesByNodeId({});
     setSessionContextSpace(null);
     setSessionContextSpaceLoading(false);
     setSessionContextSpaceSaving(false);
@@ -759,7 +748,6 @@ export function App() {
     setCenterOnNodeRequest(null);
     setHiddenLaneNotice(null);
     setInitialLoadComplete(false);
-    inflightBundleFetchRef.current.clear();
   }, []);
 
   const acknowledgeNewDirectionRequest = useCallback(() => {
@@ -935,6 +923,8 @@ export function App() {
     () => nodes.find((n) => n.id === inspectedNodeId) ?? null,
     [nodes, inspectedNodeId],
   );
+  const { bundle: selectedContextBundle, loading: selectedContextBundleLoading } =
+    useNodeContextBundle(session?.id, selectedNode);
   const isNodeNative = useCallback(
     (node: NodeInfo) => nodeBelongsToHost(node, session?.local_machine_id),
     [session?.local_machine_id],
@@ -2218,88 +2208,6 @@ export function App() {
     selectedNode?.subtype,
     selectedNode?.state,
   ]);
-
-  useEffect(() => {
-    if (!session?.id || !inspectedNodeId || selectedNode?.state === "virtual") {
-      setSelectedContextBundle(null);
-      setSelectedContextBundleLoading(false);
-      return;
-    }
-    let cancelled = false;
-    setSelectedContextBundleLoading(true);
-    getNodeContextBundle(session.id, inspectedNodeId)
-      .then((bundle) => {
-        if (cancelled) return;
-        setSelectedContextBundle(bundle);
-        /* aggregate so the context lane has data even after the user navigates away */
-        if (bundle) {
-          setContextBundlesByNodeId((prev) => ({
-            ...prev,
-            [inspectedNodeId]: bundle,
-          }));
-        }
-      })
-      .catch((err) => {
-        if (!cancelled) {
-          console.error("get node context bundle failed:", err);
-          setSelectedContextBundle(null);
-        }
-      })
-      .finally(() => {
-        if (!cancelled) setSelectedContextBundleLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [
-    session?.id,
-    inspectedNodeId,
-    selectedNode?.context_bundle_id,
-    selectedNode?.context_bundle_path,
-    selectedNode?.state,
-    selectedNode?.finished_at,
-  ]);
-
-  /* When the node list refreshes, prefetch bundles for terminal nodes we haven't
-   * loaded yet, capped to avoid hammering the backend on big projects. The
-   * `inflightBundleFetchRef` guard prevents the self-modifying dep loop where
-   * each successful fetch updates `contextBundlesByNodeId`, retriggers this
-   * effect, and refetches the still-in-flight nodes. */
-  useEffect(() => {
-    if (!session?.id) return;
-    const sessionId = session.id;
-    const missing = nodes
-      .filter(
-        (n) =>
-          n.kind !== "op" &&
-          TERMINAL_STATES.has(n.state) &&
-          n.context_bundle_id &&
-          contextBundlesByNodeId[n.id] === undefined &&
-          !inflightBundleFetchRef.current.has(n.id),
-      )
-      .slice(0, 6);
-    if (missing.length === 0) return;
-    let cancelled = false;
-    for (const n of missing) inflightBundleFetchRef.current.add(n.id);
-    void Promise.all(
-      missing.map(async (n) => {
-        try {
-          const bundle = await getNodeContextBundle(sessionId, n.id);
-          if (cancelled) return;
-          setContextBundlesByNodeId((prev) =>
-            prev[n.id] !== undefined ? prev : { ...prev, [n.id]: bundle },
-          );
-        } catch (err) {
-          console.warn("prefetch bundle failed", n.id, err);
-        } finally {
-          inflightBundleFetchRef.current.delete(n.id);
-        }
-      }),
-    );
-    return () => {
-      cancelled = true;
-    };
-  }, [session?.id, nodes, contextBundlesByNodeId]);
 
   /* WS event handling */
   const flushSelectedEvents = useCallback(() => {

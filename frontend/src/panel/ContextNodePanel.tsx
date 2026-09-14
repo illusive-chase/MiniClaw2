@@ -6,16 +6,18 @@ import {
   type SkillSummary,
 } from "../api";
 import type { AttachedSkillDisplay } from "../canvas/layout";
-import type { ContextBundle, NodeInfo } from "../types";
+import type { ContextBundle, ContextBundleSources, NodeInfo } from "../types";
+import { useNodeContextBundle } from "../useNodeContextBundle";
 
 export type ContextNodePanelProps = {
+  sessionId?: string;
+  sampleNodeId?: string;
   identityKey: string;
   path: string;
   /** node ids that loaded this context */
   loadedByNodeIds: string[];
   nodesById: Map<string, NodeInfo>;
-  /** the bundle from the most-recent loader, used to read file content */
-  sampleBundle: ContextBundle | null;
+  sampleBundle: ContextBundleSources | null;
   onSelectConsumer: (nodeId: string) => void;
   /** Populated when the selected context tile is a user-wide principle. */
   principle?: PrincipleSummary | null;
@@ -34,6 +36,8 @@ export type ContextNodePanelProps = {
  * that loaded it. The body of the file is rendered when the bundle includes it.
  */
 export function ContextNodePanel({
+  sessionId,
+  sampleNodeId,
   path,
   loadedByNodeIds,
   nodesById,
@@ -51,6 +55,9 @@ export function ContextNodePanel({
     error: boolean;
   } | null>(null);
   const source = sampleBundle?.sources.find((s) => s.path === path) ?? null;
+  const detail = useNodeContextBundle(
+    sessionId, !skill && sampleNodeId ? nodesById.get(sampleNodeId) : null,
+  );
   const kindHint = principle ? "principle" : skill ? "skill" : source?.kind;
   const description = plainLanguageDescription(source?.scope, kindHint);
   const heading = principle?.title || skill?.title || filenameOf(path);
@@ -146,7 +153,15 @@ export function ContextNodePanel({
               </div>
             )
           ) : (
-            <ContextFileContent path={path} bundle={sampleBundle} />
+            detail.loading ? (
+              <div className="text-[12px] text-ink-muted">正在加载上下文正文…</div>
+            ) : detail.error ? (
+              <button type="button" onClick={detail.retry} className="text-[12px] text-ink-muted">
+                上下文正文加载失败，点击重试
+              </button>
+            ) : (
+              <ContextFileContent path={path} bundle={detail.bundle} />
+            )
           )}
         </section>
 

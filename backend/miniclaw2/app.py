@@ -18,7 +18,7 @@ from typing import Any, Literal
 from urllib.parse import quote
 
 from anyio import CancelScope
-from fastapi import FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Query, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
@@ -36,11 +36,21 @@ from .contextspace import (
     get_principle,
     list_principles,
     load_context_bundle_for_node,
+    load_context_bundle_sources_for_node,
     read_project_context,
     read_template_instances,
 )
 from .context_refresh import cancel_context_task, context_refresh_status, start_context_task
-from .domain import GitNodeId, GitPosition, LaneNodeId, LanePosition, Node, NodePosition
+from .domain import (
+    TERMINAL_NODE_STATES,
+    GitNodeId,
+    GitPosition,
+    LaneNodeId,
+    LanePosition,
+    Node,
+    NodeKind,
+    NodePosition,
+)
 from .node_projection import node_list_projection
 from .events import (
     ContextRefreshUpdated,
@@ -2170,6 +2180,23 @@ def create_app(
             headers["Referrer-Policy"] = "no-referrer"
         headers["Content-Type"] = content_type
         return Response(content=content, headers=headers)
+
+    @app.get("/sessions/{sid}/context-bundles", response_model=dict[str, dict[str, Any] | None])
+    def get_context_bundles(
+        sid: str, node_ids: list[str] | None = Query(default=None),
+    ) -> dict[str, dict[str, Any] | None]:
+        nodes = registry.list_nodes(sid)
+        if nodes is None:
+            raise HTTPException(404, "session not found")
+        requested = set(node_ids) if node_ids is not None else None
+        return {
+            node.id: load_context_bundle_sources_for_node(node, store_root=registry.store.root)
+            for node in nodes
+            if node.kind != NodeKind.OP
+            and node.state in TERMINAL_NODE_STATES
+            and (node.context_bundle_id or node.context_bundle_path)
+            and (requested is None or node.id in requested)
+        }
 
     @app.get("/sessions/{sid}/nodes/{nid}/context-bundle", response_model=dict[str, Any])
     def get_node_context_bundle(sid: str, nid: str) -> dict[str, Any]:

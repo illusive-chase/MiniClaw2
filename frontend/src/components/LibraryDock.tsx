@@ -13,7 +13,7 @@ import {
   type SkillSummary,
 } from "../api";
 import type {
-  ContextBundle,
+  ContextBundleSources,
   ModelPreset,
   NodeInfo,
   TemplateSummary,
@@ -46,7 +46,7 @@ type Props = {
   principles: PrincipleSummary[];
   skills: SkillSummary[];
   nodes: NodeInfo[];
-  contextBundlesByNodeId: Record<string, ContextBundle | null>;
+  contextBundlesByNodeId: Record<string, ContextBundleSources | null>;
   onRefreshEntries: () => Promise<unknown> | void;
   onDeletePrinciple: (slug: string) => Promise<void> | void;
   onDeleteSkill: (slug: string) => Promise<void> | void;
@@ -627,7 +627,7 @@ function setDragData(event: React.DragEvent, mime: string, value: string): void 
 
 function countBindings(
   nodes: NodeInfo[],
-  contextBundlesByNodeId: Record<string, ContextBundle | null>,
+  contextBundlesByNodeId: Record<string, ContextBundleSources | null>,
 ): Record<string, number> {
   const counts: Record<string, number> = {};
   const ownersByEntry = new Map<string, Set<string>>();

@@ -4,6 +4,7 @@ import type {
   ArtifactExtension,
   ClientMessage,
   ContextBundle,
+  ContextBundleSources,
   EventRecord,
   InteractionRequest,
   NodeDiff,
@@ -51,7 +52,7 @@ export type SidePanelProps = {
   contextBundleLoading: boolean;
 
   /* context-node data: bundles aggregated across nodes */
-  contextBundlesByNodeId: Record<string, ContextBundle | null | undefined>;
+  contextBundlesByNodeId: Record<string, ContextBundleSources | null | undefined>;
 
   /* project / context-space data */
   contextSpace: SessionContextSpaceInfo | null;
@@ -448,12 +449,16 @@ function Inner(props: SidePanelProps & {
   if (selection.kind === "context") {
     /* Find all nodes whose bundle includes this path. */
     const loadedByNodeIds: string[] = [];
-    let sample: ContextBundle | null = null;
+    let sample: ContextBundleSources | null = null;
+    let sampleNodeId: string | undefined;
     for (const [ownerId, bundle] of Object.entries(contextBundlesByNodeId)) {
       if (!bundle) continue;
       if (bundle.sources.some((s) => s.path === selection.path)) {
         loadedByNodeIds.push(ownerId);
-        if (!sample) sample = bundle;
+        if (!sample) {
+          sample = bundle;
+          sampleNodeId = ownerId;
+        }
       }
     }
     if (selection.plugId?.startsWith("skills.")) {
@@ -500,6 +505,8 @@ function Inner(props: SidePanelProps & {
       : undefined;
     return (
       <ContextNodePanel
+        sessionId={session?.id}
+        sampleNodeId={sampleNodeId}
         identityKey={selection.identityKey}
         path={selection.path}
         loadedByNodeIds={loadedByNodeIds}

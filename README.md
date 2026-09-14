@@ -387,6 +387,15 @@ WebSocket 不受影响。
 可运行 `cd frontend && npm run test:nodes` 检查投影、2000 节点画布一致性和缓存；
 设置 `BROWSER_BIN` 后运行 `npm run test:nodes:browser` 检查真实浏览器切换竞态。
 
+`GET /sessions/{sid}/context-bundles` 按节点 ID 批量返回终态非 op 节点的上下文来源，
+只保留 `sources` 和画布泳道颜色所需的 `active_planspace` 元数据，不传输正文。
+可用重复的 `node_ids` 查询参数筛选增量节点；缺失或损坏的快照返回 `null`，
+无快照引用及非终态节点不进入结果。前端首次读取合为一次请求、一次画布数据发布，
+随后仅为新终态或快照引用变化的节点补取；大量增量时退回整批，避免过长 URL。
+完整正文仅在节点详情或上下文卡片被选中时，通过原有单节点端点读取，不写回共享摘要。
+`cd frontend && npm run test:context` 覆盖批量请求、竞态及 2000 节点画布一致性。
+设置 `BROWSER_BIN` 后运行 `npm run test:context:browser` 验证实际 React 加载和切换行为。
+
 - Project/session REST APIs:
   `GET /sessions`, `POST /sessions`, `PATCH /sessions/{sid}`,
   `PATCH /sessions/{sid}/preferences`,
@@ -399,6 +408,7 @@ WebSocket 不受影响。
 - ContextSpace REST APIs:
   `GET /sessions/{sid}/contextspace`,
   `PATCH /sessions/{sid}/contextspace`,
+  `GET /sessions/{sid}/context-bundles`,
   `POST /sessions/{sid}/context/init`,
   `POST /sessions/{sid}/context/refresh`,
   `POST /sessions/{sid}/context/cancel`,
