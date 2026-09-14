@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import type { NodeInfo, NodePosition } from "../src/types";
-import { buildGraph, resizePlanspaceLanes, type BuildGraphArgs, type PlanspaceLaneData } from "../src/canvas/layout";
-import { filterNodePositions, nodePositionUpdate } from "../src/canvas/nodePositions";
+import { artifactNodeId, buildGraph, resizePlanspaceLanes, type BuildGraphArgs, type PlanspaceLaneData } from "../src/canvas/layout";
+import { filterNodePositions, hydrateLayoutPositions, nodePositionUpdate } from "../src/canvas/nodePositions";
 import { readCanvasViewport, saveCanvasViewport } from "../src/canvas/viewportStorage";
 import { filterGitPositions, gitPositionUpdate } from "../src/canvas/gitPositions";
 import { filterLanePositions, lanePositionUpdate } from "../src/canvas/lanePositions";
@@ -21,6 +21,63 @@ assert.deepEqual(filterNodePositions(nodes, { native: position, foreign: positio
 assert.deepEqual(filterNodePositions([{ ...native, planspace_id: "new" }], { native: position }), {});
 assert.deepEqual(filterNodePositions(nodes, { native: { ...position, x: Infinity } }), {});
 assert.deepEqual(filterNodePositions([{ ...native, settings_snapshot: {}, parent_node_id: "native" }], { native: { ...position, space: "canvas" } }), { native: { ...position, space: "canvas" } });
+
+{
+  const artifactId = artifactNodeId(native.id, "report.md");
+  const loadedNodes = [{
+    ...native,
+    artifacts: [{ name: "report.md", bytes: 42, mtime: 1, sha256: "hash", status: "published" as const }],
+  }, foreign];
+  const saved = {
+    native: position,
+    foreign: { ...position, x: 80 },
+    [artifactId]: { ...position, x: 420 },
+    "commit:ghost": { x: 100, y: 200, space: "canvas" },
+    "planspace:history": { x: 300, y: 400, space: "canvas" },
+  };
+  const removed = new Set<string>();
+  let snapshot = hydrateLayoutPositions({
+    current: { ...saved }, incoming: saved, incomingChanged: false, pending: {}, removed,
+  });
+  assert.deepEqual(filterNodePositions([], snapshot), {});
+  assert.deepEqual(filterNodePositions([foreign], snapshot), {});
+  snapshot = hydrateLayoutPositions({
+    current: snapshot, incoming: saved, incomingChanged: false, pending: {}, removed,
+  });
+  assert.deepEqual(filterNodePositions(loadedNodes, snapshot), {
+    native: saved.native, foreign: saved.foreign, [artifactId]: saved[artifactId],
+  });
+  assert.deepEqual(filterGitPositions(snapshot), { "commit:ghost": saved["commit:ghost"] });
+  assert.deepEqual(filterLanePositions(snapshot), { "planspace:history": saved["planspace:history"] });
+
+  const dragged = { ...position, x: 900 };
+  removed.add("commit:ghost");
+  snapshot = hydrateLayoutPositions({
+    current: snapshot, incoming: saved, incomingChanged: false, pending: { native: dragged }, removed,
+  });
+  snapshot = hydrateLayoutPositions({
+    current: snapshot, incoming: saved, incomingChanged: false, pending: {}, removed,
+  });
+  assert.deepEqual(snapshot.native, dragged);
+  assert.equal(snapshot["commit:ghost"], undefined);
+  assert.deepEqual(filterNodePositions(loadedNodes, snapshot)[artifactId], saved[artifactId]);
+
+  snapshot = hydrateLayoutPositions({
+    current: snapshot, incoming: { ...saved }, incomingChanged: true, pending: { native: dragged }, removed,
+  });
+  assert.deepEqual(snapshot.native, dragged);
+  assert.equal(snapshot["commit:ghost"], undefined);
+  assert.equal(removed.has("commit:ghost"), true);
+  snapshot = hydrateLayoutPositions({
+    current: snapshot, incoming: { native: position }, incomingChanged: true, pending: {}, removed,
+  });
+  assert.deepEqual(snapshot, { native: position });
+  assert.equal(removed.size, 0);
+  snapshot = hydrateLayoutPositions({
+    current: snapshot, incoming: saved, incomingChanged: true, pending: {}, removed,
+  });
+  assert.deepEqual(snapshot["commit:ghost"], saved["commit:ghost"]);
+}
 
 const args: BuildGraphArgs = {
   nodes,

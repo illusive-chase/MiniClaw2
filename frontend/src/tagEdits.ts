@@ -8,7 +8,12 @@
  * request the server rejects (a 400 surfaced in the panel) or a silent no-op.
  */
 
-import type { Tag } from "./types";
+import type { SessionInfo, Tag } from "./types";
+
+export function removeSessionTag(session: SessionInfo | null, tagId: string): SessionInfo | null {
+  if (!session?.tag_ids?.includes(tagId)) return session;
+  return { ...session, tag_ids: session.tag_ids.filter((id) => id !== tagId) };
+}
 
 /**
  * Whether `draft` collides with another tag's name.

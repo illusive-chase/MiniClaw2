@@ -2,6 +2,27 @@ import type { NodeInfo, NodePosition } from "../types";
 import { nodeLaneResolver } from "./layout";
 import { nodeLayoutOwners } from "./nodeLayoutOwners";
 
+export function hydrateLayoutPositions({
+  current,
+  incoming,
+  incomingChanged,
+  pending,
+  removed,
+}: {
+  current: Record<string, NodePosition>;
+  incoming: Record<string, NodePosition> | undefined;
+  incomingChanged: boolean;
+  pending: Record<string, NodePosition>;
+  removed: Set<string>;
+}): Record<string, NodePosition> {
+  const positions = { ...(incomingChanged ? incoming : current), ...pending };
+  for (const nodeId of removed) {
+    delete positions[nodeId];
+    if (incomingChanged && !incoming?.[nodeId]) removed.delete(nodeId);
+  }
+  return positions;
+}
+
 export function filterNodePositions(
   nodes: readonly NodeInfo[],
   positions: Readonly<Record<string, NodePosition>> = {},

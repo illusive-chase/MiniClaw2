@@ -14,6 +14,7 @@ import {
 import { TagEditPopover } from "../components/TagEditPopover";
 import { TagChip } from "../components/TagFilterBar";
 import type { TagColor } from "../tagPalette";
+import { removeSessionTag } from "../tagEdits";
 import {
   defaultModelPresetId,
   modelPresetDetail,
@@ -33,7 +34,7 @@ import { EMBEDDED_SESSION_PREFIX } from "../types";
 
 export type ProjectPanelProps = {
   session: SessionInfo | null;
-  onSessionChange: (session: SessionInfo) => void;
+  onSessionChange: (update: (session: SessionInfo | null) => SessionInfo | null) => void;
   modelPresets: ModelPreset[];
   contextSpace: SessionContextSpaceInfo | null;
   contextSpaceLoading: boolean;
@@ -169,7 +170,9 @@ export function ProjectPanel({
       setTagError(null);
       const updated = await updateSessionTags(projectId, nextIds);
       setTagIds(updated.tag_ids ?? []);
-      onSessionChange(updated);
+      onSessionChange((current) =>
+        current?.id === updated.id ? { ...current, tag_ids: updated.tag_ids } : current,
+      );
     },
     [onSessionChange, projectId],
   );
@@ -200,14 +203,9 @@ export function ProjectPanel({
       await deleteTag(tagId);
       setTags((prev) => prev.filter((tag) => tag.id !== tagId));
       setTagIds((prev) => prev.filter((id) => id !== tagId));
-      if (session && session.tag_ids?.includes(tagId)) {
-        onSessionChange({
-          ...session,
-          tag_ids: session.tag_ids.filter((id) => id !== tagId),
-        });
-      }
+      onSessionChange((current) => removeSessionTag(current, tagId));
     },
-    [onSessionChange, session],
+    [onSessionChange],
   );
 
   const assignedTags = useMemo(() => {

@@ -28,7 +28,7 @@ import type {
   SessionHost,
   TemplateInstanceRecord,
 } from "../types";
-import { filterNodePositions, nodePositionUpdate } from "./nodePositions";
+import { filterNodePositions, hydrateLayoutPositions, nodePositionUpdate } from "./nodePositions";
 import {
   filterGitPositions,
   gitPositionUpdate,
@@ -344,7 +344,7 @@ function CanvasInner({
   onCommitPositionTransferHandled,
 }: CanvasProps) {
   const nodePositionsRef = useRef<Record<string, NodePosition>>(
-    { ...filterNodePositions(nodes, initialNodePositions), ...filterGitPositions(initialNodePositions), ...filterLanePositions(initialNodePositions) },
+    { ...initialNodePositions },
   );
   const hydratedPositionsRef = useRef(initialNodePositions);
   const initialViewportRef = useRef<Viewport | null>(
@@ -388,16 +388,14 @@ function CanvasInner({
    * pass normally preserves current positions to protect active drags. */
   useEffect(() => {
     const incomingChanged = hydratedPositionsRef.current !== initialNodePositions;
-    const incoming = !incomingChanged
-      ? nodePositionsRef.current
-      : initialNodePositions;
     hydratedPositionsRef.current = initialNodePositions;
-    const positions = { ...incoming, ...pendingPositionsRef.current };
-    for (const nodeId of removedPositionsRef.current) {
-      delete positions[nodeId];
-      if (incomingChanged && !incoming?.[nodeId]) removedPositionsRef.current.delete(nodeId);
-    }
-    const next = { ...filterNodePositions(nodes, positions), ...filterGitPositions(positions), ...filterLanePositions(positions) };
+    const next = hydrateLayoutPositions({
+      current: nodePositionsRef.current,
+      incoming: initialNodePositions,
+      incomingChanged,
+      pending: pendingPositionsRef.current,
+      removed: removedPositionsRef.current,
+    });
     if (sameNodePositions(nodePositionsRef.current, next)) return;
     nodePositionsRef.current = next;
     setLayoutHydrationVersion((version) => version + 1);

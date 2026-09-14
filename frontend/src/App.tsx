@@ -3601,11 +3601,7 @@ export function App() {
                 onResolveReview={onResolveReview}
                 onSelectNode={onSelectNode}
                 onSelectArtifact={onSelectArtifact}
-                onSessionChange={(updated) => {
-                  setSession((current) =>
-                    current?.id === updated.id ? updated : current,
-                  );
-                }}
+                onSessionChange={setSession}
                 onPreferredLanguageChange={updatePreferredLanguage}
                 onConcurrencyChange={updateConcurrency}
                 onSelectContextBinding={selectContextBinding}

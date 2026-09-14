@@ -3,9 +3,10 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shlex
 from pathlib import Path
 from typing import Any
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 
@@ -143,8 +144,8 @@ def main() -> None:
     parser.add_argument("--root", type=Path, default=Path(os.environ.get("MINICLAW_HOME", str(Path.home() / ".miniclaw2"))))
     parser.add_argument("--transaction", required=True)
     parser.add_argument("--project")
-    parser.add_argument("--server", default="http://127.0.0.1:8000")
-    parser.add_argument("--apply", action="store_true")
+    parser.add_argument("--server", default="http://127.0.0.1:8000", help="正在运行的新版后端地址（默认 http://127.0.0.1:8000）")
+    parser.add_argument("--apply", action="store_true", help="通过后端接口恢复；需先启动使用同一数据目录的服务")
     args = parser.parse_args()
     try:
         plan = recovery_plan(args.root.expanduser().resolve(), args.transaction, project_id=args.project)
@@ -152,6 +153,16 @@ def main() -> None:
             print(json.dumps({"restored": apply_recovery(plan, args.server)}, ensure_ascii=False, indent=2))
         else:
             print(json.dumps(plan, ensure_ascii=False, indent=2))
+    except (URLError, TimeoutError) as exc:
+        reason = exc.reason if isinstance(exc, URLError) else str(exc)
+        root = shlex.quote(str(args.root.expanduser().resolve()))
+        parser.exit(1, (
+            f"产出物布局恢复未完成：无法连接恢复服务 {args.server} 或等待响应失败（{reason}）。\n"
+            "--apply 需要正在运行的新版 MiniClaw2 后端；--root 只指定数据目录，不会启动服务。\n"
+            f"若服务尚未启动，请在另一个终端运行：MINICLAW_HOME={root} python -m miniclaw2\n"
+            "若后端使用非默认地址或端口，请用 --server 指定实际地址后重试。\n"
+            "可安全重试；已保存的坐标不会被覆盖。\n"
+        ))
     except (MigrationError, OSError, ValueError, KeyError, TypeError) as exc:
         parser.exit(1, f"产出物布局恢复未完成：{exc}\n")
 

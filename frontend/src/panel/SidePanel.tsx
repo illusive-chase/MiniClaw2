@@ -76,7 +76,7 @@ export type SidePanelProps = {
     name: string,
     ext: ArtifactExtension,
   ) => void;
-  onSessionChange: (session: SessionInfo) => void;
+  onSessionChange: (update: (session: SessionInfo | null) => SessionInfo | null) => void;
   onPreferredLanguageChange: (preferredLanguage: string | null) => void;
   onConcurrencyChange: (concurrency: number) => void;
   onSelectContextBinding: (binding_id: string) => void;

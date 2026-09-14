@@ -60,6 +60,7 @@ export function TagEditPopover({
   const inputRef = useRef<HTMLInputElement | null>(null);
   const renameRef = useRef<HTMLInputElement | null>(null);
   const confirmTimerRef = useRef<number | null>(null);
+  const busyRef = useRef(false);
   const [position, setPosition] = useState<{ top: number; left: number } | null>(null);
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
@@ -117,6 +118,42 @@ export function TagEditPopover({
     setRenameDraft("");
   }, []);
 
+  const run = useCallback(
+    async (action: () => Promise<void>): Promise<boolean> => {
+      if (busyRef.current) return false;
+      busyRef.current = true;
+      setBusy(true);
+      setError(null);
+      try {
+        await action();
+        return true;
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+        return false;
+      } finally {
+        busyRef.current = false;
+        setBusy(false);
+      }
+    },
+    [],
+  );
+
+  const commitRename = useCallback(async (tag: Tag): Promise<boolean> => {
+    if (!onRenameTag) return true;
+    if (busyRef.current) return false;
+    if (
+      !shouldCommitRename(tag.name, renameDraft)
+      || renameConflicts(tags, tag.id, renameDraft)
+    ) {
+      cancelRename();
+      return true;
+    }
+    return run(async () => {
+      await onRenameTag(tag.id, renameDraft.trim());
+      cancelRename();
+    });
+  }, [onRenameTag, renameDraft, tags, cancelRename, run]);
+
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
@@ -143,6 +180,14 @@ export function TagEditPopover({
       const target = event.target as Node;
       if (panelRef.current?.contains(target)) return;
       if (anchor?.contains(target)) return;
+      const tag = tags.find((item) => item.id === renamingId);
+      if (tag) {
+        event.preventDefault();
+        void commitRename(tag).then((saved) => {
+          if (saved) onClose();
+        });
+        return;
+      }
       onClose();
     };
     window.addEventListener("keydown", onKeyDown, true);
@@ -151,7 +196,7 @@ export function TagEditPopover({
       window.removeEventListener("keydown", onKeyDown, true);
       window.removeEventListener("mousedown", onPointerDown, true);
     };
-  }, [anchor, onClose, renamingId, confirmingDeleteId, paletteFor, cancelRename]);
+  }, [anchor, onClose, renamingId, confirmingDeleteId, paletteFor, cancelRename, tags, commitRename]);
 
   /* Selected on focus so the common case — replacing the name outright — takes
    * one keystroke, while an edit-in-place is still possible with an arrow key. */
@@ -162,22 +207,6 @@ export function TagEditPopover({
     input.focus();
     input.select();
   }, [renamingId]);
-
-  const run = useCallback(
-    async (action: () => Promise<void>) => {
-      if (busy) return;
-      setBusy(true);
-      setError(null);
-      try {
-        await action();
-      } catch (err) {
-        setError(err instanceof Error ? err.message : String(err));
-      } finally {
-        setBusy(false);
-      }
-    },
-    [busy],
-  );
 
   const toggle = (tagId: string) =>
     void run(async () => {
@@ -212,21 +241,6 @@ export function TagEditPopover({
     setError(null);
     setRenamingId(tag.id);
     setRenameDraft(tag.name);
-  };
-
-  /* An unchanged or empty name closes the editor without a request: the tag
-   * already has that name, and the backend would reject the empty one. */
-  const commitRename = (tag: Tag) => {
-    if (!onRenameTag) return;
-    const name = renameDraft.trim();
-    if (!shouldCommitRename(tag.name, renameDraft)) {
-      cancelRename();
-      return;
-    }
-    void run(async () => {
-      await onRenameTag(tag.id, name);
-      cancelRename();
-    });
   };
 
   /* Two-step, because a delete lands on every project carrying the tag and
@@ -353,9 +367,7 @@ export function TagEditPopover({
                          * request the backend rejects; the inline warning has
                          * already said why. Enter keeps the editor open in that
                          * case so the name can still be corrected. */
-                        onBlur={() =>
-                          renameDuplicate ? cancelRename() : commitRename(tag)
-                        }
+                        onBlur={() => void commitRename(tag)}
                         onKeyDown={(event) => {
                           event.stopPropagation();
                           if (event.key === "Enter") {

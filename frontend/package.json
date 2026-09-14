@@ -8,6 +8,7 @@
     "build": "tsc -b && vite build",
     "test:svg": "node tests/run-artifacts.mjs",
     "test:svg:browser": "node tests/run-svg-browser.mjs",
+    "test:tags:browser": "node tests/run-tag-edit-browser.mjs",
     "posttest": "node tests/run-dev-proxy.mjs && npm run test:svg",
     "test": "node tests/run-canvas-layout.mjs && node tests/run-template-instantiate.mjs && node tests/run-template-editor.mjs && node tests/run-hierarchy.mjs && node tests/run-library-tree.mjs && node tests/run-focused-lane.mjs && node tests/run-project-tags.mjs && node tests/run-active-nodes.mjs && node tests/run-notices.mjs && node tests/run-node-authority.mjs && node tests/run-self-update.mjs && node tests/run-agent-panel-draft.mjs && node tests/run-canvas-wiring.mjs && node tests/run-canvas-interaction.mjs && node tests/run-wiring-drag-store.mjs && node tests/run-panel-overflow.mjs && node tests/run-draft-stash.mjs && node tests/run-permission-dialog.mjs && node tests/run-md-route.mjs && node tests/run-md-link.mjs && node tests/run-md-font.mjs && node tests/run-md-reader.mjs && node tests/run-md-handoff.mjs",
     "preview": "vite preview"

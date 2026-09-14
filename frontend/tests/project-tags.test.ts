@@ -21,7 +21,7 @@ import {
   writeProjectSort,
 } from "../src/projectSort";
 import { TAG_COLORS, defaultColorForName, isTagColor } from "../src/tagPalette";
-import { renameConflicts, shouldCommitRename } from "../src/tagEdits";
+import { removeSessionTag, renameConflicts, shouldCommitRename } from "../src/tagEdits";
 
 function tag(id: string, name: string, color = "coral"): Tag {
   return { id, name, color, created_at: 0 };
@@ -361,6 +361,27 @@ function testCommitRenameSkipsNoOpAndEmpty(): void {
   assert.equal(shouldCommitRename("work", "    "), false);
 }
 
+function testTagRemovalPreservesCurrentSession(): void {
+  const original = project("current", { tag_ids: [WORK.id, RESEARCH.id] });
+  const current = {
+    ...original,
+    concurrency: 3,
+    preferred_language: "zh-CN",
+    node_positions: { node: { x: 800, y: 900, space: "canvas" } },
+    tag_ids: [...original.tag_ids!, INFRA.id],
+  };
+  const updated = removeSessionTag(current, WORK.id)!;
+  assert.deepEqual(updated, { ...current, tag_ids: [RESEARCH.id, INFRA.id] });
+  assert.equal(updated.node_positions, current.node_positions);
+  assert.deepEqual(original.tag_ids, [WORK.id, RESEARCH.id]);
+  assert.equal(removeSessionTag(updated, WORK.id), updated);
+  assert.equal(removeSessionTag(null, WORK.id), null);
+  const untagged = project("untagged");
+  assert.equal(removeSessionTag(untagged, WORK.id), untagged);
+  const switched = project("other", { tag_ids: [WORK.id] });
+  assert.deepEqual(removeSessionTag(switched, WORK.id), { ...switched, tag_ids: [] });
+}
+
 testActivityFallsBackToCreatedAt();
 testRecentIsGlobalNewestFirst();
 testRecentIgnoresTagFilter();
@@ -374,6 +395,7 @@ testResolveTagsFollowsTagOrder();
 testDefaultColorIsStableAndInPalette();
 testRenameConflictMatchesBackendUniqueness();
 testCommitRenameSkipsNoOpAndEmpty();
+testTagRemovalPreservesCurrentSession();
 testSortModePersistence();
 
 console.log("project-tags tests passed");

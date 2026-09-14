@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import errno
+import io
 import json
 from pathlib import Path
+from urllib.error import HTTPError, URLError
 
 import pytest
 from fastapi.testclient import TestClient
@@ -10,7 +13,7 @@ from miniclaw2.app import create_app
 from miniclaw2.domain import ArtifactRef, Node, NodeKind, NodePosition, Project
 from miniclaw2.migrations.transaction import atomic_json, file_digest
 from miniclaw2.node_layout import node_layout_owners
-from miniclaw2.restore_artifact_layout import apply_recovery, recovery_plan
+from miniclaw2.restore_artifact_layout import _request_json, apply_recovery, main, recovery_plan
 from miniclaw2.store import Store
 
 
@@ -207,3 +210,54 @@ def test_recovery_refuses_wrong_or_readonly_server_before_writing(tmp_path: Path
     monkeypatch.setattr("miniclaw2.restore_artifact_layout._request_json", request)
     with pytest.raises(ValueError):
         apply_recovery(plan, "http://testserver")
+
+
+@pytest.mark.parametrize("method", ["GET", "PATCH"])
+@pytest.mark.parametrize("timeout", [False, True])
+def test_cli_connection_failure_explains_server_requirement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], method: str, timeout: bool,
+) -> None:
+    root = tmp_path / "store with spaces"
+    store, project_id, owner, tile_id = backup_fixture(root)
+    originals = {path: path.read_bytes() for path in root.rglob("*.json")}
+    calls = []
+    session = {
+        "local_machine_id": store.machine.id, "root_path": str(root),
+        "read_only": False, "bound_here": True, "node_positions": {},
+    }
+
+    def urlopen(request, **kwargs):
+        calls.append(request.method)
+        if request.method == method:
+            if timeout:
+                raise TimeoutError("timed out")
+            raise URLError(ConnectionRefusedError(errno.ECONNREFUSED, "Connection refused"))
+        return io.BytesIO(json.dumps(session).encode())
+
+    monkeypatch.setattr("miniclaw2.restore_artifact_layout.urlopen", urlopen)
+    monkeypatch.setattr("sys.argv", [
+        "restore_artifact_layout", "--root", str(root), "--transaction", "backup",
+        "--project", project_id, "--server", "http://127.0.0.1:8123", "--apply",
+    ])
+    with pytest.raises(SystemExit) as error:
+        main()
+    assert error.value.code == 1
+    output = capsys.readouterr()
+    assert output.out == ""
+    assert "http://127.0.0.1:8123" in output.err
+    assert ("timed out" if timeout else "Connection refused") in output.err
+    assert f"MINICLAW_HOME='{root}' python -m miniclaw2" in output.err
+    assert "--server" in output.err
+    assert "不会启动服务" in output.err
+    assert "已保存的坐标不会被覆盖" in output.err
+    assert calls == (["GET"] if method == "GET" else ["GET", "PATCH"])
+    assert {path: path.read_bytes() for path in root.rglob("*.json")} == originals
+
+
+def test_http_error_keeps_api_diagnostic(monkeypatch: pytest.MonkeyPatch) -> None:
+    def urlopen(request, **kwargs):
+        raise HTTPError(request.full_url, 409, "Conflict", {}, io.BytesIO(b'{"detail":"read only"}'))
+
+    monkeypatch.setattr("miniclaw2.restore_artifact_layout.urlopen", urlopen)
+    with pytest.raises(ValueError, match="409.*read only"):
+        _request_json("http://testserver", "/sessions/project")
