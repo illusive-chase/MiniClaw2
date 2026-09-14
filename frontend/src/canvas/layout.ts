@@ -144,6 +144,8 @@ export type PlanspaceLaneData = {
   focused: boolean;
   auto: boolean;
   canCreateVirtual: boolean;
+  canMove?: boolean;
+  positionPinned?: boolean;
 };
 
 /** One `key=value` pair from the instance record, for the group header. */
@@ -655,8 +657,12 @@ export type BuildGraphArgs = {
   nodes: NodeInfo[];
   /** ids of project runners that currently occupy execution slots */
   activeNodeIds: string[];
-  /** per-node manual position overrides (drag persistence — client-side for now) */
-  layoutHints: Record<string, { x: number; y: number }>;
+  nodePositions: Record<string, { x: number; y: number }>;
+  gitPositions?: Record<string, { x: number; y: number }>;
+  canMutateGitLayout?: boolean;
+  lanePositions?: Record<string, { x: number; y: number }>;
+  canMutateLaneLayout?: boolean;
+  canMutateNode?: (nodeId: string) => boolean;
   /** per-node context bundles, keyed by node id, used to materialize context + loads edges */
   contextBundlesByNodeId: Record<string, ContextBundle | null | undefined>;
   /** planspaces known from the project binding, including empty lanes */
@@ -719,13 +725,6 @@ export type TemplateInstanceCluster = {
   collapsed: boolean;
 };
 
-export type CommitPositionTransfer = {
-  fromId: "commit:ghost";
-  toId: string;
-  position: { x: number; y: number };
-  resetGhostPosition: { x: number; y: number } | null;
-};
-
 function defaultCommitPosition(index: number, column = 0): { x: number; y: number } {
   return {
     x: LANE.trunkX + column * LANE.trunkColumnStep,
@@ -752,7 +751,6 @@ function firstUnoccupiedSlot(
  * `occupied` and `previousByColumn` are grown as commits are placed; the pass
  * relies on the backend emitting parents before children. */
 type CommitPlacementContext = {
-  layoutHints: Readonly<Record<string, { x: number; y: number }>>;
   columnBySha: ReadonlyMap<string, number>;
   resolved: Map<string, { x: number; y: number }>;
   occupied: Set<string>;
@@ -792,32 +790,6 @@ function resolveCommitAnchor(
   return y === null ? null : { x, y: y + LANE.trunkStep };
 }
 
-/**
- * Resolve a commit hub's position: a saved hint wins, otherwise the commit
- * lands directly below the commit it descends from.
- *
- * Anchoring to the parent's *resolved* position rather than to an absolute
- * grid row is what keeps a newly appearing commit under its predecessor after
- * the trunk has been dragged. This is independent of who created the commit,
- * so it covers UI commits, agent commits and pulls alike.
- */
-function commitLayoutPosition(
-  commit: CommitDescriptor,
-  index: number,
-  column: number,
-  ctx: CommitPlacementContext,
-): { x: number; y: number } {
-  for (const sha of [commit.sha, ...commit.aliases]) {
-    const position = ctx.layoutHints[`commit:${sha}`];
-    if (position) return position;
-  }
-  const anchor = resolveCommitAnchor(commit, column, ctx);
-  const base = anchor
-    ? { x: anchor.x ?? LANE.trunkX + column * LANE.trunkColumnStep, y: anchor.y }
-    : defaultCommitPosition(index, column);
-  return firstUnoccupiedSlot(base, ctx.occupied);
-}
-
 function firstUnoccupiedTrunkPositionBelowHead(
   nodes: readonly RFNode[],
 ): { x: number; y: number } | null {
@@ -840,40 +812,17 @@ function firstUnoccupiedTrunkPositionBelowHead(
   return { x: headNode.position.x, y };
 }
 
-export function resolveCommitPositionTransfer(
-  currentNodes: readonly RFNode[],
-  nextNodes: readonly RFNode[],
-  committedHead: string | null,
-  retainedGhostPosition: { x: number; y: number } | null = null,
-): CommitPositionTransfer | null {
-  if (!committedHead) return null;
-  const ghost = currentNodes.find((node) => node.id === "commit:ghost");
-  const committedNodeId = `commit:${committedHead}`;
-  const targetAlreadyRendered = currentNodes.some(
-    (node) => node.id === committedNodeId,
-  );
-  const ghostPosition = targetAlreadyRendered
-    ? retainedGhostPosition ?? ghost?.position
-    : ghost?.position ?? retainedGhostPosition;
-  if (!ghostPosition) return null;
-  const committedNode = nextNodes.find(
-    (node) => node.type === "commit" && node.id === committedNodeId,
-  );
-  if (!committedNode) return null;
-  const nextCommitNodes = nextNodes.filter((node) => node.type === "commit");
-  const nextGhostIndex = nextCommitNodes.findIndex((node) => node.id === "commit:ghost");
-  return {
-    fromId: "commit:ghost",
-    toId: committedNode.id,
-    position: { x: ghostPosition.x, y: ghostPosition.y },
-    resetGhostPosition:
-      nextGhostIndex >= 0
-        ? {
-            x: ghostPosition.x,
-            y: ghostPosition.y + LANE.trunkStep,
-          }
-        : null,
-  };
+function commitLayoutPosition(
+  commit: CommitDescriptor,
+  index: number,
+  column: number,
+  ctx: CommitPlacementContext,
+): { x: number; y: number } {
+  const anchor = resolveCommitAnchor(commit, column, ctx);
+  const base = anchor
+    ? { x: anchor.x ?? LANE.trunkX + column * LANE.trunkColumnStep, y: anchor.y }
+    : defaultCommitPosition(index, column);
+  return firstUnoccupiedSlot(base, ctx.occupied);
 }
 
 /**
@@ -981,66 +930,23 @@ export function summarizeInstanceArguments(
     .map(([name, value]) => ({ name, value }));
 }
 
-export function resolveGitChangesAppearancePosition(
-  currentNodes: readonly RFNode[],
-  nextNodes: readonly RFNode[],
-): { x: number; y: number } | null {
-  if (currentNodes.some((node) => node.id === "commit:ghost")) return null;
-  if (!nextNodes.some((node) => node.id === "commit:ghost")) return null;
-  return firstUnoccupiedTrunkPositionBelowHead(nextNodes);
-}
-
-/**
- * Where the uncommitted-changes ghost moves when a newly appearing commit
- * claims its row, keeping the trunk in reading order: commits above, pending
- * changes last.
- *
- * Returns null unless a commit that was *not* previously rendered now sits
- * exactly on the ghost's current position. An overlap already on screen —
- * including one the user made by dragging the ghost onto a hub — is left
- * alone, and a ghost that is only now appearing belongs to
- * `resolveGitChangesAppearancePosition` instead.
- *
- * This covers the case the position transfer cannot: an agent commits while
- * the working tree is still dirty, so the ghost survives the commit rather
- * than becoming the new hub.
- */
-export function resolveDisplacedGhostPosition(
-  currentNodes: readonly RFNode[],
-  nextNodes: readonly RFNode[],
-): { x: number; y: number } | null {
-  const ghost = currentNodes.find((node) => node.id === "commit:ghost");
-  if (!ghost) return null;
-  if (!nextNodes.some((node) => node.id === "commit:ghost")) return null;
-  const hubs = nextNodes.filter(
-    (node) => node.type === "commit" && node.id !== "commit:ghost",
-  );
-  const rendered = new Set(currentNodes.map((node) => node.id));
-  const claimed = hubs.some(
-    (hub) =>
-      !rendered.has(hub.id) &&
-      hub.position.x === ghost.position.x &&
-      hub.position.y === ghost.position.y,
-  );
-  if (!claimed) return null;
-  return firstUnoccupiedSlot(
-    ghost.position,
-    new Set(hubs.map((hub) => trunkSlotKey(hub.position))),
-  );
-}
-
 /**
  * Build the React Flow node + edge list from the backend NodeInfo[].
  *
  * Layout strategy is *append-don't-reflow*: each node is placed deterministically by
- * its index in the input. Manual drags persisted via `layoutHints` override the
+ * its index in the input. Manual drags persisted via `nodePositions` override the
  * default position. This means a new node never shoves an existing one off-screen.
  */
 export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
   const {
     nodes,
     activeNodeIds,
-    layoutHints,
+    nodePositions: suppliedPositions,
+    gitPositions = {},
+    canMutateGitLayout = false,
+    lanePositions = {},
+    canMutateLaneLayout = false,
+    canMutateNode = () => false,
     contextBundlesByNodeId,
     knownPlanspaceIds,
     hiddenPlanspaceIds,
@@ -1060,6 +966,7 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
     gitHosts = [],
   } = args;
 
+  const nodePositions = Object.fromEntries(nodes.filter((node) => suppliedPositions[node.id]).map((node) => [node.id, suppliedPositions[node.id]]));
   const rfNodes: RFNode[] = [];
   const rfEdges: RFEdge[] = [];
   const hiddenPlanspaces = new Set(hiddenPlanspaceIds);
@@ -1135,7 +1042,7 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
       x: LANE.rootX + LANE.trunkGutter + commitColumnOffset,
       y: LANE.timelineY + idx * LANE.planspaceLaneSpacing - LANE.planspaceLaneAgentRowY,
     };
-    laneAbsPos.set(id, layoutHints[`planspace:${id}`] ?? defaultPos);
+    laneAbsPos.set(id, lanePositions[`planspace:${id}`] ?? defaultPos);
   }
   /* Per-lane growable width + node count, harvested during the child pass. */
   const laneChildMaxX = new Map<string, number>();
@@ -1188,7 +1095,6 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
     gitCommits.map((commit) => [commit.sha, commit.column ?? 0] as const),
   );
   const commitPlacement: CommitPlacementContext = {
-    layoutHints,
     columnBySha: commitColumnBySha,
     resolved: new Map(),
     occupied: new Set(),
@@ -1196,7 +1102,7 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
   };
   gitCommits.forEach((commit) => {
     const column = commit.column ?? 0;
-    const position = commitLayoutPosition(
+    const position = gitPositions[`commit:${commit.sha}`] ?? commitLayoutPosition(
       commit,
       commitRows.get(commit.sha) ?? 0,
       column,
@@ -1218,7 +1124,7 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
             ? commit.external_count_before
             : 0,
       },
-      draggable: true,
+      draggable: canMutateGitLayout,
       selectable: true,
     });
     const parents = commit.parent_shas?.filter((sha) => shaSet.has(sha));
@@ -1281,8 +1187,8 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
       ? firstUnoccupiedTrunkPositionBelowHead(rfNodes) ??
         defaultCommitPosition(nextTrunkRow)
       : defaultCommitPosition(nextTrunkRow);
-    const position = layoutHints[ghostId] ?? fallbackPosition;
-    rfNodes.push({ id: ghostId, type: "commit", position, width: 76, height: 76, data: { commit: { sha: "ghost", live: false, message: "Uncommitted changes", external_count_before: 0, aliases: [], column: 0 }, head: false, ghost: true, dirtyCount: gitDirtyCount }, draggable: true, selectable: true });
+    const position = gitPositions[ghostId] ?? fallbackPosition;
+    rfNodes.push({ id: ghostId, type: "commit", position, width: 76, height: 76, data: { commit: { sha: "ghost", live: false, message: "Uncommitted changes", external_count_before: 0, aliases: [], column: 0 }, head: false, ghost: true, dirtyCount: gitDirtyCount }, draggable: canMutateGitLayout, selectable: true });
     const previous = gitHead
       ? gitCommits.find((commit) => commit.sha === gitHead)
       : [...gitCommits].reverse().find((commit) => (commit.column ?? 0) === 0);
@@ -1374,7 +1280,7 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
      * lane, so a free top-level tile must clear it too. */
     laneVisibleNodes,
     allNodeById,
-    layoutHints,
+    nodePositions,
   );
   const laneCursors = new Map<string, number>();
   const nextLanePosition = (
@@ -1456,13 +1362,12 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
     if (collapsedCluster) {
       const laneId = resolvePlanspaceId(node, allNodeById);
       if (laneId && !collapsedBoxPositions.has(collapsedCluster.instanceId)) {
-        const boxId = templateInstanceBoxNodeId(collapsedCluster.instanceId);
         collapsedBoxPositions.set(
           collapsedCluster.instanceId,
           nextLanePosition(
             laneId,
             LANE.agentSpacing,
-            layoutHints[boxId],
+            nodePositions[node.id],
             agentRowY(laneId),
           ),
         );
@@ -1471,7 +1376,7 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
     }
     const resumeParent = findResumeParent(node, nodeById);
     const isActive = activeNodeIds.includes(node.id);
-    const stored = layoutHints[node.id];
+    const stored = nodePositions[node.id];
     const planspaceId = resolvePlanspaceId(node, allNodeById);
     const planspaceColor = colorForPlanspace(
       planspaceId,
@@ -1598,7 +1503,7 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
         width: LANE.opWidth,
         height: 48,
         data: { node, parent, child: null },
-        draggable: true,
+        draggable: false,
         ...(planspaceId
           ? { parentNode: `planspace:${planspaceId}`, extent: PLANSPACE_CHILD_EXTENT }
           : {}),
@@ -1647,7 +1552,7 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
           canCreateVirtual,
           ...(hasArgChips ? { templateArguments } : {}),
         },
-        draggable: true,
+        draggable: false,
         ...(planspaceId
           ? { parentNode: `planspace:${planspaceId}`, extent: PLANSPACE_CHILD_EXTENT }
           : {}),
@@ -1730,12 +1635,11 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
     const sourceNode = rfNodes.find((n) => n.id === node.id);
     const baseX = sourceNode?.position.x ?? LANE.rootX;
     const baseY = sourceNode?.position.y ?? LANE.timelineY;
-    const stored = layoutHints[terminalId];
     /* Inherit the owner's lane parent so dragging the lane keeps the failure
      * marker tied to its agent. Owner-relative offset stays the same in both
      * regimes. */
     const ownerParent = sourceNode?.parentNode;
-    const terminalPosition = stored ?? {
+    const terminalPosition = {
       /* Drop below the agent so retries (next timeline slot at
        * baseX + agentSpacing) don't stack on top of the failure marker. */
       x: baseX,
@@ -1760,7 +1664,7 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
         ownerNodeId: node.id,
         message: node.error,
       },
-      draggable: true,
+      draggable: false,
       selectable: true,
       ...(ownerParent ? { parentNode: ownerParent, extent: PLANSPACE_CHILD_EXTENT } : {}),
     });
@@ -1798,7 +1702,7 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
       const tileId = entry.artifact
         ? artifactNodeId(node.id, entry.artifact.name)
         : artifactOverflowNodeId(node.id);
-      const position = layoutHints[tileId] ?? {
+      const position = {
         x: startX + index * 170,
         y: baseY + LANE.artifactOffsetY,
       };
@@ -1822,7 +1726,7 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
           artifact: entry.artifact,
           overflowCount: entry.overflowCount,
         },
-        draggable: true,
+        draggable: false,
         selectable: true,
         ...(ownerParent ? { parentNode: ownerParent, extent: PLANSPACE_CHILD_EXTENT } : {}),
       });
@@ -2048,8 +1952,7 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
   if (firstLaneId) {
     for (const agg of ctxAgg.values()) {
       if (agg.scope === "project-root" || agg.plugId !== firstLaneId) continue;
-      const stored = layoutHints[`ctx:${agg.identityKey}`];
-      const positionX = stored?.x ?? firstLaneContextCursorX;
+      const positionX = firstLaneContextCursorX;
       firstLaneContextRight = Math.max(firstLaneContextRight, positionX + 160);
       firstLaneContextCursorX += LANE.planspaceCtxStep;
     }
@@ -2064,7 +1967,6 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
   const inLaneCtxCursor = new Map<string, number>();
   for (const agg of ctxAgg.values()) {
     const ctxId = `ctx:${agg.identityKey}`;
-    const stored = layoutHints[ctxId];
     const isProject = agg.scope === "project-root";
     const homeLaneId =
       !isProject && agg.plugId && planspaceOrder.includes(agg.plugId)
@@ -2076,17 +1978,17 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
     if (homeLaneId) {
       const cursor =
         inLaneCtxCursor.get(homeLaneId) ?? LANE.planspaceLanePaddingX;
-      position = stored ?? { x: cursor, y: LANE.planspaceLaneCtxRowY };
+      position = { x: cursor, y: LANE.planspaceLaneCtxRowY };
       inLaneCtxCursor.set(homeLaneId, cursor + LANE.planspaceCtxStep);
       parentNode = `planspace:${homeLaneId}`;
       extent = PLANSPACE_CHILD_EXTENT;
       /* Width here matches ContextNode (160 for non-project tiles). */
       recordChildExtent(homeLaneId, position.x, position.y, 160, LANE.contextHeight);
     } else if (isProject) {
-      position = stored ?? { x: projectCtxCursorX, y: LANE.projectContextLaneY };
+      position = { x: projectCtxCursorX, y: LANE.projectContextLaneY };
       projectCtxCursorX += 240;
     } else {
-      position = stored ?? { x: laneCtxCursorX, y: LANE.contextLaneY };
+      position = { x: laneCtxCursorX, y: LANE.contextLaneY };
       laneCtxCursorX += 180;
     }
     const attachedSkills =
@@ -2119,7 +2021,7 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
         usedByNodeIds: Array.from(agg.usedBy),
         ...(attachedSkills ? { attachedSkills } : {}),
       },
-      draggable: true,
+      draggable: false,
       ...(parentNode ? { parentNode, extent } : {}),
     });
     /* Context tiles sit above the agent row, so a load enters the tile's top
@@ -2192,7 +2094,7 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
         nextLanePosition(
           planspaceId,
           LANE.agentSpacing,
-          layoutHints[boxId],
+          undefined,
           agentRowY(planspaceId),
         );
       recordChildExtent(
@@ -2218,7 +2120,7 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
           color,
           canCreateVirtual,
         },
-        draggable: true,
+        draggable: false,
         selectable: true,
         parentNode: `planspace:${planspaceId}`,
         extent: PLANSPACE_CHILD_EXTENT,
@@ -2299,8 +2201,7 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
     for (const port of templatePorts) {
       if (!port || typeof port.name !== "string" || !port.name) continue;
       const portNodeId = templatePortNodeId(port.name);
-      const stored = layoutHints[portNodeId];
-      const position = stored ?? { x: portCursorX, y: LANE.templatePortRowY };
+      const position = { x: portCursorX, y: LANE.templatePortRowY };
       portCursorX = Math.max(
         portCursorX,
         position.x + LANE.templatePortSpacing,
@@ -2323,7 +2224,7 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
           consumerIds,
           unreferenced: consumerIds.length === 0,
         },
-        draggable: true,
+        draggable: false,
         parentNode: `planspace:${portLaneId}`,
         extent: PLANSPACE_CHILD_EXTENT,
       });
@@ -2368,20 +2269,10 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
       LANE.planspaceLaneMinHeight,
       maxBottom + LANE.planspaceLanePaddingY,
     );
-    const hintedPos = layoutHints[`planspace:${planspaceId}`];
     const fallbackPos = laneAbsPos.get(planspaceId);
-    const pos = hintedPos ?? (
-      fallbackPos ? { x: fallbackPos.x, y: nextAutoLaneY } : null
-    );
-    if (!pos) continue;
-    if (!hintedPos) {
-      nextAutoLaneY += height + LANE.planspaceLaneGap;
-    } else {
-      nextAutoLaneY = Math.max(
-        nextAutoLaneY,
-        hintedPos.y + height + LANE.planspaceLaneGap,
-      );
-    }
+    if (!fallbackPos) continue;
+    const pos = lanePositions[`planspace:${planspaceId}`] ?? { x: fallbackPos.x, y: nextAutoLaneY };
+    nextAutoLaneY += height + LANE.planspaceLaneGap;
     const color =
       laneColors.get(planspaceId) ??
       colorForPlanspace(planspaceId, planspaceIndex, planspaceColorOverrides) ??
@@ -2402,9 +2293,11 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
         focused: planspaceId === focusedPlanspaceId,
         auto: autoPlanspaceIds.includes(planspaceId),
         canCreateVirtual,
+        canMove: canMutateLaneLayout,
+        positionPinned: !!lanePositions[`planspace:${planspaceId}`],
       },
       selectable: true,
-      draggable: true,
+      draggable: canMutateLaneLayout,
       dragHandle: ".planspace-lane-drag-handle",
       style: { pointerEvents: "none" },
       zIndex: -20,
@@ -2426,11 +2319,15 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
     rfNodes,
     new Set(laneNodes.map((node) => node.id)),
     true,
-    layoutHints,
   );
 
   return {
-    rfNodes: fittedRfNodes,
+    rfNodes: fittedRfNodes.map((node) => ({
+      ...node,
+      draggable: node.type === "commit" ? canMutateGitLayout
+        : node.type === "planspaceLane" ? canMutateLaneLayout
+          : allNodeById.has(node.id) && canMutateNode(node.id),
+    })),
     rfEdges,
     epochMembersByCommitSha,
     commitHubIdByNodeId,
@@ -2444,7 +2341,6 @@ export function resizePlanspaceLanes(
   nodes: RFNode[],
   laneIds: ReadonlySet<string>,
   shrinkToFit: boolean,
-  layoutHints: Readonly<Record<string, { x: number; y: number }>> = {},
 ): RFNode[] {
   if (laneIds.size === 0) return nodes;
 
@@ -2498,27 +2394,34 @@ export function resizePlanspaceLanes(
     };
   });
 
-  /* A lane hint is user-owned absolute placement. Without a hint, Y is
-   * derived from the preceding lane geometry and must be normalized even when
-   * every lane already has the desired dimensions. */
   let nextAutoLaneY = LANE.timelineY - LANE.planspaceLaneAgentRowY;
   let positionsChanged = false;
+  const occupied = resized.filter((node) => node.type === "planspaceLane" && (node.data as PlanspaceLaneData).positionPinned);
   const positioned = resized.map((node) => {
     if (node.type !== "planspaceLane") return node;
+    if ((node.data as PlanspaceLaneData).positionPinned) return node;
     const height = node.height ?? (node.data as PlanspaceLaneData).height;
-    if (layoutHints[node.id]) {
-      nextAutoLaneY = Math.max(
-        nextAutoLaneY,
-        node.position.y + height + LANE.planspaceLaneGap,
+    const width = node.width ?? (node.data as PlanspaceLaneData).width;
+    for (;;) {
+      const overlapping = occupied.filter((other) =>
+        node.position.x < other.position.x + (other.width ?? (other.data as PlanspaceLaneData).width) + LANE.planspaceLaneGap &&
+        node.position.x + width + LANE.planspaceLaneGap > other.position.x &&
+        nextAutoLaneY < other.position.y + (other.height ?? (other.data as PlanspaceLaneData).height) + LANE.planspaceLaneGap &&
+        nextAutoLaneY + height + LANE.planspaceLaneGap > other.position.y,
       );
-      return node;
+      if (overlapping.length === 0) break;
+      nextAutoLaneY = Math.max(...overlapping.map((other) =>
+        other.position.y + (other.height ?? (other.data as PlanspaceLaneData).height) + LANE.planspaceLaneGap,
+      ));
     }
     const position = node.position.y === nextAutoLaneY
       ? node.position
       : { ...node.position, y: nextAutoLaneY };
     nextAutoLaneY += height + LANE.planspaceLaneGap;
     positionsChanged ||= position !== node.position;
-    return position === node.position ? node : { ...node, position };
+    const placed = position === node.position ? node : { ...node, position };
+    occupied.push(placed);
+    return placed;
   });
   return dimensionsChanged || positionsChanged ? positioned : nodes;
 }
@@ -2683,12 +2586,14 @@ function resolvePlanspaceId(
   node: NodeInfo,
   byId: Map<string, NodeInfo>,
 ): string | null {
-  if (node.planspace_id) return node.planspace_id;
-  const snapshotValue = node.settings_snapshot?.active_planspace_id;
-  if (typeof snapshotValue === "string" && snapshotValue) return snapshotValue;
-  if (node.parent_node_id) {
-    const parent = byId.get(node.parent_node_id);
-    if (parent) return resolvePlanspaceId(parent, byId);
+  const visited = new Set<string>();
+  let current: NodeInfo | undefined = node;
+  while (current && !visited.has(current.id)) {
+    visited.add(current.id);
+    if (current.planspace_id) return current.planspace_id;
+    const snapshotValue = current.settings_snapshot?.active_planspace_id;
+    if (typeof snapshotValue === "string" && snapshotValue) return snapshotValue;
+    current = current.parent_node_id ? byId.get(current.parent_node_id) : undefined;
   }
   return null;
 }
@@ -2698,7 +2603,7 @@ function initialFreeCursorX(
   laneAbsPos: Map<string, { x: number; y: number }>,
   visibleNodes: NodeInfo[],
   byId: Map<string, NodeInfo>,
-  layoutHints: Record<string, { x: number; y: number }>,
+  nodePositions: Record<string, { x: number; y: number }>,
 ): number {
   const base = LANE.rootX + LANE.trunkGutter;
   const firstLaneId = planspaceOrder[0];
@@ -2712,7 +2617,7 @@ function initialFreeCursorX(
     if (resolvePlanspaceId(node, byId) !== firstLaneId) continue;
     const geometry = renderedWorkNodeGeometry(node);
     if (!geometry) continue;
-    const position = layoutHints[node.id] ?? {
+    const position = nodePositions[node.id] ?? {
       x: laneCursor,
       y: LANE.planspaceLaneAgentRowY,
     };

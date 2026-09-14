@@ -13,7 +13,7 @@ from __future__ import annotations
 import time
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 from uuid import uuid4
 
 from pydantic import (
@@ -174,6 +174,49 @@ class ArtifactRef(BaseModel):
     reason: str | None = None
 
 
+class NodePosition(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True, allow_inf_nan=False)
+
+    x: float
+    y: float
+    space: str = Field(pattern=r"^(canvas|planspace:.+)$")
+
+
+class NodeLayout(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    schema_version: StrictInt = Field(ge=1, le=1)
+    nodes: dict[str, NodePosition]
+
+
+GitNodeId = Annotated[str, Field(pattern=r"^commit:([0-9a-f]{7,64}|ghost)$")]
+
+
+class GitPosition(NodePosition):
+    space: Literal["canvas"]
+
+
+class GitLayout(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    schema_version: StrictInt = Field(ge=1, le=1)
+    nodes: dict[GitNodeId, GitPosition]
+
+
+LaneNodeId = Annotated[str, Field(pattern=r"^planspace:.+$")]
+
+
+class LanePosition(NodePosition):
+    space: Literal["canvas"]
+
+
+class LaneLayout(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    schema_version: StrictInt = Field(ge=1, le=1)
+    nodes: dict[LaneNodeId, LanePosition]
+
+
 class Project(BaseModel):
     model_config = ConfigDict(extra="forbid")
     _model_catalog_root: Path | None = PrivateAttr(default=None)
@@ -192,8 +235,7 @@ class Project(BaseModel):
     template_id: str | None = None
     tag_ids: list[str] = Field(default_factory=list)
     created_at: float = Field(default_factory=_now)
-    layout_hints: dict[str, dict[str, float]] = Field(default_factory=dict)
-    layout_viewport: dict[str, float] | None = None
+    node_positions: dict[str, NodePosition] = Field(default_factory=dict)
     planspace_view: dict[str, dict[str, bool]] = Field(default_factory=dict)
 
     @model_validator(mode="after")

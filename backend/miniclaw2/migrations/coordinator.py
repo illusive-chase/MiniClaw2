@@ -7,7 +7,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 
-from .catalog import CURRENT_VERSION, marker, steps, version_of
+from .catalog import CURRENT_VERSION, MINIMUM_VERSION, marker, steps, version_of
 from .errors import MigrationError
 from .inventory import LOCAL_DIRECTORY, context_root, files, safe_path
 from .sdk import MigrationContext
@@ -120,7 +120,14 @@ class StorageCoordinator:
                     external = self.receipt_version(roots[1], machine_id, external=True) if len(roots) > 1 else CURRENT_VERSION
                     sources = {"shared": shared, "local": local, "external_context": external}
                     has_receipts = all((root / LOCAL_DIRECTORY / "state.json").exists() for root in roots)
-                    if all(version == CURRENT_VERSION for version in sources.values()) and has_receipts:
+                    receipt_path = self.root / LOCAL_DIRECTORY / "state.json"
+                    old_receipt = read_object(receipt_path) if receipt_path.exists() else {}
+                    identity = {"device": self.root.stat().st_dev, "inode": self.root.stat().st_ino}
+                    receipt_matches = old_receipt.get("machine_id") == machine_id and old_receipt.get("root_identity") == identity
+                    accepted = set(old_receipt.get("accepted_migration_contracts", [])) if receipt_matches else set()
+                    if accept_data_loss:
+                        accepted.update(migration.contract for migration in steps(MINIMUM_VERSION) if migration.destructive)
+                    if all(version == CURRENT_VERSION for version in sources.values()) and has_receipts and receipt_matches and not accept_data_loss:
                         self.ready = True
                         return
                     owner_path = self.root / ".runtime-owner.json"
@@ -133,21 +140,25 @@ class StorageCoordinator:
                             raise MigrationError("waiting_for_idle", "旧运行进程仍在使用此存储，请停止它后再迁移", owner_path)
                     transaction = Transaction(self.root, roots)
                     transaction.journal["accept_data_loss"] = accept_data_loss
+                    transaction.journal["accepted_migration_contracts"] = sorted(accepted)
                     for scope, source in sources.items():
                         if scope == "external_context" and len(roots) == 1:
                             continue
                         stage = transaction.stage(1 if scope == "external_context" else 0)
                         context = MigrationContext(stage, scope, machine_id, transaction.backup / ("1" if scope == "external_context" else "0"))
                         for migration in steps(source):
-                            if migration.destructive and not accept_data_loss:
-                                raise MigrationError("migration_required", "该迁移声明数据损失，需人工确认后单独执行")
                             if scope in migration.scopes:
+                                if migration.destructive and migration.contract not in accepted:
+                                    raise MigrationError("migration_required", f"{migration.summary}；请查看 migrations plan 后用 apply --accept-data-loss 确认")
                                 migration.upgrade(context)
                                 migration.verify(context)
                     for index, root in enumerate(roots):
                         stage = transaction.stage(index)
                         validate(stage, external=index > 0)
-                        atomic_json(stage / LOCAL_DIRECTORY / "state.json", self.receipt(root, machine_id))
+                        receipt = self.receipt(root, machine_id)
+                        if index == 0:
+                            receipt["accepted_migration_contracts"] = sorted(accepted)
+                        atomic_json(stage / LOCAL_DIRECTORY / "state.json", receipt)
                     atomic_json(transaction.stage(0) / "schema.json", marker())
                     transaction.decide()
                     transaction.publish()

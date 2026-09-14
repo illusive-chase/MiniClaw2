@@ -36,7 +36,7 @@ for (const name of ["report", "svg", ".svg", "report.SVG", "report.svg.html.exe"
 const graph = buildGraph({
   nodes: [owner],
   activeNodeIds: [],
-  layoutHints: {},
+  nodePositions: {},
   contextBundlesByNodeId: {},
   knownPlanspaceIds: [],
   hiddenPlanspaceIds: [],

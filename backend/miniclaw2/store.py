@@ -30,11 +30,13 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from .domain import HumanGate, Node, Project, UNBOUND_ROOT_PATH
+from .domain import GitLayout, GitPosition, HumanGate, LaneLayout, LanePosition, Node, NodeLayout, NodePosition, Project, UNBOUND_ROOT_PATH
+from .node_layout import node_coordinate_space
 from .git_state import is_git_repo, normalized_origin_url, root_commits
 from .replay import EVENT_SCHEMA_VERSION
 from .migrations.coordinator import open_storage
 from .migrations.errors import MigrationError
+from .migrations.transaction import atomic_json
 from .migrations.access import storage_methods
 from .sync import (
     MachineIdentity,
@@ -157,7 +159,7 @@ class Store:
     def refresh_last_activity_index(self) -> None:
         """Rebuild project activity timestamps from all persisted nodes."""
         self._last_activity_index.clear()
-        for project in self.list_projects():
+        for project in self.list_projects(include_node_positions=False):
             self._list_nodes_for_project(project.id, project)
 
     def _refresh_last_activity_after_sync(self) -> None:
@@ -168,7 +170,7 @@ class Store:
 
     def project_last_activity_at(self, pid: str) -> float | None:
         if pid not in self._last_activity_index:
-            project = next((item for item in self.list_projects() if item.id == pid), None)
+            project = self._load_project(pid)
             if project is None:
                 return None
             self._list_nodes_for_project(project.id, project)
@@ -356,13 +358,7 @@ class Store:
         host_dir = self._host_dir(project.id, self.machine.id)
         (host_dir / "nodes").mkdir(parents=True, exist_ok=True)
         self._write_json(host_dir / "local.json", {"root_path": project.root_path})
-        self._write_json(
-            host_dir / "layout.json",
-            {
-                "layout_hints": project.layout_hints,
-                "layout_viewport": project.layout_viewport,
-            },
-        )
+        self._write_json(host_dir / "node-layout.json", NodeLayout(schema_version=1, nodes={}).model_dump())
         roots = [] if project.temporary else root_commits(project.root_path)
         observed_is_repo = not project.temporary and is_git_repo(project.root_path)
         repo: dict[str, Any] = {}
@@ -384,7 +380,7 @@ class Store:
             },
         )
         payload = project.model_dump(
-            exclude={"provider", "root_path", "layout_hints", "layout_viewport"}
+            exclude={"provider", "root_path", "node_positions"}
         )
         self._write_json(self._project_file(project.id), payload)
         self.sync.schedule_commit(f'create project "{project.name or project.id}"')
@@ -412,11 +408,8 @@ class Store:
                 "repo": {},
                 "is_repo": False,
             })
-        if not (host_dir / "layout.json").is_file():
-            self._write_json(host_dir / "layout.json", {
-                "layout_hints": project.layout_hints,
-                "layout_viewport": project.layout_viewport,
-            })
+        if not (host_dir / "node-layout.json").is_file():
+            self._write_json(host_dir / "node-layout.json", NodeLayout(schema_version=1, nodes={}).model_dump())
 
     def update_project(self, project: Project) -> None:
         self.assert_writable()
@@ -424,15 +417,8 @@ class Store:
         host_dir = self._host_dir(project.id, self.machine.id)
         if self.is_bound_here(project.id):
             self._write_json(host_dir / "local.json", {"root_path": project.root_path})
-            self._write_json(
-                host_dir / "layout.json",
-                {
-                    "layout_hints": project.layout_hints,
-                    "layout_viewport": project.layout_viewport,
-                },
-            )
         payload = project.model_dump(
-            exclude={"provider", "root_path", "layout_hints", "layout_viewport"}
+            exclude={"provider", "root_path", "node_positions"}
         )
         self._write_json(
             self._project_file(project.id),
@@ -440,47 +426,133 @@ class Store:
         )
         self.sync.schedule_commit(f'update project "{project.name or project.id}"')
 
-    def _layout_with_remote_seeds(
-        self,
-        project_dir: Path,
-        layout_payload: dict[str, Any],
-    ) -> dict[str, Any]:
-        """Fill missing local work-node and commit positions from peer layouts."""
-        local_hints = layout_payload.get("layout_hints")
-        merged_hints = dict(local_hints) if isinstance(local_hints, dict) else {}
-        hosts_dir = project_dir / "hosts"
-        for host_dir in sorted(hosts_dir.iterdir()):
-            if host_dir.name == self.machine.id:
-                continue
-            nodes_dir = host_dir / "nodes"
-            layout_file = host_dir / "layout.json"
-            if not layout_file.is_file():
-                continue
+    def read_node_positions(
+        self, pid: str, *, nodes: list[Node] | None = None
+    ) -> dict[str, NodePosition]:
+        if nodes is None:
+            nodes = self._list_nodes_for_project(pid, None)
+        nodes_by_id = {node.id: node for node in nodes}
+        positions: dict[str, NodePosition] = {}
+        for path in sorted(self._hosts_dir(pid).glob("*/node-layout.json")):
             try:
-                remote_layout = self._read_json(layout_file)
-            except (OSError, ValueError):
-                continue
-            remote_hints = remote_layout.get("layout_hints")
-            if not isinstance(remote_hints, dict):
-                continue
-            remote_node_ids = {
-                node_file.parent.name for node_file in nodes_dir.glob("*/node.json")
-            }
-            for hint_id, position in remote_hints.items():
-                portable_commit = (
-                    hint_id.startswith("commit:") and hint_id != "commit:ghost"
-                )
-                if (
-                    hint_id not in merged_hints
-                    and (hint_id in remote_node_ids or portable_commit)
-                ):
-                    merged_hints[hint_id] = position
-        return {
-            "layout_hints": merged_hints,
-            "layout_viewport": layout_payload.get("layout_viewport"),
-        }
+                layout = NodeLayout.model_validate(self._read_json(path))
+            except (OSError, ValueError) as exc:
+                raise MigrationError("migration_failed", str(exc), path) from exc
+            for node_id, position in layout.nodes.items():
+                node = nodes_by_id.get(node_id)
+                if node is not None and node.owner_host_id == path.parent.name:
+                    if position.space == node_coordinate_space(node, nodes_by_id):
+                        positions[node_id] = position
+        return positions
 
-    def list_projects(self) -> list[Project]:
+    def read_git_positions(self, pid: str) -> dict[str, GitPosition]:
+        path = self._project_file(pid).parent / "git-layout.json"
+        if not path.exists():
+            return {}
+        try:
+            return GitLayout.model_validate(self._read_json(path)).nodes
+        except (OSError, ValueError) as exc:
+            raise MigrationError("migration_failed", str(exc), path) from exc
+
+    def update_git_positions(
+        self, pid: str, updates: dict[str, GitPosition], remove: list[str],
+    ) -> dict[str, GitPosition]:
+        self.assert_writable()
+        if not self.is_bound_here(pid):
+            raise ValueError("项目未绑定到本机，不能修改 Git 位置")
+        validated = GitLayout(schema_version=1, nodes=updates).nodes
+        GitLayout(schema_version=1, nodes={key: GitPosition(x=0, y=0, space="canvas") for key in remove})
+        merged = self.read_git_positions(pid)
+        merged.update(validated)
+        for node_id in remove:
+            merged.pop(node_id, None)
+        atomic_json(self._project_file(pid).parent / "git-layout.json",
+                    GitLayout(schema_version=1, nodes=merged).model_dump())
+        self.sync.schedule_commit(f"更新 Git 节点位置 {pid}")
+        return merged
+
+    def read_lane_positions(self, pid: str) -> dict[str, LanePosition]:
+        path = self._project_file(pid).parent / "lane-layout.json"
+        if not path.exists():
+            return {}
+        try:
+            return LaneLayout.model_validate(self._read_json(path)).nodes
+        except (OSError, ValueError) as exc:
+            raise MigrationError("migration_failed", str(exc), path) from exc
+
+    def update_lane_positions(
+        self, pid: str, updates: dict[str, LanePosition], remove: list[str],
+    ) -> dict[str, LanePosition]:
+        self.assert_writable()
+        if not self.is_bound_here(pid):
+            raise ValueError("项目未绑定到本机，不能修改方向位置")
+        validated = LaneLayout(schema_version=1, nodes=updates).nodes
+        LaneLayout(schema_version=1, nodes={key: LanePosition(x=0, y=0, space="canvas") for key in remove})
+        merged = self.read_lane_positions(pid)
+        merged.update(validated)
+        for node_id in remove:
+            merged.pop(node_id, None)
+        atomic_json(self._project_file(pid).parent / "lane-layout.json",
+                    LaneLayout(schema_version=1, nodes=merged).model_dump())
+        self.sync.schedule_commit(f"更新方向位置 {pid}")
+        return merged
+
+    def update_node_positions(
+        self,
+        pid: str,
+        updates: dict[str, NodePosition],
+        remove: list[str],
+    ) -> dict[str, NodePosition]:
+        self.assert_writable()
+        if not self.is_bound_here(pid):
+            raise ValueError("项目未绑定到本机，不能修改节点位置")
+        node_records = self._list_nodes_for_project(pid, None)
+        nodes = {node.id: node for node in node_records}
+        for node_id in set(updates) | set(remove):
+            node = nodes.get(node_id)
+            if node is None or node.owner_host_id != self.machine.id:
+                raise ValueError(f"只能修改本机拥有的真实节点位置：{node_id}")
+        validated = {node_id: NodePosition.model_validate(position) for node_id, position in updates.items()}
+        for node_id, position in validated.items():
+            if position.space != node_coordinate_space(nodes[node_id], nodes):
+                raise ValueError(f"节点坐标空间已改变：{node_id}")
+        merged = {
+            node_id: position
+            for node_id, position in self.read_node_positions(pid, nodes=node_records).items()
+            if nodes[node_id].owner_host_id == self.machine.id
+        }
+        merged.update(validated)
+        for node_id in remove:
+            merged.pop(node_id, None)
+        self._write_json(self._host_dir(pid, self.machine.id) / "node-layout.json",
+                         NodeLayout(schema_version=1, nodes=merged).model_dump())
+        self.sync.schedule_commit(f"update node positions {pid}")
+        return self.read_node_positions(pid, nodes=node_records)
+
+    def _load_project(self, pid: str) -> Project | None:
+        project_file = self._project_file(pid)
+        if not project_file.exists():
+            return None
+        try:
+            payload = self._read_json(project_file)
+            if any(
+                candidate.is_file()
+                for candidate in (project_file.parent / "nodes").rglob("*")
+            ):
+                raise ValueError("当前格式不允许未分区节点")
+            local_file = self._host_dir(pid, self.machine.id) / "local.json"
+            local_payload = self._read_json(local_file) if local_file.is_file() else {}
+            payload.update(
+                root_path=local_payload.get("root_path", UNBOUND_ROOT_PATH),
+                node_positions={},
+            )
+            return _validate_project_record(project_file, payload).bind_model_catalog(
+                self.root
+            )
+        except (OSError, ValueError, ValidationError) as exc:
+            raise MigrationError("migration_failed", str(exc), project_file) from exc
+
+    def list_projects(self, *, include_node_positions: bool = True) -> list[Project]:
         projects_dir = self.root / "projects"
         out: list[Project] = []
         if not projects_dir.exists():
@@ -493,48 +565,15 @@ class Store:
         for pdir in sorted(projects_dir.iterdir()):
             if not pdir.is_dir():
                 continue
-            pf = pdir / "project.json"
-            # Host partitions are the authority boundary. A flat project can
-            # only have arrived from a pre-partition peer and is not part of
-            # the current store contract.
-            if pf.exists():
-                try:
-                    payload = self._read_json(pf)
-                    if any(candidate.is_file() for candidate in (pdir / "nodes").rglob("*")):
-                        raise ValueError("当前格式不允许未分区节点")
-                    local_dir = pdir / "hosts" / self.machine.id
-                    local_payload: dict[str, Any] = {}
-                    layout_payload: dict[str, Any] = {}
-                    if (local_dir / "local.json").is_file():
-                        local_payload = self._read_json(local_dir / "local.json")
-                    if (local_dir / "layout.json").is_file():
-                        layout_payload = self._read_json(local_dir / "layout.json")
-                    layout_payload = self._layout_with_remote_seeds(
-                        pdir,
-                        layout_payload,
-                    )
-                    payload.update(
-                        {
-                            "root_path": local_payload.get(
-                                "root_path", UNBOUND_ROOT_PATH
-                            ),
-                            "layout_hints": layout_payload.get(
-                                "layout_hints", {}
-                            ),
-                            "layout_viewport": layout_payload.get(
-                                "layout_viewport"
-                            ),
-                        }
-                    )
-                    project = _validate_project_record(pf, payload)
-                    project.tag_ids = [
-                        tag_id
-                        for tag_id in project.tag_ids
-                        if tag_id in known_tag_ids
-                    ]
-                    out.append(project.bind_model_catalog(self.root))
-                except (OSError, ValueError, ValidationError) as exc:
-                    raise MigrationError("migration_failed", str(exc), pf) from exc
+            project = self._load_project(pdir.name)
+            if project is None:
+                continue
+            project.tag_ids = [
+                tag_id for tag_id in project.tag_ids if tag_id in known_tag_ids
+            ]
+            if include_node_positions:
+                project.node_positions = self.read_node_positions(project.id)
+            out.append(project)
         return out
 
     def delete_project(self, pid: str) -> bool:
@@ -566,14 +605,15 @@ class Store:
         return node
 
     def load_node(self, pid: str, nid: str) -> Node | None:
-        path = self._node_file(pid, nid)
-        if not path.exists():
-            matches = list(self._hosts_dir(pid).glob(f"*/nodes/{nid}/node.json"))
-            if matches:
-                path = matches[0]
-        if not path.exists():
+        matches = list(self._hosts_dir(pid).glob(f"*/nodes/{nid}/node.json"))
+        if len(matches) > 1:
+            raise MigrationError("migration_failed", f"节点出现在多个 host 分区：{nid}")
+        if not matches:
             return None
+        path = matches[0]
         node = Node.model_validate(self._read_json(path)).bind_model_catalog(self.root)
+        if node.id != nid or node.project_id != pid:
+            raise MigrationError("migration_failed", "节点 id 或项目归属与路径不一致", path)
         # The partition a record physically lives in is the only thing that
         # decides who may rewrite it. Deriving the owner from the loaded path
         # keeps synchronized provenance fields out of local write authority.
@@ -607,7 +647,7 @@ class Store:
         return True
 
     def list_nodes(self, pid: str) -> list[Node]:
-        project = next((item for item in self.list_projects() if item.id == pid), None)
+        project = self._load_project(pid)
         return self._list_nodes_for_project(pid, project)
 
     def _list_nodes_for_project(

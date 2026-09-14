@@ -6,7 +6,6 @@ import asyncio
 import ctypes
 import json
 import logging
-import math
 import os
 import shutil
 import subprocess
@@ -58,8 +57,12 @@ from .domain import (
     TERMINAL_NODE_STATES,
     ArtifactMode,
     Category,
+    GitPosition,
+    LanePosition,
     Node,
     NodeKind,
+    NodeLayout,
+    NodePosition,
     NodeState,
     PlanspaceMode,
     Project,
@@ -744,7 +747,6 @@ class ProjectRegistry:
                 )
 
         host_dir = self.store.root / "projects" / pid / "hosts" / self.store.machine.id
-        source_layout = self._binding_layout_seed(pid, self.store.machine.id)
         repo: dict[str, Any] = {}
         if roots and adopt_fingerprint:
             repo = {
@@ -764,11 +766,11 @@ class ProjectRegistry:
             host_payload["unverified_binding"] = True
         self.store._write_json(host_dir / "host.json", host_payload)
         self.store._write_json(host_dir / "local.json", {"root_path": resolved})
-        self.store._write_json(host_dir / "layout.json", source_layout)
+        if not (host_dir / "node-layout.json").exists():
+            self.store._write_json(host_dir / "node-layout.json", NodeLayout(schema_version=1, nodes={}).model_dump())
         (host_dir / "nodes").mkdir(parents=True, exist_ok=True)
         project.root_path = resolved
-        project.layout_hints = dict(source_layout.get("layout_hints", {}))
-        project.layout_viewport = source_layout.get("layout_viewport")
+        project.node_positions = self.store.read_node_positions(pid)
         self.store.invalidate_owner_index()
         self.store.sync.schedule_commit(
             f'bind project "{project.name or pid}" on this device'
@@ -808,24 +810,6 @@ class ProjectRegistry:
             f'unbind project "{project.name or pid}" on this device'
         )
         return project
-
-    def _binding_layout_seed(self, pid: str, preferred_mid: str) -> dict[str, Any]:
-        hosts_dir = self.store.root / "projects" / pid / "hosts"
-        candidates = [hosts_dir / preferred_mid / "layout.json"]
-        candidates.extend(sorted(hosts_dir.glob("*/layout.json")))
-        for path in candidates:
-            if not path.is_file():
-                continue
-            try:
-                payload = json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, ValueError):
-                continue
-            if isinstance(payload, dict):
-                return {
-                    "layout_hints": payload.get("layout_hints", {}),
-                    "layout_viewport": payload.get("layout_viewport"),
-                }
-        return {"layout_hints": {}, "layout_viewport": None}
 
     def rename_project(self, pid: str, name: str) -> Project | None:
         rt = self._runtimes.get(pid)
@@ -912,49 +896,38 @@ class ProjectRegistry:
         self.store.update_project(rt.project)
         return rt.project
 
-    def update_layout_hints(
+    def update_node_layout(
         self,
         pid: str,
-        updates: dict[str, dict[str, float]],
+        updates: dict[str, NodePosition],
         *,
         remove: list[str] | None = None,
-        layout_viewport: dict[str, float] | None = None,
     ) -> Project | None:
         rt = self._runtimes.get(pid)
         if rt is None:
             return None
         self.require_native(pid)
-        merged = dict(rt.project.layout_hints)
-        for nid, pos in updates.items():
-            if not isinstance(pos, dict):
-                continue
-            x = pos.get("x")
-            y = pos.get("y")
-            if not isinstance(x, (int, float)) or not isinstance(y, (int, float)):
-                continue
-            merged[nid] = {"x": float(x), "y": float(y)}
-        for nid in remove or ():
-            merged.pop(nid, None)
-        rt.project.layout_hints = merged
-        if layout_viewport is not None:
-            x = layout_viewport.get("x")
-            y = layout_viewport.get("y")
-            zoom = layout_viewport.get("zoom")
-            if (
-                isinstance(x, (int, float))
-                and isinstance(y, (int, float))
-                and isinstance(zoom, (int, float))
-                and math.isfinite(x)
-                and math.isfinite(y)
-                and math.isfinite(zoom)
-                and zoom > 0
-            ):
-                rt.project.layout_viewport = {
-                    "x": float(x),
-                    "y": float(y),
-                    "zoom": float(zoom),
-                }
-        self.store.update_project(rt.project)
+        rt.project.node_positions = self.store.update_node_positions(pid, updates, remove or [])
+        return rt.project
+
+    def update_git_layout(
+        self, pid: str, updates: dict[str, GitPosition], *, remove: list[str] | None = None,
+    ) -> Project | None:
+        rt = self._runtimes.get(pid)
+        if rt is None:
+            return None
+        self.require_native(pid)
+        self.store.update_git_positions(pid, updates, remove or [])
+        return rt.project
+
+    def update_lane_layout(
+        self, pid: str, updates: dict[str, LanePosition], *, remove: list[str] | None = None,
+    ) -> Project | None:
+        rt = self._runtimes.get(pid)
+        if rt is None:
+            return None
+        self.require_native(pid)
+        self.store.update_lane_positions(pid, updates, remove or [])
         return rt.project
 
     def update_planspace_view(
@@ -1097,11 +1070,7 @@ class ProjectRegistry:
         view = dict(rt.project.planspace_view)
         view.pop(lane_id, None)
         rt.project.planspace_view = view
-        hints = dict(rt.project.layout_hints)
-        hints.pop(f"planspace:{lane_id}", None)
-        for node_id in removed:
-            hints.pop(node_id, None)
-        rt.project.layout_hints = hints
+        rt.project.node_positions = self.store.read_node_positions(pid)
         self.store.update_project(rt.project)
         self.store.sync.schedule_commit(f"delete planspace {lane_id}")
 
@@ -1323,8 +1292,11 @@ class ProjectRegistry:
     def turn_count(self, pid: str) -> int:
         return len(self.store.list_nodes(pid))
 
-    def node_summary(self, project: Project) -> ProjectNodeSummary:
-        nodes = self.store.list_nodes(project.id)
+    def node_summary(
+        self, project: Project, *, nodes: list[Node] | None = None
+    ) -> ProjectNodeSummary:
+        if nodes is None:
+            nodes = self.store.list_nodes(project.id)
         last_activity_at = max(
             (
                 timestamp
@@ -3030,12 +3002,7 @@ class ProjectRegistry:
             store_root=self.store.root,
         )
 
-        hints = dict(rt.project.layout_hints)
-        hints.pop(f"tplbox:{iid}", None)
-        hints.pop(f"tplgroup:{iid}", None)
-        for node_id in removed:
-            hints.pop(node_id, None)
-        rt.project.layout_hints = hints
+        rt.project.node_positions = self.store.read_node_positions(pid)
         self.store.update_project(rt.project)
         self.store.sync.schedule_commit(f"delete template instance {iid}")
 

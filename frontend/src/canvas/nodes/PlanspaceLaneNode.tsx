@@ -17,17 +17,13 @@ function PlanspaceLaneNodeImpl({ data }: NodeProps<PlanspaceLaneData>) {
         boxShadow: data.focused ? `0 0 0 1px ${data.color.accent}` : undefined,
       }}
     >
-      {/* The whole header is the drag handle (no inner buttons that would
-       * swallow drag-starts on the label text). Clicking the lane is handled
-       * by React Flow's onNodeClick in Canvas, which selects the planspace,
-       * so this div doesn't need its own onClick. */}
       <div
-        className="planspace-lane-drag-handle pointer-events-auto flex h-8 w-full cursor-grab items-center gap-2 border-b px-3 text-[10px] font-medium uppercase tracking-[0.14em] transition hover:bg-surface-raised/40 active:cursor-grabbing"
+        className={`planspace-lane-drag-handle pointer-events-auto flex h-8 w-full ${data.canMove ? "cursor-grab active:cursor-grabbing" : "cursor-pointer"} items-center gap-2 border-b px-3 text-[10px] font-medium uppercase tracking-[0.14em] transition hover:bg-surface-raised/40`}
         style={{
           borderColor: data.color.border,
           color: data.color.text,
         }}
-        title="Drag to move · click to open direction"
+        title={data.canMove ? "点击打开方向；拖动标题栏移动并保存位置" : "点击打开方向；当前项目只读"}
       >
         <span
           className="inline-block h-1.5 w-1.5 flex-none rounded-full"

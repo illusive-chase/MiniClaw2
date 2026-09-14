@@ -39,7 +39,7 @@ from .contextspace import (
     read_template_instances,
 )
 from .context_refresh import cancel_context_task, context_refresh_status, start_context_task
-from .domain import Node
+from .domain import GitNodeId, GitPosition, LaneNodeId, LanePosition, Node, NodePosition
 from .events import (
     ContextRefreshUpdated,
     InteractionResponse,
@@ -221,8 +221,9 @@ class SessionInfo(BaseModel):
     hosts: list[dict[str, Any]] = Field(default_factory=list)
     last_sync_at: float | None = None
     project_context_binding_id: str | None = None
-    layout_hints: dict[str, dict[str, float]] = Field(default_factory=dict)
-    layout_viewport: dict[str, float] | None = None
+    node_positions: dict[str, NodePosition] = Field(default_factory=dict)
+    git_positions: dict[str, GitPosition] = Field(default_factory=dict)
+    lane_positions: dict[str, LanePosition] = Field(default_factory=dict)
     # Runtime capabilities are explicit so clients can hide workspace/Git
     # controls for ephemeral sessions.
     persistence_mode: str = "durable"
@@ -257,10 +258,25 @@ class ActiveNodesResponse(BaseModel):
     entries: list[ActiveNodeEntry]
 
 
-class UpdateLayoutHintsRequest(BaseModel):
-    updates: dict[str, dict[str, float]] = Field(default_factory=dict)
+class UpdateNodeLayoutRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    updates: dict[str, NodePosition] = Field(default_factory=dict)
     remove: list[str] = Field(default_factory=list)
-    layout_viewport: dict[str, float] | None = None
+
+
+class UpdateGitLayoutRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    updates: dict[GitNodeId, GitPosition] = Field(default_factory=dict)
+    remove: list[GitNodeId] = Field(default_factory=list)
+
+
+class UpdateLaneLayoutRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    updates: dict[LaneNodeId, LanePosition] = Field(default_factory=dict)
+    remove: list[LaneNodeId] = Field(default_factory=list)
 
 
 class BindProjectRequest(BaseModel):
@@ -1516,19 +1532,34 @@ def create_app(
             raise HTTPException(404, "session not found")
         return _session_info(registry, project)
 
-    @app.patch("/sessions/{sid}/layout-hints", response_model=SessionInfo)
-    def update_layout_hints(
-        sid: str,
-        req: UpdateLayoutHintsRequest,
-    ) -> SessionInfo:
-        project = registry.update_layout_hints(
-            sid,
-            req.updates,
-            remove=req.remove,
-            layout_viewport=req.layout_viewport,
-        )
+    @app.patch("/sessions/{sid}/node-layout", response_model=SessionInfo)
+    def update_node_layout(sid: str, req: UpdateNodeLayoutRequest) -> SessionInfo:
+        try:
+            project = registry.update_node_layout(sid, req.updates, remove=req.remove)
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
         if project is None:
             raise HTTPException(404, "session not found")
+        return _session_info(registry, project)
+
+    @app.patch("/sessions/{sid}/git-layout", response_model=SessionInfo)
+    def update_git_layout(sid: str, req: UpdateGitLayoutRequest) -> SessionInfo:
+        try:
+            project = registry.update_git_layout(sid, req.updates, remove=req.remove)
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        if project is None:
+            raise HTTPException(404, "项目不存在")
+        return _session_info(registry, project)
+
+    @app.patch("/sessions/{sid}/lane-layout", response_model=SessionInfo)
+    def update_lane_layout(sid: str, req: UpdateLaneLayoutRequest) -> SessionInfo:
+        try:
+            project = registry.update_lane_layout(sid, req.updates, remove=req.remove)
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        if project is None:
+            raise HTTPException(404, "项目不存在")
         return _session_info(registry, project)
 
     @app.patch("/sessions/{sid}/planspace-view", response_model=dict[str, Any])
@@ -2680,7 +2711,8 @@ def _embedded_session_for(registry: ProjectRegistry, slug: str) -> Any:
 
 def _session_info(registry: ProjectRegistry, project: Any) -> SessionInfo:
     bound_here = registry.is_native_project(project)
-    node_summary = registry.node_summary(project)
+    nodes = registry.store.list_nodes(project.id)
+    node_summary = registry.node_summary(project, nodes=nodes)
     return SessionInfo(
         id=project.id,
         created_at=project.created_at,
@@ -2714,8 +2746,9 @@ def _session_info(registry: ProjectRegistry, project: Any) -> SessionInfo:
         hosts=registry.store.list_hosts(project.id),
         last_sync_at=registry.store.sync.identity.last_sync_at,
         project_context_binding_id=project.project_context_binding_id,
-        layout_hints=project.layout_hints,
-        layout_viewport=project.layout_viewport,
+        node_positions=registry.store.read_node_positions(project.id, nodes=nodes),
+        git_positions=registry.store.read_git_positions(project.id),
+        lane_positions=registry.store.read_lane_positions(project.id),
         persistence_mode="ephemeral" if project.temporary else "durable",
         capabilities=(
             {

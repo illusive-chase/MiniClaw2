@@ -117,6 +117,7 @@ def test_artifact_metadata_names_survive_validation_and_migration(tmp_path: Path
     validate(store.root)
     atomic_json(store.root / "schema.json", marker(MINIMUM_VERSION))
     store.coordinator.ready = False
+    store.coordinator.apply(store.machine.id, accept_data_loss=True)
     migrated = Store(store.root)
     assert stored_artifact_path(migrated, project.id, node.id, name).read_text(encoding="utf-8") == '["这是产物，不是元数据"]'
 
@@ -152,8 +153,8 @@ def test_local_cursor_is_not_shared_cursor(tmp_path: Path) -> None:
         return [replace(migration, upgrade=lambda context, migration=migration: track(context, migration)) for migration in steps(source)]
 
     with patch("miniclaw2.migrations.coordinator.steps", side_effect=tracked_steps):
-        store.coordinator.apply(store.machine.id)
-    assert scopes == ["local"] * (CURRENT_VERSION - MINIMUM_VERSION)
+        store.coordinator.apply(store.machine.id, accept_data_loss=True)
+    assert scopes == ["local"] * sum("local" in migration.scopes for migration in steps(MINIMUM_VERSION))
     assert version_of(json.loads(receipt_path.read_text()), receipt_path) == CURRENT_VERSION
     latest = sorted((tmp_path / ".migration-local" / "transactions").glob("*/journal.json"), key=lambda path: path.stat().st_mtime)[-1]
     assert any(change["path"] == ".migration-local/state.json" for change in json.loads(latest.read_text())["changes"])

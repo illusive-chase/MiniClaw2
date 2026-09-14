@@ -17,7 +17,9 @@ import {
   promoteVirtual,
   refreshProjectContext,
   rerunNode,
-  updateLayoutHints,
+  updateNodeLayout,
+  updateGitLayout,
+  updateLaneLayout,
   deletePlanspace,
   updatePlanspaceMode,
   updatePlanspaceView,
@@ -107,7 +109,7 @@ import type {
   NodeDiff,
   NodeInfo,
   ServerEvent,
-  CanvasViewport,
+  NodePosition,
   ModelPreset,
   GlobalState,
   SessionContextSpaceInfo,
@@ -332,7 +334,6 @@ export function App() {
   const [gitAction, setGitAction] = useState<"commit" | "review" | "pull" | "push" | null>(null);
   const [gitError, setGitError] = useState<string | null>(null);
   const pendingUiCommitNodeIdsRef = useRef<Set<string>>(new Set());
-  const [uiCommitPositionTargets, setUiCommitPositionTargets] = useState<string[]>([]);
 
   const [selection, setSelection] = useState<CanvasSelection>({ kind: "none" });
   const selectionRef = useRef<CanvasSelection>(selection);
@@ -744,7 +745,6 @@ export function App() {
     setGitAction(null);
     setGitError(null);
     pendingUiCommitNodeIdsRef.current.clear();
-    setUiCommitPositionTargets([]);
     setProjectMutationPending(false);
     setNodePositionTarget(null);
     setPendingGates({});
@@ -1229,23 +1229,10 @@ export function App() {
         node.commit_after !== node.commit_before
       ) {
         committed = true;
-        setUiCommitPositionTargets((current) =>
-          current.includes(node.commit_after!)
-            ? current
-            : [...current, node.commit_after!],
-        );
       }
     }
     if (committed) void refreshGit();
   }, [nodes, refreshGit]);
-
-  const consumeUiCommitPositionTarget = useCallback((sha: string) => {
-    setUiCommitPositionTargets((current) =>
-      current[0] === sha
-        ? current.slice(1)
-        : current.filter((candidate) => candidate !== sha),
-    );
-  }, []);
 
   /* context space */
   /* `quiet` is for reconciliation rather than a user-initiated read: it skips
@@ -2924,29 +2911,49 @@ export function App() {
     canAcceptCanvasDependency,
   ]);
 
-  /* Canvas layout changes -> serialized backend PATCHes. Best-effort: log on
-   * failure but don't surface; the client-side ref keeps working either way. */
-  const onLayoutHintsChange = useCallback(
+  const canvasPositions = useMemo(() => ({
+    ...session?.node_positions,
+    ...session?.git_positions,
+    ...session?.lane_positions,
+  }), [session?.node_positions, session?.git_positions, session?.lane_positions]);
+
+  const onNodePositionsChange = useCallback(
     (
-      updates: Record<string, { x: number; y: number }>,
-      layoutViewport?: CanvasViewport | null,
+      updates: Record<string, NodePosition>,
       remove: string[] = [],
     ) => {
       if (!session?.id || readOnly) return;
-      if (Object.keys(updates).length === 0 && remove.length === 0 && !layoutViewport) return;
+      if (Object.keys(updates).length === 0 && remove.length === 0) return;
       const sessionId = session.id;
       const updatesSnapshot = Object.fromEntries(
-        Object.entries(updates).map(([id, pos]) => [id, { x: pos.x, y: pos.y }]),
+        Object.entries(updates).map(([id, pos]) => [id, { ...pos }]),
       );
-      const viewportSnapshot = layoutViewport ? { ...layoutViewport } : layoutViewport;
       const removeSnapshot = [...remove];
       const save = layoutSaveChainRef.current
         .catch(() => undefined)
-        .then(() => updateLayoutHints(sessionId, updatesSnapshot, removeSnapshot, viewportSnapshot))
+        .then(async () => {
+          const writers = [
+            { matches: (id: string) => !id.startsWith("commit:") && !id.startsWith("planspace:"), write: updateNodeLayout },
+            { matches: (id: string) => id.startsWith("commit:"), write: updateGitLayout },
+            { matches: (id: string) => id.startsWith("planspace:"), write: updateLaneLayout },
+          ];
+          let next: SessionInfo | null = null;
+          for (const { matches, write } of writers) {
+            const positions = Object.fromEntries(Object.entries(updatesSnapshot).filter(([id]) => matches(id)));
+            const removals = removeSnapshot.filter(matches);
+            if (Object.keys(positions).length || removals.length) {
+              next = await write(sessionId, positions, removals);
+            }
+          }
+          if (!next) throw new Error("没有可保存的位置");
+          return next;
+        })
         .then((next) => {
-          setSession((current) =>
-            current && current.id === next.id ? { ...current, ...next } : current,
-          );
+          if (lastLayoutSaveRef.current === save) {
+            setSession((current) =>
+              current && current.id === next.id ? { ...current, ...next } : current,
+            );
+          }
           return next;
         });
       lastLayoutSaveRef.current = save;
@@ -2955,7 +2962,8 @@ export function App() {
         () => undefined,
       );
       save.catch((err) => {
-        console.warn("update layout hints failed:", err);
+        console.warn("保存节点位置失败：", err);
+        window.alert(`节点位置未保存，请重试拖动：${apiErrorText(err)}`);
       }).finally(() => {
         if (lastLayoutSaveRef.current === save) {
           lastLayoutSaveRef.current = null;
@@ -3415,10 +3423,7 @@ export function App() {
               gitHead={gitStatus?.head ?? null}
               gitHosts={session?.hosts ?? []}
               gitDirtyCount={gitStatus?.dirty_count ?? 0}
-              commitPositionTarget={uiCommitPositionTargets[0] ?? null}
-              onCommitPositionTransferHandled={consumeUiCommitPositionTarget}
-              initialLayoutHints={session?.layout_hints}
-              initialLayoutViewport={session?.layout_viewport ?? null}
+              initialNodePositions={canvasPositions}
               onSelectionChange={onSelectionChange}
               onMultiSelectionChange={onMultiSelectionChange}
               onAgentNodeContextMenu={onAgentNodeContextMenu}
@@ -3426,10 +3431,12 @@ export function App() {
               onAttachPrincipleToVirtual={handleAttachPrincipleToVirtual}
               onAttachSkillToVirtual={handleAttachSkillToVirtual}
               canMutateNode={canMutateCanvasNode}
+              canMutateGitLayout={!readOnly && session?.capabilities?.git_review !== false}
+              canMutateLaneLayout={!readOnly}
               onConnectDependency={handleConnectDependency}
               onCreateDependencyVirtualAt={createDependencyVirtualAt}
               onDisconnectDependency={handleDisconnectDependency}
-              onLayoutHintsChange={onLayoutHintsChange}
+              onNodePositionsChange={onNodePositionsChange}
             />
           ) : (
             <div className="flex h-full w-full items-center justify-center text-[11px] uppercase tracking-[0.18em] text-ink-subtle">

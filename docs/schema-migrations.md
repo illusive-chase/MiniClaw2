@@ -2,7 +2,7 @@
 
 MiniClaw2 通过发行包内的迁移单元升级持久化数据。当前目标版本和最低接纳版本只来自
 `backend/miniclaw2/migrations/manifest.json`，不再由同步模块中的版本分支维护。
-首个接入版本是 v15，可信来源基线是 v14。v13 及更早的数据必须先使用覆盖其来源格式的中间版本升级。
+首个接入版本是 v15，布局重构在 v16 接入，可信来源基线仍是 v14。v13 及更早的数据必须先使用覆盖其来源格式的中间版本升级。
 
 ## 使用与维护
 
@@ -19,8 +19,8 @@ miniclaw2 migrations recover
 
 这些命令支持 `--root /path/to/store`。`status` 只读取原始标记与日志，不加载业务模型。
 `recover` 在提交决定之前废弃暂存，在决定之后继续发布；它不是任意版本降级。
-明确声明语义损失的脚本只能通过 `apply --accept-data-loss` 执行，确认会写入事务日志。
-在线同步不会自动确认有损迁移。
+明确声明语义损失的脚本只能通过 `apply --accept-data-loss` 确认。确认覆盖当前发行窗口内声明的有损迁移契约，写入事务日志及当前机器、当前物理存储根的本机凭据，不随 Git 同步。
+在线同步不会自动确认有损迁移；规范化远端或共同祖先时，可以复用本机已确认的同一契约。新增有损迁移仍需再次确认，复制目录不能继承原目录的确认。
 
 如备份或暂存损坏、发现外部改写，恢复会停止，不猜测应保留哪个版本。可将原始备份导出到空的隔离目录：
 
@@ -36,13 +36,83 @@ HTTP 的 `/health` 和 `/migrations/status` 在维护模式中仍可访问。
 无法准入时服务不初始化 Registry、不调度节点；前端显示维护原因，而不是空项目画布。
 修复或升级后重启服务，再重新检查页面。
 
+## v16 节点布局切换
+
+v15 迁移脚本已纳入发行摘要，不能重新定义其语义；布局变更因此使用独立的 `15 → 16` 迁移边。存储、API 和前端必须同批切换，旧 `/layout-hints` 写接口不保留兼容分支。
+
+升级前先停止使用该存储的旧服务，检查影响后执行：
+
+```sh
+miniclaw2 migrations plan --root /path/to/store
+miniclaw2 migrations apply --root /path/to/store --accept-data-loss
+```
+
+`plan` 的 `layout_impact` 按项目和 host 列出保留位置、丢弃的 foreign 副本、合成／悬空条目及 viewport，并区分缺失和空布局；损坏文件或非法 owner 坐标报错。该清单针对现有 host 分区，v14 未分区残留仍需由 14→15 基线转换核验。
+
+随后用新版程序重启服务，并刷新所有旧浏览器页面。不要对正在被旧后端使用的存储直接迁移。首次同步来自旧版设备的历史时，即使本机是新建 v16 存储，也可能需要通过上述确认授权规范化旧输入。
+
+每个 `projects/<pid>/hosts/<owner>/layout.json` 转为同目录的 `node-layout.json`：
+
+```json
+{
+  "schema_version": 1,
+  "nodes": {
+    "node-id": {"x": 320.0, "y": 180.0, "space": "planspace:implementation"}
+  }
+}
+```
+
+- 仅保留该 host 分区真实拥有的节点坐标；不从其他 host 的完整快照补缺。缺失位置由画布确定性布局补上。
+- `space` 按显式 `planspace_id`、启动快照 `settings_snapshot.active_planspace_id`、父节点链依次解析；无归属或无归属循环使用 `canvas`。所属空间改变后旧坐标不再应用。
+- 丢弃 foreign 副本、已删除节点、commit/ghost/planspace/context/template 等合成图元坐标和旧 viewport。这是有损取舍，必须确认；本地源文件原字节及权限保存在事务备份中。
+- 跨 host 重复 node id、错误节点路径、非法 owner 坐标会使迁移失败，不猜测归属或悄悄覆盖。
+- 同步在隔离区将本地、远端、共同祖先都规范化到当前版本，再三方合并。同步事务记录输入提交及确认契约；原始输入提交由合并历史保留，未规范化的旧快照不能直接混入活动树。
+
+运行时从所有 owner 分片聚合 `node_positions`；普通项目更新不回写布局，新设备绑定只创建空分片。`PATCH /sessions/{sid}/node-layout` 接受 `updates` 与 `remove`，先完整校验再仅改本机分片；foreign、合成或未知节点及过时坐标空间返回 `409`，非有限坐标或缺失字段返回 `422`。
+
+真实节点只有本机 owner 可拖动。Git 卡片和 lane 按下节的独立持久化规则处理，其他合成图元仍由图结构与成员位置派生；viewport 按 `miniclaw2.canvas-viewport.v1:<project-id>` 保存在浏览器中，不进入 API、项目记录或 Git。只有用户 pan/zoom 保存视角，程序化居中和 fit 不覆盖它。
+
+## Git 布局与备份恢复
+
+`projects/<pid>/git-layout.json` 是可选的项目共享记录，使用独立的 `schema_version: 1`，结构为 `{"schema_version": 1, "nodes": {"commit:<sha>": {"x": 10, "y": 20, "space": "canvas"}}}`。同时支持 `commit:ghost`。位置只接受有限数值，空间固定为 canvas；无文件／无条目时使用自动布局，手工拖动后保存，提交暂时不在展示集合内时不清理位置。
+
+这是 v16 共享目录中的新增可选记录，不改写已发布的 v15/v16 迁移、根标记或旧节点布局，也不需要再次有损迁移。旧客户端不展示这些锚点，因此应升级后端并刷新前端后使用。文件随共享元数据备份和同步，校验器拒绝非法格式；同一锚点的并发修改或修改／删除冲突按完整坐标拒绝，避免 Git 文本合并把两台设备分别改动的 x/y 拼成未经确认的位置。其他文本合并冲突也保留显式失败，不自动选边。
+
+`SessionInfo.git_positions` 返回共享坐标；`PATCH /sessions/{sid}/git-layout` 使用 `updates` 和 `remove`。已绑定设备可写，未绑定设备只读；执行节点仍只走 `node-layout`，不会混入 Git 坐标。保存失败会提示，不能把当前画面位置当成已落盘。
+
+v16 曾删除的坐标通过原始事务备份恢复，不能把旧 `layout.json` 复制回活动树。先预览：
+
+```sh
+python -m miniclaw2.restore_git_layout --root /path/to/store --transaction TRANSACTION_ID
+python -m miniclaw2.restore_git_layout --root /path/to/store --transaction TRANSACTION_ID --apply
+```
+
+工具逐文件核对事务记录的摘要，对仍存在的所有项目提取 commit/ghost 坐标；默认优先 `machine.json` 指定的本机 host，其他 host 按 id 排序补缺，可用 `--preferred-host HOST_ID` 指定优先来源。已存在的新坐标永远保留。
+
+`--apply` 仅原子创建缺失的 `git-layout.json`，不覆盖已有文件；备份损坏时在写入前失败，并发创建时停止而不替换对方文件。可安全重跑；若已有文件仍有缺失条目，工具拒绝整批写入，应在新版服务中通过 `git-layout` 接口补入预览的差量。它不打开 Registry、不迁移或回滚活动存储、不触发同步、不提交 Git，也不改节点记录或 viewport。恢复后由新版后端下次会话读取呈现，随后按正常元数据同步流程传播。
+
+## Lane 布局补充
+
+`projects/<pid>/lane-layout.json` 与 Git 布局分离，结构为 `{"schema_version": 1, "nodes": {"planspace:<id>": {"x": -1704, "y": 3480, "space": "canvas"}}}`。这是同样的可选共享记录，不改写已发布迁移或根版本；通过 `SessionInfo.lane_positions` 返回，`PATCH /sessions/{sid}/lane-layout` 接受差量 `updates`／`remove`。已绑定设备可写，未绑定设备只读；同一 lane 的并发坐标修改按整个坐标检测冲突。
+
+拖动 lane 标题栏保存的是绝对坐标，内部节点依旧使用原有 parent-relative 坐标，不能把 lane 位移再加到子节点记录中。尺寸调整仍按成员边界计算，但不会移动已定位 lane；隐藏、焦点变化和列数变化也不清除锚点。没有锚点的 lane 使用自动排列，并避让已定位的 lane。
+
+使用同一恢复工具添加 `--kind lane`，提取备份中的 `planspace:*`：
+
+```sh
+python -m miniclaw2.restore_git_layout --root /path/to/store --transaction TRANSACTION_ID --kind lane
+python -m miniclaw2.restore_git_layout --root /path/to/store --transaction TRANSACTION_ID --kind lane --apply
+```
+
+默认优先本机备份、其他 host 补缺，对全部仍存在的项目恢复；校验、仅创建、不覆盖和可重跑规则与 Git 恢复相同。不会修改已有 `git-layout.json`、`node-layout.json` 或旧备份。
+
 ## 数据域清单
 
 唯一文件归属规则位于 `migrations/inventory.py`，供暂存、备份、恢复与同步候选树使用。
 
 | 域 | 路径及责任 | 完成凭据 |
 | --- | --- | --- |
-| shared | `projects/*/project.json`；`projects/*/hosts/*/` 下的节点、事件、gate、预览、artifact、host/layout/head/git_aliases；根 `config.json`、`tags.json`、`.gitignore`；内置 `contextspace/` 的绑定、原则、planspace、模板与快照 | 根 `schema.json` |
+| shared | `projects/*/project.json`、`projects/*/git-layout.json`、`projects/*/lane-layout.json`；`projects/*/hosts/*/` 下的节点、事件、gate、预览、artifact、host/node-layout/head/git_aliases；根 `config.json`、`tags.json`、`.gitignore`；内置 `contextspace/` 的绑定、原则、planspace、模板与快照 | 根 `schema.json` |
 | local | `projects/*/hosts/*/local.json`；凭据按本机身份与物理数据根绑定，不从远端复制 | `.migration-local/state.json` |
 | external_context | 非默认位置的 `$MINICLAW_CONTEXT_HOME`，与受管共享路径不能重叠 | 该根自己的 `.migration-local/state.json` 和锁 |
 

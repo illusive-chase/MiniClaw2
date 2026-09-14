@@ -23,7 +23,7 @@ def test_v14_code_review_default_uses_remaining_preset(tmp_path: Path) -> None:
     payload["model_presets"] = [preset for preset in payload["model_presets"] if preset["id"] != "gpt-5.6"]
     atomic_json(path, payload)
     baseline(tmp_path)
-    store.coordinator.apply(store.machine.id)
+    store.coordinator.apply(store.machine.id, accept_data_loss=True)
     assert json.loads(path.read_text())["code_review"] == {"model_preset_id": "opus-4-8"}
 
 
@@ -52,6 +52,7 @@ def test_baseline_converges_config_project_and_events(tmp_path: Path) -> None:
     event_file.write_text(original)
     baseline(tmp_path)
     store.coordinator.ready = False
+    store.coordinator.apply(store.machine.id, accept_data_loss=True)
     migrated = Store(tmp_path)
     assert migrated.list_projects()[0].id == project.id
     assert "updates" not in json.loads(config_file.read_text())
@@ -101,7 +102,7 @@ def test_v14_partial_partition_preserves_owned_binding_and_artifacts(tmp_path: P
     store = Store(tmp_path)
     project = Project(root_path="/tmp/source-checkout", machine_id=store.machine.id, name="legacy")
     project_file = tmp_path / "projects" / project.id / "project.json"
-    atomic_json(project_file, project.model_dump(exclude={"provider"}))
+    atomic_json(project_file, project.model_dump(exclude={"provider", "node_positions"}))
     node = Node(project_id=project.id, model_preset_id=project.model_preset_id)
     old = project_file.parent / "nodes" / node.id
     atomic_json(old / "node.json", node.model_dump(exclude={"provider", "owner_host_id"}))
@@ -109,7 +110,7 @@ def test_v14_partial_partition_preserves_owned_binding_and_artifacts(tmp_path: P
     artifact.parent.mkdir(parents=True)
     artifact.write_bytes(b"unaltered evidence\n")
     baseline(tmp_path)
-    store.coordinator.apply(store.machine.id)
+    store.coordinator.apply(store.machine.id, accept_data_loss=True)
     loaded = store.list_projects()[0]
     assert loaded.root_path == project.root_path
     assert store.load_node(project.id, node.id).id == node.id
@@ -125,14 +126,14 @@ def test_v14_broken_jsonl_never_advances_schema(tmp_path: Path) -> None:
     events.write_text('{"event": {"type": "text"}, "seq": 1}')
     baseline(tmp_path)
     with pytest.raises(MigrationError, match="未完整落盘"):
-        store.coordinator.apply(store.machine.id)
+        store.coordinator.apply(store.machine.id, accept_data_loss=True)
     assert json.loads((tmp_path / "schema.json").read_text())["schema_version"] == 14
 
 
 class RetiredProjectKeyTests(unittest.TestCase):
     def _migrate(self) -> None:
         (self.store.root / "schema.json").write_text(json.dumps(marker(14)))
-        self.store.coordinator.apply(self.store.machine.id)
+        self.store.coordinator.apply(self.store.machine.id, accept_data_loss=True)
 
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()

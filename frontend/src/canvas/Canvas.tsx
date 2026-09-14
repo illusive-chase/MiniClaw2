@@ -24,9 +24,14 @@ import type {
   CommitDescriptor,
   ContextBundle,
   NodeInfo,
+  NodePosition,
   SessionHost,
   TemplateInstanceRecord,
 } from "../types";
+import { filterNodePositions, nodePositionUpdate } from "./nodePositions";
+import { filterGitPositions, gitPositionUpdate, isGitPositionId } from "./gitPositions";
+import { filterLanePositions, isLanePositionId, lanePositionUpdate } from "./lanePositions";
+import { browserViewportStorage, readCanvasViewport, saveCanvasViewport } from "./viewportStorage";
 import { artifactRawUrl } from "../api";
 import { artifactSelection } from "../artifactSelection";
 import { extraPrinciplesAvailable, nodeClassification } from "../nodeUtil";
@@ -36,12 +41,9 @@ import {
   buildGraph,
   classifyPlanspaceLaneResizes,
   laneNeedsVerticalJump,
-  resolveCommitPositionTransfer,
   resolveLaneJumpLeftOffset,
   resolveLaneVerticalSpan,
   resolveRenderedLaneAnchorId,
-  resolveDisplacedGhostPosition,
-  resolveGitChangesAppearancePosition,
   resolveSyncedNodePosition,
   resizePlanspaceLanes,
   snapPlanspaceChildPosition,
@@ -214,9 +216,7 @@ export type CanvasProps = {
   principles?: PrincipleEnumeration[];
   skills?: SkillEnumeration[];
   /** Persisted positions hydrated from the session. */
-  initialLayoutHints?: Record<string, { x: number; y: number }>;
-  /** Persisted viewport hydrated from the session. */
-  initialLayoutViewport?: Viewport | null;
+  initialNodePositions?: Record<string, NodePosition>;
   onSelectionChange: (sel: CanvasSelection) => void;
   /**
    * Fires when React Flow's multi-selection changes (marquee, shift-click).
@@ -252,6 +252,8 @@ export type CanvasProps = {
   onAttachSkillToVirtual?: (virtualNodeId: string, skillId: string) => void;
   /** Whether this host/session may rewrite a node owned dependency list. */
   canMutateNode?: (nodeId: string) => boolean;
+  canMutateGitLayout?: boolean;
+  canMutateLaneLayout?: boolean;
   /**
    * Fires when the user drags a wire from one agent tile onto another. The
    * source is appended to the target's `scheduled_deps` — the target is the side
@@ -268,19 +270,14 @@ export type CanvasProps = {
   ) => void;
   /** Fires when the user confirms withdrawing a dependency on the canvas. */
   onDisconnectDependency?: (targetNodeId: string, sourceNodeId: string) => void;
-  /** Called after drag-end / pan / zoom with layout state that changed. */
-  onLayoutHintsChange?: (
-    updates: Record<string, { x: number; y: number }>,
-    viewport?: Viewport | null,
+  onNodePositionsChange?: (
+    updates: Record<string, NodePosition>,
     remove?: string[],
   ) => void;
   gitCommits?: CommitDescriptor[];
   gitHead?: string | null;
   gitDirtyCount?: number;
   gitHosts?: SessionHost[];
-  /** SHA produced by a commit explicitly started from this MiniClaw2 UI. */
-  commitPositionTarget?: string | null;
-  onCommitPositionTransferHandled?: (sha: string) => void;
 };
 
 export function Canvas(props: CanvasProps) {
@@ -314,8 +311,7 @@ function CanvasInner({
   onCreateVirtualAt,
   principles,
   skills,
-  initialLayoutHints,
-  initialLayoutViewport,
+  initialNodePositions,
   onSelectionChange,
   onMultiSelectionChange,
   onAgentNodeContextMenu,
@@ -323,40 +319,40 @@ function CanvasInner({
   onAttachPrincipleToVirtual,
   onAttachSkillToVirtual,
   canMutateNode = () => false,
+  canMutateGitLayout = false,
+  canMutateLaneLayout = false,
   onConnectDependency,
   onCreateDependencyVirtualAt,
   onDisconnectDependency,
-  onLayoutHintsChange,
+  onNodePositionsChange,
   gitCommits,
   gitHead,
   gitDirtyCount,
   gitHosts,
-  commitPositionTarget = null,
-  onCommitPositionTransferHandled,
 }: CanvasProps) {
-  const layoutHintsRef = useRef<Record<string, { x: number; y: number }>>(
-    sanitizeLayoutHints(initialLayoutHints),
+  const nodePositionsRef = useRef<Record<string, NodePosition>>(
+    { ...filterNodePositions(nodes, initialNodePositions), ...filterGitPositions(initialNodePositions), ...filterLanePositions(initialNodePositions) },
   );
+  const hydratedPositionsRef = useRef(initialNodePositions);
   const initialViewportRef = useRef<Viewport | null>(
-    sanitizeViewport(initialLayoutViewport),
+    readCanvasViewport(sessionId, browserViewportStorage()),
   );
   const viewportRef = useRef<Viewport | null>(initialViewportRef.current);
   const liveViewportRef = useRef<Viewport>(initialViewportRef.current ?? DEFAULT_VIEWPORT);
-  const pendingHintsRef = useRef<Record<string, { x: number; y: number }>>({});
-  const pendingHintRemovalsRef = useRef<Set<string>>(new Set());
-  const pendingViewportRef = useRef<Viewport | null>(null);
+  const pendingPositionsRef = useRef<Record<string, NodePosition>>({});
   const flushTimerRef = useRef<number | null>(null);
   const wrapperRef = useRef<HTMLDivElement | null>(null);
   const appliedNodePositionTargetRef = useRef<string | null>(null);
   const pendingNodePositionTargetRef = useRef<string | null>(null);
   if (
     nodePositionTarget &&
-    appliedNodePositionTargetRef.current !== nodePositionTarget.nodeId
+    appliedNodePositionTargetRef.current !== nodePositionTarget.nodeId &&
+    nodes.some((node) => node.id === nodePositionTarget.nodeId) &&
+    canMutateNode(nodePositionTarget.nodeId)
   ) {
-    const position = { ...nodePositionTarget.position };
-    layoutHintsRef.current[nodePositionTarget.nodeId] = position;
-    pendingHintsRef.current[nodePositionTarget.nodeId] = position;
-    pendingHintRemovalsRef.current.delete(nodePositionTarget.nodeId);
+    const position = nodePositionUpdate(nodes, nodePositionTarget.nodeId, nodePositionTarget.position, canMutateNode)!;
+    nodePositionsRef.current[nodePositionTarget.nodeId] = position;
+    pendingPositionsRef.current[nodePositionTarget.nodeId] = position;
     appliedNodePositionTargetRef.current = nodePositionTarget.nodeId;
     pendingNodePositionTargetRef.current = nodePositionTarget.nodeId;
   }
@@ -372,30 +368,31 @@ function CanvasInner({
     preserveExisting: boolean;
   } | null>(null);
 
-  /* Re-hydrate when the session changes (initialLayoutHints prop swap). A ref
+  /* Re-hydrate when the session changes (initialNodePositions prop swap). A ref
    * update alone is not enough because buildGraph is memoized, and the RF sync
    * pass normally preserves current positions to protect active drags. */
   useEffect(() => {
-    const next = sanitizeLayoutHints(initialLayoutHints);
-    if (sameLayoutHints(layoutHintsRef.current, next)) return;
-    layoutHintsRef.current = next;
+    const incoming = hydratedPositionsRef.current === initialNodePositions
+      ? { ...initialNodePositions, ...nodePositionsRef.current }
+      : initialNodePositions;
+    hydratedPositionsRef.current = initialNodePositions;
+    const positions = { ...incoming, ...pendingPositionsRef.current };
+    const next = { ...filterNodePositions(nodes, positions), ...filterGitPositions(positions), ...filterLanePositions(positions) };
+    if (sameNodePositions(nodePositionsRef.current, next)) return;
+    nodePositionsRef.current = next;
     setLayoutHydrationVersion((version) => version + 1);
-  }, [initialLayoutHints]);
+  }, [initialNodePositions, nodes]);
 
   const flushPendingLayout = useCallback(() => {
     if (flushTimerRef.current !== null) {
       window.clearTimeout(flushTimerRef.current);
       flushTimerRef.current = null;
     }
-    const pending = pendingHintsRef.current;
-    const removals = [...pendingHintRemovalsRef.current];
-    const pendingViewport = pendingViewportRef.current;
-    if (Object.keys(pending).length === 0 && removals.length === 0 && !pendingViewport) return;
-    pendingHintsRef.current = {};
-    pendingHintRemovalsRef.current = new Set();
-    pendingViewportRef.current = null;
-    onLayoutHintsChange?.(pending, pendingViewport, removals);
-  }, [onLayoutHintsChange]);
+    const pending = pendingPositionsRef.current;
+    if (Object.keys(pending).length === 0) return;
+    pendingPositionsRef.current = {};
+    onNodePositionsChange?.(pending);
+  }, [onNodePositionsChange]);
 
   const scheduleFlushLayout = useCallback(
     (delayMs: number) => {
@@ -410,7 +407,9 @@ function CanvasInner({
   );
 
   useEffect(() => {
+    window.addEventListener("pagehide", flushPendingLayout);
     return () => {
+      window.removeEventListener("pagehide", flushPendingLayout);
       flushPendingLayout();
     };
   }, [flushPendingLayout]);
@@ -436,7 +435,12 @@ function CanvasInner({
       buildGraph({
         nodes,
         activeNodeIds,
-        layoutHints: layoutHintsRef.current,
+        nodePositions: filterNodePositions(nodes, nodePositionsRef.current),
+        gitPositions: filterGitPositions(nodePositionsRef.current),
+        canMutateGitLayout,
+        lanePositions: filterLanePositions(nodePositionsRef.current),
+        canMutateLaneLayout,
+        canMutateNode,
         contextBundlesByNodeId,
         knownPlanspaceIds,
               hiddenPlanspaceIds,
@@ -477,6 +481,9 @@ function CanvasInner({
       gitHosts,
       layoutHydrationVersion,
       nodePositionTarget,
+      canMutateNode,
+      canMutateGitLayout,
+      canMutateLaneLayout,
     ],
   );
   /* Read imperatively by onNodeClick, which must not be re-created on every
@@ -766,17 +773,6 @@ function CanvasInner({
     });
     return () => setLaneAppendResolver(null);
   }, [resolveRenderId]);
-  const commitGhostPositionRef = useRef<{ x: number; y: number } | null>(
-    layoutHintsRef.current["commit:ghost"] ?? null,
-  );
-  const currentCommitGhost = rfNodes.find((node) => node.id === "commit:ghost");
-  if (currentCommitGhost) {
-    commitGhostPositionRef.current = {
-      x: currentCommitGhost.position.x,
-      y: currentCommitGhost.position.y,
-    };
-  }
-
   /* Sync upstream node changes into local state without trampling drag
    * positions. Critically, this effect must NOT depend on hover state — hover
    * does not change node identity, and forcing a node-list rewrite on every
@@ -786,58 +782,8 @@ function CanvasInner({
   useEffect(() => {
     const hydrateFromLayout =
       appliedLayoutHydrationVersionRef.current !== layoutHydrationVersion;
-    const commitPositionTransfer = resolveCommitPositionTransfer(
-      rfNodesRef.current as RFNode[],
-      layeredBuiltNodes,
-      commitPositionTarget,
-      commitGhostPositionRef.current,
-    );
-    const gitChangesAppearancePosition = commitPositionTransfer
-      ? null
-      : resolveGitChangesAppearancePosition(
-          rfNodesRef.current as RFNode[],
-          layeredBuiltNodes,
-        );
-    /* A commit that lands while the tree is still dirty takes the ghost's row;
-     * step the ghost down so pending changes stay at the end of the trunk. */
-    const displacedGhostPosition =
-      commitPositionTransfer || gitChangesAppearancePosition
-        ? null
-        : resolveDisplacedGhostPosition(
-            rfNodesRef.current as RFNode[],
-            layeredBuiltNodes,
-          );
-    if (
-      syncedBuiltNodesRef.current === layeredBuiltNodes &&
-      !hydrateFromLayout &&
-      !commitPositionTransfer &&
-      !gitChangesAppearancePosition &&
-      !displacedGhostPosition
-    ) {
-      return;
-    }
+    if (syncedBuiltNodesRef.current === layeredBuiltNodes && !hydrateFromLayout) return;
     syncedBuiltNodesRef.current = layeredBuiltNodes;
-    if (commitPositionTransfer) {
-      layoutHintsRef.current[commitPositionTransfer.toId] = commitPositionTransfer.position;
-      delete layoutHintsRef.current[commitPositionTransfer.fromId];
-      pendingHintsRef.current[commitPositionTransfer.toId] = commitPositionTransfer.position;
-      delete pendingHintsRef.current[commitPositionTransfer.fromId];
-      pendingHintRemovalsRef.current.add(commitPositionTransfer.fromId);
-      pendingHintRemovalsRef.current.delete(commitPositionTransfer.toId);
-      scheduleFlushLayout(0);
-    }
-    if (gitChangesAppearancePosition) {
-      layoutHintsRef.current["commit:ghost"] = gitChangesAppearancePosition;
-      pendingHintsRef.current["commit:ghost"] = gitChangesAppearancePosition;
-      pendingHintRemovalsRef.current.delete("commit:ghost");
-      scheduleFlushLayout(0);
-    }
-    if (displacedGhostPosition) {
-      layoutHintsRef.current["commit:ghost"] = displacedGhostPosition;
-      pendingHintsRef.current["commit:ghost"] = displacedGhostPosition;
-      pendingHintRemovalsRef.current.delete("commit:ghost");
-      scheduleFlushLayout(0);
-    }
     setRfNodes((current) => {
       const runtimeById = new Map(current.map((n) => [n.id, n]));
       // Carry over ``selected`` so React Flow's multi-selection (marquee /
@@ -870,13 +816,7 @@ function CanvasInner({
          * beat an existing runtime position: a websocket refresh can expose a
          * newly-created node at its default position before the create request
          * returns the double-click target to App. */
-        const preserveRuntimePosition =
-          !hydrateFromLayout &&
-          n.type !== "templateGroup" &&
-          !(
-            commitPositionTransfer?.resetGhostPosition &&
-            n.id === commitPositionTransfer.fromId
-          );
+        const preserveRuntimePosition = !hydrateFromLayout && n.draggable === true && runtime?.parentNode === n.parentNode;
         const syncedPosition = resolveSyncedNodePosition(
           n.position,
           runtime?.position,
@@ -890,21 +830,6 @@ function CanvasInner({
           syncedPosition.y !== out.position.y
         ) {
           out = { ...out, position: syncedPosition };
-        }
-        if (n.id === commitPositionTransfer?.toId) {
-          out = { ...out, position: commitPositionTransfer.position };
-        }
-        if (
-          n.id === commitPositionTransfer?.fromId &&
-          commitPositionTransfer.resetGhostPosition
-        ) {
-          out = { ...out, position: commitPositionTransfer.resetGhostPosition };
-        }
-        if (n.id === "commit:ghost" && gitChangesAppearancePosition) {
-          out = { ...out, position: gitChangesAppearancePosition };
-        }
-        if (n.id === "commit:ghost" && displacedGhostPosition) {
-          out = { ...out, position: displacedGhostPosition };
         }
         const carried = selectedById.get(n.id);
         if (carried !== undefined && carried !== out.selected) {
@@ -922,7 +847,6 @@ function CanvasInner({
           next,
           laneIds,
           true,
-          layoutHintsRef.current,
         ),
         primarySelectionRef.current,
         true,
@@ -931,16 +855,10 @@ function CanvasInner({
     if (hydrateFromLayout) {
       appliedLayoutHydrationVersionRef.current = layoutHydrationVersion;
     }
-    if (commitPositionTransfer && commitPositionTarget) {
-      onCommitPositionTransferHandled?.(commitPositionTarget);
-    }
   }, [
     layeredBuiltNodes,
     setRfNodes,
     layoutHydrationVersion,
-    scheduleFlushLayout,
-    commitPositionTarget,
-    onCommitPositionTransferHandled,
     nodePositionTarget,
   ]);
 
@@ -1036,35 +954,48 @@ function CanvasInner({
       for (const change of changes) {
         if (change.type !== "position") continue;
         if (change.position && change.dragging !== undefined) {
-          const position = { x: change.position.x, y: change.position.y };
-          layoutHintsRef.current[change.id] = position;
-          pendingHintsRef.current[change.id] = position;
-          pendingHintRemovalsRef.current.delete(change.id);
+          const position = isGitPositionId(change.id)
+            ? gitPositionUpdate(change.id, change.position, canMutateGitLayout)
+            : isLanePositionId(change.id)
+              ? lanePositionUpdate(change.id, change.position, canMutateLaneLayout)
+              : nodePositionUpdate(nodes, change.id, change.position, canMutateNode);
+          if (!position) continue;
+          nodePositionsRef.current[change.id] = position;
+          pendingPositionsRef.current[change.id] = position;
         }
         if (change.dragging === false) shouldFlush = true;
       }
-      if (shouldFlush) scheduleFlushLayout(0);
+      if (shouldFlush) {
+        setLayoutHydrationVersion((version) => version + 1);
+        scheduleFlushLayout(0);
+      }
       setRfNodes((current) => {
         const { growLaneIds, fitLaneIds } = classifyPlanspaceLaneResizes(
           current as RFNode[],
           changes,
         );
-        let next = applyNodeChanges(changes, current) as RFNode[];
+        const allowed = changes.filter((change) => change.type !== "position" || current.some((node) => node.id === change.id && node.draggable));
+        let next = applyNodeChanges(allowed, current) as RFNode[];
+        const movingLanes = new Set(allowed.flatMap((change) =>
+          change.type === "position" && change.position && change.dragging !== undefined && isLanePositionId(change.id)
+            ? [change.id] : [],
+        ));
+        next = next.map((node) => node.type === "planspaceLane" && movingLanes.has(node.id)
+          ? { ...node, data: { ...node.data, positionPinned: true } }
+          : node);
         next = resizePlanspaceLanes(
           next,
           growLaneIds,
           false,
-          layoutHintsRef.current,
         );
         return resizePlanspaceLanes(
           next,
           fitLaneIds,
           true,
-          layoutHintsRef.current,
         );
       });
     },
-    [scheduleFlushLayout, setRfNodes],
+    [nodes, canMutateNode, canMutateGitLayout, canMutateLaneLayout, scheduleFlushLayout, setRfNodes],
   );
 
   const onMove = useCallback((_event: MouseEvent | TouchEvent | null, viewport: Viewport) => {
@@ -1081,10 +1012,9 @@ function CanvasInner({
       if (!next || sameViewport(viewportRef.current, next)) return;
       liveViewportRef.current = next;
       viewportRef.current = next;
-      pendingViewportRef.current = next;
-      scheduleFlushLayout(250);
+      saveCanvasViewport(sessionId, next, browserViewportStorage(), true);
     },
-    [scheduleFlushLayout],
+    [sessionId],
   );
 
   /* Right-drag panning over tiles and arrows.
@@ -1172,7 +1102,7 @@ function CanvasInner({
       const next = panViewportBy(liveViewportRef.current, dx, dy);
       liveViewportRef.current = next;
       viewportRef.current = next;
-      pendingViewportRef.current = next;
+      saveCanvasViewport(sessionId, next, browserViewportStorage(), true);
       setViewport(next, { duration: 0 });
     };
     const onUp = (event: PointerEvent) => {
@@ -1185,7 +1115,6 @@ function CanvasInner({
        * unselected tile and released over a selected one, whose handler would
        * otherwise open its menu at the end of a pan. */
       suppressNextContextMenuRef.current = true;
-      scheduleFlushLayout(250);
     };
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
@@ -1195,7 +1124,7 @@ function CanvasInner({
       window.removeEventListener("pointerup", onUp);
       window.removeEventListener("pointercancel", onUp);
     };
-  }, [scheduleFlushLayout, setViewport]);
+  }, [sessionId, setViewport]);
 
   /* One handler owns "no browser menu on this canvas".
    *
@@ -1242,11 +1171,10 @@ function CanvasInner({
 
       liveViewportRef.current = next;
       viewportRef.current = next;
-      pendingViewportRef.current = next;
+      saveCanvasViewport(sessionId, next, browserViewportStorage(), true);
       setViewport(next, { duration: 0 });
-      scheduleFlushLayout(250);
     },
-    [scheduleFlushLayout, setViewport],
+    [sessionId, setViewport],
   );
 
   const persistCurrentViewport = useCallback(() => {
@@ -1255,10 +1183,9 @@ function CanvasInner({
       if (!next || sameViewport(viewportRef.current, next)) return;
       liveViewportRef.current = next;
       viewportRef.current = next;
-      pendingViewportRef.current = next;
-      scheduleFlushLayout(0);
+      saveCanvasViewport(sessionId, next, browserViewportStorage(), true);
     }, 0);
-  }, [getViewport, scheduleFlushLayout]);
+  }, [getViewport, sessionId]);
 
   /* Click → selection. We translate the clicked React Flow node into the
    * parent's polymorphic CanvasSelection shape.
@@ -2035,19 +1962,6 @@ function LaneJumpButton({
  * Keep every finite coordinate so post-migration work-node drags survive
  * refresh/reopen; this function is only a defensive clone/shape check.
  */
-function sanitizeLayoutHints(
-  hints: Record<string, { x: number; y: number } | null | undefined> | undefined,
-): Record<string, { x: number; y: number }> {
-  if (!hints) return {};
-  const out: Record<string, { x: number; y: number }> = {};
-  for (const [id, pos] of Object.entries(hints)) {
-    if (pos && Number.isFinite(pos.x) && Number.isFinite(pos.y)) {
-      out[id] = { x: pos.x, y: pos.y };
-    }
-  }
-  return out;
-}
-
 function sanitizeViewport(
   viewport: Viewport | null | undefined,
 ): Viewport | null {
@@ -2072,9 +1986,9 @@ function sameViewport(a: Viewport | null, b: Viewport): boolean {
   );
 }
 
-function sameLayoutHints(
-  a: Record<string, { x: number; y: number }>,
-  b: Record<string, { x: number; y: number }>,
+function sameNodePositions(
+  a: Record<string, NodePosition>,
+  b: Record<string, NodePosition>,
 ): boolean {
   const aKeys = Object.keys(a);
   const bKeys = Object.keys(b);
@@ -2082,7 +1996,7 @@ function sameLayoutHints(
   for (const key of aKeys) {
     const left = a[key];
     const right = b[key];
-    if (!right || left.x !== right.x || left.y !== right.y) return false;
+    if (!right || left.x !== right.x || left.y !== right.y || left.space !== right.space) return false;
   }
   return true;
 }

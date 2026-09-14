@@ -6,10 +6,11 @@ import shutil
 from pathlib import Path
 from typing import Any
 
-from .catalog import CURRENT_VERSION, MINIMUM_VERSION, check_manifest, generate, read_manifest
+from .catalog import CURRENT_VERSION, MINIMUM_VERSION, check_manifest, generate, read_manifest, steps
 from .coordinator import coordinator, open_storage
 from .errors import MigrationError
 from .inventory import LOCAL_DIRECTORY
+from .impact import layout_impact
 from .validation import read_object
 from .inventory import safe_path
 from .transaction import file_digest
@@ -52,7 +53,10 @@ def main(arguments: list[str]) -> None:
             storage = coordinator(root)
             source = storage.source_version()
             result = {"source": source, "target": CURRENT_VERSION, "minimum": MINIMUM_VERSION,
-                      "steps": [item for item in read_manifest()["steps"] if item["source"] >= source],
+                      "steps": [{"source": item.source, "target": item.target, "summary": item.summary,
+                                 "destructive": item.destructive} for item in steps(source)],
+                      "sync_confirmation": [item.summary for item in steps(MINIMUM_VERSION) if item.destructive],
+                      "layout_impact": layout_impact(root) if source < 16 else [],
                       "note": "本机及外部 ContextSpace 游标在 apply 中独立核验"}
         elif args.action == "recover" and args.output is not None:
             if not args.transaction:

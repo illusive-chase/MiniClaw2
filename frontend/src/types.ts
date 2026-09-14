@@ -227,10 +227,9 @@ export type SessionInfo = {
   hosts: SessionHost[];
   last_sync_at?: number | null;
   project_context_binding_id?: string | null;
-  /** Persisted canvas positions keyed by node id or synthetic graph id. */
-  layout_hints?: Record<string, { x: number; y: number }>;
-  /** Persisted React Flow viewport so pan/zoom survives project reopen. */
-  layout_viewport?: CanvasViewport | null;
+  node_positions?: Record<string, NodePosition>;
+  git_positions?: Record<string, NodePosition>;
+  lane_positions?: Record<string, NodePosition>;
   persistence_mode?: "durable" | "ephemeral";
   capabilities?: Record<string, boolean>;
 };
@@ -759,3 +758,5 @@ export type MarkdownFile = {
   text: string;
   truncated: boolean;
 };
+
+export type NodePosition = { x: number; y: number; space: string };

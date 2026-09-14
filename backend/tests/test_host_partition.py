@@ -929,7 +929,7 @@ class HostPartitionApiTests(unittest.TestCase):
 
 
 class HostPartitionSyncTests(unittest.TestCase):
-    def test_commit_layout_syncs_from_a_peer_without_node_directories(self) -> None:
+    def test_empty_layout_sync_and_binding_do_not_seed_synthetic_positions(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             base = Path(raw)
             remote = base / "metadata.git"
@@ -938,14 +938,6 @@ class HostPartitionSyncTests(unittest.TestCase):
             commit_id = f"commit:{_git(repo_a, 'rev-parse', 'HEAD')}"
             store_a = Store(base / "store-a")
             project_a = store_a.create_project(Project(root_path=str(repo_a)))
-            project_a.layout_hints = {
-                commit_id: {"x": 150, "y": 160},
-                "commit:ghost": {"x": 190, "y": 200},
-                "deleted-node": {"x": 30, "y": 40},
-                "planspace:lane-sync": {"x": 70, "y": 80},
-            }
-            project_a.layout_viewport = {"x": 9, "y": 8, "zoom": 0.9}
-            store_a.update_project(project_a)
             store_a.sync.setup_existing_store(str(remote))
             _git(remote, "symbolic-ref", "HEAD", "refs/heads/main")
 
@@ -953,26 +945,23 @@ class HostPartitionSyncTests(unittest.TestCase):
             bootstrap_store(root_b, str(remote))
             store_b = Store(root_b)
             remote_host = root_b / "projects" / project_a.id / "hosts" / store_a.machine.id
-            self.assertTrue((remote_host / "layout.json").is_file())
+            self.assertTrue((remote_host / "node-layout.json").is_file())
             self.assertFalse((remote_host / "nodes").exists())
 
             imported = store_b.list_projects()[0]
-            self.assertEqual(imported.layout_hints, {commit_id: {"x": 150, "y": 160}})
-            self.assertIsNone(imported.layout_viewport)
+            self.assertEqual(imported.node_positions, {})
             self.assertEqual(store_b.list_nodes(project_a.id), [])
 
             repo_b = base / "repo-b"
             subprocess.run(["git", "clone", "-q", str(repo_a), str(repo_b)], check=True)
             registry_b = ProjectRegistry(store_b)
             registry_b.bind_project_here(project_a.id, str(repo_b))
-            registry_b.update_layout_hints(
-                project_a.id,
-                {commit_id: {"x": 300, "y": 400}},
-                layout_viewport={"x": 1, "y": 2, "zoom": 1.1},
-            )
+            with self.assertRaises(ValueError):
+                registry_b.update_node_layout(project_a.id, {commit_id: {"x": 300, "y": 400, "space": "canvas"}})
             reloaded = store_b.list_projects()[0]
-            self.assertEqual(reloaded.layout_hints[commit_id], {"x": 300, "y": 400})
-            self.assertEqual(reloaded.layout_viewport, {"x": 1, "y": 2, "zoom": 1.1})
+            self.assertEqual(reloaded.node_positions, {})
+            local_layout = root_b / "projects" / project_a.id / "hosts" / store_b.machine.id / "node-layout.json"
+            self.assertEqual(json.loads(local_layout.read_text())["nodes"], {})
 
     def test_explicit_sync_commits_current_host_head(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -1111,27 +1100,11 @@ class HostPartitionSyncTests(unittest.TestCase):
                 "remote report",
                 encoding="utf-8",
             )
-            registry_a.update_layout_hints(
-                project_a.id,
-                {
-                    node_a.id: {"x": 10, "y": 20},
-                    node_b.id: {"x": 300, "y": 400},
-                    "commit:shared": {"x": 110, "y": 120},
-                },
-                layout_viewport={"x": 1, "y": 2, "zoom": 1.1},
-            )
-            registry_b.update_layout_hints(
-                project_a.id,
-                {
-                    node_b.id: {"x": 30, "y": 40},
-                    node_c.id: {"x": 50, "y": 60},
-                    "commit:remote": {"x": 150, "y": 160},
-                    "commit:shared": {"x": 170, "y": 180},
-                    "commit:ghost": {"x": 190, "y": 200},
-                    "planspace:lane-sync": {"x": 70, "y": 80},
-                },
-                layout_viewport={"x": 9, "y": 8, "zoom": 0.9},
-            )
+            registry_a.update_node_layout(project_a.id, {node_a.id: {"x": 10, "y": 20, "space": "canvas"}})
+            registry_b.update_node_layout(project_a.id, {
+                node_b.id: {"x": 30, "y": 40, "space": "planspace:lane-sync"},
+                node_c.id: {"x": 50, "y": 60, "space": "planspace:lane-sync"},
+            })
             store_a.write_git_aliases(project_a.id, {"old-a": "new-a"})
             store_b.write_git_aliases(project_a.id, {"old-b": "new-b"})
 
@@ -1170,50 +1143,15 @@ class HostPartitionSyncTests(unittest.TestCase):
                 ).read_text(encoding="utf-8"),
                 "remote report",
             )
-            self.assertEqual(
-                synced_project_a.layout_hints[node_a.id],
-                {"x": 10.0, "y": 20.0},
-            )
-            self.assertEqual(
-                synced_project_a.layout_hints[node_b.id],
-                {"x": 300.0, "y": 400.0},
-            )
-            self.assertEqual(
-                synced_project_a.layout_hints[node_c.id],
-                {"x": 50.0, "y": 60.0},
-            )
-            self.assertEqual(
-                synced_project_a.layout_hints["commit:remote"],
-                {"x": 150.0, "y": 160.0},
-            )
-            self.assertEqual(
-                synced_project_a.layout_hints["commit:shared"],
-                {"x": 110.0, "y": 120.0},
-            )
-            self.assertNotIn("commit:ghost", synced_project_a.layout_hints)
-            self.assertNotIn("planspace:lane-sync", synced_project_a.layout_hints)
-            self.assertEqual(
-                synced_project_a.layout_viewport,
-                {"x": 1.0, "y": 2.0, "zoom": 1.1},
-            )
+            expected_positions = {
+                node_a.id: {"x": 10.0, "y": 20.0, "space": "canvas"},
+                node_b.id: {"x": 30.0, "y": 40.0, "space": "planspace:lane-sync"},
+                node_c.id: {"x": 50.0, "y": 60.0, "space": "planspace:lane-sync"},
+            }
+            self.assertEqual(synced_project_a.model_dump()["node_positions"], expected_positions)
             synced_project_b = registry_b.get_project(project_a.id)
             assert synced_project_b is not None
-            self.assertEqual(
-                synced_project_b.layout_hints[node_a.id],
-                {"x": 10.0, "y": 20.0},
-            )
-            self.assertEqual(
-                synced_project_b.layout_hints[node_b.id],
-                {"x": 30.0, "y": 40.0},
-            )
-            self.assertEqual(
-                synced_project_b.layout_hints["commit:shared"],
-                {"x": 170.0, "y": 180.0},
-            )
-            self.assertEqual(
-                synced_project_b.layout_hints["commit:ghost"],
-                {"x": 190.0, "y": 200.0},
-            )
+            self.assertEqual(synced_project_b.node_positions, synced_project_a.node_positions)
             self.assertEqual(
                 store_a.read_git_aliases(project_a.id), {"old-a": "new-a"}
             )

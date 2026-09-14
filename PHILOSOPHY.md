@@ -661,6 +661,16 @@ Which lane a launch materializes is settled by the node's own lane, so
 the accent marks where the user is, not what the backend will do.
 
 
+### 10.5 节点位置与阅读视角
+
+项目只有一张逻辑共享布局。真实节点的位置属于该节点的 owner：每个节点最多一个权威位置，各 host 仅持久化自己拥有节点的稀疏分片，读取时聚合，不复制完整画布，也不让不同 host 争写一个全局布局文件。未绑定设备可以阅读，但不能修改节点位置。
+
+坐标必须携带所属空间；节点归属改变后，不把旧泳道的相对坐标误用到新空间。Git commit 和 ghost 的手工位置是项目共享的持久化锚点，以稳定的 `commit:<sha>`／`commit:ghost` 标识、使用 canvas 坐标；没有手工位置时才从提交图派生。它们没有执行节点 owner，单独存储，不伪装成某个 host 的执行节点分片。绑定项目的设备可以修改，同一锚点的并发坐标冲突明确拒绝同步，不按 x/y 分别拼接或最后写入者胜出。暂时不可见的提交与 ghost 不因此删除坐标。
+
+planspace lane 的绝对位置同样是项目共享的持久化锚点，以 `planspace:<id>` 标识并使用 canvas 坐标。移动 lane 只改变该锚点，不重写内部节点的相对坐标或 owner 分片；调整内容、展开折叠、隐藏后显示、焦点或排序改变都不能重排已定位的 lane。lane 的宽高仍从成员边界派生，未定位的 lane 自动排列并避让已定位的 lane。context 和 template 图元继续从图结构及成员位置派生，不成为新的共享写入对象。
+
+viewport 属于 viewer，而不是项目。浏览器保存自己的阅读中心和缩放，不同步到其他设备；程序化定位不能覆盖用户主动选择的阅读视角。
+
 ## 11. Templates are functions
 
 A template is a **captured subgraph with a declared interface**. The user

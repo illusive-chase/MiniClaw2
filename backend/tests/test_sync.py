@@ -89,8 +89,8 @@ class NonNativeProjectApiTests(unittest.TestCase):
                 f"/sessions/{self.project.id}", json={"name": "changed"}
             ),
             self.client.patch(
-                f"/sessions/{self.project.id}/layout-hints",
-                json={"updates": {"root": {"x": 1, "y": 2}}},
+                f"/sessions/{self.project.id}/node-layout",
+                json={"updates": {"root": {"x": 1, "y": 2, "space": "canvas"}}},
             ),
             self.client.post(
                 f"/sessions/{self.project.id}/virtuals",
@@ -299,6 +299,47 @@ class GitMetadataSyncTests(unittest.TestCase):
         self.assertEqual(self.store_a.list_tags(), [tag_a])
         self.assertEqual(self.store_a.sync.status()["status"], "changed")
 
+    def test_shared_git_positions_sync_and_atomic_conflict(self) -> None:
+        from miniclaw2.domain import GitPosition
+        from miniclaw2.migrations.transaction import atomic_json
+
+        pid = self.project_a.id
+        node_id = "commit:" + "a" * 40
+        position = GitPosition(x=10, y=20, space="canvas")
+        self.store_a.update_git_positions(pid, {node_id: position}, [])
+        self.store_a.sync.sync_now()
+        self.store_b.sync.sync_now()
+        self.assertEqual(self.store_b.read_git_positions(pid), {node_id: position})
+        atomic_json(self.root_b / "projects" / pid / "hosts" / self.store_b.machine.id / "local.json", {"root_path": "/machine-b/project"})
+        self.store_a.update_git_positions(pid, {node_id: position.model_copy(update={"x": 100})}, [])
+        self.store_a.sync.commit_now("本机修改 Git 横坐标")
+        self.store_b.update_git_positions(pid, {node_id: position.model_copy(update={"y": 200})}, [])
+        self.store_b.sync.sync_now()
+        with self.assertRaisesRegex(SyncError, "Git 节点位置冲突"):
+            self.store_a.sync.sync_now()
+        self.assertEqual(self.store_a.read_git_positions(pid)[node_id].x, 100)
+        self.assertEqual(self.store_a.read_git_positions(pid)[node_id].y, 20)
+
+    def test_shared_lane_positions_sync_and_atomic_conflict(self) -> None:
+        from miniclaw2.domain import LanePosition
+        from miniclaw2.migrations.transaction import atomic_json
+
+        pid = self.project_a.id
+        position = LanePosition(x=-1704, y=3480, space="canvas")
+        self.store_a.update_lane_positions(pid, {"planspace:lane": position}, [])
+        self.store_a.sync.sync_now()
+        self.store_b.sync.sync_now()
+        self.assertEqual(self.store_b.read_lane_positions(pid), {"planspace:lane": position})
+        atomic_json(self.root_b / "projects" / pid / "hosts" / self.store_b.machine.id / "local.json", {"root_path": "/machine-b/project"})
+        self.store_a.update_lane_positions(pid, {"planspace:lane": position.model_copy(update={"x": 100})}, [])
+        self.store_a.sync.commit_now("本机修改方向横坐标")
+        self.store_b.update_lane_positions(pid, {"planspace:lane": position.model_copy(update={"y": 200})}, [])
+        self.store_b.sync.sync_now()
+        with self.assertRaisesRegex(SyncError, "方向位置冲突"):
+            self.store_a.sync.sync_now()
+        self.assertEqual(self.store_a.read_lane_positions(pid)["planspace:lane"].x, 100)
+        self.assertEqual(self.store_a.read_lane_positions(pid)["planspace:lane"].y, 3480)
+
     def test_remote_schema_upgrade_is_refused_without_touching_live_store(self) -> None:
         schema_b = json.loads((self.root_b / "schema.json").read_text())
         schema_b["schema_version"] += 1
@@ -319,6 +360,7 @@ class GitMetadataSyncTests(unittest.TestCase):
         _git("push", "origin", "HEAD:main", cwd=self.root_b)
 
     def test_supported_remote_is_normalized_before_divergent_merge(self) -> None:
+        self.store_a.coordinator.apply(self.store_a.machine.id, accept_data_loss=True)
         local = self.store_a.create_project(Project(root_path="/a/offline", name="Offline A"))
         remote = self.store_b.create_project(Project(root_path="/b/offline", name="Offline B"))
         (self.root_b / "schema.json").write_text(json.dumps(marker(MINIMUM_VERSION)))

@@ -20,7 +20,7 @@ import type {
   TemplateInstanceRecord,
   SessionFile,
   SessionFileRole,
-  CanvasViewport,
+  NodePosition,
   SessionInfo,
   SessionContextSpaceInfo,
   ArtifactFile,
@@ -777,25 +777,48 @@ export async function updateSessionPreferences(
   return res.json();
 }
 
-export async function updateLayoutHints(
+export async function updateNodeLayout(
   sessionId: string,
-  updates: Record<string, { x: number; y: number }> = {},
+  updates: Record<string, NodePosition> = {},
   remove: string[] = [],
-  layoutViewport?: CanvasViewport | null,
 ): Promise<SessionInfo> {
-  const body: {
-    updates: Record<string, { x: number; y: number }>;
-    remove: string[];
-    layout_viewport?: CanvasViewport;
-  } = { updates, remove };
-  if (layoutViewport) body.layout_viewport = layoutViewport;
-  const res = await fetch(`/sessions/${sessionId}/layout-hints`, {
+  const res = await fetch(`/sessions/${sessionId}/node-layout`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
+    body: JSON.stringify({ updates, remove }),
     keepalive: true,
   });
-  if (!res.ok) throw new Error(`updateLayoutHints failed: ${res.status}`);
+  if (!res.ok) throw new Error(`updateNodeLayout failed: ${res.status}`);
+  return res.json();
+}
+
+export async function updateGitLayout(
+  sessionId: string,
+  updates: Record<string, NodePosition> = {},
+  remove: string[] = [],
+): Promise<SessionInfo> {
+  const res = await fetch(`/sessions/${sessionId}/git-layout`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ updates, remove }),
+    keepalive: true,
+  });
+  if (!res.ok) throw new Error(`保存 Git 位置失败：${res.status}`);
+  return res.json();
+}
+
+export async function updateLaneLayout(
+  sessionId: string,
+  updates: Record<string, NodePosition> = {},
+  remove: string[] = [],
+): Promise<SessionInfo> {
+  const res = await fetch(`/sessions/${sessionId}/lane-layout`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ updates, remove }),
+    keepalive: true,
+  });
+  if (!res.ok) throw new Error(`保存方向位置失败：${res.status}`);
   return res.json();
 }
 

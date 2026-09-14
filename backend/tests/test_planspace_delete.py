@@ -234,7 +234,7 @@ class DeletePlanspaceRegistryTests(unittest.TestCase):
         assert survivor is not None
         self.assertEqual(survivor.scheduled_deps, [])
 
-    def test_delete_clears_view_prefs_and_layout_hints(self) -> None:
+    def test_delete_clears_view_prefs_and_node_positions(self) -> None:
         keep_lane = self._make_lane("Keep")
         drop_lane = self._make_lane("Drop")
         node = self._add_node(
@@ -243,17 +243,17 @@ class DeletePlanspaceRegistryTests(unittest.TestCase):
         self.registry.update_planspace_view(
             self.project.id, {drop_lane: {"hidden": True}}
         )
-        self.registry.update_layout_hints(
+        self.registry.update_node_layout(
             self.project.id,
-            {f"planspace:{drop_lane}": {"x": 10, "y": 20}, node.id: {"x": 1, "y": 2}},
+            {node.id: {"x": 1, "y": 2, "space": f"planspace:{drop_lane}"}},
         )
 
         self.registry.delete_planspace(self.project.id, drop_lane)
 
         project = self._runtime_project()
         self.assertNotIn(drop_lane, project.planspace_view)
-        self.assertNotIn(f"planspace:{drop_lane}", project.layout_hints)
-        self.assertNotIn(node.id, project.layout_hints)
+        self.assertNotIn(f"planspace:{drop_lane}", project.node_positions)
+        self.assertNotIn(node.id, project.node_positions)
 
     def test_delete_removes_materialized_lane_directory(self) -> None:
         keep_lane = self._make_lane("Keep")

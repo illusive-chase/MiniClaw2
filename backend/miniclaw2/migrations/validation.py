@@ -21,7 +21,7 @@ def read_object(path: Path) -> dict[str, Any]:
 
 
 def validate(root: Path, *, external: bool = False) -> None:
-    from ..domain import HumanGate, Node, Project, UNBOUND_ROOT_PATH
+    from ..domain import GitLayout, HumanGate, LaneLayout, Node, NodeLayout, Project, UNBOUND_ROOT_PATH
     from ..global_config import GlobalConfig
     from ..templates.loader import TemplateError, _load_from_root
 
@@ -34,13 +34,21 @@ def validate(root: Path, *, external: bool = False) -> None:
         try:
             if not external and path.name == "project.json" and len(parts) == 3 and parts[0] == "projects":
                 payload = read_object(path)
-                if any(key in payload for key in ("root_path", "layout_hints", "layout_viewport")):
+                if any(key in payload for key in ("root_path", "layout_hints", "layout_viewport", "node_positions")):
                     raise ValueError("共享项目不能包含本机字段；请先通过中间版本完成分区")
                 if not payload.get("model_preset_id") or payload.get("id") != parts[1]:
                     raise ValueError("项目 id 或模型预设无效")
                 Project.model_validate({**payload, "root_path": UNBOUND_ROOT_PATH})
                 if any(candidate.is_file() for candidate in (path.parent / "nodes").rglob("*")):
                     raise ValueError("发现未分区节点，不能猜测归属")
+            elif not external and len(parts) == 3 and parts[0] == "projects" and path.name == "git-layout.json":
+                GitLayout.model_validate(read_object(path))
+                if not (path.parent / "project.json").is_file():
+                    raise ValueError("Git 布局所属项目不存在")
+            elif not external and len(parts) == 3 and parts[0] == "projects" and path.name == "lane-layout.json":
+                LaneLayout.model_validate(read_object(path))
+                if not (path.parent / "project.json").is_file():
+                    raise ValueError("方向布局所属项目不存在")
             elif path.name == "node.json" and node_record:
                 node = Node.model_validate(read_object(path))
                 if node.id != parts[5] or node.project_id != parts[1]:
@@ -53,7 +61,11 @@ def validate(root: Path, *, external: bool = False) -> None:
                 nodes[key] = path
             elif relative == "config.json" and not external:
                 GlobalConfig.model_validate(read_object(path))
-            elif host_record and path.name in {"local.json", "layout.json", "host.json", "head.json", "git_aliases.json"}:
+            elif host_record and path.name == "layout.json":
+                raise ValueError("当前格式不允许旧布局文件")
+            elif host_record and path.name == "node-layout.json":
+                NodeLayout.model_validate(read_object(path))
+            elif host_record and path.name in {"local.json", "host.json", "head.json", "git_aliases.json"}:
                 payload = read_object(path)
                 if path.name == "local.json" and (set(payload) != {"root_path"} or not isinstance(payload["root_path"], str)):
                     raise ValueError("本机绑定必须且只能包含 root_path")

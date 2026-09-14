@@ -55,14 +55,14 @@ def extract(root: Path, revision: str, destination: Path) -> None:
                 path.chmod(member.mode & 0o777)
 
 
-def normalize(root: Path) -> None:
+def normalize(root: Path, accepted: frozenset[str] = frozenset()) -> None:
     path = root / "schema.json"
     version = version_of(read_object(path), path)
     context = MigrationContext(root, "shared", "")
     for migration in steps(version):
-        if migration.destructive:
-            raise MigrationError("migration_required", "同步所需迁移声明数据损失，不能自动执行")
         if "shared" in migration.scopes:
+            if migration.destructive and migration.contract not in accepted:
+                raise MigrationError("migration_required", f"同步需要确认：{migration.summary}；请运行 migrations apply --accept-data-loss")
             migration.upgrade(context)
             migration.verify(context)
     validate(root)
@@ -76,27 +76,33 @@ def tree(root: Path, directory: Path, index: Path) -> str:
 
 
 def merge_remote(root: Path, remote_ref: str) -> bool:
+    receipt = root / ".migration-local" / "state.json"
+    accepted = frozenset(read_object(receipt).get("accepted_migration_contracts", [])) if receipt.exists() else frozenset()
     local_head = git(root, "rev-parse", "HEAD")
     remote_head = git(root, "rev-parse", remote_ref)
     with tempfile.TemporaryDirectory(prefix="sync-", dir=root / ".migration-local") as temporary:
         directory = Path(temporary)
         local, remote, base, result = (directory / name for name in ("local", "remote", "base", "result"))
         extract(root, remote_head, remote)
-        normalize(remote)
+        normalize(remote, accepted)
         extract(root, local_head, local)
         local_files = files(local)
-        normalize(local)
+        normalize(local, accepted)
         if local_head == remote_head:
             return False
-        ancestor = git(root, "merge-base", local_head, remote_head)
+        ancestor_commit = git(root, "merge-base", local_head, remote_head)
         remote_tree = tree(root, remote, directory / "remote.index")
-        if ancestor == local_head:
+        if ancestor_commit == local_head:
             merged_tree = remote_tree
-        elif ancestor == remote_head:
+        elif ancestor_commit == remote_head:
             return False
         else:
-            extract(root, ancestor, base)
-            normalize(base)
+            extract(root, ancestor_commit, base)
+            normalize(base, accepted)
+            from ..git_layout import check_git_layout_conflicts, check_lane_layout_conflicts
+
+            check_git_layout_conflicts(base, local, remote)
+            check_lane_layout_conflicts(base, local, remote)
             base_commit = git(root, "commit-tree", tree(root, base, directory / "base.index"), input_text="迁移规范化共同祖先\n")
             local_commit = git(root, "commit-tree", tree(root, local, directory / "local.index"), "-p", base_commit, input_text="迁移规范化本地\n")
             remote_commit = git(root, "commit-tree", remote_tree, "-p", base_commit, input_text="迁移规范化远端\n")
@@ -104,7 +110,7 @@ def merge_remote(root: Path, remote_ref: str) -> bool:
         extract(root, merged_tree, result)
         validate(result)
         remote_original_tree = git(root, "rev-parse", f"{remote_head}^{{tree}}")
-        target = remote_head if ancestor == local_head and merged_tree == remote_original_tree else git(
+        target = remote_head if ancestor_commit == local_head and merged_tree == remote_original_tree else git(
             root, "commit-tree", merged_tree, "-p", local_head, "-p", remote_head, input_text="规范化并合并元数据\n",
         )
         result_files = files(result)
@@ -130,6 +136,8 @@ def merge_remote(root: Path, remote_ref: str) -> bool:
         durable_copy(result / "schema.json", stage / "schema.json")
         validate(stage)
         transaction.journal["git"] = {"before": local_head, "after": target}
+        transaction.journal["migration_inputs"] = {"local": local_head, "remote": remote_head, "base": ancestor_commit}
+        transaction.journal["accepted_migration_contracts"] = sorted(accepted)
         transaction.decide()
         transaction.publish()
         return True

@@ -14,9 +14,6 @@ import {
   contextIdentityKey,
   LANE,
   laneNeedsVerticalJump,
-  resolveCommitPositionTransfer,
-  resolveDisplacedGhostPosition,
-  resolveGitChangesAppearancePosition,
   resolveLaneJumpLeftOffset,
   resolveLaneVerticalSpan,
   resolveRenderedLaneAnchorId,
@@ -212,30 +209,12 @@ function testPeerCommitRowsFollowVisibleParents(): void {
   assert.equal(child?.position.y, LANE.trunkStartY + 3 * LANE.trunkStep);
 }
 
-function testCommitFallbackDoesNotCrossColumnsAndHintsWin(): void {
-  const hinted = { x: 700, y: 320 };
-  const graph = buildGraph(args({
-    gitCommits: [
-      commit("local", 0, { column: 0 }),
-      commit("peer-a", 0, { column: 1, availability: "peer" }),
-      commit("peer-b", 0, { column: 1, availability: "peer" }),
-    ],
-    layoutHints: { "commit:peer-a": hinted },
-  }));
-
-  assert.deepEqual(
-    graph.rfNodes.find((item) => item.id === "commit:peer-a")?.position,
-    hinted,
-  );
-  assert.equal(graph.rfEdges.some((edge) => edge.id === "commit-trunk:local:peer-a"), false);
-  assert.equal(graph.rfEdges.some((edge) => edge.id === "commit-trunk:peer-a:peer-b"), true);
-}
 
 function args(overrides: Partial<BuildGraphArgs> = {}): BuildGraphArgs {
   return {
     nodes: [],
     activeNodeIds: [],
-    layoutHints: {},
+    nodePositions: {},
     contextBundlesByNodeId: {},
     knownPlanspaceIds: [],
     hiddenPlanspaceIds: [],
@@ -469,28 +448,6 @@ function testVerticalCommitTrunkAndStableLaneX(): void {
   assert.equal(empty.rfEdges.length, 0);
 }
 
-function testChangesNodePreservesSavedPosition(): void {
-  const headPosition = { x: 360, y: 520 };
-  const savedChangesPosition = { x: 40, y: 80 };
-  const graph = buildGraph(args({
-    gitCommits: [commit("base"), commit("head")],
-    gitHead: "head",
-    gitDirtyCount: 2,
-    layoutHints: {
-      "commit:head": headPosition,
-      "commit:ghost": savedChangesPosition,
-    },
-  }));
-
-  assert.deepEqual(
-    graph.rfNodes.find((item) => item.id === "commit:ghost")?.position,
-    savedChangesPosition,
-  );
-  assert.equal(
-    graph.rfEdges.some((edge) => edge.id === "commit-trunk:head:ghost"),
-    true,
-  );
-}
 
 function testChangesNodeAvoidsPostHeadRows(): void {
   const graph = buildGraph(args({
@@ -509,357 +466,33 @@ function testChangesNodeAvoidsPostHeadRows(): void {
   );
 }
 
-function testAppearingChangesNodeAvoidsPostHeadRows(): void {
-  const current = buildGraph(args({
-    gitCommits: [commit("base"), commit("head"), commit("stale")],
-    gitHead: "head",
-  })).rfNodes;
-  const next = buildGraph(args({
-    gitCommits: [commit("base"), commit("head"), commit("stale")],
-    gitHead: "head",
-    gitDirtyCount: 1,
-    layoutHints: { "commit:ghost": { x: 40, y: 80 } },
-  })).rfNodes;
-  const stalePosition = next.find(
-    (item) => item.id === "commit:stale",
-  )?.position;
 
-  assert.ok(stalePosition);
-  assert.deepEqual(resolveGitChangesAppearancePosition(current, next), {
-    x: LANE.trunkX,
-    y: stalePosition.y + LANE.trunkStep,
-  });
-  assert.equal(resolveGitChangesAppearancePosition(next, next), null);
-}
 
-function testCommitLayoutResolvesShaAliases(): void {
-  const aliasedCommit = {
-    ...commit("rebased"),
-    aliases: ["oldest", "old"],
-  };
-  const aliasPosition = { x: 360, y: 520 };
-  const fallback = buildGraph(args({
-    gitCommits: [aliasedCommit],
-    layoutHints: { "commit:old": aliasPosition },
-  }));
-
-  assert.deepEqual(
-    fallback.rfNodes.find((item) => item.id === "commit:rebased")?.position,
-    aliasPosition,
-  );
-
-  const firstAliasPosition = { x: 240, y: 400 };
-  const ordered = buildGraph(args({
-    gitCommits: [aliasedCommit],
-    layoutHints: {
-      "commit:oldest": firstAliasPosition,
-      "commit:old": aliasPosition,
-    },
-  }));
-  assert.deepEqual(
-    ordered.rfNodes.find((item) => item.id === "commit:rebased")?.position,
-    firstAliasPosition,
-  );
-}
-
-function testCurrentCommitLayoutWinsOverShaAliases(): void {
-  const currentPosition = { x: 480, y: 640 };
-  const graph = buildGraph(args({
-    gitCommits: [{ ...commit("rebased"), aliases: ["old"] }],
-    layoutHints: {
-      "commit:rebased": currentPosition,
-      "commit:old": { x: 360, y: 520 },
-    },
-  }));
-
-  assert.deepEqual(
-    graph.rfNodes.find((item) => item.id === "commit:rebased")?.position,
-    currentPosition,
-  );
-}
 
 /* The regression the parent-relative fallback exists for: once the trunk has
  * been dragged off the default grid, an unhinted commit has to follow the
  * commit it descends from rather than snapping back to its original grid row.
  * Applies to every commit source — nothing here identifies who committed. */
-function testNewCommitFollowsDraggedParentInsteadOfTheGrid(): void {
-  const draggedHead = { x: 360, y: 900 };
-  const graph = buildGraph(args({
-    gitCommits: [
-      commit("base", 0, { parent_shas: [] }),
-      commit("head", 0, { parent_shas: ["base"] }),
-      commit("fresh", 0, { parent_shas: ["head"] }),
-    ],
-    gitHead: "fresh",
-    layoutHints: { "commit:head": draggedHead },
-  }));
-
-  assert.deepEqual(
-    graph.rfNodes.find((item) => item.id === "commit:fresh")?.position,
-    { x: draggedHead.x, y: draggedHead.y + LANE.trunkStep },
-    "an unhinted commit follows its dragged parent",
-  );
-  /* The dragged parent's own ancestor keeps its hint-free grid row: the fix
-   * places children below parents, it does not reflow what is already there. */
-  assert.deepEqual(
-    graph.rfNodes.find((item) => item.id === "commit:base")?.position,
-    { x: LANE.trunkX, y: LANE.trunkStartY },
-  );
-}
 
 /* Same guarantee where the backend omits parent_shas entirely: the column's
  * previous commit is the anchor, matching where the trunk edge is drawn. */
-function testNewCommitFollowsDraggedPredecessorWithoutParentShas(): void {
-  const draggedHead = { x: 360, y: 900 };
-  const graph = buildGraph(args({
-    gitCommits: [commit("base"), commit("head"), commit("fresh")],
-    gitHead: "fresh",
-    layoutHints: { "commit:head": draggedHead },
-  }));
-
-  assert.deepEqual(
-    graph.rfNodes.find((item) => item.id === "commit:fresh")?.position,
-    { x: draggedHead.x, y: draggedHead.y + LANE.trunkStep },
-  );
-}
 
 /* A merge has to clear its lowest parent vertically while staying in its own
  * column horizontally, so the two axes resolve from different commits. */
-function testMergeClearsItsLowestParentButKeepsItsColumn(): void {
-  const draggedPeer = { x: 700, y: 1200 };
-  const graph = buildGraph(args({
-    gitCommits: [
-      commit("base", 0, { column: 0, parent_shas: [] }),
-      commit("peer", 0, { column: 1, parent_shas: ["base"], availability: "peer" }),
-      commit("merge", 0, { column: 0, parent_shas: ["base", "peer"] }),
-    ],
-    layoutHints: { "commit:peer": draggedPeer },
-  }));
-
-  assert.deepEqual(
-    graph.rfNodes.find((item) => item.id === "commit:merge")?.position,
-    { x: LANE.trunkX, y: draggedPeer.y + LANE.trunkStep },
-    "y clears the lowest parent, x stays in the merge's own column",
-  );
-}
 
 /* Two children of one parent must not stack on the same slot. */
-function testSiblingCommitsDoNotShareASlot(): void {
-  const draggedBase = { x: 360, y: 900 };
-  const graph = buildGraph(args({
-    gitCommits: [
-      commit("base", 0, { parent_shas: [] }),
-      commit("child-a", 0, { parent_shas: ["base"] }),
-      commit("child-b", 0, { parent_shas: ["base"] }),
-    ],
-    layoutHints: { "commit:base": draggedBase },
-  }));
-  const a = graph.rfNodes.find((item) => item.id === "commit:child-a")?.position;
-  const b = graph.rfNodes.find((item) => item.id === "commit:child-b")?.position;
-
-  assert.deepEqual(a, { x: draggedBase.x, y: draggedBase.y + LANE.trunkStep });
-  assert.deepEqual(b, { x: draggedBase.x, y: draggedBase.y + 2 * LANE.trunkStep });
-}
 
 /* A commit landing while the tree is still dirty — the agent-commit case the
  * ghost-to-head position transfer cannot cover, because the ghost survives. */
-function testCommitLandingOnTheGhostRowPushesTheGhostDown(): void {
-  const before = buildGraph(args({
-    gitCommits: [commit("base", 0, { parent_shas: [] })],
-    gitHead: "base",
-    gitDirtyCount: 1,
-  })).rfNodes;
-  const ghostPosition = before.find((item) => item.id === "commit:ghost")?.position;
-  assert.ok(ghostPosition);
-
-  const after = buildGraph(args({
-    gitCommits: [
-      commit("base", 0, { parent_shas: [] }),
-      commit("fresh", 0, { parent_shas: ["base"] }),
-    ],
-    gitHead: "fresh",
-    gitDirtyCount: 1,
-  })).rfNodes;
-
-  assert.deepEqual(
-    after.find((item) => item.id === "commit:fresh")?.position,
-    ghostPosition,
-    "the new commit takes the row directly below its parent",
-  );
-  assert.deepEqual(resolveDisplacedGhostPosition(before, after), {
-    x: ghostPosition.x,
-    y: ghostPosition.y + LANE.trunkStep,
-  });
-}
 
 /* The displacement must not fire on overlaps that were already on screen, nor
  * stand in for the ghost's own first appearance. */
-function testGhostIsNotDisplacedWithoutANewlyArrivingCommit(): void {
-  const steady = buildGraph(args({
-    gitCommits: [commit("base", 0, { parent_shas: [] })],
-    gitHead: "base",
-    gitDirtyCount: 1,
-  })).rfNodes;
-  assert.equal(resolveDisplacedGhostPosition(steady, steady), null);
 
-  /* A user-dragged ghost sitting on an existing hub is left alone. */
-  const overlapping = buildGraph(args({
-    gitCommits: [commit("base", 0, { parent_shas: [] })],
-    gitHead: "base",
-    gitDirtyCount: 1,
-    layoutHints: { "commit:ghost": { x: LANE.trunkX, y: LANE.trunkStartY } },
-  })).rfNodes;
-  assert.equal(resolveDisplacedGhostPosition(overlapping, overlapping), null);
 
-  /* No ghost beforehand is the appearance path's job, not this one. */
-  const clean = buildGraph(args({
-    gitCommits: [commit("base", 0, { parent_shas: [] })],
-    gitHead: "base",
-  })).rfNodes;
-  assert.equal(resolveDisplacedGhostPosition(clean, steady), null);
-}
 
-function testCommittedGhostTransfersItsPositionToNewHead(): void {
-  const before = buildGraph(args({
-    gitCommits: [commit("old")],
-    gitHead: "old",
-    gitDirtyCount: 2,
-  })).rfNodes.map((item) =>
-    item.id === "commit:ghost"
-      ? { ...item, position: { x: 360, y: 520 } }
-      : item,
-  );
-  const after = buildGraph(args({
-    gitCommits: [commit("old"), commit("new")],
-    gitHead: "new",
-  })).rfNodes;
 
-  assert.deepEqual(resolveCommitPositionTransfer(before, after, "new"), {
-    fromId: "commit:ghost",
-    toId: "commit:new",
-    position: { x: 360, y: 520 },
-    resetGhostPosition: null,
-  });
-}
 
-function testRemainingChangesMoveToTheNextCommitSlot(): void {
-  const before = buildGraph(args({
-    gitCommits: [commit("old")],
-    gitHead: "old",
-    gitDirtyCount: 2,
-  })).rfNodes.map((item) =>
-    item.id === "commit:ghost"
-      ? { ...item, position: { x: 360, y: 520 } }
-      : item,
-  );
-  const after = buildGraph(args({
-    gitCommits: [commit("old"), commit("new")],
-    gitHead: "new",
-    gitDirtyCount: 1,
-    layoutHints: { "commit:ghost": { x: 360, y: 520 } },
-  })).rfNodes;
 
-  assert.deepEqual(resolveCommitPositionTransfer(before, after, "new"), {
-    fromId: "commit:ghost",
-    toId: "commit:new",
-    position: { x: 360, y: 520 },
-    resetGhostPosition: {
-      x: 360,
-      y: 520 + LANE.trunkStep,
-    },
-  });
-}
-
-function testAlreadyRenderedCommitUsesRetainedGhostPosition(): void {
-  const rendered = buildGraph(args({
-    gitCommits: [commit("old"), commit("new")],
-    gitHead: "new",
-  })).rfNodes;
-
-  assert.deepEqual(
-    resolveCommitPositionTransfer(
-      rendered,
-      rendered,
-      "new",
-      { x: 360, y: 520 },
-    ),
-    {
-      fromId: "commit:ghost",
-      toId: "commit:new",
-      position: { x: 360, y: 520 },
-      resetGhostPosition: null,
-    },
-  );
-}
-
-function testAlreadyRenderedCommitDoesNotUseRemainingChangesPosition(): void {
-  const rendered = buildGraph(args({
-    gitCommits: [commit("old"), commit("new")],
-    gitHead: "new",
-    gitDirtyCount: 1,
-  })).rfNodes.map((item) =>
-    item.id === "commit:ghost"
-      ? { ...item, position: { x: 480, y: 680 } }
-      : item,
-  );
-
-  assert.deepEqual(
-    resolveCommitPositionTransfer(
-      rendered,
-      rendered,
-      "new",
-      { x: 360, y: 520 },
-    ),
-    {
-      fromId: "commit:ghost",
-      toId: "commit:new",
-      position: { x: 360, y: 520 },
-      resetGhostPosition: {
-        x: 360,
-        y: 520 + LANE.trunkStep,
-      },
-    },
-  );
-}
-
-function testCleaningWithoutACommitDoesNotMoveHead(): void {
-  const before = buildGraph(args({
-    gitCommits: [commit("head")],
-    gitHead: "head",
-    gitDirtyCount: 1,
-  })).rfNodes;
-  const after = buildGraph(args({
-    gitCommits: [commit("head")],
-    gitHead: "head",
-  })).rfNodes;
-
-  assert.equal(resolveCommitPositionTransfer(before, after, null), null);
-}
-
-function testUnrelatedHeadChangeDoesNotTransferGhost(): void {
-  const before = buildGraph(args({
-    gitCommits: [commit("old")],
-    gitHead: "old",
-    gitDirtyCount: 2,
-  })).rfNodes.map((item) =>
-    item.id === "commit:ghost"
-      ? { ...item, position: { x: 360, y: 520 } }
-      : item,
-  );
-  const after = buildGraph(args({
-    gitCommits: [commit("branch-head")],
-    gitHead: "branch-head",
-    gitDirtyCount: 2,
-  })).rfNodes;
-
-  assert.equal(resolveCommitPositionTransfer(before, after, null), null);
-  assert.equal(resolveCommitPositionTransfer(before, after, "different-commit"), null);
-  assert.equal(
-    (after.find((item) => item.id === "commit:branch-head")?.data as { head?: boolean }).head,
-    true,
-  );
-  assert.ok(after.some((item) => item.id === "commit:ghost"));
-}
 
 function testEpochLinksAndHoverGroups(): void {
   const graph = buildGraph(args({
@@ -1074,7 +707,7 @@ function testNewLaneNodeFollowsActualLayout(): void {
       node("new", { planspace_id: planspaceId, created_at: 5 }),
     ],
     knownPlanspaceIds: [planspaceId],
-    layoutHints: {
+    nodePositions: {
       "old-1": { x: 40, y: LANE.planspaceLaneAgentRowY },
       "old-2": { x: 320, y: LANE.planspaceLaneAgentRowY },
       "old-3": { x: 40, y: LANE.planspaceLaneAgentRowY + LANE.siblingYStep },
@@ -1136,7 +769,7 @@ function testAppendedNodeClearsAHandPlacedBottomNode(): void {
       node("dragged-low", { planspace_id: planspaceId, created_at: 2 }),
     ],
     knownPlanspaceIds: [planspaceId],
-    layoutHints: {
+    nodePositions: {
       top: { x: 40, y: LANE.planspaceLaneAgentRowY },
       "dragged-low": { x: 320, y: draggedY },
     },
@@ -1211,7 +844,7 @@ function testAppendedPositionSurvivesAsALayoutHint(): void {
       node("fresh", { planspace_id: planspaceId, state: "virtual", created_at: 3 }),
     ],
     knownPlanspaceIds: [planspaceId],
-    layoutHints: { fresh: appended },
+    nodePositions: { fresh: appended },
   }));
 
   const fresh = after.rfNodes.find((item) => item.id === "fresh");
@@ -1410,7 +1043,7 @@ function testRerunNodeStacksBelowOriginal(): void {
       }),
     ],
     knownPlanspaceIds: [planspaceId],
-    layoutHints: { failed: originalPosition },
+    nodePositions: { failed: originalPosition },
   }));
 
   /* Directly beneath the node it reruns, sharing its column — the same rule a
@@ -1426,7 +1059,7 @@ function testRerunNodeStacksBelowOriginal(): void {
       .filter((item) => item.type === "agent")
       .map((item) => (item.data as { node: NodeInfo }).node),
     knownPlanspaceIds: [planspaceId],
-    layoutHints: { failed: originalPosition, rerun: draggedPosition },
+    nodePositions: { failed: originalPosition, rerun: draggedPosition },
   }));
   assert.deepEqual(
     dragged.rfNodes.find((item) => item.id === "rerun")?.position,
@@ -1453,7 +1086,7 @@ function testRerunWithoutDependenciesStillAnchors(): void {
       }),
     ],
     knownPlanspaceIds: [planspaceId],
-    layoutHints: { a: { x: 40, y: 156 }, failed: failedPosition },
+    nodePositions: { a: { x: 40, y: 156 }, failed: failedPosition },
   }));
 
   assert.deepEqual(
@@ -1485,7 +1118,7 @@ function testRerunAndDependentVirtualDoNotShareASlot(): void {
       }),
     ],
     knownPlanspaceIds: [planspaceId],
-    layoutHints: { failed: failedPosition },
+    nodePositions: { failed: failedPosition },
   }));
 
   const positionOf = (id: string) =>
@@ -1522,7 +1155,7 @@ function testSuccessiveRerunsStackDownward(): void {
       }),
     ],
     knownPlanspaceIds: [planspaceId],
-    layoutHints: { failed: failedPosition },
+    nodePositions: { failed: failedPosition },
   }));
 
   const positionOf = (id: string) =>
@@ -1577,7 +1210,7 @@ function testPlanspaceLaneBuildAndDropShareBottomFit(): void {
   const graph = buildGraph(args({
     nodes: [node("work", { planspace_id: "planspaces.alpha" })],
     knownPlanspaceIds: ["planspaces.alpha"],
-    layoutHints: { work: { x: 720, y: workY } },
+    nodePositions: { work: { x: 720, y: workY } },
   }));
   const builtLane = graph.rfNodes.find((item) => item.id === laneId);
   const work = graph.rfNodes.find((item) => item.id === "work");
@@ -1670,7 +1303,7 @@ function testPlanspaceLaneResizeReflowsLaterAutomaticLanes(): void {
   const firstLaneId = "planspace:planspaces.alpha";
   const secondLaneId = "planspace:planspaces.beta";
   const thirdLaneId = "planspace:planspaces.gamma";
-  const layoutHints = { [secondLaneId]: { x: 40, y: 900 } };
+  const nodePositions = { [secondLaneId]: { x: 40, y: 900 } };
   const graph = buildGraph(args({
     nodes: [node("work", { planspace_id: "planspaces.alpha" })],
     knownPlanspaceIds: [
@@ -1678,7 +1311,7 @@ function testPlanspaceLaneResizeReflowsLaterAutomaticLanes(): void {
       "planspaces.beta",
       "planspaces.gamma",
     ],
-    layoutHints,
+    nodePositions,
   }));
   const originalFirst = graph.rfNodes.find((item) => item.id === firstLaneId);
   const originalSecond = graph.rfNodes.find((item) => item.id === secondLaneId);
@@ -1698,7 +1331,6 @@ function testPlanspaceLaneResizeReflowsLaterAutomaticLanes(): void {
     moved,
     new Set([firstLaneId]),
     false,
-    layoutHints,
   );
   const grownFirst = grown.find((item) => item.id === firstLaneId);
   const grownSecond = grown.find((item) => item.id === secondLaneId);
@@ -1706,10 +1338,10 @@ function testPlanspaceLaneResizeReflowsLaterAutomaticLanes(): void {
   assert.ok(grownFirst);
   assert.ok(grownSecond);
   assert.ok(grownThird);
-  assert.equal(grownSecond.position.y, originalSecond.position.y);
+  assert.equal(grownSecond.position.y, grownFirst.position.y + (grownFirst.height ?? 0) + LANE.planspaceLaneGap);
   assert.equal(
     grownThird.position.y,
-    grownFirst.position.y + (grownFirst.height ?? 0) + LANE.planspaceLaneGap,
+    grownSecond.position.y + (grownSecond.height ?? 0) + LANE.planspaceLaneGap,
   );
 
   const restoredChild = grown.map((item) =>
@@ -1725,7 +1357,6 @@ function testPlanspaceLaneResizeReflowsLaterAutomaticLanes(): void {
     restoredChild,
     new Set([firstLaneId]),
     true,
-    layoutHints,
   );
   assert.equal(
     fitted.find((item) => item.id === firstLaneId)?.height,
@@ -1744,11 +1375,11 @@ function testPlanspaceLaneResizeReflowsLaterAutomaticLanes(): void {
 function testPlanspaceLaneReflowsStaleAutomaticPositionWithoutResize(): void {
   const firstLaneId = "planspace:planspaces.alpha";
   const secondLaneId = "planspace:planspaces.beta";
-  const layoutHints = { [firstLaneId]: { x: 360, y: -128 } };
+  const nodePositions = { [firstLaneId]: { x: 360, y: -128 } };
   const graph = buildGraph(args({
     nodes: [node("work", { planspace_id: "planspaces.alpha" })],
     knownPlanspaceIds: ["planspaces.alpha", "planspaces.beta"],
-    layoutHints,
+    nodePositions,
   }));
   const firstLane = graph.rfNodes.find((item) => item.id === firstLaneId);
   const secondLane = graph.rfNodes.find((item) => item.id === secondLaneId);
@@ -1764,13 +1395,12 @@ function testPlanspaceLaneReflowsStaleAutomaticPositionWithoutResize(): void {
     stale,
     new Set([firstLaneId, secondLaneId]),
     true,
-    layoutHints,
   );
   const normalizedFirst = normalized.find((item) => item.id === firstLaneId);
   const normalizedSecond = normalized.find((item) => item.id === secondLaneId);
 
   assert.equal(normalizedFirst, firstLane);
-  assert.deepEqual(normalizedFirst?.position, layoutHints[firstLaneId]);
+  assert.deepEqual(normalizedFirst?.position, firstLane.position);
   assert.equal(
     normalizedSecond?.position.y,
     firstLane.position.y + (firstLane.height ?? 0) + LANE.planspaceLaneGap,
@@ -1780,7 +1410,6 @@ function testPlanspaceLaneReflowsStaleAutomaticPositionWithoutResize(): void {
       normalized,
       new Set([firstLaneId, secondLaneId]),
       true,
-      layoutHints,
     ),
     normalized,
   );
@@ -2134,7 +1763,7 @@ function testInstanceGroupDoesNotConsumeExtraLaneSlots(): void {
 
 function testLayoutHintsOverrideInstanceClustering(): void {
   const dragged = { x: 900, y: 420 };
-  const graph = buildGraph(templateArgs({ layoutHints: { "tpl-b": dragged } }));
+  const graph = buildGraph(templateArgs({ nodePositions: { "tpl-b": dragged } }));
 
   assert.deepEqual(
     graph.rfNodes.find((item) => item.id === "tpl-b")?.position,
@@ -2375,53 +2004,6 @@ function testCollapsedInstanceErrorAndProgressRollup(): void {
   });
 }
 
-function testCollapsedInstanceKeepsItsLaneAndHonoursHints(): void {
-  /* A lane whose only nodes are inside a collapsed instance must keep its
-   * swimlane, and the box must accept a manual position. */
-  const dragged = { x: 640, y: 300 };
-  const graph = buildGraph(templateArgs({
-    collapsedTemplateInstanceIds: ["inst-1"],
-    layoutHints: { [templateInstanceBoxNodeId("inst-1")]: dragged },
-  }));
-  const lane = graph.rfNodes.find(
-    (item) => item.id === `planspace:${TEMPLATE_LANE}`,
-  );
-  assert.ok(lane, "the lane must survive collapsing every node inside it");
-  const box = graph.rfNodes.find(
-    (item) => item.id === templateInstanceBoxNodeId("inst-1"),
-  );
-  assert.deepEqual(box?.position, dragged);
-  assert.ok(
-    dragged.x + (box?.width ?? 0) + LANE.planspaceLanePaddingX <= (lane.width ?? 0),
-    "the lane must grow to contain a dragged box",
-  );
-
-  /* A collapsed box consumes exactly one lane slot, and a dragged box advances
-   * the cursor from where it actually sits — the same rule `nextLanePosition`
-   * applies to a dragged tile. Asserted against the equivalent plain graph so
-   * the two stay consistent rather than pinned to a literal. */
-  const withLater = buildGraph(templateArgs({
-    nodes: [
-      ...instanceNodes(),
-      node("after-box", { planspace_id: TEMPLATE_LANE, created_at: 9 }),
-    ],
-    collapsedTemplateInstanceIds: ["inst-1"],
-    layoutHints: { [templateInstanceBoxNodeId("inst-1")]: dragged },
-  }));
-  const equivalentTile = buildGraph(args({
-    nodes: [
-      node("stand-in", { planspace_id: TEMPLATE_LANE, created_at: 1 }),
-      node("after-box", { planspace_id: TEMPLATE_LANE, created_at: 9 }),
-    ],
-    knownPlanspaceIds: [TEMPLATE_LANE],
-    layoutHints: { "stand-in": dragged },
-  }));
-  assert.deepEqual(
-    withLater.rfNodes.find((item) => item.id === "after-box")?.position,
-    equivalentTile.rfNodes.find((item) => item.id === "after-box")?.position,
-    "a collapsed instance must occupy one lane slot, exactly like one tile",
-  );
-}
 
 function testNonTemplateLayoutIsUnchangedByGroupSupport(): void {
   /* buildGraph is the common path for every canvas, so a graph with no
@@ -2499,7 +2081,7 @@ function testLaneVerticalSpanReadsLiveGeometry(): void {
   const graph = buildGraph(args({
     nodes: [node("work", { planspace_id: "planspaces.alpha" })],
     knownPlanspaceIds: ["planspaces.alpha"],
-    layoutHints: { work: { x: 40, y: 4000 } },
+    nodePositions: { work: { x: 40, y: 4000 } },
   }));
   const span = resolveLaneVerticalSpan(graph.rfNodes, "planspaces.alpha");
   const lane = graph.rfNodes.find((item) => item.id === laneId);
@@ -2699,26 +2281,9 @@ testPlanspaceChildPositionUsesLaneRelativeSnapGrid();
 testExplicitCreationPositionBeatsExistingRuntimePosition();
 testProjectScopedLaneLabelShowsOnlyDirectionName();
 testVerticalCommitTrunkAndStableLaneX();
-testChangesNodePreservesSavedPosition();
 testChangesNodeAvoidsPostHeadRows();
-testAppearingChangesNodeAvoidsPostHeadRows();
 testCommitBranchesUseParentsAndColumns();
 testPeerCommitRowsFollowVisibleParents();
-testCommitFallbackDoesNotCrossColumnsAndHintsWin();
-testCommitLayoutResolvesShaAliases();
-testCurrentCommitLayoutWinsOverShaAliases();
-testNewCommitFollowsDraggedParentInsteadOfTheGrid();
-testNewCommitFollowsDraggedPredecessorWithoutParentShas();
-testMergeClearsItsLowestParentButKeepsItsColumn();
-testSiblingCommitsDoNotShareASlot();
-testCommitLandingOnTheGhostRowPushesTheGhostDown();
-testGhostIsNotDisplacedWithoutANewlyArrivingCommit();
-testCommittedGhostTransfersItsPositionToNewHead();
-testRemainingChangesMoveToTheNextCommitSlot();
-testAlreadyRenderedCommitUsesRetainedGhostPosition();
-testAlreadyRenderedCommitDoesNotUseRemainingChangesPosition();
-testCleaningWithoutACommitDoesNotMoveHead();
-testUnrelatedHeadChangeDoesNotTransferGhost();
 testEpochLinksAndHoverGroups();
 testBindingDrivenContextTiles();
 testFloatingContextDoesNotOverlapFirstLane();
@@ -2755,7 +2320,6 @@ testInstanceGeometryFlowsIntoLaneSizing();
 testSinkDetectionIgnoresExternalDownstream();
 testCollapsedInstanceRendersOneBoxAndRedirectsEdges();
 testCollapsedInstanceErrorAndProgressRollup();
-testCollapsedInstanceKeepsItsLaneAndHonoursHints();
 testCollapsingKeepsTheInstanceInPlace();
 testNonTemplateLayoutIsUnchangedByGroupSupport();
 testLaneVerticalSpanReadsLiveGeometry();
@@ -2880,20 +2444,20 @@ function testPortsFlowIntoLaneSizing(): void {
   );
 }
 
-function testPortsHonourLayoutHints(): void {
+function testPortsIgnoreSyntheticPositions(): void {
   const portId = templatePortNodeId("spec");
   const built = buildGraph(args({
     nodes: [node("consumer", { planspace_id: TEMPLATE_LANE, created_at: 1 })],
     knownPlanspaceIds: [TEMPLATE_LANE],
     focusedPlanspaceId: TEMPLATE_LANE,
     templatePortLaneId: TEMPLATE_LANE,
-    layoutHints: { [portId]: { x: 640, y: 24 } },
+    nodePositions: { [portId]: { x: 640, y: 24 } },
     templatePorts: [{ name: "spec", consumers: ["consumer"] }],
   }));
 
   assert.deepEqual(
     built.rfNodes.find((item) => item.id === portId)?.position,
-    { x: 640, y: 24 },
+    { x: LANE.planspaceLanePaddingX, y: LANE.templatePortRowY },
   );
 }
 
@@ -3074,7 +2638,7 @@ testTemplatePortsRenderNodesAndEdges();
 testUnreferencedPortIsFlagged();
 testPortConsumerOffCanvasDoesNotDangle();
 testPortsFlowIntoLaneSizing();
-testPortsHonourLayoutHints();
+testPortsIgnoreSyntheticPositions();
 testPortsOnlyRenderInTheExecutionTargetLane();
 testPortsStayOnTheirSourceLaneWhenFocusMovesAway();
 testArgumentChipsGrowTheNodeHeight();
