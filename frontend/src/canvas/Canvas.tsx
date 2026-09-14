@@ -18,6 +18,7 @@ import ReactFlow, {
   useReactFlow,
 } from "reactflow";
 import "reactflow/dist/style.css";
+import { ViewportHandleBounds } from "./ViewportHandleBounds";
 
 import type {
   ArtifactExtension,
@@ -771,6 +772,10 @@ function CanvasInner({
   );
   const [rfEdges, setRfEdges] = useEdgesState(
     decorateEdges(built.rfEdges, selectedNodeId, hoverGroup),
+  );
+  const renderedEdges = useMemo(
+    () => rfEdges.filter((edge) => edge.style?.opacity !== 0),
+    [rfEdges],
   );
   const rfNodesRef = useRef(rfNodes);
   rfNodesRef.current = rfNodes;
@@ -1647,8 +1652,9 @@ function CanvasInner({
       onDrop={onCanvasDrop}
     >
       <ReactFlow
+        onlyRenderVisibleElements={pendingGateNodeIds.length === 0}
         nodes={rfNodes}
-        edges={rfEdges}
+        edges={renderedEdges}
         onNodesChange={handleNodesChange}
         onNodeClick={onNodeClick}
         onNodeContextMenu={onNodeContextMenu}
@@ -1696,6 +1702,7 @@ function CanvasInner({
           color="rgb(var(--grid-line))"
         />
         <FitOnInit enabled={!initialViewportRef.current} />
+        <ViewportHandleBounds />
         <CenterOnNode
           request={centerOnNodeRequest ?? null}
           resolveRenderId={resolveRenderId}

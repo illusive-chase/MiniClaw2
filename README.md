@@ -396,6 +396,24 @@ WebSocket 不受影响。
 `cd frontend && npm run test:context` 覆盖批量请求、竞态及 2000 节点画布一致性。
 设置 `BROWSER_BIN` 后运行 `npm run test:context:browser` 验证实际 React 加载和切换行为。
 
+画布启用 `onlyRenderVisibleElements`，只挂载与视口相交的节点和边；未选中／悬浮时
+本就透明的来源、产物及提交关联边不进入 DOM，显示规则不变。React Flow 11 的边还依赖
+DOM 测量出的锚点，因此 `ViewportHandleBounds` 会为尚未挂载的节点补入布局锚点，
+保证首次打开时两端均在视口外的跨视口边仍可见；挂载后的真实测量优先，不被补全覆盖。
+新增节点和未测量节点的尺寸更新同样补全。升级 React Flow 或修改节点 Handle 时，
+须同步检查 `viewportHandles.ts` 并运行浏览器回归，不能只保留裁剪开关。
+存在待响应交互时暂时关闭视口裁剪，避免卡片下方的提问／权限表单在平移时被卸载、
+丢失未提交的回答、工具参数及备注；全部交互结束后恢复裁剪。
+
+`cd frontend && npm run test:viewport` 使用可重复生成的 411 × 5 合成夹具，验证
+2055 节点的完整／精简投影一致性、尺寸完整性和所有边的锚点。夹具不包含用户存储或提示词。
+设置 `BROWSER_BIN` 后运行 `npm run test:viewport:browser`，在真实无头浏览器中验证
+DOM 数量、跨视口边、框选、Shift 多选、右键菜单／平移、跨视口长按连线、定位／视口恢复、
+泳道隐藏恢复、模板折叠、适配及缩放，以及提问／权限表单离屏后的草稿保留、提交和裁剪恢复；
+报告滚动帧间隔，但只对挂载数量设回归阈值。
+测试使用临时浏览器配置与调试管道，不启动服务、不占用端口，并只清理自己启动的进程。
+隐藏泳道的来源摘要仍保留给资源库计数及恢复使用；未引入缩放级别简化卡片或服务端分页。
+
 - Project/session REST APIs:
   `GET /sessions`, `POST /sessions`, `PATCH /sessions/{sid}`,
   `PATCH /sessions/{sid}/preferences`,
