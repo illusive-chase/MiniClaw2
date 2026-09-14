@@ -131,7 +131,7 @@ Ctrl-C stops both processes.
 
 `$MINICLAW_HOME` 可以通过 Git remote 同步。持久项目在当前设备绑定本地目录后
 即可执行，创建者设备只记录来源；每台设备只能修改自己分区中的节点。
-全局设置和 ContextSpace 使用本地差异优先的合并策略，`schema.json` 冲突则
+全局设置和 ContextSpace 在隔离候选树中合并并校验，结构冲突或格式契约冲突则
 停止同步，等待人工处理。
 
 临时项目无需绑定目录：同步到新设备后即可继续创建节点，框架自动准备非 Git
@@ -316,13 +316,15 @@ On-disk layout (under `$MINICLAW_HOME`, default `~/.miniclaw2`):
 
 ```
 config.json             # global defaults and complete model preset catalog
-schema.json             # canonical store schema version (currently v6)
+schema.json             # 当前共享格式契约；目标版本由发行迁移清单决定
 machine.json            # 本地 UUID、设备指纹哈希、标签和同步检查点（不参与同步）
 machine.lock            # 身份写入的进程间锁（不参与同步）
+.migration-local/       # 本机完成凭据、维护锁和可恢复事务日志（不参与同步）
+migration-backups/      # 原始文件备份，不随代码支持窗口删除（不参与同步）
 .gitignore              # excludes machine identity, backups, and temp writes
 projects/<pid>/
   project.json          # includes native machine id + display label
-  nodes/<nid>/
+  hosts/<machine-id>/nodes/<nid>/
     node.json           # full Node fields, rewritten on each state transition
     events.jsonl        # {schema_version, seq, event} per line, append-only
     gates.jsonl         # {action: "created"|"resolved", gate} per line
@@ -414,8 +416,8 @@ is a project id, and each `user_message` spawns a fresh agent node.
   `result_kind`), `interaction_request` (`permission`, `ask_user`,
   or `human_review_prose`), `usage`, `turn_done`,
   and `error`. Events carry monotonic `seq` values for reconnect
-  replay; persisted envelopes carry an event schema version and upgrade
-  legacy `checkpoint_review` records before runtime delivery.
+  replay; persisted envelopes carry an event schema version. 历史
+  `checkpoint_review` 在存储迁移时转换，运行时只读取当前载体。
 
 Current ask-user responses use
 `response.answers.<question-id>.answers: string[]`; human reviews use
@@ -427,6 +429,10 @@ Exact shapes: [`backend/miniclaw2/events.py`](backend/miniclaw2/events.py)
 and [`frontend/src/types.ts`](frontend/src/types.ts).
 
 ## Status
+
+持久化格式迁移、三步支持窗口、数据域清单与恢复命令见
+[`docs/schema-migrations.md`](docs/schema-migrations.md)。更新程序后的启动自动迁移；
+过旧或过新的存储进入维护模式，不自动下载旧迁移器，也不显示误导性的空项目列表。
 
 The code is the ledger of what has landed — this file does not enumerate
 it, because such a list goes stale in a way code cannot.

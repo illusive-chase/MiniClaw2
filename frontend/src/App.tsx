@@ -30,6 +30,7 @@ import {
   deleteSkill,
   importSkill,
   getGlobalState,
+  getMigrationStatus,
   getGitState,
   gitCommit,
   gitReview,
@@ -324,6 +325,8 @@ export function App() {
   const [nodes, setNodes] = useState<NodeInfo[]>([]);
   const [modelPresets, setModelPresets] = useState<ModelPreset[]>([]);
   const [globalState, setGlobalState] = useState<GlobalState | null>(null);
+  const [storageError, setStorageError] = useState<string | null>(null);
+  const [storageLoading, setStorageLoading] = useState(true);
   const [gitStatus, setGitStatus] = useState<GitStatus | null>(null);
   const [gitCommits, setGitCommits] = useState<CommitDescriptor[]>([]);
   const [gitAction, setGitAction] = useState<"commit" | "review" | "pull" | "push" | null>(null);
@@ -460,7 +463,11 @@ export function App() {
 
   useEffect(() => {
     let cancelled = false;
-    getGlobalState()
+    getMigrationStatus()
+      .then((migration) => {
+        if (migration.state !== "ready") throw new Error(migration.detail);
+        return getGlobalState();
+      })
       .then((next) => {
         if (!cancelled) {
           setGlobalState(next);
@@ -468,7 +475,10 @@ export function App() {
         }
       })
       .catch((err) => {
-        console.error("get global state failed:", err);
+        if (!cancelled) setStorageError(err instanceof Error ? err.message : String(err));
+      })
+      .finally(() => {
+        if (!cancelled) setStorageLoading(false);
       });
     return () => {
       cancelled = true;
@@ -2968,6 +2978,25 @@ export function App() {
         onClose={closeTemplateEditor}
         onSaved={() => setLibraryRefreshToken((v) => v + 1)}
       />
+    );
+  }
+
+  if (storageLoading || storageError) {
+    return (
+      <main className="flex min-h-screen items-center justify-center bg-surface p-8 text-ink">
+        <section className="max-w-2xl space-y-4" role="status">
+          <h1 className="text-xl font-semibold">{storageLoading ? "正在检查存储格式…" : "存储维护模式"}</h1>
+          {storageError && (
+            <>
+              <p className="whitespace-pre-wrap break-words">{storageError}</p>
+              <p>业务数据尚未加载，这不是空项目列表。请保留原数据及 migration-backups；停止使用该存储的进程后，通过 CLI 检查或恢复。</p>
+              <pre className="overflow-auto rounded border p-3">{"miniclaw2 migrations status\nminiclaw2 migrations plan\nminiclaw2 migrations recover"}</pre>
+              <p>数据过旧需使用覆盖其版本的中间版本升级；数据过新需先更新程序。</p>
+              <button className="rounded border px-4 py-2" onClick={() => window.location.reload()}>重新检查</button>
+            </>
+          )}
+        </section>
+      </main>
     );
   }
 

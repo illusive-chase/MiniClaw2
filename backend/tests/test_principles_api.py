@@ -11,6 +11,7 @@ import yaml
 from fastapi.testclient import TestClient
 
 from miniclaw2.app import create_app
+from miniclaw2.store import Store
 
 
 def _write_principle(ctx_root: Path, slug: str, *, title: str, body: str = "body") -> None:
@@ -33,6 +34,7 @@ class PrinciplesApiTest(unittest.TestCase):
         self._home = tempfile.TemporaryDirectory()
         os.environ["MINICLAW_HOME"] = self._home.name
         self.ctx_root = Path(self._home.name) / "contextspace"
+        self.store = Store(Path(self._home.name))
         self.client = TestClient(create_app())
 
     def tearDown(self) -> None:

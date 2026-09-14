@@ -22,6 +22,7 @@ from miniclaw2.registry import (
 )
 from miniclaw2.store import Store, StoreReadOnlyError
 from miniclaw2.sync import bootstrap_store
+from miniclaw2.migrations.errors import MigrationError
 
 
 def _git(cwd: Path, *args: str) -> str:
@@ -351,7 +352,7 @@ class HostPartitionStoreTests(unittest.TestCase):
             self.assertEqual(loaded[0].root_path, UNBOUND_ROOT_PATH)
             self.assertFalse(loaded[0].is_bound)
 
-    def test_flat_project_from_legacy_peer_is_ignored(self) -> None:
+    def test_flat_project_from_legacy_peer_is_explicitly_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             base = Path(raw)
             store = Store(base / "store")
@@ -382,8 +383,10 @@ class HostPartitionStoreTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            self.assertEqual(store.list_projects(), [])
-            self.assertEqual(store.list_nodes(project.id), [])
+            with self.assertRaises(MigrationError):
+                store.list_projects()
+            with self.assertRaises(MigrationError):
+                store.list_nodes(project.id)
             self.assertIsNone(store.load_node(project.id, node.id))
             self.assertEqual(store.read_git_aliases(project.id), {})
             self.assertEqual(

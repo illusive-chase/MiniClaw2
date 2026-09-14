@@ -15,6 +15,7 @@ from miniclaw2.templates import user_templates_root
 
 
 class GlobalStateApiTest(unittest.TestCase):
+
     def setUp(self) -> None:
         self.home = tempfile.TemporaryDirectory()
         self.workspace = tempfile.TemporaryDirectory()
@@ -56,18 +57,6 @@ class GlobalStateApiTest(unittest.TestCase):
         self.assertEqual(response.status_code, 409)
         self.assertIn("not configured", response.json()["detail"])
 
-    def test_retired_startup_preference_is_dropped_from_existing_config(self) -> None:
-        """Self-update never contacts the remote unprompted, so the toggle is gone."""
-        path = self.root / "config.json"
-        payload = json.loads(path.read_text())
-        payload["updates"] = {"check_on_startup": True}
-        path.write_text(json.dumps(payload))
-
-        response = self.client.get("/global-state")
-
-        self.assertEqual(response.status_code, 200)
-        self.assertNotIn("updates", response.json())
-        self.assertFalse(hasattr(load_global_config(self.root), "updates"))
 
     def test_retired_startup_preference_endpoint_is_gone(self) -> None:
         response = self.client.patch(
@@ -277,47 +266,13 @@ class GlobalStateApiTest(unittest.TestCase):
             {"timeout_seconds": 120, "timeout_action": "accept"},
         )
 
-    def test_legacy_config_without_code_review_settings_gets_default(self) -> None:
-        payload = json.loads((self.root / "config.json").read_text())
-        payload.pop("code_review", None)
-        (self.root / "config.json").write_text(json.dumps(payload), encoding="utf-8")
 
-        response = self.client.get("/global-state")
-
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(
-            response.json()["code_review"],
-            {"model_preset_id": "gpt-5.6"},
-        )
-
-    def test_model_constructed_legacy_config_gets_code_review_default(self) -> None:
+    def test_model_constructed_legacy_config_requires_migration(self) -> None:
         current = load_global_config(self.root)
 
-        migrated = GlobalConfig(
-            defaults=current.defaults,
-            model_presets=current.model_presets,
-        )
+        with self.assertRaises(ValueError):
+            GlobalConfig(defaults=current.defaults, model_presets=current.model_presets)
 
-        self.assertEqual(migrated.code_review.model_preset_id, "gpt-5.6")
-
-    def test_legacy_code_review_default_falls_back_to_project_default(self) -> None:
-        payload = json.loads((self.root / "config.json").read_text())
-        payload.pop("code_review", None)
-        payload["defaults"]["default_model_preset_id"] = "opus-4-8"
-        payload["model_presets"] = [
-            preset
-            for preset in payload["model_presets"]
-            if preset["id"] != "gpt-5.6"
-        ]
-        (self.root / "config.json").write_text(json.dumps(payload), encoding="utf-8")
-
-        response = self.client.get("/global-state")
-
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(
-            response.json()["code_review"],
-            {"model_preset_id": "opus-4-8"},
-        )
 
     def test_duplicate_preset_id_is_rejected(self) -> None:
         existing = self.client.get("/global-state").json()["model_presets"][0]

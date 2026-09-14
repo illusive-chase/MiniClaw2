@@ -24,6 +24,8 @@ Design constraints (agreed in the design discussion; see the plan file):
 
 from __future__ import annotations
 
+from ..migrations.access import storage_function
+
 import re
 import shutil
 from pathlib import Path
@@ -74,6 +76,7 @@ class SerializerError(TemplateError):
     """Raised when a save-as-template request is invalid."""
 
 
+@storage_function
 def serialize_selection(
     store: Store,
     project_id: str,
@@ -180,6 +183,7 @@ def serialize_selection(
     )
 
 
+@storage_function
 def rewrite_user_template(
     slug: str,
     *,
@@ -308,6 +312,7 @@ def rewrite_user_template(
     )
 
 
+@storage_function
 def serialize_embedded_session(
     registry: Any,
     project: Project,
@@ -674,6 +679,7 @@ def _valid_user_template_slug(slug: str) -> bool:
     return bool(slug) and "/" not in slug and ".." not in slug
 
 
+@storage_function
 def delete_user_template(slug: str, store_root: Path | None = None) -> bool:
     """Delete the user template directory. Returns True if it was removed."""
     if not _valid_user_template_slug(slug):

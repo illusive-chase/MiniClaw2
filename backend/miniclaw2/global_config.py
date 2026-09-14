@@ -10,6 +10,7 @@ from threading import RLock
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, model_validator
+from .migrations.access import storage_function
 
 _CONFIG_FILENAME = "config.json"
 _DEFAULT_CONFIG_PATH = Path(__file__).with_name("default_config.json")
@@ -103,44 +104,6 @@ class GlobalConfig(BaseModel):
     tool_requests: ToolRequestSettings = Field(default_factory=ToolRequestSettings)
     sync: SyncSettings = Field(default_factory=SyncSettings)
 
-    @model_validator(mode="before")
-    @classmethod
-    def drop_retired_update_settings(cls, value: Any) -> Any:
-        """Self-update never contacts the remote unprompted, so it has no settings."""
-        if isinstance(value, dict) and "updates" in value:
-            return {key: item for key, item in value.items() if key != "updates"}
-        return value
-
-    @model_validator(mode="before")
-    @classmethod
-    def migrate_code_review_settings(cls, value: Any) -> Any:
-        if not isinstance(value, dict) or "code_review" in value:
-            return value
-        presets = value.get("model_presets")
-        defaults = value.get("defaults")
-        active_ids: set[str] = set()
-        if isinstance(presets, list):
-            for preset in presets:
-                if isinstance(preset, ModelPreset) and preset.status == "active":
-                    active_ids.add(preset.id)
-                elif (
-                    isinstance(preset, dict)
-                    and preset.get("status", "active") == "active"
-                    and isinstance(preset.get("id"), str)
-                ):
-                    active_ids.add(preset["id"])
-        if isinstance(defaults, GlobalDefaults):
-            default_id = defaults.default_model_preset_id
-        elif isinstance(defaults, dict):
-            default_id = defaults.get("default_model_preset_id")
-        else:
-            default_id = None
-        model_preset_id = "gpt-5.6" if "gpt-5.6" in active_ids else default_id
-        return {
-            **value,
-            "code_review": {"model_preset_id": model_preset_id},
-        }
-
     @model_validator(mode="after")
     def validate_catalog(self) -> "GlobalConfig":
         ids = [preset.id for preset in self.model_presets]
@@ -188,6 +151,7 @@ def load_global_config(store_root: Path | None = None) -> GlobalConfig:
         raise ValueError(f"invalid global config {source}: {exc}") from exc
 
 
+@storage_function
 def ensure_global_config(store_root: Path | None = None) -> Path:
     path = global_config_path(store_root)
     with _LOCK:
@@ -199,6 +163,7 @@ def ensure_global_config(store_root: Path | None = None) -> Path:
     return path
 
 
+@storage_function
 def save_global_config(
     config: GlobalConfig,
     store_root: Path | None = None,

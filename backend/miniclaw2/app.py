@@ -21,6 +21,8 @@ from fastapi import FastAPI, HTTPException, Request, Response, WebSocket, WebSoc
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
+from .migrations.errors import MigrationError
+from .migrations.catalog import CURRENT_VERSION, MINIMUM_VERSION
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, ValidationError
 
 from .active_nodes import ACTIVE_STATES, ActiveNodesIndex, collect_active_entries
@@ -595,7 +597,12 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
-        initialize_registry()
+        try:
+            initialize_registry()
+        except MigrationError as exc:
+            _app.state.storage_error = exc.payload()
+            yield
+            return
         if consume_pending_exit(registry.store.root):
             yield
             return
@@ -614,6 +621,7 @@ def create_app(
         yield
 
     app = FastAPI(title="MiniClaw2", lifespan=lifespan)
+    app.state.storage_error = None
     app.state.update_checker = update_checker
     app.add_middleware(
         CORSMiddleware,
@@ -621,6 +629,26 @@ def create_app(
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    @app.middleware("http")
+    async def storage_admission(request: Request, call_next):
+        error = app.state.storage_error
+        if error and not request.url.path.startswith(("/migrations/", "/assets/")) and request.url.path not in {"/", "/health"}:
+            return JSONResponse(status_code=503, content=error)
+        return await call_next(request)
+
+    @app.exception_handler(MigrationError)
+    async def migration_error(_request: Request, exc: MigrationError) -> JSONResponse:
+        return JSONResponse(status_code=409, content=exc.payload())
+
+    @app.get("/migrations/status")
+    def migration_status() -> dict[str, Any]:
+        return {"state": "ready", "target": CURRENT_VERSION, "minimum": MINIMUM_VERSION,
+                "detail": "存储格式已就绪", **(app.state.storage_error or {})}
+
+    @app.get("/health")
+    def storage_health() -> dict[str, Any]:
+        return {"status": "maintenance" if app.state.storage_error else "ok"}
 
     @app.exception_handler(NonNativeProjectError)
     async def non_native_project_error(
@@ -652,7 +680,7 @@ def create_app(
         return _global_state_payload(registry.store.root)
 
     @app.post("/global-state/sync/setup", response_model=dict[str, Any])
-    def setup_sync(req: SetupSyncRequest) -> dict[str, Any]:
+    async def setup_sync(req: SetupSyncRequest) -> dict[str, Any]:
         registry.store.assert_writable()
         if not req.privacy_acknowledged:
             raise HTTPException(
@@ -676,7 +704,7 @@ def create_app(
         return _global_state_payload(registry.store.root)
 
     @app.post("/global-state/sync", response_model=dict[str, Any])
-    def sync_now() -> dict[str, Any]:
+    async def sync_now() -> dict[str, Any]:
         try:
             registry.store.sync.sync_now()
             registry.reload_from_store()
@@ -869,7 +897,11 @@ def create_app(
 
     @app.middleware("http")
     async def record_hook_port(request: Request, call_next):
-        initialize_registry()
+        if app.state.storage_error is None:
+            try:
+                initialize_registry()
+            except MigrationError as exc:
+                app.state.storage_error = exc.payload()
         _record_hook_port_from_scope(request.scope)
         return await call_next(request)
 
@@ -2353,6 +2385,9 @@ def create_app(
 
     @app.websocket("/ws/{sid}")
     async def ws(websocket: WebSocket, sid: str) -> None:
+        if app.state.storage_error is not None:
+            await websocket.close(code=1013, reason="存储处于维护模式")
+            return
         initialize_registry()
         _record_hook_port_from_scope(websocket.scope)
         if sid == "-":

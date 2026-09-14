@@ -1,0 +1,38 @@
+name: Schema 迁移窗口
+
+on:
+  pull_request:
+    paths:
+      - 'backend/miniclaw2/migrations/**'
+      - 'backend/setup.py'
+      - '.github/workflows/schema-window.yml'
+  push:
+    branches: [main, master]
+    paths:
+      - 'backend/miniclaw2/migrations/steps/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install PyYAML
+      - run: PYTHONPATH=backend python -c 'from miniclaw2.migrations.catalog import generate; generate(prune=True)'
+      - run: pip install -e './backend[test]'
+      - run: python -m miniclaw2 migrations check
+      - run: python -m pytest backend/tests/test_migrations.py backend/tests/migrations -q
+      - name: 输出可审查的窗口裁剪补丁
+        run: git diff --binary > schema-window.patch
+      - uses: actions/upload-artifact@v4
+        with:
+          name: schema-window-patch
+          path: schema-window.patch
+      - name: 禁止未生成清单或退役代码进入主分支
+        run: git diff --exit-code -- backend/miniclaw2/migrations backend/tests/migrations

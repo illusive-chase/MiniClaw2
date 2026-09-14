@@ -32,7 +32,10 @@ from pydantic import ValidationError
 
 from .domain import HumanGate, Node, Project, UNBOUND_ROOT_PATH
 from .git_state import is_git_repo, normalized_origin_url, root_commits
-from .replay import EVENT_SCHEMA_VERSION, upgrade_event_record
+from .replay import EVENT_SCHEMA_VERSION
+from .migrations.coordinator import open_storage
+from .migrations.errors import MigrationError
+from .migrations.access import storage_methods
 from .sync import (
     MachineIdentity,
     SyncError,
@@ -64,17 +67,22 @@ def _root() -> Path:
     return Path(base).expanduser() if base else Path.home() / ".miniclaw2"
 
 
+@storage_methods
 class Store:
     """Filesystem-backed store with a per-project node-owner path index."""
 
     def __init__(self, root: Path | None = None) -> None:
-        self.root = root or _root()
+        self.root = (root or _root()).expanduser()
+        self.coordinator = open_storage(self.root)
         (self.root / "projects").mkdir(parents=True, exist_ok=True)
         self.machine: MachineIdentity = ensure_machine_identity(self.root)
         ensure_store_metadata(self.root, self.machine)
         from .global_config import ensure_global_config
 
-        ensure_global_config(self.root)
+        try:
+            ensure_global_config(self.root)
+        except (OSError, ValueError) as exc:
+            raise MigrationError("migration_failed", str(exc), self.root / "config.json") from exc
         self.sync: SyncManager = get_sync_manager(self.root, self.machine)
         self._owner_index: dict[str, dict[str, str]] = {}
         self._last_activity_index: dict[str, float] = {}
@@ -84,6 +92,10 @@ class Store:
 
     @property
     def read_only_reason(self) -> str | None:
+        try:
+            self.coordinator.assert_current()
+        except MigrationError as exc:
+            return str(exc)
         if schema_is_newer(self.root):
             return "store schema is newer than this MiniClaw2 version"
         try:
@@ -483,9 +495,11 @@ class Store:
             # Host partitions are the authority boundary. A flat project can
             # only have arrived from a pre-partition peer and is not part of
             # the current store contract.
-            if pf.exists() and (pdir / "hosts").is_dir():
+            if pf.exists():
                 try:
                     payload = self._read_json(pf)
+                    if any(candidate.is_file() for candidate in (pdir / "nodes").rglob("*")):
+                        raise ValueError("当前格式不允许未分区节点")
                     local_dir = pdir / "hosts" / self.machine.id
                     local_payload: dict[str, Any] = {}
                     layout_payload: dict[str, Any] = {}
@@ -517,12 +531,8 @@ class Store:
                         if tag_id in known_tag_ids
                     ]
                     out.append(project.bind_model_catalog(self.root))
-                except (OSError, ValueError, ValidationError):
-                    logger.error(
-                        "skipping invalid current-schema project record %s",
-                        pf,
-                        exc_info=True,
-                    )
+                except (OSError, ValueError, ValidationError) as exc:
+                    raise MigrationError("migration_failed", str(exc), pf) from exc
         return out
 
     def delete_project(self, pid: str) -> bool:
@@ -612,14 +622,12 @@ class Store:
                     self.root
                 )
                 owner = nf.parents[2].name
+                if node.id != nf.parent.name or node.project_id != pid or node.id in owners:
+                    raise ValueError("节点路径、项目归属或跨 host 唯一性不满足当前契约")
                 owners[node.id] = owner
                 out.append(node.bind_owner_host(owner))
-            except (ValueError, ValidationError):
-                logger.error(
-                    "skipping invalid current-schema node record %s",
-                    nf,
-                    exc_info=True,
-                )
+            except (ValueError, ValidationError) as exc:
+                raise MigrationError("migration_failed", str(exc), nf) from exc
         self._owner_index[pid] = owners
         out.sort(key=lambda n: n.created_at)
         if project is not None:
@@ -691,12 +699,13 @@ class Store:
                 if not line:
                     continue
                 rec = json.loads(line)
+                if type(rec.get("schema_version")) is not int or rec["schema_version"] != EVENT_SCHEMA_VERSION:
+                    raise MigrationError("migration_failed", "事件不是当前格式", path)
                 if rec.get("seq", 0) > since_seq:
-                    upgraded = upgrade_event_record(rec)
-                    event = upgraded.get("event")
+                    event = rec.get("event")
                     if isinstance(event, dict):
                         event.setdefault("node_id", nid)
-                    out.append(upgraded)
+                    out.append(rec)
         return out
 
     # ---- gates ----
@@ -732,21 +741,8 @@ class Store:
             raise StoreReadOnlyError(reason)
 
 
-#: Keys written by versions that still carried a project-level lane cursor.
-#: ``Project`` is ``extra="forbid"``, so leaving them in the payload makes
-#: ``model_validate`` raise — and :meth:`Store.list_projects` answers a
-#: ``ValidationError`` by logging and *skipping* the record. The project would
-#: not error, it would silently vanish from the user's list. Dropping the keys
-#: on read is what lets a store written before the cursor was removed still
-#: open. Never re-add them to the model: a resurrected field would start
-#: reading these stale values as if they meant something.
-_RETIRED_PROJECT_KEYS = ("active_planspace_id", "planspace_selection_explicit")
-
-
 def _validate_project_record(path: Path, payload: dict[str, Any]) -> Project:
     preset_id = payload.get("model_preset_id")
     if not isinstance(preset_id, str) or not preset_id.strip():
         raise ValueError(f"{path}: project requires model_preset_id")
-    for key in _RETIRED_PROJECT_KEYS:
-        payload.pop(key, None)
     return Project.model_validate(payload)

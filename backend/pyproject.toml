@@ -30,6 +30,8 @@ packages = [
     "miniclaw2.providers",
     "miniclaw2.providers.claude_native",
     "miniclaw2.templates",
+    "miniclaw2.migrations",
+    "miniclaw2.migrations.steps",
 ]
 
 [tool.setuptools.package-data]
@@ -44,3 +46,4 @@ packages = [
     "bundled/*/scripts/*.sh",
     "bundled/*/seed/**/*",
 ]
+"miniclaw2.migrations" = ["manifest.json"]

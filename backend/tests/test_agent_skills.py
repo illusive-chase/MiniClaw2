@@ -28,7 +28,6 @@ from miniclaw2.skills import (
     skill_content_hash,
 )
 from miniclaw2.store import Store
-from miniclaw2.sync import SCHEMA_VERSION
 
 
 def _write_skill(
@@ -465,125 +464,6 @@ class SkillAuditTests(unittest.TestCase):
                 name="Skill",
                 summary=json.dumps({"command": "skill-plugin:alpha"}),
             )))
-
-
-class PrinciplesSkillsMigrationTests(unittest.TestCase):
-    def test_schema_v5_migrates_old_skill_records_without_touching_snapshots(self) -> None:
-        with tempfile.TemporaryDirectory() as temp:
-            root = Path(temp)
-            (root / "schema.json").write_text(
-                json.dumps({"schema": "canonical-schema-v5", "schema_version": 5}),
-                encoding="utf-8",
-            )
-            old = root / "contextspace" / "plugs" / "skills" / "review"
-            old.mkdir(parents=True)
-            (old / "manifest.yaml").write_text(
-                "kind: skill\nid: skills.review\ntitle: Review\n",
-                encoding="utf-8",
-            )
-            (old / "CONTEXT.md").write_text("review\n", encoding="utf-8")
-            binding = root / "contextspace" / "bindings" / "projects" / "one.yaml"
-            binding.parent.mkdir(parents=True)
-            binding.write_text("id: one\nplugs:\n  - id: skills.review\n", encoding="utf-8")
-            template = root / "contextspace" / "templates" / "review.yaml"
-            template.parent.mkdir(parents=True)
-            template.write_text(
-                "id: review\nsettings:\n  extra_skills:\n    - skills.review\n",
-                encoding="utf-8",
-            )
-            node_file = root / "projects" / "p" / "nodes" / "n" / "node.json"
-            node_file.parent.mkdir(parents=True)
-            node_file.write_text(json.dumps({
-                "settings_snapshot": {"extra_skills": ["skills.review"]},
-                "pending_extra_skills": ["skills.review"],
-                "agent_op_kind": "skill_edit",
-            }), encoding="utf-8")
-            snapshot = root / "contextspace" / "snapshots" / "old.json"
-            snapshot.parent.mkdir(parents=True)
-            snapshot.write_text(json.dumps({"kind": "skill", "plug_id": "skills.review"}), encoding="utf-8")
-
-            Store(root=root)
-
-            schema = json.loads((root / "schema.json").read_text(encoding="utf-8"))
-            self.assertEqual(schema["schema_version"], SCHEMA_VERSION)
-            self.assertTrue((root / "contextspace" / "plugs" / "principles" / "review").is_dir())
-            migrated = json.loads(node_file.read_text(encoding="utf-8"))
-            self.assertEqual(
-                migrated["settings_snapshot"]["extra_principles"],
-                ["principles.review"],
-            )
-            self.assertEqual(migrated["pending_extra_principles"], ["principles.review"])
-            self.assertEqual(migrated["pending_extra_skills"], [])
-            self.assertEqual(migrated["agent_op_kind"], "principle_edit")
-            self.assertIn(
-                "principles.review",
-                template.read_text(encoding="utf-8"),
-            )
-            self.assertEqual(
-                json.loads(snapshot.read_text(encoding="utf-8"))["kind"],
-                "skill",
-            )
-
-    def test_schema_v5_migrates_configured_external_contextspace(self) -> None:
-        with tempfile.TemporaryDirectory() as temp:
-            root = Path(temp) / "home"
-            context_root = Path(temp) / "external-context"
-            root.mkdir()
-            (root / "schema.json").write_text(
-                json.dumps({"schema": "canonical-schema-v5", "schema_version": 5}),
-                encoding="utf-8",
-            )
-            old = context_root / "plugs" / "skills" / "review"
-            old.mkdir(parents=True)
-            (old / "manifest.yaml").write_text(
-                "kind: skill\nid: skills.review\ntitle: Review\n",
-                encoding="utf-8",
-            )
-            (old / "CONTEXT.md").write_text("review\n", encoding="utf-8")
-
-            with patch.dict(
-                os.environ,
-                {"MINICLAW_CONTEXT_HOME": str(context_root)},
-            ):
-                Store(root=root)
-
-            self.assertFalse(old.exists())
-            migrated = context_root / "plugs" / "principles" / "review"
-            self.assertTrue(migrated.is_dir())
-            self.assertIn("kind: principle", (migrated / "manifest.yaml").read_text())
-            backups = list(
-                (root / "migration-backups").glob(
-                    "*/contextspace/plugs/skills/review/CONTEXT.md"
-                )
-            )
-            self.assertEqual(len(backups), 1)
-            schema = json.loads((root / "schema.json").read_text(encoding="utf-8"))
-            self.assertEqual(schema["schema_version"], SCHEMA_VERSION)
-
-    def test_migration_preserves_unrelated_yaml_text_and_file(self) -> None:
-        with tempfile.TemporaryDirectory() as temp:
-            root = Path(temp)
-            (root / "schema.json").write_text(
-                json.dumps({"schema": "canonical-schema-v5", "schema_version": 5}),
-                encoding="utf-8",
-            )
-            unchanged = root / "templates" / "unchanged.yaml"
-            unchanged.parent.mkdir(parents=True)
-            original = "# keep this comment\nid: ordinary\ndescription: skills.write prose\n"
-            unchanged.write_text(original, encoding="utf-8")
-            changed = root / "templates" / "changed.yaml"
-            changed.write_text(
-                "id: review\ndescription: skills.keep this prose\nsettings:\n  extra_skills:\n    - skills.review\n",
-                encoding="utf-8",
-            )
-
-            Store(root=root)
-
-            self.assertEqual(unchanged.read_text(encoding="utf-8"), original)
-            migrated = changed.read_text(encoding="utf-8")
-            self.assertIn("description: skills.keep this prose", migrated)
-            self.assertIn("extra_principles:", migrated)
-            self.assertIn("principles.review", migrated)
 
 
 if __name__ == "__main__":

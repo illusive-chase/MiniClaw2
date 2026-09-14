@@ -33,6 +33,11 @@ VITE_PORT = 5173
 
 
 def main() -> None:
+    if len(sys.argv) > 1 and sys.argv[1] == "migrations":
+        from .migrations.cli import main as migrations_main
+
+        migrations_main(sys.argv[2:])
+        return
     if len(sys.argv) > 1 and sys.argv[1] == "machine":
         _machine_cli(sys.argv[2:])
         return

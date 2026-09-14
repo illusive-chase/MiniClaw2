@@ -108,6 +108,12 @@ export async function getGlobalState(): Promise<GlobalState> {
   return res.json();
 }
 
+export async function getMigrationStatus(): Promise<{ state: string; detail: string; target: number; minimum: number }> {
+  const res = await fetch("/migrations/status");
+  if (!res.ok) throw new ApiError("getMigrationStatus", res.status, await readErrorDetail(res));
+  return res.json();
+}
+
 export async function setupSync(remoteUrl: string): Promise<GlobalState> {
   const res = await fetch("/global-state/sync/setup", {
     method: "POST",

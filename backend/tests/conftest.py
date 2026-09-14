@@ -6,13 +6,11 @@ but a bare ``Store()`` resolves ``MINICLAW_HOME`` and otherwise lands on
 stamps ``schema.json`` to the current ``SCHEMA_VERSION``, which turns a
 concurrently running older backend read-only, and ``ProjectRegistry``
 initialization sweeps every live node to CANCELLED. Point the variable at
-a session-scoped temporary directory so a missing root argument degrades
+a per-test temporary directory so a missing root argument degrades
 to an empty throwaway store instead of the developer's own graph.
 
-Only ``MINICLAW_HOME`` is set. ContextSpace defaults to ``$MINICLAW_HOME/
-contextspace``, and tests that override the home alone rely on the two
-staying together — pinning ``MINICLAW_CONTEXT_HOME`` here would split them
-and strand those tests' migrations in this fixture's directory.
+每个测试开始时解除外部 ContextSpace 覆盖，结束时恢复原环境。
+未显式覆盖的 ContextSpace 始终跟随该测试的 MINICLAW_HOME，避免失败测试污染后续用例。
 """
 
 from __future__ import annotations
@@ -24,9 +22,10 @@ from collections.abc import Iterator
 import pytest
 
 
-@pytest.fixture(scope="session", autouse=True)
+@pytest.fixture(autouse=True)
 def _isolate_miniclaw_home() -> Iterator[None]:
     previous = os.environ.get("MINICLAW_HOME")
+    previous_context = os.environ.pop("MINICLAW_CONTEXT_HOME", None)
     with tempfile.TemporaryDirectory(prefix="miniclaw-tests-") as directory:
         os.environ["MINICLAW_HOME"] = os.path.join(directory, "home")
         try:
@@ -36,3 +35,7 @@ def _isolate_miniclaw_home() -> Iterator[None]:
                 os.environ.pop("MINICLAW_HOME", None)
             else:
                 os.environ["MINICLAW_HOME"] = previous
+            if previous_context is None:
+                os.environ.pop("MINICLAW_CONTEXT_HOME", None)
+            else:
+                os.environ["MINICLAW_CONTEXT_HOME"] = previous_context

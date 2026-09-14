@@ -11,8 +11,6 @@ from miniclaw2.replay import (
     EVENT_SCHEMA_VERSION,
     LiveReplayBuffer,
     covered_by_replay,
-    upgrade_event_record,
-    upgrade_legacy_interaction_response,
 )
 from miniclaw2.store import Store
 
@@ -111,51 +109,6 @@ class CoveredByReplayTest(unittest.TestCase):
                 99,
             )
         )
-
-
-    def test_legacy_checkpoint_review_is_upgraded_before_replay(self) -> None:
-        upgraded = upgrade_event_record(
-            {
-                "seq": 3,
-                "event": {
-                    "type": "interaction_request",
-                    "interaction_type": "checkpoint_review",
-                    "tool_name": "checkpoint_review",
-                },
-            }
-        )
-
-        self.assertEqual(upgraded["schema_version"], EVENT_SCHEMA_VERSION)
-        self.assertEqual(
-            upgraded["event"]["interaction_type"],
-            "human_review_prose",
-        )
-        self.assertEqual(upgraded["event"]["tool_name"], "human_review_prose")
-
-    def test_legacy_ask_response_is_upgraded_to_canonical_answers(self) -> None:
-        upgraded = upgrade_legacy_interaction_response(
-            {
-                "type": "interaction_response",
-                "id": "gate-1",
-                "updated_input": {
-                    "answers": {
-                        "framework": "React",
-                        "checks": ["types", "tests"],
-                    }
-                },
-            }
-        )
-
-        self.assertEqual(
-            upgraded["response"],
-            {
-                "answers": {
-                    "framework": {"answers": ["React"]},
-                    "checks": {"answers": ["types", "tests"]},
-                }
-            },
-        )
-        self.assertNotIn("updated_input", upgraded)
 
 
 class RegistryReplayCompatibilityTest(unittest.TestCase):

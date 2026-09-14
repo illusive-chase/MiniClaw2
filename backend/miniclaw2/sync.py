@@ -7,7 +7,6 @@ import json
 import logging
 import os
 import plistlib
-import shutil
 import socket
 import subprocess
 import sys
@@ -20,15 +19,16 @@ from pathlib import Path
 from typing import Any, Callable
 from uuid import uuid4
 
-import yaml
 
 from .tags import TAGS_FILENAME
+from .migrations.catalog import CURRENT_VERSION
+from .migrations.errors import MigrationError
 
 
 MACHINE_FILENAME = "machine.json"
 SCHEMA_FILENAME = "schema.json"
-SCHEMA_VERSION = 14
-SCHEMA_NAME = "node-revision-v9"
+SCHEMA_VERSION = CURRENT_VERSION
+SCHEMA_NAME = "miniclaw2-store"
 DEFAULT_COMMIT_DEBOUNCE_SECONDS = 30.0
 REMOTE_CHECK_TIMEOUT_SECONDS = 30.0
 
@@ -256,548 +256,16 @@ def _new_machine_identity(
 
 
 def ensure_store_metadata(root: Path, identity: MachineIdentity) -> None:
-    """Create current metadata and stamp records from pre-sync stores."""
-    schema_path = root / SCHEMA_FILENAME
-    existing_version = 0
-    if schema_path.exists():
-        try:
-            payload = json.loads(schema_path.read_text(encoding="utf-8"))
-            existing_version = int(payload.get("schema_version", 0))
-        except (OSError, ValueError, TypeError) as exc:
-            raise SyncError(f"invalid store schema {schema_path}: {exc}") from exc
-    if existing_version > SCHEMA_VERSION:
-        return
+    from .migrations.coordinator import coordinator
 
-    context_root = _configured_contextspace_root(root)
-    legacy_skill_plugs = context_root / "plugs" / "skills"
-    if existing_version < 6 and (existing_version > 0 or legacy_skill_plugs.exists()):
-        _migrate_principles_and_skills(root, context_root=context_root)
-    if existing_version < 8:
-        _migrate_user_templates_v2(root, context_root=context_root)
-
-    project_files = sorted((root / "projects").glob("*/project.json"))
-    legacy_files: list[tuple[Path, dict[str, Any]]] = []
-    for project_file in project_files:
-        try:
-            project_payload = json.loads(project_file.read_text(encoding="utf-8"))
-        except (OSError, ValueError) as exc:
-            raise SyncError(f"invalid project record {project_file}: {exc}") from exc
-        if not project_payload.get("machine_id"):
-            legacy_files.append((project_file, project_payload))
-
-    if legacy_files:
-        backup_root = (
-            root
-            / "migration-backups"
-            / f"{SCHEMA_NAME}-{int(time.time())}"
-        )
-        for project_file, project_payload in legacy_files:
-            relative = project_file.relative_to(root)
-            backup_file = backup_root / relative
-            backup_file.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(project_file, backup_file)
-            project_payload["machine_id"] = identity.id
-            project_payload["machine_label"] = identity.label
-            _write_json(project_file, project_payload)
-
-    # Keep this repair active after the schema bump so a per-project failure
-    # can be retried on the next launch without holding the whole store back.
-    _migrate_native_projects_v12(root, identity)
-    # schema.json is synchronized, but local.json is host-local.  A peer may
-    # therefore receive schema v13 before its upgraded process can inspect its
-    # own checkout, so this repair must remain active after the global bump.
-    _backfill_host_repo_observation_v13(root, identity)
-    # Project policy fields were synchronized while bindings are host-local.
-    # Keep this repair active because a peer can receive schema v14 before its
-    # upgraded process has stripped records in its own host partition.
-    _migrate_binding_authority_v14(root, identity, context_root=context_root)
-
-    _write_json(
-        schema_path,
-        {"schema": SCHEMA_NAME, "schema_version": SCHEMA_VERSION},
-    )
-    _drop_nested_git_expectation(root)
+    coordinator(root).apply(identity.id)
     ensure_store_gitignore(root)
 
 
-def _migrate_native_projects_v12(root: Path, identity: MachineIdentity) -> None:
-    """Move this machine's projects into host-partitioned storage."""
-    from .git_state import is_git_repo, normalized_origin_url, root_commits
-
-    for project_file in sorted((root / "projects").glob("*/project.json")):
-        try:
-            payload = json.loads(project_file.read_text(encoding="utf-8"))
-            if not isinstance(payload, dict):
-                raise ValueError("expected object")
-            if payload.get("machine_id") != identity.id:
-                continue
-
-            project_dir = project_file.parent
-            host_dir = project_dir / "hosts" / identity.id
-            if (host_dir / "nodes").is_dir():
-                # A prior attempt may have moved nodes before project.json was
-                # finalized. Current shared projects have no root_path here.
-                if "root_path" not in payload:
-                    continue
-                aliases = project_dir / "git_aliases.json"
-                if aliases.exists():
-                    shutil.move(str(aliases), str(host_dir / "git_aliases.json"))
-                root_path = payload.get("root_path")
-                if not isinstance(root_path, str):
-                    root_path = ""
-                _write_json(host_dir / "local.json", {"root_path": root_path})
-                _write_json(
-                    host_dir / "layout.json",
-                    {
-                        "layout_hints": payload.get("layout_hints", {}),
-                        "layout_viewport": payload.get("layout_viewport"),
-                    },
-                )
-                roots = root_commits(root_path) if root_path else []
-                repo: dict[str, Any] = {}
-                if roots:
-                    repo.update(
-                        {
-                            "root_commit": roots[0],
-                            "root_commits": roots,
-                            "origin_url": normalized_origin_url(root_path),
-                        }
-                    )
-                _write_json(
-                    host_dir / "host.json",
-                    {
-                        "label": payload.get("machine_label") or identity.label,
-                        "bound_at": time.time(),
-                        "repo": repo,
-                        "is_repo": is_git_repo(root_path),
-                    },
-                )
-                for key in ("root_path", "layout_hints", "layout_viewport"):
-                    payload.pop(key, None)
-                _write_json(project_file, payload)
-                continue
-
-            backup = (
-                root
-                / "migration-backups"
-                / f"native-prepartition-v12-{int(time.time())}-{project_dir.name}"
-            )
-            if backup.exists():
-                backup = backup.with_name(f"{backup.name}-{uuid4().hex[:8]}")
-            shutil.copytree(project_dir, backup / "projects" / project_dir.name)
-
-            host_dir.mkdir(parents=True, exist_ok=True)
-            nodes_dir = project_dir / "nodes"
-            if nodes_dir.exists():
-                shutil.move(str(nodes_dir), str(host_dir / "nodes"))
-            else:
-                (host_dir / "nodes").mkdir(parents=True, exist_ok=True)
-            aliases = project_dir / "git_aliases.json"
-            if aliases.exists():
-                shutil.move(str(aliases), str(host_dir / "git_aliases.json"))
-
-            root_path = payload.get("root_path")
-            if not isinstance(root_path, str):
-                root_path = ""
-            _write_json(host_dir / "local.json", {"root_path": root_path})
-            _write_json(
-                host_dir / "layout.json",
-                {
-                    "layout_hints": payload.get("layout_hints", {}),
-                    "layout_viewport": payload.get("layout_viewport"),
-                },
-            )
-            roots = root_commits(root_path) if root_path else []
-            repo: dict[str, Any] = {}
-            if roots:
-                repo.update(
-                    {
-                        "root_commit": roots[0],
-                        "root_commits": roots,
-                        "origin_url": normalized_origin_url(root_path),
-                    }
-                )
-            _write_json(
-                host_dir / "host.json",
-                {
-                    "label": payload.get("machine_label") or identity.label,
-                    "bound_at": time.time(),
-                    "repo": repo,
-                    "is_repo": is_git_repo(root_path),
-                },
-            )
-            for key in ("root_path", "layout_hints", "layout_viewport"):
-                payload.pop(key, None)
-            _write_json(project_file, payload)
-        except Exception:  # noqa: BLE001
-            logger.exception("failed to prepartition native project %s", project_file)
-
-
-def _backfill_host_repo_observation_v13(root: Path, identity: MachineIdentity) -> None:
-    """Distinguish a non-repository binding from an empty Git repository."""
-    from .git_state import is_git_repo
-
-    for host_file in sorted(
-        (root / "projects").glob(f"*/hosts/{identity.id}/host.json")
-    ):
-        try:
-            payload = json.loads(host_file.read_text(encoding="utf-8"))
-            if not isinstance(payload, dict) or isinstance(payload.get("is_repo"), bool):
-                continue
-            local_file = host_file.with_name("local.json")
-            local_payload = json.loads(local_file.read_text(encoding="utf-8"))
-            root_path = local_payload.get("root_path")
-            if not isinstance(root_path, str) or not root_path:
-                continue
-            payload["is_repo"] = is_git_repo(root_path)
-            _write_json(host_file, payload)
-        except (OSError, ValueError, TypeError):
-            logger.exception("failed to backfill repository observation for %s", host_file)
-
-
-def _migrate_binding_authority_v14(
-    root: Path,
-    identity: MachineIdentity,
-    *,
-    context_root: Path,
-) -> None:
-    """Remove synchronized policy fields and checkout-local binding paths."""
-    backup_root: Path | None = None
-
-    def backup(path: Path, *, contextspace: bool = False) -> None:
-        nonlocal backup_root
-        if backup_root is None:
-            backup_root = (
-                root
-                / "migration-backups"
-                / f"binding-authority-v14-{int(time.time())}-{uuid4().hex[:8]}"
-            )
-        if contextspace:
-            relative = Path("contextspace") / path.relative_to(context_root)
-        else:
-            relative = path.relative_to(root)
-        destination = backup_root / relative
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(path, destination)
-
-    for project_file in sorted((root / "projects").glob("*/project.json")):
-        try:
-            payload = json.loads(project_file.read_text(encoding="utf-8"))
-            if not isinstance(payload, dict):
-                raise ValueError("expected object")
-            original = dict(payload)
-            payload.pop("sharing", None)
-            payload.pop("identity", None)
-            if payload != original:
-                backup(project_file)
-                _write_json(project_file, payload)
-
-            if (
-                payload.get("machine_id") == identity.id
-                and payload.get("temporary") is not True
-            ):
-                local_file = project_file.parent / "hosts" / identity.id / "local.json"
-                root_path = payload.get("root_path")
-                if (
-                    not local_file.is_file()
-                    and isinstance(root_path, str)
-                    and root_path
-                ):
-                    _write_json(local_file, {"root_path": root_path})
-        except (OSError, ValueError, TypeError):
-            logger.exception("failed to migrate project authority record %s", project_file)
-
-    for host_file in sorted((root / "projects").glob("*/hosts/*/host.json")):
-        try:
-            payload = json.loads(host_file.read_text(encoding="utf-8"))
-            if not isinstance(payload, dict):
-                raise ValueError("expected object")
-            original = dict(payload)
-            payload.pop("identity", None)
-            payload.pop("attestation", None)
-            if payload != original:
-                backup(host_file)
-                _write_json(host_file, payload)
-        except (OSError, ValueError, TypeError):
-            logger.exception("failed to migrate host observation %s", host_file)
-
-    for node_file in sorted((root / "projects").glob("*/**/node.json")):
-        try:
-            payload = json.loads(node_file.read_text(encoding="utf-8"))
-            if not isinstance(payload, dict):
-                raise ValueError("expected object")
-            if "promoted_from" not in payload:
-                continue
-            backup(node_file)
-            payload.pop("promoted_from", None)
-            _write_json(node_file, payload)
-        except (OSError, ValueError, TypeError):
-            logger.exception("failed to migrate node promotion record %s", node_file)
-
-    for claims_dir in sorted((root / "projects").glob("*/hosts/*/claims")):
-        try:
-            for claim_file in sorted(path for path in claims_dir.rglob("*") if path.is_file()):
-                backup(claim_file)
-            shutil.rmtree(claims_dir)
-        except OSError:
-            logger.exception("failed to remove legacy claim records %s", claims_dir)
-
-    bindings_dir = context_root / "bindings" / "projects"
-    for binding_file in sorted(bindings_dir.glob("*.yaml")):
-        try:
-            payload = yaml.safe_load(binding_file.read_text(encoding="utf-8"))
-            if not isinstance(payload, dict):
-                continue
-            project_payload = payload.get("project")
-            if not isinstance(project_payload, dict) or "local_paths" not in project_payload:
-                continue
-            backup(binding_file, contextspace=True)
-            updated_project = dict(project_payload)
-            updated_project.pop("local_paths", None)
-            payload["project"] = updated_project
-            _write_yaml_mapping(binding_file, payload)
-        except (OSError, ValueError, TypeError, yaml.YAMLError):
-            logger.exception("failed to migrate project binding %s", binding_file)
-
-
 def _configured_contextspace_root(root: Path) -> Path:
-    override = os.environ.get("MINICLAW_CONTEXT_HOME")
-    if override:
-        return Path(override).expanduser().resolve()
-    return (root / "contextspace").resolve()
+    from .migrations.inventory import context_root
 
-
-def _migrate_user_templates_v2(root: Path, *, context_root: Path) -> None:
-    """Upgrade user-authored template manifests to template schema v2."""
-    from .templates.loader import SCHEMA_VERSION as template_schema_version
-
-    templates_root = context_root / "templates"
-    if not templates_root.is_dir():
-        return
-
-    backup_root = (
-        root
-        / "migration-backups"
-        / f"{SCHEMA_NAME}-{int(time.time())}"
-        / "contextspace"
-        / "templates"
-    )
-    shutil.copytree(templates_root, backup_root, dirs_exist_ok=True)
-
-    for template_root in sorted(templates_root.iterdir(), key=lambda path: path.name):
-        manifest = template_root / "template.yaml"
-        if not template_root.is_dir() or not manifest.is_file():
-            continue
-        try:
-            payload = _read_yaml_mapping(manifest)
-            if payload is None:
-                raise SyncError(f"{manifest} 顶层必须是 YAML mapping")
-
-            version = payload.get("schema_version")
-            if version == template_schema_version and not isinstance(version, bool):
-                continue
-            if version is not None and (
-                isinstance(version, bool) or not isinstance(version, int)
-            ):
-                raise SyncError(f"{manifest} 的 schema_version 必须是整数")
-            if isinstance(version, int) and version > template_schema_version:
-                raise SyncError(
-                    f"{manifest} 使用了更新的模板 schema_version {version}"
-                )
-
-            placeholder_warnings = _template_placeholder_warnings(template_root)
-            migrated: dict[str, Any] = {"schema_version": template_schema_version}
-            migrated.update(
-                (key, value)
-                for key, value in payload.items()
-                if key != "schema_version"
-            )
-            migrated.setdefault("arguments", [])
-            migrated.setdefault("inputs", [])
-            _write_yaml_mapping(manifest, migrated)
-        except Exception as exc:  # noqa: BLE001
-            logger.error("用户模板 %r 迁移失败：%s", template_root.name, exc)
-            continue
-
-        if placeholder_warnings:
-            logger.warning(
-                "用户模板 %r 已迁移到 schema v%d；以下占位符将被识别为参数，"
-                "请确认它们符合作者意图：\n%s",
-                template_root.name,
-                template_schema_version,
-                "\n".join(f"  - {item}" for item in placeholder_warnings),
-            )
-
-
-def _template_placeholder_warnings(template_root: Path) -> list[str]:
-    """List prompt placeholders whose meaning changes under template schema v2."""
-    from .templates.loader import PARAM_NAME_RE, _PLACEHOLDER_RE
-
-    prompts_root = template_root / "prompts"
-    if not prompts_root.is_dir():
-        return []
-
-    warnings: list[str] = []
-    for prompt_path in sorted(prompts_root.rglob("*.md")):
-        text = prompt_path.read_text(encoding="utf-8")
-        relative = prompt_path.relative_to(template_root).as_posix()
-        for match in _PLACEHOLDER_RE.finditer(text):
-            name = match.group(1)
-            if PARAM_NAME_RE.fullmatch(name):
-                line = text.count("\n", 0, match.start()) + 1
-                warnings.append(f"{relative}:{line}: {match.group(0)}")
-    return warnings
-
-
-def _migrate_principles_and_skills(
-    root: Path, *, context_root: Path
-) -> None:
-    """Migrate the former injected-skill mechanism to principles."""
-    backup_root = (
-        root
-        / "migration-backups"
-        / f"principles-and-agent-skills-v6-{int(time.time())}"
-    )
-    for name in ("projects", "templates"):
-        source = root / name
-        if source.exists():
-            shutil.copytree(source, backup_root / name, dirs_exist_ok=True)
-    if context_root.exists():
-        shutil.copytree(
-            context_root,
-            backup_root / "contextspace",
-            dirs_exist_ok=True,
-        )
-
-    old_plugs = context_root / "plugs" / "skills"
-    principle_plugs = context_root / "plugs" / "principles"
-    if old_plugs.is_dir():
-        principle_plugs.parent.mkdir(parents=True, exist_ok=True)
-        if principle_plugs.exists():
-            for child in old_plugs.iterdir():
-                destination = principle_plugs / child.name
-                if destination.exists():
-                    raise SyncError(
-                        f"cannot migrate principle {child.name!r}: destination exists"
-                    )
-                child.replace(destination)
-            old_plugs.rmdir()
-        else:
-            old_plugs.replace(principle_plugs)
-
-    for manifest in principle_plugs.glob("*/manifest.yaml"):
-        payload = _read_yaml_mapping(manifest)
-        if payload is None:
-            continue
-        changed = False
-        if payload.get("kind") == "skill":
-            payload["kind"] = "principle"
-            changed = True
-        identifier = payload.get("id")
-        if isinstance(identifier, str) and identifier.startswith("skills."):
-            payload["id"] = "principles." + identifier[len("skills."):]
-            changed = True
-        if changed:
-            _write_yaml_mapping(manifest, payload)
-
-    yaml_roots = [
-        context_root / "bindings",
-        context_root / "templates",
-        root / "templates",
-    ]
-    for yaml_root in yaml_roots:
-        if not yaml_root.exists():
-            continue
-        for path in [*yaml_root.rglob("*.yaml"), *yaml_root.rglob("*.yml")]:
-            payload = _read_yaml_mapping(path)
-            if payload is None:
-                continue
-            rewritten = _rewrite_principle_values(payload)
-            if rewritten != payload:
-                _write_yaml_mapping(path, rewritten)
-
-    for node_path in (root / "projects").glob("*/nodes/*/node.json"):
-        try:
-            payload = json.loads(node_path.read_text(encoding="utf-8"))
-        except (OSError, ValueError) as exc:
-            raise SyncError(f"invalid node record {node_path}: {exc}") from exc
-        if not isinstance(payload, dict):
-            raise SyncError(f"invalid node record {node_path}: expected object")
-        changed = False
-        settings = payload.get("settings_snapshot")
-        if isinstance(settings, dict) and "extra_skills" in settings:
-            settings["extra_principles"] = _rewrite_principle_values(
-                settings.pop("extra_skills"), rewrite_strings=True
-            )
-            changed = True
-        if "pending_extra_skills" in payload:
-            payload["pending_extra_principles"] = _rewrite_principle_values(
-                payload.pop("pending_extra_skills"), rewrite_strings=True
-            )
-            changed = True
-        if "pending_extra_skills" not in payload:
-            payload["pending_extra_skills"] = []
-            changed = True
-        if payload.get("agent_op_kind") == "skill_edit":
-            payload["agent_op_kind"] = "principle_edit"
-            changed = True
-        if changed:
-            _write_json(node_path, payload)
-
-
-_PRINCIPLE_IDENTIFIER_KEYS = {
-    "id",
-    "plug_id",
-    "plugs",
-    "extra_skills",
-    "extra_principles",
-    "pending_extra_skills",
-    "pending_extra_principles",
-    "agent_op_kind",
-}
-
-
-def _rewrite_principle_values(
-    value: Any, *, rewrite_strings: bool = False
-) -> Any:
-    if isinstance(value, str):
-        if rewrite_strings and value.startswith("skills."):
-            return "principles." + value[len("skills."):]
-        if rewrite_strings and value == "skill_edit":
-            return "principle_edit"
-        return value
-    if isinstance(value, list):
-        return [
-            _rewrite_principle_values(item, rewrite_strings=rewrite_strings)
-            for item in value
-        ]
-    if isinstance(value, dict):
-        return {
-            ("extra_principles" if key == "extra_skills" else key):
-            _rewrite_principle_values(
-                item,
-                rewrite_strings=(rewrite_strings or key in _PRINCIPLE_IDENTIFIER_KEYS),
-            )
-            for key, item in value.items()
-        }
-    return value
-
-
-def _read_yaml_mapping(path: Path) -> dict[str, Any] | None:
-    try:
-        payload = yaml.safe_load(path.read_text(encoding="utf-8"))
-    except (OSError, yaml.YAMLError) as exc:
-        raise SyncError(f"invalid YAML {path}: {exc}") from exc
-    return payload if isinstance(payload, dict) else None
-
-
-def _write_yaml_mapping(path: Path, payload: dict[str, Any]) -> None:
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(
-        yaml.safe_dump(payload, sort_keys=False, allow_unicode=True),
-        encoding="utf-8",
-    )
-    temporary.replace(path)
+    return context_root(root)
 
 
 def schema_is_newer(root: Path) -> bool:
@@ -806,47 +274,25 @@ def schema_is_newer(root: Path) -> bool:
         return False
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
-        return int(payload.get("schema_version", 0)) > SCHEMA_VERSION
+        version = payload.get("schema_version")
+        if type(version) is not int:
+            return True
+        return version > SCHEMA_VERSION
     except (OSError, ValueError, TypeError):
-        return False
+        return True
 
 
 def ensure_store_gitignore(root: Path) -> None:
+    from .migrations.inventory import IGNORED_PATTERNS
+
     path = root / ".gitignore"
-    required = [
-        "machine.json",
-        "machine.lock",
-        "migration-backups/",
-        ".update-exit-pending",
-        ".runtime-owner.json",
-        "*.tmp",
-        "projects/*/hosts/*/local.json",
-    ]
+    required = IGNORED_PATTERNS
     existing = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
     missing = [entry for entry in required if entry not in existing]
     if not missing:
         return
     content = "\n".join([*existing, *missing]).strip() + "\n"
     path.write_text(content, encoding="utf-8")
-
-
-def _drop_nested_git_expectation(root: Path) -> None:
-    path = root / "contextspace" / "contextspace.yaml"
-    if not path.exists():
-        return
-    try:
-        payload = yaml.safe_load(path.read_text(encoding="utf-8"))
-    except (OSError, yaml.YAMLError) as exc:
-        raise SyncError(f"invalid ContextSpace manifest {path}: {exc}") from exc
-    if not isinstance(payload, dict) or "git" not in payload:
-        return
-    payload.pop("git", None)
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(
-        yaml.safe_dump(payload, sort_keys=False, allow_unicode=True),
-        encoding="utf-8",
-    )
-    temporary.replace(path)
 
 
 def bootstrap_store(root: Path, remote_url: str) -> MachineIdentity:
@@ -903,11 +349,15 @@ class SyncManager:
         self.root = root
         self.identity = identity or ensure_machine_identity(root)
         self.debounce_seconds = debounce_seconds
-        self._lock = threading.RLock()
+        from .migrations.coordinator import open_storage
+
+        self.coordinator = open_storage(self.root)
+        self._lock = self.coordinator.mutex
         self._timer: threading.Timer | None = None
         self._pending_messages: list[str] = []
         self._pre_commit_callbacks: list[Callable[[], None]] = []
         self._success_callbacks: list[Callable[[], None]] = []
+        self._idle_callbacks: list[Callable[[], None]] = []
         self._file_commit_time_cache_head: str | None = None
         self._file_commit_time_cache: dict[Path, float | None] = {}
 
@@ -918,6 +368,10 @@ class SyncManager:
     def add_success_callback(self, callback: Callable[[], None]) -> None:
         if callback not in self._success_callbacks:
             self._success_callbacks.append(callback)
+
+    def add_idle_callback(self, callback: Callable[[], None]) -> None:
+        if callback not in self._idle_callbacks:
+            self._idle_callbacks.append(callback)
 
     @property
     def configured(self) -> bool:
@@ -984,6 +438,7 @@ class SyncManager:
 
     def commit_now(self, message: str | None = None) -> str | None:
         with self._lock:
+            self.coordinator.assert_current()
             if self._timer is not None:
                 self._timer.cancel()
                 self._timer = None
@@ -1117,14 +572,16 @@ class SyncManager:
             raise SyncError("metadata sync is not configured")
         self._ensure_contextspace_inside_store()
         with self._lock:
+            self.coordinator.assert_current()
+            for callback in tuple(self._idle_callbacks):
+                callback()
             self._refresh_identity()
             for callback in tuple(self._pre_commit_callbacks):
                 try:
                     callback()
-                except Exception:  # noqa: BLE001
-                    logger.exception("pre-commit sync callback failed")
+                except Exception as exc:
+                    raise SyncError(f"同步前本机状态采集失败：{exc}") from exc
             self.commit_now()
-            starting_head = self._head()
             branch = self._branch()
             try:
                 fetched = _git(self.root, "fetch", "origin", check=False)
@@ -1147,45 +604,18 @@ class SyncManager:
                 if pushed.returncode != 0:
                     raise SyncError(_command_error("push failed", pushed))
             except SyncError:
-                if starting_head is not None and self._head() != starting_head:
-                    _git(self.root, "reset", "--merge", starting_head, check=False)
                 self._record_failure()
                 raise
             self._record_success()
             return self.status()
 
     def _merge_remote(self, remote_ref: str) -> None:
-        local_head = self._head()
-        remote_head = _git(self.root, "rev-parse", remote_ref).stdout.strip()
-        if local_head == remote_head:
-            return
-        merge = _git(self.root, "merge", "--no-edit", remote_ref, check=False)
-        if merge.returncode == 0:
-            return
-        conflicts = _git(
-            self.root, "diff", "--name-only", "--diff-filter=U", check=False
-        ).stdout.splitlines()
-        _git(self.root, "merge", "--abort", check=False)
-        if SCHEMA_FILENAME in conflicts:
-            raise SchemaConflictError(
-                "schema.json changed independently on both machines; resolve it manually"
-            )
-        if TAGS_FILENAME in conflicts:
-            raise SyncError(
-                "tags.json changed independently on both machines; resolve it manually"
-            )
-        retried = _git(
-            self.root,
-            "merge",
-            "--no-edit",
-            "-X",
-            "ours",
-            remote_ref,
-            check=False,
-        )
-        if retried.returncode != 0:
-            _git(self.root, "merge", "--abort", check=False)
-            raise SyncError(_command_error("merge failed", retried))
+        from .migrations.sync_tree import merge_remote
+
+        try:
+            merge_remote(self.root, remote_ref)
+        except MigrationError as exc:
+            raise SchemaConflictError(str(exc)) from exc
 
     def _remote_status(self, branch: str) -> dict[str, Any]:
         remote_ref = f"origin/{branch}"

@@ -357,6 +357,7 @@ class ProjectRegistry:
         self._store = store
         self._initialized = True
         store.sync.add_pre_commit_callback(self._record_host_heads)
+        store.sync.add_idle_callback(self.require_storage_idle)
         sweep = self._claim_runtime_ownership()
         for project in store.list_projects():
             if project.temporary and store.read_only_reason is None:
@@ -470,6 +471,12 @@ class ProjectRegistry:
             for node_id, task in list(runtime.runner_tasks.items())
             if not task.done()
         ]
+
+    def require_storage_idle(self) -> None:
+        from .sync import SyncError
+
+        if self.finalizing_runner_nodes():
+            raise SyncError("等待当前任务及终结写入完成后再同步；不会强行停止任务")
 
     def reload_from_store(self) -> None:
         """Refresh project metadata after a successful manual merge."""

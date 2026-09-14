@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from .migrations.access import storage_function
+
 import hashlib
 import json
 import time
@@ -99,6 +101,7 @@ def load_tags(store_root: Path) -> list[Tag]:
         raise ValueError(f"invalid tag file {path}: {exc}") from exc
 
 
+@storage_function
 def save_tags(store_root: Path, tags: list[Tag]) -> None:
     validated = _TagFile(version=1, tags=tags)
     path = store_root / TAGS_FILENAME
@@ -111,6 +114,7 @@ def save_tags(store_root: Path, tags: list[Tag]) -> None:
     temporary.replace(path)
 
 
+@storage_function
 def create_tag(store_root: Path, name: str, color: str | None = None) -> Tag:
     tags = load_tags(store_root)
     if len(tags) >= MAX_TAGS:
@@ -130,6 +134,7 @@ def create_tag(store_root: Path, name: str, color: str | None = None) -> Tag:
     return tag
 
 
+@storage_function
 def update_tag(
     store_root: Path,
     tag_id: str,
@@ -156,6 +161,7 @@ def update_tag(
     return updated
 
 
+@storage_function
 def delete_tag(store_root: Path, tag_id: str) -> bool:
     tags = load_tags(store_root)
     remaining = [tag for tag in tags if tag.id != tag_id]

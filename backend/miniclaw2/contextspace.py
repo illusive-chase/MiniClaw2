@@ -15,6 +15,8 @@ materialized filesystem projection under ``.miniclaw2/graph/lanes/``
 
 from __future__ import annotations
 
+from .migrations.access import storage_function
+
 import hashlib
 import json
 import logging
@@ -84,6 +86,7 @@ def contextspace_root(store_root: Path | None = None) -> Path:
     return root / "contextspace"
 
 
+@storage_function
 def compose_context_bundle(
     project: Project,
     node: Node,
@@ -230,6 +233,7 @@ def compose_context_bundle(
     )
 
 
+@storage_function
 def load_context_bundle_for_node(
     node: Node,
     *,
@@ -251,6 +255,7 @@ def load_context_bundle_for_node(
         return None
 
 
+@storage_function
 def ensure_contextspace_root(
     store_root: Path | None = None,
     *,
@@ -290,6 +295,7 @@ def ensure_contextspace_root(
     return root
 
 
+@storage_function
 def ensure_project_binding(
     project: Project,
     *,
@@ -341,6 +347,7 @@ def list_project_bindings(root: Path) -> list[ProjectBinding]:
     return out
 
 
+@storage_function
 def delete_project_contextspace(
     project: Project,
     *,
@@ -413,6 +420,7 @@ def delete_project_contextspace(
     return summary
 
 
+@storage_function
 def describe_project_contextspace(
     project: Project,
     *,
@@ -524,6 +532,7 @@ def _project_context_last_writer(root: Path, context_mtime: float) -> dict[str, 
     return out
 
 
+@storage_function
 def read_planspace_mode(
     project: Project,
     lane_id: str,
@@ -548,6 +557,7 @@ def read_planspace_mode(
         return PlanspaceMode.MANUAL
 
 
+@storage_function
 def set_planspace_mode(
     project: Project,
     lane_id: str,
@@ -575,6 +585,7 @@ def set_planspace_mode(
     return normalized
 
 
+@storage_function
 def read_template_instances(
     project: Project,
     lane_id: str,
@@ -598,6 +609,7 @@ def read_template_instances(
     return [dict(record) for record in records]
 
 
+@storage_function
 def append_template_instance(
     project: Project,
     lane_id: str,
@@ -627,6 +639,7 @@ def append_template_instance(
     _write_yaml(manifest_path, raw)
 
 
+@storage_function
 def remove_template_instance(
     project: Project,
     lane_id: str,
@@ -672,6 +685,7 @@ def remove_template_instance(
 _PORT_NAME_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 
 
+@storage_function
 def read_template_ports(
     project: Project,
     lane_id: str,
@@ -693,6 +707,7 @@ def read_template_ports(
     return _coerce_template_ports(raw.get("template_ports"), lane_id)
 
 
+@storage_function
 def write_template_ports(
     project: Project,
     lane_id: str,
@@ -818,6 +833,7 @@ def _project_planspace_manifest(
     return manifest_path, raw
 
 
+@storage_function
 def create_planspace(
     project: Project,
     *,
@@ -896,6 +912,7 @@ def remove_planspace_from_binding(
     return True
 
 
+@storage_function
 def delete_planspace(
     project: Project,
     plug_id: str,
@@ -1017,6 +1034,7 @@ def resolve_planspace_lane(
     return binding, ref, plug_dir
 
 
+@storage_function
 def require_resolvable_planspace(
     project: Project,
     lane_id: str | None,
@@ -1082,6 +1100,7 @@ def _principle_summary(root: Path, plug_dir: Path) -> dict[str, Any] | None:
     }
 
 
+@storage_function
 def list_principles(store_root: Path | None = None) -> list[dict[str, Any]]:
     """Enumerate user-wide principle plugs for the shelf.
 
@@ -1103,6 +1122,7 @@ def list_principles(store_root: Path | None = None) -> list[dict[str, Any]]:
     return out
 
 
+@storage_function
 def get_principle(slug: str, *, store_root: Path | None = None) -> dict[str, Any] | None:
     """One principle plug with its ``CONTEXT.md`` body, or None if absent.
 
@@ -1130,6 +1150,7 @@ def get_principle(slug: str, *, store_root: Path | None = None) -> dict[str, Any
     }
 
 
+@storage_function
 def delete_principle(slug: str, *, store_root: Path | None = None) -> bool:
     """Delete a user-wide principle plug directory. Return True if removed.
 

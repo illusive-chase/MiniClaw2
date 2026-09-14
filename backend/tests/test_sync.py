@@ -7,7 +7,6 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-import yaml
 from fastapi.testclient import TestClient
 
 import miniclaw2.sync as sync_module
@@ -15,16 +14,13 @@ from miniclaw2.app import create_app
 from miniclaw2.domain import Node, NodeState, Project
 from miniclaw2.global_config import load_global_config, save_global_config
 from miniclaw2.registry import ProjectRegistry
-from miniclaw2.store import Store, StoreReadOnlyError
+from miniclaw2.store import Store
+from miniclaw2.migrations.catalog import MINIMUM_VERSION, marker
 from miniclaw2.sync import (
-    SCHEMA_VERSION,
     SchemaConflictError,
     SyncError,
     bootstrap_store,
-    schema_is_newer,
 )
-from miniclaw2.sync import current_hostname
-from miniclaw2.templates import load_user_template
 
 
 def _git(*args: str, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
@@ -35,490 +31,6 @@ def _git(*args: str, cwd: Path | None = None) -> subprocess.CompletedProcess[str
         capture_output=True,
         text=True,
     )
-
-
-def _write_user_template(
-    root: Path,
-    slug: str,
-    *,
-    template_text: str,
-    prompt: str = "Do the work.",
-) -> Path:
-    template_root = root / "contextspace" / "templates" / slug
-    (template_root / "prompts").mkdir(parents=True)
-    (template_root / "template.yaml").write_text(template_text, encoding="utf-8")
-    (template_root / "lane.yaml").write_text(
-        yaml.safe_dump(
-            {
-                "nodes": [
-                    {
-                        "id": "work",
-                        "kind": "agent",
-                        "category": "regular",
-                        "prompt_file": "prompts/work.md",
-                    }
-                ]
-            },
-            sort_keys=False,
-        ),
-        encoding="utf-8",
-    )
-    (template_root / "prompts" / "work.md").write_text(prompt, encoding="utf-8")
-    return template_root
-
-
-class StoreIdentityMigrationTests(unittest.TestCase):
-    def test_schema_gate_advances_so_older_builds_stay_read_only(self) -> None:
-        self.assertEqual(SCHEMA_VERSION, 14)
-        with tempfile.TemporaryDirectory() as raw:
-            root = Path(raw)
-            (root / "schema.json").write_text(
-                json.dumps({"schema": "node-revision-v9", "schema_version": 14}),
-                encoding="utf-8",
-            )
-            with patch.object(sync_module, "SCHEMA_VERSION", 13):
-                self.assertTrue(schema_is_newer(root))
-
-    def test_legacy_projects_are_stamped_and_backed_up(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            project = Project(root_path="/tmp/legacy", name="Legacy")
-            payload = project.model_dump(
-                exclude={"provider", "machine_id", "machine_label"}
-            )
-            project_file = root / "projects" / project.id / "project.json"
-            project_file.parent.mkdir(parents=True)
-            project_file.write_text(json.dumps(payload), encoding="utf-8")
-
-            store = Store(root)
-
-            migrated = json.loads(project_file.read_text(encoding="utf-8"))
-            self.assertEqual(migrated["machine_id"], store.machine.id)
-            self.assertEqual(migrated["machine_label"], store.machine.label)
-            self.assertTrue((root / "machine.json").is_file())
-            self.assertEqual(
-                json.loads((root / "schema.json").read_text())["schema_version"],
-                SCHEMA_VERSION,
-            )
-            self.assertTrue(list((root / "migration-backups").glob("*/projects/*/project.json")))
-            ignore = (root / ".gitignore").read_text()
-            self.assertIn("machine.json", ignore)
-            self.assertIn("migration-backups/", ignore)
-            self.assertIn("*.tmp", ignore)
-
-    def test_v12_prepartitions_owned_projects_idempotently(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            root.mkdir(parents=True, exist_ok=True)
-            machine_id = "local-machine"
-            (root / "machine.json").write_text(
-                json.dumps(
-                    {
-                        "id": machine_id,
-                        "hostname": current_hostname(),
-                        "label": "Local",
-                    }
-                ),
-                encoding="utf-8",
-            )
-            (root / "schema.json").write_text(
-                json.dumps({"schema": "node-revision-v9", "schema_version": 11}),
-                encoding="utf-8",
-            )
-            repo = root / "repo"
-            repo.mkdir()
-            _git("init", "-q", "--initial-branch=main", cwd=repo)
-            (repo / "seed.txt").write_text("seed\n", encoding="utf-8")
-            _git("add", "seed.txt", cwd=repo)
-            _git(
-                "-c", "user.name=Test", "-c", "user.email=test@example.com",
-                "commit", "-q", "-m", "seed", cwd=repo,
-            )
-
-            owned = Project(
-                root_path=str(repo),
-                machine_id=machine_id,
-                machine_label="Local",
-                layout_hints={"node-a": {"x": 1, "y": 2}},
-            )
-            foreign = Project(
-                root_path="/remote/checkout",
-                machine_id="remote-machine",
-                machine_label="Remote",
-            )
-            temporary = Project(
-                root_path=str(root / "temporary"),
-                machine_id=machine_id,
-                machine_label="Local",
-                temporary=True,
-            )
-            for project in (owned, foreign, temporary):
-                project_dir = root / "projects" / project.id
-                (project_dir / "nodes").mkdir(parents=True)
-                (project_dir / "project.json").write_text(
-                    json.dumps(project.model_dump(exclude={"provider"})),
-                    encoding="utf-8",
-                )
-            owned_node = Node(
-                id="node-a",
-                project_id=owned.id,
-                model_preset_id=owned.model_preset_id,
-            )
-            owned_node_file = root / "projects" / owned.id / "nodes" / owned_node.id / "node.json"
-            owned_node_file.parent.mkdir(parents=True)
-            owned_node_file.write_text(
-                json.dumps(owned_node.model_dump(exclude={"provider", "owner_host_id"})),
-                encoding="utf-8",
-            )
-
-            store = Store(root)
-
-            owned_dir = root / "projects" / owned.id
-            host_dir = owned_dir / "hosts" / machine_id
-            payload = json.loads((owned_dir / "project.json").read_text(encoding="utf-8"))
-            self.assertNotIn("sharing", payload)
-            self.assertNotIn("root_path", payload)
-            self.assertNotIn("layout_hints", payload)
-            self.assertFalse((owned_dir / "nodes").exists())
-            self.assertTrue((host_dir / "nodes" / "node-a" / "node.json").is_file())
-            self.assertEqual(
-                json.loads((host_dir / "local.json").read_text(encoding="utf-8"))["root_path"],
-                str(repo),
-            )
-            self.assertTrue(
-                json.loads((host_dir / "host.json").read_text(encoding="utf-8"))["repo"]["root_commit"]
-            )
-            self.assertTrue((root / "projects" / foreign.id / "nodes").is_dir())
-            self.assertTrue(
-                (
-                    root
-                    / "projects"
-                    / temporary.id
-                    / "hosts"
-                    / machine_id
-                    / "nodes"
-                ).is_dir()
-            )
-            backups = sorted((root / "migration-backups").glob("native-prepartition-v12-*"))
-            self.assertEqual(len(backups), 2)
-
-            Store(root)
-            self.assertEqual(
-                sorted((root / "migration-backups").glob("native-prepartition-v12-*")),
-                backups,
-            )
-            loaded = next(project for project in store.list_projects() if project.id == owned.id)
-            self.assertEqual(loaded.root_path, str(repo))
-            self.assertNotIn(foreign.id, {project.id for project in store.list_projects()})
-
-    def test_v12_recovery_moves_aliases_after_nodes_were_already_moved(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            machine_id = "local-machine"
-            (root / "machine.json").write_text(
-                json.dumps(
-                    {
-                        "id": machine_id,
-                        "hostname": current_hostname(),
-                        "label": "Local",
-                    }
-                ),
-                encoding="utf-8",
-            )
-            (root / "schema.json").write_text(
-                json.dumps({"schema": "node-revision-v9", "schema_version": 11}),
-                encoding="utf-8",
-            )
-            project = Project(
-                root_path=str(root / "repo"),
-                machine_id=machine_id,
-                machine_label="Local",
-            )
-            project_dir = root / "projects" / project.id
-            host_dir = project_dir / "hosts" / machine_id
-            (host_dir / "nodes").mkdir(parents=True)
-            (project_dir / "project.json").write_text(
-                json.dumps(project.model_dump(exclude={"provider"})),
-                encoding="utf-8",
-            )
-            aliases = {"old-commit": "new-commit"}
-            (project_dir / "git_aliases.json").write_text(
-                json.dumps(aliases),
-                encoding="utf-8",
-            )
-
-            store = Store(root)
-
-            self.assertFalse((project_dir / "git_aliases.json").exists())
-            self.assertEqual(store.read_git_aliases(project.id), aliases)
-
-    def test_v13_backfills_non_git_host_observation_after_schema_was_synced(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            machine_id = "local-machine"
-            (root / "machine.json").write_text(
-                json.dumps(
-                    {
-                        "id": machine_id,
-                        "hostname": current_hostname(),
-                        "label": "Local",
-                    }
-                ),
-                encoding="utf-8",
-            )
-            (root / "schema.json").write_text(
-                json.dumps({"schema": "node-revision-v9", "schema_version": 13}),
-                encoding="utf-8",
-            )
-            workspace = root / "workspace"
-            workspace.mkdir()
-            project = Project(
-                root_path=str(workspace),
-                machine_id=machine_id,
-                machine_label="Local",
-            )
-            project_dir = root / "projects" / project.id
-            host_dir = project_dir / "hosts" / machine_id
-            (host_dir / "nodes").mkdir(parents=True)
-            (host_dir / "local.json").write_text(
-                json.dumps({"root_path": str(workspace)}),
-                encoding="utf-8",
-            )
-            (host_dir / "host.json").write_text(
-                json.dumps({"label": "Local", "bound_at": 1, "repo": {}}),
-                encoding="utf-8",
-            )
-            (project_dir / "project.json").write_text(
-                json.dumps(
-                    project.model_dump(
-                        exclude={"provider", "root_path", "layout_hints", "layout_viewport"}
-                    )
-                ),
-                encoding="utf-8",
-            )
-
-            store = Store(root)
-
-            self.assertFalse(store.list_hosts(project.id)[0]["is_repo"])
-            loaded = store.list_projects()[0]
-            self.assertTrue(store.is_bound_here(loaded.id))
-
-    def test_v14_removes_policy_and_promotion_fields_without_losing_nodes(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            store = Store(root)
-            workspace = root / "workspace"
-            workspace.mkdir()
-            project = store.create_project(Project(root_path=str(workspace)))
-            node = store.create_node(
-                Node(project_id=project.id, model_preset_id=project.model_preset_id)
-            )
-            project_file = root / "projects" / project.id / "project.json"
-            project_payload = json.loads(project_file.read_text(encoding="utf-8"))
-            project_payload.update(
-                {"sharing": "shared", "identity": "environment-attested"}
-            )
-            project_file.write_text(json.dumps(project_payload), encoding="utf-8")
-            node_file = store.node_dir(project.id, node.id) / "node.json"
-            node_payload = json.loads(node_file.read_text(encoding="utf-8"))
-            node_payload["promoted_from"] = None
-            node_file.write_text(json.dumps(node_payload), encoding="utf-8")
-            host_file = (
-                root / "projects" / project.id / "hosts" / store.machine.id / "host.json"
-            )
-            host_payload = json.loads(host_file.read_text(encoding="utf-8"))
-            host_payload.update(
-                {"identity": "environment-attested", "attestation": {"legacy": True}}
-            )
-            host_file.write_text(json.dumps(host_payload), encoding="utf-8")
-            claim_file = host_file.parent / "claims" / "old-virtual.json"
-            claim_file.parent.mkdir()
-            claim_file.write_text(
-                json.dumps(
-                    {"claimed_by": store.machine.id, "as_node": node.id, "claimed_at": 1}
-                ),
-                encoding="utf-8",
-            )
-            binding_file = (
-                root
-                / "contextspace"
-                / "bindings"
-                / "projects"
-                / "project.legacy.yaml"
-            )
-            binding_file.parent.mkdir(parents=True, exist_ok=True)
-            binding_file.write_text(
-                yaml.safe_dump(
-                    {
-                        "version": 1,
-                        "id": "project.legacy",
-                        "project": {
-                            "miniclaw_project_id": project.id,
-                            "local_paths": [str(workspace)],
-                        },
-                        "plugs": [],
-                    },
-                    sort_keys=False,
-                ),
-                encoding="utf-8",
-            )
-            (root / "schema.json").write_text(
-                json.dumps({"schema": "node-revision-v9", "schema_version": 13}),
-                encoding="utf-8",
-            )
-
-            migrated = Store(root)
-
-            self.assertIsNotNone(migrated.load_node(project.id, node.id))
-            self.assertNotIn("promoted_from", json.loads(node_file.read_text()))
-            self.assertNotIn("sharing", json.loads(project_file.read_text()))
-            self.assertNotIn("identity", json.loads(project_file.read_text()))
-            migrated_host = json.loads(host_file.read_text())
-            self.assertNotIn("identity", migrated_host)
-            self.assertNotIn("attestation", migrated_host)
-            self.assertFalse(claim_file.parent.exists())
-            migrated_binding = yaml.safe_load(binding_file.read_text(encoding="utf-8"))
-            self.assertNotIn("local_paths", migrated_binding["project"])
-
-
-class UserTemplateSchemaMigrationTests(unittest.TestCase):
-    def _write_store_schema_v7(self, root: Path) -> None:
-        root.mkdir(parents=True, exist_ok=True)
-        (root / "schema.json").write_text(
-            json.dumps({"schema": "host-partition-v7", "schema_version": 7}),
-            encoding="utf-8",
-        )
-
-    def test_legacy_template_is_backed_up_migrated_loadable_and_warned(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            self._write_store_schema_v7(root)
-            template_root = _write_user_template(
-                root,
-                "legacy",
-                template_text=(
-                    "name: legacy\n"
-                    "brief: Legacy template\n"
-                    "allowed_model_preset_ids: [opus-4-8]\n"
-                    "lane_mode: manual\n"
-                ),
-                prompt="Discuss {{topic}} while preserving {{Not-An-Arg}}.\n",
-            )
-
-            with self.assertLogs("miniclaw2.sync", level="WARNING") as captured:
-                Store(root)
-
-            migrated = yaml.safe_load(
-                (template_root / "template.yaml").read_text(encoding="utf-8")
-            )
-            self.assertEqual(migrated["schema_version"], 2)
-            self.assertEqual(migrated["arguments"], [])
-            self.assertEqual(migrated["inputs"], [])
-            loaded = load_user_template("legacy", store_root=root)
-            self.assertEqual([argument.name for argument in loaded.arguments], ["topic"])
-
-            warning_text = "\n".join(captured.output)
-            self.assertIn("prompts/work.md:1: {{topic}}", warning_text)
-            self.assertNotIn("Not-An-Arg", warning_text)
-
-            backups = list(
-                (root / "migration-backups").glob(
-                    "node-revision-v9-*/contextspace/templates/legacy/template.yaml"
-                )
-            )
-            self.assertEqual(len(backups), 1)
-            self.assertNotIn(
-                "schema_version",
-                yaml.safe_load(backups[0].read_text(encoding="utf-8")),
-            )
-
-            first_result = (template_root / "template.yaml").read_text(encoding="utf-8")
-            first_backups = sorted((root / "migration-backups").iterdir())
-            Store(root)
-            self.assertEqual(
-                (template_root / "template.yaml").read_text(encoding="utf-8"),
-                first_result,
-            )
-            self.assertEqual(
-                sorted((root / "migration-backups").iterdir()),
-                first_backups,
-            )
-
-    def test_schema_v2_template_is_skipped_without_rewriting(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            self._write_store_schema_v7(root)
-            original = (
-                "# preserve this exact v2 file\n"
-                "schema_version: 2\n"
-                "name: current\n"
-                "brief: Current template\n"
-                "allowed_model_preset_ids: [opus-4-8]\n"
-                "lane_mode: manual\n"
-            )
-            template_root = _write_user_template(
-                root,
-                "current",
-                template_text=original,
-                prompt="Discuss {{topic}}.\n",
-            )
-
-            Store(root)
-
-            self.assertEqual(
-                (template_root / "template.yaml").read_text(encoding="utf-8"),
-                original,
-            )
-            self.assertTrue(
-                list(
-                    (root / "migration-backups").glob(
-                        "node-revision-v9-*/contextspace/templates/current/template.yaml"
-                    )
-                )
-            )
-
-    def test_bad_template_does_not_block_other_template_migrations(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            self._write_store_schema_v7(root)
-            bad_root = _write_user_template(
-                root,
-                "bad",
-                template_text="name: [\n",
-            )
-            good_root = _write_user_template(
-                root,
-                "good",
-                template_text=(
-                    "name: good\n"
-                    "brief: Good template\n"
-                    "allowed_model_preset_ids: [opus-4-8]\n"
-                    "lane_mode: manual\n"
-                ),
-            )
-            bad_original = (bad_root / "template.yaml").read_text(encoding="utf-8")
-
-            with self.assertLogs("miniclaw2.sync", level="ERROR") as captured:
-                Store(root)
-
-            self.assertIn("用户模板 'bad' 迁移失败", "\n".join(captured.output))
-            self.assertEqual(
-                (bad_root / "template.yaml").read_text(encoding="utf-8"),
-                bad_original,
-            )
-            self.assertEqual(
-                yaml.safe_load(
-                    (good_root / "template.yaml").read_text(encoding="utf-8")
-                )["schema_version"],
-                2,
-            )
-            load_user_template("good", store_root=root)
-            self.assertEqual(
-                json.loads((root / "schema.json").read_text(encoding="utf-8"))[
-                    "schema_version"
-                ],
-                SCHEMA_VERSION,
-            )
 
 
 class NonNativeProjectApiTests(unittest.TestCase):
@@ -712,7 +224,7 @@ class GitMetadataSyncTests(unittest.TestCase):
             with self.assertRaisesRegex(SyncError, "timed out after 0.01 seconds"):
                 sync_module._run_raw(["git", "fetch"], timeout=0.01)
 
-    def test_global_conflict_uses_local_hunks_then_converges(self) -> None:
+    def test_global_conflict_preserves_both_sides_until_manual_resolution(self) -> None:
         config_a = load_global_config(self.root_a)
         save_global_config(
             config_a.model_copy(
@@ -740,7 +252,8 @@ class GitMetadataSyncTests(unittest.TestCase):
         self.store_b.sync.commit_now("set language on B")
         self.store_b.sync.sync_now()
 
-        self.store_a.sync.sync_now()
+        with self.assertRaises(SchemaConflictError):
+            self.store_a.sync.sync_now()
         self.assertEqual(
             load_global_config(self.root_a).defaults.preferred_language,
             "English",
@@ -748,24 +261,16 @@ class GitMetadataSyncTests(unittest.TestCase):
         self.store_b.sync.sync_now()
         self.assertEqual(
             load_global_config(self.root_b).defaults.preferred_language,
-            "English",
+            "Chinese",
         )
 
     def test_schema_conflict_is_a_hard_failure(self) -> None:
-        schema_a = json.loads((self.root_a / "schema.json").read_text())
-        schema_a["migration"] = "machine-a"
-        (self.root_a / "schema.json").write_text(
-            json.dumps(schema_a, indent=2) + "\n", encoding="utf-8"
-        )
-        self.store_a.sync.commit_now("migrate schema on A")
-
         schema_b = json.loads((self.root_b / "schema.json").read_text())
-        schema_b["migration"] = "machine-b"
+        schema_b["contract"] = "fork"
         (self.root_b / "schema.json").write_text(
             json.dumps(schema_b, indent=2) + "\n", encoding="utf-8"
         )
-        self.store_b.sync.commit_now("migrate schema on B")
-        self.store_b.sync.sync_now()
+        self._push_unchecked_b()
 
         with self.assertRaises(SchemaConflictError):
             self.store_a.sync.sync_now()
@@ -782,50 +287,71 @@ class GitMetadataSyncTests(unittest.TestCase):
         self.store_b.sync.commit_now("create tag on B")
         self.store_b.sync.sync_now()
 
-        with self.assertRaisesRegex(
-            SyncError,
-            "tags.json changed independently.*resolve it manually",
-        ):
+        with self.assertRaisesRegex(SyncError, "tags.json"):
             self.store_a.sync.sync_now()
 
         self.assertFalse((self.root_a / ".git" / "MERGE_HEAD").exists())
         self.assertEqual(self.store_a.list_tags(), [tag_a])
         self.assertEqual(self.store_a.sync.status()["status"], "changed")
 
-    def test_remote_schema_upgrade_makes_live_store_read_only(self) -> None:
+    def test_remote_schema_upgrade_is_refused_without_touching_live_store(self) -> None:
         schema_b = json.loads((self.root_b / "schema.json").read_text())
         schema_b["schema_version"] += 1
         (self.root_b / "schema.json").write_text(
             json.dumps(schema_b, indent=2) + "\n", encoding="utf-8"
         )
-        self.store_b.sync.sync_now()
+        self._push_unchecked_b()
 
         self.assertIsNone(self.store_a.read_only_reason)
-        self.store_a.sync.sync_now()
+        with self.assertRaisesRegex(SchemaConflictError, "新于程序"):
+            self.store_a.sync.sync_now()
+        self.assertIsNone(self.store_a.read_only_reason)
+        self.store_a.create_project(Project(root_path="/machine-a/allowed", name="Allowed"))
 
-        self.assertEqual(
-            self.store_a.read_only_reason,
-            "store schema is newer than this MiniClaw2 version",
-        )
-        with self.assertRaises(StoreReadOnlyError):
-            self.store_a.create_project(
-                Project(root_path="/machine-a/blocked", name="Blocked")
-            )
+    def _push_unchecked_b(self) -> None:
+        _git("add", "-A", cwd=self.root_b)
+        _git("-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "外部客户端写入", cwd=self.root_b)
+        _git("push", "origin", "HEAD:main", cwd=self.root_b)
+
+    def test_supported_remote_is_normalized_before_divergent_merge(self) -> None:
+        local = self.store_a.create_project(Project(root_path="/a/offline", name="Offline A"))
+        remote = self.store_b.create_project(Project(root_path="/b/offline", name="Offline B"))
+        (self.root_b / "schema.json").write_text(json.dumps(marker(MINIMUM_VERSION)))
+        self._push_unchecked_b()
+        self.store_a.sync.sync_now()
+        ids = {project.id for project in self.store_a.list_projects()}
+        self.assertTrue({local.id, remote.id}.issubset(ids))
+        self.assertEqual(json.loads((self.root_a / "schema.json").read_text()), marker())
+        parents = _git("rev-list", "--parents", "-n", "1", "HEAD", cwd=self.root_a).stdout.split()
+        self.assertEqual(len(parents), 3)
+
+    def test_current_but_corrupt_remote_is_never_published(self) -> None:
+        remote = self.store_b.create_project(Project(root_path="/b/corrupt"))
+        path = self.root_b / "projects" / remote.id / "project.json"
+        payload = json.loads(path.read_text())
+        payload["unknown_schema_field"] = True
+        path.write_text(json.dumps(payload))
+        self._push_unchecked_b()
+        original = _git("rev-parse", "HEAD", cwd=self.root_a).stdout
+        with self.assertRaises(SchemaConflictError):
+            self.store_a.sync.sync_now()
+        self.assertEqual(_git("rev-parse", "HEAD", cwd=self.root_a).stdout, original)
+        self.assertFalse((self.root_a / "projects" / remote.id).exists())
 
     def test_read_only_store_does_not_schedule_native_projects(self) -> None:
+        registry = ProjectRegistry(self.store_a)
         schema = json.loads((self.root_a / "schema.json").read_text())
         schema["schema_version"] += 1
         (self.root_a / "schema.json").write_text(
             json.dumps(schema, indent=2) + "\n", encoding="utf-8"
         )
-        registry = ProjectRegistry(self.store_a)
 
         with patch.object(registry, "_schedule_queued") as schedule_queued:
             registry.schedule_all()
 
         schedule_queued.assert_not_called()
 
-    def test_failed_push_rolls_back_the_fetched_merge(self) -> None:
+    def test_failed_push_keeps_the_validated_local_merge(self) -> None:
         project_b = self.store_b.create_project(
             Project(root_path="/machine-b/queued", name="Queued on B")
         )
@@ -843,11 +369,11 @@ class GitMetadataSyncTests(unittest.TestCase):
         with self.assertRaises(SyncError):
             self.store_a.sync.sync_now()
 
-        self.assertEqual(
+        self.assertNotEqual(
             _git("rev-parse", "HEAD", cwd=self.root_a).stdout.strip(),
             starting_head,
         )
-        self.assertFalse(
+        self.assertTrue(
             (self.root_a / "projects" / project_b.id / "project.json").exists()
         )
         self.assertEqual(self.store_a.sync.status()["status"], "changed")

@@ -1,0 +1,18 @@
+{
+  "family": "miniclaw2-store",
+  "protocol": 1,
+  "target": 15,
+  "minimum": 14,
+  "contracts": {
+    "14": "db73e32c384d4d75b1eefd502feb9c896a06e3be44c4c3a6c0a3f8e2df0738cc",
+    "15": "fb019e495470ad2c728343b19a4e604ab48733b2ef087b58a887914cad9bac92"
+  },
+  "steps": [
+    {
+      "source": 14,
+      "target": 15,
+      "module": "v0015_current_records",
+      "sha256": "9da8ec64258d75a44bab50ec6cd9c9420f83867609c951acc449047329884bab"
+    }
+  ]
+}
