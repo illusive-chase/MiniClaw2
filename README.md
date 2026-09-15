@@ -129,20 +129,19 @@ Ctrl-C stops both processes.
 
 ## Metadata Sync
 
-`$MINICLAW_HOME` 可以通过 Git remote 同步。持久项目在当前设备绑定本地目录后
-即可执行，创建者设备只记录来源；每台设备只能修改自己分区中的节点。
-全局设置和 ContextSpace 在隔离候选树中合并并校验，结构冲突或格式契约冲突则
-停止同步，等待人工处理。
+`$MINICLAW_HOME` can be synchronized through any Git remote. A persistent
+project runs on any machine that has bound it to a local directory; the
+creating machine is recorded only as provenance. Each machine may edit only
+the nodes in its own partition. Global settings and ContextSpace files are
+merged and validated in an isolated candidate tree; a structural or schema
+conflict stops sync for manual resolution.
 
-临时项目无需绑定目录：同步到新设备后即可继续创建节点，框架自动准备非 Git
-缓存目录，缓存被系统清理后也会重建。图、逐字记录与已发布产物是持久状态，
-缓存中的普通文件不随设备迁移。续接保留图中的来源关系，但始终启动新的
-provider 会话，不复用设备本地 session id。远端节点仍只读，可作为新节点的
-上下文来源；临时项目不提供 Git、工作目录打开或绑定功能。
-
-Session API 的 `capabilities.workspace` 与 `capabilities.git_review` 控制上述
-入口；删除了未实现的 `artifact_restore` 和含义不清的 `resumable` 声明。
-产物仍可从持久记录读取和下载，但不承诺自动还原整个临时工作目录。
+Ephemeral projects need no bound directory: after syncing to a new machine
+they can keep creating nodes against a framework-managed cache outside Git,
+rebuilt if the system clears it. The graph, transcripts, and published
+artifacts are durable; ordinary files in the cache are not. Resuming keeps
+the provenance recorded in the graph but always starts a fresh provider
+session. Remote nodes stay read-only and can serve as context for new ones.
 
 Principle files, native skill directories, `skill-imports.json` package and
 dependency provenance, and node attachment selections are all part of this
@@ -165,31 +164,23 @@ manual-only: press **Sync now** in Global settings. Durable changes are
 committed locally in a roughly 30-second coalescing window, but MiniClaw2 does
 not fetch or push on startup, shutdown, or a timer.
 
-升级前同步一次，完成存储迁移后再同步一次。`machine.json` 记录本机设备标识的
-哈希（不参与同步），hostname 仅作为显示名称：同一设备改名保留 machine id，
-复制到设备标识不同的机器则自动生成新 id，不继承来源机器的路径绑定。
-设备标识分别取自 macOS 的 `IOPlatformUUID`、Linux 的系统 `machine-id`
-和 Windows 的 `MachineGuid`。自动改名保留同步检查点和自定义显示名称，
-仅随 hostname 设置的默认名称会跟随更新，并修复本机所属项目及 host 的标签。
+Before upgrading MiniClaw2, sync once; after the upgraded process writes a
+store migration, sync again. `machine.json` records a hash of the machine's
+hardware identity and is not synced; hostname is only a display name. Renaming
+a machine keeps its machine ID, while a store copied to different hardware
+gets a new one and does not inherit the source machine's directory bindings.
 
-旧版身份没有设备标识且 hostname 已变化时，框架无法可靠区分改名与复制，
-会要求明确选择。先停止使用此存储的后端，再执行以下命令之一并重启：
+A legacy identity with no recorded fingerprint whose hostname has changed is
+ambiguous — the framework cannot tell a rename from a copy, and asks. Stop the
+backends using the store, run one of these, and restart:
 
 ```bash
-python -m miniclaw2 machine rename  # 确认只是同一设备改名
-python -m miniclaw2 machine copy    # 确认这是另一设备上的副本
+python -m miniclaw2 machine rename  # same machine, new name
+python -m miniclaw2 machine copy    # a copy on different hardware
 ```
 
-两个命令都支持 `--label`，不依赖交互终端。已记录设备指纹却暂时无法读取系统
-标识时，启动会停止，不会把读取失败当作新设备，也不会允许 `rename` 清除旧指纹。
-身份创建、复制和同步检查点写入使用进程间锁；中断的标签修复会在下次启动重试。
-运行中执行身份切换后，旧 Store 的写入和旧同步管理器会被拒绝，仍须停止并重启
-所有使用该存储的进程。同步状态中的 `hostname_mismatch` 仅是进程内名称变化的
-诊断信息，不再作为只读或禁止同步的依据。
-
-同名的旧版副本、共享系统 machine-id 的克隆镜像无法仅靠本机标识自动区分；
-首次打开此类副本前应主动运行 `machine copy`。新设备优先使用 `sync init`
-克隆远端，不要复制包含本地身份的整个存储目录。
+Both accept `--label` and need no interactive terminal. Prefer `sync init` on
+a new machine over copying a store directory that contains a local identity.
 
 Env:
 
@@ -316,11 +307,11 @@ On-disk layout (under `$MINICLAW_HOME`, default `~/.miniclaw2`):
 
 ```
 config.json             # global defaults and complete model preset catalog
-schema.json             # 当前共享格式契约；目标版本由发行迁移清单决定
-machine.json            # 本地 UUID、设备指纹哈希、标签和同步检查点（不参与同步）
-machine.lock            # 身份写入的进程间锁（不参与同步）
-.migration-local/       # 本机完成凭据、维护锁和可恢复事务日志（不参与同步）
-migration-backups/      # 原始文件备份，不随代码支持窗口删除（不参与同步）
+schema.json             # current shared schema contract (target set by the release)
+machine.json            # local UUID + hardware fingerprint hash + label + checkpoint (not synced)
+machine.lock            # inter-process lock for identity writes (not synced)
+.migration-local/       # local completion receipts, maintenance lock, journal (not synced)
+migration-backups/      # pre-migration file backups (not synced)
 .gitignore              # excludes machine identity, backups, and temp writes
 projects/<pid>/
   project.json          # includes native machine id + display label
@@ -367,52 +358,11 @@ render artifact graph nodes.
 The HTTP/WS shape is the "session"-based compat layer: each session id
 is a project id, and each `user_message` spawns a fresh agent node.
 
-`GET /sessions` 返回项目摘要，不包含 `node_positions`、`git_positions`、
-`lane_positions`；打开项目时通过 `GET /sessions/{sid}` 获取完整布局。
-列表聚合使用轻量节点索引，正常写入立即更新，同步发布后重建；读取时检查文件签名，
-只重读新增或发生变化的节点，避免陈旧计数。活动时间仍取所有节点创建、开始、完成
-时间的最大值，空项目回落到项目创建时间。
-
-HTTP 响应支持 gzip 协商（`Accept-Encoding: gzip`），仅压缩至少 1024 字节的响应；
-WebSocket 不受影响。
-
-`GET /sessions/{sid}/nodes` 返回精简节点：不含 `system_context_snapshot`、
-`launch_instructions_snapshot`，`prompt` 最多保留 120 个 Unicode 字符，并通过
-`prompt_truncated` 标明是否截断。`settings_snapshot`、`prompt_draft` 保持完整；
-`prompt_argument_names` 保留完整提示词或草稿中的模板参数，避免截断影响画布芯片。
-`node_started`、`node_updated`、`turn_done` 的 `node` 载荷（含历史事件回放）采用
-同一投影；持久化节点、事件日志、单节点详情及变更接口响应仍保留完整内容。
-前端仅在选中节点时调用 `GET /sessions/{sid}/nodes/{nid}`，按项目、节点与 `rev`
-缓存详情（最多 32 条），隔离过期选择的响应，加载失败可重试；详情不写回画布列表。
-可运行 `cd frontend && npm run test:nodes` 检查投影、2000 节点画布一致性和缓存；
-设置 `BROWSER_BIN` 后运行 `npm run test:nodes:browser` 检查真实浏览器切换竞态。
-
-`GET /sessions/{sid}/context-bundles` 按节点 ID 批量返回终态非 op 节点的上下文来源，
-只保留 `sources` 和画布泳道颜色所需的 `active_planspace` 元数据，不传输正文。
-可用重复的 `node_ids` 查询参数筛选增量节点；缺失或损坏的快照返回 `null`，
-无快照引用及非终态节点不进入结果。前端首次读取合为一次请求、一次画布数据发布，
-随后仅为新终态或快照引用变化的节点补取；大量增量时退回整批，避免过长 URL。
-完整正文仅在节点详情或上下文卡片被选中时，通过原有单节点端点读取，不写回共享摘要。
-`cd frontend && npm run test:context` 覆盖批量请求、竞态及 2000 节点画布一致性。
-设置 `BROWSER_BIN` 后运行 `npm run test:context:browser` 验证实际 React 加载和切换行为。
-
-画布启用 `onlyRenderVisibleElements`，只挂载与视口相交的节点和边；未选中／悬浮时
-本就透明的来源、产物及提交关联边不进入 DOM，显示规则不变。React Flow 11 的边还依赖
-DOM 测量出的锚点，因此 `ViewportHandleBounds` 会为尚未挂载的节点补入布局锚点，
-保证首次打开时两端均在视口外的跨视口边仍可见；挂载后的真实测量优先，不被补全覆盖。
-新增节点和未测量节点的尺寸更新同样补全。升级 React Flow 或修改节点 Handle 时，
-须同步检查 `viewportHandles.ts` 并运行浏览器回归，不能只保留裁剪开关。
-存在待响应交互时暂时关闭视口裁剪，避免卡片下方的提问／权限表单在平移时被卸载、
-丢失未提交的回答、工具参数及备注；全部交互结束后恢复裁剪。
-
-`cd frontend && npm run test:viewport` 使用可重复生成的 411 × 5 合成夹具，验证
-2055 节点的完整／精简投影一致性、尺寸完整性和所有边的锚点。夹具不包含用户存储或提示词。
-设置 `BROWSER_BIN` 后运行 `npm run test:viewport:browser`，在真实无头浏览器中验证
-DOM 数量、跨视口边、框选、Shift 多选、右键菜单／平移、跨视口长按连线、定位／视口恢复、
-泳道隐藏恢复、模板折叠、适配及缩放，以及提问／权限表单离屏后的草稿保留、提交和裁剪恢复；
-报告滚动帧间隔，但只对挂载数量设回归阈值。
-测试使用临时浏览器配置与调试管道，不启动服务、不占用端口，并只清理自己启动的进程。
-隐藏泳道的来源摘要仍保留给资源库计数及恢复使用；未引入缩放级别简化卡片或服务端分页。
+List and canvas responses are projections: `GET /sessions` omits layout,
+and `GET /sessions/{sid}/nodes` omits snapshot fields and truncates
+`prompt`. Full node content is served per node by
+`GET /sessions/{sid}/nodes/{nid}`. The projections and their fields are
+defined in the route handlers.
 
 - Project/session REST APIs:
   `GET /sessions`, `POST /sessions`, `PATCH /sessions/{sid}`,
@@ -464,8 +414,8 @@ DOM 数量、跨视口边、框选、Shift 多选、右键菜单／平移、跨�
   `result_kind`), `interaction_request` (`permission`, `ask_user`,
   or `human_review_prose`), `usage`, `turn_done`,
   and `error`. Events carry monotonic `seq` values for reconnect
-  replay; persisted envelopes carry an event schema version. 历史
-  `checkpoint_review` 在存储迁移时转换，运行时只读取当前载体。
+  replay; persisted envelopes carry an event schema version, and legacy
+  records are converted during store migration rather than at runtime.
 
 Current ask-user responses use
 `response.answers.<question-id>.answers: string[]`; human reviews use
@@ -478,9 +428,8 @@ and [`frontend/src/types.ts`](frontend/src/types.ts).
 
 ## Status
 
-持久化格式迁移、三步支持窗口、数据域清单与恢复命令见
-[`docs/schema-migrations.md`](docs/schema-migrations.md)。更新程序后的启动自动迁移；
-过旧或过新的存储进入维护模式，不自动下载旧迁移器，也不显示误导性的空项目列表。
+Store schema migrations, the support window, and the recovery commands are
+documented in [`docs/schema-migrations.md`](docs/schema-migrations.md).
 
 The code is the ledger of what has landed — this file does not enumerate
 it, because such a list goes stale in a way code cannot.

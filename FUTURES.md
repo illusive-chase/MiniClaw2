@@ -34,15 +34,24 @@ one is a place where a reasonable change silently breaks something.
 
 ### 2.1 Adding a `Project` field without advancing the store schema
 
-新增持久化字段与新增迁移单元必须属于同一次格式演化。当前程序会在加载业务模型前
-拒绝更新格式，但这个准入依赖准确的版本与契约，不能补救没有推进版本的字段变更。
-旧发行版也不会因为新程序增加了维护锁而自动遵守它：首次切换前必须停止旧进程，
-不合规的远端推送则必须由候选树校验拒绝。
+`Project` forbids unknown fields, and the project lister **skips records
+that fail validation** rather than surfacing an error. Together these
+mean: write a new `Project` field without advancing the store schema
+version in the same commit, and an older build does not ignore the field —
+it silently omits the entire project from the list.
 
-三步窗口裁剪的是程序能力，不是备份寿命。尤其不要把“共同祖先过旧”修复成重新引入
-无限历史迁移器；跨格式分叉合并需要无法解释的祖先时应显式停止。仍未建设的能力是
-跨设备、跨代迁移输入的自动保留与淘汰；后续脚本若依赖已被远端删除的字段，必须先
-设计同步的交接载体，不能把本机一次完成凭据当作所需输入仍然存在的证明。
+The guard that appears to protect against this does not. A newer schema
+version makes an older build open the store read-only, which blocks
+*writes*; the lister keeps dropping records regardless. So the two costs
+are inseparable: add the defaulted field **and** advance the schema
+version together, always.
+
+The migration window narrows what the *program* can do, not how long
+backups live. Resist fixing "common ancestor too old" by reintroducing an
+unbounded chain of historical migrators; a cross-schema merge that would
+need an ancestor no release can explain should stop explicitly instead.
+Note also that an older release does not obey a maintenance lock a newer
+one introduced — stop old processes before the first switchover.
 
 ### 2.2 Compaction summaries are not turn boundaries
 
@@ -315,10 +324,12 @@ Kept because the reason, not the absence, is the content:
   keeps a stale running state honest. Relaying events host-to-host is a
   different feature, not an increment of sync.
 - **Merging two non-empty stores** at bootstrap stays unsupported.
-- **设备标识完全相同的系统克隆**：操作系统 machine-id 或硬件 UUID 也被复制时，
-  无法仅凭本机标识区分副本；旧版无设备指纹且 hostname 相同的存储也有同样
-  的信息缺口。此类副本须在启动前显式执行 `machine copy`；自动检测需要另建
-  不随系统镜像复制的可信身份来源，而不能把 hostname 当作设备身份。
+- **Detecting a disk clone that copied the hardware identity too.** When
+  the OS machine-id or hardware UUID comes along with the image, no local
+  signal distinguishes the copy from the original. Such a copy must run
+  `machine copy` before first use. Automatic detection would need a
+  trusted identity source that system imaging does not reproduce —
+  hostname is not one.
 - **Per-token streaming** for the transcript-driven provider, whose
   transcript is written block-at-a-time. Revisit only if that provider
   gains a partial-block stream.

@@ -661,17 +661,35 @@ Which lane a launch materializes is settled by the node's own lane, so
 the accent marks where the user is, not what the backend will do.
 
 
-### 10.5 节点位置与阅读视角
+### 10.5 Position is shared; viewport is not
 
-项目只有一张逻辑共享布局。真实节点的位置属于该节点的 owner：每个节点最多一个权威位置，各 host 仅持久化自己拥有节点的稀疏分片，读取时聚合，不复制完整画布，也不让不同 host 争写一个全局布局文件。未绑定设备可以阅读，但不能修改节点位置。
+A project has **one logical layout**, and a node's position belongs to
+the node's owner: at most one authoritative position per node, each
+host persisting only its own sparse shard. No host writes a global
+layout file, so two machines never fight over one canvas. A machine
+that has not bound the project can read the layout but not move it.
 
-已发布产出物卡片的位置同样持久化，而不是每次刷新都重新排列。产出物有明确的生产节点，沿用其 owner 与坐标空间，保存到同一节点布局分片；单个文件及“更多产出物”卡片均可独立定位。隐藏、折叠或刷新不能丢失仍有效的手工位置；生产节点换到其他空间或产出物撤回后，不误用旧位置。布局恢复只补缺，不覆盖用户后来保存的坐标。
+Coordinates carry the space they belong to. When a node changes lanes,
+its old relative position does not survive into the new space — a
+coordinate without its space is not a position.
 
-坐标必须携带所属空间；节点归属改变后，不把旧泳道的相对坐标误用到新空间。Git commit 和 ghost 的手工位置是项目共享的持久化锚点，以稳定的 `commit:<sha>`／`commit:ghost` 标识、使用 canvas 坐标；没有手工位置时才从提交图派生。它们没有执行节点 owner，单独存储，不伪装成某个 host 的执行节点分片。绑定项目的设备可以修改，同一锚点的并发坐标冲突明确拒绝同步，不按 x/y 分别拼接或最后写入者胜出。暂时不可见的提交与 ghost 不因此删除坐标。
+Some things on the canvas have no owning node: commits, ghosts, and
+lane placements. Their hand-placed positions are **project-shared
+anchors**, stored separately rather than disguised as some host's
+shard, and derived from the graph only when no one has placed them.
+Because they are shared, a concurrent conflict on the same anchor is
+refused outright — never merged per-axis, never last-writer-wins.
 
-planspace lane 的绝对位置同样是项目共享的持久化锚点，以 `planspace:<id>` 标识并使用 canvas 坐标。移动 lane 只改变该锚点，不重写内部节点的相对坐标或 owner 分片；调整内容、展开折叠、隐藏后显示、焦点或排序改变都不能重排已定位的 lane。lane 的宽高仍从成员边界派生，未定位的 lane 自动排列并避让已定位的 lane。context 和 template 图元继续从图结构及成员位置派生，不成为新的共享写入对象。
+Layout is user intent, so it is preserved rather than recomputed:
+hiding, collapsing, reordering, or refreshing must not discard a
+position that is still valid, and restoring a layout fills gaps
+without overwriting what the user placed later.
 
-viewport 属于 viewer，而不是项目。浏览器保存自己的阅读中心和缩放，不同步到其他设备；程序化定位不能覆盖用户主动选择的阅读视角。
+**Viewport belongs to the viewer, not the project.** Where someone is
+looking and how far they are zoomed is their own reading position; it
+does not sync to other machines, and programmatic navigation does not
+override a view the user chose deliberately.
+
 
 ## 11. Templates are functions
 
