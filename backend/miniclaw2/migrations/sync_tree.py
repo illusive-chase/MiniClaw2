@@ -58,13 +58,20 @@ def extract(root: Path, revision: str, destination: Path) -> None:
 def normalize(root: Path, accepted: frozenset[str] = frozenset()) -> None:
     path = root / "schema.json"
     version = version_of(read_object(path), path)
-    context = MigrationContext(root, "shared", "")
-    for migration in steps(version):
-        if "shared" in migration.scopes:
-            if migration.destructive and migration.contract not in accepted:
-                raise MigrationError("migration_required", f"同步需要确认：{migration.summary}；请运行 migrations apply --accept-data-loss")
-            migration.upgrade(context)
-            migration.verify(context)
+    migrations = [migration for migration in steps(version) if "shared" in migration.scopes]
+    for migration in migrations:
+        if migration.destructive and migration.contract not in accepted:
+            raise MigrationError("migration_required", f"同步需要确认：{migration.summary}；请运行 migrations apply --accept-data-loss")
+    if migrations:
+        with tempfile.TemporaryDirectory(prefix="migration-source-") as temporary:
+            source = Path(temporary)
+            for relative, scope in files(root).items():
+                if scope == "shared":
+                    durable_copy(root / relative, source / relative)
+            context = MigrationContext(root, "shared", "", source)
+            for migration in migrations:
+                migration.upgrade(context)
+                migration.verify(context)
     validate(root)
     atomic_json(path, marker())
 

@@ -123,12 +123,13 @@ def test_sync_normalization_requires_local_confirmation(tmp_path: Path) -> None:
         normalize(tmp_path)
 
 
-def test_plan_counts_losses_without_modifying_sources(tmp_path: Path) -> None:
+def test_plan_counts_recovery_without_modifying_sources(tmp_path: Path) -> None:
     _, hosts = seed(tmp_path)
     before = {host: (path / "layout.json").read_bytes() for host, path in hosts.items()}
     impact = layout_impact(tmp_path)
     assert len(impact) == 2
-    assert all(item["retained"] == 1 and item["discarded_foreign"] == 1 and item["discarded_synthetic_or_missing"] == 1 and item["viewport_discarded"] for item in impact)
+    assert sum(item["restored"]["git"] for item in impact) == 1
+    assert all(item["retained"] >= 2 and not any(item["not_restored"].values()) and item["viewport_discarded"] for item in impact)
     assert before == {host: (path / "layout.json").read_bytes() for host, path in hosts.items()}
     (hosts["a"] / "layout.json").unlink()
     atomic_json(hosts["b"] / "layout.json", {"layout_hints": {}})

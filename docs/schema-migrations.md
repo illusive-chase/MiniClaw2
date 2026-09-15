@@ -2,7 +2,7 @@
 
 MiniClaw2 通过发行包内的迁移单元升级持久化数据。当前目标版本和最低接纳版本只来自
 `backend/miniclaw2/migrations/manifest.json`，不再由同步模块中的版本分支维护。
-首个接入版本是 v15，布局重构在 v16 接入，可信来源基线仍是 v14。v13 及更早的数据必须先使用覆盖其来源格式的中间版本升级。
+首个接入版本是 v15，布局重构在 v16 接入，v17 补回同事务内丢弃的有效布局；可信来源基线仍是 v14。v13 及更早的数据必须先使用覆盖其来源格式的中间版本升级。
 
 ## 使用与维护
 
@@ -47,7 +47,7 @@ miniclaw2 migrations plan --root /path/to/store
 miniclaw2 migrations apply --root /path/to/store --accept-data-loss
 ```
 
-`plan` 的 `layout_impact` 按项目和 host 列出保留位置、丢弃的 foreign 副本、合成／悬空条目及 viewport，并区分缺失和空布局；损坏文件或非法 owner 坐标报错。该清单针对现有 host 分区，v14 未分区残留仍需由 14→15 基线转换核验。
+`plan` 的 `layout_impact` 按项目、host 和原始来源列出已有位置、将补回的位置、不恢复条目及 viewport，并区分缺失和空布局。v14 未分区记录同样计入；具体语义见 v17 小节。损坏文件或 v16 必须转换的非法 owner 坐标仍报错。
 
 随后用新版程序重启服务，并刷新所有旧浏览器页面。不要对正在被旧后端使用的存储直接迁移。首次同步来自旧版设备的历史时，即使本机是新建 v16 存储，也可能需要通过上述确认授权规范化旧输入。
 
@@ -71,6 +71,23 @@ miniclaw2 migrations apply --root /path/to/store --accept-data-loss
 运行时从所有 owner 分片聚合 `node_positions`；普通项目更新不回写布局，新设备绑定只创建空分片。`PATCH /sessions/{sid}/node-layout` 接受 `updates` 与 `remove`，先完整校验再仅改本机分片；foreign、不支持的合成图元、未知节点及过时坐标空间返回 `409`，非有限坐标或缺失字段返回 `422`。已发布产出物按下节规则沿用生产节点的 owner。
 
 真实节点及产出物只有本机 owner 可拖动。Git 卡片和 lane 按下节的独立持久化规则处理，其他合成图元仍由图结构与成员位置派生；viewport 按 `miniclaw2.canvas-viewport.v1:<project-id>` 保存在浏览器中，不进入 API、项目记录或 Git。只有用户 pan/zoom 保存视角，程序化居中和 fit 不覆盖它。
+
+## v17 同事务布局补回
+
+新增 `16 → 17` 非 destructive 步骤，不改写已发布的 v15/v16 脚本、摘要或 v16 的 destructive 声明。最低版本仍为 14，保留三条相邻迁移边。v14/v15 首次升级仍需 `--accept-data-loss`：转换包含 v16 有损中间步骤，随后 v17 在同一事务内补回；不借此变更启动或同步的确认策略。
+
+`MigrationContext.input_records()` 读取 `source_root`，协调器将它指向本次事务的原始备份，而不是已被 v16 修改的暂存树。同步规范化同样先复制原始共享快照，再对远端、本地和共同祖先分别执行完整迁移链。v17 同时读取 v15 的 `hosts/*/layout.json` 和 v14 的 `project.json.layout_hints`，host 分片按路径排序优先，项目记录补缺；同一输入在不同执行机器上产生相同结果，不按 `machine_id` 选共享坐标。
+
+- 真实节点和有效产物位置写入生产节点 owner 的 `node-layout.json`，包括只存在于其他 host 的副本；坐标空间由节点、设置快照及父链推导。
+- 产物键按 `encodeURIComponent` 编码规则匹配，只接受已发布文件，跳过 op 产物，overflow 仅在已发布文件超过四个时保留。
+- `commit:<sha>` / `commit:ghost` 写入项目 `git-layout.json`，`planspace:<id>` 写入 `lane-layout.json`，两者空间固定为 canvas。
+- 所有目标只补缺，已有坐标（含升级后新拖动的位置）不覆盖，重复运行不改字节。合成图元和旧 viewport 按设计不恢复；悬空图元、非法标识和畸形／非有限补充坐标跳过并报告，不阻断其他有效位置的补回。
+
+`plan` 在隔离副本演算中间步骤并复用 v17 的补回规则，活动文件不变。`layout_impact.restored` 分列节点、foreign 节点、产物、Git 和方向的计划补回数量；`retained` 表示目标已有位置或先前来源已提供位置；`not_restored` 和 `skipped_entries` 给出不恢复数量与原因，`viewport_discarded` 单列浏览器状态。多个来源包含同一图元时，仅首次有效补入计入 `restored`。
+
+**v17 修复此后的升级，不自动找回此前已丢的数据。** 已是 v16 的存储，本次原始快照通常不再含旧布局；历史 `migration-backups/` 不属于迁移 SDK 的受管输入，也不随 host 同步。`plan.layout_recovery` 核对本机历史备份并列出仍缺失的位置和恢复预览命令；升级到 v17 后仍可查看此提示。已恢复的位置不再提示补回；无本机旧备份时明确提示到原升级设备查找，不能据此宣称恢复成功。
+
+产物、Git 和方向继续使用下述恢复工具；真实节点缺失位置需核对备份后通过 `node-layout` 接口补入。若历史备份含 v14 未分区项目布局，现有恢复工具不能直接读取这部分数据，`plan` 给出隔离导出命令而不推荐无法完整恢复的分片恢复命令；请把示例输出路径换成实际空目录，再核对数据。历史恢复与新升级补回是两个独立路径，不回滚活动存储。
 
 ## 产出物布局与备份恢复
 
