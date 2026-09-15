@@ -8,6 +8,11 @@ from .errors import MigrationError
 
 Scope = Literal["shared", "local", "external_context"]
 LOCAL_DIRECTORY = ".migration-local"
+LEGACY_LOCAL_FILES = frozenset({
+    ".migration.lock",
+    "migrations/canonical-schema-v3.jsonl",
+    "migrations/model-presets-v2.jsonl",
+})
 EXCLUDED_ROOTS = {
     ".git", LOCAL_DIRECTORY, "migration-backups", "machine.json", "machine.lock",
     ".runtime-owner.json", ".update-exit-pending", "workspaces",
@@ -16,6 +21,7 @@ IGNORED_PATTERNS = [
     "machine.json", "machine.lock", "migration-backups/", ".migration-local/",
     ".update-exit-pending", ".runtime-owner.json", "*.tmp",
     "projects/*/hosts/*/local.json", "workspaces/",
+    *[f"/{relative}" for relative in sorted(LEGACY_LOCAL_FILES)],
 ]
 
 
@@ -27,7 +33,7 @@ def context_root(root: Path) -> Path:
 def scope_for(relative: Path, *, external: bool = False) -> Scope | None:
     if not relative.parts or relative.parts[0] in EXCLUDED_ROOTS:
         return None
-    if relative.suffix == ".tmp" or relative.as_posix() == "schema.json":
+    if relative.suffix == ".tmp" or relative.as_posix() in LEGACY_LOCAL_FILES | {"schema.json"}:
         return None
     if external:
         return "external_context"

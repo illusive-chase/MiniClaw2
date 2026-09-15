@@ -9,7 +9,7 @@ from pathlib import Path
 
 from .catalog import marker, steps, version_of
 from .errors import MigrationError
-from .inventory import files, safe_path, scope_for
+from .inventory import LEGACY_LOCAL_FILES, files, safe_path, scope_for
 from .sdk import MigrationContext
 from .transaction import Transaction, atomic_json, durable_copy
 from .validation import read_object, validate
@@ -44,6 +44,8 @@ def extract(root: Path, revision: str, destination: Path) -> None:
                     continue
                 if not member.isfile():
                     raise MigrationError("schema_conflict", "同步快照包含链接或特殊文件", path)
+                if member.name in LEGACY_LOCAL_FILES:
+                    continue
                 if member.name != "schema.json" and scope_for(Path(member.name)) != "shared":
                     raise MigrationError("schema_conflict", "同步快照包含本机私有或非受管路径", path)
                 source = stream.extractfile(member)

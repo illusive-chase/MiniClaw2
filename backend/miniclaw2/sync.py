@@ -23,6 +23,7 @@ from uuid import uuid4
 from .tags import TAGS_FILENAME
 from .migrations.catalog import CURRENT_VERSION
 from .migrations.errors import MigrationError
+from .migrations.inventory import LEGACY_LOCAL_FILES
 
 
 MACHINE_FILENAME = "machine.json"
@@ -455,7 +456,9 @@ class SyncManager:
             if not (self.root / ".git").exists():
                 return None
             self._refresh_identity()
+            ensure_store_gitignore(self.root)
             _git(self.root, "add", "-A")
+            _git(self.root, "rm", "--cached", "--ignore-unmatch", "--", *sorted(LEGACY_LOCAL_FILES))
             staged = _git(self.root, "diff", "--cached", "--quiet", check=False)
             if staged.returncode == 0:
                 return self._head()

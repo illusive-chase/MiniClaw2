@@ -21,10 +21,20 @@ from miniclaw2.global_config import load_global_config, save_global_config
 from miniclaw2.registry import ProjectRegistry
 from miniclaw2.store import Store
 from miniclaw2.migrations.catalog import MINIMUM_VERSION, marker
+from miniclaw2.migrations.errors import MigrationError
+from miniclaw2.migrations.inventory import scope_for
+from miniclaw2.migrations.sync_tree import extract
 from miniclaw2.sync import (
     SchemaConflictError,
     SyncError,
     bootstrap_store,
+)
+
+
+LEGACY_MIGRATION_FILES = (
+    ".migration.lock",
+    "migrations/canonical-schema-v3.jsonl",
+    "migrations/model-presets-v2.jsonl",
 )
 
 
@@ -36,6 +46,43 @@ def _git(*args: str, cwd: Path | None = None) -> subprocess.CompletedProcess[str
         capture_output=True,
         text=True,
     )
+
+
+@pytest.mark.parametrize("relative", LEGACY_MIGRATION_FILES)
+def test_legacy_migration_files_are_not_managed_context(relative: str) -> None:
+    assert scope_for(Path(relative)) is None
+    assert scope_for(Path(relative), external=True) is None
+    assert scope_for(Path("contextspace") / relative) == "shared"
+
+
+@pytest.mark.parametrize("relative,symbolic_link", [
+    ("machine.json", False),
+    (".migration-local/state.json", False),
+    ("projects/project/hosts/host/local.json", False),
+    ("migrations/unknown.jsonl", False),
+    (".migration.lock.bak", False),
+    (".migration.lock/nested.json", False),
+    *[(relative, True) for relative in LEGACY_MIGRATION_FILES],
+])
+def test_sync_extract_still_rejects_private_unknown_and_linked_files(
+    tmp_path: Path, relative: str, symbolic_link: bool,
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    _git("init", cwd=source)
+    candidate = source / relative
+    candidate.parent.mkdir(parents=True, exist_ok=True)
+    if symbolic_link:
+        candidate.symlink_to("missing-target")
+    else:
+        candidate.write_text("{}\n", encoding="utf-8")
+    _git("add", "-A", cwd=source)
+    _git("-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "不允许同步的文件", cwd=source)
+
+    message = "链接或特殊文件" if symbolic_link else "本机私有或非受管路径"
+    with pytest.raises(MigrationError, match=message) as error:
+        extract(source, "HEAD", tmp_path / "destination")
+    assert error.value.state == "schema_conflict"
 
 
 class NonNativeProjectApiTests(unittest.TestCase):
@@ -358,6 +405,72 @@ class GitMetadataSyncTests(unittest.TestCase):
         _git("add", "-A", cwd=self.root_b)
         _git("-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "外部客户端写入", cwd=self.root_b)
         _git("push", "origin", "HEAD:main", cwd=self.root_b)
+
+    def _write_legacy_migration_files(self, root: Path) -> None:
+        for relative in LEGACY_MIGRATION_FILES:
+            destination = root / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_text("旧版迁移本机记录\n", encoding="utf-8")
+
+    def test_commit_ignores_untracked_legacy_migration_files(self) -> None:
+        self._write_legacy_migration_files(self.root_a)
+        self.store_a.sync.commit_now()
+        tracked = _git("ls-files", cwd=self.root_a).stdout.splitlines()
+        for relative in LEGACY_MIGRATION_FILES:
+            self.assertNotIn(relative, tracked)
+            self.assertTrue((self.root_a / relative).is_file())
+            _git("check-ignore", relative, cwd=self.root_a)
+
+    def test_commit_untracks_legacy_migration_files_without_deleting_local_copies(self) -> None:
+        self._write_legacy_migration_files(self.root_a)
+        _git("add", "--force", "--", *LEGACY_MIGRATION_FILES, cwd=self.root_a)
+        _git("-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "旧版迁移记录", cwd=self.root_a)
+        for relative in LEGACY_MIGRATION_FILES:
+            (self.root_a / relative).write_text("本机修改需要保留\n", encoding="utf-8")
+
+        self.store_a.sync.commit_now()
+
+        tracked = _git("ls-files", cwd=self.root_a).stdout.splitlines()
+        for relative in LEGACY_MIGRATION_FILES:
+            self.assertNotIn(relative, tracked)
+            self.assertEqual((self.root_a / relative).read_text(encoding="utf-8"), "本机修改需要保留\n")
+        self.assertEqual(_git("status", "--porcelain", cwd=self.root_a).stdout, "")
+
+    def test_remote_legacy_migration_files_are_filtered_before_fast_forward(self) -> None:
+        remote = self.store_b.create_project(Project(root_path="/b/incoming", name="远端新增"))
+        self._write_legacy_migration_files(self.root_b)
+        _git("add", "--force", "--", *LEGACY_MIGRATION_FILES, cwd=self.root_b)
+        self._push_unchecked_b()
+
+        self.store_a.sync.sync_now()
+
+        self.assertIn(remote.id, {project.id for project in self.store_a.list_projects()})
+        for relative in LEGACY_MIGRATION_FILES:
+            self.assertFalse((self.root_a / relative).exists())
+        published = _git("--git-dir", str(self.remote), "ls-tree", "-r", "--name-only", "main").stdout.splitlines()
+        self.assertTrue(set(LEGACY_MIGRATION_FILES).isdisjoint(published))
+        self.store_a.sync.sync_now()
+
+    def test_divergent_sync_filters_legacy_migration_files_in_common_ancestor(self) -> None:
+        self._write_legacy_migration_files(self.root_b)
+        _git("add", "--force", "--", *LEGACY_MIGRATION_FILES, cwd=self.root_b)
+        self._push_unchecked_b()
+        _git("fetch", "origin", cwd=self.root_a)
+        _git("merge", "--ff-only", "origin/main", cwd=self.root_a)
+        local = self.store_a.create_project(Project(root_path="/a/offline", name="本机新增"))
+        remote = self.store_b.create_project(Project(root_path="/b/offline", name="远端新增"))
+        (self.root_b / LEGACY_MIGRATION_FILES[1]).write_text("远端迁移记录\n", encoding="utf-8")
+        self._push_unchecked_b()
+
+        self.store_a.sync.sync_now()
+
+        ids = {project.id for project in self.store_a.list_projects()}
+        self.assertTrue({local.id, remote.id}.issubset(ids))
+        for relative in LEGACY_MIGRATION_FILES:
+            self.assertEqual((self.root_a / relative).read_text(encoding="utf-8"), "旧版迁移本机记录\n")
+        tracked = _git("ls-files", cwd=self.root_a).stdout.splitlines()
+        self.assertTrue(set(LEGACY_MIGRATION_FILES).isdisjoint(tracked))
+        self.assertEqual(_git("status", "--porcelain", cwd=self.root_a).stdout, "")
 
     def test_supported_remote_is_normalized_before_divergent_merge(self) -> None:
         self.store_a.coordinator.apply(self.store_a.machine.id, accept_data_loss=True)
