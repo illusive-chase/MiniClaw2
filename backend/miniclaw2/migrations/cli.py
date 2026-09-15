@@ -12,7 +12,7 @@ from .inventory import LOCAL_DIRECTORY
 from .impact import layout_impact, layout_recovery_guidance
 from .validation import read_object
 from .inventory import safe_path
-from .transaction import backup_payload, prune_transactions
+from .transaction import backup_digest, backup_extract, backup_origin, prune_transactions
 
 
 def status(root: Path) -> dict[str, Any]:
@@ -52,12 +52,21 @@ def main(arguments: list[str]) -> None:
         elif args.action == "status":
             result = status(root)
         elif args.action == "prune":
-            # A backup that is still the only source of restorable coordinates
-            # is load-bearing regardless of age, so it is excluded here rather
-            # than left to whoever picks --keep.
-            protected = {report["transaction"] for report in layout_recovery_guidance(root) if report.get("transaction")}
-            result = {"state": "ready", **prune_transactions(root, keep=args.keep, protected=protected),
-                      "detail": "已回收已完结事务的暂存树；保留窗口之外、且不再被布局恢复引用的备份已清理。未完结事务与仍可恢复坐标的备份保持原样"}
+            # Reclaiming a transaction has to take the storage lock, which
+            # constructing the coordinator does: `publish` writes its ready
+            # journal and only then fsyncs the transaction directory, so a
+            # delete landing between those two steps fails a publication
+            # whose live data has already changed. Under a running backend
+            # this now refuses outright instead of deleting some of what
+            # that backend still depends on.
+            storage = coordinator(root)
+            with storage.mutex:
+                # A backup that is still the only source of restorable
+                # coordinates is load-bearing regardless of age, so it is
+                # excluded here rather than left to whoever picks --keep.
+                protected = {report["transaction"] for report in layout_recovery_guidance(root) if report.get("transaction")}
+                result = {"state": "ready", **prune_transactions(root, keep=args.keep, protected=protected),
+                          "detail": "已回收已完结事务的暂存树；保留窗口之外、且不再被布局恢复引用的备份已清理。未完结事务与仍可恢复坐标的备份保持原样"}
         elif args.action == "plan":
             storage = coordinator(root)
             source = storage.source_version()
@@ -97,14 +106,15 @@ def restore_isolated(root: Path, identifier: str, output: Path) -> None:
         for relative, checksum in inventory.items():
             if checksum is None:
                 continue
-            payload = backup_payload(root, journal, index, relative, identifier=identifier)
-            if payload.digest != checksum:
-                raise MigrationError("migration_failed", f"原始备份缺失或摘要不一致：{payload.origin}", root)
+            if backup_digest(root, journal, index, relative, identifier=identifier) != checksum:
+                origin = backup_origin(root, journal, index, relative, identifier=identifier)
+                raise MigrationError("migration_failed", f"原始备份缺失或摘要不一致：{origin}", root)
     for index, inventory in enumerate(journal["inputs"]):
         destination = output / ("store" if index == 0 else "external_context")
         for relative, checksum in inventory.items():
             if checksum is not None:
                 target = safe_path(destination, relative)
-                target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_bytes(backup_payload(root, journal, index, relative, identifier=identifier).content)
+                if backup_extract(root, journal, index, relative, target, identifier=identifier) != checksum:
+                    origin = backup_origin(root, journal, index, relative, identifier=identifier)
+                    raise MigrationError("migration_failed", f"导出期间原始备份发生变化：{origin}", root)
                 target.chmod(int(checksum.split(":")[0], 8))

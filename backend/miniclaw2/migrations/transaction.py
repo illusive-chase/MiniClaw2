@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -8,7 +9,7 @@ import tempfile
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterator
+from typing import IO, Any, Iterator
 from uuid import uuid4
 
 from .errors import MigrationError
@@ -52,8 +53,6 @@ def atomic_json(path: Path, payload: dict[str, Any]) -> None:
 def file_digest(path: Path) -> str | None:
     if not path.exists():
         return None
-    import hashlib
-
     checksum = hashlib.sha256()
     with path.open("rb") as stream:
         for block in iter(lambda: stream.read(1024 * 1024), b""):
@@ -118,11 +117,19 @@ def pin_backup_commit(root: Path, identifier: str, commit: str) -> bool:
 
 
 def blob_names(root: Path, paths: list[Path]) -> dict[Path, str]:
-    """Hash files the way Git would, to match their bytes against a tree."""
+    """Name each file by the hash of its raw bytes, as Git stores them.
+
+    `--no-filters` is what makes the answer usable as a byte-identity test.
+    Without it, a clean filter or newline normalization is applied first, so
+    a CRLF working file under `core.autocrlf=true` hashes to the committed
+    LF blob — and a backup that recorded that reference would hand back
+    bytes the store never had. Filtered files simply fail to match here and
+    are copied instead.
+    """
     names: dict[Path, str] = {}
     for start in range(0, len(paths), 400):
         batch = paths[start:start + 400]
-        output = _git_output(root, "hash-object", "--", *[str(path) for path in batch])
+        output = _git_output(root, "hash-object", "--no-filters", "--", *[str(path) for path in batch])
         if output is None:
             return {}
         hashes = output.decode().split()
@@ -132,11 +139,34 @@ def blob_names(root: Path, paths: list[Path]) -> dict[Path, str]:
     return names
 
 
-def blob_bytes(root: Path, blob: str) -> bytes:
-    content = _git_output(root, "cat-file", "blob", blob)
-    if content is None:
-        raise MigrationError("migration_failed", f"Git 不再持有备份引用的对象 {blob}", root)
-    return content
+@contextmanager
+def blob_stream(root: Path, blob: str) -> Iterator[IO[bytes]]:
+    """One Git object, open for reading rather than buffered whole.
+
+    Backups reference blobs of any size — transcripts and event logs among
+    them — so every read of one is incremental. Consumers read to EOF: the
+    exit status is what catches an object that turns out to be truncated,
+    and abandoning the stream early is indistinguishable from that.
+    """
+    def lost() -> MigrationError:
+        return MigrationError("migration_failed", f"Git 不再持有备份引用的对象 {blob}", root)
+
+    if not (root / ".git").exists():
+        raise lost()
+    process = subprocess.Popen(
+        ["git", "-C", str(root), "cat-file", "blob", blob], stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL, env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+    )
+    if process.stdout is None:
+        process.wait()
+        raise lost()
+    try:
+        yield process.stdout
+    finally:
+        process.stdout.close()
+        process.wait()
+    if process.returncode:
+        raise lost()
 
 
 def snapshot(root: Path, *, external: bool = False) -> dict[str, str | None]:
@@ -208,10 +238,6 @@ class Transaction:
         durable_mkdir(path)
         return path
 
-    def backup_digest(self, index: int, relative: str) -> str | None:
-        """Digest of the pre-migration file, from the copy or from Git."""
-        return backup_payload(self.root, self.journal, index, relative, identifier=self.identifier).digest
-
     def discard_stage(self) -> None:
         """Drop the staged tree once it has been published.
 
@@ -268,7 +294,9 @@ class Transaction:
             current = file_digest(target)
             if current not in (change["before"], change["after"]):
                 raise MigrationError("migration_failed", "发布目标被外部修改，请在隔离目录恢复备份", target)
-            if change["before"] is not None and self.backup_digest(index, relative) != change["before"]:
+            if change["before"] is not None and backup_digest(
+                self.root, self.journal, index, relative, identifier=self.identifier,
+            ) != change["before"]:
                 raise MigrationError("migration_failed", "迁移备份摘要不一致", target)
             if change["after"] is not None:
                 source = safe_path(self.stage(index), relative)
@@ -318,22 +346,80 @@ class Transaction:
                     raise MigrationError("migration_failed", "发布输入被外部修改", Path(root_name) / relative)
 
 
-def backup_source(root: Path, journal: dict[str, Any], index: int, relative: str) -> bytes:
-    """Read one pre-migration file, whether it was copied or left in Git.
-
-    Restore tooling addresses backups by path; a referenced entry has no
-    file on disk, so its bytes come back from the recorded blob.
-    """
+def _reference(journal: dict[str, Any], index: int, relative: str) -> str | None:
     references = journal.get("backup_refs") or []
-    blob = references[index].get(relative) if index < len(references) else None
-    if blob is not None:
-        return blob_bytes(root, blob)
-    return safe_path(root / "migration-backups", f"{journal['id']}/{index}/{relative}").read_bytes()
+    return references[index].get(relative) if index < len(references) else None
+
+
+def backup_origin(
+    root: Path, journal: dict[str, Any], index: int, relative: str, *, identifier: str | None = None,
+) -> str:
+    """Where one backup entry's bytes live, for error messages."""
+    blob = _reference(journal, index, relative)
+    if blob is None:
+        return str(safe_path(root / "migration-backups", f"{identifier or journal['id']}/{index}/{relative}"))
+    return f"git:{blob} ({relative})"
+
+
+@contextmanager
+def backup_stream(
+    root: Path, journal: dict[str, Any], index: int, relative: str, *, identifier: str | None = None,
+) -> Iterator[tuple[IO[bytes], str, str]]:
+    """One backup entry open for incremental reading.
+
+    A backup entry is either a copied file or a reference to the Git blob
+    that already held those exact bytes at the pre-migration commit. Both
+    are addressed by path here, so callers need not know which they got.
+    Yielded alongside the stream are the permission prefix the entry's
+    digest carries and an origin label for error messages.
+    """
+    blob = _reference(journal, index, relative)
+    origin = backup_origin(root, journal, index, relative, identifier=identifier)
+    if blob is None:
+        path = Path(origin)
+        if not path.is_file():
+            raise MigrationError("migration_failed", "迁移备份缺失", path)
+        with path.open("rb") as stream:
+            yield stream, f"{path.stat().st_mode & 0o777:03o}", origin
+        return
+    recorded = (journal["inputs"][index] or {}).get(relative) or ""
+    with blob_stream(root, blob) as stream:
+        yield stream, recorded.split(":")[0], origin
+
+
+def backup_digest(
+    root: Path, journal: dict[str, Any], index: int, relative: str, *, identifier: str | None = None,
+) -> str:
+    """Checksum one backup entry without holding it in memory."""
+    checksum = hashlib.sha256()
+    with backup_stream(root, journal, index, relative, identifier=identifier) as (stream, mode, _origin):
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            checksum.update(block)
+    return f"{mode}:{checksum.hexdigest()}"
+
+
+def backup_extract(
+    root: Path, journal: dict[str, Any], index: int, relative: str, target: Path,
+    *, identifier: str | None = None,
+) -> str:
+    """Write one backup entry to `target`, and return the digest of what was written.
+
+    Copying and checksumming share the one pass, so restoring a store costs
+    a buffer rather than its largest transcript.
+    """
+    checksum = hashlib.sha256()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with backup_stream(root, journal, index, relative, identifier=identifier) as (stream, mode, _origin):
+        with target.open("wb") as output:
+            for block in iter(lambda: stream.read(1024 * 1024), b""):
+                checksum.update(block)
+                output.write(block)
+    return f"{mode}:{checksum.hexdigest()}"
 
 
 @dataclass(frozen=True)
 class BackupPayload:
-    """One pre-migration file, wherever its bytes actually live."""
+    """One pre-migration metadata record, wherever its bytes actually live."""
 
     content: bytes
     digest: str
@@ -350,24 +436,16 @@ class BackupPayload:
 def backup_payload(
     root: Path, journal: dict[str, Any], index: int, relative: str, *, identifier: str | None = None,
 ) -> BackupPayload:
-    """Read one file from a transaction's backup.
+    """Read one backup entry whole, for callers that parse it as a record.
 
-    A backup entry is either a copied file or a reference to the Git blob
-    that already held those exact bytes at the pre-migration commit. Both
-    are addressed by path here, so callers need not know which they got.
+    Only metadata records are read this way. Anything whose size is not
+    bounded by its shape — a transcript, an event log — is checksummed with
+    `backup_digest` or copied with `backup_extract` instead, so that neither
+    verification nor restore scales with the largest file in the store.
     """
-    references = journal.get("backup_refs") or []
-    blob = references[index].get(relative) if index < len(references) else None
-    recorded = (journal["inputs"][index] or {}).get(relative) or ""
-    if blob is None:
-        directory = f"{identifier or journal['id']}/{index}"
-        path = safe_path(root / "migration-backups", f"{directory}/{relative}")
-        return BackupPayload(path.read_bytes(), file_digest(path) or "", str(path))
-    import hashlib
-
-    content = blob_bytes(root, blob)
-    checksum = hashlib.sha256(content).hexdigest()
-    return BackupPayload(content, f"{recorded.split(':')[0]}:{checksum}", f"git:{blob} ({relative})")
+    with backup_stream(root, journal, index, relative, identifier=identifier) as (stream, mode, origin):
+        content = stream.read()
+    return BackupPayload(content, f"{mode}:{hashlib.sha256(content).hexdigest()}", origin)
 
 
 @contextmanager
@@ -392,12 +470,11 @@ def hydrated_backup(
         for relative, checksum in (journal["inputs"][index] or {}).items():
             if checksum is None:
                 continue
-            payload = backup_payload(root, journal, index, relative, identifier=identifier)
-            if payload.digest != checksum:
-                raise MigrationError("migration_failed", f"备份摘要不一致：{payload.origin}", root)
             target = safe_path(overlay, relative)
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(payload.content)
+            digest = backup_extract(root, journal, index, relative, target, identifier=identifier)
+            if digest != checksum:
+                origin = backup_origin(root, journal, index, relative, identifier=identifier)
+                raise MigrationError("migration_failed", f"备份摘要不一致：{origin}", root)
             target.chmod(int(checksum.split(":")[0], 8))
         yield overlay
 

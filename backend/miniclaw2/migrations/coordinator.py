@@ -141,20 +141,32 @@ class StorageCoordinator:
                     transaction = Transaction(self.root, roots)
                     transaction.journal["accept_data_loss"] = accept_data_loss
                     transaction.journal["accepted_migration_contracts"] = sorted(accepted)
+                    # One hydration per root index, and none at all for a
+                    # scope with nothing to run. Both shared and local read
+                    # index 0, so hydrating per scope would build the same
+                    # overlay twice and — under ExitStack — hold both trees
+                    # at once, which the preflight's three-times-size budget
+                    # does not cover. `apply --accept-data-loss` on an
+                    # already-current store has no steps at all and so needs
+                    # no snapshot.
                     with ExitStack() as pristine:
+                        snapshots: dict[int, Path] = {}
                         for scope, source in sources.items():
                             if scope == "external_context" and len(roots) == 1:
                                 continue
+                            applicable = [migration for migration in steps(source) if scope in migration.scopes]
+                            if not applicable:
+                                continue
                             index = 1 if scope == "external_context" else 0
-                            stage = transaction.stage(index)
-                            snapshot = pristine.enter_context(hydrated_backup(self.root, transaction.journal, index))
-                            context = MigrationContext(stage, scope, machine_id, snapshot)
-                            for migration in steps(source):
-                                if scope in migration.scopes:
-                                    if migration.destructive and migration.contract not in accepted:
-                                        raise MigrationError("migration_required", f"{migration.summary}；请查看 migrations plan 后用 apply --accept-data-loss 确认")
-                                    migration.upgrade(context)
-                                    migration.verify(context)
+                            if index not in snapshots:
+                                snapshots[index] = pristine.enter_context(
+                                    hydrated_backup(self.root, transaction.journal, index))
+                            context = MigrationContext(transaction.stage(index), scope, machine_id, snapshots[index])
+                            for migration in applicable:
+                                if migration.destructive and migration.contract not in accepted:
+                                    raise MigrationError("migration_required", f"{migration.summary}；请查看 migrations plan 后用 apply --accept-data-loss 确认")
+                                migration.upgrade(context)
+                                migration.verify(context)
                     for index, root in enumerate(roots):
                         stage = transaction.stage(index)
                         validate(stage, external=index > 0)

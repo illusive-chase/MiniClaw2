@@ -164,6 +164,45 @@ def test_local_cursor_is_not_shared_cursor(tmp_path: Path) -> None:
 
 
 
+def test_pristine_snapshot_is_hydrated_once_per_root(tmp_path: Path) -> None:
+    """Shared and local read the same root, so one overlay serves both."""
+    from miniclaw2.migrations.transaction import hydrated_backup
+
+    store = Store(tmp_path)
+    store.create_project(Project(root_path="/tmp/one-hydration"))
+    _committed_store(tmp_path)
+    atomic_json(tmp_path / "schema.json", marker(MINIMUM_VERSION))
+    receipt_path = tmp_path / ".migration-local" / "state.json"
+    receipt = json.loads(receipt_path.read_text())
+    receipt.update(marker(MINIMUM_VERSION))
+    atomic_json(receipt_path, receipt)
+    store.coordinator.ready = False
+    hydrated = []
+
+    def tracked(root, journal, index, **keywords):
+        hydrated.append(index)
+        return hydrated_backup(root, journal, index, **keywords)
+
+    with patch("miniclaw2.migrations.coordinator.hydrated_backup", side_effect=tracked):
+        store.coordinator.apply(store.machine.id, accept_data_loss=True)
+    assert hydrated == [0], "同一数据根只应水化一次原始快照"
+    assert version_of(json.loads((tmp_path / "schema.json").read_text()), tmp_path / "schema.json") == CURRENT_VERSION
+
+
+def test_current_store_records_confirmation_without_hydrating(tmp_path: Path) -> None:
+    """`apply --accept-data-loss` on a current store has no steps, so no snapshot."""
+    store = Store(tmp_path)
+    store.create_project(Project(root_path="/tmp/no-hydration"))
+    _committed_store(tmp_path)
+    store.coordinator.ready = False
+    with patch("miniclaw2.migrations.coordinator.hydrated_backup",
+               side_effect=AssertionError("无迁移步骤时不应水化备份")):
+        store.coordinator.apply(store.machine.id, accept_data_loss=True)
+    accepted = json.loads((tmp_path / ".migration-local" / "state.json").read_text())
+    assert accepted["accepted_migration_contracts"] == sorted(
+        migration.contract for migration in steps(MINIMUM_VERSION) if migration.destructive)
+
+
 def test_current_bad_record_is_not_silently_hidden(tmp_path: Path) -> None:
     store = Store(tmp_path)
     project = store.create_project(Project(root_path="/tmp/current-bad"))
@@ -278,6 +317,77 @@ def test_backup_references_git_instead_of_copying_committed_bytes(tmp_path: Path
     assert payload.digest == transaction.journal["inputs"][0]["config.json"]
 
 
+def test_backup_copies_bytes_git_would_normalize(tmp_path: Path) -> None:
+    """A filtered file is copied, because its committed blob is not its bytes."""
+    from miniclaw2.migrations.cli import restore_isolated
+
+    root = tmp_path / "store"
+    crlf = b'{\r\n  "old": true\r\n}\r\n'
+    root.mkdir()
+    (root / "config.json").write_bytes(crlf)
+    atomic_json(root / "schema.json", marker())
+    environment = {**os.environ, "GIT_AUTHOR_NAME": "T", "GIT_COMMITTER_NAME": "T",
+                   "GIT_AUTHOR_EMAIL": "t@localhost", "GIT_COMMITTER_EMAIL": "t@localhost"}
+    for arguments in (["init", "-b", "main"], ["config", "core.autocrlf", "true"],
+                      ["add", "-A"], ["commit", "-m", "baseline"]):
+        subprocess.run(["git", "-C", str(root), *arguments], check=True,
+                       capture_output=True, env=environment)
+    committed = subprocess.run(["git", "-C", str(root), "cat-file", "blob", "HEAD:config.json"],
+                               check=True, capture_output=True, env=environment).stdout
+    assert committed != crlf, "此用例要求 Git 确实规范化了换行，否则没有验证到该风险"
+
+    transaction = Transaction(root, [root])
+
+    assert "config.json" not in transaction.journal["backup_refs"][0], "字节与提交对象不同的文件不能只记引用"
+    assert (transaction.backup / "0" / "config.json").read_bytes() == crlf
+    atomic_json(transaction.stage(0) / "config.json", {"new": True})
+    transaction.decide()
+    transaction.publish()
+    restore_isolated(root, transaction.identifier, tmp_path / "recovered")
+    assert (tmp_path / "recovered" / "store" / "config.json").read_bytes() == crlf
+
+
+@pytest.mark.parametrize("committed", [True, False])
+def test_large_backup_entry_is_verified_and_exported_by_streaming(tmp_path: Path, committed: bool) -> None:
+    """Neither verifying nor exporting a backup may scale with the largest file."""
+    import tracemalloc
+
+    from miniclaw2.migrations.cli import restore_isolated
+    from miniclaw2.migrations.transaction import backup_digest, backup_extract
+
+    root = tmp_path / "store"
+    relative = "projects/p/hosts/h/nodes/n/events.jsonl"
+    events = root / relative
+    events.parent.mkdir(parents=True)
+    events.write_bytes(b'{"seq":1}\n' * (1024 * 1024))
+    atomic_json(root / "schema.json", marker())
+    if committed:
+        _committed_store(root)
+    transaction = Transaction(root, [root])
+    assert (relative in transaction.journal["backup_refs"][0]) is committed
+    recorded = transaction.journal["inputs"][0][relative]
+    budget = events.stat().st_size // 2
+
+    tracemalloc.start()
+    try:
+        assert backup_digest(root, transaction.journal, 0, relative,
+                             identifier=transaction.identifier) == recorded
+        assert tracemalloc.get_traced_memory()[1] < budget, "校验备份摘要不应整块读入文件"
+        tracemalloc.reset_peak()
+        assert backup_extract(root, transaction.journal, 0, relative, tmp_path / "copy.jsonl",
+                              identifier=transaction.identifier) == recorded
+        assert tracemalloc.get_traced_memory()[1] < budget, "导出备份不应整块读入文件"
+    finally:
+        tracemalloc.stop()
+    assert (tmp_path / "copy.jsonl").read_bytes() == events.read_bytes()
+
+    atomic_json(transaction.stage(0) / "config.json", {"new": True})
+    transaction.decide()
+    transaction.publish()
+    restore_isolated(root, transaction.identifier, tmp_path / "recovered")
+    assert (tmp_path / "recovered" / "store" / relative).read_bytes() == events.read_bytes()
+
+
 def test_backup_copies_everything_without_git_history(tmp_path: Path) -> None:
     atomic_json(tmp_path / "config.json", {"old": True})
     transaction = Transaction(tmp_path, [tmp_path])
@@ -387,6 +497,27 @@ def test_prune_spares_backup_still_needed_for_recovery(tmp_path: Path) -> None:
     assert (tmp_path / "migration-backups" / identifiers[0]).is_dir(), "仍被恢复引用的备份不能因为旧而删除"
     assert identifiers[1] in result["removed"]
     assert not (tmp_path / "migration-backups" / identifiers[1]).exists()
+
+
+def test_other_process_cannot_prune_held_store(tmp_path: Path) -> None:
+    """Reclaiming a transaction under a running backend would race publication."""
+    store = Store(tmp_path)
+    for step in range(3):
+        transaction = Transaction(tmp_path, [tmp_path])
+        atomic_json(transaction.stage(0) / "config.json", {"n": step + 1})
+        transaction.decide()
+        transaction.publish()
+    backups = {path.name for path in (tmp_path / "migration-backups").iterdir()}
+
+    result = subprocess.run(
+        [os.sys.executable, "-m", "miniclaw2", "migrations", "prune", "--root", str(tmp_path), "--keep", "0"],
+        capture_output=True, text=True,
+    )
+
+    assert result.returncode != 0
+    assert "另一个进程" in result.stderr
+    assert {path.name for path in (tmp_path / "migration-backups").iterdir()} == backups, "未取得存储协调权时不能删除任何备份"
+    assert store.list_projects() == []
 
 
 def test_other_process_cannot_open_held_store(tmp_path: Path) -> None:
