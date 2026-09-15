@@ -450,7 +450,6 @@ def describe_project_contextspace(
 
     root = contextspace_root(store_root)
     binding = resolve_project_binding(project, root)
-    all_bindings = list_project_bindings(root)
     bindings = [binding] if binding is not None else []
     #: Ports live on one lane's manifest, and only an embedded template session
     #: declares any — every ordinary project reports an empty list, which is
@@ -492,10 +491,6 @@ def describe_project_contextspace(
         "bindings": [
             _binding_summary(root, project, item)
             for item in bindings
-        ],
-        "selectable_bindings": [
-            _binding_summary(root, project, item)
-            for item in all_bindings
         ],
     }
 
@@ -980,9 +975,23 @@ def delete_planspace(
 
 
 def resolve_project_binding(project: Project, root: Path) -> ProjectBinding | None:
+    """The one binding this project owns, or None.
+
+    Ownership is the only rule: a binding belongs to the project whose id its
+    manifest records. ``project_context_binding_id`` is a cache of that answer,
+    consulted first to avoid scanning, and honoured only when the named binding
+    agrees — or when it claims no owner at all, which is how a binding written
+    before the owner id existed still resolves. A stored id naming another
+    project's binding is stale metadata, not a choice; it is ignored so the
+    owner scan can find the right one.
+    """
     explicit = project.project_context_binding_id
     if explicit:
-        return _load_binding_by_id(root, explicit)
+        binding = _load_binding_by_id(root, explicit)
+        if binding is not None:
+            owner = _binding_project_owner_id(binding)
+            if owner is None or owner == project.id:
+                return binding
     return next(
         (
             binding

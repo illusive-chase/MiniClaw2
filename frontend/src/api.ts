@@ -84,7 +84,6 @@ export async function createSession(
     concurrency?: number;
     temporary?: boolean;
     name?: string;
-    project_context_binding_id?: string | null;
     create_missing_cwd?: boolean;
   } = {},
 ): Promise<SessionInfo> {
@@ -111,8 +110,17 @@ export async function getGlobalState(): Promise<GlobalState> {
   return res.json();
 }
 
-export async function getMigrationStatus(): Promise<{ state: string; detail: string; target: number; minimum: number }> {
-  const res = await fetch("/migrations/status");
+export type SyncProgress = {
+  phase: string;
+  detail: string;
+  started_at: number | null;
+  phase_started_at: number | null;
+};
+
+export async function getMigrationStatus(signal?: AbortSignal): Promise<{
+  state: string; detail: string; target: number; minimum: number; sync_progress?: SyncProgress;
+}> {
+  const res = await fetch("/migrations/status", { signal });
   if (!res.ok) throw new ApiError("getMigrationStatus", res.status, await readErrorDetail(res));
   return res.json();
 }
@@ -394,21 +402,6 @@ export async function getSessionContextSpace(
 ): Promise<SessionContextSpaceInfo> {
   const res = await fetch(`/sessions/${sessionId}/contextspace`);
   if (!res.ok) throw new Error(`getSessionContextSpace failed: ${res.status}`);
-  return res.json();
-}
-
-export async function updateSessionContextSpace(
-  sessionId: string,
-  body: {
-    project_context_binding_id?: string | null;
-  },
-): Promise<SessionContextSpaceInfo> {
-  const res = await fetch(`/sessions/${sessionId}/contextspace`, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) throw new Error(`updateSessionContextSpace failed: ${res.status}`);
   return res.json();
 }
 

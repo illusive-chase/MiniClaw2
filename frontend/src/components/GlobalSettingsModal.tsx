@@ -15,6 +15,7 @@ import {
   updateToolRequestSettings,
 } from "../api";
 import { canApplyUpdate } from "../selfUpdate";
+import { useSyncProgress } from "../useSyncProgress";
 import { LANGUAGE_OPTIONS } from "../languages";
 import type {
   CodeReviewSettings,
@@ -55,6 +56,7 @@ export function GlobalSettingsModal({ open, state, onClose, onChanged }: Props) 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [syncing, setSyncing] = useState(false);
+  const { progress: syncProgress, elapsedSeconds: syncElapsedSeconds } = useSyncProgress(open && syncing);
   const [checkingRemote, setCheckingRemote] = useState(false);
   const [checkingUpdate, setCheckingUpdate] = useState(false);
   const [applyingUpdate, setApplyingUpdate] = useState(false);
@@ -300,9 +302,14 @@ export function GlobalSettingsModal({ open, state, onClose, onChanged }: Props) 
               </div>
             )}
             {syncError ? <div className="mt-2 text-[11px] text-state-error">{syncError}</div> : null}
+            {syncing && (
+              <div role="status" className="mt-2 text-[11px] text-ink-muted">
+                {syncProgress?.detail ?? "正在准备同步"} · 已用时 {syncElapsedSeconds} 秒
+              </div>
+            )}
             <div className="mt-3 flex justify-end">
               <button type="button" disabled={syncing || checkingRemote || (!state?.sync.configured && (!remoteUrl.trim() || !privacyAcknowledged))} onClick={() => void runSync()} className={primaryButton}>
-                {syncing ? "Syncing…" : state?.sync.configured ? "Sync now" : "Set up sync"}
+                {syncing ? "正在同步…" : state?.sync.configured ? "Sync now" : "Set up sync"}
               </button>
             </div>
           </section>

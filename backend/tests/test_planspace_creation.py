@@ -202,11 +202,52 @@ class ReadPlanspaceModeTests(unittest.TestCase):
         plug_ids = {plug["id"] for plug in binding["plugs"]}
         self.assertIn(current_plug, plug_ids)
         self.assertNotIn(other_plug, plug_ids)
-        selectable_ids = {
-            selectable["id"] for selectable in summary["selectable_bindings"]
+        # Another project's binding is not offered for selection: the summary
+        # reports the one binding this project owns and nothing else.
+        self.assertNotIn("selectable_bindings", summary)
+
+    def test_a_binding_owned_by_another_project_is_not_honoured(self) -> None:
+        """A stored id naming a foreign binding resolves to the owner's, not it.
+
+        This is the shape a project ended up in when it could adopt another
+        project's binding: the id persisted on the project record, and every
+        lane created afterwards was scoped to — and stored inside — the other
+        project's binding.
+        """
+        root = Path(os.environ["MINICLAW_CONTEXT_HOME"])
+        other = Project(
+            root_path=str(Path(self.tmp.name) / "other-repo"),
+            name="billing",
+        )
+        Path(other.root_path).mkdir(parents=True, exist_ok=True)
+        own = ensure_project_binding(self.project)
+        foreign = ensure_project_binding(other)
+
+        self.project.project_context_binding_id = foreign.id
+        resolved = resolve_project_binding(self.project, root)
+
+        assert resolved is not None
+        self.assertEqual(resolved.id, own.id)
+
+    def test_an_ownerless_binding_is_still_honoured(self) -> None:
+        """Bindings written before the owner id existed must keep resolving."""
+        root = Path(os.environ["MINICLAW_CONTEXT_HOME"])
+        binding = ensure_project_binding(self.project)
+        raw = dict(binding.raw)
+        raw["project"] = {
+            key: value
+            for key, value in (raw.get("project") or {}).items()
+            if key != "miniclaw_project_id"
         }
-        self.assertIn(binding["id"], selectable_ids)
-        self.assertIn("project.billing", selectable_ids)
+        binding.path.write_text(
+            yaml.safe_dump(raw, sort_keys=False, allow_unicode=True),
+            encoding="utf-8",
+        )
+
+        resolved = resolve_project_binding(self.project, root)
+
+        assert resolved is not None
+        self.assertEqual(resolved.id, binding.id)
 
 
 class BlankPlanspaceRegistryTests(unittest.TestCase):

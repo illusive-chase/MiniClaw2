@@ -14,23 +14,22 @@ from .domain import Node, NodeLayout, NodePosition
 from .migrations.errors import MigrationError
 from .migrations.inventory import safe_path
 from .migrations.steps.v0016_node_layout import coordinate_space
-from .migrations.transaction import file_digest
+from .migrations.transaction import backup_payload
 from .migrations.validation import read_object
 from .node_layout import node_coordinate_space, node_layout_owners
 
 
-def _verified_record(backup: Path, relative: str, inventory: dict[str, Any]) -> dict[str, Any]:
-    path = safe_path(backup, relative)
-    if not inventory.get(relative) or file_digest(path) != inventory[relative]:
-        raise ValueError(f"备份摘要不匹配：{path}")
-    return read_object(path)
+def _verified_record(root: Path, journal: dict[str, Any], relative: str, inventory: dict[str, Any], identifier: str) -> dict[str, Any]:
+    payload = backup_payload(root, journal, 0, relative, identifier=identifier)
+    if not inventory.get(relative) or payload.digest != inventory[relative]:
+        raise ValueError(f"备份摘要不匹配：{payload.origin}")
+    return payload.record
 
 
 def recovery_plan(root: Path, transaction: str, *, project_id: str | None = None) -> dict[str, Any]:
     host = read_object(root / "machine.json")["id"]
     journal = read_object(safe_path(root / ".migration-local/transactions", transaction + "/journal.json"))
     inventory = journal["inputs"][0]
-    backup = safe_path(root / "migration-backups", transaction + "/0")
     layouts: dict[str, list[str]] = {}
     for relative in sorted(inventory, key=lambda name: (Path(name).parts[3:4] != (host,), name)):
         if inventory[relative] is None or not Path(relative).match("projects/*/hosts/*/layout.json"):
@@ -47,7 +46,7 @@ def recovery_plan(root: Path, transaction: str, *, project_id: str | None = None
         for relative in inventory:
             if inventory[relative] is None or not Path(relative).match(f"projects/{candidate_id}/hosts/*/nodes/*/node.json"):
                 continue
-            payload = _verified_record(backup, relative, inventory)
+            payload = _verified_record(root, journal, relative, inventory, transaction)
             node_id = Path(relative).parts[5]
             if payload.get("id") != node_id or payload.get("project_id") != candidate_id or node_id in historical:
                 raise ValueError(f"备份节点路径或唯一性无效：{relative}")
@@ -69,7 +68,7 @@ def recovery_plan(root: Path, transaction: str, *, project_id: str | None = None
         sources = {}
         skipped = {}
         for relative in relatives:
-            hints = _verified_record(backup, relative, inventory).get("layout_hints", {})
+            hints = _verified_record(root, journal, relative, inventory, transaction).get("layout_hints", {})
             if not isinstance(hints, dict):
                 raise ValueError(f"备份布局不是对象：{relative}")
             for tile_id, position in sorted(hints.items()):

@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import threading
 import weakref
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -11,7 +11,7 @@ from .catalog import CURRENT_VERSION, MINIMUM_VERSION, marker, steps, version_of
 from .errors import MigrationError
 from .inventory import LOCAL_DIRECTORY, context_root, files, safe_path
 from .sdk import MigrationContext
-from .transaction import Transaction, atomic_json, durable_mkdir, recover
+from .transaction import Transaction, atomic_json, durable_mkdir, hydrated_backup, recover
 from .validation import read_object, validate
 
 _COORDINATORS: weakref.WeakValueDictionary[Path, StorageCoordinator] = weakref.WeakValueDictionary()
@@ -141,17 +141,20 @@ class StorageCoordinator:
                     transaction = Transaction(self.root, roots)
                     transaction.journal["accept_data_loss"] = accept_data_loss
                     transaction.journal["accepted_migration_contracts"] = sorted(accepted)
-                    for scope, source in sources.items():
-                        if scope == "external_context" and len(roots) == 1:
-                            continue
-                        stage = transaction.stage(1 if scope == "external_context" else 0)
-                        context = MigrationContext(stage, scope, machine_id, transaction.backup / ("1" if scope == "external_context" else "0"))
-                        for migration in steps(source):
-                            if scope in migration.scopes:
-                                if migration.destructive and migration.contract not in accepted:
-                                    raise MigrationError("migration_required", f"{migration.summary}；请查看 migrations plan 后用 apply --accept-data-loss 确认")
-                                migration.upgrade(context)
-                                migration.verify(context)
+                    with ExitStack() as pristine:
+                        for scope, source in sources.items():
+                            if scope == "external_context" and len(roots) == 1:
+                                continue
+                            index = 1 if scope == "external_context" else 0
+                            stage = transaction.stage(index)
+                            snapshot = pristine.enter_context(hydrated_backup(self.root, transaction.journal, index))
+                            context = MigrationContext(stage, scope, machine_id, snapshot)
+                            for migration in steps(source):
+                                if scope in migration.scopes:
+                                    if migration.destructive and migration.contract not in accepted:
+                                        raise MigrationError("migration_required", f"{migration.summary}；请查看 migrations plan 后用 apply --accept-data-loss 确认")
+                                    migration.upgrade(context)
+                                    migration.verify(context)
                     for index, root in enumerate(roots):
                         stage = transaction.stage(index)
                         validate(stage, external=index > 0)

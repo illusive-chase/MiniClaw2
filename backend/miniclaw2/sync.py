@@ -363,6 +363,27 @@ class SyncManager:
         self._idle_callbacks: list[Callable[[], None]] = []
         self._file_commit_time_cache_head: str | None = None
         self._file_commit_time_cache: dict[Path, float | None] = {}
+        self.progress: dict[str, Any] = {"phase": "idle", "detail": "未在同步", "started_at": None, "phase_started_at": None}
+
+    def _set_progress(self, phase: str) -> None:
+        details = {
+            "idle": "未在同步",
+            "preparing": "正在采集并提交本机状态",
+            "fetching": "正在拉取远端元数据",
+            "merging": "正在比较并合并元数据",
+            "normalizing_remote": "正在读取并迁移远端快照",
+            "normalizing_local": "正在读取并迁移本机快照",
+            "normalizing_base": "正在读取并迁移共同祖先快照",
+            "publishing": "正在校验并发布合并结果",
+            "pushing": "正在推送元数据",
+            "finishing": "正在记录同步结果",
+        }
+        now = time.time()
+        self.progress = {
+            "phase": phase, "detail": details[phase],
+            "started_at": None if phase == "idle" else now if phase == "preparing" else self.progress["started_at"],
+            "phase_started_at": None if phase == "idle" else now,
+        }
 
     def add_pre_commit_callback(self, callback: Callable[[], None]) -> None:
         if callback not in self._pre_commit_callbacks:
@@ -583,52 +604,60 @@ class SyncManager:
             raise SyncError("metadata sync is not configured")
         self._ensure_contextspace_inside_store()
         with self._lock:
-            self.coordinator.assert_current()
-            for callback in tuple(self._idle_callbacks):
-                callback()
-            self._refresh_identity()
-            for callback in tuple(self._pre_commit_callbacks):
-                try:
-                    callback()
-                except Exception as exc:
-                    raise SyncError(f"同步前本机状态采集失败：{exc}") from exc
-            self.commit_now()
-            branch = self._branch()
+            self._set_progress("preparing")
             try:
-                fetched = _git(self.root, "fetch", "origin", check=False, timeout=REMOTE_CHECK_TIMEOUT_SECONDS)
-                if fetched.returncode != 0:
-                    raise SyncError(_command_error("fetch failed", fetched))
-                remote_ref = f"origin/{branch}"
-                remote_exists = _git(
-                    self.root, "rev-parse", "--verify", remote_ref, check=False
-                ).returncode == 0
-                if remote_exists:
-                    if self._merge_remote(remote_ref):
-                        self.publication_generation += 1
-                        for callback in tuple(self._publication_callbacks):
-                            callback()
-                pushed = _git(
-                    self.root,
-                    "push",
-                    "--set-upstream",
-                    "origin",
-                    f"HEAD:{branch}",
-                    check=False,
-                    timeout=REMOTE_CHECK_TIMEOUT_SECONDS,
-                )
-                if pushed.returncode != 0:
-                    raise SyncError(_command_error("push failed", pushed))
-            except SyncError:
-                self._record_failure()
-                raise
-            self._record_success()
-            return self.status()
+                self.coordinator.assert_current()
+                for callback in tuple(self._idle_callbacks):
+                    callback()
+                self._refresh_identity()
+                for callback in tuple(self._pre_commit_callbacks):
+                    try:
+                        callback()
+                    except Exception as exc:
+                        raise SyncError(f"同步前本机状态采集失败：{exc}") from exc
+                self.commit_now()
+                branch = self._branch()
+                try:
+                    self._set_progress("fetching")
+                    fetched = _git(self.root, "fetch", "origin", check=False, timeout=REMOTE_CHECK_TIMEOUT_SECONDS)
+                    if fetched.returncode != 0:
+                        raise SyncError(_command_error("fetch failed", fetched))
+                    remote_ref = f"origin/{branch}"
+                    remote_exists = _git(
+                        self.root, "rev-parse", "--verify", remote_ref, check=False
+                    ).returncode == 0
+                    if remote_exists:
+                        self._set_progress("merging")
+                        if self._merge_remote(remote_ref):
+                            self.publication_generation += 1
+                            for callback in tuple(self._publication_callbacks):
+                                callback()
+                    self._set_progress("pushing")
+                    pushed = _git(
+                        self.root,
+                        "push",
+                        "--set-upstream",
+                        "origin",
+                        f"HEAD:{branch}",
+                        check=False,
+                        timeout=REMOTE_CHECK_TIMEOUT_SECONDS,
+                    )
+                    if pushed.returncode != 0:
+                        raise SyncError(_command_error("push failed", pushed))
+                except SyncError:
+                    self._record_failure()
+                    raise
+                self._set_progress("finishing")
+                self._record_success()
+                return self.status()
+            finally:
+                self._set_progress("idle")
 
     def _merge_remote(self, remote_ref: str) -> bool:
         from .migrations.sync_tree import merge_remote
 
         try:
-            return merge_remote(self.root, remote_ref)
+            return merge_remote(self.root, remote_ref, on_progress=self._set_progress)
         except MigrationError as exc:
             raise SchemaConflictError(str(exc)) from exc
 

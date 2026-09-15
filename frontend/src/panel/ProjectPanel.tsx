@@ -42,7 +42,6 @@ export type ProjectPanelProps = {
   contextSpaceError: string | null;
   settingsSaving: boolean;
   settingsError: string | null;
-  onSelectContextBinding: (binding_id: string) => void;
   onPreferredLanguageChange: (preferredLanguage: string | null) => void;
   onConcurrencyChange: (concurrency: number) => void;
   onStartBlankDirection: (
@@ -77,7 +76,6 @@ export function ProjectPanel({
   contextSpaceError,
   settingsSaving,
   settingsError,
-  onSelectContextBinding,
   onPreferredLanguageChange,
   onConcurrencyChange,
   onStartBlankDirection,
@@ -111,7 +109,6 @@ export function ProjectPanel({
   const activeBinding = contextSpace?.bindings.find(
     (b) => b.id === (contextSpace?.resolved_binding_id ?? session?.project_context_binding_id),
   );
-  const selectableBindings = contextSpace?.selectable_bindings ?? contextSpace?.bindings ?? [];
   const directions = useMemo(
     () => collectDirections(activeBinding),
     [activeBinding],
@@ -570,31 +567,6 @@ export function ProjectPanel({
                 </li>
               ))}
             </ul>
-          )}
-
-          {contextSpace && !activeBinding && selectableBindings.length > 0 && (
-            <div className="mt-4">
-              <SectionLabel>Existing memory profiles</SectionLabel>
-              <ul className="mt-1 space-y-1">
-                {selectableBindings.map((binding) => (
-                  <li key={binding.id}>
-                    <button
-                      type="button"
-                      disabled={busy}
-                      onClick={() => onSelectContextBinding(binding.id)}
-                      className="block w-full rounded-md border border-line bg-surface-raised px-3 py-2 text-left text-[12px] transition hover:border-line-strong disabled:opacity-50"
-                    >
-                      <div className="line-clamp-1 font-medium text-ink-strong">
-                        {binding.title}
-                      </div>
-                      <div className="mt-0.5 font-mono text-[10.5px] text-ink-muted">
-                        {binding.id}
-                      </div>
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            </div>
           )}
         </section>
       </div>

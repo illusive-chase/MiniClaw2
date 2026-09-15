@@ -3,8 +3,12 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import subprocess
+import tempfile
+from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 from uuid import uuid4
 
 from .errors import MigrationError
@@ -69,6 +73,72 @@ def durable_copy(source: Path, destination: Path) -> None:
     fsync_directory(destination.parent)
 
 
+def _git_output(root: Path, *arguments: str) -> bytes | None:
+    if not (root / ".git").exists():
+        return None
+    result = subprocess.run(
+        ["git", "-C", str(root), *arguments], capture_output=True,
+        env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+    )
+    return None if result.returncode else result.stdout
+
+
+def head_blobs(root: Path) -> tuple[str, dict[str, tuple[int, str]]]:
+    """The commit at HEAD and the (mode, blob) pair for each path in it.
+
+    Returns no commit when the store keeps no Git history, which is the case
+    until metadata sync is configured. Callers must then treat every file as
+    unavailable from Git and copy it instead.
+    """
+    commit = _git_output(root, "rev-parse", "HEAD")
+    output = _git_output(root, "ls-tree", "-r", "-z", "HEAD")
+    if not commit or not output:
+        return "", {}
+    entries: dict[str, tuple[int, str]] = {}
+    for record in output.split(b"\0"):
+        if not record:
+            continue
+        header, _, path = record.partition(b"\t")
+        fields = header.split(b" ")
+        if len(fields) != 3 or fields[1] != b"blob":
+            continue
+        entries[path.decode()] = (int(fields[0], 8) & 0o777, fields[2].decode())
+    return commit.decode().strip(), entries
+
+
+def pin_backup_commit(root: Path, identifier: str, commit: str) -> bool:
+    """Anchor the commit a backup references so Git cannot garbage-collect it.
+
+    Without a ref of its own, a referenced blob is only as durable as the
+    branch that happened to contain it: a later rewrite or prune could drop
+    the very bytes the backup promises. The ref makes the backup outlive
+    history edits, and is removed when the backup itself is removed.
+    """
+    return _git_output(root, "update-ref", f"refs/miniclaw2/migration-backups/{identifier}", commit) is not None
+
+
+def blob_names(root: Path, paths: list[Path]) -> dict[Path, str]:
+    """Hash files the way Git would, to match their bytes against a tree."""
+    names: dict[Path, str] = {}
+    for start in range(0, len(paths), 400):
+        batch = paths[start:start + 400]
+        output = _git_output(root, "hash-object", "--", *[str(path) for path in batch])
+        if output is None:
+            return {}
+        hashes = output.decode().split()
+        if len(hashes) != len(batch):
+            return {}
+        names.update(zip(batch, hashes))
+    return names
+
+
+def blob_bytes(root: Path, blob: str) -> bytes:
+    content = _git_output(root, "cat-file", "blob", blob)
+    if content is None:
+        raise MigrationError("migration_failed", f"Git 不再持有备份引用的对象 {blob}", root)
+    return content
+
+
 def snapshot(root: Path, *, external: bool = False) -> dict[str, str | None]:
     paths = set(files(root, external=external))
     paths.update({"schema.json", f"{LOCAL_DIRECTORY}/state.json"})
@@ -88,18 +158,37 @@ class Transaction:
             raise MigrationError("migration_failed", "可用空间不足以保存备份、暂存和发布临时文件；不会删除已有备份", root)
         self.journal: dict[str, Any] = {
             "id": self.identifier, "phase": "prepare", "roots": [str(path) for path in roots],
-            "inputs": [], "changes": [],
+            "inputs": [], "changes": [], "backup_refs": [],
         }
         self.save()
         atomic_json(root / LOCAL_DIRECTORY / "pending.json", {"id": self.identifier})
         for index, source in enumerate(roots):
             inputs = snapshot(source, external=index > 0)
             self.journal["inputs"].append(inputs)
-            for relative, checksum in inputs.items():
-                if checksum is not None:
-                    original = safe_path(source, relative)
+            present = [relative for relative, checksum in inputs.items() if checksum is not None]
+            # The store is itself a Git repository, so any file already committed
+            # at HEAD with identical bytes needs no second copy on disk: the
+            # journal records the blob and restore reads it back from Git. Only
+            # what Git does not hold (uncommitted edits, gitignored per-host
+            # files, or a store with no history yet) is copied. The commit is
+            # pinned first, so a reference is never recorded against bytes that
+            # a later history rewrite could collect.
+            commit, committed = head_blobs(source) if index == 0 else ("", {})
+            if commit and not pin_backup_commit(source, self.identifier, commit):
+                commit, committed = "", {}
+            names = blob_names(source, [safe_path(source, relative) for relative in present]) if committed else {}
+            references: dict[str, str] = {}
+            for relative in present:
+                original = safe_path(source, relative)
+                entry = committed.get(relative)
+                if entry is not None and names.get(original) == entry[1] and original.stat().st_mode & 0o777 == entry[0]:
+                    references[relative] = entry[1]
+                else:
                     durable_copy(original, self.backup / str(index) / relative)
-                    durable_copy(original, self.stage(index) / relative)
+                durable_copy(original, self.stage(index) / relative)
+            self.journal["backup_refs"].append(references)
+            if commit:
+                self.journal["backup_commit"] = commit
             self.save()
 
     @classmethod
@@ -118,6 +207,22 @@ class Transaction:
         path = self.directory / "stage" / str(index)
         durable_mkdir(path)
         return path
+
+    def backup_digest(self, index: int, relative: str) -> str | None:
+        """Digest of the pre-migration file, from the copy or from Git."""
+        return backup_payload(self.root, self.journal, index, relative, identifier=self.identifier).digest
+
+    def discard_stage(self) -> None:
+        """Drop the staged tree once it has been published.
+
+        Nothing reads a stage after `publish` — the backup is the audit
+        record and the live store is the result — so keeping it only
+        doubles the migration's disk cost.
+        """
+        stage = self.directory / "stage"
+        if stage.exists():
+            shutil.rmtree(stage, ignore_errors=True)
+            fsync_directory(self.directory)
 
     def save(self) -> None:
         atomic_json(self.directory / "journal.json", self.journal)
@@ -163,7 +268,7 @@ class Transaction:
             current = file_digest(target)
             if current not in (change["before"], change["after"]):
                 raise MigrationError("migration_failed", "发布目标被外部修改，请在隔离目录恢复备份", target)
-            if change["before"] is not None and file_digest(self.backup / str(index) / relative) != change["before"]:
+            if change["before"] is not None and self.backup_digest(index, relative) != change["before"]:
                 raise MigrationError("migration_failed", "迁移备份摘要不一致", target)
             if change["after"] is not None:
                 source = safe_path(self.stage(index), relative)
@@ -188,7 +293,9 @@ class Transaction:
                 raise MigrationError("migration_failed", "发布期间 Git HEAD 被外部修改", self.root)
             git(self.root, "read-tree", git_state["after"])
         self.journal["phase"] = "ready"
+        self.journal["stage_discarded"] = True
         self.save()
+        self.discard_stage()
 
     def check_git(self) -> None:
         state = self.journal.get("git")
@@ -211,6 +318,131 @@ class Transaction:
                     raise MigrationError("migration_failed", "发布输入被外部修改", Path(root_name) / relative)
 
 
+def backup_source(root: Path, journal: dict[str, Any], index: int, relative: str) -> bytes:
+    """Read one pre-migration file, whether it was copied or left in Git.
+
+    Restore tooling addresses backups by path; a referenced entry has no
+    file on disk, so its bytes come back from the recorded blob.
+    """
+    references = journal.get("backup_refs") or []
+    blob = references[index].get(relative) if index < len(references) else None
+    if blob is not None:
+        return blob_bytes(root, blob)
+    return safe_path(root / "migration-backups", f"{journal['id']}/{index}/{relative}").read_bytes()
+
+
+@dataclass(frozen=True)
+class BackupPayload:
+    """One pre-migration file, wherever its bytes actually live."""
+
+    content: bytes
+    digest: str
+    origin: str
+
+    @property
+    def record(self) -> dict[str, Any]:
+        payload = json.loads(self.content.decode("utf-8"))
+        if not isinstance(payload, dict):
+            raise MigrationError("migration_failed", f"备份记录不是对象：{self.origin}")
+        return payload
+
+
+def backup_payload(
+    root: Path, journal: dict[str, Any], index: int, relative: str, *, identifier: str | None = None,
+) -> BackupPayload:
+    """Read one file from a transaction's backup.
+
+    A backup entry is either a copied file or a reference to the Git blob
+    that already held those exact bytes at the pre-migration commit. Both
+    are addressed by path here, so callers need not know which they got.
+    """
+    references = journal.get("backup_refs") or []
+    blob = references[index].get(relative) if index < len(references) else None
+    recorded = (journal["inputs"][index] or {}).get(relative) or ""
+    if blob is None:
+        directory = f"{identifier or journal['id']}/{index}"
+        path = safe_path(root / "migration-backups", f"{directory}/{relative}")
+        return BackupPayload(path.read_bytes(), file_digest(path) or "", str(path))
+    import hashlib
+
+    content = blob_bytes(root, blob)
+    checksum = hashlib.sha256(content).hexdigest()
+    return BackupPayload(content, f"{recorded.split(':')[0]}:{checksum}", f"git:{blob} ({relative})")
+
+
+@contextmanager
+def hydrated_backup(
+    root: Path, journal: dict[str, Any], index: int, *, identifier: str | None = None,
+) -> Iterator[Path]:
+    """Present a transaction's backup as a complete tree on disk.
+
+    Migration steps and impact reports read the pre-migration snapshot by
+    walking it, so every file has to exist. Referenced entries are written
+    into a temporary overlay that lives only for the duration of the call —
+    transient disk, unlike the permanent second copy it replaces.
+    """
+    identifier = identifier or journal["id"]
+    backup = safe_path(root / "migration-backups", f"{identifier}/{index}")
+    references = (journal.get("backup_refs") or [])[index:index + 1]
+    if not references or not references[0]:
+        yield backup
+        return
+    with tempfile.TemporaryDirectory(prefix="migration-pristine-") as temporary:
+        overlay = Path(temporary)
+        for relative, checksum in (journal["inputs"][index] or {}).items():
+            if checksum is None:
+                continue
+            payload = backup_payload(root, journal, index, relative, identifier=identifier)
+            if payload.digest != checksum:
+                raise MigrationError("migration_failed", f"备份摘要不一致：{payload.origin}", root)
+            target = safe_path(overlay, relative)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(payload.content)
+            target.chmod(int(checksum.split(":")[0], 8))
+        yield overlay
+
+
+def prune_transactions(root: Path, *, keep: int = 2, protected: set[str] | None = None) -> dict[str, Any]:
+    """Reclaim finished transactions beyond the most recent `keep`.
+
+    A finished transaction's stage is dead weight in every case, so every
+    finished stage goes. Its backup is the audit record for one upgrade:
+    the newest few are kept, and so is any backup named in `protected` —
+    recency is not the only thing that makes a backup load-bearing, since
+    an older one can be the only remaining source of pre-migration
+    coordinates. An unfinished transaction is never touched: `recover`
+    still needs both its stage and its backup.
+    """
+    protected = protected or set()
+    journals = sorted((root / LOCAL_DIRECTORY / "transactions").glob("*/journal.json"),
+                      key=lambda path: path.stat().st_mtime)
+    finished = [path for path in journals if read_object(path).get("phase") in {"ready", "aborted"}]
+    removed: list[str] = []
+    kept_protected: list[str] = []
+    reclaimed = 0
+    candidates = finished[:max(0, len(finished) - keep)]
+    for path in candidates:
+        identifier = path.parent.name
+        if identifier in protected:
+            kept_protected.append(identifier)
+            continue
+        for directory in (path.parent, safe_path(root / "migration-backups", identifier)):
+            if directory.exists():
+                reclaimed += sum(item.stat().st_size for item in directory.rglob("*") if item.is_file())
+                shutil.rmtree(directory, ignore_errors=True)
+        _git_output(root, "update-ref", "-d", f"refs/miniclaw2/migration-backups/{identifier}")
+        removed.append(identifier)
+    for path in journals:
+        if path.exists() and read_object(path).get("phase") in {"ready", "aborted"}:
+            stage = path.parent / "stage"
+            if stage.exists():
+                reclaimed += sum(item.stat().st_size for item in stage.rglob("*") if item.is_file())
+                shutil.rmtree(stage, ignore_errors=True)
+                fsync_directory(path.parent)
+    return {"removed": removed, "kept": keep, "kept_protected": kept_protected,
+            "reclaimed_bytes": reclaimed}
+
+
 def recover(root: Path, roots: list[Path]) -> None:
     for path in sorted((root / LOCAL_DIRECTORY / "transactions").glob("*/journal.json")):
         if read_object(path).get("phase") in {"ready", "aborted"}:
@@ -221,7 +453,9 @@ def recover(root: Path, roots: list[Path]) -> None:
             transaction.publish()
         elif phase == "prepare":
             transaction.journal["phase"] = "aborted"
+            transaction.journal["stage_discarded"] = True
             transaction.save()
+            transaction.discard_stage()
         elif phase not in {"ready", "aborted"}:
             raise MigrationError("migration_failed", "未知事务阶段", path)
     pending = root / LOCAL_DIRECTORY / "pending.json"

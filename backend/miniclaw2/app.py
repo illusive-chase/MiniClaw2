@@ -138,7 +138,6 @@ class CreateSessionRequest(BaseModel):
     preferred_language: str | None = None
     temporary: bool = False
     name: str | None = None
-    project_context_binding_id: str | None = None
     create_missing_cwd: bool = False
     concurrency: StrictInt | None = Field(default=None, ge=1)
 
@@ -199,10 +198,6 @@ class UpdateSessionTagsRequest(BaseModel):
 class UpdateSessionPreferencesRequest(BaseModel):
     preferred_language: str | None = None
     concurrency: StrictInt | None = Field(default=None, ge=1)
-
-
-class UpdateSessionContextRequest(BaseModel):
-    project_context_binding_id: str | None = None
 
 
 class SessionInfo(BaseModel):
@@ -685,10 +680,10 @@ def create_app(
         return JSONResponse(status_code=409, content=exc.payload())
 
     @app.get("/migrations/status")
-    def migration_status() -> dict[str, Any]:
+    async def migration_status() -> dict[str, Any]:
         if app.state.storage_syncing:
             return {"state": "waiting_for_idle", "target": CURRENT_VERSION, "minimum": MINIMUM_VERSION,
-                    "detail": "元数据正在同步，请稍后重试"}
+                    "detail": "元数据正在同步，请稍后重试", "sync_progress": registry.store.sync.progress}
         return {"state": "ready", "target": CURRENT_VERSION, "minimum": MINIMUM_VERSION,
                 "detail": "存储格式已就绪", **(app.state.storage_error or {})}
 
@@ -1179,7 +1174,6 @@ def create_app(
                 ),
                 temporary=req.temporary,
                 name=req.name or "",
-                project_context_binding_id=req.project_context_binding_id,
                 create_missing_cwd=req.create_missing_cwd,
                 concurrency=(
                     req.concurrency
@@ -1604,19 +1598,6 @@ def create_app(
     @app.get("/sessions/{sid}/contextspace", response_model=dict[str, Any])
     def get_session_contextspace(sid: str) -> dict[str, Any]:
         project = registry.get_project(sid)
-        if project is None:
-            raise HTTPException(404, "session not found")
-        return describe_project_contextspace(project, store_root=registry.store.root)
-
-    @app.patch("/sessions/{sid}/contextspace", response_model=dict[str, Any])
-    async def update_session_contextspace(
-        sid: str,
-        req: UpdateSessionContextRequest,
-    ) -> dict[str, Any]:
-        kwargs: dict[str, Any] = {}
-        if "project_context_binding_id" in req.model_fields_set:
-            kwargs["project_context_binding_id"] = req.project_context_binding_id
-        project = registry.update_project_context(sid, **kwargs)
         if project is None:
             raise HTTPException(404, "session not found")
         return describe_project_contextspace(project, store_root=registry.store.root)

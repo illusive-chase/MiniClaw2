@@ -677,7 +677,6 @@ export type SessionContextSpaceInfo = {
     started_at?: number;
   };
   bindings: ContextSpaceBindingSummary[];
-  selectable_bindings?: ContextSpaceBindingSummary[];
   bootstrap?: {
     context_root: string;
     binding_id: string;

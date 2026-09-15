@@ -81,7 +81,6 @@ export type SidePanelProps = {
   onSessionChange: (update: (session: SessionInfo | null) => SessionInfo | null) => void;
   onPreferredLanguageChange: (preferredLanguage: string | null) => void;
   onConcurrencyChange: (concurrency: number) => void;
-  onSelectContextBinding: (binding_id: string) => void;
   onStartBlankDirection: (
     userSeed: string,
     mode: PlanspaceMode,
@@ -204,7 +203,6 @@ function Inner(props: SidePanelProps & {
     onSessionChange,
     onPreferredLanguageChange,
     onConcurrencyChange,
-    onSelectContextBinding,
     onStartBlankDirection,
     onImportSkill,
     onCreateContinuationVirtual,
@@ -255,7 +253,6 @@ function Inner(props: SidePanelProps & {
         contextSpaceError={contextSpaceError}
         settingsSaving={settingsSaving}
         settingsError={settingsError}
-        onSelectContextBinding={onSelectContextBinding}
         onPreferredLanguageChange={onPreferredLanguageChange}
         onConcurrencyChange={onConcurrencyChange}
         onStartBlankDirection={onStartBlankDirection}

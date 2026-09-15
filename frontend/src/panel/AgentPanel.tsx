@@ -423,7 +423,7 @@ export function AgentPanel({
         <section className="mb-5">
           <BasicInformationCard node={node} modelPresets={modelPresets} />
         </section>
-        {detailLoading && (
+        {detailLoading && !detail && (
           <p role="status" className="mb-3 text-[11px] text-ink-muted">正在读取节点详情…</p>
         )}
         {detailError && (

@@ -306,6 +306,18 @@ should sit.
 
 Kept because the reason, not the absence, is the content:
 
+- **有损迁移的界面确认入口** — 先展示影响，再记录本机确认，不能把
+  `--accept-data-loss` 直接包装成一个通用「确定」按钮。拟在设置面板显示
+  有损步骤、`layout_impact`、`layout_recovery` 与导出备份路径；已拉取的
+  远端快照影响应与本机影响分别展示，本机计划为空不等于远端无损。
+  拟用 `/migrations/plan` 与 `/migrations/confirm`，读取计划不隐式 fetch；
+  确认必须等待同步结束及运行任务空闲，再以同一存储准入屏障执行。
+  仅当 shared、本机及外部 ContextSpace 游标均为目标版本时显示
+  「仅补登本机凭据」；任一游标落后则展示实际迁移范围并明确确认数据丢失。
+  确认绑定机器身份、已展示的版本与契约，状态变化必须重新展示，不静默扩大授权。
+  命令行保留为后备；确认后重试同步仍需用户明确触发。该入口尚待产品确认，
+  不随同步性能修复直接上线。凭据不跨机器传播：一台机器的知情同意不能代表
+  另一台机器，改变这一边界需要单独决策。
 - **Store compaction and retention** — transcripts grow the metadata repo
   monotonically. Deferred until repo size actually hurts, at which point
   archiving, compaction, or large-file storage are the options.

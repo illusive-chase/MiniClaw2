@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import shutil
 from pathlib import Path
 from typing import Any
 
@@ -13,7 +12,7 @@ from .inventory import LOCAL_DIRECTORY
 from .impact import layout_impact, layout_recovery_guidance
 from .validation import read_object
 from .inventory import safe_path
-from .transaction import file_digest
+from .transaction import backup_payload, prune_transactions
 
 
 def status(root: Path) -> dict[str, Any]:
@@ -29,9 +28,10 @@ def main(arguments: list[str]) -> None:
     from ..global_config import miniclaw_home
 
     parser = argparse.ArgumentParser(prog="miniclaw2 migrations", description="格式迁移诊断与恢复；不会下载或执行远端脚本")
-    parser.add_argument("action", choices=["status", "plan", "apply", "recover", "release", "check"])
+    parser.add_argument("action", choices=["status", "plan", "apply", "recover", "release", "check", "prune"])
     parser.add_argument("--root", type=Path)
     parser.add_argument("--prune", action="store_true", help="发布时删除迁移目录内三步窗口之外的脚本")
+    parser.add_argument("--keep", type=int, default=2, help="仅 prune：保留最近多少个已完结事务的备份（默认 2）")
     parser.add_argument("--accept-data-loss", action="store_true", help="仅 apply：明确接受迁移脚本声明的语义损失，并记录在事务日志")
     parser.add_argument("--transaction", help="恢复到隔离目录时指定事务 id")
     parser.add_argument("--output", type=Path, help="仅 recover：把事务源备份导出到一个空目录，不回滚活动存储")
@@ -40,6 +40,8 @@ def main(arguments: list[str]) -> None:
         parser.error("--accept-data-loss 仅用于 apply")
     if args.output is not None and args.action != "recover":
         parser.error("--output 仅用于 recover")
+    if args.keep < 0:
+        parser.error("--keep 不能为负")
     root = (args.root or miniclaw_home()).expanduser().resolve()
     try:
         if args.action == "release":
@@ -49,6 +51,13 @@ def main(arguments: list[str]) -> None:
             result = {"state": "ready", "target": CURRENT_VERSION, "minimum": MINIMUM_VERSION}
         elif args.action == "status":
             result = status(root)
+        elif args.action == "prune":
+            # A backup that is still the only source of restorable coordinates
+            # is load-bearing regardless of age, so it is excluded here rather
+            # than left to whoever picks --keep.
+            protected = {report["transaction"] for report in layout_recovery_guidance(root) if report.get("transaction")}
+            result = {"state": "ready", **prune_transactions(root, keep=args.keep, protected=protected),
+                      "detail": "已回收已完结事务的暂存树；保留窗口之外、且不再被布局恢复引用的备份已清理。未完结事务与仍可恢复坐标的备份保持原样"}
         elif args.action == "plan":
             storage = coordinator(root)
             source = storage.source_version()
@@ -88,13 +97,14 @@ def restore_isolated(root: Path, identifier: str, output: Path) -> None:
         for relative, checksum in inventory.items():
             if checksum is None:
                 continue
-            source = safe_path(root / "migration-backups" / identifier / str(index), relative)
-            if file_digest(source) != checksum:
-                raise MigrationError("migration_failed", "原始备份缺失或摘要不一致", source)
+            payload = backup_payload(root, journal, index, relative, identifier=identifier)
+            if payload.digest != checksum:
+                raise MigrationError("migration_failed", f"原始备份缺失或摘要不一致：{payload.origin}", root)
     for index, inventory in enumerate(journal["inputs"]):
         destination = output / ("store" if index == 0 else "external_context")
         for relative, checksum in inventory.items():
             if checksum is not None:
                 target = safe_path(destination, relative)
                 target.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(root / "migration-backups" / identifier / str(index) / relative, target)
+                target.write_bytes(backup_payload(root, journal, index, relative, identifier=identifier).content)
+                target.chmod(int(checksum.split(":")[0], 8))

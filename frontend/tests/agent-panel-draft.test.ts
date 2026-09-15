@@ -97,6 +97,7 @@ function node(over: Partial<NodeDetail> = {}): NodeDetail {
     ...props, detailLoading: true,
   }));
   assert.match(refreshingMarkup, /<textarea/);
+  assert.doesNotMatch(refreshingMarkup, /正在读取节点详情/);
   assert.doesNotMatch(refreshingMarkup, /<fieldset[^>]*disabled/);
   const refreshErrorMarkup = renderToStaticMarkup(createElement(AgentPanel, {
     ...props, detailError: "详情读取失败",

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import tempfile
 import unittest
 from pathlib import Path
@@ -15,7 +14,13 @@ from miniclaw2.registry import PlanspaceCreationResult, VirtualPromotionResult
 
 
 class PlanspaceApiTest(unittest.TestCase):
-    def test_contextspace_update_runs_registry_on_event_loop(self) -> None:
+    def test_contextspace_binding_cannot_be_reassigned(self) -> None:
+        """``PATCH /contextspace`` was the only way to claim a foreign binding.
+
+        A project's binding is decided by ownership, not chosen: the endpoint
+        accepted any binding id on the machine, which let one project adopt
+        another's memory profile and then create lanes inside it.
+        """
         with tempfile.TemporaryDirectory() as raw:
             project = Project(root_path=raw, name="Project")
 
@@ -25,32 +30,18 @@ class PlanspaceApiTest(unittest.TestCase):
                 def get_project(self, sid: str) -> Project | None:
                     return project if sid == project.id else None
 
-                def update_project_context(
-                    self, sid: str, **kwargs: object
-                ) -> Project | None:
-                    asyncio.get_running_loop()
-                    project.project_context_binding_id = str(
-                        kwargs["project_context_binding_id"]
-                    )
-                    return project
-
             with patch.object(app_module, "ProjectRegistry", return_value=_Registry()):
-                with patch.object(
-                    app_module,
-                    "describe_project_contextspace",
-                    return_value={"resolved_binding_id": "project.demo"},
-                ):
-                    client = TestClient(app_module.create_app())
-                    try:
-                        res = client.patch(
-                            f"/sessions/{project.id}/contextspace",
-                            json={"project_context_binding_id": "project.demo"},
-                        )
-                    finally:
-                        client.close()
+                client = TestClient(app_module.create_app())
+                try:
+                    res = client.patch(
+                        f"/sessions/{project.id}/contextspace",
+                        json={"project_context_binding_id": "project.demo"},
+                    )
+                finally:
+                    client.close()
 
-            self.assertEqual(res.status_code, 200, res.text)
-            self.assertEqual(res.json()["resolved_binding_id"], "project.demo")
+            self.assertEqual(res.status_code, 405, res.text)
+            self.assertIsNone(project.project_context_binding_id)
 
     def test_concierge_planspace_endpoint_is_gone(self) -> None:
         """``POST /planspaces`` was the concierge path; only blank remains.

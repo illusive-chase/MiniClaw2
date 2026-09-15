@@ -15,6 +15,7 @@ from anyio import CancelScope
 from fastapi.testclient import TestClient
 
 import miniclaw2.sync as sync_module
+import miniclaw2.migrations.sync_tree as sync_tree_module
 from miniclaw2.app import create_app
 from miniclaw2.domain import Node, NodeState, Project
 from miniclaw2.global_config import load_global_config, save_global_config
@@ -46,6 +47,28 @@ def _git(*args: str, cwd: Path | None = None) -> subprocess.CompletedProcess[str
         capture_output=True,
         text=True,
     )
+
+
+@pytest.mark.parametrize("operation", ["query", "archive"])
+def test_sync_tree_git_timeout_is_bounded_and_actionable(tmp_path: Path, operation: str) -> None:
+    def timeout(command: list[str], **kwargs: object) -> None:
+        assert kwargs["timeout"] == sync_tree_module.GIT_COMMAND_TIMEOUT_SECONDS
+        raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+
+    with patch.object(sync_tree_module.subprocess, "run", side_effect=timeout):
+        with pytest.raises(MigrationError, match="120 秒") as error:
+            if operation == "archive":
+                extract(tmp_path, "HEAD", tmp_path / "snapshot")
+            else:
+                sync_tree_module.git(tmp_path, "merge-base", "HEAD", "origin/main")
+    assert error.value.state == "schema_conflict"
+    assert ("git archive HEAD" if operation == "archive" else "git merge-base HEAD origin/main") in str(error.value)
+
+
+def test_sync_tree_git_timeout_override(tmp_path: Path) -> None:
+    with patch.object(sync_tree_module.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "head\n", "")) as run:
+        assert sync_tree_module.git(tmp_path, "rev-parse", "HEAD", timeout=7.0) == "head"
+    assert run.call_args.kwargs["timeout"] == 7.0
 
 
 @pytest.mark.parametrize("relative", LEGACY_MIGRATION_FILES)
@@ -183,6 +206,72 @@ class GitMetadataSyncTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.temp.cleanup()
+
+    def test_ancestor_sync_skips_snapshot_extraction_and_normalization(self) -> None:
+        self.store_a.create_project(Project(root_path="/machine-a/ahead", name="本机领先"))
+        self.store_a.sync.commit_now("本机领先")
+        self.assertNotEqual(_git("rev-parse", "HEAD", cwd=self.root_a).stdout,
+                            _git("rev-parse", "origin/main", cwd=self.root_a).stdout)
+        with patch.object(sync_tree_module, "extract", side_effect=AssertionError("不应抽取快照")) as extract_snapshot, \
+             patch.object(sync_tree_module, "normalize", side_effect=AssertionError("不应迁移快照")) as normalize_snapshot:
+            self.store_a.sync.sync_now()
+        extract_snapshot.assert_not_called()
+        normalize_snapshot.assert_not_called()
+        self.assertEqual(_git("rev-parse", "HEAD", cwd=self.root_a).stdout,
+                         _git("rev-parse", "origin/main", cwd=self.root_a).stdout)
+
+    def test_equal_heads_sync_skips_snapshot_extraction_and_normalization(self) -> None:
+        self.store_a.sync.sync_now()
+        with patch.object(sync_tree_module, "extract", side_effect=AssertionError("不应抽取快照")) as extract_snapshot, \
+             patch.object(sync_tree_module, "normalize", side_effect=AssertionError("不应迁移快照")) as normalize_snapshot:
+            self.store_a.sync.sync_now()
+        extract_snapshot.assert_not_called()
+        normalize_snapshot.assert_not_called()
+
+    def test_sync_progress_reports_fast_forward_and_resets_after_success(self) -> None:
+        self.store_b.create_project(Project(root_path="/machine-b/ahead", name="远端领先"))
+        self.store_b.sync.sync_now()
+        manager = self.store_a.sync
+        snapshots: list[dict[str, object]] = []
+        set_progress = manager._set_progress
+
+        def record_progress(phase: str) -> None:
+            set_progress(phase)
+            snapshots.append(manager.progress)
+
+        with patch.object(manager, "_set_progress", side_effect=record_progress):
+            manager.sync_now()
+        self.assertEqual([snapshot["phase"] for snapshot in snapshots], [
+            "preparing", "fetching", "merging", "normalizing_remote", "normalizing_local",
+            "merging", "publishing", "pushing", "finishing", "idle",
+        ])
+        self.assertIsNotNone(snapshots[0]["started_at"])
+        self.assertTrue(all(snapshot["started_at"] == snapshots[0]["started_at"] for snapshot in snapshots[:-1]))
+        self.assertIsNone(manager.progress["started_at"])
+
+    def test_sync_tree_timeout_releases_api_gate_and_resets_progress(self) -> None:
+        manager = self.store_a.sync
+        registry = ProjectRegistry(self.store_a)
+        app = create_app(registry)
+        with TestClient(app) as client, patch.object(sync_tree_module, "git", side_effect=MigrationError(
+            "schema_conflict", "git merge-base 执行超时（120 秒）",
+        )):
+            response = client.post("/global-state/sync")
+        self.assertEqual(response.status_code, 409, response.text)
+        self.assertIn("git merge-base", response.json()["detail"])
+        self.assertFalse(app.state.storage_syncing)
+        self.assertFalse(registry._storage_sync_pending)
+        self.assertEqual(manager.progress["phase"], "idle")
+        self.assertTrue(manager.identity.sync_pending)
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            self.assertIn("remote", pool.submit(manager.status).result(timeout=2))
+
+    def test_sync_preparation_failure_resets_progress(self) -> None:
+        manager = self.store_a.sync
+        with patch.object(manager.coordinator, "assert_current", side_effect=MigrationError("migration_required", "需要迁移")):
+            with self.assertRaises(MigrationError):
+                manager.sync_now()
+        self.assertEqual(manager.progress["phase"], "idle")
 
     def test_disjoint_projects_sync_and_remain_single_writer(self) -> None:
         registry_b = ProjectRegistry(self.store_b)
@@ -643,9 +732,12 @@ def test_sync_worker_keeps_loop_responsive_and_gates_storage(tmp_path: Path, end
 
     def slow_git(*_arguments: object) -> None:
         worker_threads.append(get_ident())
-        entered.set()
-        assert release.wait(10)
-        raise SyncError("模拟远端失败")
+        with registry.store.sync._lock:
+            registry.store.sync._set_progress("preparing")
+            registry.store.sync._set_progress("normalizing_remote")
+            entered.set()
+            assert release.wait(10)
+            raise SyncError("模拟远端失败")
 
     method = "setup_existing_store" if endpoint.endswith("setup") else "sync_now"
     app = create_app(registry)
@@ -657,7 +749,11 @@ def test_sync_worker_keeps_loop_responsive_and_gates_storage(tmp_path: Path, end
                     assert entered.wait(5)
                     health = pool.submit(client.get, "/health").result(timeout=2)
                     assert health.json()["status"] == "maintenance"
-                    assert client.get("/migrations/status").json()["state"] == "waiting_for_idle"
+                    status = pool.submit(client.get, "/migrations/status").result(timeout=2)
+                    assert status.status_code == 200
+                    assert status.json()["state"] == "waiting_for_idle"
+                    assert status.json()["sync_progress"]["phase"] == "normalizing_remote"
+                    assert status.json()["sync_progress"]["started_at"] is not None
                     assert client.patch(f"/sessions/{project.id}", json={"name": "不应写入"}).status_code == 503
                     assert client.post("/global-state/sync").status_code == 503
                     websocket.send_json({"type": "user_message", "text": "不应启动"})

@@ -8,6 +8,7 @@ import type { NodeDetail, NodeInfo } from "../src/types";
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 const container = document.createElement("div");
+container.id = "test-root";
 document.body.append(container);
 const root = createRoot(container);
 const requests: Array<{ url: string; resolve: (response: Response) => void }> = [];
@@ -126,6 +127,7 @@ async function mountDraftPanel(id: string, stashedPrompt?: string, kind: NodeDet
 
 async function testDraftPromotion() {
   const panel = await mountDraftPanel("restored-draft", "浏览器中未保存的提示词");
+  check(container.querySelector('[role="status"]')?.textContent === "正在读取节点详情…", "首次加载仍应显示详情读取提示");
   check(button("Promote").disabled, "详情加载前禁止提升节点");
   await act(async () => { button("Promote").click(); });
   check(panel.promotions.length === 0 && panel.saves.length === 0, "加载时不得提交或运行旧提示词");
@@ -175,6 +177,18 @@ async function testAutosaveRefresh() {
     const input = promptInput();
     input.focus();
     await editPrompt("自动保存的草稿");
+    const scrollArea = input.closest<HTMLElement>(".overflow-y-auto");
+    check(scrollArea, "编辑器应位于详情滚动区内");
+    const inputTop = input.getBoundingClientRect().top;
+    const scrollTop = scrollArea.scrollTop;
+    const contentTop = inputTop - scrollArea.getBoundingClientRect().top + scrollTop;
+    const checkStableLayout = () => {
+      const currentContentTop = input.getBoundingClientRect().top - scrollArea.getBoundingClientRect().top + scrollArea.scrollTop;
+      check(currentContentTop === contentTop, `后台刷新不应挤动草稿布局：${contentTop} → ${currentContentTop}`);
+      check(input.getBoundingClientRect().top === inputTop, "后台刷新不应改变编辑器的屏幕位置");
+      check(scrollArea.scrollTop === scrollTop, "后台刷新不应改变详情区的滚动位置");
+      check(!container.querySelector('[role="status"]'), "已有详情时不应插入加载提示");
+    };
     check(autosave, "手动方向应启用自动保存");
     const refreshIndex = requests.length;
     await act(async () => { autosave?.(); });
@@ -182,13 +196,16 @@ async function testAutosaveRefresh() {
     check(requests.length === refreshIndex + 1, "保存导致版本变化并重新读取详情");
     check(promptInput() === input && !input.matches(":disabled"), "后台读取详情不能禁用或重建编辑器");
     check(document.activeElement === input, "自动保存后仍保留输入焦点");
+    checkStableLayout();
     await editPrompt("自动保存后继续输入");
     await respond(refreshIndex, panel.serverNode());
     check(input.value === "自动保存后继续输入", "详情响应不能覆盖保存期间继续输入的内容");
     check(document.activeElement === input, "详情更新后仍保留输入焦点");
+    checkStableLayout();
 
     const failedRefreshIndex = requests.length;
     await act(async () => { autosave?.(); });
+    checkStableLayout();
     await respond(failedRefreshIndex, "刷新失败", 500);
     check(!input.matches(":disabled") && document.activeElement === input, "后台刷新失败也不应打断已有草稿编辑");
     await editPrompt("刷新失败后继续输入");

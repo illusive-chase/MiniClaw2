@@ -25,7 +25,6 @@ import {
   deletePlanspace,
   updatePlanspaceMode,
   updatePlanspaceView,
-  updateSessionContextSpace,
   updateSessionPreferences,
   updateVirtual,
   listPrinciples,
@@ -1383,30 +1382,6 @@ export function App() {
     }
     prevContextRefreshRunningRef.current = running;
   }, [sessionContextSpace?.context_refresh?.running]);
-
-  const selectContextBinding = useCallback(
-    async (binding_id: string) => {
-      if (!session?.id) return;
-      setSessionContextSpaceSaving(true);
-      setSessionContextSpaceError(null);
-      try {
-        const next = await updateSessionContextSpace(session.id, {
-          project_context_binding_id: binding_id,
-        });
-        setSessionContextSpace(next);
-        setSession((current) =>
-          current && current.id === session.id
-            ? { ...current, project_context_binding_id: next.project_context_binding_id ?? null }
-            : current,
-        );
-      } catch (err) {
-        setSessionContextSpaceError(String(err));
-      } finally {
-        setSessionContextSpaceSaving(false);
-      }
-    },
-    [session?.id],
-  );
 
   const startBlankDirection = useCallback(
     async (userSeed: string, mode: PlanspaceMode, modelPresetId: string) => {
@@ -3503,7 +3478,6 @@ export function App() {
                 onSessionChange={setSession}
                 onPreferredLanguageChange={updatePreferredLanguage}
                 onConcurrencyChange={updateConcurrency}
-                onSelectContextBinding={selectContextBinding}
                 onStartBlankDirection={startBlankDirection}
                 onImportSkill={handleImportSkill}
                 onCreateContinuationVirtual={createContinuationVirtual}

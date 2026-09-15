@@ -624,7 +624,6 @@ class ProjectRegistry:
         permission_mode: str | None = None,
         approval_policy: str | None = None,
         sandbox: str | None = None,
-        project_context_binding_id: str | None = None,
         preferred_language: str | None = None,
         temporary: bool = False,
         template_id: str | None = None,
@@ -675,7 +674,6 @@ class ProjectRegistry:
             model_preset_id=normalized_model_preset_id,
             concurrency=concurrency,
             preferred_language=normalized_language,
-            project_context_binding_id=project_context_binding_id,
             settings_override=settings,
             temporary=temporary,
             template_id=template_id,
@@ -876,26 +874,6 @@ class ProjectRegistry:
             rt.project.concurrency = validated.concurrency
         self.store.update_project(rt.project)
         self._schedule_queued(rt)
-        return rt.project
-
-    def update_project_context(
-        self,
-        pid: str,
-        *,
-        project_context_binding_id: str | None | object = _UNSET,
-    ) -> Project | None:
-        rt = self._runtimes.get(pid)
-        if rt is None:
-            return None
-        self.require_native(pid)
-        if project_context_binding_id is not _UNSET:
-            rt.project.project_context_binding_id = (
-                project_context_binding_id.strip()
-                if isinstance(project_context_binding_id, str)
-                and project_context_binding_id.strip()
-                else None
-            )
-        self.store.update_project(rt.project)
         return rt.project
 
     def update_node_layout(

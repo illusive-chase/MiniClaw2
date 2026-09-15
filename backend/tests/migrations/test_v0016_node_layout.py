@@ -119,8 +119,11 @@ def test_three_way_sync_preserves_each_owners_offline_move(tmp_path: Path, ances
 
 def test_sync_normalization_requires_local_confirmation(tmp_path: Path) -> None:
     seed(tmp_path)
-    with pytest.raises(MigrationError, match="确认"):
+    with pytest.raises(MigrationError, match="确认") as error:
         normalize(tmp_path)
+    assert error.value.state == "migration_required"
+    for text in ("v15 → v16", "layout_impact", "layout_recovery", "--accept-data-loss", "--transaction", "--output", "仅保存在本机"):
+        assert text in str(error.value)
 
 
 def test_plan_counts_recovery_without_modifying_sources(tmp_path: Path) -> None:

@@ -16,7 +16,7 @@ from miniclaw2.migrations.catalog import CURRENT_VERSION, MINIMUM_VERSION, check
 from miniclaw2.migrations.coordinator import coordinator, open_storage
 from miniclaw2.migrations.errors import MigrationError
 from miniclaw2.migrations.inventory import files
-from miniclaw2.migrations.transaction import Transaction, atomic_json, recover
+from miniclaw2.migrations.transaction import Transaction, atomic_json, backup_payload, recover
 from miniclaw2.migrations.validation import validate
 from miniclaw2.store import Store
 
@@ -249,6 +249,144 @@ def test_isolated_restore_never_rolls_back_live_data(tmp_path: Path) -> None:
     restore_isolated(root, transaction.identifier, tmp_path / "recovered")
     assert json.loads((root / "config.json").read_text()) == {"new": True}
     assert json.loads((tmp_path / "recovered" / "store" / "config.json").read_text()) == {"old": True}
+
+
+def _committed_store(root: Path) -> str:
+    """A store whose managed files are committed, as a synced store's are."""
+    environment = {**os.environ, "GIT_AUTHOR_NAME": "T", "GIT_COMMITTER_NAME": "T",
+                   "GIT_AUTHOR_EMAIL": "t@localhost", "GIT_COMMITTER_EMAIL": "t@localhost"}
+    for arguments in (["init", "-b", "main"], ["add", "-A"], ["commit", "-m", "baseline"]):
+        subprocess.run(["git", "-C", str(root), *arguments], check=True,
+                       capture_output=True, env=environment)
+    return subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"], check=True,
+                          capture_output=True, text=True, env=environment).stdout.strip()
+
+
+def test_backup_references_git_instead_of_copying_committed_bytes(tmp_path: Path) -> None:
+    atomic_json(tmp_path / "config.json", {"old": True})
+    atomic_json(tmp_path / "tags.json", {"old": True})
+    _committed_store(tmp_path)
+    atomic_json(tmp_path / "tags.json", {"uncommitted": True})
+    transaction = Transaction(tmp_path, [tmp_path])
+    references = transaction.journal["backup_refs"][0]
+    assert "config.json" in references, "已提交且字节一致的文件应引用 Git 对象"
+    assert "tags.json" not in references, "Git 未持有的字节必须真拷贝"
+    assert not (transaction.backup / "0" / "config.json").exists()
+    assert (transaction.backup / "0" / "tags.json").is_file()
+    payload = backup_payload(tmp_path, transaction.journal, 0, "config.json")
+    assert payload.record == {"old": True}
+    assert payload.digest == transaction.journal["inputs"][0]["config.json"]
+
+
+def test_backup_copies_everything_without_git_history(tmp_path: Path) -> None:
+    atomic_json(tmp_path / "config.json", {"old": True})
+    transaction = Transaction(tmp_path, [tmp_path])
+    assert transaction.journal["backup_refs"][0] == {}
+    assert (transaction.backup / "0" / "config.json").is_file()
+
+
+def test_published_transaction_keeps_backup_and_drops_stage(tmp_path: Path) -> None:
+    atomic_json(tmp_path / "config.json", {"old": True})
+    _committed_store(tmp_path)
+    transaction = Transaction(tmp_path, [tmp_path])
+    atomic_json(transaction.stage(0) / "config.json", {"new": True})
+    transaction.decide()
+    transaction.publish()
+    assert not (transaction.directory / "stage").exists(), "发布后暂存树没有读取方，应回收"
+    assert (transaction.directory / "journal.json").is_file()
+    assert backup_payload(tmp_path, transaction.journal, 0, "config.json").record == {"old": True}
+
+
+def test_isolated_restore_reads_referenced_backup(tmp_path: Path) -> None:
+    from miniclaw2.migrations.cli import restore_isolated
+
+    root = tmp_path / "store"
+    atomic_json(root / "config.json", {"old": True})
+    _committed_store(root)
+    transaction = Transaction(root, [root])
+    atomic_json(transaction.stage(0) / "config.json", {"new": True})
+    transaction.decide()
+    transaction.publish()
+    assert transaction.journal["backup_refs"][0], "此前提交过的文件应为引用"
+    restore_isolated(root, transaction.identifier, tmp_path / "recovered")
+    assert json.loads((tmp_path / "recovered" / "store" / "config.json").read_text()) == {"old": True}
+    assert json.loads((root / "config.json").read_text()) == {"new": True}
+
+
+def test_referenced_backup_reports_lost_git_object(tmp_path: Path) -> None:
+    atomic_json(tmp_path / "config.json", {"old": True})
+    _committed_store(tmp_path)
+    transaction = Transaction(tmp_path, [tmp_path])
+    blob = transaction.journal["backup_refs"][0]["config.json"]
+    transaction.journal["backup_refs"][0]["config.json"] = "0" * 40
+    with pytest.raises(MigrationError, match="不再持有"):
+        backup_payload(tmp_path, transaction.journal, 0, "config.json")
+    transaction.journal["backup_refs"][0]["config.json"] = blob
+    assert backup_payload(tmp_path, transaction.journal, 0, "config.json").record == {"old": True}
+
+
+def test_referenced_backup_survives_history_rewrite_and_gc(tmp_path: Path) -> None:
+    atomic_json(tmp_path / "config.json", {"old": True})
+    _committed_store(tmp_path)
+    transaction = Transaction(tmp_path, [tmp_path])
+    assert transaction.journal["backup_refs"][0], "已提交文件应为引用"
+    environment = {**os.environ, "GIT_AUTHOR_NAME": "T", "GIT_COMMITTER_NAME": "T",
+                   "GIT_AUTHOR_EMAIL": "t@localhost", "GIT_COMMITTER_EMAIL": "t@localhost"}
+    # Discard the branch that held those bytes, then collect aggressively:
+    # only the backup's own ref can still keep the blob reachable.
+    atomic_json(tmp_path / "config.json", {"rewritten": True})
+    for arguments in (["add", "-A"], ["commit", "--amend", "-m", "rewritten"],
+                      ["reflog", "expire", "--expire=now", "--all"],
+                      ["gc", "--prune=now", "--aggressive"]):
+        subprocess.run(["git", "-C", str(tmp_path), *arguments], check=True,
+                       capture_output=True, env=environment)
+    assert backup_payload(tmp_path, transaction.journal, 0, "config.json").record == {"old": True}
+
+
+def test_prune_keeps_recent_backups_and_spares_unfinished(tmp_path: Path) -> None:
+    from miniclaw2.migrations.transaction import prune_transactions
+
+    atomic_json(tmp_path / "config.json", {"n": 0})
+    finished = []
+    for step in range(3):
+        transaction = Transaction(tmp_path, [tmp_path])
+        atomic_json(transaction.stage(0) / "config.json", {"n": step + 1})
+        transaction.decide()
+        transaction.publish()
+        finished.append(transaction.identifier)
+    unfinished = Transaction(tmp_path, [tmp_path])
+    atomic_json(unfinished.stage(0) / "config.json", {"n": 9})
+
+    result = prune_transactions(tmp_path, keep=2)
+
+    assert result["removed"] == finished[:1], "只应回收保留窗口之外的已完结事务"
+    assert not (tmp_path / "migration-backups" / finished[0]).exists()
+    for identifier in finished[1:]:
+        assert (tmp_path / "migration-backups" / identifier).is_dir(), "窗口内的备份必须保留"
+        assert not (tmp_path / ".migration-local/transactions" / identifier / "stage").exists()
+    assert (unfinished.directory / "stage").is_dir(), "未完结事务仍要能被 recover 使用"
+    recover(tmp_path, [tmp_path])
+    assert json.loads((tmp_path / "config.json").read_text()) == {"n": 3}
+
+
+def test_prune_spares_backup_still_needed_for_recovery(tmp_path: Path) -> None:
+    from miniclaw2.migrations.transaction import prune_transactions
+
+    atomic_json(tmp_path / "config.json", {"n": 0})
+    identifiers = []
+    for step in range(3):
+        transaction = Transaction(tmp_path, [tmp_path])
+        atomic_json(transaction.stage(0) / "config.json", {"n": step + 1})
+        transaction.decide()
+        transaction.publish()
+        identifiers.append(transaction.identifier)
+
+    result = prune_transactions(tmp_path, keep=1, protected={identifiers[0]})
+
+    assert result["kept_protected"] == [identifiers[0]]
+    assert (tmp_path / "migration-backups" / identifiers[0]).is_dir(), "仍被恢复引用的备份不能因为旧而删除"
+    assert identifiers[1] in result["removed"]
+    assert not (tmp_path / "migration-backups" / identifiers[1]).exists()
 
 
 def test_other_process_cannot_open_held_store(tmp_path: Path) -> None:

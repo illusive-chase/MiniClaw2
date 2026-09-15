@@ -10,7 +10,7 @@ from typing import Any, Literal
 from .domain import GitLayout, LaneLayout, NodePosition
 from .migrations.errors import MigrationError
 from .migrations.inventory import safe_path
-from .migrations.transaction import file_digest, fsync_directory
+from .migrations.transaction import backup_payload, fsync_directory
 from .migrations.validation import read_object
 
 
@@ -21,7 +21,6 @@ def recovery_plan(
     prefix = "commit:" if kind == "git" else "planspace:"
     journal = read_object(safe_path(root / ".migration-local/transactions", transaction + "/journal.json"))
     inventory = journal["inputs"][0]
-    backup = safe_path(root / "migration-backups", transaction + "/0")
     candidates: dict[str, dict[str, NodePosition]] = {}
     sources: dict[str, dict[str, str]] = {}
     layouts = sorted(
@@ -31,15 +30,15 @@ def recovery_plan(
     for relative in layouts:
         if inventory[relative] is None:
             continue
-        source = safe_path(backup, relative)
-        if file_digest(source) != inventory[relative]:
-            raise ValueError(f"备份摘要不匹配：{source}")
+        payload = backup_payload(root, journal, 0, relative, identifier=transaction)
+        if payload.digest != inventory[relative]:
+            raise ValueError(f"备份摘要不匹配：{payload.origin}")
         project_id = Path(relative).parts[1]
         if not safe_path(root, f"projects/{project_id}/project.json").is_file():
             continue
-        hints = read_object(source).get("layout_hints", {})
+        hints = payload.record.get("layout_hints", {})
         if not isinstance(hints, dict):
-            raise ValueError(f"备份布局不是对象：{source}")
+            raise ValueError(f"备份布局不是对象：{payload.origin}")
         positions = candidates.setdefault(project_id, {})
         provenance = sources.setdefault(project_id, {})
         for node_id, position in sorted(hints.items()):
