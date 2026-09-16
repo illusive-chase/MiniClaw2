@@ -23,7 +23,15 @@ from miniclaw2.contextspace import (
     create_planspace,
     resolve_project_binding,
 )
-from miniclaw2.domain import ArtifactMode, Category, Node, NodeKind, NodeState, Project
+from miniclaw2.domain import (
+    ArtifactMode,
+    ArtifactRef,
+    Category,
+    Node,
+    NodeKind,
+    NodeState,
+    Project,
+)
 from miniclaw2.providers import AgentProviderContext, AgentProviderEvent
 from miniclaw2.runner import NodeRunner
 from miniclaw2.registry import ProjectRegistry
@@ -168,6 +176,56 @@ class _SvgArtifactProvider:
         return None
 
 
+class _MismatchedArtifactProvider:
+    name = "stub"
+
+    def __init__(self) -> None:
+        self.prompts: list[str] = []
+
+    async def run(self, context: AgentProviderContext):
+        self.prompts.append(context.node.prompt)
+        outputs = workspace_artifacts_dir(context.project, context.node.id)
+        (outputs / "report.md").write_text("# Report\n", encoding="utf-8")
+        (outputs / "data.json").write_text("{}\n", encoding="utf-8")
+        preview_path = (
+            Path(context.project.root_path)
+            / ".miniclaw2"
+            / "graph"
+            / "runs"
+            / context.node.id
+            / "lanes"
+            / (context.node.planspace_id or "")
+            / "nodes"
+            / context.node.id
+            / "preview.json"
+        )
+        preview_path.parent.mkdir(parents=True, exist_ok=True)
+        preview_path.write_text(
+            json.dumps(
+                {
+                    "id": context.node.id,
+                    "kind": "agent",
+                    "category": "regular",
+                    "state": "done",
+                    "ran_at": "2026-09-16T00:00:00Z",
+                    "lane": context.node.planspace_id or "",
+                    "motivation": "publish a report",
+                    "summary": "report written",
+                    "next_implications": "none",
+                    "artifacts": (
+                        ["report.md"] if len(self.prompts) > 1 else ["data.json"]
+                    ),
+                }
+            ),
+            encoding="utf-8",
+        )
+        yield AgentProviderEvent(kind="session", session_id="artifact-repair")
+        yield AgentProviderEvent(kind="done", final_state="done")
+
+    async def interrupt(self) -> None:
+        return None
+
+
 def _write_own_preview(context: AgentProviderContext) -> None:
     node = context.node
     lane = node.planspace_id or ""
@@ -255,6 +313,7 @@ class RunnerPreviewRepairTests(unittest.IsolatedAsyncioTestCase):
             f"/nodes/{node.id}/preview.json"
         )
         self.assertIn(expected_path, provider.prompts[1])
+        self.assertIn('"artifacts": []', provider.prompts[1])
         self.assertNotIn(
             f".miniclaw2/graph/lanes/{self.plug_id}",
             provider.prompts[1],
@@ -443,6 +502,74 @@ class RunnerPreviewRepairTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("%E5%9B%BE%E8%A1%A8.svg", raw.headers["content-disposition"])
         finally:
             client.close()
+
+    async def test_wrong_artifact_mode_is_repaired_before_completion(self) -> None:
+        node = self._node()
+        node.artifact_mode = ArtifactMode.MARKDOWN
+        self.store.update_node(node)
+
+        async def on_event(_payload: dict) -> None:
+            return None
+
+        provider = _MismatchedArtifactProvider()
+        runner = NodeRunner(node, self.project, self.store, on_event)
+        with patch.object(runner_module, "_make_provider", return_value=provider):
+            await asyncio.wait_for(runner.run(), timeout=5.0)
+
+        self.assertEqual(node.state, NodeState.DONE, node.error)
+        self.assertEqual(len(provider.prompts), 2)
+        self.assertIn(
+            "artifact_mode=markdown requires at least one published .md artifact",
+            provider.prompts[1],
+        )
+        self.assertIn(
+            '"artifacts": ["<bare Markdown artifact filename>.md"]',
+            provider.prompts[1],
+        )
+        self.assertNotIn('"artifacts": ["data.json"]', provider.prompts[1])
+        self.assertIn(
+            str(workspace_artifacts_dir(self.project, node.id)),
+            provider.prompts[1],
+        )
+        self.assertEqual(
+            [(ref.name, ref.status) for ref in node.artifacts],
+            [("report.md", "published")],
+        )
+        preview = json.loads(
+            self.store.read_node_preview(self.project.id, node.id) or "{}"
+        )
+        self.assertEqual(preview["artifacts"], ["report.md"])
+
+    def test_repair_artifacts_match_each_required_mode(self) -> None:
+        node = self._node()
+        node.artifacts = [
+            ArtifactRef(
+                name=name,
+                bytes=1,
+                mtime=1,
+                sha256="hash",
+                status="published",
+            )
+            for name in ("data.json", "page.html", "diagram.svg")
+        ]
+        outputs = workspace_artifacts_dir(self.project, node.id)
+
+        expected_by_mode = {
+            ArtifactMode.MARKDOWN: ["<bare Markdown artifact filename>.md"],
+            ArtifactMode.HTML: ["page.html"],
+            ArtifactMode.SVG: ["diagram.svg"],
+        }
+        for mode, expected in expected_by_mode.items():
+            with self.subTest(mode=mode):
+                node.artifact_mode = mode
+                prompt = runner_module._preview_repair_prompt(
+                    node,
+                    "invalid artifact mode",
+                    1,
+                    outputs_path=outputs,
+                )
+                encoded = json.dumps(expected, ensure_ascii=False)
+                self.assertIn(f'"artifacts": {encoded}', prompt)
 
     async def test_stale_active_planspace_errors_before_provider_launch(self) -> None:
         node = self._node()

@@ -28,6 +28,8 @@ from pydantic import BaseModel
 
 from .artifacts import (
     ALLOWED_ARTIFACT_SUFFIXES,
+    artifact_name_matches_mode,
+    artifact_requirement_issue,
     clear_published_artifacts,
     publish_artifacts,
     workspace_artifacts_dir,
@@ -40,6 +42,7 @@ from .contextspace import (
 )
 from .domain import (
     COLD_START_AGENT_OP_KIND,
+    ArtifactMode,
     Category,
     GateKind,
     GateState,
@@ -1096,7 +1099,12 @@ class NodeRunner:
 
         last_reason = reason
         for attempt in range(1, _PREVIEW_REPAIR_RETRIES + 1):
-            prompt = _preview_repair_prompt(self.node, last_reason, attempt)
+            prompt = _preview_repair_prompt(
+                self.node,
+                last_reason,
+                attempt,
+                outputs_path=workspace_artifacts_dir(self.project, self.node.id),
+            )
             await self._emit(
                 Activity(
                     kind="agent",
@@ -1146,6 +1154,36 @@ class NodeRunner:
     def _try_reap_and_persist_unlocked(self) -> tuple[bool, str]:
         if self._lane_root is None:
             return False, "no materialized lane exists for this node"
+        own_path = node_dir(self._lane_root, self.node.id) / "preview.json"
+        try:
+            text = own_path.read_text(encoding="utf-8")
+            preview = parse_preview(text)
+        except PreviewValidationError as exc:
+            return False, "; ".join(exc.issues)
+        except OSError as exc:
+            return False, f"cannot read own preview: {exc}"
+        if not isinstance(preview, ExecutedPreview):
+            return False, "running node wrote a virtual preview as its own"
+        issues = validate_preview_for_node(preview, self.node)
+        if issues:
+            return False, "; ".join(issues)
+        try:
+            refs = publish_artifacts(
+                self.project,
+                self.node,
+                preview.artifacts,
+                self.store,
+            )
+        except OSError as exc:
+            logger.exception("failed to publish artifacts")
+            return False, f"failed to publish artifacts: {exc}"
+        artifact_issue = artifact_requirement_issue(
+            self.node.artifact_mode,
+            refs,
+        )
+        if artifact_issue is not None:
+            return False, artifact_issue
+
         try:
             result = reap_lane(
                 self.project, self.node, self._lane_root, self._pre_snapshot, self.store
@@ -1159,19 +1197,11 @@ class NodeRunner:
             return False, "; ".join(result.rejection_reasons)
         if result.own_preview is None:
             return False, "reap did not return the running node preview"
-        own_path = node_dir(self._lane_root, self.node.id) / "preview.json"
         try:
-            text = own_path.read_text(encoding="utf-8")
             self.store.write_node_preview(self.project.id, self.node.id, text)
         except OSError as exc:
-            logger.exception("failed to persist own preview to durable store")
+            logger.exception("failed to persist own preview")
             return False, f"failed to persist own preview: {exc}"
-        publish_artifacts(
-            self.project,
-            self.node,
-            result.own_preview.artifacts,
-            self.store,
-        )
         for virtual in result.new_virtuals + result.modified_virtuals:
             self.store.update_node(virtual)
         return True, ""
@@ -1218,13 +1248,19 @@ class NodeRunner:
         if issues:
             return False, "; ".join(issues)
         try:
-            self.store.write_node_preview(self.project.id, self.node.id, text)
-            publish_artifacts(
+            refs = publish_artifacts(
                 self.project,
                 self.node,
                 preview.artifacts,
                 self.store,
             )
+            artifact_issue = artifact_requirement_issue(
+                self.node.artifact_mode,
+                refs,
+            )
+            if artifact_issue is not None:
+                return False, artifact_issue
+            self.store.write_node_preview(self.project.id, self.node.id, text)
         except OSError as exc:
             logger.exception("failed to persist unlaned preview")
             return False, f"failed to persist own preview: {exc}"
@@ -2012,9 +2048,19 @@ def _validate_authored_principle(principle_dir: Path, slug: str) -> str:
         ) from exc
 
 
-def _preview_repair_prompt(node: Node, reason: str, attempt: int) -> str:
+def _preview_repair_prompt(
+    node: Node,
+    reason: str,
+    attempt: int,
+    *,
+    outputs_path: Path,
+) -> str:
     lane = node.planspace_id or ""
     category = node.category.value if node.category is not None else "regular"
+    artifacts_example = json.dumps(
+        _preview_repair_artifact_names(node),
+        ensure_ascii=False,
+    )
     lines = [
         "MiniClaw2 could not accept your graph preview writes.",
         "",
@@ -2040,12 +2086,37 @@ def _preview_repair_prompt(node: Node, reason: str, attempt: int) -> str:
         f'  "lane": "{lane}",',
         '  "motivation": "<why this node ran>",',
         '  "summary": "<what happened and the key outcome>",',
-        '  "next_implications": "<what this enables or blocks downstream>"',
+        '  "next_implications": "<what this enables or blocks downstream>",',
+        f'  "artifacts": {artifacts_example}',
         "}",
+        "",
+        f"Artifact output directory: {outputs_path}",
+        f"Required artifact mode: {node.artifact_mode.value}",
+        "Use an empty artifacts array only when no artifact is required or intended.",
         "",
         "If the failure mentions virtual previews, repair or remove only the invalid graph-preview writes under this lane. Do not modify ordinary worktree files unless the validation failure explicitly requires it.",
     ])
     return "\n".join(lines)
+
+
+def _preview_repair_artifact_names(node: Node) -> list[str]:
+    published_names = [
+        ref.name for ref in node.artifacts if ref.status == "published"
+    ]
+    matching_names = [
+        name
+        for name in published_names
+        if artifact_name_matches_mode(node.artifact_mode, name)
+    ]
+    if matching_names or node.artifact_mode is ArtifactMode.DEFAULT:
+        return matching_names
+    placeholder = {
+        ArtifactMode.MARKDOWN: "<bare Markdown artifact filename>.md",
+        ArtifactMode.HTML: "<bare HTML artifact filename>.html",
+        ArtifactMode.SVG: "<bare SVG artifact filename>.svg",
+        ArtifactMode.CUSTOM: "<bare artifact filename>.md",
+    }[node.artifact_mode]
+    return [placeholder]
 
 
 def _state_from_provider(value: str | None) -> NodeState | None:

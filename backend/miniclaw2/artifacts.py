@@ -6,7 +6,7 @@ import hashlib
 import shutil
 from pathlib import Path
 
-from .domain import ArtifactRef, Node, Project
+from .domain import ArtifactMode, ArtifactRef, Node, Project
 from .materialize import ARTIFACTS_DIRNAME
 from .store import Store
 
@@ -16,6 +16,14 @@ MAX_ARTIFACT_BYTES = 2 * 1024 * 1024
 MAX_ARTIFACTS_TOTAL_BYTES = 8 * 1024 * 1024
 INLINE_TEXT_CAP = 512 * 1024
 ALLOWED_ARTIFACT_SUFFIXES = frozenset({".md", ".json", ".html", ".svg"})
+
+_REQUIRED_SUFFIX_BY_MODE: dict[ArtifactMode, str | None] = {
+    ArtifactMode.DEFAULT: None,
+    ArtifactMode.MARKDOWN: ".md",
+    ArtifactMode.HTML: ".html",
+    ArtifactMode.SVG: ".svg",
+    ArtifactMode.CUSTOM: None,
+}
 
 
 def workspace_artifacts_dir(project: Project, node_id: str) -> Path:
@@ -154,6 +162,43 @@ def publish_artifacts(
 
 def clear_published_artifacts(project: Project, node: Node, store: Store) -> None:
     publish_artifacts(project, node, [], store)
+
+
+def artifact_requirement_issue(
+    mode: ArtifactMode,
+    refs: list[ArtifactRef],
+) -> str | None:
+    """Return why a required artifact set is unsatisfied, if applicable."""
+    if mode is ArtifactMode.DEFAULT:
+        return None
+
+    published = [ref for ref in refs if ref.status == "published"]
+    required_suffix = _REQUIRED_SUFFIX_BY_MODE[mode]
+    if any(artifact_name_matches_mode(mode, ref.name) for ref in published):
+        return None
+    expected = (
+        "at least one published artifact"
+        if required_suffix is None
+        else f"at least one published {required_suffix} artifact"
+    )
+
+    dropped = [
+        f"{ref.name}: {ref.reason or 'invalid artifact'}"
+        for ref in refs
+        if ref.status == "dropped"
+    ]
+    detail = f" Dropped declarations: {'; '.join(dropped)}." if dropped else ""
+    return (
+        f"artifact_mode={mode.value} requires {expected}; add the bare filename "
+        "to preview.artifacts and ensure the file exists in the node outputs "
+        f"directory.{detail}"
+    )
+
+
+def artifact_name_matches_mode(mode: ArtifactMode, name: str) -> bool:
+    """Return whether a publishable artifact name satisfies the selected mode."""
+    required_suffix = _REQUIRED_SUFFIX_BY_MODE[mode]
+    return required_suffix is None or Path(name).suffix == required_suffix
 
 
 def _invalid_name_reason(name: str) -> str | None:
