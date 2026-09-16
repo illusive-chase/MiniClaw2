@@ -1,21 +1,15 @@
 {
   "family": "miniclaw2-store",
   "protocol": 1,
-  "target": 17,
-  "minimum": 14,
+  "target": 18,
+  "minimum": 15,
   "contracts": {
-    "14": "db73e32c384d4d75b1eefd502feb9c896a06e3be44c4c3a6c0a3f8e2df0738cc",
     "15": "fb019e495470ad2c728343b19a4e604ab48733b2ef087b58a887914cad9bac92",
     "16": "5c4fde85ddb79804d8cafa018dd83e7c63ccbb10be66b2a3907c0f3561998ffe",
-    "17": "15dbc213dfb36040dfd555917c1fba4bde378b00032f93e934c5969ae4ef317e"
+    "17": "15dbc213dfb36040dfd555917c1fba4bde378b00032f93e934c5969ae4ef317e",
+    "18": "eced2f8ca2649460632dca3a0ec6b088353bd308ff916d901325e1872480ef0a"
   },
   "steps": [
-    {
-      "source": 14,
-      "target": 15,
-      "module": "v0015_current_records",
-      "sha256": "9da8ec64258d75a44bab50ec6cd9c9420f83867609c951acc449047329884bab"
-    },
     {
       "source": 15,
       "target": 16,
@@ -27,6 +21,12 @@
       "target": 17,
       "module": "v0017_layout_recovery",
       "sha256": "638b83949a62df76f184429f5bc5c626535968ed628c9178dec3051a6dd0bed8"
+    },
+    {
+      "source": 17,
+      "target": 18,
+      "module": "v0018_project_persistence_mode",
+      "sha256": "4a89d6fa0b4af3aca0fd85f09e3626f325638e02f8065b3bfa5133864b683e3b"
     }
   ]
 }

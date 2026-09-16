@@ -63,7 +63,7 @@ def layouts(root: Path) -> dict[str, bytes]:
     return {relative: (root / relative).read_bytes() for relative in files(root) if relative.endswith("-layout.json")}
 
 
-@pytest.mark.parametrize("version", [14, 15])
+@pytest.mark.parametrize("version", [15])
 def test_transaction_preserves_layout_and_original_bytes(tmp_path: Path, version: int) -> None:
     seed(tmp_path, version)
     original = {relative: (tmp_path / relative).read_bytes() for relative in files(tmp_path)}
@@ -83,11 +83,11 @@ def test_transaction_preserves_layout_and_original_bytes(tmp_path: Path, version
     backups = list((tmp_path / "migration-backups").glob("*/0"))
     assert len(backups) == 1
     assert all((backups[0] / relative).read_bytes() == content for relative, content in original.items())
-    assert read_object(tmp_path / "schema.json") == marker(17)
+    assert read_object(tmp_path / "schema.json") == marker()
     validate(tmp_path)
 
 
-@pytest.mark.parametrize("version", [14, 15])
+@pytest.mark.parametrize("version", [15])
 def test_normalize_matches_transaction_and_is_idempotent(tmp_path: Path, version: int) -> None:
     root, normalized = tmp_path / "root", tmp_path / "normalized"
     seed(root, version)
@@ -175,13 +175,13 @@ def test_only_missing_and_repeated_step_preserve_newer_bytes(tmp_path: Path) -> 
         assert json.loads(before[relative])["nodes"][tile]["x"] == 444
 
 
-@pytest.mark.parametrize("version", [14, 15])
+@pytest.mark.parametrize("version", [15])
 def test_plan_reports_recovery_without_touching_sources(tmp_path: Path, version: int, capsys: pytest.CaptureFixture[str]) -> None:
     seed(tmp_path, version)
     before = {relative: (tmp_path / relative).read_bytes() for relative in files(tmp_path)}
     main(["plan", "--root", str(tmp_path)])
     plan = json.loads(capsys.readouterr().out)
-    assert plan["target"] == 17 and plan["minimum"] == 14
+    assert plan["target"] == 18 and plan["minimum"] == 15
     assert "v17 显式修复 v16" in plan["layout_note"]
     assert "不恢复" in plan["layout_note"]
     assert sum(report["restored"]["artifact"] for report in plan["layout_impact"]) == 2
@@ -212,7 +212,7 @@ def test_v16_reports_history_but_does_not_restore_it(tmp_path: Path, capsys: pyt
     assert any("--kind lane" in command for command in report["commands"])
     coordinator(tmp_path).apply("host-a")
     assert layouts(tmp_path) == before
-    assert read_object(tmp_path / "schema.json") == marker(17)
+    assert read_object(tmp_path / "schema.json") == marker()
     assert layout_recovery_guidance(tmp_path)[0]["missing"] == report["missing"]
 
 
@@ -264,22 +264,6 @@ def test_op_artifacts_are_excluded(tmp_path: Path) -> None:
     assert set(nodes) == {"child"}
 
 
-def test_v14_host_shards_take_priority_and_project_hints_fill_gaps(tmp_path: Path) -> None:
-    seed(tmp_path, 14)
-    host = tmp_path / "projects/project/hosts/host-z"
-    atomic_json(host / "host.json", {"label": "host-z", "bound_at": 1, "repo": {}})
-    atomic_json(host / "layout.json", {"layout_hints": {
-        ARTIFACT_ID: {"x": 999, "y": 888}, "commit:abc1234": {"x": 777, "y": 666},
-    }})
-    normalize(tmp_path, frozenset({V16.contract}))
-    nodes = read_object(tmp_path / "projects/project/hosts/host-a/node-layout.json")["nodes"]
-    assert nodes[ARTIFACT_ID]["x"] == 999
-    assert nodes["artifact-overflow:child"]["x"] == 70
-    git = read_object(tmp_path / "projects/project/git-layout.json")["nodes"]
-    assert git["commit:abc1234"]["x"] == 777
-    assert git["commit:ghost"]["x"] == 110
-
-
 def test_invalid_first_source_does_not_hide_valid_later_source(tmp_path: Path) -> None:
     seed(tmp_path)
     path = tmp_path / "projects/project/hosts/host-a/layout.json"
@@ -297,18 +281,6 @@ def test_fully_recovered_history_does_not_report_missing_layout(tmp_path: Path) 
     assert layout_recovery_guidance(tmp_path) == []
 
 
-def test_flat_historical_backup_offers_export_not_unsupported_recovery(tmp_path: Path) -> None:
-    seed(tmp_path, 14)
-    coordinator(tmp_path).apply("host-a", accept_data_loss=True)
-    (tmp_path / "projects/project/git-layout.json").unlink()
-    report = layout_recovery_guidance(tmp_path)[0]
-    assert report["missing"]["git"] == 2
-    assert len(report["commands"]) == 1
-    assert "migrations recover" in report["commands"][0]
-    assert "--output" in report["commands"][0]
-    assert "v14" in report["message"]
-
-
 def test_historical_backup_corruption_is_not_reported_as_recoverable(tmp_path: Path) -> None:
     seed(tmp_path)
     coordinator(tmp_path).apply("host-a", accept_data_loss=True)
@@ -321,6 +293,6 @@ def test_historical_backup_corruption_is_not_reported_as_recoverable(tmp_path: P
 def test_release_keeps_published_edges_and_confirmation() -> None:
     check_manifest()
     manifest = read_manifest()
-    assert manifest["minimum"] == 14 and manifest["target"] == 17
-    assert [(entry["source"], entry["target"]) for entry in manifest["steps"]] == [(14, 15), (15, 16), (16, 17)]
+    assert manifest["minimum"] == 15 and manifest["target"] == 18
+    assert [(entry["source"], entry["target"]) for entry in manifest["steps"]] == [(15, 16), (16, 17), (17, 18)]
     assert V16.destructive and not MIGRATION.destructive

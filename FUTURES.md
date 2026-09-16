@@ -302,7 +302,27 @@ artifact — preview one click behind — moves the canvas from "status board
 about the work" toward the work itself, which is where a graph *IDE*
 should sit.
 
-### 3.8 Smaller deferrals with a stated reason
+### 3.8 Remote execution keeps authority and access separate
+
+A remote project has one authoritative Git worktree on the remote machine and
+a one-way local projection for inspection. Its synchronized project record may
+name that remote root and its repository fingerprint; SSH aliases, jump hosts,
+credentials, and the local projection path are host-local facts and must remain
+in the ignored `local.json`. The presence of that file remains the sole local
+write-authority gate. Removing the gate would turn reachability into shared
+state and recreate the consensus variable rejected by `PHILOSOPHY.md` §12.1.
+
+The remaining execution path must preserve three less obvious constraints.
+First, every node in one project must resolve commits in the same repository;
+otherwise the existing single commit graph and review staleness comparison mix
+unrelated histories. Second, a source projection is remote-to-local only and is
+never written back. Third, an agent's lane is a read/write protocol, not source
+code: remote Codex execution must either retrieve its lane changes before reap
+or expose local graph operations as explicit tools, without giving the remote
+host a reverse connection to the backend. Git review still requires both remote
+snapshots so concurrent changes remain visible as stale results.
+
+### 3.9 Smaller deferrals with a stated reason
 
 Kept because the reason, not the absence, is the content:
 
@@ -359,7 +379,7 @@ Kept because the reason, not the absence, is the content:
   ops — and report-only stays the contract, so the reviewer never edits
   or comments on its own.
 
-### 3.9 Explicit non-goals
+### 3.10 Explicit non-goals
 
 Not "not yet" — decided against, recorded so they are not re-proposed:
 

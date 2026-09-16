@@ -749,20 +749,32 @@ export async function renameSession(id: string, name: string): Promise<SessionIn
   return res.json();
 }
 
+export type ProjectHostBinding =
+  | {
+      rootPath: string;
+      unverifiedAcknowledged?: boolean;
+    }
+  | {
+      remote: {
+        ssh_target: string;
+        connect_via?: string;
+      };
+    };
+
 export async function bindProjectHere(
   id: string,
-  rootPath: string,
-  options: {
-    unverifiedAcknowledged?: boolean;
-  } = {},
+  binding: ProjectHostBinding,
 ): Promise<SessionInfo> {
+  const body = "remote" in binding
+    ? { remote: binding.remote }
+    : {
+        root_path: binding.rootPath,
+        unverified_acknowledged: binding.unverifiedAcknowledged ?? false,
+      };
   const res = await fetch(`/sessions/${id}/hosts`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      root_path: rootPath,
-      unverified_acknowledged: options.unverifiedAcknowledged ?? false,
-    }),
+    body: JSON.stringify(body),
   });
   if (!res.ok) {
     const detail = await res.json().catch(() => null) as { detail?: string } | null;

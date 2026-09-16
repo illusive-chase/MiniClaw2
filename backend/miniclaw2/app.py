@@ -51,6 +51,9 @@ from .domain import (
     Node,
     NodeKind,
     NodePosition,
+    ProjectPersistenceMode,
+    RemoteAccessConfig,
+    RemoteProjectIdentity,
 )
 from .node_projection import node_list_projection
 from .events import (
@@ -235,8 +238,9 @@ class SessionInfo(BaseModel):
     context_positions: dict[str, NodePosition] = Field(default_factory=dict)
     # Runtime capabilities are explicit so clients can hide workspace/Git
     # controls for ephemeral sessions.
-    persistence_mode: str = "durable"
+    persistence_mode: ProjectPersistenceMode = ProjectPersistenceMode.DURABLE
     capabilities: dict[str, bool] = Field(default_factory=dict)
+    remote: RemoteProjectIdentity | None = None
 
 
 class ActiveNodeGate(BaseModel):
@@ -299,7 +303,8 @@ class UpdateContextLayoutRequest(BaseModel):
 class BindProjectRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    root_path: str
+    root_path: str | None = None
+    remote: RemoteAccessConfig | None = None
     unverified_acknowledged: bool = False
 
 
@@ -629,6 +634,16 @@ def create_app(
         guard = getattr(registry, "require_native", None)
         if guard is not None:
             guard(sid)
+
+    def require_execution_project(sid: str) -> None:
+        guard = getattr(registry, "require_execution_project", None)
+        if guard is not None:
+            try:
+                guard(sid)
+            except ValueError as exc:
+                raise HTTPException(400, str(exc)) from exc
+            return
+        require_native_project(sid)
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
@@ -1393,6 +1408,7 @@ def create_app(
             project = registry.bind_project_here(
                 sid,
                 req.root_path,
+                remote_access=req.remote,
                 unverified_acknowledged=req.unverified_acknowledged,
             )
         except ValueError as exc:
@@ -1750,7 +1766,7 @@ def create_app(
         project = registry.get_project(sid)
         if project is None:
             raise HTTPException(404, "session not found")
-        require_native_project(sid)
+        require_execution_project(sid)
         if registry.is_running(sid):
             raise HTTPException(409, "turn in progress")
         try:
@@ -1776,7 +1792,7 @@ def create_app(
         project = registry.get_project(sid)
         if project is None:
             raise HTTPException(404, "session not found")
-        require_native_project(sid)
+        require_execution_project(sid)
         if registry.is_running(sid):
             raise HTTPException(409, "turn in progress")
         try:
@@ -2816,18 +2832,24 @@ def _session_info(
         git_positions=registry.store.read_git_positions(project.id) if include_positions else {},
         lane_positions=registry.store.read_lane_positions(project.id) if include_positions else {},
         context_positions=registry.store.read_context_positions(project.id) if include_positions else {},
-        persistence_mode="ephemeral" if project.temporary else "durable",
+        persistence_mode=project.persistence_mode,
         capabilities=(
             {
                 "workspace": False,
                 "git_review": False,
             }
-            if project.temporary
+            if project.persistence_mode is ProjectPersistenceMode.EPHEMERAL
+            else {
+                "workspace": False,
+                "git_review": False,
+            }
+            if project.persistence_mode is ProjectPersistenceMode.REMOTE
             else {
                 "workspace": True,
                 "git_review": True,
             }
         ),
+        remote=project.remote,
     )
 
 

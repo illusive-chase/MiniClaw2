@@ -52,6 +52,7 @@ class AgentProviderEvent:
     error: str | None = None
     final_state: str | None = None
     report: ReviewReport | None = None
+    settings: dict[str, Any] | None = None
 
 
 @dataclass(slots=True)

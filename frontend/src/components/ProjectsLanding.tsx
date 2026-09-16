@@ -759,6 +759,11 @@ function ProjectCard({
             temp
           </span>
         )}
+        {session.persistence_mode === "remote" && (
+          <span className="rounded border border-brand/30 bg-brand-soft px-1.5 py-0.5 text-brand-ink dark:text-brand">
+            remote
+          </span>
+        )}
       </div>
 
       <div className="mt-auto flex items-center justify-between text-[11px] text-ink-subtle">

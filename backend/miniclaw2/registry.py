@@ -67,6 +67,9 @@ from .domain import (
     NodeState,
     PlanspaceMode,
     Project,
+    ProjectPersistenceMode,
+    RemoteAccessConfig,
+    RemoteProjectBinding,
     ReviewBrief,
     ReviewSubtype,
     ReviewTarget,
@@ -427,7 +430,11 @@ class ProjectRegistry:
         """Stamp each bound project's local repository state before sync."""
         for runtime in list(self._runtimes.values()):
             project = runtime.project
-            if project.temporary or not self.store.is_bound_here(project.id):
+            if (
+                project.persistence_mode is ProjectPersistenceMode.REMOTE
+                or project.temporary
+                or not self.store.is_bound_here(project.id)
+            ):
                 continue
             self.store.refresh_local_fingerprint(project)
             status = git_status(project.root_path)
@@ -447,7 +454,11 @@ class ProjectRegistry:
         if self._storage_sync_pending or self._self_update_pending or self.store.read_only_reason is not None:
             return
         for runtime in self._runtimes.values():
-            if self.is_native_project(runtime.project):
+            if (
+                self.is_native_project(runtime.project)
+                and runtime.project.persistence_mode
+                is not ProjectPersistenceMode.REMOTE
+            ):
                 self._schedule_queued(runtime)
 
     def prepare_self_update(self) -> bool:
@@ -551,6 +562,14 @@ class ProjectRegistry:
         project = self.require_native(pid)
         if project.temporary:
             raise ValueError("临时项目不支持 Git 操作，请使用持久项目")
+        if project.persistence_mode is ProjectPersistenceMode.REMOTE:
+            raise ValueError("远端 Git 通道尚未实现")
+        return project
+
+    def require_execution_project(self, pid: str) -> Project:
+        project = self.require_native(pid)
+        if project.persistence_mode is ProjectPersistenceMode.REMOTE:
+            raise ValueError("远端节点执行通道尚未实现")
         return project
 
     def require_native_node(self, project: Project, node: Node) -> Node:
@@ -692,8 +711,9 @@ class ProjectRegistry:
     def bind_project_here(
         self,
         pid: str,
-        root_path: str,
+        root_path: str | None = None,
         *,
+        remote_access: RemoteAccessConfig | None = None,
         unverified_acknowledged: bool = False,
     ) -> Project | None:
         self.store.assert_writable()
@@ -705,6 +725,56 @@ class ProjectRegistry:
             raise ValueError("temporary projects cannot be rebound")
         if self.is_native_project(project):
             raise ValueError("project is already bound on this device")
+        if project.persistence_mode is ProjectPersistenceMode.REMOTE:
+            if remote_access is None:
+                raise ValueError("remote access configuration is required")
+            if root_path is not None:
+                raise ValueError("remote projects do not bind a local authority path")
+            projection = (
+                self.store.root / "workspaces" / "remote" / project.id
+            ).resolve(strict=False)
+            projection.mkdir(parents=True, exist_ok=True)
+            host_dir = (
+                self.store.root
+                / "projects"
+                / pid
+                / "hosts"
+                / self.store.machine.id
+            )
+            self.store._write_json(
+                host_dir / "host.json",
+                {
+                    "label": self.store.machine.label,
+                    "bound_at": time.time(),
+                    "repo": {},
+                    "is_repo": True,
+                    "remote_access_configured": True,
+                },
+            )
+            self.store._write_json(
+                host_dir / "local.json",
+                RemoteProjectBinding(
+                    remote=remote_access,
+                    projection_path=str(projection),
+                ).model_dump(),
+            )
+            if not (host_dir / "node-layout.json").exists():
+                self.store._write_json(
+                    host_dir / "node-layout.json",
+                    NodeLayout(schema_version=1, nodes={}).model_dump(),
+                )
+            (host_dir / "nodes").mkdir(parents=True, exist_ok=True)
+            project.root_path = str(projection)
+            project.node_positions = self.store.read_node_positions(pid)
+            self.store.invalidate_owner_index()
+            self.store.sync.schedule_commit(
+                f'bind remote project "{project.name or pid}" on this device'
+            )
+            return project
+        if remote_access is not None:
+            raise ValueError("local projects do not accept remote access configuration")
+        if root_path is None:
+            raise ValueError("root_path is required")
         root = Path(root_path).expanduser()
         if not root.exists():
             raise ValueError(f"path does not exist: {root}")
@@ -1410,7 +1480,7 @@ class ProjectRegistry:
         rt = self._runtimes.get(pid)
         if rt is None:
             return None
-        self.require_native(pid)
+        self.require_execution_project(pid)
 
         if subtype == ReviewSubtype.CODE_REVIEW:
             self.require_git_project(pid)
@@ -1563,7 +1633,12 @@ class ProjectRegistry:
         return runner
 
     def _schedule_queued(self, rt: ProjectRuntime) -> None:
-        if self._storage_sync_pending or self._self_update_pending or not self.is_native_project(rt.project):
+        if (
+            self._storage_sync_pending
+            or self._self_update_pending
+            or not self.is_native_project(rt.project)
+            or rt.project.persistence_mode is ProjectPersistenceMode.REMOTE
+        ):
             return
         while rt.has_capacity():
             if self._exclusive_node_active(rt):
@@ -2093,7 +2168,7 @@ class ProjectRegistry:
                 "project_unavailable",
                 "Project runtime is unavailable.",
             )
-        self.require_native(pid)
+        self.require_execution_project(pid)
         node = self.store.load_node(pid, vid)
         if node is None:
             return VirtualPromotionResult(

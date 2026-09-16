@@ -287,7 +287,10 @@ export function ProjectPanel({
               label="Default model"
               value={modelPresetLabel(modelPresets, session.model_preset_id)}
             />
-            <KV label="Temporary" value={session.temporary ? "yes" : "no"} />
+            <KV
+              label="Persistence"
+              value={session.persistence_mode ?? (session.temporary ? "ephemeral" : "durable")}
+            />
             <KV label="Template" value={session.template_id ?? "(none)"} />
             <KV label="Turns" value={String(session.turns)} />
             <KV

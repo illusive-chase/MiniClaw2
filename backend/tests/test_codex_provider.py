@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import tempfile
 import unittest
 from collections.abc import Callable
 from pathlib import Path
@@ -10,7 +11,7 @@ from typing import Any
 from unittest.mock import patch
 
 from miniclaw2.domain import GateSubtype, ReviewTarget
-from miniclaw2.providers.base import ReviewSpec
+from miniclaw2.providers.base import AgentProviderEvent, ReviewSpec
 from miniclaw2.providers.codex import (
     CodexRpcError,
     CodexProvider,
@@ -19,11 +20,14 @@ from miniclaw2.providers.codex import (
     _configure_skill_roots,
     _codex_dynamic_tools_capable,
     _codex_user_input_response,
+    _observed_codex_settings,
     _activity_from_item,
     _thread_params,
     _turn_params,
     _review_report_from_codex,
 )
+from miniclaw2.runner import NodeRunner
+from miniclaw2.store import Store
 
 
 class CodexUserInputResponseTest(unittest.TestCase):
@@ -174,6 +178,52 @@ class _FakeProviderContext:
 
 
 class CodexProviderTest(unittest.IsolatedAsyncioTestCase):
+    def test_initialize_identity_extracts_observed_codex_home(self) -> None:
+        self.assertEqual(
+            _observed_codex_settings({"codexHome": "/profiles/kth"}),
+            {"observed_codex_home": "/profiles/kth"},
+        )
+        self.assertEqual(_observed_codex_settings({"codexHome": ""}), {})
+        self.assertEqual(_observed_codex_settings({}), {})
+
+    async def test_runner_persists_observed_codex_home(self) -> None:
+        from miniclaw2.domain import Node, Project
+
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            workspace = root / "workspace"
+            workspace.mkdir()
+            store = Store(root / "store")
+            project = store.create_project(Project(root_path=str(workspace)))
+            node = store.create_node(
+                Node(
+                    project_id=project.id,
+                    model_preset_id=project.model_preset_id,
+                )
+            )
+
+            async def on_event(_payload: dict[str, Any]) -> None:
+                return None
+
+            runner = NodeRunner(node, project, store, on_event)
+            await runner._handle_provider_event(
+                AgentProviderEvent(
+                    kind="settings",
+                    settings={
+                        "observed_codex_home": "/profiles/observed",
+                        "untrusted_key": "ignored",
+                    },
+                )
+            )
+
+            persisted = store.load_node(project.id, node.id)
+            assert persisted is not None
+            self.assertEqual(
+                persisted.settings_snapshot["observed_codex_home"],
+                "/profiles/observed",
+            )
+            self.assertNotIn("untrusted_key", persisted.settings_snapshot)
+
     async def test_skill_root_failure_marks_audit_without_raising(self) -> None:
         suggestion = (
             'The skill "Alpha" is available and likely relevant to this task.'
@@ -214,7 +264,10 @@ class CodexProviderTest(unittest.IsolatedAsyncioTestCase):
 
         class _ClientStub:
             async def initialize(self) -> dict[str, Any]:
-                return {"serverInfo": {"version": "0.200.0"}}
+                return {
+                    "serverInfo": {"version": "0.200.0"},
+                    "codexHome": "/profiles/observed",
+                }
 
             async def request(
                 self, method: str, params: dict[str, Any], **_kwargs: Any
@@ -259,6 +312,11 @@ class CodexProviderTest(unittest.IsolatedAsyncioTestCase):
         thread_params = next(params for method, params in captured if method == "thread/start")
         self.assertEqual(
             thread_params["developerInstructions"], "Suggested skill context"
+        )
+        self.assertEqual(events[0].kind, "settings")
+        self.assertEqual(
+            events[0].settings,
+            {"observed_codex_home": "/profiles/observed"},
         )
         self.assertEqual(events[-1].kind, "done")
 

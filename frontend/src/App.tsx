@@ -3077,6 +3077,61 @@ export function App() {
   const commitGitMessage = (message: string) => runGitAction("commit", message);
   const reviewGitChanges = () => runGitAction("review");
 
+  const configureProjectBinding = async () => {
+    if (!session?.can_bind_here || projectMutationPending) return;
+
+    if (session.persistence_mode === "remote") {
+      const sshTarget = window.prompt(
+        "请输入 SSH 目标（主机名、SSH config 别名或 user@host）",
+        session.remote?.target_id ?? "",
+      );
+      if (!sshTarget?.trim()) return;
+      const connectVia = window.prompt(
+        "可选：请输入跳板机 SSH 目标；留空表示直连",
+        "",
+      );
+      if (connectVia === null) return;
+
+      setProjectMutationPending(true);
+      try {
+        setSession(await bindProjectHere(session.id, {
+          remote: {
+            ssh_target: sshTarget.trim(),
+            ...(connectVia.trim() ? { connect_via: connectVia.trim() } : {}),
+          },
+        }));
+      } catch (error) {
+        window.alert(error instanceof Error ? error.message : String(error));
+      } finally {
+        setProjectMutationPending(false);
+      }
+      return;
+    }
+
+    const rootPath = window.prompt("请输入此设备上的项目目录绝对路径");
+    if (!rootPath?.trim()) return;
+    setProjectMutationPending(true);
+    try {
+      setSession(await bindProjectHere(session.id, { rootPath: rootPath.trim() }));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (!message.includes("无法校验") || !window.confirm(message)) {
+        if (!message.includes("无法校验")) window.alert(message);
+        return;
+      }
+      try {
+        setSession(await bindProjectHere(session.id, {
+          rootPath: rootPath.trim(),
+          unverifiedAcknowledged: true,
+        }));
+      } catch (retryError) {
+        window.alert(retryError instanceof Error ? retryError.message : String(retryError));
+      }
+    } finally {
+      setProjectMutationPending(false);
+    }
+  };
+
   return (
     <TextZoomProvider preferredLanguage={session?.preferred_language ?? null}>
     <div className="flex h-screen flex-col bg-surface text-ink">
@@ -3129,37 +3184,18 @@ export function App() {
                     : "只读 · 此设备尚未配置项目路径"}
                 </span>
               )}
-              {session?.capabilities?.workspace !== false && session?.can_bind_here && (
+              {session?.can_bind_here && (
                 <button
                   type="button"
                   disabled={projectMutationPending}
-                  onClick={() => {
-                    const rootPath = window.prompt(
-                      "请输入此设备上的项目目录绝对路径",
-                    );
-                    if (!rootPath?.trim()) return;
-                    setProjectMutationPending(true);
-                    void bindProjectHere(session.id, rootPath.trim())
-                      .then(setSession)
-                      .catch(async (error: unknown) => {
-                        const message = error instanceof Error ? error.message : String(error);
-                        if (!message.includes("无法校验") || !window.confirm(message)) {
-                          if (!message.includes("无法校验")) window.alert(message);
-                          return;
-                        }
-                        try {
-                          setSession(await bindProjectHere(session.id, rootPath.trim(), {
-                            unverifiedAcknowledged: true,
-                          }));
-                        } catch (retryError) {
-                          window.alert(retryError instanceof Error ? retryError.message : String(retryError));
-                        }
-                      })
-                      .finally(() => setProjectMutationPending(false));
-                  }}
+                  onClick={() => void configureProjectBinding()}
                   className="rounded border border-brand/50 bg-brand-soft px-1.5 py-0.5 font-sans text-brand-ink transition hover:border-brand disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  {projectMutationPending ? "正在配置..." : "配置路径"}
+                  {projectMutationPending
+                    ? "正在配置..."
+                    : session.persistence_mode === "remote"
+                      ? "配置远端"
+                      : "配置路径"}
                 </button>
               )}
               {session?.bound_here && session.hosts.length > 0 && (

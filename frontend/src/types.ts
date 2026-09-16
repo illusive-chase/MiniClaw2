@@ -231,8 +231,13 @@ export type SessionInfo = {
   git_positions?: Record<string, NodePosition>;
   lane_positions?: Record<string, NodePosition>;
   context_positions?: Record<string, NodePosition>;
-  persistence_mode?: "durable" | "ephemeral";
+  persistence_mode?: "durable" | "ephemeral" | "remote";
   capabilities?: Record<string, boolean>;
+  remote?: {
+    target_id: string;
+    root_path: string;
+    root_commit?: string | null;
+  } | null;
 };
 
 /** Global project tag (`$MINICLAW_HOME/tags.json`). `color` is a palette key

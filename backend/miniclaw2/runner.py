@@ -1682,6 +1682,19 @@ class NodeRunner:
             self.store.update_node(self.node)
             await self._emit_node_updated()
             return
+        if ev.kind == "settings" and ev.settings:
+            allowed = {
+                key: value
+                for key, value in ev.settings.items()
+                if key == "observed_codex_home"
+                and isinstance(value, str)
+                and value
+            }
+            if allowed:
+                self.node.settings_snapshot.update(allowed)
+                self.store.update_node(self.node)
+                await self._emit_node_updated()
+            return
         if ev.kind == "error" and ev.error:
             await self._emit(ErrorEvent(message=ev.error))
             return

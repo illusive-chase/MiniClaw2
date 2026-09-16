@@ -11,7 +11,16 @@ from fastapi.testclient import TestClient
 
 from miniclaw2.app import create_app
 from miniclaw2.artifacts import publish_artifacts, workspace_artifacts_dir
-from miniclaw2.domain import Category, Node, NodeState, ReviewSubtype
+from miniclaw2.domain import (
+    UNBOUND_ROOT_PATH,
+    Category,
+    Node,
+    NodeState,
+    Project,
+    ProjectPersistenceMode,
+    RemoteProjectIdentity,
+    ReviewSubtype,
+)
 from miniclaw2.git_state import is_git_repo
 from miniclaw2.registry import NonNativeNodeError, ProjectRegistry
 from miniclaw2.store import Store
@@ -19,6 +28,155 @@ from miniclaw2.workspace import create_temporary_root, remove_temporary_root
 
 
 class TemporaryProjectTest(unittest.TestCase):
+    def test_legacy_temporary_flag_upgrades_to_ephemeral_mode(self) -> None:
+        project = Project(root_path="/tmp/cache", temporary=True)
+
+        self.assertEqual(
+            project.persistence_mode, ProjectPersistenceMode.EPHEMERAL
+        )
+
+    def test_explicit_mode_rejects_conflicting_temporary_flag(self) -> None:
+        with self.assertRaisesRegex(ValueError, "temporary must be true"):
+            Project(
+                root_path="/tmp/cache",
+                temporary=True,
+                persistence_mode=ProjectPersistenceMode.DURABLE,
+            )
+
+    def test_explicit_ephemeral_mode_populates_compatibility_flag(self) -> None:
+        project = Project(
+            root_path="/tmp/cache",
+            persistence_mode=ProjectPersistenceMode.EPHEMERAL,
+        )
+
+        self.assertTrue(project.temporary)
+
+    def test_remote_mode_has_remote_session_capabilities(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            registry = ProjectRegistry(Store(Path(raw)))
+            project = Project(
+                root_path=UNBOUND_ROOT_PATH,
+                persistence_mode=ProjectPersistenceMode.REMOTE,
+                remote=RemoteProjectIdentity(
+                    target_id="training-a100",
+                    root_path="/srv/project",
+                    root_commit="a" * 40,
+                ),
+            )
+            project.machine_id = registry.store.machine.id
+            project.machine_label = registry.store.machine.label
+            project.bind_model_catalog(registry.store.root)
+            project_dir = registry.store.root / "projects" / project.id
+            project_dir.mkdir(parents=True)
+            registry.store._write_json(
+                project_dir / "project.json",
+                project.model_dump(
+                    exclude={"provider", "root_path", "node_positions"}
+                ),
+            )
+            registry.reload_from_store()
+
+            with TestClient(create_app(registry=registry)) as client:
+                info = client.get(f"/sessions/{project.id}").json()
+
+            self.assertEqual(info["persistence_mode"], "remote")
+            self.assertEqual(
+                info["capabilities"],
+                {"workspace": False, "git_review": False},
+            )
+            self.assertFalse(info["bound_here"])
+            self.assertTrue(info["read_only"])
+
+    def test_remote_binding_uses_projection_without_local_authority_path(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            registry = ProjectRegistry(Store(Path(raw) / "store"))
+            project = Project(
+                root_path=UNBOUND_ROOT_PATH,
+                persistence_mode=ProjectPersistenceMode.REMOTE,
+                remote=RemoteProjectIdentity(
+                    target_id="training-a100",
+                    root_path="/srv/project",
+                    root_commit="a" * 40,
+                ),
+            )
+            project.machine_id = "another-host"
+            project.machine_label = "Another host"
+            project.bind_model_catalog(registry.store.root)
+            project_dir = registry.store.root / "projects" / project.id
+            project_dir.mkdir(parents=True)
+            registry.store._write_json(
+                project_dir / "project.json",
+                project.model_dump(
+                    exclude={"provider", "root_path", "node_positions"}
+                ),
+            )
+            registry.reload_from_store()
+            projection = (
+                registry.store.root / "workspaces" / "remote" / project.id
+            ).resolve()
+
+            with TestClient(create_app(registry=registry)) as client:
+                response = client.post(
+                    f"/sessions/{project.id}/hosts",
+                    json={
+                        "remote": {
+                            "ssh_target": "autodl-a100",
+                            "connect_via": "bastion",
+                        },
+                    },
+                )
+                with patch("miniclaw2.app.start_context_task") as start:
+                    init_response = client.post(
+                        f"/sessions/{project.id}/context/init"
+                    )
+                    refresh_response = client.post(
+                        f"/sessions/{project.id}/context/refresh"
+                    )
+
+                self.assertEqual(init_response.status_code, 400, init_response.text)
+                self.assertEqual(
+                    init_response.json()["detail"],
+                    "远端节点执行通道尚未实现",
+                )
+                self.assertEqual(
+                    refresh_response.status_code, 400, refresh_response.text
+                )
+                self.assertEqual(
+                    refresh_response.json()["detail"],
+                    "远端节点执行通道尚未实现",
+                )
+                start.assert_not_called()
+
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertTrue(response.json()["bound_here"])
+            self.assertEqual(
+                response.json()["root_path"], str(projection.resolve())
+            )
+            self.assertEqual(
+                response.json()["remote"],
+                {
+                    "target_id": "training-a100",
+                    "root_path": "/srv/project",
+                    "root_commit": "a" * 40,
+                },
+            )
+            binding = registry.store.read_remote_binding(project.id)
+            assert binding is not None
+            self.assertEqual(binding.remote.ssh_target, "autodl-a100")
+            self.assertEqual(binding.remote.connect_via, "bastion")
+            self.assertEqual(binding.projection_path, str(projection.resolve()))
+
+            bound = registry.get_project(project.id)
+            assert bound is not None
+            with self.assertRaisesRegex(ValueError, "远端节点执行通道尚未实现"):
+                registry.start_node(project.id, "不得回落到本地执行")
+            self.assertEqual(registry.list_nodes(project.id), [])
+            bound.name = "Renamed"
+            registry.store.update_project(bound)
+            self.assertEqual(
+                registry.store.read_remote_binding(project.id), binding
+            )
+
     def test_nested_tmpdir_does_not_inherit_parent_repository(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             subprocess.run(["git", "init", "-q", raw], check=True)

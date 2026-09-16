@@ -34,6 +34,14 @@ _MIN_REVIEW_VERSION = (0, 144, 1)
 _MIN_DYNAMIC_TOOLS_VERSION = (0, 146, 0)
 
 
+def _observed_codex_settings(initialized: dict[str, Any]) -> dict[str, Any]:
+    """Extract app-server-reported launch identity for the node audit."""
+    codex_home = initialized.get("codexHome")
+    if not isinstance(codex_home, str) or not codex_home.strip():
+        return {}
+    return {"observed_codex_home": codex_home}
+
+
 class CodexRpcError(RuntimeError):
     """A structured JSON-RPC error returned by Codex app-server."""
 
@@ -66,6 +74,9 @@ class CodexProvider:
             self._client = client
             try:
                 initialized = await client.initialize()
+                observed_settings = _observed_codex_settings(initialized)
+                if observed_settings:
+                    yield AgentProviderEvent(kind="settings", settings=observed_settings)
                 await _configure_skill_roots(client, context)
                 thread_id = context.node.provider_session_id
                 fresh_thread = not thread_id
@@ -163,6 +174,9 @@ class CodexProvider:
             self._client = client
             try:
                 initialized = await client.initialize()
+                observed_settings = _observed_codex_settings(initialized)
+                if observed_settings:
+                    yield AgentProviderEvent(kind="settings", settings=observed_settings)
                 if not _codex_review_capable(initialized):
                     yield AgentProviderEvent(
                         kind="error",

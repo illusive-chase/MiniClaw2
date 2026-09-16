@@ -31,7 +31,22 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from .domain import ContextLayout, GitLayout, GitPosition, HumanGate, LaneLayout, LanePosition, Node, NodeLayout, NodePosition, NodeState, Project, UNBOUND_ROOT_PATH
+from .domain import (
+    UNBOUND_ROOT_PATH,
+    ContextLayout,
+    GitLayout,
+    GitPosition,
+    HumanGate,
+    LaneLayout,
+    LanePosition,
+    Node,
+    NodeLayout,
+    NodePosition,
+    NodeState,
+    Project,
+    ProjectPersistenceMode,
+    RemoteProjectBinding,
+)
 from .node_layout import node_coordinate_space, node_layout_owners
 from .git_state import is_git_repo, normalized_origin_url, root_commits
 from .replay import EVENT_SCHEMA_VERSION
@@ -138,8 +153,20 @@ class Store:
         return self._hosts_dir(pid) / machine_id
 
     def is_bound_here(self, pid: str) -> bool:
-        """Whether this host has a local checkout path for the project."""
+        """Whether this host has the local prerequisites to operate a project."""
         return (self._host_dir(pid, self.machine.id) / "local.json").is_file()
+
+    def read_remote_binding(self, pid: str) -> RemoteProjectBinding | None:
+        path = self._host_dir(pid, self.machine.id) / "local.json"
+        if not path.is_file():
+            return None
+        try:
+            payload = self._read_json(path)
+            if "remote" not in payload:
+                return None
+            return RemoteProjectBinding.model_validate(payload)
+        except (OSError, ValueError, ValidationError):
+            return None
 
     def _owner_mid(self, pid: str, nid: str) -> str:
         return self._owner_index.get(pid, {}).get(nid, self.machine.id)
@@ -246,7 +273,11 @@ class Store:
         return [entry[1] for entry in fresh.values()]
 
     def refresh_local_fingerprint(self, project: Project) -> bool:
-        if project.temporary or not self.is_bound_here(project.id):
+        if (
+            project.persistence_mode is ProjectPersistenceMode.REMOTE
+            or project.temporary
+            or not self.is_bound_here(project.id)
+        ):
             return False
         roots = root_commits(project.root_path)
         path = self._host_dir(project.id, self.machine.id) / "host.json"
@@ -413,6 +444,10 @@ class Store:
 
     def create_project(self, project: Project) -> Project:
         self.assert_writable()
+        if project.persistence_mode is ProjectPersistenceMode.REMOTE:
+            raise ValueError(
+                "remote projects must be created through the remote project workflow"
+            )
         if not project.machine_id:
             project.machine_id = self.machine.id
         if not project.machine_label:
@@ -479,7 +514,10 @@ class Store:
         self.assert_writable()
         project.bind_model_catalog(self.root)
         host_dir = self._host_dir(project.id, self.machine.id)
-        if self.is_bound_here(project.id):
+        if (
+            self.is_bound_here(project.id)
+            and project.persistence_mode is not ProjectPersistenceMode.REMOTE
+        ):
             self._write_json(host_dir / "local.json", {"root_path": project.root_path})
         payload = project.model_dump(
             exclude={"provider", "root_path", "node_positions"}
@@ -650,8 +688,14 @@ class Store:
                 raise ValueError("当前格式不允许未分区节点")
             local_file = self._host_dir(pid, self.machine.id) / "local.json"
             local_payload = self._read_json(local_file) if local_file.is_file() else {}
+            persistence_mode = payload.get("persistence_mode")
+            local_root_key = (
+                "projection_path"
+                if persistence_mode == ProjectPersistenceMode.REMOTE
+                else "root_path"
+            )
             payload.update(
-                root_path=local_payload.get("root_path", UNBOUND_ROOT_PATH),
+                root_path=local_payload.get(local_root_key, UNBOUND_ROOT_PATH),
                 node_positions={},
             )
             return _validate_project_record(project_file, payload).bind_model_catalog(

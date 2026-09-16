@@ -40,7 +40,7 @@ def seed(root: Path, version: int = 15) -> tuple[str, dict[str, Path]]:
     return project.id, hosts
 
 
-@pytest.mark.parametrize("version", [14, 15])
+@pytest.mark.parametrize("version", [15])
 def test_confirmation_backup_and_historical_spaces(tmp_path: Path, version: int) -> None:
     """v17 declares that it repairs v16, so a chain that carries both runs
     unattended; the backup and the recovered spaces must survive regardless."""
@@ -77,7 +77,7 @@ def git(root: Path, *arguments: str) -> str:
     return result.stdout.strip()
 
 
-@pytest.mark.parametrize("ancestor_version", [14, 15])
+@pytest.mark.parametrize("ancestor_version", [15])
 @pytest.mark.parametrize("peer_upgraded", [False, True])
 def test_three_way_sync_preserves_each_owners_offline_move(tmp_path: Path, ancestor_version: int, peer_upgraded: bool) -> None:
     root = tmp_path / "local"

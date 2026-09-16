@@ -23,6 +23,7 @@ from pydantic import (
     PrivateAttr,
     StrictInt,
     computed_field,
+    field_validator,
     model_validator,
 )
 
@@ -88,6 +89,50 @@ class ArtifactMode(StrEnum):
     HTML = "html"
     SVG = "svg"
     CUSTOM = "custom"
+
+
+class ProjectPersistenceMode(StrEnum):
+    DURABLE = "durable"
+    EPHEMERAL = "ephemeral"
+    REMOTE = "remote"
+
+
+class RemoteProjectIdentity(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    target_id: str = Field(min_length=1, pattern=r"^[A-Za-z0-9._-]+$")
+    root_path: str = Field(min_length=1)
+    root_commit: str | None = Field(default=None, pattern=r"^[0-9a-f]{40,64}$")
+
+    @field_validator("root_path")
+    @classmethod
+    def _validate_remote_root_path(cls, value: str) -> str:
+        if not value.startswith("/") or "\n" in value or "\r" in value:
+            raise ValueError("remote root_path must be an absolute POSIX path")
+        return value
+
+
+class RemoteAccessConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    ssh_target: str = Field(min_length=1, pattern=r"^[A-Za-z0-9._@:-]+$")
+    connect_via: str | None = Field(
+        default=None, pattern=r"^[A-Za-z0-9._@:-]+$"
+    )
+
+
+class RemoteProjectBinding(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    remote: RemoteAccessConfig
+    projection_path: str = Field(min_length=1)
+
+    @field_validator("projection_path")
+    @classmethod
+    def _validate_projection_path(cls, value: str) -> str:
+        if not Path(value).is_absolute():
+            raise ValueError("projection_path must be absolute")
+        return value
 
 
 TERMINAL_NODE_STATES: frozenset[NodeState] = frozenset({
@@ -241,6 +286,8 @@ class Project(BaseModel):
     preferred_language: str | None = None
     project_context_binding_id: str | None = None
     settings_override: dict[str, Any] = Field(default_factory=dict)
+    persistence_mode: ProjectPersistenceMode = ProjectPersistenceMode.DURABLE
+    remote: RemoteProjectIdentity | None = None
     temporary: bool = False
     template_id: str | None = None
     tag_ids: list[str] = Field(default_factory=list)
@@ -248,12 +295,43 @@ class Project(BaseModel):
     node_positions: dict[str, NodePosition] = Field(default_factory=dict)
     planspace_view: dict[str, dict[str, bool]] = Field(default_factory=dict)
 
+    @model_validator(mode="before")
+    @classmethod
+    def _upgrade_legacy_persistence_mode(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        upgraded = dict(value)
+        if "persistence_mode" not in upgraded:
+            upgraded["persistence_mode"] = (
+                ProjectPersistenceMode.EPHEMERAL
+                if upgraded.get("temporary") is True
+                else ProjectPersistenceMode.DURABLE
+            )
+        elif "temporary" not in upgraded:
+            upgraded["temporary"] = (
+                upgraded["persistence_mode"]
+                == ProjectPersistenceMode.EPHEMERAL
+            )
+        return upgraded
+
     @model_validator(mode="after")
     def _check_project_model_preset(self) -> "Project":
         preset_id = self.model_preset_id.strip()
         if not preset_id:
             raise ValueError("model_preset_id is required")
         object.__setattr__(self, "model_preset_id", preset_id)
+        if self.temporary != (
+            self.persistence_mode is ProjectPersistenceMode.EPHEMERAL
+        ):
+            raise ValueError(
+                "temporary must be true exactly when persistence_mode is ephemeral"
+            )
+        if (self.persistence_mode is ProjectPersistenceMode.REMOTE) != (
+            self.remote is not None
+        ):
+            raise ValueError(
+                "remote identity must be set exactly when persistence_mode is remote"
+            )
         return self
 
     def bind_model_catalog(self, store_root: Path) -> "Project":

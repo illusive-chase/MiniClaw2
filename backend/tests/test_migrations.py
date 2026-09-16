@@ -48,7 +48,7 @@ def legacy_layout_store(root: Path, source: int = 15, *, hints: bool = True) -> 
     return store, project.id, node.id
 
 
-@pytest.mark.parametrize("source", [14, 15])
+@pytest.mark.parametrize("source", [15])
 @pytest.mark.parametrize("entrypoint", ["startup", "sync"])
 def test_repaired_chain_automatically_preserves_layout(tmp_path: Path, source: int, entrypoint: str) -> None:
     from miniclaw2.migrations.catalog import DIRECTORY
@@ -657,7 +657,7 @@ def test_plan_endpoint_stays_reachable_while_storage_is_blocked(tmp_path: Path, 
         assert response.status_code == 200
         plan = response.json()
         assert plan["source"] == 15 and plan["target"] == CURRENT_VERSION
-        assert [step["destructive"] for step in plan["steps"]] == [True, False]
+        assert [step["destructive"] for step in plan["steps"]] == [True, False, False]
         assert plan["sync_confirmation_contracts"] and plan["sync_confirmation_note"]
         assert any(host["local"] for host in plan["confirmation_hosts"])
         assert "layout_impact" in plan and "layout_recovery" in plan

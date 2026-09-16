@@ -95,10 +95,23 @@ class StorageCoordinator:
         scope = "external_context" if external else "local"
         relevant = [relative for relative, domain in files(root, external=external).items() if domain == scope]
         if relevant:
-            from .catalog import MINIMUM_VERSION
+            from .catalog import MINIMUM_VERSION, steps
 
             if MINIMUM_VERSION > 14:
-                raise MigrationError("schema_too_old", "本机数据缺少可信完成凭据，需通过中间版本识别基线", path)
+                if any(
+                    scope in migration.scopes
+                    for migration in steps(MINIMUM_VERSION)
+                ):
+                    raise MigrationError(
+                        "schema_too_old",
+                        "本机数据缺少可信完成凭据，需通过中间版本识别基线",
+                        path,
+                    )
+                # This data domain has not changed anywhere in the retained
+                # chain. Structural validation still runs before publication,
+                # so a copied current tree can receive a fresh host receipt
+                # without pretending that an unknown old format was migrated.
+                return CURRENT_VERSION
             return 14
         return CURRENT_VERSION
 

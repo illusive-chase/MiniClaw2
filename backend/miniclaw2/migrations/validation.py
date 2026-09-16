@@ -21,7 +21,7 @@ def read_object(path: Path) -> dict[str, Any]:
 
 
 def validate(root: Path, *, external: bool = False) -> None:
-    from ..domain import ContextLayout, GitLayout, HumanGate, LaneLayout, Node, NodeLayout, Project, UNBOUND_ROOT_PATH
+    from ..domain import ContextLayout, GitLayout, HumanGate, LaneLayout, Node, NodeLayout, Project, RemoteProjectBinding, UNBOUND_ROOT_PATH
     from ..global_config import GlobalConfig
     from ..templates.loader import TemplateError, _load_from_root
 
@@ -71,8 +71,11 @@ def validate(root: Path, *, external: bool = False) -> None:
                 NodeLayout.model_validate(read_object(path))
             elif host_record and path.name in {"local.json", "host.json", "head.json", "git_aliases.json"}:
                 payload = read_object(path)
-                if path.name == "local.json" and (set(payload) != {"root_path"} or not isinstance(payload["root_path"], str)):
-                    raise ValueError("本机绑定必须且只能包含 root_path")
+                if path.name == "local.json":
+                    if "remote" in payload:
+                        RemoteProjectBinding.model_validate(payload)
+                    elif set(payload) != {"root_path"} or not isinstance(payload["root_path"], str):
+                        raise ValueError("本机绑定格式无效")
                 if path.name == "host.json" and any(key in payload for key in ("identity", "attestation")):
                     raise ValueError("host 观察仍包含退休权限字段")
             elif node_record and path.name in {"events.jsonl", "gates.jsonl"}:
