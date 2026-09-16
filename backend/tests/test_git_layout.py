@@ -21,6 +21,7 @@ def test_coordinate_is_atomic_in_three_way_sync(tmp_path: Path) -> None:
     base, local, remote = (tmp_path / name for name in ("base", "local", "remote"))
     relative = "projects/project/git-layout.json"
     for root, position in ((base, POSITION), (local, {**POSITION, "x": 80}), (remote, {**POSITION, "y": 90})):
+        atomic_json(root / "projects/project/project.json", {"id": "project"})
         atomic_json(root / relative, {"schema_version": 1, "nodes": {COMMIT: position}})
     with pytest.raises(MigrationError, match="位置冲突"):
         check_git_layout_conflicts(base, local, remote)
@@ -31,6 +32,34 @@ def test_coordinate_is_atomic_in_three_way_sync(tmp_path: Path) -> None:
         check_git_layout_conflicts(base, local, remote)
     atomic_json(remote / relative, json.loads((local / relative).read_text()))
     check_git_layout_conflicts(base, local, remote)
+
+
+@pytest.mark.parametrize("deleted_side", ["local", "remote", "both"])
+@pytest.mark.parametrize("whole_file", [False, True])
+def test_layout_deletion_requires_agreement(tmp_path: Path, deleted_side: str, whole_file: bool) -> None:
+    roots = {name: tmp_path / name for name in ("base", "local", "remote")}
+    for name, root in roots.items():
+        atomic_json(root / "projects/project/project.json", {"id": "project"})
+        deleted = name != "base" and deleted_side in (name, "both")
+        if not (deleted and whole_file):
+            atomic_json(root / "projects/project/git-layout.json", {
+                "schema_version": 1, "nodes": {} if deleted else {COMMIT: POSITION},
+            })
+    if deleted_side == "both":
+        check_git_layout_conflicts(roots["base"], roots["local"], roots["remote"])
+    else:
+        with pytest.raises(MigrationError, match=COMMIT) as error:
+            check_git_layout_conflicts(roots["base"], roots["local"], roots["remote"])
+        assert error.value.state == "schema_conflict"
+
+
+@pytest.mark.parametrize("deleted_side", ["local", "remote"])
+def test_project_deletion_is_not_a_layout_conflict(tmp_path: Path, deleted_side: str) -> None:
+    for name in ("base", "local", "remote"):
+        if name != deleted_side:
+            atomic_json(tmp_path / name / "projects/project/project.json", {"id": "project"})
+            atomic_json(tmp_path / name / "projects/project/git-layout.json", {"schema_version": 1, "nodes": {COMMIT: POSITION}})
+    check_git_layout_conflicts(tmp_path / "base", tmp_path / "local", tmp_path / "remote")
 
 
 def backup_fixture(root: Path) -> None:

@@ -29,3 +29,12 @@ await build({
   logLevel: "warning",
 });
 await import(`${pathToFileURL("/tmp/miniclaw2-artifact-positions.test.mjs").href}?run=${Date.now()}`);
+await build({
+  entryPoints: [new URL("./context-error-positions.test.ts", import.meta.url).pathname],
+  outfile: "/tmp/miniclaw2-context-error-positions.test.mjs",
+  bundle: true,
+  platform: "node",
+  format: "esm",
+  logLevel: "warning",
+});
+await import(`${pathToFileURL("/tmp/miniclaw2-context-error-positions.test.mjs").href}?run=${Date.now()}`);

@@ -10,6 +10,7 @@ from typing import Any, Iterator
 from .catalog import CURRENT_VERSION, MINIMUM_VERSION, marker, steps, version_of
 from .errors import MigrationError
 from .inventory import LOCAL_DIRECTORY, context_root, files, safe_path
+from .repairs import repaired_contracts
 from .sdk import MigrationContext
 from .transaction import Transaction, atomic_json, durable_mkdir, hydrated_backup, recover
 from .validation import read_object, validate
@@ -163,7 +164,8 @@ class StorageCoordinator:
                                     hydrated_backup(self.root, transaction.journal, index))
                             context = MigrationContext(transaction.stage(index), scope, machine_id, snapshots[index])
                             for migration in applicable:
-                                if migration.destructive and migration.contract not in accepted:
+                                if (migration.destructive and migration.contract not in accepted
+                                        and migration.contract not in repaired_contracts(applicable, context)):
                                     raise MigrationError("migration_required", f"{migration.summary}；请查看 migrations plan 后用 apply --accept-data-loss 确认")
                                 migration.upgrade(context)
                                 migration.verify(context)

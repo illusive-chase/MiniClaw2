@@ -911,6 +911,16 @@ class ProjectRegistry:
         self.store.update_lane_positions(pid, updates, remove or [])
         return rt.project
 
+    def update_context_layout(
+        self, pid: str, updates: dict[str, NodePosition], *, remove: list[str] | None = None,
+    ) -> Project | None:
+        rt = self._runtimes.get(pid)
+        if rt is None:
+            return None
+        self.require_native(pid)
+        self.store.update_context_positions(pid, updates, remove or [])
+        return rt.project
+
     def update_planspace_view(
         self,
         pid: str,

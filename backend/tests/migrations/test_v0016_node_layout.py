@@ -42,16 +42,13 @@ def seed(root: Path, version: int = 15) -> tuple[str, dict[str, Path]]:
 
 @pytest.mark.parametrize("version", [14, 15])
 def test_confirmation_backup_and_historical_spaces(tmp_path: Path, version: int) -> None:
+    """v17 declares that it repairs v16, so a chain that carries both runs
+    unattended; the backup and the recovered spaces must survive regardless."""
     project_id, hosts = seed(tmp_path, version)
     original = (hosts["a"] / "layout.json").read_bytes()
     (hosts["a"] / "layout.json").chmod(0o640)
-    with pytest.raises(MigrationError) as error:
-        Store(tmp_path)
-    assert error.value.state == "migration_required"
-    assert (hosts["a"] / "layout.json").read_bytes() == original
-    storage = coordinator(tmp_path)
-    storage.apply(ensure_machine_identity(tmp_path).id, accept_data_loss=True)
     store = Store(tmp_path)
+    assert json.loads((tmp_path / "schema.json").read_text()) == marker()
     positions = store.read_node_positions(project_id)
     assert positions["a"].model_dump() == {"x": 10, "y": 20, "space": "planspace:history"}
     assert positions["b"].model_dump() == {"x": 30, "y": 40, "space": "planspace:history"}
@@ -61,7 +58,8 @@ def test_confirmation_backup_and_historical_spaces(tmp_path: Path, version: int)
     backups = list((tmp_path / "migration-backups").rglob("hosts/a/layout.json"))
     assert backups and all(path.read_bytes() == original and path.stat().st_mode & 0o777 == 0o640 for path in backups)
     receipt = json.loads((tmp_path / ".migration-local/state.json").read_text())
-    assert MIGRATION.contract in receipt["accepted_migration_contracts"]
+    # An automatic run must not record a confirmation the user never gave.
+    assert receipt["accepted_migration_contracts"] == []
 
 
 def test_ambiguous_owner_aborts_without_publishing(tmp_path: Path) -> None:
@@ -118,12 +116,27 @@ def test_three_way_sync_preserves_each_owners_offline_move(tmp_path: Path, ances
 
 
 def test_sync_normalization_requires_local_confirmation(tmp_path: Path) -> None:
-    seed(tmp_path)
+    """The repair exemption is a net-effect judgement, not an open gate: with no
+    recoverable input it must still demand confirmation, with full guidance."""
+    _, hosts = seed(tmp_path)
+    for host in hosts.values():
+        atomic_json(host / "layout.json", {"layout_hints": {}})
     with pytest.raises(MigrationError, match="确认") as error:
         normalize(tmp_path)
     assert error.value.state == "migration_required"
     for text in ("v15 → v16", "layout_impact", "layout_recovery", "--accept-data-loss", "--transaction", "--output", "仅保存在本机"):
         assert text in str(error.value)
+
+
+def test_sync_normalization_is_automatic_when_recovery_covers_the_loss(tmp_path: Path) -> None:
+    """The counterpart: v17 can restore these coordinates from this run's own
+    input, so normalize proceeds and records no confirmation."""
+    seed(tmp_path)
+    normalize(tmp_path)
+    assert json.loads((tmp_path / "schema.json").read_text()) == marker()
+    assert not list(tmp_path.glob("projects/*/hosts/*/layout.json"))
+    receipt = tmp_path / ".migration-local/state.json"
+    assert not receipt.exists() or json.loads(receipt.read_text()).get("accepted_migration_contracts") == []
 
 
 def test_plan_counts_recovery_without_modifying_sources(tmp_path: Path) -> None:

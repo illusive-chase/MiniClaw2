@@ -21,7 +21,7 @@ def read_object(path: Path) -> dict[str, Any]:
 
 
 def validate(root: Path, *, external: bool = False) -> None:
-    from ..domain import GitLayout, HumanGate, LaneLayout, Node, NodeLayout, Project, UNBOUND_ROOT_PATH
+    from ..domain import ContextLayout, GitLayout, HumanGate, LaneLayout, Node, NodeLayout, Project, UNBOUND_ROOT_PATH
     from ..global_config import GlobalConfig
     from ..templates.loader import TemplateError, _load_from_root
 
@@ -49,6 +49,10 @@ def validate(root: Path, *, external: bool = False) -> None:
                 LaneLayout.model_validate(read_object(path))
                 if not (path.parent / "project.json").is_file():
                     raise ValueError("方向布局所属项目不存在")
+            elif not external and len(parts) == 3 and parts[0] == "projects" and path.name == "context-layout.json":
+                ContextLayout.model_validate(read_object(path))
+                if not (path.parent / "project.json").is_file():
+                    raise ValueError("上下文布局所属项目不存在")
             elif path.name == "node.json" and node_record:
                 node = Node.model_validate(read_object(path))
                 if node.id != parts[5] or node.project_id != parts[1]:

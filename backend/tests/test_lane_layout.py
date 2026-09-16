@@ -20,6 +20,7 @@ def test_lane_coordinate_is_atomic_in_sync(tmp_path: Path) -> None:
     base, local, remote = (tmp_path / name for name in ("base", "local", "remote"))
     relative = "projects/project/lane-layout.json"
     for root, position in ((base, POSITION), (local, {**POSITION, "x": 80}), (remote, {**POSITION, "y": 90})):
+        atomic_json(root / "projects/project/project.json", {"id": "project"})
         atomic_json(root / relative, {"schema_version": 1, "nodes": {"planspace:lane": position}})
     with pytest.raises(MigrationError, match="方向位置冲突"):
         check_lane_layout_conflicts(base, local, remote)
@@ -28,6 +29,34 @@ def test_lane_coordinate_is_atomic_in_sync(tmp_path: Path) -> None:
     atomic_json(remote / relative, {"schema_version": 1, "nodes": {}})
     with pytest.raises(MigrationError, match="方向位置冲突"):
         check_lane_layout_conflicts(base, local, remote)
+
+
+@pytest.mark.parametrize("deleted_side", ["local", "remote", "both"])
+@pytest.mark.parametrize("whole_file", [False, True])
+def test_lane_deletion_requires_agreement(tmp_path: Path, deleted_side: str, whole_file: bool) -> None:
+    roots = {name: tmp_path / name for name in ("base", "local", "remote")}
+    for name, root in roots.items():
+        atomic_json(root / "projects/project/project.json", {"id": "project"})
+        deleted = name != "base" and deleted_side in (name, "both")
+        if not (deleted and whole_file):
+            atomic_json(root / "projects/project/lane-layout.json", {
+                "schema_version": 1, "nodes": {} if deleted else {"planspace:lane": POSITION},
+            })
+    if deleted_side == "both":
+        check_lane_layout_conflicts(roots["base"], roots["local"], roots["remote"])
+    else:
+        with pytest.raises(MigrationError, match="planspace:lane") as error:
+            check_lane_layout_conflicts(roots["base"], roots["local"], roots["remote"])
+        assert error.value.state == "schema_conflict"
+
+
+@pytest.mark.parametrize("deleted_side", ["local", "remote"])
+def test_deleted_project_does_not_block_lane_merge(tmp_path: Path, deleted_side: str) -> None:
+    for name in ("base", "local", "remote"):
+        if name != deleted_side:
+            atomic_json(tmp_path / name / "projects/project/project.json", {"id": "project"})
+            atomic_json(tmp_path / name / "projects/project/lane-layout.json", {"schema_version": 1, "nodes": {"planspace:lane": POSITION}})
+    check_lane_layout_conflicts(tmp_path / "base", tmp_path / "local", tmp_path / "remote")
 
 
 def test_lane_recovery_preserves_git_and_owner_records(tmp_path: Path) -> None:

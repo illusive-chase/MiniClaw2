@@ -11,6 +11,7 @@ from pathlib import Path
 from .catalog import marker, steps, version_of
 from .errors import MigrationError
 from .inventory import LEGACY_LOCAL_FILES, files, safe_path, scope_for
+from .repairs import repaired_contracts
 from .sdk import MigrationContext
 from .transaction import Transaction, atomic_json, durable_copy
 from .validation import read_object, validate
@@ -74,18 +75,6 @@ def normalize(root: Path, accepted: frozenset[str] = frozenset()) -> None:
     path = root / "schema.json"
     version = version_of(read_object(path), path)
     migrations = [migration for migration in steps(version) if "shared" in migration.scopes]
-    for migration in migrations:
-        if migration.destructive and migration.contract not in accepted:
-            raise MigrationError(
-                "migration_required",
-                f"同步快照需要本机确认有损迁移 v{migration.source} → v{migration.target}：{migration.summary}。"
-                "请先运行 python -m miniclaw2 migrations plan，核对 layout_impact 与 layout_recovery；"
-                "本机已是目标版本时只补登确认凭据，旧版本则会执行实际迁移。"
-                "确认后在可中断的时间窗口停止本机后端，再运行 python -m miniclaw2 migrations apply --accept-data-loss，"
-                "重启后重试同步。确认凭据仅保存在本机，不随同步传播。"
-                "本机迁移原始文件保留在事务备份中，可用 python -m miniclaw2 migrations recover "
-                "--transaction <事务ID> --output <导出目录> 导出。",
-            )
     if migrations:
         with tempfile.TemporaryDirectory(prefix="migration-source-") as temporary:
             source = Path(temporary)
@@ -94,6 +83,18 @@ def normalize(root: Path, accepted: frozenset[str] = frozenset()) -> None:
                     durable_copy(root / relative, source / relative)
             context = MigrationContext(root, "shared", "", source)
             for migration in migrations:
+                if (migration.destructive and migration.contract not in accepted
+                        and migration.contract not in repaired_contracts(migrations, context)):
+                    raise MigrationError(
+                        "migration_required",
+                        f"同步快照需要本机确认有损迁移 v{migration.source} → v{migration.target}：{migration.summary}。"
+                        "请先运行 python -m miniclaw2 migrations plan，核对 layout_impact 与 layout_recovery；"
+                        "本机已是目标版本时只补登确认凭据，旧版本则会执行实际迁移。"
+                        "确认后在可中断的时间窗口停止本机后端，再运行 python -m miniclaw2 migrations apply --accept-data-loss，"
+                        "重启后重试同步。确认凭据仅保存在本机，不随同步传播。"
+                        "本机迁移原始文件保留在事务备份中，可用 python -m miniclaw2 migrations recover "
+                        "--transaction <事务ID> --output <导出目录> 导出。",
+                    )
                 migration.upgrade(context)
                 migration.verify(context)
     validate(root)
@@ -135,11 +136,12 @@ def merge_remote(root: Path, remote_ref: str, *, on_progress: Callable[[str], No
             report_progress("normalizing_base")
             extract(root, ancestor_commit, base)
             normalize(base, accepted)
-            from ..git_layout import check_git_layout_conflicts, check_lane_layout_conflicts
+            from ..git_layout import check_context_layout_conflicts, check_git_layout_conflicts, check_lane_layout_conflicts
 
             report_progress("merging")
             check_git_layout_conflicts(base, local, remote)
             check_lane_layout_conflicts(base, local, remote)
+            check_context_layout_conflicts(base, local, remote)
             base_commit = git(root, "commit-tree", tree(root, base, directory / "base.index"), input_text="迁移规范化共同祖先\n")
             local_commit = git(root, "commit-tree", tree(root, local, directory / "local.index"), "-p", base_commit, input_text="迁移规范化本地\n")
             remote_commit = git(root, "commit-tree", remote_tree, "-p", base_commit, input_text="迁移规范化远端\n")

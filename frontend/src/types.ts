@@ -230,6 +230,7 @@ export type SessionInfo = {
   node_positions?: Record<string, NodePosition>;
   git_positions?: Record<string, NodePosition>;
   lane_positions?: Record<string, NodePosition>;
+  context_positions?: Record<string, NodePosition>;
   persistence_mode?: "durable" | "ephemeral";
   capabilities?: Record<string, boolean>;
 };

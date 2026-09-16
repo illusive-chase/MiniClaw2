@@ -217,6 +217,16 @@ class LaneLayout(BaseModel):
     nodes: dict[LaneNodeId, LanePosition]
 
 
+ContextNodeId = Annotated[str, Field(pattern=r"^ctx:.+::.+::.+$")]
+
+
+class ContextLayout(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    schema_version: StrictInt = Field(ge=1, le=1)
+    nodes: dict[ContextNodeId, NodePosition]
+
+
 class Project(BaseModel):
     model_config = ConfigDict(extra="forbid")
     _model_catalog_root: Path | None = PrivateAttr(default=None)

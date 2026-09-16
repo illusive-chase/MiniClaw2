@@ -31,7 +31,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from .domain import GitLayout, GitPosition, HumanGate, LaneLayout, LanePosition, Node, NodeLayout, NodePosition, NodeState, Project, UNBOUND_ROOT_PATH
+from .domain import ContextLayout, GitLayout, GitPosition, HumanGate, LaneLayout, LanePosition, Node, NodeLayout, NodePosition, NodeState, Project, UNBOUND_ROOT_PATH
 from .node_layout import node_coordinate_space, node_layout_owners
 from .git_state import is_git_repo, normalized_origin_url, root_commits
 from .replay import EVENT_SCHEMA_VERSION
@@ -571,6 +571,32 @@ class Store:
         self.sync.schedule_commit(f"更新方向位置 {pid}")
         return merged
 
+    def read_context_positions(self, pid: str) -> dict[str, NodePosition]:
+        path = self._project_file(pid).parent / "context-layout.json"
+        if not path.exists():
+            return {}
+        try:
+            return ContextLayout.model_validate(self._read_json(path)).nodes
+        except (OSError, ValueError) as exc:
+            raise MigrationError("migration_failed", str(exc), path) from exc
+
+    def update_context_positions(
+        self, pid: str, updates: dict[str, NodePosition], remove: list[str],
+    ) -> dict[str, NodePosition]:
+        self.assert_writable()
+        if not self.is_bound_here(pid):
+            raise ValueError("项目未绑定到本机，不能修改上下文位置")
+        validated = ContextLayout(schema_version=1, nodes=updates).nodes
+        ContextLayout(schema_version=1, nodes={key: NodePosition(x=0, y=0, space="canvas") for key in remove})
+        merged = self.read_context_positions(pid)
+        merged.update(validated)
+        for node_id in remove:
+            merged.pop(node_id, None)
+        atomic_json(self._project_file(pid).parent / "context-layout.json",
+                    ContextLayout(schema_version=1, nodes=merged).model_dump())
+        self.sync.schedule_commit(f"更新上下文位置 {pid}")
+        return merged
+
     def update_node_positions(
         self,
         pid: str,
@@ -590,7 +616,7 @@ class Store:
         for node_id in set(updates) | set(remove):
             node = layout_owners.get(node_id)
             if node is None or node.owner_host_id != self.machine.id:
-                raise ValueError(f"只能修改本机拥有的节点及其已发布产物位置：{node_id}")
+                raise ValueError(f"只能修改本机拥有的节点及其已发布产物或错误卡片位置：{node_id}")
         validated = {node_id: NodePosition.model_validate(position) for node_id, position in updates.items()}
         for node_id, position in validated.items():
             if position.space != node_coordinate_space(layout_owners[node_id], nodes):

@@ -40,39 +40,50 @@ import type {
 import type { TemplateRewritePayload } from "./templateEditor";
 import { toNodeInfo } from "./nodeProjection";
 
+/** The backend's `state` alongside `detail`; see `MigrationError.payload()`. */
+export type ErrorBody = { detail: string | null; state: string | null };
+
 export class ApiError extends Error {
   readonly status: number;
   readonly detail: string | null;
+  readonly state: string | null;
 
-  constructor(operation: string, status: number, detail: string | null) {
+  constructor(operation: string, status: number, body: string | ErrorBody | null) {
+    const { detail, state } = typeof body === "string" || body === null
+      ? { detail: body, state: null }
+      : body;
     super(`${operation} failed: ${status}${detail ? `: ${detail}` : ""}`);
     this.name = "ApiError";
     this.status = status;
     this.detail = detail;
+    this.state = state;
   }
 }
 
-async function readErrorDetail(res: Response): Promise<string | null> {
+async function readErrorDetail(res: Response): Promise<ErrorBody> {
   const contentType = res.headers.get("content-type") ?? "";
   if (contentType.includes("application/json")) {
     try {
       const body: unknown = await res.json();
-      if (body && typeof body === "object" && "detail" in body) {
+      if (body && typeof body === "object") {
+        const raw = (body as { state?: unknown }).state;
+        const state = typeof raw === "string" ? raw : null;
+        if (!("detail" in body)) return { detail: null, state };
         const detail = (body as { detail?: unknown }).detail;
-        if (typeof detail === "string") return detail;
+        if (typeof detail === "string") return { detail, state };
         if (detail && typeof detail === "object" && "message" in detail) {
           const message = (detail as { message?: unknown }).message;
-          if (typeof message === "string") return message;
+          if (typeof message === "string") return { detail: message, state };
         }
-        return JSON.stringify(detail);
+        return { detail: JSON.stringify(detail), state };
       }
     } catch {
-      return null;
+      return { detail: null, state: null };
     }
-    return null;
+    return { detail: null, state: null };
   }
   const text = await res.text();
-  return text || null;
+  return { detail: text || null, state: null };
 }
 
 export async function createSession(
@@ -122,6 +133,34 @@ export async function getMigrationStatus(signal?: AbortSignal): Promise<{
 }> {
   const res = await fetch("/migrations/status", { signal });
   if (!res.ok) throw new ApiError("getMigrationStatus", res.status, await readErrorDetail(res));
+  return res.json();
+}
+
+export type MigrationStep = {
+  source: number; target: number; summary: string; contract: string; destructive: boolean;
+};
+
+/** Read-only; it never records a confirmation. Reachable while storage is blocked. */
+export type MigrationPlan = {
+  source: number;
+  target: number;
+  minimum: number;
+  steps: MigrationStep[];
+  local_destructive_steps: MigrationStep[];
+  sync_confirmation: string[];
+  sync_confirmation_contracts: MigrationStep[];
+  sync_confirmation_note: string;
+  confirmation_hosts: { host_id: string; label: string; local: boolean }[];
+  confirmation_hosts_note: string;
+  layout_impact: unknown[];
+  layout_recovery: unknown[];
+  layout_note: string;
+  note: string;
+};
+
+export async function getMigrationPlan(signal?: AbortSignal): Promise<MigrationPlan> {
+  const res = await fetch("/migrations/plan", { signal });
+  if (!res.ok) throw new ApiError("getMigrationPlan", res.status, await readErrorDetail(res));
   return res.json();
 }
 
@@ -815,6 +854,21 @@ export async function updateLaneLayout(
     keepalive: true,
   });
   if (!res.ok) throw new Error(`保存方向位置失败：${res.status}`);
+  return res.json();
+}
+
+export async function updateContextLayout(
+  sessionId: string,
+  updates: Record<string, NodePosition> = {},
+  remove: string[] = [],
+): Promise<SessionInfo> {
+  const res = await fetch(`/sessions/${sessionId}/context-layout`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ updates, remove }),
+    keepalive: true,
+  });
+  if (!res.ok) throw new Error(`保存上下文位置失败：${res.status}`);
   return res.json();
 }
 

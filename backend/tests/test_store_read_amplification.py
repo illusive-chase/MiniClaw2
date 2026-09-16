@@ -172,7 +172,7 @@ def test_sessions_read_no_node_bodies_or_layout(tmp_path: Path, node_counts: lis
             response = client.get("/sessions")
         assert response.status_code == 200, response.text
         assert not _reads(reader, "node.json")
-        for filename in ("node-layout.json", "git-layout.json", "lane-layout.json"):
+        for filename in ("node-layout.json", "git-layout.json", "lane-layout.json", "context-layout.json"):
             assert not _reads(reader, filename)
         infos = {info["id"]: info for info in response.json()}
         for project in projects:
@@ -180,7 +180,7 @@ def test_sessions_read_no_node_bodies_or_layout(tmp_path: Path, node_counts: lis
             info = infos[project.id]
             assert info["turns"] == len(nodes)
             assert info["queued_count"] == (1 if nodes else 0)
-            assert not {"node_positions", "git_positions", "lane_positions"} & info.keys()
+            assert not {"node_positions", "git_positions", "lane_positions", "context_positions"} & info.keys()
             assert info["last_activity_at"] == max(
                 (
                     timestamp

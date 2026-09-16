@@ -41,6 +41,7 @@ import {
   type CommitPositionTarget,
 } from "./gitPositions";
 import { filterLanePositions, isLanePositionId, lanePositionUpdate } from "./lanePositions";
+import { contextPositionUpdate, filterContextPositions, isContextPositionId } from "./contextPositions";
 import { browserViewportStorage, readCanvasViewport, saveCanvasViewport } from "./viewportStorage";
 import { artifactRawUrl } from "../api";
 import { artifactSelection } from "../artifactSelection";
@@ -264,6 +265,7 @@ export type CanvasProps = {
   canMutateNode?: (nodeId: string) => boolean;
   canMutateGitLayout?: boolean;
   canMutateLaneLayout?: boolean;
+  canMutateContextLayout?: boolean;
   /**
    * Fires when the user drags a wire from one agent tile onto another. The
    * source is appended to the target's `scheduled_deps` — the target is the side
@@ -333,6 +335,7 @@ function CanvasInner({
   canMutateNode = () => false,
   canMutateGitLayout = false,
   canMutateLaneLayout = false,
+  canMutateContextLayout = false,
   onConnectDependency,
   onCreateDependencyVirtualAt,
   onDisconnectDependency,
@@ -465,6 +468,8 @@ function CanvasInner({
         canMutateGitLayout,
         lanePositions: filterLanePositions(nodePositionsRef.current),
         canMutateLaneLayout,
+        contextPositions: filterContextPositions(nodePositionsRef.current),
+        canMutateContextLayout,
         canMutateNode,
         contextBundlesByNodeId,
         knownPlanspaceIds,
@@ -509,6 +514,7 @@ function CanvasInner({
       canMutateNode,
       canMutateGitLayout,
       canMutateLaneLayout,
+      canMutateContextLayout,
       commitPositionTransfer,
     ],
   );
@@ -1011,7 +1017,9 @@ function CanvasInner({
             ? gitPositionUpdate(change.id, change.position, canMutateGitLayout)
             : isLanePositionId(change.id)
               ? lanePositionUpdate(change.id, change.position, canMutateLaneLayout)
-              : nodePositionUpdate(nodes, change.id, change.position, canMutateNode);
+              : isContextPositionId(change.id)
+                ? contextPositionUpdate(rfNodesRef.current.find((node) => node.id === change.id), change.position, canMutateContextLayout)
+                : nodePositionUpdate(nodes, change.id, change.position, canMutateNode);
           if (!position) continue;
           nodePositionsRef.current[change.id] = position;
           pendingPositionsRef.current[change.id] = position;
@@ -1050,7 +1058,7 @@ function CanvasInner({
         );
       });
     },
-    [nodes, canMutateNode, canMutateGitLayout, canMutateLaneLayout, scheduleFlushLayout, setRfNodes],
+    [nodes, canMutateNode, canMutateGitLayout, canMutateLaneLayout, canMutateContextLayout, scheduleFlushLayout, setRfNodes],
   );
 
   const onMove = useCallback((_event: MouseEvent | TouchEvent | null, viewport: Viewport) => {

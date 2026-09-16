@@ -187,6 +187,44 @@ class LayoutStateApiTest(unittest.TestCase):
             binding.unlink()
         self.assertEqual(self.client.patch(f"/sessions/{sid}/lane-layout", json={"updates": {"planspace:lane": position}}).status_code, 403)
 
+    def test_context_layout_round_trip_and_validation(self) -> None:
+        sid = self._create_session()
+        context_id = "ctx:project-root::context::CONTEXT.md"
+        lane_id = "ctx:contextspace::planspace::planspaces/lane/CONTEXT.md"
+        position = {"x": 800, "y": 900, "space": "canvas"}
+        saved = {context_id: position, lane_id: {**position, "space": "planspace:lane"}}
+        response = self.client.patch(f"/sessions/{sid}/context-layout", json={"updates": saved})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["context_positions"], saved)
+        self.assertEqual(response.json()["node_positions"], {})
+        with TestClient(create_app()) as restarted:
+            self.assertEqual(restarted.get(f"/sessions/{sid}").json()["context_positions"], saved)
+            listed = next(item for item in restarted.get("/sessions").json() if item["id"] == sid)
+            self.assertNotIn("context_positions", listed)
+        for invalid in [
+            {"updates": {"ctx:bad": position}}, {"remove": ["err:owner"]},
+            {"updates": {context_id: {**position, "space": "planspace:"}}},
+            {"updates": {context_id: {**position, "x": True}}}, {"unknown": True},
+        ]:
+            self.assertEqual(self.client.patch(f"/sessions/{sid}/context-layout", json=invalid).status_code, 422)
+        self.assertEqual(self.client.get(f"/sessions/{sid}").json()["context_positions"], saved)
+        removed = self.client.patch(f"/sessions/{sid}/context-layout", json={"remove": [context_id]})
+        self.assertEqual(removed.json()["context_positions"], {lane_id: saved[lane_id]})
+        for binding in (Path(self._home.name) / "projects" / sid).glob("hosts/*/local.json"):
+            binding.unlink()
+        self.assertEqual(self.client.patch(f"/sessions/{sid}/context-layout", json={"updates": saved}).status_code, 403)
+
+    def test_error_layout_round_trip(self) -> None:
+        sid = self._create_session()
+        store = Store(Path(self._home.name))
+        node = store.create_node(Node(model_preset_id="opus-4-8", project_id=sid, state="error", error="测试失败"))
+        saved = {f"err:{node.id}": {"x": 650, "y": 700, "space": "canvas"}}
+        response = self.client.patch(f"/sessions/{sid}/node-layout", json={"updates": saved})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["node_positions"], saved)
+        with TestClient(create_app()) as restarted:
+            self.assertEqual(restarted.get(f"/sessions/{sid}").json()["node_positions"], saved)
+
     def test_rejects_foreign_synthetic_and_stale_space_atomically(self) -> None:
         sid = self._create_session()
         native = self._node(sid)

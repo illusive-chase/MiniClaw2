@@ -17,7 +17,7 @@ from miniclaw2.migrations.coordinator import coordinator, open_storage
 from miniclaw2.migrations.errors import MigrationError
 from miniclaw2.migrations.inventory import files
 from miniclaw2.migrations.transaction import Transaction, atomic_json, backup_payload, recover
-from miniclaw2.migrations.validation import validate
+from miniclaw2.migrations.validation import read_object, validate
 from miniclaw2.store import Store
 
 
@@ -26,6 +26,87 @@ from miniclaw2.store import Store
 def test_manifest_window() -> None:
     check_manifest()
     assert MINIMUM_VERSION == max(14, CURRENT_VERSION - 3)
+
+
+def legacy_layout_store(root: Path, source: int = 15, *, hints: bool = True) -> tuple[Store, str, str]:
+    store = Store(root)
+    project = store.create_project(Project(root_path=str(root / "workspace")))
+    node = store.create_node(Node(project_id=project.id, model_preset_id=project.model_preset_id))
+    (root / f"projects/{project.id}/hosts/{store.machine.id}/node-layout.json").unlink(missing_ok=True)
+    if hints:
+        atomic_json(root / f"projects/{project.id}/hosts/{store.machine.id}/layout.json", {
+            "layout_hints": {node.id: {"x": 10, "y": 20}, "planspace:lane": {"x": 30, "y": 40}},
+        })
+    atomic_json(root / "schema.json", marker(source))
+    receipt_path = root / ".migration-local/state.json"
+    receipt = read_object(receipt_path)
+    receipt.update(marker(source))
+    receipt["accepted_migration_contracts"] = []
+    atomic_json(receipt_path, receipt)
+    store.coordinator.ready = False
+    return store, project.id, node.id
+
+
+@pytest.mark.parametrize("source", [14, 15])
+@pytest.mark.parametrize("entrypoint", ["startup", "sync"])
+def test_repaired_chain_automatically_preserves_layout(tmp_path: Path, source: int, entrypoint: str) -> None:
+    from miniclaw2.migrations.catalog import DIRECTORY
+    from miniclaw2.migrations.sync_tree import normalize
+
+    manifest_before = (DIRECTORY / "manifest.json").read_bytes()
+    store, project_id, node_id = legacy_layout_store(tmp_path, source)
+    if entrypoint == "startup":
+        assert open_storage(tmp_path) is store.coordinator
+    else:
+        normalize(tmp_path)
+    host = tmp_path / f"projects/{project_id}/hosts/{store.machine.id}"
+    assert read_object(host / "node-layout.json")["nodes"][node_id] == {"x": 10, "y": 20, "space": "canvas"}
+    assert read_object(tmp_path / f"projects/{project_id}/lane-layout.json")["nodes"]["planspace:lane"]["x"] == 30
+    assert not (host / "layout.json").exists()
+    assert read_object(tmp_path / "schema.json") == marker()
+    assert read_object(tmp_path / ".migration-local/state.json")["accepted_migration_contracts"] == []
+    check_manifest()
+    assert (DIRECTORY / "manifest.json").read_bytes() == manifest_before
+
+
+@pytest.mark.parametrize("entrypoint", ["startup", "sync"])
+@pytest.mark.parametrize("guard", ["undeclared", "outside_chain", "repair_outside_chain", "no_input", "empty_impact"])
+def test_repair_exemption_never_replaces_confirmation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, entrypoint: str, guard: str) -> None:
+    from miniclaw2.migrations import repairs
+    from miniclaw2.migrations.sync_tree import normalize
+
+    store, project_id, _node_id = legacy_layout_store(tmp_path, hints=guard != "no_input")
+    if guard == "undeclared":
+        monkeypatch.setattr(repairs, "REPAIRS", {})
+    elif guard == "outside_chain":
+        monkeypatch.setattr(repairs, "REPAIRS", {repairs.V17: ("不在本条链中的契约",)})
+    elif guard == "repair_outside_chain":
+        monkeypatch.setattr(repairs, "REPAIRS", {"不在本条链中的修复者": (repairs.V16,)})
+    elif guard == "empty_impact":
+        atomic_json(tmp_path / f"projects/{project_id}/hosts/{store.machine.id}/layout.json", {"layout_hints": {}})
+    before = (tmp_path / "schema.json").read_bytes()
+    with pytest.raises(MigrationError) as error:
+        open_storage(tmp_path) if entrypoint == "startup" else normalize(tmp_path)
+    assert error.value.state == "migration_required"
+    assert (tmp_path / "schema.json").read_bytes() == before
+
+
+@pytest.mark.parametrize("entrypoint", ["startup", "sync"])
+def test_new_destructive_step_cannot_borrow_retired_repair(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, entrypoint: str) -> None:
+    from miniclaw2.migrations import repairs
+    from miniclaw2.migrations.sdk import Migration
+    from miniclaw2.migrations.sync_tree import normalize
+
+    store, _project_id, _node_id = legacy_layout_store(tmp_path, 16, hints=False)
+    destructive = Migration(16, 17, ("shared",), "新的有损步骤", "new-loss", lambda context: None, lambda context: None, True)
+    chain = [destructive, *steps(16)]
+    monkeypatch.setattr(repairs, "REPAIRS", {repairs.V17: (repairs.V16, "new-loss")})
+    module = "coordinator" if entrypoint == "startup" else "sync_tree"
+    monkeypatch.setattr(f"miniclaw2.migrations.{module}.steps", lambda source: chain)
+    with pytest.raises(MigrationError) as error:
+        open_storage(tmp_path) if entrypoint == "startup" else normalize(tmp_path)
+    assert error.value.state == "migration_required"
+    assert not store.coordinator.ready
 
 
 def test_release_prunes_fourth_edge_and_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -548,6 +629,51 @@ def test_maintenance_api_does_not_load_incompatible_store(tmp_path: Path, monkey
         assert client.get("/migrations/status").json()["state"] == "schema_too_new"
         assert client.get("/sessions").status_code == 503
     assert not (tmp_path / "config.json").exists()
+
+
+def test_plan_endpoint_stays_reachable_while_storage_is_blocked(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The maintenance page is the only surface a blocked user has, so the plan
+    it reads must survive the admission middleware that 503s everything else."""
+    from miniclaw2.app import create_app
+
+    store, project_id, _node_id = legacy_layout_store(tmp_path)
+    for host in (tmp_path / f"projects/{project_id}/hosts").iterdir():
+        atomic_json(host / "layout.json", {"layout_hints": {}})
+    monkeypatch.setenv("MINICLAW_HOME", str(tmp_path))
+    with TestClient(create_app()) as client:
+        assert client.get("/sessions").status_code == 503
+        assert client.get("/migrations/status").json()["state"] == "migration_required"
+        response = client.get("/migrations/plan")
+        assert response.status_code == 200
+        plan = response.json()
+        assert plan["source"] == 15 and plan["target"] == CURRENT_VERSION
+        assert [step["destructive"] for step in plan["steps"]] == [True, False]
+        assert plan["sync_confirmation_contracts"] and plan["sync_confirmation_note"]
+        assert any(host["local"] for host in plan["confirmation_hosts"])
+        assert "layout_impact" in plan and "layout_recovery" in plan
+    # Reading the plan must not confirm anything, nor advance the storage.
+    assert read_object(tmp_path / "schema.json") == marker(15)
+    assert read_object(tmp_path / ".migration-local/state.json")["accepted_migration_contracts"] == []
+    assert store.coordinator.root == tmp_path
+
+
+def test_unexpected_failure_answers_structured_json(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Without a fallback handler an unhandled error reaches the client as the
+    plain text `Internal Server Error`, which the UI cannot branch on."""
+    from miniclaw2.app import create_app
+    from miniclaw2.registry import ProjectRegistry
+
+    monkeypatch.setenv("MINICLAW_HOME", str(tmp_path))
+    registry = ProjectRegistry(Store(tmp_path))
+    monkeypatch.setattr(type(registry), "list_projects",
+                        lambda self: (_ for _ in ()).throw(KeyError("注入的意外故障")))
+    with TestClient(create_app(registry), raise_server_exceptions=False) as client:
+        response = client.get("/sessions")
+    assert response.status_code == 500
+    assert response.headers["content-type"].startswith("application/json")
+    body = response.json()
+    assert body["state"] == "internal_error"
+    assert body["detail"] and "Internal Server Error" not in body["detail"]
 
 
 def test_context_root_change_does_not_reuse_previous_receipt(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

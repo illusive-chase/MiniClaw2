@@ -5,11 +5,12 @@ import json
 from pathlib import Path
 from typing import Any
 
-from .catalog import CURRENT_VERSION, MINIMUM_VERSION, check_manifest, generate, read_manifest, steps
+from .catalog import CURRENT_VERSION, MINIMUM_VERSION, check_manifest, generate, read_manifest
 from .coordinator import coordinator, open_storage
 from .errors import MigrationError
 from .inventory import LOCAL_DIRECTORY
-from .impact import layout_impact, layout_recovery_guidance
+from .impact import layout_recovery_guidance
+from .plan import migration_plan
 from .validation import read_object
 from .inventory import safe_path
 from .transaction import backup_digest, backup_extract, backup_origin, prune_transactions
@@ -68,16 +69,7 @@ def main(arguments: list[str]) -> None:
                 result = {"state": "ready", **prune_transactions(root, keep=args.keep, protected=protected),
                           "detail": "已回收已完结事务的暂存树；保留窗口之外、且不再被布局恢复引用的备份已清理。未完结事务与仍可恢复坐标的备份保持原样"}
         elif args.action == "plan":
-            storage = coordinator(root)
-            source = storage.source_version()
-            result = {"source": source, "target": CURRENT_VERSION, "minimum": MINIMUM_VERSION,
-                      "steps": [{"source": item.source, "target": item.target, "summary": item.summary,
-                                 "destructive": item.destructive} for item in steps(source)],
-                      "sync_confirmation": [item.summary for item in steps(MINIMUM_VERSION) if item.destructive],
-                      "layout_impact": layout_impact(root) if source < 17 else [],
-                      "layout_recovery": layout_recovery_guidance(root) if source >= 16 else [],
-                      "layout_note": "v14/v15 升级包含 v16 有损中间步骤，仍需 --accept-data-loss 确认；v17 在同一事务内从原始快照补回有效节点、产物、Git 和方向坐标，只补缺。合成图元与旧 viewport 按设计不恢复；坏项及悬空条目见 layout_impact。已是 v16 的存储需另行核对历史备份。",
-                      "note": "本机及外部 ContextSpace 游标在 apply 中独立核验"}
+            result = migration_plan(root)
         elif args.action == "recover" and args.output is not None:
             if not args.transaction:
                 parser.error("--output 必须同时指定 --transaction")

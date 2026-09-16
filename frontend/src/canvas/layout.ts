@@ -5,10 +5,12 @@ import type {
   CommitDescriptor,
   ContextBundleSources,
   NodeInfo,
+  NodePosition,
   SessionHost,
   TemplateInstanceRecord,
 } from "../types";
 import { artifactNodeId, artifactOverflowNodeId, nodeLayoutOwners } from "./nodeLayoutOwners";
+import { filterContextPositions } from "./contextPositions";
 
 export { artifactNodeId, artifactOverflowNodeId } from "./nodeLayoutOwners";
 
@@ -666,6 +668,8 @@ export type BuildGraphArgs = {
   canMutateGitLayout?: boolean;
   lanePositions?: Record<string, { x: number; y: number }>;
   canMutateLaneLayout?: boolean;
+  contextPositions?: Record<string, NodePosition>;
+  canMutateContextLayout?: boolean;
   canMutateNode?: (nodeId: string) => boolean;
   /** per-node context bundles, keyed by node id, used to materialize context + loads edges */
   contextBundlesByNodeId: Record<string, ContextBundleSources | null | undefined>;
@@ -950,6 +954,8 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
     canMutateGitLayout = false,
     lanePositions = {},
     canMutateLaneLayout = false,
+    contextPositions: suppliedContextPositions = {},
+    canMutateContextLayout = false,
     canMutateNode = () => false,
     contextBundlesByNodeId,
     knownPlanspaceIds,
@@ -972,6 +978,7 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
 
   const nodes = suppliedNodes.map(toNodeInfo);
   const layoutOwners = nodeLayoutOwners(nodes);
+  const contextPositions = filterContextPositions(suppliedContextPositions);
   const nodePositions = Object.fromEntries(Object.entries(suppliedPositions).filter(([nodeId]) => layoutOwners.has(nodeId)));
   const rfNodes: RFNode[] = [];
   const rfEdges: RFEdge[] = [];
@@ -1649,7 +1656,7 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
      * marker tied to its agent. Owner-relative offset stays the same in both
      * regimes. */
     const ownerParent = sourceNode?.parentNode;
-    const terminalPosition = {
+    const terminalPosition = nodePositions[terminalId] ?? {
       /* Drop below the agent so retries (next timeline slot at
        * baseX + agentSpacing) don't stack on top of the failure marker. */
       x: baseX,
@@ -1674,7 +1681,6 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
         ownerNodeId: node.id,
         message: node.error,
       },
-      draggable: false,
       selectable: true,
       ...(ownerParent ? { parentNode: ownerParent, extent: PLANSPACE_CHILD_EXTENT } : {}),
     });
@@ -1985,20 +1991,24 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
     let position: { x: number; y: number };
     let parentNode: string | undefined;
     let extent: CoordinateExtent | undefined;
+    const savedPosition = contextPositions[ctxId];
+    const expectedSpace = homeLaneId ? `planspace:${homeLaneId}` : "canvas";
+    const stored = savedPosition?.space === expectedSpace
+      ? { x: savedPosition.x, y: savedPosition.y } : undefined;
     if (homeLaneId) {
       const cursor =
         inLaneCtxCursor.get(homeLaneId) ?? LANE.planspaceLanePaddingX;
-      position = { x: cursor, y: LANE.planspaceLaneCtxRowY };
+      position = stored ?? { x: cursor, y: LANE.planspaceLaneCtxRowY };
       inLaneCtxCursor.set(homeLaneId, cursor + LANE.planspaceCtxStep);
       parentNode = `planspace:${homeLaneId}`;
       extent = PLANSPACE_CHILD_EXTENT;
       /* Width here matches ContextNode (160 for non-project tiles). */
       recordChildExtent(homeLaneId, position.x, position.y, 160, LANE.contextHeight);
     } else if (isProject) {
-      position = { x: projectCtxCursorX, y: LANE.projectContextLaneY };
+      position = stored ?? { x: projectCtxCursorX, y: LANE.projectContextLaneY };
       projectCtxCursorX += 240;
     } else {
-      position = { x: laneCtxCursorX, y: LANE.contextLaneY };
+      position = stored ?? { x: laneCtxCursorX, y: LANE.contextLaneY };
       laneCtxCursorX += 180;
     }
     const attachedSkills =
@@ -2031,7 +2041,6 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
         usedByNodeIds: Array.from(agg.usedBy),
         ...(attachedSkills ? { attachedSkills } : {}),
       },
-      draggable: false,
       ...(parentNode ? { parentNode, extent } : {}),
     });
     /* Context tiles sit above the agent row, so a load enters the tile's top
@@ -2336,7 +2345,8 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
       ...node,
       draggable: node.type === "commit" ? canMutateGitLayout
         : node.type === "planspaceLane" ? canMutateLaneLayout
-          : layoutOwners.has(node.id) && canMutateNode(layoutOwners.get(node.id)!.id),
+          : node.type === "context" ? canMutateContextLayout
+            : layoutOwners.has(node.id) && canMutateNode(layoutOwners.get(node.id)!.id),
     })),
     rfEdges,
     epochMembersByCommitSha,

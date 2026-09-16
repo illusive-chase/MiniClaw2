@@ -43,6 +43,7 @@ from .contextspace import (
 from .context_refresh import cancel_context_task, context_refresh_status, start_context_task
 from .domain import (
     TERMINAL_NODE_STATES,
+    ContextNodeId,
     GitNodeId,
     GitPosition,
     LaneNodeId,
@@ -231,6 +232,7 @@ class SessionInfo(BaseModel):
     node_positions: dict[str, NodePosition] = Field(default_factory=dict)
     git_positions: dict[str, GitPosition] = Field(default_factory=dict)
     lane_positions: dict[str, LanePosition] = Field(default_factory=dict)
+    context_positions: dict[str, NodePosition] = Field(default_factory=dict)
     # Runtime capabilities are explicit so clients can hide workspace/Git
     # controls for ephemeral sessions.
     persistence_mode: str = "durable"
@@ -285,6 +287,13 @@ class UpdateLaneLayoutRequest(BaseModel):
 
     updates: dict[LaneNodeId, LanePosition] = Field(default_factory=dict)
     remove: list[LaneNodeId] = Field(default_factory=list)
+
+
+class UpdateContextLayoutRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    updates: dict[ContextNodeId, NodePosition] = Field(default_factory=dict)
+    remove: list[ContextNodeId] = Field(default_factory=list)
 
 
 class BindProjectRequest(BaseModel):
@@ -678,6 +687,27 @@ def create_app(
     @app.exception_handler(MigrationError)
     async def migration_error(_request: Request, exc: MigrationError) -> JSONResponse:
         return JSONResponse(status_code=409, content=exc.payload())
+
+    @app.exception_handler(Exception)
+    async def unexpected_error(request: Request, exc: Exception) -> JSONResponse:
+        logger.error("请求处理失败：%s %s", request.method, request.url.path,
+                     exc_info=(type(exc), exc, exc.__traceback__))
+        return JSONResponse(status_code=500, content={
+            "state": "internal_error", "detail": "服务端处理请求时发生异常；请保留原数据并查看后端日志，勿手工合并存储。",
+        })
+
+    @app.get("/migrations/plan")
+    def get_migration_plan() -> dict[str, Any]:
+        from .global_config import miniclaw_home
+        from .migrations.plan import migration_plan
+
+        if app.state.storage_syncing:
+            raise MigrationError("waiting_for_idle", "元数据正在同步，请结束后重新查看迁移计划")
+        # Read `_store` directly: `registry.store` would initialize the store,
+        # which is exactly what a blocked storage must not do. Falling back to
+        # the configured home keeps the plan readable before any load succeeds.
+        store = getattr(registry, "_store", None)
+        return migration_plan(store.root if store is not None else miniclaw_home())
 
     @app.get("/migrations/status")
     async def migration_status() -> dict[str, Any]:
@@ -1337,7 +1367,7 @@ def create_app(
         "/sessions",
         response_model=list[SessionInfo],
         response_model_exclude={
-            "__all__": {"node_positions", "git_positions", "lane_positions"}
+            "__all__": {"node_positions", "git_positions", "lane_positions", "context_positions"}
         },
     )
     def list_sessions() -> list[SessionInfo]:
@@ -1573,6 +1603,16 @@ def create_app(
     def update_lane_layout(sid: str, req: UpdateLaneLayoutRequest) -> SessionInfo:
         try:
             project = registry.update_lane_layout(sid, req.updates, remove=req.remove)
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        if project is None:
+            raise HTTPException(404, "项目不存在")
+        return _session_info(registry, project)
+
+    @app.patch("/sessions/{sid}/context-layout", response_model=SessionInfo)
+    def update_context_layout(sid: str, req: UpdateContextLayoutRequest) -> SessionInfo:
+        try:
+            project = registry.update_context_layout(sid, req.updates, remove=req.remove)
         except ValueError as exc:
             raise HTTPException(409, str(exc)) from exc
         if project is None:
@@ -2775,6 +2815,7 @@ def _session_info(
         ),
         git_positions=registry.store.read_git_positions(project.id) if include_positions else {},
         lane_positions=registry.store.read_lane_positions(project.id) if include_positions else {},
+        context_positions=registry.store.read_context_positions(project.id) if include_positions else {},
         persistence_mode="ephemeral" if project.temporary else "durable",
         capabilities=(
             {

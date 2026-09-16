@@ -22,6 +22,7 @@ import {
   updateNodeLayout,
   updateGitLayout,
   updateLaneLayout,
+  updateContextLayout,
   deletePlanspace,
   updatePlanspaceMode,
   updatePlanspaceView,
@@ -95,6 +96,8 @@ import {
  * argument chips reuse the editor's scanner rather than re-deriving the rule. */
 import { scanPlaceholders } from "./templateEditor";
 import { ProjectsLanding } from "./components/ProjectsLanding";
+import { StorageMaintenance } from "./components/StorageMaintenance";
+import { storageGuidance } from "./storageMaintenance";
 import { NotificationBell } from "./components/NotificationBell";
 import { NoticeBannerRail } from "./components/NoticeBannerRail";
 import { RunStatusButton } from "./components/RunStatusButton";
@@ -233,6 +236,19 @@ function apiErrorText(err: unknown): string {
   if (err instanceof ApiError) return err.detail ?? err.message;
   return err instanceof Error ? err.message : String(err);
 }
+
+/** A non-`ready` migration status, carrying its `state` to the maintenance page.
+    The status endpoint answers 200 with a state, so this is not an `ApiError`. */
+class StorageBlocked extends Error {
+  readonly state: string;
+
+  constructor(state: string, detail: string) {
+    super(detail);
+    this.name = "StorageBlocked";
+    this.state = state;
+  }
+}
+
 export function App() {
   const [route, setRoute] = useState<Route>("landing");
   const [landingSessions, setLandingSessions] = useState<SessionInfo[] | null>(null);
@@ -328,7 +344,7 @@ export function App() {
   const [nodes, setNodes] = useState<NodeInfo[]>([]);
   const [modelPresets, setModelPresets] = useState<ModelPreset[]>([]);
   const [globalState, setGlobalState] = useState<GlobalState | null>(null);
-  const [storageError, setStorageError] = useState<string | null>(null);
+  const [storageError, setStorageError] = useState<{ state: string | null; detail: string } | null>(null);
   const [storageLoading, setStorageLoading] = useState(true);
   const [gitStatus, setGitStatus] = useState<GitStatus | null>(null);
   const [gitCommits, setGitCommits] = useState<CommitDescriptor[]>([]);
@@ -461,7 +477,9 @@ export function App() {
     let cancelled = false;
     getMigrationStatus()
       .then((migration) => {
-        if (migration.state !== "ready") throw new Error(migration.detail);
+        if (migration.state !== "ready") {
+          throw new StorageBlocked(migration.state, migration.detail);
+        }
         return getGlobalState();
       })
       .then((next) => {
@@ -471,7 +489,13 @@ export function App() {
         }
       })
       .catch((err) => {
-        if (!cancelled) setStorageError(err instanceof Error ? err.message : String(err));
+        if (cancelled) return;
+        setStorageError({
+          state: err instanceof StorageBlocked ? err.state
+            : err instanceof ApiError ? err.state
+            : null,
+          detail: apiErrorText(err),
+        });
       })
       .finally(() => {
         if (!cancelled) setStorageLoading(false);
@@ -2802,7 +2826,8 @@ export function App() {
     ...session?.node_positions,
     ...session?.git_positions,
     ...session?.lane_positions,
-  }), [session?.node_positions, session?.git_positions, session?.lane_positions]);
+    ...session?.context_positions,
+  }), [session?.node_positions, session?.git_positions, session?.lane_positions, session?.context_positions]);
 
   const onNodePositionsChange = useCallback(
     (
@@ -2820,9 +2845,10 @@ export function App() {
         .catch(() => undefined)
         .then(async () => {
           const writers = [
-            { matches: (id: string) => !id.startsWith("commit:") && !id.startsWith("planspace:"), write: updateNodeLayout },
+            { matches: (id: string) => !id.startsWith("commit:") && !id.startsWith("planspace:") && !id.startsWith("ctx:"), write: updateNodeLayout },
             { matches: (id: string) => id.startsWith("commit:"), write: updateGitLayout },
             { matches: (id: string) => id.startsWith("planspace:"), write: updateLaneLayout },
+            { matches: (id: string) => id.startsWith("ctx:"), write: updateContextLayout },
           ];
           let next: SessionInfo | null = null;
           for (const { matches, write } of writers) {
@@ -2880,16 +2906,10 @@ export function App() {
     return (
       <main className="flex min-h-screen items-center justify-center bg-surface p-8 text-ink">
         <section className="max-w-2xl space-y-4" role="status">
-          <h1 className="text-xl font-semibold">{storageLoading ? "正在检查存储格式…" : "存储维护模式"}</h1>
-          {storageError && (
-            <>
-              <p className="whitespace-pre-wrap break-words">{storageError}</p>
-              <p>业务数据尚未加载，这不是空项目列表。请保留原数据及 migration-backups；停止使用该存储的进程后，通过 CLI 检查或恢复。</p>
-              <pre className="overflow-auto rounded border p-3">{"miniclaw2 migrations status\nminiclaw2 migrations plan\nminiclaw2 migrations recover"}</pre>
-              <p>数据过旧需使用覆盖其版本的中间版本升级；数据过新需先更新程序。</p>
-              <button className="rounded border px-4 py-2" onClick={() => window.location.reload()}>重新检查</button>
-            </>
-          )}
+          <h1 className="text-xl font-semibold">
+            {storageError ? storageGuidance(storageError.state).title : "正在检查存储格式…"}
+          </h1>
+          {storageError && <StorageMaintenance error={storageError} />}
         </section>
       </main>
     );
@@ -3323,6 +3343,7 @@ export function App() {
               canMutateNode={canMutateCanvasNode}
               canMutateGitLayout={!readOnly && session?.capabilities?.git_review !== false}
               canMutateLaneLayout={!readOnly}
+              canMutateContextLayout={!readOnly}
               onConnectDependency={handleConnectDependency}
               onCreateDependencyVirtualAt={createDependencyVirtualAt}
               onDisconnectDependency={handleDisconnectDependency}

@@ -11,6 +11,8 @@ def node_layout_owners(nodes: list[Node]) -> dict[str, Node]:
     for node in nodes:
         if node.kind == "op":
             continue
+        if node.state == "error" and node.error:
+            owners[f"err:{node.id}"] = node
         published = [artifact for artifact in node.artifacts if artifact.status == "published"]
         for artifact in published:
             name = quote(artifact.name, safe="~!*'()-._")

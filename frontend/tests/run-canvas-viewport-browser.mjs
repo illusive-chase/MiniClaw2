@@ -288,6 +288,49 @@ try {
   const frameIntervals = await evaluate("window.collectFrames=false;window.frameIntervals");
   frameIntervals.sort((left, right) => left - right);
   assert.ok(peakNodes < 100, `滚动过程中挂载数量应受视口限制：${peakNodes}`);
+  await evaluate(`(() => {
+    window.savedSyntheticPositions = {};
+    canvasTest.patch({
+      nodes: [{...canvasTest.nodes.find(node => node.id === 'source'), state:'error', error:'拖拽回归测试'}],
+      knownPlanspaceIds: ['interaction'], hiddenPlanspaceIds: [],
+      focusedPlanspaceId: 'interaction', canMutateContextLayout: true,
+      contextBundlesByNodeId: {source: {sources: [
+        {scope:'project-root',kind:'context',path:'CONTEXT.md',chars:20,sha256:'hash',injection:'system'},
+        {scope:'contextspace',kind:'planspace',path:'lane/CONTEXT.md',plug_id:'interaction',chars:20,sha256:'hash',injection:'system'}
+      ]}},
+      onNodePositionsChange: updates => Object.assign(window.savedSyntheticPositions, updates),
+    });
+  })()`);
+  const syntheticIds = ['err:source', 'ctx:project-root::context::CONTEXT.md', 'ctx:contextspace::planspace::lane/CONTEXT.md'];
+  const syntheticTransforms = {};
+  for (const nodeId of syntheticIds) {
+    await focus(nodeId);
+    const point = center(await bounds(nodeId));
+    const before = await evaluate(`document.querySelector('[data-id="${nodeId}"]').style.transform`);
+    await mouse('mouseMoved', point);
+    await mouse('mousePressed', point, { button: 'left', buttons: 1, clickCount: 1 });
+    await mouse('mouseMoved', { x: point.x + 90, y: point.y + 65 }, { buttons: 1 });
+    await mouse('mouseReleased', { x: point.x + 90, y: point.y + 65 }, { button: 'left', buttons: 0, clickCount: 1 });
+    await eventually(`window.savedSyntheticPositions[${JSON.stringify(nodeId)}]`);
+    await delay(150);
+    syntheticTransforms[nodeId] = await evaluate(`document.querySelector('[data-id="${nodeId}"]').style.transform`);
+    assert.notEqual(syntheticTransforms[nodeId], before, `${nodeId} 应能真实拖动`);
+    const space = await evaluate(`window.savedSyntheticPositions[${JSON.stringify(nodeId)}].space`);
+    assert.equal(space, nodeId.includes('project-root') ? 'canvas' : 'planspace:interaction');
+  }
+  await evaluate('canvasTest.patch({initialNodePositions:{...window.savedSyntheticPositions}})');
+  await delay(100);
+  await evaluate('canvasTest.remount()');
+  for (const nodeId of syntheticIds) {
+    await focus(nodeId);
+    assert.equal(await evaluate(`document.querySelector('[data-id="${nodeId}"]').style.transform`), syntheticTransforms[nodeId], `${nodeId} 重新挂载应恢复位置`);
+  }
+  await evaluate('canvasTest.patch({canMutateContextLayout:false,canMutateNode:()=>false})');
+  for (const nodeId of syntheticIds) {
+    await focus(nodeId);
+    assert.equal(await evaluate(`document.querySelector('[data-id="${nodeId}"]').classList.contains('draggable')`), false);
+  }
+  console.log('context 与错误卡片真实拖拽、坐标空间、重新挂载恢复及只读权限验证通过');
   console.log(`视口浏览器回归通过：${initial.total} 个图元素初始仅挂载 ${initial.rendered} 个节点、${initial.edges.length} 条边；提问／权限草稿保留及裁剪恢复、跨视口边、框选、多选、菜单／平移、跨视口长按连线、定位／恢复、泳道及模板折叠、适配和缩放通过`);
   console.log(`滚动采样：最多挂载 ${peakNodes} 个节点，帧间隔中位数 ${frameIntervals[Math.floor(frameIntervals.length / 2)]?.toFixed(1)} ms，P95 ${frameIntervals[Math.floor(frameIntervals.length * 0.95)]?.toFixed(1)} ms（仅报告，不设机器相关耗时阈值）`);
   assert.deepEqual(errors, []);

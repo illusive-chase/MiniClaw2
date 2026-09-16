@@ -182,7 +182,8 @@ def test_plan_reports_recovery_without_touching_sources(tmp_path: Path, version:
     main(["plan", "--root", str(tmp_path)])
     plan = json.loads(capsys.readouterr().out)
     assert plan["target"] == 17 and plan["minimum"] == 14
-    assert "有损中间步骤" in plan["layout_note"]
+    assert "v17 显式修复 v16" in plan["layout_note"]
+    assert "不恢复" in plan["layout_note"]
     assert sum(report["restored"]["artifact"] for report in plan["layout_impact"]) == 2
     assert sum(report["restored"]["git"] for report in plan["layout_impact"]) == 2
     assert sum(report["restored"]["lane"] for report in plan["layout_impact"]) == 1
