@@ -158,4 +158,53 @@ assert.ok(!page.includes("miniclaw2 migrations status\\nminiclaw2 migrations pla
 assert.ok(page.includes("StorageBlocked"), "the migration gate keeps the backend state");
 assert.ok(page.includes("StorageMaintenance"), "the page delegates to the guidance component");
 
+/* A sync failure raises the same `state` vocabulary as a blocked startup, so the
+   settings panel must branch on it too. It used to flatten every failure with
+   `String(err)` into one line of 11px red text, which is the dead end the whole
+   presentation layer exists to remove: the user could not tell
+   `migration_required` (stop the backend, confirm once) from `waiting_for_idle`
+   (just wait), and retrying produced the identical string. */
+const settings = readFileSync(
+  new URL("../src/components/GlobalSettingsModal.tsx", import.meta.url),
+  "utf8",
+);
+assert.ok(
+  !/setSyncError\(String\(err\)\)/.test(settings),
+  "the settings panel no longer flattens a sync failure into a bare string",
+);
+assert.ok(
+  settings.includes("StorageGuidanceBody"),
+  "the settings panel renders the same guidance body as the maintenance page",
+);
+assert.ok(
+  settings.includes("err instanceof ApiError ? err.state"),
+  "the settings panel keeps the backend `state` off the ApiError",
+);
+
+/* Both surfaces render one component, so a state cannot gain guidance on the
+   maintenance page while staying a bare error string in settings. */
+const body = readFileSync(
+  new URL("../src/components/StorageGuidanceBody.tsx", import.meta.url),
+  "utf8",
+);
+assert.ok(body.includes("guidance.steps"), "the shared body renders the steps");
+assert.ok(body.includes("requiresShutdown"), "the shared body keeps the shutdown warning");
+for (const surface of ["../src/components/StorageMaintenance.tsx", "../src/components/GlobalSettingsModal.tsx"]) {
+  const source = readFileSync(new URL(surface, import.meta.url), "utf8");
+  assert.ok(
+    source.includes("StorageGuidanceBody"),
+    `${surface} renders guidance through the shared body`,
+  );
+  assert.ok(
+    !source.includes("guidance.commands.join"),
+    `${surface} does not re-implement the command block`,
+  );
+}
+
+/* The panel stays open on live data, so a sync failure must not tell the user to
+   stop the backend unless that state genuinely requires it. */
+assert.equal(storageGuidance("schema_conflict").requiresShutdown, false);
+assert.equal(storageGuidance("waiting_for_idle").requiresShutdown, false);
+assert.equal(storageGuidance("migration_required").requiresShutdown, true);
+
 console.log("storage maintenance tests passed");

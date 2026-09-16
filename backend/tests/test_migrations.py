@@ -16,6 +16,7 @@ from miniclaw2.migrations.catalog import CURRENT_VERSION, MINIMUM_VERSION, check
 from miniclaw2.migrations.coordinator import coordinator, open_storage
 from miniclaw2.migrations.errors import MigrationError
 from miniclaw2.migrations.inventory import files
+from miniclaw2.migrations.plan import migration_plan
 from miniclaw2.migrations.transaction import Transaction, atomic_json, backup_payload, recover
 from miniclaw2.migrations.validation import read_object, validate
 from miniclaw2.store import Store
@@ -173,6 +174,15 @@ def test_nonempty_unversioned_store_is_not_new(tmp_path: Path) -> None:
     atomic_json(tmp_path / "config.json", {})
     with pytest.raises(MigrationError, match="非空存储"):
         Store(tmp_path)
+
+
+def test_migration_plan_rejects_nonempty_unversioned_store(tmp_path: Path) -> None:
+    assert migration_plan(tmp_path)["source"] == CURRENT_VERSION
+    atomic_json(tmp_path / "config.json", {})
+    with pytest.raises(MigrationError, match="非空存储") as error:
+        migration_plan(tmp_path)
+    assert error.value.state == "migration_failed"
+    assert error.value.path == tmp_path / "schema.json"
 
 
 def test_empty_and_repeat_startup_do_not_reapply(tmp_path: Path) -> None:

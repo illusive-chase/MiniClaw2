@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import {
   createModelPreset,
   applySelfUpdate,
+  ApiError,
   checkSyncRemote,
   checkSelfUpdate,
   getSelfUpdate,
@@ -15,6 +16,8 @@ import {
   updateToolRequestSettings,
 } from "../api";
 import { canApplyUpdate } from "../selfUpdate";
+import { storageGuidance, type StorageFailure } from "../storageMaintenance";
+import { StorageGuidanceBody } from "./StorageGuidanceBody";
 import { useSyncProgress } from "../useSyncProgress";
 import { LANGUAGE_OPTIONS } from "../languages";
 import type {
@@ -62,7 +65,7 @@ export function GlobalSettingsModal({ open, state, onClose, onChanged }: Props) 
   const [applyingUpdate, setApplyingUpdate] = useState(false);
   const [remoteUrl, setRemoteUrl] = useState("");
   const [privacyAcknowledged, setPrivacyAcknowledged] = useState(false);
-  const [syncError, setSyncError] = useState<string | null>(null);
+  const [syncError, setSyncError] = useState<StorageFailure | null>(null);
   const [updateError, setUpdateError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -200,6 +203,18 @@ export function GlobalSettingsModal({ open, state, onClose, onChanged }: Props) 
     }
   };
 
+  /* A sync failure carries the same `state` vocabulary as a blocked startup, so
+     keep the structure instead of flattening it: the recovery path for
+     `migration_required` differs entirely from `waiting_for_idle`, and a bare
+     string sent the user to a dead end (the incident this fixes began with a
+     silent sync failure the user could not act on). */
+  const syncFailure = (err: unknown): StorageFailure => ({
+    state: err instanceof ApiError ? err.state : null,
+    detail: err instanceof ApiError ? err.detail ?? err.message
+      : err instanceof Error ? err.message
+      : String(err),
+  });
+
   const runSync = async () => {
     setSyncing(true);
     setSyncError(null);
@@ -211,7 +226,7 @@ export function GlobalSettingsModal({ open, state, onClose, onChanged }: Props) 
       onChanged(next);
       setRemoteUrl(next.sync.remote_url ?? remoteUrl);
     } catch (err) {
-      setSyncError(String(err));
+      setSyncError(syncFailure(err));
     } finally {
       setSyncing(false);
     }
@@ -223,7 +238,7 @@ export function GlobalSettingsModal({ open, state, onClose, onChanged }: Props) 
     try {
       onChanged(await checkSyncRemote());
     } catch (err) {
-      setSyncError(String(err));
+      setSyncError(syncFailure(err));
     } finally {
       setCheckingRemote(false);
     }
@@ -301,7 +316,16 @@ export function GlobalSettingsModal({ open, state, onClose, onChanged }: Props) 
                 </div>
               </div>
             )}
-            {syncError ? <div className="mt-2 text-[11px] text-state-error">{syncError}</div> : null}
+            {syncError ? (
+              <div className="mt-2 space-y-2 rounded-md border border-state-error/30 bg-state-error-soft px-3 py-2 text-[11px] leading-relaxed text-ink">
+                <div className="font-medium text-state-error">
+                  {storageGuidance(syncError.state).title}
+                </div>
+                <p className="whitespace-pre-wrap break-words">{syncError.detail}</p>
+                <p>{storageGuidance(syncError.state).summary}</p>
+                <StorageGuidanceBody guidance={storageGuidance(syncError.state)} compact />
+              </div>
+            ) : null}
             {syncing && (
               <div role="status" className="mt-2 text-[11px] text-ink-muted">
                 {syncProgress?.detail ?? "正在准备同步"} · 已用时 {syncElapsedSeconds} 秒

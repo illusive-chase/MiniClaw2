@@ -97,7 +97,7 @@ import {
 import { scanPlaceholders } from "./templateEditor";
 import { ProjectsLanding } from "./components/ProjectsLanding";
 import { StorageMaintenance } from "./components/StorageMaintenance";
-import { storageGuidance } from "./storageMaintenance";
+import { storageGuidance, type StorageFailure } from "./storageMaintenance";
 import { NotificationBell } from "./components/NotificationBell";
 import { NoticeBannerRail } from "./components/NoticeBannerRail";
 import { RunStatusButton } from "./components/RunStatusButton";
@@ -344,7 +344,7 @@ export function App() {
   const [nodes, setNodes] = useState<NodeInfo[]>([]);
   const [modelPresets, setModelPresets] = useState<ModelPreset[]>([]);
   const [globalState, setGlobalState] = useState<GlobalState | null>(null);
-  const [storageError, setStorageError] = useState<{ state: string | null; detail: string } | null>(null);
+  const [storageError, setStorageError] = useState<StorageFailure | null>(null);
   const [storageLoading, setStorageLoading] = useState(true);
   const [gitStatus, setGitStatus] = useState<GitStatus | null>(null);
   const [gitCommits, setGitCommits] = useState<CommitDescriptor[]>([]);

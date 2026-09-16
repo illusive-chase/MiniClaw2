@@ -4,7 +4,9 @@ from pathlib import Path
 from typing import Any
 
 from .catalog import CURRENT_VERSION, MINIMUM_VERSION, steps, version_of
+from .errors import MigrationError
 from .impact import layout_impact, layout_recovery_guidance
+from .inventory import files
 from .sdk import Migration
 from .validation import read_object
 
@@ -16,7 +18,16 @@ def describe_step(migration: Migration) -> dict[str, Any]:
 
 def migration_plan(root: Path) -> dict[str, Any]:
     schema = root / "schema.json"
-    source = version_of(read_object(schema), schema) if schema.exists() else CURRENT_VERSION
+    if schema.exists():
+        source = version_of(read_object(schema), schema)
+    elif files(root):
+        raise MigrationError(
+            "migration_failed",
+            "非空存储缺少 schema.json；请先识别基线，不能自动当作新库",
+            schema,
+        )
+    else:
+        source = CURRENT_VERSION
     applicable = steps(source)
     confirmation = [item for item in steps(MINIMUM_VERSION) if item.destructive]
     machine_path = root / "machine.json"

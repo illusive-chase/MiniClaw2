@@ -125,3 +125,8 @@ export function storageGuidance(state: string | null): StorageGuidance {
 export function guidanceNotes(guidance: StorageGuidance): string[] {
   return guidance.commands.length > 0 ? [PRESERVE, STATUS_NOTE] : [PRESERVE];
 }
+
+/** A failure carrying the backend's `state`, as both the maintenance page and
+    the settings panel receive it. `state` is null for an older backend, or for
+    any failure that is not a `MigrationError`. */
+export type StorageFailure = { state: string | null; detail: string };
