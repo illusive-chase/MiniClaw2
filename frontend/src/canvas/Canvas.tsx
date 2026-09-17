@@ -31,11 +31,14 @@ import type {
 } from "../types";
 import { filterNodePositions, hydrateLayoutPositions, nodePositionUpdate } from "./nodePositions";
 import {
+  browserGitChangesStorage,
   filterGitPositions,
   gitPositionUpdate,
   isGitPositionId,
   preserveGitRuntimePosition,
+  readGitChangesPosition,
   resolveCommitPositionTarget,
+  saveGitChangesPosition,
   setGitChangesPositionResolver,
   transferGitPosition,
   type CommitPositionTarget,
@@ -347,8 +350,17 @@ function CanvasInner({
   commitPositionTarget = null,
   onCommitPositionTransferHandled,
 }: CanvasProps) {
+  const initialGitChangesPosition = readGitChangesPosition(
+    sessionId,
+    browserGitChangesStorage(),
+  );
   const nodePositionsRef = useRef<Record<string, NodePosition>>(
-    { ...initialNodePositions },
+    {
+      ...initialNodePositions,
+      ...(initialGitChangesPosition
+        ? { "commit:ghost": initialGitChangesPosition }
+        : {}),
+    },
   );
   const hydratedPositionsRef = useRef(initialNodePositions);
   const initialViewportRef = useRef<Viewport | null>(
@@ -831,7 +843,7 @@ function CanvasInner({
       nodePositionsRef.current = transferGitPosition(nodePositionsRef.current, commitPositionTransfer);
       pendingPositionsRef.current[commitId] = commitPositionTransfer.position;
       delete pendingPositionsRef.current["commit:ghost"];
-      pendingPositionRemovalsRef.current.add("commit:ghost");
+      saveGitChangesPosition(sessionId, null, browserGitChangesStorage());
       removedPositionsRef.current.add("commit:ghost");
       scheduleFlushLayout(0);
     }
@@ -1022,7 +1034,11 @@ function CanvasInner({
                 : nodePositionUpdate(nodes, change.id, change.position, canMutateNode);
           if (!position) continue;
           nodePositionsRef.current[change.id] = position;
-          pendingPositionsRef.current[change.id] = position;
+          if (change.id !== "commit:ghost") {
+            pendingPositionsRef.current[change.id] = position;
+          } else if (change.dragging === false) {
+            saveGitChangesPosition(sessionId, position, browserGitChangesStorage());
+          }
           pendingPositionRemovalsRef.current.delete(change.id);
           removedPositionsRef.current.delete(change.id);
         }
@@ -1058,7 +1074,7 @@ function CanvasInner({
         );
       });
     },
-    [nodes, canMutateNode, canMutateGitLayout, canMutateLaneLayout, canMutateContextLayout, scheduleFlushLayout, setRfNodes],
+    [nodes, sessionId, canMutateNode, canMutateGitLayout, canMutateLaneLayout, canMutateContextLayout, scheduleFlushLayout, setRfNodes],
   );
 
   const onMove = useCallback((_event: MouseEvent | TouchEvent | null, viewport: Viewport) => {

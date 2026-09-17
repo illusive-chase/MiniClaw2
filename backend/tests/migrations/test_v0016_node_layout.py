@@ -144,8 +144,9 @@ def test_plan_counts_recovery_without_modifying_sources(tmp_path: Path) -> None:
     before = {host: (path / "layout.json").read_bytes() for host, path in hosts.items()}
     impact = layout_impact(tmp_path)
     assert len(impact) == 2
-    assert sum(item["restored"]["git"] for item in impact) == 1
-    assert all(item["retained"] >= 2 and not any(item["not_restored"].values()) and item["viewport_discarded"] for item in impact)
+    assert sum(item["restored"]["git"] for item in impact) == 0
+    assert sum(item["not_restored"]["synthetic"] for item in impact) == 1
+    assert all(item["retained"] >= 2 and item["viewport_discarded"] for item in impact)
     assert before == {host: (path / "layout.json").read_bytes() for host, path in hosts.items()}
     (hosts["a"] / "layout.json").unlink()
     atomic_json(hosts["b"] / "layout.json", {"layout_hints": {}})

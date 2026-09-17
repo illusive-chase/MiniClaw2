@@ -456,6 +456,41 @@ class GitMetadataSyncTests(unittest.TestCase):
         self.assertEqual(self.store_a.read_git_positions(pid)[node_id].x, 100)
         self.assertEqual(self.store_a.read_git_positions(pid)[node_id].y, 20)
 
+    def test_legacy_ghost_deletion_does_not_block_diverged_sync(self) -> None:
+        from miniclaw2.migrations.transaction import atomic_json
+
+        pid = self.project_a.id
+        path_a = self.root_a / "projects" / pid / "git-layout.json"
+        path_b = self.root_b / "projects" / pid / "git-layout.json"
+        ghost = {"x": -64.0, "y": 36640.0, "space": "canvas"}
+        left_id = "commit:" + "a" * 40
+        right_id = "commit:" + "b" * 40
+        position = {"x": 10.0, "y": 20.0, "space": "canvas"}
+
+        atomic_json(path_a, {"schema_version": 1, "nodes": {"commit:ghost": ghost}})
+        self.store_a.sync.commit_now("legacy shared ghost")
+        self.store_a.sync.sync_now()
+
+        # Reproduce a peer that received the old shared representation before
+        # the canonicalizer was available.
+        _git("fetch", "origin", cwd=self.root_b)
+        _git("merge", "--ff-only", "origin/main", cwd=self.root_b)
+        payload_b = json.loads(path_b.read_text())
+        payload_b["nodes"].pop("commit:ghost")
+        payload_b["nodes"][right_id] = position
+        atomic_json(path_b, payload_b)
+        self.store_b.sync.commit_now("peer removes ghost")
+        self.store_b.sync.sync_now()
+
+        payload_a = json.loads(path_a.read_text())
+        payload_a["nodes"][left_id] = position
+        atomic_json(path_a, payload_a)
+        self.store_a.sync.commit_now("local retains ghost")
+        self.store_a.sync.sync_now()
+
+        nodes = json.loads(path_a.read_text())["nodes"]
+        self.assertEqual(set(nodes), {left_id, right_id})
+
     def test_shared_lane_positions_sync_and_atomic_conflict(self) -> None:
         from miniclaw2.domain import LanePosition
         from miniclaw2.migrations.transaction import atomic_json

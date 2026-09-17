@@ -52,6 +52,6 @@ def migration_plan(root: Path) -> dict[str, Any]:
         "confirmation_hosts_note": "确认也覆盖本机快照中以下设备的记录。列表仅反映已知 host，不会联系远端，也不代表这些设备自身已确认；尚未获取的远端快照也受上述契约授权约束。",
         "layout_impact": layout_impact(root) if source < 17 else [],
         "layout_recovery": layout_recovery_guidance(root) if source >= 16 else [],
-        "layout_note": "v17 显式修复 v16：两步同在执行链且本次原始输入可补回有效坐标时，可自动升级。缺失来源或空影响不自动放行。合成图元与旧 viewport 按设计不恢复；已过 v16 且输入已丢失时，须核对历史备份，不能宣称自动找回。",
+        "layout_note": "v17 显式修复 v16：两步同在执行链且本次原始输入可补回有效坐标时，可自动升级。缺失来源或空影响不自动放行。commit:ghost 属于单机未提交工作区，不作为共享坐标恢复，改由浏览器本地保存；其他合成图元与旧 viewport 按设计不恢复。已过 v16 且输入已丢失时，须核对历史备份，不能宣称自动找回。",
         "note": "只读预览，不记录确认；本机及外部 ContextSpace 游标在 apply 中独立核验。执行前请重新核对计划。",
     }

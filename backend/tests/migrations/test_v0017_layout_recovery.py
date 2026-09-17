@@ -76,7 +76,7 @@ def test_transaction_preserves_layout_and_original_bytes(tmp_path: Path, version
     git = GitLayout.model_validate(read_object(tmp_path / "projects/project/git-layout.json"))
     lane = LaneLayout.model_validate(read_object(tmp_path / "projects/project/lane-layout.json"))
     assert git.nodes["commit:abc1234"].x == 90
-    assert git.nodes["commit:ghost"].space == "canvas"
+    assert "commit:ghost" not in git.nodes
     assert lane.nodes["planspace:history"].x == 130
     assert all(b"err:broken" not in content and b"viewport" not in content for content in layouts(tmp_path).values())
     assert not list(tmp_path.glob("projects/*/hosts/*/layout.json"))
@@ -183,11 +183,12 @@ def test_plan_reports_recovery_without_touching_sources(tmp_path: Path, version:
     plan = json.loads(capsys.readouterr().out)
     assert plan["target"] == 18 and plan["minimum"] == 15
     assert "v17 显式修复 v16" in plan["layout_note"]
+    assert "commit:ghost" in plan["layout_note"]
     assert "不恢复" in plan["layout_note"]
     assert sum(report["restored"]["artifact"] for report in plan["layout_impact"]) == 2
-    assert sum(report["restored"]["git"] for report in plan["layout_impact"]) == 2
+    assert sum(report["restored"]["git"] for report in plan["layout_impact"]) == 1
     assert sum(report["restored"]["lane"] for report in plan["layout_impact"]) == 1
-    assert sum(report["not_restored"]["synthetic"] for report in plan["layout_impact"]) == 1
+    assert sum(report["not_restored"]["synthetic"] for report in plan["layout_impact"]) == 2
     assert before == {relative: (tmp_path / relative).read_bytes() for relative in files(tmp_path)}
 
 

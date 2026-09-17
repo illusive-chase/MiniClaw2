@@ -62,7 +62,7 @@ class SessionListingTests(unittest.TestCase):
             project.id, {node.id: NodePosition(x=10, y=20, space="canvas")}, []
         )
         self.store.update_git_positions(
-            project.id, {"commit:ghost": GitPosition(x=30, y=40, space="canvas")}, []
+            project.id, {"commit:" + "a" * 40: GitPosition(x=30, y=40, space="canvas")}, []
         )
         self.store.update_lane_positions(
             project.id, {"planspace:lane": LanePosition(x=50, y=60, space="canvas")}, []
@@ -84,7 +84,7 @@ class SessionListingTests(unittest.TestCase):
         detail = response.json()
         expected = {
             "node_positions": {node.id: {"x": 10, "y": 20, "space": "canvas"}},
-            "git_positions": {"commit:ghost": {"x": 30, "y": 40, "space": "canvas"}},
+            "git_positions": {"commit:" + "a" * 40: {"x": 30, "y": 40, "space": "canvas"}},
             "lane_positions": {"planspace:lane": {"x": 50, "y": 60, "space": "canvas"}},
             "context_positions": {
                 "ctx:project-root::context::CONTEXT.md": {

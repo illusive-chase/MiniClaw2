@@ -10,9 +10,36 @@ from .catalog import steps, version_of
 from .errors import MigrationError
 from .inventory import files, safe_path
 from .sdk import MigrationContext
-from .steps.v0017_layout_recovery import pristine_hints, recover_layout
+from .steps.v0017_layout_recovery import finite_position, pristine_hints, recover_layout
 from .transaction import backup_payload, file_digest, hydrated_backup
 from .validation import read_object
+
+
+def _discount_transient_ghost(
+    context: MigrationContext, reports: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Do not present a host-local working-tree anchor as recoverable shared data."""
+    sources = dict(pristine_hints(context))
+    discounted: set[str] = set()
+    for report in reports:
+        project_id = report["project_id"]
+        if project_id in discounted or report["restored"]["git"] == 0:
+            continue
+        target = context.path(f"projects/{project_id}/git-layout.json")
+        existing = read_object(target).get("nodes", {}) if target.exists() else {}
+        hints = sources.get(report["path"], {}).get("layout_hints", {})
+        if "commit:ghost" in existing or not isinstance(hints, dict):
+            continue
+        if finite_position(hints.get("commit:ghost"), "canvas") is None:
+            continue
+        report["restored"]["git"] -= 1
+        report["not_restored"]["synthetic"] += 1
+        report["skipped_entries"].append({
+            "id": "commit:ghost",
+            "reason": "未提交工作区位置仅属于来源设备，不写入共享布局",
+        })
+        discounted.add(project_id)
+    return reports
 
 
 def layout_impact(root: Path) -> list[dict[str, Any]]:
@@ -32,7 +59,7 @@ def layout_impact(root: Path) -> list[dict[str, Any]]:
             if migration.target < 17 and "shared" in migration.scopes:
                 migration.upgrade(context)
                 migration.verify(context)
-        return recover_layout(context, write=False)
+        return _discount_transient_ghost(context, recover_layout(context, write=False))
 
 
 def _transaction_reports(
@@ -50,7 +77,7 @@ def _transaction_reports(
         if relative.endswith("/project.json"):
             flat_projects.add(relative.split("/")[1])
     per_project: dict[str, dict[str, int]] = {}
-    for report in recover_layout(context, write=False):
+    for report in _discount_transient_ghost(context, recover_layout(context, write=False)):
         counts = per_project.setdefault(report["project_id"], {})
         for kind, count in report["restored"].items():
             counts[kind] = counts.get(kind, 0) + count

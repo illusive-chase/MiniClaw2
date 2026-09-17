@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from miniclaw2.domain import GitLayout
-from miniclaw2.git_layout import check_git_layout_conflicts
+from miniclaw2.git_layout import check_git_layout_conflicts, discard_transient_git_positions, merge_git_layouts
 from miniclaw2.migrations.errors import MigrationError
 from miniclaw2.migrations.transaction import atomic_json, file_digest
 from miniclaw2.restore_git_layout import apply_recovery, recovery_plan
@@ -32,6 +32,34 @@ def test_coordinate_is_atomic_in_three_way_sync(tmp_path: Path) -> None:
         check_git_layout_conflicts(base, local, remote)
     atomic_json(remote / relative, json.loads((local / relative).read_text()))
     check_git_layout_conflicts(base, local, remote)
+
+
+def test_transient_ghost_is_removed_and_never_conflicts(tmp_path: Path) -> None:
+    roots = {name: tmp_path / name for name in ("base", "local", "remote")}
+    positions = {
+        "base": {"commit:ghost": POSITION},
+        "local": {"commit:ghost": {**POSITION, "x": 80}, COMMIT: POSITION},
+        "remote": {OTHER: POSITION},
+    }
+    for name, root in roots.items():
+        atomic_json(root / "projects/project/project.json", {"id": "project"})
+        atomic_json(root / "projects/project/git-layout.json", {
+            "schema_version": 1,
+            "nodes": positions[name],
+        })
+
+    check_git_layout_conflicts(roots["base"], roots["local"], roots["remote"])
+    for root in roots.values():
+        discard_transient_git_positions(root)
+    merge_git_layouts(roots["base"], roots["local"], roots["remote"])
+
+    assert read_nodes(roots["base"]) == {}
+    assert read_nodes(roots["local"]) == {COMMIT: POSITION, OTHER: POSITION}
+    assert read_nodes(roots["remote"]) == {COMMIT: POSITION, OTHER: POSITION}
+
+
+def read_nodes(root: Path) -> dict[str, object]:
+    return json.loads((root / "projects/project/git-layout.json").read_text())["nodes"]
 
 
 @pytest.mark.parametrize("deleted_side", ["local", "remote", "both"])
@@ -82,8 +110,9 @@ def test_restore_all_projects_is_verified_additive_and_idempotent(tmp_path: Path
     plan = recovery_plan(tmp_path, "backup", "native")
     assert {project["project_id"] for project in plan["projects"]} == {"one", "two"}
     assert plan["projects"][0]["additions"][COMMIT] == POSITION
+    assert "commit:ghost" not in plan["projects"][0]["additions"]
     assert not list((tmp_path / "projects").glob("*/git-layout.json"))
-    assert apply_recovery(tmp_path, plan) == {"one": 3, "two": 3}
+    assert apply_recovery(tmp_path, plan) == {"one": 2, "two": 2}
     assert apply_recovery(tmp_path, recovery_plan(tmp_path, "backup", "native")) == {}
     for path, original in originals.items():
         assert path.read_bytes() == original

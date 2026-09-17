@@ -4,7 +4,9 @@ import { buildGraph, LANE, resolveSyncedNodePosition, type BuildGraphArgs } from
 import {
   captureGitChangesPosition,
   preserveGitRuntimePosition,
+  readGitChangesPosition,
   resolveCommitPositionTarget,
+  saveGitChangesPosition,
   setGitChangesPositionResolver,
   transferGitPosition,
   type CommitPositionTarget,
@@ -32,6 +34,21 @@ const positionOf = (graph: ReturnType<typeof buildGraph>, nodeId: string) => {
   assert.ok(node, `缺少节点：${nodeId}`);
   return xy(node.position);
 };
+
+const stored = new Map<string, string>();
+const storage = {
+  getItem: (key: string) => stored.get(key) ?? null,
+  setItem: (key: string, value: string) => { stored.set(key, value); },
+  removeItem: (key: string) => { stored.delete(key); },
+};
+assert.equal(readGitChangesPosition("project", storage), null);
+saveGitChangesPosition("project", draggedPosition, storage);
+assert.deepEqual(readGitChangesPosition("project", storage), draggedPosition);
+saveGitChangesPosition("project", null, storage);
+assert.equal(readGitChangesPosition("project", storage), null);
+stored.set("miniclaw2.git-changes-position.v1:project", "invalid");
+assert.equal(readGitChangesPosition("project", storage), null);
+assert.doesNotThrow(() => saveGitChangesPosition("project", draggedPosition, null));
 
 const original = buildGraph(args);
 const originalGhost = positionOf(original, ghostId);

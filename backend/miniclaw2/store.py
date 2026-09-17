@@ -48,6 +48,7 @@ from .domain import (
     RemoteProjectBinding,
 )
 from .node_layout import node_coordinate_space, node_layout_owners
+from .git_layout import GHOST_GIT_NODE_ID
 from .git_state import is_git_repo, normalized_origin_url, root_commits
 from .replay import EVENT_SCHEMA_VERSION
 from .migrations.coordinator import open_storage
@@ -654,7 +655,9 @@ class Store:
         if not path.exists():
             return {}
         try:
-            return GitLayout.model_validate(self._read_json(path)).nodes
+            positions = GitLayout.model_validate(self._read_json(path)).nodes
+            positions.pop(GHOST_GIT_NODE_ID, None)
+            return positions
         except (OSError, ValueError) as exc:
             raise MigrationError("migration_failed", str(exc), path) from exc
 
@@ -664,6 +667,11 @@ class Store:
         self.assert_writable()
         if not self.is_bound_here(pid):
             raise ValueError("项目未绑定到本机，不能修改 Git 位置")
+        # A ghost is the current host's uncommitted working tree, not a Git
+        # object shared by every host. Ignore legacy clients that still send it
+        # and rewrite the shared file without any historical ghost entry.
+        updates = {key: value for key, value in updates.items() if key != GHOST_GIT_NODE_ID}
+        remove = [key for key in remove if key != GHOST_GIT_NODE_ID]
         validated = GitLayout(schema_version=1, nodes=updates).nodes
         GitLayout(schema_version=1, nodes={key: GitPosition(x=0, y=0, space="canvas") for key in remove})
         merged = self.read_git_positions(pid)

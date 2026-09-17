@@ -97,6 +97,12 @@ def normalize(root: Path, accepted: frozenset[str] = frozenset()) -> None:
                     )
                 migration.upgrade(context)
                 migration.verify(context)
+    # ``commit:ghost`` describes one host's uncommitted working tree. v17
+    # briefly admitted it into the shared Git layout, so canonicalize every
+    # merge input even when it is already at the current schema version.
+    from ..git_layout import discard_transient_git_positions
+
+    discard_transient_git_positions(root)
     validate(root)
     atomic_json(path, marker())
 
@@ -129,19 +135,21 @@ def merge_remote(root: Path, remote_ref: str, *, on_progress: Callable[[str], No
         local_files = files(local)
         normalize(local, accepted)
         report_progress("merging")
-        remote_tree = tree(root, remote, directory / "remote.index")
         if ancestor_commit == local_head:
+            remote_tree = tree(root, remote, directory / "remote.index")
             merged_tree = remote_tree
         else:
             report_progress("normalizing_base")
             extract(root, ancestor_commit, base)
             normalize(base, accepted)
-            from ..git_layout import check_context_layout_conflicts, check_git_layout_conflicts, check_lane_layout_conflicts
+            from ..git_layout import check_context_layout_conflicts, check_git_layout_conflicts, check_lane_layout_conflicts, merge_git_layouts
 
             report_progress("merging")
             check_git_layout_conflicts(base, local, remote)
             check_lane_layout_conflicts(base, local, remote)
             check_context_layout_conflicts(base, local, remote)
+            merge_git_layouts(base, local, remote)
+            remote_tree = tree(root, remote, directory / "remote.index")
             base_commit = git(root, "commit-tree", tree(root, base, directory / "base.index"), input_text="迁移规范化共同祖先\n")
             local_commit = git(root, "commit-tree", tree(root, local, directory / "local.index"), "-p", base_commit, input_text="迁移规范化本地\n")
             remote_commit = git(root, "commit-tree", remote_tree, "-p", base_commit, input_text="迁移规范化远端\n")

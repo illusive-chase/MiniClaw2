@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from .domain import GitLayout, LaneLayout, NodePosition
+from .git_layout import GHOST_GIT_NODE_ID
 from .migrations.errors import MigrationError
 from .migrations.inventory import safe_path
 from .migrations.transaction import backup_payload, fsync_directory
@@ -43,6 +44,8 @@ def recovery_plan(
         provenance = sources.setdefault(project_id, {})
         for node_id, position in sorted(hints.items()):
             if not node_id.startswith(prefix):
+                continue
+            if kind == "git" and node_id == GHOST_GIT_NODE_ID:
                 continue
             validated = model.model_validate({"schema_version": 1, "nodes": {
                 node_id: {"x": position["x"], "y": position["y"], "space": "canvas"},

@@ -184,6 +184,10 @@ class StorageCoordinator:
                                 migration.verify(context)
                     for index, root in enumerate(roots):
                         stage = transaction.stage(index)
+                        if index == 0:
+                            from ..git_layout import discard_transient_git_positions
+
+                            discard_transient_git_positions(stage)
                         validate(stage, external=index > 0)
                         receipt = self.receipt(root, machine_id)
                         if index == 0:

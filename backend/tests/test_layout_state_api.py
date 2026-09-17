@@ -122,13 +122,13 @@ class LayoutStateApiTest(unittest.TestCase):
                 self.assertEqual(bad_layout.read_text(encoding="utf-8"), payload)
                 self.assertEqual(healthy_layout.read_bytes(), healthy_before)
 
-    def test_git_positions_survive_restart_and_stay_separate(self) -> None:
+    def test_git_positions_survive_restart_but_transient_ghost_is_not_shared(self) -> None:
         sid = self._create_session()
         node_id = "commit:" + "a" * 40
         position = {"x": 812.5, "y": -256, "space": "canvas"}
         response = self.client.patch(f"/sessions/{sid}/git-layout", json={"updates": {node_id: position, "commit:ghost": position}})
         self.assertEqual(response.status_code, 200, response.text)
-        self.assertEqual(response.json()["git_positions"][node_id], position)
+        self.assertEqual(response.json()["git_positions"], {node_id: position})
         self.assertEqual(response.json()["node_positions"], {})
         with TestClient(create_app()) as restarted:
             self.assertEqual(restarted.get(f"/sessions/{sid}").json()["git_positions"][node_id], position)
@@ -144,8 +144,13 @@ class LayoutStateApiTest(unittest.TestCase):
             response = self.client.patch(f"/sessions/{sid}/git-layout", json={"updates": {invalid_id: invalid_position}})
             self.assertEqual(response.status_code, 422, response.text)
             self.assertEqual((project / "git-layout.json").read_bytes(), before)
+        payload = json.loads((project / "git-layout.json").read_text())
+        payload["nodes"]["commit:ghost"] = position
+        atomic_json(project / "git-layout.json", payload)
+        self.assertEqual(self.client.get(f"/sessions/{sid}").json()["git_positions"], {node_id: position})
         response = self.client.patch(f"/sessions/{sid}/git-layout", json={"remove": ["commit:ghost"]})
         self.assertEqual(response.json()["git_positions"], {node_id: position})
+        self.assertNotIn("commit:ghost", json.loads((project / "git-layout.json").read_text())["nodes"])
         self.assertNotIn("git_positions", json.loads((project / "project.json").read_text()))
         for binding in project.glob("hosts/*/local.json"):
             binding.unlink()
@@ -158,7 +163,8 @@ class LayoutStateApiTest(unittest.TestCase):
         child_position = {"x": 40, "y": 160, "space": "canvas"}
         self.client.patch(f"/sessions/{sid}/node-layout", json={"updates": {node.id: child_position}})
         git_position = {"x": -100, "y": 20, "space": "canvas"}
-        self.client.patch(f"/sessions/{sid}/git-layout", json={"updates": {"commit:ghost": git_position}})
+        git_id = "commit:" + "b" * 40
+        self.client.patch(f"/sessions/{sid}/git-layout", json={"updates": {git_id: git_position}})
         project = Path(self._home.name) / "projects" / sid
         originals = {path: path.read_bytes() for path in project.rglob("*.json")}
         position = {"x": -1704, "y": 3480, "space": "canvas"}
@@ -166,7 +172,7 @@ class LayoutStateApiTest(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.json()["lane_positions"], {"planspace:lane": position})
         self.assertEqual(response.json()["node_positions"], {node.id: child_position})
-        self.assertEqual(response.json()["git_positions"], {"commit:ghost": git_position})
+        self.assertEqual(response.json()["git_positions"], {git_id: git_position})
         for path, before in originals.items():
             self.assertEqual(path.read_bytes(), before)
         with TestClient(create_app()) as restarted:
