@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import socket
 import subprocess
 from pathlib import Path
 from unittest.mock import patch
@@ -7,7 +8,107 @@ from unittest.mock import patch
 import pytest
 
 from miniclaw2.domain import RemoteAccessConfig
-from miniclaw2.remote_transport import RemoteTransportError, SSHProjectTransport
+from miniclaw2.remote_transport import (
+    SSH_TRANSPORT_FAILURE,
+    RemoteTransportError,
+    SSHProjectTransport,
+    control_socket_path,
+)
+
+
+# macOS caps sockaddr_un.sun_path at 104 bytes and OpenSSH binds
+# "<ControlPath>.<16 random chars>" before renaming it into place.
+_SUN_PATH_LIMIT = 103
+_OPENSSH_SUFFIX = 17
+
+
+def _transport(**kwargs: object) -> SSHProjectTransport:
+    return SSHProjectTransport(
+        RemoteAccessConfig(ssh_target="gpu-box"),
+        project_id="project-1",
+        store_root=Path("/tmp/store"),
+        **kwargs,  # type: ignore[arg-type]
+    )
+
+
+def test_control_path_fits_sun_path_under_long_private_tmpdir() -> None:
+    """macOS TMPDIR is a ~48-char per-user folder; the socket must still fit."""
+    long_tmp = "/var/folders/9g/1rqns07577q68nq5stpglns40000gn/T"
+
+    with patch(
+        "miniclaw2.remote_transport.tempfile.gettempdir", return_value=long_tmp
+    ):
+        path = control_socket_path("a" * 32)
+
+    assert path is not None
+    assert str(path).startswith(long_tmp)
+    assert len(str(path)) + _OPENSSH_SUFFIX <= _SUN_PATH_LIMIT
+    # The path must remain bindable in practice, not merely arithmetically short.
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    probe = socket.socket(socket.AF_UNIX)
+    try:
+        probe.bind(f"{path}.{'x' * 16}")
+    finally:
+        probe.close()
+        Path(f"{path}.{'x' * 16}").unlink(missing_ok=True)
+
+
+def test_control_path_falls_back_to_shared_root_when_tmpdir_too_long() -> None:
+    with patch(
+        "miniclaw2.remote_transport.tempfile.gettempdir",
+        return_value="/var/folders/" + "d" * 90,
+    ):
+        path = control_socket_path("b" * 32)
+
+    assert path is not None
+    assert str(path).startswith("/tmp/miniclaw2-ssh-")
+    assert len(str(path)) + _OPENSSH_SUFFIX <= _SUN_PATH_LIMIT
+
+
+def test_unusable_socket_dir_degrades_to_unmultiplexed_ssh() -> None:
+    """No usable socket directory must not break SSH, only multiplexing."""
+    with patch(
+        "miniclaw2.remote_transport._prepare_socket_dir", return_value=False
+    ):
+        transport = _transport()
+
+    assert transport.control_path is None
+    args = transport._ssh_prefix()
+    assert not any(arg.startswith("-oControlPath") for arg in args)
+    assert not any(arg.startswith("-oControlMaster") for arg in args)
+    assert "-oBatchMode=yes" in args
+    transport.close()  # must not raise without a control socket
+
+
+def test_probe_reports_ssh_failure_rather_than_missing_remote_directory() -> None:
+    """A dead transport must not be reported as an absent remote path."""
+    transport = _transport()
+
+    with patch(
+        "miniclaw2.remote_transport.subprocess.run",
+        side_effect=OSError("unix_listener: path too long for Unix domain socket"),
+    ):
+        with pytest.raises(RemoteTransportError) as excinfo:
+            transport.probe_repository("/srv/project")
+
+    message = str(excinfo.value)
+    assert "无法通过 SSH 连接到 gpu-box" in message
+    assert "远端目录不存在" not in message
+
+
+def test_transport_failure_uses_ssh_exit_code_not_git_exit_one() -> None:
+    """Exit 1 is a meaningful git result; a broken transport must differ."""
+    transport = _transport()
+
+    with patch(
+        "miniclaw2.remote_transport.subprocess.run", side_effect=OSError("boom")
+    ):
+        text = transport.run(["git", "status"])
+        binary = transport.run_bytes(["git", "status"])
+
+    assert text.returncode == SSH_TRANSPORT_FAILURE
+    assert binary.returncode == SSH_TRANSPORT_FAILURE
+    assert SSH_TRANSPORT_FAILURE != 1
 
 
 def test_probe_uses_project_control_socket_and_quotes_remote_path(
