@@ -35,24 +35,54 @@ def check_git_layout_conflicts(base: Path, local: Path, remote: Path) -> None:
 
 def merge_git_layouts(base: Path, local: Path, remote: Path) -> None:
     """Materialize the conflict-checked per-node merge into both Git inputs."""
+    _merge_layouts(
+        base,
+        local,
+        remote,
+        "git-layout.json",
+        GitLayout,
+        "Git 节点",
+        ignored_node_ids=frozenset({GHOST_GIT_NODE_ID}),
+    )
+
+
+def merge_lane_layouts(base: Path, local: Path, remote: Path) -> None:
+    """Merge cosmetic lane positions without blocking metadata sync."""
+    _merge_layouts(
+        base,
+        local,
+        remote,
+        "lane-layout.json",
+        LaneLayout,
+        "方向",
+        prefer_local_on_conflict=True,
+    )
+
+
+def _merge_layouts(
+    base: Path, local: Path, remote: Path, filename: str,
+    model: type[GitLayout] | type[LaneLayout] | type[ContextLayout], label: str,
+    *, ignored_node_ids: frozenset[str] = frozenset(),
+    prefer_local_on_conflict: bool = False,
+) -> None:
     paths = {
         path.relative_to(root)
         for root in (base, local, remote)
-        for path in root.glob("projects/*/git-layout.json")
+        for path in root.glob(f"projects/*/{filename}")
     }
     for relative in sorted(paths):
         project = relative.parent / "project.json"
         if not all((root / project).is_file() for root in (local, remote)):
             continue
         ancestor, ours, theirs = (
-            GitLayout.model_validate(read_object(root / relative)).nodes
+            model.model_validate(read_object(root / relative)).nodes
             if (root / relative).exists()
             else {}
             for root in (base, local, remote)
         )
         merged = {}
         for node_id in sorted(
-            (ancestor.keys() | ours.keys() | theirs.keys()) - {GHOST_GIT_NODE_ID}
+            (ancestor.keys() | ours.keys() | theirs.keys()) - ignored_node_ids
         ):
             before, left, right = ancestor.get(node_id), ours.get(node_id), theirs.get(node_id)
             if left == right:
@@ -61,17 +91,15 @@ def merge_git_layouts(base: Path, local: Path, remote: Path) -> None:
                 value = right
             elif right == before:
                 value = left
+            elif prefer_local_on_conflict:
+                value = left
             else:
-                raise MigrationError("schema_conflict", f"Git 节点位置冲突：{node_id}", local / relative)
+                raise MigrationError("schema_conflict", f"{label}位置冲突：{node_id}", local / relative)
             if value is not None:
                 merged[node_id] = value
-        payload = GitLayout(schema_version=1, nodes=merged).model_dump()
+        payload = model.model_validate({"schema_version": 1, "nodes": merged}).model_dump()
         atomic_json(local / relative, payload)
         atomic_json(remote / relative, payload)
-
-
-def check_lane_layout_conflicts(base: Path, local: Path, remote: Path) -> None:
-    _check_layout_conflicts(base, local, remote, "lane-layout.json", LaneLayout, "方向")
 
 
 def check_context_layout_conflicts(base: Path, local: Path, remote: Path) -> None:

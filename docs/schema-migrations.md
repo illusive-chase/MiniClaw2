@@ -133,7 +133,7 @@ python -m miniclaw2.restore_git_layout --root /path/to/store --transaction TRANS
 
 ## Lane 布局补充
 
-`projects/<pid>/lane-layout.json` 与 Git 布局分离，结构为 `{"schema_version": 1, "nodes": {"planspace:<id>": {"x": -1704, "y": 3480, "space": "canvas"}}}`。这是同样的可选共享记录，不改写已发布迁移或根版本；通过 `SessionInfo.lane_positions` 返回，`PATCH /sessions/{sid}/lane-layout` 接受差量 `updates`／`remove`。已绑定设备可写，未绑定设备只读；同一 lane 的并发坐标修改按整个坐标检测冲突。
+`projects/<pid>/lane-layout.json` 与 Git 布局分离，结构为 `{"schema_version": 1, "nodes": {"planspace:<id>": {"x": -1704, "y": 3480, "space": "canvas"}}}`。这是同样的可选共享记录，不改写已发布迁移或根版本；通过 `SessionInfo.lane_positions` 返回，`PATCH /sessions/{sid}/lane-layout` 接受差量 `updates`／`remove`。已绑定设备可写，未绑定设备只读。同步按 lane 做结构化三方合并；同一 lane 在两端并发变化时采用发起合并一侧的值，避免可丢弃的界面坐标阻断业务数据同步。
 
 拖动 lane 标题栏保存的是绝对坐标，内部节点依旧使用原有 parent-relative 坐标，不能把 lane 位移再加到子节点记录中。尺寸调整仍按成员边界计算，但不会移动已定位 lane；隐藏、焦点变化和列数变化也不清除锚点。没有锚点的 lane 使用自动排列，并避让已定位的 lane。
 

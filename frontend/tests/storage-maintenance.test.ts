@@ -85,14 +85,14 @@ for (const unknown of [null, "something_new"]) {
 const originalFetch = globalThis.fetch;
 try {
   globalThis.fetch = async () =>
-    new Response(JSON.stringify({ state: "schema_conflict", detail: "方向位置冲突：planspace:lane" }), {
+    new Response(JSON.stringify({ state: "schema_conflict", detail: "上下文位置冲突：ctx:project-root::context::CONTEXT.md" }), {
       status: 409,
       headers: { "content-type": "application/json" },
     });
   await assert.rejects(getMigrationPlan(), (err: unknown) => {
     assert.ok(err instanceof ApiError);
     assert.equal(err.state, "schema_conflict");
-    assert.equal(err.detail, "方向位置冲突：planspace:lane");
+    assert.equal(err.detail, "上下文位置冲突：ctx:project-root::context::CONTEXT.md");
     assert.equal(storageGuidance(err.state).requiresShutdown, false);
     return true;
   });

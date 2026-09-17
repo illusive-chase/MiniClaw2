@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from miniclaw2.domain import LaneLayout
-from miniclaw2.git_layout import check_lane_layout_conflicts
+from miniclaw2.git_layout import merge_lane_layouts
 from miniclaw2.migrations.errors import MigrationError
 from miniclaw2.migrations.transaction import atomic_json, file_digest
 from miniclaw2.migrations.validation import validate
@@ -16,24 +16,69 @@ from miniclaw2.restore_git_layout import apply_recovery, recovery_plan
 POSITION = {"x": -1704.0, "y": 3480.0, "space": "canvas"}
 
 
-def test_lane_coordinate_is_atomic_in_sync(tmp_path: Path) -> None:
+def test_concurrent_lane_coordinate_prefers_merging_side(tmp_path: Path) -> None:
     base, local, remote = (tmp_path / name for name in ("base", "local", "remote"))
     relative = "projects/project/lane-layout.json"
     for root, position in ((base, POSITION), (local, {**POSITION, "x": 80}), (remote, {**POSITION, "y": 90})):
         atomic_json(root / "projects/project/project.json", {"id": "project"})
         atomic_json(root / relative, {"schema_version": 1, "nodes": {"planspace:lane": position}})
-    with pytest.raises(MigrationError, match="方向位置冲突"):
-        check_lane_layout_conflicts(base, local, remote)
+    merge_lane_layouts(base, local, remote)
+    expected = {"planspace:lane": {**POSITION, "x": 80}}
+    assert read_nodes(local) == expected
+    assert read_nodes(remote) == expected
+
+
+def test_disjoint_lane_changes_are_combined(tmp_path: Path) -> None:
+    base, local, remote = (tmp_path / name for name in ("base", "local", "remote"))
+    relative = "projects/project/lane-layout.json"
+    for root in (base, local, remote):
+        atomic_json(root / "projects/project/project.json", {"id": "project"})
+        atomic_json(root / relative, {"schema_version": 1, "nodes": {"planspace:lane": POSITION}})
+    atomic_json(local / relative, {"schema_version": 1, "nodes": {
+        "planspace:lane": {**POSITION, "x": 80},
+    }})
     atomic_json(remote / relative, {"schema_version": 1, "nodes": {"planspace:lane": POSITION, "planspace:other": POSITION}})
-    check_lane_layout_conflicts(base, local, remote)
-    atomic_json(remote / relative, {"schema_version": 1, "nodes": {}})
-    with pytest.raises(MigrationError, match="方向位置冲突"):
-        check_lane_layout_conflicts(base, local, remote)
+    merge_lane_layouts(base, local, remote)
+    expected = {
+        "planspace:lane": {**POSITION, "x": 80},
+        "planspace:other": POSITION,
+    }
+    assert read_nodes(local) == expected
+    assert read_nodes(remote) == expected
+
+
+@pytest.mark.parametrize("local_deleted", [False, True])
+def test_concurrent_lane_delete_and_move_prefers_merging_side(
+    tmp_path: Path, local_deleted: bool,
+) -> None:
+    roots = {name: tmp_path / name for name in ("base", "local", "remote")}
+    moved = {**POSITION, "x": 80}
+    for name, root in roots.items():
+        atomic_json(root / "projects/project/project.json", {"id": "project"})
+        nodes = {"planspace:lane": POSITION}
+        if name == "local":
+            nodes = {} if local_deleted else {"planspace:lane": moved}
+        elif name == "remote":
+            nodes = {"planspace:lane": moved} if local_deleted else {}
+        atomic_json(root / "projects/project/lane-layout.json", {
+            "schema_version": 1,
+            "nodes": nodes,
+        })
+
+    merge_lane_layouts(roots["base"], roots["local"], roots["remote"])
+
+    expected = {} if local_deleted else {"planspace:lane": moved}
+    assert read_nodes(roots["local"]) == expected
+    assert read_nodes(roots["remote"]) == expected
+
+
+def read_nodes(root: Path) -> dict[str, object]:
+    return json.loads((root / "projects/project/lane-layout.json").read_text())["nodes"]
 
 
 @pytest.mark.parametrize("deleted_side", ["local", "remote", "both"])
 @pytest.mark.parametrize("whole_file", [False, True])
-def test_lane_deletion_requires_agreement(tmp_path: Path, deleted_side: str, whole_file: bool) -> None:
+def test_lane_deletion_from_either_side_is_merged(tmp_path: Path, deleted_side: str, whole_file: bool) -> None:
     roots = {name: tmp_path / name for name in ("base", "local", "remote")}
     for name, root in roots.items():
         atomic_json(root / "projects/project/project.json", {"id": "project"})
@@ -42,12 +87,9 @@ def test_lane_deletion_requires_agreement(tmp_path: Path, deleted_side: str, who
             atomic_json(root / "projects/project/lane-layout.json", {
                 "schema_version": 1, "nodes": {} if deleted else {"planspace:lane": POSITION},
             })
-    if deleted_side == "both":
-        check_lane_layout_conflicts(roots["base"], roots["local"], roots["remote"])
-    else:
-        with pytest.raises(MigrationError, match="planspace:lane") as error:
-            check_lane_layout_conflicts(roots["base"], roots["local"], roots["remote"])
-        assert error.value.state == "schema_conflict"
+    merge_lane_layouts(roots["base"], roots["local"], roots["remote"])
+    assert read_nodes(roots["local"]) == {}
+    assert read_nodes(roots["remote"]) == {}
 
 
 @pytest.mark.parametrize("deleted_side", ["local", "remote"])
@@ -56,7 +98,7 @@ def test_deleted_project_does_not_block_lane_merge(tmp_path: Path, deleted_side:
         if name != deleted_side:
             atomic_json(tmp_path / name / "projects/project/project.json", {"id": "project"})
             atomic_json(tmp_path / name / "projects/project/lane-layout.json", {"schema_version": 1, "nodes": {"planspace:lane": POSITION}})
-    check_lane_layout_conflicts(tmp_path / "base", tmp_path / "local", tmp_path / "remote")
+    merge_lane_layouts(tmp_path / "base", tmp_path / "local", tmp_path / "remote")
 
 
 def test_lane_recovery_preserves_git_and_owner_records(tmp_path: Path) -> None:

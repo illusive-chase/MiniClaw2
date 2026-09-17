@@ -491,7 +491,7 @@ class GitMetadataSyncTests(unittest.TestCase):
         nodes = json.loads(path_a.read_text())["nodes"]
         self.assertEqual(set(nodes), {left_id, right_id})
 
-    def test_shared_lane_positions_sync_and_atomic_conflict(self) -> None:
+    def test_shared_lane_positions_converge_with_merging_side_preferred(self) -> None:
         from miniclaw2.domain import LanePosition
         from miniclaw2.migrations.transaction import atomic_json
 
@@ -506,10 +506,14 @@ class GitMetadataSyncTests(unittest.TestCase):
         self.store_a.sync.commit_now("本机修改方向横坐标")
         self.store_b.update_lane_positions(pid, {"planspace:lane": position.model_copy(update={"y": 200})}, [])
         self.store_b.sync.sync_now()
-        with self.assertRaisesRegex(SyncError, "方向位置冲突"):
-            self.store_a.sync.sync_now()
+        self.store_a.sync.sync_now()
         self.assertEqual(self.store_a.read_lane_positions(pid)["planspace:lane"].x, 100)
         self.assertEqual(self.store_a.read_lane_positions(pid)["planspace:lane"].y, 3480)
+        self.store_b.sync.sync_now()
+        self.assertEqual(
+            self.store_b.read_lane_positions(pid)["planspace:lane"],
+            self.store_a.read_lane_positions(pid)["planspace:lane"],
+        )
 
     def test_remote_schema_upgrade_is_refused_without_touching_live_store(self) -> None:
         schema_b = json.loads((self.root_b / "schema.json").read_text())
