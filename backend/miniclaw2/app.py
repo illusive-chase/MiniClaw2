@@ -89,6 +89,7 @@ from .registry import (
     NonNativeProjectError,
     PlanspaceModePreconditionError,
     ProjectRegistry,
+    RemoteProjectionBusyError,
 )
 from .remote_transport import RemoteTransportError
 from .replay import LiveReplayBuffer
@@ -1457,6 +1458,8 @@ def create_app(
         try:
             result = registry.sync_remote_projection(sid)
         except NonNativeProjectError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        except RemoteProjectionBusyError as exc:
             raise HTTPException(409, str(exc)) from exc
         except (RemoteTransportError, ValueError) as exc:
             raise HTTPException(400, str(exc)) from exc

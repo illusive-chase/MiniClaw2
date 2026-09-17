@@ -5,7 +5,15 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from miniclaw2.domain import Node, NodeKind, NodeState, Project
+from miniclaw2.domain import (
+    Category,
+    Node,
+    NodeKind,
+    NodeState,
+    Project,
+    ProjectPersistenceMode,
+    ReviewSubtype,
+)
 from miniclaw2.registry import ProjectRegistry
 from miniclaw2.runner import NodeRunner
 from miniclaw2.store import Store
@@ -153,6 +161,27 @@ class OpCommitRunnerTest(unittest.IsolatedAsyncioTestCase):
 
             registry = ProjectRegistry(store=store)
             rt = registry._runtimes[project.id]
+            rt.runners[agent.id] = _StubRunner(agent)  # type: ignore[assignment]
+
+            registry._on_runner_done(rt, agent.id)
+
+            self.assertEqual(rt.runners, {})
+            self.assertEqual(rt.runner_tasks, {})
+            self.assertEqual(len(store.list_nodes(project.id)), 1)
+
+    async def test_remote_review_does_not_enqueue_auto_commit(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            store, project, agent, _initial = _project_with_agent(
+                tmp, auto_commit=True, agent_state=NodeState.DONE
+            )
+            project.persistence_mode = ProjectPersistenceMode.REMOTE
+            agent.category = Category.REVIEW
+            agent.subtype = ReviewSubtype.CODE_REVIEW
+
+            registry = ProjectRegistry(store=store)
+            rt = registry._runtimes[project.id]
+            rt.project = project
             rt.runners[agent.id] = _StubRunner(agent)  # type: ignore[assignment]
 
             registry._on_runner_done(rt, agent.id)

@@ -36,7 +36,10 @@ def sync_remote_projection(
     transport: SSHProjectTransport,
 ) -> ProjectionSyncResult:
     """Replace the local projection from a validated remote tar snapshot."""
-    projection = Path(binding.projection_path).resolve(strict=False)
+    # Keep the lexical path so a projection root replaced with a symlink is
+    # visible to the checks below instead of being resolved into its target.
+    configured = Path(binding.projection_path)
+    projection = configured.parent.resolve(strict=False) / configured.name
     with _PROJECTION_LOCKS_GUARD:
         lock = _PROJECTION_LOCKS.setdefault(str(projection), threading.Lock())
     with lock:
@@ -55,8 +58,12 @@ def _sync_remote_projection(
     transport: SSHProjectTransport,
     projection: Path,
 ) -> ProjectionSyncResult:
-    projection.parent.mkdir(parents=True, exist_ok=True)
     backup = projection.with_name(f".{projection.name}.projection-backup")
+    if projection.is_symlink():
+        raise RemoteTransportError("本地投影根目录不能是符号链接")
+    if backup.is_symlink():
+        raise RemoteTransportError("本地投影备份目录不能是符号链接")
+    projection.parent.mkdir(parents=True, exist_ok=True)
     if backup.exists() and not projection.exists():
         backup.replace(projection)
     elif backup.exists() or backup.is_symlink():

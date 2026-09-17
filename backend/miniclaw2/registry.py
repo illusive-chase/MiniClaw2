@@ -107,6 +107,10 @@ class PlanspaceModePreconditionError(ValueError):
     """The planspace mode changed before a conditional virtual edit."""
 
 
+class RemoteProjectionBusyError(RuntimeError):
+    """A manual projection refresh would replace an active workspace."""
+
+
 def _process_is_alive(pid: int) -> bool:
     """Whether ``pid`` still names a live process owned by this user."""
     if pid <= 0:
@@ -573,6 +577,27 @@ class ProjectRegistry:
         unregister_remote_git_execution(project.root_path)
         self._remote_git_roots.discard(project.root_path)
 
+    def _remove_remote_projection(self, project: Project) -> None:
+        """Remove only this project's host-managed remote workspace."""
+        if project.persistence_mode is not ProjectPersistenceMode.REMOTE:
+            return
+        configured = Path(project.root_path)
+        projection = configured.parent.resolve(strict=False) / configured.name
+        expected = (
+            self.store.root / "workspaces" / "remote"
+        ).resolve(strict=False) / project.id
+        if projection != expected:
+            logger.error(
+                "refusing to remove unexpected remote projection for %s: %s",
+                project.id,
+                projection,
+            )
+            return
+        if projection.is_symlink() or projection.is_file():
+            projection.unlink(missing_ok=True)
+        elif projection.is_dir():
+            shutil.rmtree(projection)
+
     def is_native_project(self, project: Project) -> bool:
         return project.temporary or self.store.is_bound_here(project.id)
 
@@ -752,8 +777,8 @@ class ProjectRegistry:
                 template_id=template_id,
             )
             projection = (
-                self.store.root / "workspaces" / "remote" / project.id
-            ).resolve(strict=False)
+                self.store.root / "workspaces" / "remote"
+            ).resolve(strict=False) / project.id
             transport = self._remote_transport_pool().get(project.id, remote_access)
             try:
                 probe = transport.probe_repository(remote_identity.root_path)
@@ -865,8 +890,8 @@ class ProjectRegistry:
                 self._remote_transport_pool().close(pid)
                 raise ValueError("remote repository fingerprint does not match")
             projection = (
-                self.store.root / "workspaces" / "remote" / project.id
-            ).resolve(strict=False)
+                self.store.root / "workspaces" / "remote"
+            ).resolve(strict=False) / project.id
             binding = RemoteProjectBinding(
                 remote=remote_access,
                 projection_path=str(projection),
@@ -1036,21 +1061,28 @@ class ProjectRegistry:
             / self.store.machine.id
             / "local.json"
         )
-        local_file.unlink(missing_ok=True)
         if project.persistence_mode is ProjectPersistenceMode.REMOTE:
             self._unregister_remote_git_execution(project)
+            self._remove_remote_projection(project)
             self._remote_transport_pool().close(pid)
+        local_file.unlink(missing_ok=True)
         project.root_path = UNBOUND_ROOT_PATH
         self.store.sync.schedule_commit(
             f'unbind project "{project.name or pid}" on this device'
         )
         return project
 
-    def sync_remote_projection(self, pid: str) -> ProjectionSyncResult:
+    def sync_remote_projection(
+        self, pid: str, *, _allow_active: bool = False
+    ) -> ProjectionSyncResult:
         """Refresh one bound remote project's disposable local projection."""
         project = self.require_native(pid)
         if project.persistence_mode is not ProjectPersistenceMode.REMOTE:
             raise ValueError("project is not remote")
+        if not _allow_active and self.is_running(pid):
+            raise RemoteProjectionBusyError(
+                "项目有正在运行的节点，暂不能刷新远端投影"
+            )
         if project.remote is None:
             raise ValueError("remote project identity is missing")
         binding = self.store.read_remote_binding(pid)
@@ -1387,6 +1419,7 @@ class ProjectRegistry:
             remove_temporary_root(rt.project.root_path)
         if rt.project.persistence_mode is ProjectPersistenceMode.REMOTE:
             self._unregister_remote_git_execution(rt.project)
+            self._remove_remote_projection(rt.project)
             self._remote_transport_pool().close(pid)
         self._publish_project_nodes_removed(rt.project)
         self.store.delete_project(pid)
@@ -1817,7 +1850,9 @@ class ProjectRegistry:
             prepare_workspace=(
                 (
                     lambda: asyncio.to_thread(
-                        self.sync_remote_projection, rt.project.id
+                        self.sync_remote_projection,
+                        rt.project.id,
+                        _allow_active=True,
                     )
                 )
                 if rt.project.persistence_mode is ProjectPersistenceMode.REMOTE
@@ -2010,6 +2045,7 @@ class ProjectRegistry:
             finished_node.kind is NodeKind.AGENT
             and finished_node.state is NodeState.DONE
             and not rt.project.temporary
+            and rt.project.persistence_mode is not ProjectPersistenceMode.REMOTE
             and bool(rt.project.settings_override.get("auto_commit"))
         ):
             self._spawn_op_commit(rt, finished_node)

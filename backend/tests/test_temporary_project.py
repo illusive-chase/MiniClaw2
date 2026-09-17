@@ -387,6 +387,76 @@ class TemporaryProjectTest(unittest.TestCase):
             self.assertEqual(retried.json()["file_count"], 0)
             self.assertTrue(after.json()["projection_ready"])
 
+    def test_remote_projection_sync_is_blocked_while_review_is_active(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            registry = ProjectRegistry(Store(Path(raw) / "store"))
+            transport = Mock()
+            transport.probe_repository.return_value = RemoteRepositoryProbe(
+                root_commits=("e" * 40,)
+            )
+            transport.export_tracked_files.return_value = _empty_tar()
+            with patch.object(
+                registry._remote_transport_pool(), "get", return_value=transport
+            ):
+                project = registry.create_project(
+                    cwd=None,
+                    persistence_mode=ProjectPersistenceMode.REMOTE,
+                    remote_identity=RemoteProjectIdentity(
+                        target_id="training-a100",
+                        root_path="/srv/project",
+                    ),
+                    remote_access=RemoteAccessConfig(ssh_target="gpu-box"),
+                )
+                active_task = Mock()
+                active_task.done.return_value = False
+                registry._runtimes[project.id].runner_tasks["review"] = active_task
+                with TestClient(create_app(registry=registry)) as client:
+                    response = client.post(
+                        f"/sessions/{project.id}/projection/sync"
+                    )
+
+            self.assertEqual(response.status_code, 409, response.text)
+            self.assertIn("正在运行", response.json()["detail"])
+            self.assertEqual(transport.export_tracked_files.call_count, 1)
+
+    def test_remote_projection_is_removed_on_unbind_and_delete(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            registry = ProjectRegistry(Store(Path(raw) / "store"))
+            transport = Mock()
+            transport.probe_repository.return_value = RemoteRepositoryProbe(
+                root_commits=("f" * 40,)
+            )
+            transport.export_tracked_files.return_value = _empty_tar()
+            access = RemoteAccessConfig(ssh_target="gpu-box")
+            with patch.object(
+                registry._remote_transport_pool(), "get", return_value=transport
+            ):
+                project = registry.create_project(
+                    cwd=None,
+                    persistence_mode=ProjectPersistenceMode.REMOTE,
+                    remote_identity=RemoteProjectIdentity(
+                        target_id="training-a100",
+                        root_path="/srv/project",
+                    ),
+                    remote_access=access,
+                )
+                projection = Path(project.root_path)
+                (projection / "cached.txt").write_text("cached", encoding="utf-8")
+
+                registry.unbind_project_here(project.id)
+                self.assertFalse(projection.exists())
+
+                rebound = registry.bind_project_here(
+                    project.id, remote_access=access
+                )
+                assert rebound is not None
+                projection = Path(rebound.root_path)
+                (projection / "cached.txt").write_text("cached", encoding="utf-8")
+
+                self.assertTrue(registry.delete_project(project.id))
+
+            self.assertFalse(projection.exists())
+
     def test_nested_tmpdir_does_not_inherit_parent_repository(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             subprocess.run(["git", "init", "-q", raw], check=True)

@@ -118,6 +118,51 @@ def test_sync_rejects_symlink_outside_projection(tmp_path: Path) -> None:
     assert not projection.exists()
 
 
+def test_sync_rejects_symlinked_projection_root_without_touching_target(
+    tmp_path: Path,
+) -> None:
+    outside = tmp_path / "outside"
+    control = outside / ".miniclaw2"
+    control.mkdir(parents=True)
+    marker = control / "keep.txt"
+    marker.write_text("keep", encoding="utf-8")
+    projection = tmp_path / "projection"
+    projection.symlink_to(outside, target_is_directory=True)
+    transport = Mock()
+
+    with pytest.raises(RemoteTransportError, match="投影根目录不能是符号链接"):
+        sync_remote_projection(
+            _binding(projection), remote_root="/srv/project", transport=transport
+        )
+
+    assert projection.is_symlink()
+    assert marker.read_text(encoding="utf-8") == "keep"
+    transport.export_tracked_files.assert_not_called()
+
+
+def test_sync_rejects_symlinked_backup_root_without_touching_target(
+    tmp_path: Path,
+) -> None:
+    projection = tmp_path / "projection"
+    projection.mkdir()
+    marker = projection / "keep.txt"
+    marker.write_text("keep", encoding="utf-8")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    backup = tmp_path / ".projection.projection-backup"
+    backup.symlink_to(outside, target_is_directory=True)
+    transport = Mock()
+
+    with pytest.raises(RemoteTransportError, match="备份目录不能是符号链接"):
+        sync_remote_projection(
+            _binding(projection), remote_root="/srv/project", transport=transport
+        )
+
+    assert backup.is_symlink()
+    assert marker.read_text(encoding="utf-8") == "keep"
+    transport.export_tracked_files.assert_not_called()
+
+
 def test_sync_detects_deleted_and_retargeted_symlinks(tmp_path: Path) -> None:
     projection = tmp_path / "projection"
     projection.mkdir()

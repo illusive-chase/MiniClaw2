@@ -522,12 +522,19 @@ class Store:
         project_dir = self._project_dir(project.id)
         if project_dir.exists():
             raise ValueError(f"project already exists: {project.id}")
-        projection = Path(binding.projection_path).resolve(strict=False)
-        expected_projection = (
-            self.root / "workspaces" / "remote" / project.id
+        configured_projection = Path(binding.projection_path)
+        projection = (
+            configured_projection.parent.resolve(strict=False)
+            / configured_projection.name
+        )
+        expected_parent = (
+            self.root / "workspaces" / "remote"
         ).resolve(strict=False)
+        expected_projection = expected_parent / project.id
         if projection != expected_projection:
             raise ValueError("remote projection path is outside the managed workspace")
+        if projection.is_symlink():
+            raise ValueError("remote projection path cannot be a symlink")
         projection_created = not projection.exists()
         try:
             projection.mkdir(parents=True, exist_ok=True)

@@ -93,3 +93,4 @@ def test_export_tracked_files_pipes_nul_list_to_remote_tar(tmp_path: Path) -> No
     )
     assert run.call_args_list[2].kwargs["input"] == b"src/app.py\0"
     assert "--no-recursion" in run.call_args_list[2].args[0][-1]
+    assert "--hard-dereference" not in run.call_args_list[2].args[0][-1]

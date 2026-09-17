@@ -133,7 +133,6 @@ class SSHProjectTransport:
                 root_path,
                 "--null",
                 "--no-recursion",
-                "--hard-dereference",
                 "-T",
                 "-",
                 "-cf",
