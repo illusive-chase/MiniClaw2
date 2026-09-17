@@ -6,6 +6,7 @@ import hashlib
 import os
 import re
 import shlex
+import stat
 import subprocess
 import tempfile
 import threading
@@ -16,6 +17,59 @@ from .domain import RemoteAccessConfig
 
 
 _ROOT_COMMIT_RE = re.compile(r"^[0-9a-f]{40,64}$")
+
+# ssh(1) exits 255 for its own failures; reuse it so callers that tolerate
+# git's exit code 1 never mistake a dead transport for an empty result.
+SSH_TRANSPORT_FAILURE = 255
+
+# sockaddr_un.sun_path holds 104 bytes on macOS and 108 on Linux; the smaller
+# limit applies everywhere. OpenSSH binds "<ControlPath>.<16 random chars>"
+# and renames it into place, so the configured path must reserve that suffix.
+_CONTROL_PATH_LIMIT = 103
+_CONTROL_TEMP_SUFFIX = 17
+_CONTROL_DIGEST_MIN = 12
+_CONTROL_DIGEST_MAX = 32
+
+
+def _prepare_socket_dir(directory: Path) -> bool:
+    """Create a private socket directory, rejecting one we do not own."""
+    try:
+        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        info = directory.lstat()
+    except OSError:
+        return False
+    # lstat, not stat: a symlink planted in a shared /tmp must not be adopted.
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid():
+        return False
+    if info.st_mode & 0o077:
+        try:
+            directory.chmod(0o700)
+        except OSError:
+            return False
+    return True
+
+
+def control_socket_path(digest: str) -> Path | None:
+    """Choose a control path that fits sun_path, or None to skip multiplexing.
+
+    macOS resolves TMPDIR to a ~48-character per-user folder, so the socket
+    directory plus a full digest plus OpenSSH's rename suffix overflows the
+    104-byte limit and every command fails before it reaches the remote host.
+    Prefer TMPDIR, which is private, and fall back to shorter shared roots
+    only when the budget leaves too few digest characters to stay unique.
+    """
+    name = f"miniclaw2-ssh-{os.getuid()}"
+    for base in dict.fromkeys([tempfile.gettempdir(), "/tmp", "/var/tmp"]):
+        directory = Path(base) / name
+        budget = (
+            _CONTROL_PATH_LIMIT - _CONTROL_TEMP_SUFFIX - len(str(directory)) - 1
+        )
+        if budget < _CONTROL_DIGEST_MIN:
+            continue
+        if not _prepare_socket_dir(directory):
+            continue
+        return directory / digest[: min(budget, _CONTROL_DIGEST_MAX)]
+    return None
 
 
 class RemoteTransportError(RuntimeError):
@@ -45,13 +99,7 @@ class SSHProjectTransport:
         digest = hashlib.sha256(
             f"{store_root.resolve(strict=False)}\0{project_id}\0{os.getpid()}".encode()
         ).hexdigest()[:32]
-        socket_dir = Path(tempfile.gettempdir()) / f"miniclaw2-ssh-{os.getuid()}"
-        socket_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-        try:
-            socket_dir.chmod(0o700)
-        except OSError:
-            pass
-        self.control_path = socket_dir / digest
+        self.control_path = control_socket_path(digest)
 
     def run(
         self,
@@ -72,7 +120,7 @@ class SSHProjectTransport:
         except Exception as exc:  # noqa: BLE001
             return subprocess.CompletedProcess(
                 args=["ssh", self.access.ssh_target, command],
-                returncode=1,
+                returncode=SSH_TRANSPORT_FAILURE,
                 stdout="",
                 stderr=str(exc),
             )
@@ -96,7 +144,7 @@ class SSHProjectTransport:
         except Exception as exc:  # noqa: BLE001
             return subprocess.CompletedProcess(
                 args=["ssh", self.access.ssh_target, command],
-                returncode=1,
+                returncode=SSH_TRANSPORT_FAILURE,
                 stdout=b"",
                 stderr=str(exc).encode("utf-8", errors="replace"),
             )
@@ -148,6 +196,10 @@ class SSHProjectTransport:
 
     def probe_repository(self, root_path: str) -> RemoteRepositoryProbe:
         exists = self.run(["test", "-d", root_path])
+        if exists.returncode == SSH_TRANSPORT_FAILURE:
+            raise RemoteTransportError(
+                self._failure(f"无法通过 SSH 连接到 {self.access.ssh_target}", exists)
+            )
         if exists.returncode != 0:
             raise RemoteTransportError(
                 self._failure(f"远端目录不存在或不可访问：{root_path}", exists)
@@ -177,7 +229,7 @@ class SSHProjectTransport:
         return RemoteRepositoryProbe(root_commits=root_commits)
 
     def close(self) -> None:
-        if not self.control_path.exists():
+        if self.control_path is None or not self.control_path.exists():
             return
         try:
             subprocess.run(
@@ -204,10 +256,11 @@ class SSHProjectTransport:
             "-oConnectTimeout=10",
             "-oForwardAgent=no",
             "-oClearAllForwardings=yes",
-            f"-oControlPath={self.control_path}",
         ]
-        if include_master:
-            args.extend(["-oControlMaster=auto", "-oControlPersist=60"])
+        if self.control_path is not None:
+            args.append(f"-oControlPath={self.control_path}")
+            if include_master:
+                args.extend(["-oControlMaster=auto", "-oControlPersist=60"])
         if self.access.connect_via is not None:
             args.extend(["-J", self.access.connect_via])
         return args

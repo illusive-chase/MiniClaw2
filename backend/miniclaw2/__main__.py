@@ -5,11 +5,15 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import secrets
 import shutil
 import signal
 import subprocess
 import sys
+import time
 from pathlib import Path
+from urllib.error import URLError
+from urllib.request import ProxyHandler, build_opener
 
 import uvicorn
 
@@ -30,6 +34,21 @@ from .sync import (
 
 VITE_HOST = "127.0.0.1"
 VITE_PORT = 5173
+DEV_POLL_INTERVAL_SECONDS = 0.1
+DEV_HTTP_TIMEOUT_SECONDS = 0.25
+DEV_STOP_TIMEOUT_SECONDS = 2.0
+DEV_INSTANCE_ENV = "MINICLAW_DEV_INSTANCE_TOKEN"
+DEV_INSTANCE_HEADER = "X-MiniClaw-Dev-Instance"
+_DEV_PROXY_HANDLER = ProxyHandler({})
+_DEV_HTTP_OPENER = build_opener(_DEV_PROXY_HANDLER)
+
+
+class _DevShutdown(BaseException):
+    """Interrupt the supervisor loop so its finally block can reap children."""
+
+
+def _request_dev_shutdown(_signum: int, _frame: object) -> None:
+    raise _DevShutdown
 
 
 def main() -> None:
@@ -75,8 +94,6 @@ def main() -> None:
     os.environ["MINICLAW2_HOOK_PORT"] = str(args.port)
 
     frontend_dir = Path(__file__).resolve().parents[2] / "frontend"
-    vite_proc: subprocess.Popen[bytes] | None = None
-
     if args.dev:
         if args.port == VITE_PORT:
             parser.error(
@@ -94,9 +111,84 @@ def main() -> None:
         # target, so the proxy has to dial 127.0.0.1 instead.
         proxy_host = "127.0.0.1" if args.host == "0.0.0.0" else args.host
         backend_url = f"http://{proxy_host}:{args.port}"
-        print(f"backend:            http://{args.host}:{args.port}")
-        frontend_mode = "Vite HMR" if args.reload else "Vite, reload off"
-        print(f"frontend ({frontend_mode}): http://{VITE_HOST}:{VITE_PORT}")
+        exit_code = _run_dev(
+            host=args.host,
+            port=args.port,
+            log_level=args.log_level,
+            reload=args.reload,
+            frontend_dir=frontend_dir,
+            backend_url=backend_url,
+        )
+        if exit_code:
+            raise SystemExit(exit_code)
+        return
+
+    # Prod: FastAPI serves the built frontend from the same origin.
+    # __main__ is the only writer of MINICLAW_FRONTEND_DIST — tests
+    # never invoke this module, so the app factory's mount stays
+    # inert under pytest. Users can override via env for installed
+    # (non-editable) layouts.
+    os.environ.setdefault(
+        "MINICLAW_FRONTEND_DIST", str(frontend_dir / "dist")
+    )
+
+    uvicorn.run(
+        "miniclaw2.app:app",
+        host=args.host,
+        port=args.port,
+        reload=args.reload,
+        log_level=args.log_level,
+    )
+
+
+def _run_dev(
+    *,
+    host: str,
+    port: int,
+    log_level: str,
+    reload: bool,
+    frontend_dir: Path,
+    backend_url: str,
+) -> int:
+    """Supervise backend and frontend without exposing a half-ready proxy."""
+    backend_command = [
+        sys.executable,
+        "-m",
+        "uvicorn",
+        "miniclaw2.app:app",
+        "--host",
+        host,
+        "--port",
+        str(port),
+        "--log-level",
+        log_level,
+    ]
+    if reload:
+        backend_command.append("--reload")
+
+    backend_proc: subprocess.Popen[bytes] | None = None
+    vite_proc: subprocess.Popen[bytes] | None = None
+    previous_sigterm = signal.signal(signal.SIGTERM, _request_dev_shutdown)
+    try:
+        instance_token = secrets.token_urlsafe(24)
+        print(f"backend:            http://{host}:{port}", flush=True)
+        backend_proc = subprocess.Popen(
+            backend_command,
+            start_new_session=True,
+            env={**os.environ, DEV_INSTANCE_ENV: instance_token},
+        )
+        if not _wait_for_backend(
+            backend_proc,
+            f"{backend_url}/health",
+            instance_token,
+        ):
+            return backend_proc.returncode or 1
+
+        frontend_mode = "Vite HMR" if reload else "Vite, reload off"
+        print(
+            f"frontend ({frontend_mode}): http://{VITE_HOST}:{VITE_PORT}",
+            flush=True,
+        )
         vite_proc = subprocess.Popen(
             [
                 "npm",
@@ -113,38 +205,92 @@ def main() -> None:
             env={
                 **os.environ,
                 "MINICLAW_BACKEND_URL": backend_url,
-                "MINICLAW_RELOAD": "1" if args.reload else "0",
+                "MINICLAW_RELOAD": "1" if reload else "0",
             },
         )
-    else:
-        # Prod: FastAPI serves the built frontend from the same origin.
-        # __main__ is the only writer of MINICLAW_FRONTEND_DIST — tests
-        # never invoke this module, so the app factory's mount stays
-        # inert under pytest. Users can override via env for installed
-        # (non-editable) layouts.
-        os.environ.setdefault(
-            "MINICLAW_FRONTEND_DIST", str(frontend_dir / "dist")
-        )
-
-    try:
-        uvicorn.run(
-            "miniclaw2.app:app",
-            host=args.host,
-            port=args.port,
-            reload=args.reload,
-            log_level=args.log_level,
-        )
+        return _wait_for_dev_exit(backend_proc, vite_proc)
+    except (KeyboardInterrupt, _DevShutdown):
+        return 0
     finally:
-        if vite_proc is not None:
-            # npm does not forward signals to the `sh -c vite` chain it
-            # spawns, so terminating npm alone leaks the node server as an
-            # orphan holding :5173. Signal the whole process group instead
-            # (start_new_session made vite_proc its leader).
-            _signal_group(vite_proc.pid, signal.SIGTERM)
-            try:
-                vite_proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                _signal_group(vite_proc.pid, signal.SIGKILL)
+        try:
+            _stop_process_group(vite_proc)
+            _stop_process_group(backend_proc)
+        except (KeyboardInterrupt, _DevShutdown):
+            for proc in (vite_proc, backend_proc):
+                if proc is not None:
+                    _signal_group(proc.pid, signal.SIGKILL)
+        finally:
+            signal.signal(signal.SIGTERM, previous_sigterm)
+
+
+def _wait_for_backend(
+    proc: subprocess.Popen[bytes],
+    health_url: str,
+    instance_token: str,
+) -> bool:
+    while proc.poll() is None:
+        try:
+            with _DEV_HTTP_OPENER.open(
+                health_url,
+                timeout=DEV_HTTP_TIMEOUT_SECONDS,
+            ) as response:
+                if (
+                    response.status < 500
+                    and response.headers.get(DEV_INSTANCE_HEADER) == instance_token
+                    and proc.poll() is None
+                ):
+                    return True
+        except (OSError, URLError):
+            pass
+        time.sleep(DEV_POLL_INTERVAL_SECONDS)
+    return False
+
+
+def _wait_for_dev_exit(
+    backend_proc: subprocess.Popen[bytes],
+    vite_proc: subprocess.Popen[bytes],
+) -> int:
+    while True:
+        backend_code = backend_proc.poll()
+        if backend_code is not None:
+            return backend_code
+        vite_code = vite_proc.poll()
+        if vite_code is not None:
+            return vite_code
+        time.sleep(DEV_POLL_INTERVAL_SECONDS)
+
+
+def _stop_process_group(proc: subprocess.Popen[bytes] | None) -> None:
+    if proc is None:
+        return
+    _signal_group(proc.pid, signal.SIGTERM)
+    if not _wait_for_process_group_exit(proc, DEV_STOP_TIMEOUT_SECONDS):
+        _signal_group(proc.pid, signal.SIGKILL)
+        _wait_for_process_group_exit(proc, DEV_STOP_TIMEOUT_SECONDS)
+    proc.poll()
+
+
+def _wait_for_process_group_exit(
+    proc: subprocess.Popen[bytes],
+    timeout: float,
+) -> bool:
+    deadline = time.monotonic() + timeout
+    while True:
+        proc.poll()
+        if not _process_group_exists(proc.pid):
+            return True
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        time.sleep(min(DEV_POLL_INTERVAL_SECONDS, remaining))
+
+
+def _process_group_exists(pgid: int) -> bool:
+    try:
+        os.killpg(pgid, 0)
+    except ProcessLookupError:
+        return False
+    return True
 
 
 def _signal_group(pgid: int, signum: int) -> None:

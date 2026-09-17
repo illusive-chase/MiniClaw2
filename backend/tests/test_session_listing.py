@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -127,6 +128,12 @@ class SessionListingTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertLess(len(response.content), 1024)
         self.assertNotIn("content-encoding", response.headers)
+
+    def test_health_echoes_dev_supervisor_instance(self) -> None:
+        with patch.dict(os.environ, {"MINICLAW_DEV_INSTANCE_TOKEN": "instance-1"}):
+            response = self.client.get("/health")
+
+        self.assertEqual(response.headers["X-MiniClaw-Dev-Instance"], "instance-1")
 
 
 if __name__ == "__main__":

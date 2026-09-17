@@ -749,7 +749,10 @@ def create_app(
                 "detail": "存储格式已就绪", **(app.state.storage_error or {})}
 
     @app.get("/health")
-    def storage_health() -> dict[str, Any]:
+    def storage_health(response: Response) -> dict[str, Any]:
+        dev_instance = os.environ.get("MINICLAW_DEV_INSTANCE_TOKEN")
+        if dev_instance:
+            response.headers["X-MiniClaw-Dev-Instance"] = dev_instance
         return {"status": "maintenance" if app.state.storage_error or app.state.storage_syncing else "ok"}
 
     @app.exception_handler(NonNativeProjectError)
