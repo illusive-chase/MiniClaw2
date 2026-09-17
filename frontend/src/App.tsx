@@ -42,6 +42,7 @@ import {
   gitPush,
   bindProjectHere,
   unbindProjectHere,
+  syncRemoteProjection,
   revealProjectRoot,
   artifactRawUrl,
   type PrincipleSummary,
@@ -105,6 +106,7 @@ import { ThemeToggle } from "./components/ThemeToggle";
 import { UsageStrip } from "./components/UsageStrip";
 import { GitWorkspaceStatus } from "./components/GitWorkspaceStatus";
 import { TextZoomProvider } from "./components/TextZoom";
+import { writeClipboard } from "./clipboard";
 import type {
   ActiveNodeEntry,
   ArtifactExtension,
@@ -3164,9 +3166,9 @@ export function App() {
               {session?.capabilities?.git_review !== false && <GitWorkspaceStatus
                 status={gitStatus}
                 action={gitAction}
-                canCommit={!readOnly && !!gitStatus?.is_repo && !gitAction && !!gitStatus.dirty_count}
-                canPull={!readOnly && !!gitStatus?.is_repo && !gitAction && gitQuiescent}
-                canPush={!readOnly && !!gitStatus?.is_repo && !gitAction && !pullInFlight}
+                canCommit={session?.persistence_mode !== "remote" && !readOnly && !!gitStatus?.is_repo && !gitAction && !!gitStatus.dirty_count}
+                canPull={session?.persistence_mode !== "remote" && !readOnly && !!gitStatus?.is_repo && !gitAction && gitQuiescent}
+                canPush={session?.persistence_mode !== "remote" && !readOnly && !!gitStatus?.is_repo && !gitAction && !pullInFlight}
                 onRefresh={refreshGit}
                 onCommit={() => {
                   setSelection({ kind: "commit", sha: null });
@@ -3196,6 +3198,28 @@ export function App() {
                     : session.persistence_mode === "remote"
                       ? "配置远端"
                       : "配置路径"}
+                </button>
+              )}
+              {session?.persistence_mode === "remote" && session.bound_here && (
+                <button
+                  type="button"
+                  disabled={projectMutationPending}
+                  onClick={() => {
+                    setProjectMutationPending(true);
+                    void syncRemoteProjection(session.id)
+                      .then(() => getSession(session.id))
+                      .then(setSession)
+                      .catch((error: unknown) => window.alert(apiErrorText(error)))
+                      .finally(() => setProjectMutationPending(false));
+                  }}
+                  className="rounded border border-line bg-surface px-1.5 py-0.5 font-sans text-ink-muted transition hover:border-line-strong hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
+                  title={
+                    session.projection_synced_at
+                      ? `上次同步 ${new Date(session.projection_synced_at * 1000).toLocaleString()}`
+                      : "本机投影尚未就绪"
+                  }
+                >
+                  {projectMutationPending ? "正在同步..." : "同步投影"}
                 </button>
               )}
               {session?.bound_here && session.hosts.length > 0 && (
@@ -3279,6 +3303,21 @@ export function App() {
               <path d="m6 14 1.45-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.55 6a2 2 0 0 1-1.94 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2" />
             </svg>
           </button>}
+
+          {session?.persistence_mode === "remote" && session.remote && (
+            <button
+              type="button"
+              onClick={() => {
+                void writeClipboard(session.remote?.root_path ?? "").catch(
+                  (error: unknown) => window.alert(apiErrorText(error)),
+                );
+              }}
+              className="inline-flex h-8 items-center justify-center rounded-md border border-line bg-surface px-2.5 text-[11px] text-ink-muted transition hover:border-line-strong hover:bg-surface-sunken hover:text-ink"
+              title={`复制远端路径 ${session.remote.root_path}`}
+            >
+              复制远端路径
+            </button>
+          )}
 
           <button
             type="button"

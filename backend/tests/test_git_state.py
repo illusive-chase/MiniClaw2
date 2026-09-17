@@ -13,6 +13,8 @@ from miniclaw2.git_state import (
     git_pull_rebase,
     git_review_snapshot,
     git_status,
+    register_remote_git_execution,
+    unregister_remote_git_execution,
 )
 
 
@@ -39,6 +41,55 @@ def _head(path: Path) -> str:
 
 
 class GitStateTest(unittest.TestCase):
+    def test_remote_execution_routes_text_and_binary_git_calls(self) -> None:
+        class Transport:
+            def __init__(self) -> None:
+                self.text_calls: list[list[str]] = []
+                self.bytes_calls: list[list[str]] = []
+
+            def run(self, args: list[str], *, timeout: float = 15):
+                self.text_calls.append(args)
+                command = args[3:]
+                if command[:2] == ["status", "--porcelain=v2"]:
+                    output = (
+                        "# branch.oid " + "a" * 40 + "\0"
+                        "# branch.head main\0"
+                        "? new.txt\0"
+                    )
+                    return subprocess.CompletedProcess(args, 0, output, "")
+                if command[:2] == ["diff", "--no-index"]:
+                    return subprocess.CompletedProcess(args, 1, "2\t0\tnew.txt\n", "")
+                return subprocess.CompletedProcess(args, 0, "", "")
+
+            def run_bytes(
+                self,
+                args: list[str],
+                *,
+                input_data: bytes | None = None,
+                timeout: float = 60,
+            ):
+                self.bytes_calls.append(args)
+                return subprocess.CompletedProcess(args, 0, b"remote patch\n", b"")
+
+        transport = Transport()
+        projection = "/tmp/miniclaw-remote-projection-test"
+        register_remote_git_execution(
+            projection, remote_root="/srv/project", transport=transport
+        )
+        try:
+            status = git_status(projection)
+            snapshot = git_review_snapshot(projection)
+        finally:
+            unregister_remote_git_execution(projection)
+
+        self.assertTrue(status.is_repo)
+        self.assertEqual(status.files[0].additions, 2)
+        self.assertIn("remote patch", snapshot.patch)
+        self.assertTrue(transport.text_calls)
+        self.assertTrue(transport.bytes_calls)
+        for args in [*transport.text_calls, *transport.bytes_calls]:
+            self.assertEqual(args[:3], ["git", "-C", "/srv/project"])
+
     def test_review_snapshot_handles_unborn_head(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             repo = Path(raw)

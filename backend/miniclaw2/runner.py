@@ -52,6 +52,7 @@ from .domain import (
     NodeKind,
     NodeState,
     Project,
+    ProjectPersistenceMode,
     ReviewSubtype,
     TokenUsage,
 )
@@ -100,6 +101,7 @@ from .preview import (
     render_executed_preview,
     validate_preview_for_node,
 )
+from .remote_projection import ProjectionSyncResult
 from .providers import (
     AgentProvider,
     AgentProviderContext,
@@ -165,12 +167,16 @@ class NodeRunner:
         *,
         reap_lock: asyncio.Lock | None = None,
         on_state_change: Callable[[Node, NodeState], Awaitable[None]] | None = None,
+        prepare_workspace: Callable[
+            [], Awaitable[ProjectionSyncResult]
+        ] | None = None,
     ) -> None:
         self.node = node
         self.project = project
         self.store = store
         self.on_event = on_event
         self.on_state_change = on_state_change
+        self.prepare_workspace = prepare_workspace
         self._reap_lock = reap_lock or asyncio.Lock()
 
         self._seq = 0
@@ -182,6 +188,8 @@ class NodeRunner:
         self._pre_snapshot: dict[str, str] = {}
         self._skill_materialization: SkillMaterialization | None = None
         self._cold_start_text = ""
+        self._projection_distortions: tuple[str, ...] = ()
+        self._projection_report_emitted = False
 
     # ---- public surface (used by the WS layer via ProjectRuntime) ----
 
@@ -231,6 +239,15 @@ class NodeRunner:
 
     async def run(self) -> None:
         try:
+            if self.prepare_workspace is not None:
+                try:
+                    result = await self.prepare_workspace()
+                    self._projection_distortions = result.distorted_paths
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:  # noqa: BLE001
+                    await self._fail_workspace_preparation(exc)
+                    return
             if self.node.kind is NodeKind.OP:
                 await self._run_op()
             elif self.node.kind is NodeKind.VERIFIER:
@@ -241,6 +258,16 @@ class NodeRunner:
                 await self._run_agent()
         finally:
             self._cleanup_lane_projection()
+
+    async def _fail_workspace_preparation(self, exc: Exception) -> None:
+        error_msg = f"远端源码投影同步失败：{exc}"
+        self.node.error = error_msg
+        self._write_stub_preview(NodeState.ERROR, reason=error_msg)
+        self._transition(NodeState.ERROR, started=True, finished=True)
+        await self._emit_node_started()
+        await self._emit(ErrorEvent(message=error_msg))
+        await self._emit_node_updated()
+        await self._emit(TurnDone(node=self.node.model_dump()))
 
     def _workspace_head(self) -> str | None:
         return None if self.project.temporary else git_head(self.project.root_path)
@@ -522,7 +549,13 @@ class NodeRunner:
                 final_state, error_msg, report = await self._run_native_review(
                     system_context=_skill_suggestion_block(
                         self._skill_materialization
-                    )
+                    ),
+                    patch=(
+                        snapshot.patch
+                        if self.project.persistence_mode
+                        is ProjectPersistenceMode.REMOTE
+                        else None
+                    ),
                 )
                 if final_state is NodeState.DONE and report is None:
                     final_state = NodeState.ERROR
@@ -614,7 +647,7 @@ class NodeRunner:
         await self._emit(TurnDone(node=self.node.model_dump()))
 
     async def _run_native_review(
-        self, *, system_context: str
+        self, *, system_context: str, patch: str | None = None
     ) -> tuple[NodeState, str | None, ReviewReport | None]:
         preset = get_model_preset(
             self.node.model_preset_id, store_root=self.store.root
@@ -644,7 +677,11 @@ class NodeRunner:
         target = self.node.review_target
         if target is None:
             return NodeState.ERROR, "code review target is missing", None
-        spec = ReviewSpec(target=target, focus=focus)
+        spec = ReviewSpec(
+            target=target,
+            focus=focus,
+            patch=patch,
+        )
         report: ReviewReport | None = None
         terminal_seen = False
         async for event in run_review(context, spec):
@@ -708,6 +745,8 @@ class NodeRunner:
             else self.node.prompt.strip()
         )
         if not focus:
+            return None
+        if self.project.persistence_mode is ProjectPersistenceMode.REMOTE:
             return None
         preset = get_model_preset(
             self.node.model_preset_id, store_root=self.store.root
@@ -1813,6 +1852,20 @@ class NodeRunner:
                 node=self.node.model_dump(),
             )
         )
+        if self._projection_distortions and not self._projection_report_emitted:
+            self._projection_report_emitted = True
+            count = len(self._projection_distortions)
+            await self._emit(
+                Activity(
+                    kind="tool",
+                    status="progress",
+                    id=f"remote-projection:{self.node.id}",
+                    name="remote_projection",
+                    summary=f"检测到并覆盖了 {count} 个本地投影失真文件",
+                    result="\n".join(self._projection_distortions),
+                    result_kind="text",
+                )
+            )
 
     # ---- inline gate flow ----
 

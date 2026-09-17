@@ -4,6 +4,8 @@ import tempfile
 import unittest
 import shutil
 import subprocess
+import io
+import tarfile
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -18,13 +20,22 @@ from miniclaw2.domain import (
     NodeState,
     Project,
     ProjectPersistenceMode,
+    RemoteAccessConfig,
     RemoteProjectIdentity,
     ReviewSubtype,
 )
 from miniclaw2.git_state import is_git_repo
 from miniclaw2.registry import NonNativeNodeError, ProjectRegistry
+from miniclaw2.remote_transport import RemoteRepositoryProbe, RemoteTransportError
 from miniclaw2.store import Store
 from miniclaw2.workspace import create_temporary_root, remove_temporary_root
+
+
+def _empty_tar() -> bytes:
+    output = io.BytesIO()
+    with tarfile.open(fileobj=output, mode="w"):
+        pass
+    return output.getvalue()
 
 
 class TemporaryProjectTest(unittest.TestCase):
@@ -82,7 +93,7 @@ class TemporaryProjectTest(unittest.TestCase):
             self.assertEqual(info["persistence_mode"], "remote")
             self.assertEqual(
                 info["capabilities"],
-                {"workspace": False, "git_review": False},
+                {"workspace": False, "git_review": True},
             )
             self.assertFalse(info["bound_here"])
             self.assertTrue(info["read_only"])
@@ -115,37 +126,45 @@ class TemporaryProjectTest(unittest.TestCase):
                 registry.store.root / "workspaces" / "remote" / project.id
             ).resolve()
 
-            with TestClient(create_app(registry=registry)) as client:
-                response = client.post(
-                    f"/sessions/{project.id}/hosts",
-                    json={
-                        "remote": {
-                            "ssh_target": "autodl-a100",
-                            "connect_via": "bastion",
+            transport = Mock()
+            transport.probe_repository.return_value = RemoteRepositoryProbe(
+                root_commits=("a" * 40,),
+            )
+            transport.export_tracked_files.return_value = _empty_tar()
+            with patch.object(
+                registry._remote_transport_pool(), "get", return_value=transport
+            ):
+                with TestClient(create_app(registry=registry)) as client:
+                    response = client.post(
+                        f"/sessions/{project.id}/hosts",
+                        json={
+                            "remote": {
+                                "ssh_target": "autodl-a100",
+                                "connect_via": "bastion",
+                            },
                         },
-                    },
-                )
-                with patch("miniclaw2.app.start_context_task") as start:
-                    init_response = client.post(
-                        f"/sessions/{project.id}/context/init"
                     )
-                    refresh_response = client.post(
-                        f"/sessions/{project.id}/context/refresh"
-                    )
+                    with patch("miniclaw2.app.start_context_task") as start:
+                        init_response = client.post(
+                            f"/sessions/{project.id}/context/init"
+                        )
+                        refresh_response = client.post(
+                            f"/sessions/{project.id}/context/refresh"
+                        )
 
-                self.assertEqual(init_response.status_code, 400, init_response.text)
-                self.assertEqual(
-                    init_response.json()["detail"],
-                    "远端节点执行通道尚未实现",
-                )
-                self.assertEqual(
-                    refresh_response.status_code, 400, refresh_response.text
-                )
-                self.assertEqual(
-                    refresh_response.json()["detail"],
-                    "远端节点执行通道尚未实现",
-                )
-                start.assert_not_called()
+                    self.assertEqual(init_response.status_code, 400, init_response.text)
+                    self.assertEqual(
+                        init_response.json()["detail"],
+                        "远端节点执行通道尚未实现",
+                    )
+                    self.assertEqual(
+                        refresh_response.status_code, 400, refresh_response.text
+                    )
+                    self.assertEqual(
+                        refresh_response.json()["detail"],
+                        "远端节点执行通道尚未实现",
+                    )
+                    start.assert_not_called()
 
             self.assertEqual(response.status_code, 200, response.text)
             self.assertTrue(response.json()["bound_here"])
@@ -176,6 +195,197 @@ class TemporaryProjectTest(unittest.TestCase):
             self.assertEqual(
                 registry.store.read_remote_binding(project.id), binding
             )
+
+    def test_create_existing_remote_project_records_observed_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            registry = ProjectRegistry(Store(Path(raw) / "store"))
+            transport = Mock()
+            transport.probe_repository.return_value = RemoteRepositoryProbe(
+                root_commits=("b" * 40,),
+            )
+            transport.export_tracked_files.return_value = _empty_tar()
+            with patch.object(
+                registry._remote_transport_pool(), "get", return_value=transport
+            ):
+                project = registry.create_project(
+                    cwd=None,
+                    name="Remote project",
+                    persistence_mode=ProjectPersistenceMode.REMOTE,
+                    remote_identity=RemoteProjectIdentity(
+                        target_id="training-a100",
+                        root_path="/srv/project",
+                    ),
+                    remote_access=RemoteAccessConfig(
+                        ssh_target="autodl-a100",
+                        connect_via="bastion",
+                    ),
+                )
+
+            assert project.remote is not None
+            self.assertEqual(project.remote.root_commit, "b" * 40)
+            self.assertTrue(registry.store.is_bound_here(project.id))
+            host = registry.store.list_hosts(project.id)[0]
+            self.assertEqual(host["repo"]["root_commit"], "b" * 40)
+            self.assertEqual(host["remote_initialization"]["mode"], "existing")
+            self.assertIsInstance(
+                host["remote_initialization"]["initialized_at"], float
+            )
+            reloaded = Store(registry.store.root).list_projects()[0]
+            assert reloaded.remote is not None
+            self.assertEqual(reloaded.remote.root_commit, "b" * 40)
+            self.assertEqual(reloaded.root_path, project.root_path)
+
+    def test_create_existing_remote_project_through_api(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            registry = ProjectRegistry(Store(Path(raw) / "store"))
+            transport = Mock()
+            transport.probe_repository.return_value = RemoteRepositoryProbe(
+                root_commits=("c" * 40,)
+            )
+            transport.export_tracked_files.return_value = _empty_tar()
+            with patch.object(
+                registry._remote_transport_pool(), "get", return_value=transport
+            ):
+                with TestClient(create_app(registry=registry)) as client:
+                    response = client.post(
+                        "/sessions",
+                        json={
+                            "name": "Remote API project",
+                            "persistence_mode": "remote",
+                            "remote": {
+                                "target_id": "training-a100",
+                                "root_path": "/srv/project",
+                            },
+                            "remote_access": {
+                                "ssh_target": "gpu-box",
+                                "connect_via": None,
+                            },
+                            "remote_initialization": "existing",
+                        },
+                    )
+                    reveal = client.post(
+                        f"/sessions/{response.json()['id']}/reveal"
+                    )
+
+            self.assertEqual(response.status_code, 200, response.text)
+            info = response.json()
+            self.assertEqual(info["persistence_mode"], "remote")
+            self.assertTrue(info["bound_here"])
+            self.assertEqual(info["remote"]["root_commit"], "c" * 40)
+            self.assertEqual(info["capabilities"]["git_review"], True)
+            self.assertTrue(info["projection_ready"])
+            self.assertEqual(reveal.status_code, 400)
+            self.assertEqual(
+                reveal.json()["detail"],
+                "远端项目没有可打开的本地权威目录",
+            )
+
+    def test_remote_binding_rejects_fingerprint_mismatch_without_local_state(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            registry = ProjectRegistry(Store(Path(raw) / "store"))
+            project = Project(
+                root_path=UNBOUND_ROOT_PATH,
+                persistence_mode=ProjectPersistenceMode.REMOTE,
+                remote=RemoteProjectIdentity(
+                    target_id="training-a100",
+                    root_path="/srv/project",
+                    root_commit="a" * 40,
+                ),
+            )
+            project.machine_id = "another-host"
+            project.machine_label = "Another host"
+            project.bind_model_catalog(registry.store.root)
+            project_dir = registry.store.root / "projects" / project.id
+            project_dir.mkdir(parents=True)
+            registry.store._write_json(
+                project_dir / "project.json",
+                project.model_dump(
+                    exclude={"provider", "root_path", "node_positions"}
+                ),
+            )
+            registry.reload_from_store()
+            transport = Mock()
+            transport.probe_repository.return_value = RemoteRepositoryProbe(
+                root_commits=("b" * 40,)
+            )
+
+            with patch.object(
+                registry._remote_transport_pool(), "get", return_value=transport
+            ):
+                with self.assertRaisesRegex(ValueError, "fingerprint does not match"):
+                    registry.bind_project_here(
+                        project.id,
+                        remote_access=RemoteAccessConfig(ssh_target="gpu-box"),
+                    )
+
+            self.assertFalse(registry.store.is_bound_here(project.id))
+            self.assertFalse(
+                (registry.store.root / "workspaces" / "remote" / project.id).exists()
+            )
+
+    def test_remote_probe_failure_does_not_create_project(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            registry = ProjectRegistry(Store(Path(raw) / "store"))
+            transport = Mock()
+            transport.probe_repository.side_effect = RemoteTransportError(
+                "远端目录不可达"
+            )
+            with patch.object(
+                registry._remote_transport_pool(), "get", return_value=transport
+            ):
+                with self.assertRaisesRegex(ValueError, "远端目录不可达"):
+                    registry.create_project(
+                        cwd=None,
+                        persistence_mode=ProjectPersistenceMode.REMOTE,
+                        remote_identity=RemoteProjectIdentity(
+                            target_id="training-a100",
+                            root_path="/srv/project",
+                        ),
+                        remote_access=RemoteAccessConfig(ssh_target="gpu-box"),
+                    )
+
+            self.assertEqual(registry.list_projects(), [])
+
+    def test_initial_projection_failure_keeps_project_and_can_retry(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            registry = ProjectRegistry(Store(Path(raw) / "store"))
+            transport = Mock()
+            transport.probe_repository.return_value = RemoteRepositoryProbe(
+                root_commits=("d" * 40,)
+            )
+            transport.export_tracked_files.side_effect = RemoteTransportError(
+                "snapshot unavailable"
+            )
+            with patch.object(
+                registry._remote_transport_pool(), "get", return_value=transport
+            ):
+                project = registry.create_project(
+                    cwd=None,
+                    persistence_mode=ProjectPersistenceMode.REMOTE,
+                    remote_identity=RemoteProjectIdentity(
+                        target_id="training-a100",
+                        root_path="/srv/project",
+                    ),
+                    remote_access=RemoteAccessConfig(ssh_target="gpu-box"),
+                )
+                binding = registry.store.read_remote_binding(project.id)
+                assert binding is not None
+                self.assertIsNone(binding.projection_synced_at)
+
+                transport.export_tracked_files.side_effect = None
+                transport.export_tracked_files.return_value = _empty_tar()
+                with TestClient(create_app(registry=registry)) as client:
+                    before = client.get(f"/sessions/{project.id}")
+                    retried = client.post(
+                        f"/sessions/{project.id}/projection/sync"
+                    )
+                    after = client.get(f"/sessions/{project.id}")
+
+            self.assertEqual(before.status_code, 200)
+            self.assertFalse(before.json()["projection_ready"])
+            self.assertEqual(retried.status_code, 200, retried.text)
+            self.assertEqual(retried.json()["file_count"], 0)
+            self.assertTrue(after.json()["projection_ready"])
 
     def test_nested_tmpdir_does_not_inherit_parent_repository(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

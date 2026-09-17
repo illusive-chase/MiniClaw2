@@ -17,6 +17,7 @@ type Props = {
 };
 
 const MISSING_CWD_PREFIX = "cwd does not exist:";
+type ProjectMode = "durable" | "ephemeral" | "remote";
 
 function missingCwdPath(err: unknown): string | null {
   if (
@@ -46,7 +47,11 @@ export function NewProjectModal({
   const [concurrency, setConcurrency] = useState(1);
   const [autoCommit, setAutoCommit] = useState(false);
   const [cwd, setCwd] = useState("");
-  const [temporary, setTemporary] = useState(false);
+  const [mode, setMode] = useState<ProjectMode>("durable");
+  const [remoteTargetId, setRemoteTargetId] = useState("");
+  const [remoteRootPath, setRemoteRootPath] = useState("");
+  const [sshTarget, setSshTarget] = useState("");
+  const [connectVia, setConnectVia] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const nameRef = useRef<HTMLInputElement | null>(null);
@@ -62,7 +67,11 @@ export function NewProjectModal({
       setConcurrency(defaults?.concurrency ?? 1);
       setAutoCommit(defaults?.auto_commit ?? false);
       setCwd("");
-      setTemporary(false);
+      setMode("durable");
+      setRemoteTargetId("");
+      setRemoteRootPath("");
+      setSshTarget("");
+      setConnectVia("");
       setSubmitting(false);
       setError(null);
       window.setTimeout(() => nameRef.current?.focus(), 0);
@@ -73,16 +82,36 @@ export function NewProjectModal({
 
   const submit = async () => {
     const cwdInput = cwd.trim();
-    const payload = (createMissingCwd: boolean) => ({
-      name: name.trim() || undefined,
-      preferred_language: preferredLanguage || null,
-      model_preset_id: modelPresetId || undefined,
-      concurrency,
-      auto_commit: autoCommit,
-      cwd: temporary ? undefined : (cwdInput || undefined),
-      temporary,
-      create_missing_cwd: createMissingCwd,
-    });
+    const payload = (createMissingCwd: boolean) => {
+      const common = {
+        name: name.trim() || undefined,
+        preferred_language: preferredLanguage || null,
+        model_preset_id: modelPresetId || undefined,
+        concurrency,
+        auto_commit: mode === "remote" ? false : autoCommit,
+        persistence_mode: mode,
+      };
+      if (mode === "remote") {
+        return {
+          ...common,
+          remote: {
+            target_id: remoteTargetId.trim(),
+            root_path: remoteRootPath.trim(),
+          },
+          remote_access: {
+            ssh_target: sshTarget.trim(),
+            ...(connectVia.trim() ? { connect_via: connectVia.trim() } : {}),
+          },
+          remote_initialization: "existing" as const,
+        };
+      }
+      return {
+        ...common,
+        cwd: mode === "ephemeral" ? undefined : (cwdInput || undefined),
+        temporary: mode === "ephemeral",
+        create_missing_cwd: createMissingCwd,
+      };
+    };
 
     setSubmitting(true);
     setError(null);
@@ -92,7 +121,7 @@ export function NewProjectModal({
     } catch (err) {
       const missingPath = missingCwdPath(err);
       if (
-        !temporary &&
+        mode === "durable" &&
         cwdInput &&
         missingPath &&
         window.confirm(
@@ -121,7 +150,7 @@ export function NewProjectModal({
 
   return (
     <div className="fixed inset-0 z-40 flex items-center justify-center bg-surface-scrim/60 backdrop-blur-sm">
-      <div className="flex w-[480px] max-w-[95vw] flex-col rounded-xl border border-line bg-surface-raised shadow-modal">
+      <div className="flex max-h-[92vh] w-[520px] max-w-[95vw] flex-col rounded-xl border border-line bg-surface-raised shadow-modal">
         <div className="flex items-center justify-between gap-3 border-b border-line px-5 py-3.5">
           <div className="min-w-0">
             <div className="font-display text-sm font-semibold text-ink-strong">
@@ -140,7 +169,7 @@ export function NewProjectModal({
           </button>
         </div>
 
-        <div className="flex flex-col gap-4 px-5 py-4 text-sm">
+        <div className="flex min-h-0 flex-col gap-4 overflow-y-auto px-5 py-4 text-sm">
           <label className="flex flex-col gap-1">
             <span className="text-[10px] font-medium uppercase tracking-[0.14em] text-ink-subtle">
               Name <span className="text-ink-subtle/70">(optional)</span>
@@ -215,47 +244,92 @@ export function NewProjectModal({
             </span>
           </label>
 
-          <label className="flex flex-col gap-1">
+          <div className="flex flex-col gap-1.5">
             <span className="text-[10px] font-medium uppercase tracking-[0.14em] text-ink-subtle">
-              Working directory{" "}
-              <span className="text-ink-subtle/70">(optional)</span>
+              项目位置
             </span>
-            <input
-              type="text"
-              value={cwd}
-              onChange={(e) => setCwd(e.target.value)}
-              disabled={temporary}
-              placeholder="leave blank to use server cwd"
-              className="rounded-md border border-line bg-surface-sunken px-3 py-2 font-mono text-xs text-ink-strong placeholder:text-ink-subtle focus:border-brand focus:outline-none disabled:opacity-40"
-            />
-          </label>
+            <div className="grid grid-cols-3 overflow-hidden rounded-md border border-line bg-surface-sunken p-0.5">
+              {([
+                ["durable", "本机目录"],
+                ["ephemeral", "临时目录"],
+                ["remote", "远端目录"],
+              ] as const).map(([value, label]) => (
+                <button
+                  key={value}
+                  type="button"
+                  onClick={() => setMode(value)}
+                  className={`min-h-8 rounded px-2 text-xs transition ${
+                    mode === value
+                      ? "bg-surface-raised font-medium text-ink-strong shadow-card"
+                      : "text-ink-muted hover:text-ink"
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {mode === "durable" && (
+            <label className="flex flex-col gap-1">
+              <span className="text-[10px] font-medium uppercase tracking-[0.14em] text-ink-subtle">
+                Working directory{" "}
+                <span className="text-ink-subtle/70">(optional)</span>
+              </span>
+              <input
+                type="text"
+                value={cwd}
+                onChange={(e) => setCwd(e.target.value)}
+                placeholder="leave blank to use server cwd"
+                className="rounded-md border border-line bg-surface-sunken px-3 py-2 font-mono text-xs text-ink-strong placeholder:text-ink-subtle focus:border-brand focus:outline-none"
+              />
+            </label>
+          )}
+
+          {mode === "ephemeral" && (
+            <div className="rounded-md border border-line bg-surface-sunken px-3 py-2 text-xs text-ink-muted">
+              后端会创建临时工作区；项目删除时一并清理。
+            </div>
+          )}
+
+          {mode === "remote" && (
+            <div className="grid grid-cols-2 gap-3">
+              <label className="col-span-2 flex flex-col gap-1 sm:col-span-1">
+                <span className="text-[10px] font-medium uppercase tracking-[0.14em] text-ink-subtle">远端标识</span>
+                <input value={remoteTargetId} onChange={(event) => setRemoteTargetId(event.target.value)} placeholder="autodl-a100" className="rounded-md border border-line bg-surface-sunken px-3 py-2 font-mono text-xs text-ink-strong placeholder:text-ink-subtle focus:border-brand focus:outline-none" />
+              </label>
+              <label className="col-span-2 flex flex-col gap-1 sm:col-span-1">
+                <span className="text-[10px] font-medium uppercase tracking-[0.14em] text-ink-subtle">SSH 目标</span>
+                <input value={sshTarget} onChange={(event) => setSshTarget(event.target.value)} placeholder="user@gpu-box" className="rounded-md border border-line bg-surface-sunken px-3 py-2 font-mono text-xs text-ink-strong placeholder:text-ink-subtle focus:border-brand focus:outline-none" />
+              </label>
+              <label className="col-span-2 flex flex-col gap-1">
+                <span className="text-[10px] font-medium uppercase tracking-[0.14em] text-ink-subtle">远端仓库绝对路径</span>
+                <input value={remoteRootPath} onChange={(event) => setRemoteRootPath(event.target.value)} placeholder="/root/autodl-tmp/project" className="rounded-md border border-line bg-surface-sunken px-3 py-2 font-mono text-xs text-ink-strong placeholder:text-ink-subtle focus:border-brand focus:outline-none" />
+              </label>
+              <label className="col-span-2 flex flex-col gap-1">
+                <span className="text-[10px] font-medium uppercase tracking-[0.14em] text-ink-subtle">跳板机 <span className="text-ink-subtle/70">(optional)</span></span>
+                <input value={connectVia} onChange={(event) => setConnectVia(event.target.value)} placeholder="bastion" className="rounded-md border border-line bg-surface-sunken px-3 py-2 font-mono text-xs text-ink-strong placeholder:text-ink-subtle focus:border-brand focus:outline-none" />
+              </label>
+              <p className="col-span-2 text-[11px] leading-5 text-ink-muted">
+                当前仅接入已有 Git 工作树。远端是唯一权威，本机只保留单向只读投影；并发上限仅约束当前设备。
+              </p>
+            </div>
+          )}
 
           <label className="flex items-start gap-2 text-xs text-ink">
             <input
               type="checkbox"
               checked={autoCommit}
               onChange={(e) => setAutoCommit(e.target.checked)}
+              disabled={mode === "remote"}
               className="mt-0.5 h-4 w-4 accent-brand"
             />
             <span>
               Auto commit
               <span className="ml-1 text-ink-muted">
-                — append a commit node after completed agent work.
-              </span>
-            </span>
-          </label>
-
-          <label className="flex items-start gap-2 text-xs text-ink">
-            <input
-              type="checkbox"
-              checked={temporary}
-              onChange={(e) => setTemporary(e.target.checked)}
-              className="mt-0.5 h-4 w-4 accent-brand"
-            />
-            <span>
-              Temporary workspace
-              <span className="ml-1 text-ink-muted">
-                — server creates a fresh git workspace; ignores the path above.
+                {mode === "remote"
+                  ? "— 远端项目当前不提供提交操作。"
+                  : "— append a commit node after completed agent work."}
               </span>
             </span>
           </label>
@@ -278,7 +352,15 @@ export function NewProjectModal({
           </button>
           <button
             type="button"
-            disabled={submitting || !modelPresetId}
+            disabled={
+              submitting
+              || !modelPresetId
+              || (mode === "remote" && (
+                !remoteTargetId.trim()
+                || !remoteRootPath.trim()
+                || !sshTarget.trim()
+              ))
+            }
             onClick={() => void submit()}
             className="rounded-md bg-brand px-3 py-1.5 text-xs font-medium text-white shadow-card transition hover:brightness-[0.95] disabled:opacity-40"
           >

@@ -168,6 +168,16 @@ class Store:
         except (OSError, ValueError, ValidationError):
             return None
 
+    def write_remote_binding(
+        self, pid: str, binding: RemoteProjectBinding
+    ) -> None:
+        """Persist host-local remote access and projection state."""
+        self.assert_writable()
+        path = self._host_dir(pid, self.machine.id) / "local.json"
+        if not path.is_file():
+            raise ValueError("remote project is not bound on this device")
+        self._write_json(path, binding.model_dump())
+
     def _owner_mid(self, pid: str, nid: str) -> str:
         return self._owner_index.get(pid, {}).get(nid, self.machine.id)
 
@@ -483,6 +493,81 @@ class Store:
         )
         self._write_json(self._project_file(project.id), payload)
         self.sync.schedule_commit(f'create project "{project.name or project.id}"')
+        return project
+
+    def create_remote_project(
+        self,
+        project: Project,
+        binding: RemoteProjectBinding,
+        *,
+        root_commits: tuple[str, ...],
+        initialized_at: float,
+    ) -> Project:
+        """Persist a probed existing remote repository and this host's binding."""
+        self.assert_writable()
+        if project.persistence_mode is not ProjectPersistenceMode.REMOTE:
+            raise ValueError("remote project workflow requires remote persistence mode")
+        if project.remote is None or project.remote.root_commit is None:
+            raise ValueError(
+                "remote project workflow requires a repository fingerprint"
+            )
+        if not root_commits or project.remote.root_commit != root_commits[0]:
+            raise ValueError("remote repository fingerprint is inconsistent")
+        if not project.machine_id:
+            project.machine_id = self.machine.id
+        if not project.machine_label:
+            project.machine_label = self.machine.label
+        project.bind_model_catalog(self.root)
+
+        project_dir = self._project_dir(project.id)
+        if project_dir.exists():
+            raise ValueError(f"project already exists: {project.id}")
+        projection = Path(binding.projection_path).resolve(strict=False)
+        expected_projection = (
+            self.root / "workspaces" / "remote" / project.id
+        ).resolve(strict=False)
+        if projection != expected_projection:
+            raise ValueError("remote projection path is outside the managed workspace")
+        projection_created = not projection.exists()
+        try:
+            projection.mkdir(parents=True, exist_ok=True)
+            host_dir = self._host_dir(project.id, self.machine.id)
+            (host_dir / "nodes").mkdir(parents=True, exist_ok=True)
+            self._write_json(host_dir / "local.json", binding.model_dump())
+            self._write_json(
+                host_dir / "node-layout.json",
+                NodeLayout(schema_version=1, nodes={}).model_dump(),
+            )
+            repo: dict[str, Any] = {
+                "root_commit": root_commits[0],
+                "root_commits": list(root_commits),
+            }
+            self._write_json(
+                host_dir / "host.json",
+                {
+                    "label": self.machine.label,
+                    "bound_at": initialized_at,
+                    "repo": repo,
+                    "is_repo": True,
+                    "remote_access_configured": True,
+                    "remote_initialization": {
+                        "mode": "existing",
+                        "initialized_at": initialized_at,
+                    },
+                },
+            )
+            payload = project.model_dump(
+                exclude={"provider", "root_path", "node_positions"}
+            )
+            self._write_json(self._project_file(project.id), payload)
+        except Exception:
+            shutil.rmtree(project_dir, ignore_errors=True)
+            if projection_created:
+                shutil.rmtree(projection, ignore_errors=True)
+            raise
+        self.sync.schedule_commit(
+            f'create remote project "{project.name or project.id}"'
+        )
         return project
 
     def prepare_temporary_workspace(self, project: Project) -> None:

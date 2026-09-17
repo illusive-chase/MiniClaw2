@@ -59,6 +59,10 @@ class AgentProviderEvent:
 class ReviewSpec:
     target: ReviewTarget
     focus: str | None = None
+    # Remote projects have no local .git directory. Their runner supplies the
+    # exact first snapshot so providers review the same bytes used for stale
+    # detection instead of inspecting the disposable projection as authority.
+    patch: str | None = None
 
 
 @dataclass(slots=True)

@@ -7,9 +7,11 @@ import hashlib
 import os
 import re
 import subprocess
+import threading
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Protocol
 
 
 MINICLAW_GENERATED_DIR = ".miniclaw2"
@@ -17,6 +19,51 @@ MINICLAW_GENERATED_EXCLUDE = f"{MINICLAW_GENERATED_DIR}/"
 GIT_EMPTY_TREE_SHA = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 
 logger = logging.getLogger(__name__)
+
+
+class RemoteGitTransport(Protocol):
+    def run(
+        self, args: list[str], *, timeout: float = 15
+    ) -> subprocess.CompletedProcess[str]: ...
+
+    def run_bytes(
+        self,
+        args: list[str],
+        *,
+        input_data: bytes | None = None,
+        timeout: float = 60,
+    ) -> subprocess.CompletedProcess[bytes]: ...
+
+
+@dataclass(frozen=True, slots=True)
+class _RemoteGitLocation:
+    root_path: str
+    transport: RemoteGitTransport
+
+
+_REMOTE_GIT_LOCK = threading.Lock()
+_REMOTE_GIT_LOCATIONS: dict[str, _RemoteGitLocation] = {}
+
+
+def register_remote_git_execution(
+    cwd: str, *, remote_root: str, transport: RemoteGitTransport
+) -> None:
+    """Route Git helpers for a local projection to its remote authority."""
+    key = str(Path(cwd).resolve(strict=False))
+    with _REMOTE_GIT_LOCK:
+        _REMOTE_GIT_LOCATIONS[key] = _RemoteGitLocation(remote_root, transport)
+
+
+def unregister_remote_git_execution(cwd: str) -> None:
+    key = str(Path(cwd).resolve(strict=False))
+    with _REMOTE_GIT_LOCK:
+        _REMOTE_GIT_LOCATIONS.pop(key, None)
+
+
+def _remote_git_location(cwd: str) -> _RemoteGitLocation | None:
+    key = str(Path(cwd).resolve(strict=False))
+    with _REMOTE_GIT_LOCK:
+        return _REMOTE_GIT_LOCATIONS.get(key)
 
 
 @dataclass(slots=True)
@@ -195,7 +242,7 @@ def git_status(cwd: str) -> GitStatus:
     _merge_numstat(stats, _git(cwd, ["diff", "--numstat", "-z", "--find-renames"]))
     for item in status.files:
         if item.index_status == "?" and item.worktree_status == "?":
-            item.additions, item.binary = _untracked_file_stat(Path(cwd) / item.path)
+            item.additions, item.binary = _untracked_file_stat(cwd, item.path)
             continue
         additions, deletions, binary = stats.get(item.path, (0, 0, False))
         item.additions = additions
@@ -339,8 +386,32 @@ def _merge_numstat(
         )
 
 
-def _untracked_file_stat(path: Path) -> tuple[int, bool]:
+def _untracked_file_stat(cwd: str, relative_path: str) -> tuple[int, bool]:
     """Return Git-like added-line and binary estimates for an untracked path."""
+    if _remote_git_location(cwd) is not None:
+        result = _git(
+            cwd,
+            [
+                "diff",
+                "--no-index",
+                "--numstat",
+                "--",
+                "/dev/null",
+                relative_path,
+            ],
+        )
+        if result.returncode not in {0, 1}:
+            return 0, False
+        fields = result.stdout.split("\t", 2)
+        if len(fields) < 2:
+            return 0, False
+        if fields[0] == "-" or fields[1] == "-":
+            return 0, True
+        try:
+            return int(fields[0]), False
+        except ValueError:
+            return 0, False
+    path = Path(cwd) / relative_path
     try:
         if path.is_symlink():
             return 1, False
@@ -727,6 +798,18 @@ def _git(
     timeout: float = 10,
     env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
+    remote = _remote_git_location(cwd)
+    if remote is not None:
+        if env is not None:
+            return subprocess.CompletedProcess(
+                args=["git", *args],
+                returncode=1,
+                stdout="",
+                stderr="remote Git execution does not accept environment overrides",
+            )
+        return remote.transport.run(
+            ["git", "-C", remote.root_path, *args], timeout=timeout
+        )
     try:
         return subprocess.run(
             ["git", *args],
@@ -749,6 +832,11 @@ def _git(
 def _git_bytes(
     cwd: str, args: list[str], *, timeout: float = 10
 ) -> subprocess.CompletedProcess[bytes]:
+    remote = _remote_git_location(cwd)
+    if remote is not None:
+        return remote.transport.run_bytes(
+            ["git", "-C", remote.root_path, *args], timeout=timeout
+        )
     try:
         return subprocess.run(
             ["git", *args],

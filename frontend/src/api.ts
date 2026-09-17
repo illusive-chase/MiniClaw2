@@ -94,6 +94,16 @@ export async function createSession(
     preferred_language?: string | null;
     concurrency?: number;
     temporary?: boolean;
+    persistence_mode?: "durable" | "ephemeral" | "remote";
+    remote?: {
+      target_id: string;
+      root_path: string;
+    };
+    remote_access?: {
+      ssh_target: string;
+      connect_via?: string | null;
+    };
+    remote_initialization?: "existing";
     name?: string;
     create_missing_cwd?: boolean;
   } = {},
@@ -105,6 +115,25 @@ export async function createSession(
   });
   if (!res.ok) {
     throw new ApiError("createSession", res.status, await readErrorDetail(res));
+  }
+  return res.json();
+}
+
+export async function syncRemoteProjection(id: string): Promise<{
+  ok: boolean;
+  file_count: number;
+  distorted_paths: string[];
+  projection_synced_at: number;
+}> {
+  const res = await fetch(`/sessions/${encodeURIComponent(id)}/projection/sync`, {
+    method: "POST",
+  });
+  if (!res.ok) {
+    throw new ApiError(
+      "syncRemoteProjection",
+      res.status,
+      await readErrorDetail(res),
+    );
   }
   return res.json();
 }

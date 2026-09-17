@@ -126,6 +126,8 @@ class RemoteProjectBinding(BaseModel):
 
     remote: RemoteAccessConfig
     projection_path: str = Field(min_length=1)
+    projection_hashes: dict[str, str] = Field(default_factory=dict)
+    projection_synced_at: float | None = None
 
     @field_validator("projection_path")
     @classmethod

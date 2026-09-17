@@ -48,7 +48,9 @@ from .git_state import (
     git_status,
     is_git_repo,
     normalized_origin_url,
+    register_remote_git_execution,
     root_commits,
+    unregister_remote_git_execution,
 )
 from .skills import expand_skill_selections
 from .domain import (
@@ -69,6 +71,7 @@ from .domain import (
     Project,
     ProjectPersistenceMode,
     RemoteAccessConfig,
+    RemoteProjectIdentity,
     RemoteProjectBinding,
     ReviewBrief,
     ReviewSubtype,
@@ -85,6 +88,11 @@ from .model_catalog import (
     normalize_model_preset_id,
 )
 from .preview import render_executed_preview, render_virtual_preview
+from .remote_projection import (
+    ProjectionSyncResult,
+    sync_remote_projection as update_remote_projection,
+)
+from .remote_transport import RemoteTransportError, RemoteTransportPool
 from .runner import NodeRunner
 from .store import Store
 from .virtual_graph import has_cycle
@@ -350,6 +358,8 @@ class ProjectRegistry:
         self._initialized = False
         self._self_update_pending = False
         self._storage_sync_pending = False
+        self._remote_transports: RemoteTransportPool | None = None
+        self._remote_git_roots: set[str] = set()
         if initialize:
             self.initialize()
 
@@ -364,6 +374,7 @@ class ProjectRegistry:
             return
         store = self._store or Store()
         self._store = store
+        self._remote_transports = RemoteTransportPool(store.root)
         self._initialized = True
         store.sync.add_pre_commit_callback(self._record_host_heads)
         store.sync.add_idle_callback(self.require_storage_idle)
@@ -372,6 +383,7 @@ class ProjectRegistry:
             if project.temporary and store.read_only_reason is None:
                 store.prepare_temporary_workspace(project)
             self._runtimes[project.id] = ProjectRuntime(project)
+            self._configure_remote_git_execution(project)
             if sweep and self.is_native_project(project) and store.read_only_reason is None:
                 self._repair_stale_nodes(project.id)
 
@@ -454,11 +466,7 @@ class ProjectRegistry:
         if self._storage_sync_pending or self._self_update_pending or self.store.read_only_reason is not None:
             return
         for runtime in self._runtimes.values():
-            if (
-                self.is_native_project(runtime.project)
-                and runtime.project.persistence_mode
-                is not ProjectPersistenceMode.REMOTE
-            ):
+            if self.is_native_project(runtime.project):
                 self._schedule_queued(runtime)
 
     def prepare_self_update(self) -> bool:
@@ -521,11 +529,49 @@ class ProjectRegistry:
             if runtime is None:
                 self._runtimes[project_id] = ProjectRuntime(project)
             elif not runtime.is_running():
+                self._unregister_remote_git_execution(runtime.project)
                 runtime.project = project
+            self._configure_remote_git_execution(project)
         for project_id in list(self._runtimes):
             runtime = self._runtimes[project_id]
             if project_id not in loaded and not runtime.is_running():
+                self._unregister_remote_git_execution(runtime.project)
+                self._remote_transport_pool().close(project_id)
                 self._runtimes.pop(project_id, None)
+
+    def _remote_transport_pool(self) -> RemoteTransportPool:
+        self.initialize()
+        assert self._remote_transports is not None
+        return self._remote_transports
+
+    def close_remote_transports(self) -> None:
+        for root in list(self._remote_git_roots):
+            unregister_remote_git_execution(root)
+        self._remote_git_roots.clear()
+        if self._remote_transports is not None:
+            self._remote_transports.close_all()
+
+    def _configure_remote_git_execution(self, project: Project) -> None:
+        if project.persistence_mode is not ProjectPersistenceMode.REMOTE:
+            return
+        if project.remote is None:
+            return
+        binding = self.store.read_remote_binding(project.id)
+        if binding is None:
+            return
+        transport = self._remote_transport_pool().get(project.id, binding.remote)
+        register_remote_git_execution(
+            project.root_path,
+            remote_root=project.remote.root_path,
+            transport=transport,
+        )
+        self._remote_git_roots.add(project.root_path)
+
+    def _unregister_remote_git_execution(self, project: Project) -> None:
+        if project.persistence_mode is not ProjectPersistenceMode.REMOTE:
+            return
+        unregister_remote_git_execution(project.root_path)
+        self._remote_git_roots.discard(project.root_path)
 
     def is_native_project(self, project: Project) -> bool:
         return project.temporary or self.store.is_bound_here(project.id)
@@ -562,8 +608,6 @@ class ProjectRegistry:
         project = self.require_native(pid)
         if project.temporary:
             raise ValueError("临时项目不支持 Git 操作，请使用持久项目")
-        if project.persistence_mode is ProjectPersistenceMode.REMOTE:
-            raise ValueError("远端 Git 通道尚未实现")
         return project
 
     def require_execution_project(self, pid: str) -> Project:
@@ -648,6 +692,10 @@ class ProjectRegistry:
         template_id: str | None = None,
         create_missing_cwd: bool = False,
         concurrency: int = 1,
+        persistence_mode: ProjectPersistenceMode | None = None,
+        remote_identity: RemoteProjectIdentity | None = None,
+        remote_access: RemoteAccessConfig | None = None,
+        remote_initialization: str = "existing",
     ) -> Project:
         if provider is not None:
             raise ValueError("provider is no longer accepted; use model_preset_id")
@@ -662,6 +710,89 @@ class ProjectRegistry:
             else default_model_preset_id(store_root=self.store.root)
         )
         normalized_language = normalize_preferred_language(preferred_language)
+        settings: dict[str, Any] = {}
+        if auto_commit is not None:
+            settings["auto_commit"] = bool(auto_commit)
+        if permission_mode is not None:
+            settings["permission_mode"] = permission_mode
+        if approval_policy is not None:
+            settings["approval_policy"] = approval_policy
+        if sandbox is not None:
+            settings["sandbox"] = sandbox
+        mode = persistence_mode or (
+            ProjectPersistenceMode.EPHEMERAL
+            if temporary
+            else ProjectPersistenceMode.DURABLE
+        )
+        if temporary and mode is not ProjectPersistenceMode.EPHEMERAL:
+            raise ValueError(
+                "temporary must be true exactly when persistence_mode is ephemeral"
+            )
+        temporary = mode is ProjectPersistenceMode.EPHEMERAL
+        if mode is ProjectPersistenceMode.REMOTE:
+            if cwd is not None:
+                raise ValueError("remote projects do not accept a local cwd")
+            if remote_identity is None or remote_access is None:
+                raise ValueError("remote project identity and access are required")
+            if remote_identity.root_commit is not None:
+                raise ValueError(
+                    "remote repository fingerprint must be observed by the server"
+                )
+            if remote_initialization != "existing":
+                raise ValueError("only existing remote repositories are supported")
+            project = Project(
+                root_path=UNBOUND_ROOT_PATH,
+                name=name,
+                model_preset_id=normalized_model_preset_id,
+                concurrency=concurrency,
+                preferred_language=normalized_language,
+                settings_override=settings,
+                persistence_mode=ProjectPersistenceMode.REMOTE,
+                remote=remote_identity,
+                template_id=template_id,
+            )
+            projection = (
+                self.store.root / "workspaces" / "remote" / project.id
+            ).resolve(strict=False)
+            transport = self._remote_transport_pool().get(project.id, remote_access)
+            try:
+                probe = transport.probe_repository(remote_identity.root_path)
+            except RemoteTransportError as exc:
+                self._remote_transport_pool().close(project.id)
+                raise ValueError(str(exc)) from exc
+            project.root_path = str(projection)
+            project.remote = remote_identity.model_copy(
+                update={"root_commit": probe.root_commit}
+            )
+            binding = RemoteProjectBinding(
+                remote=remote_access,
+                projection_path=str(projection),
+            )
+            try:
+                self.store.create_remote_project(
+                    project,
+                    binding,
+                    root_commits=probe.root_commits,
+                    initialized_at=time.time(),
+                )
+            except Exception:
+                self._remote_transport_pool().close(project.id)
+                raise
+            self._runtimes[project.id] = ProjectRuntime(project)
+            self._configure_remote_git_execution(project)
+            try:
+                self.sync_remote_projection(project.id)
+            except Exception:  # noqa: BLE001
+                # The remote identity and binding are valid even when the
+                # disposable local projection cannot be populated yet.
+                logger.warning(
+                    "initial remote projection failed for %s",
+                    project.id,
+                    exc_info=True,
+                )
+            return project
+        if remote_identity is not None or remote_access is not None:
+            raise ValueError("local projects do not accept remote project configuration")
         if temporary:
             root_path = create_temporary_root()
         else:
@@ -678,15 +809,6 @@ class ProjectRegistry:
                     root_path,
                     exclude_error,
                 )
-        settings: dict[str, Any] = {}
-        if auto_commit is not None:
-            settings["auto_commit"] = bool(auto_commit)
-        if permission_mode is not None:
-            settings["permission_mode"] = permission_mode
-        if approval_policy is not None:
-            settings["approval_policy"] = approval_policy
-        if sandbox is not None:
-            settings["sandbox"] = sandbox
         project = Project(
             root_path=root_path,
             name=name,
@@ -694,6 +816,7 @@ class ProjectRegistry:
             concurrency=concurrency,
             preferred_language=normalized_language,
             settings_override=settings,
+            persistence_mode=mode,
             temporary=temporary,
             template_id=template_id,
         )
@@ -730,10 +853,48 @@ class ProjectRegistry:
                 raise ValueError("remote access configuration is required")
             if root_path is not None:
                 raise ValueError("remote projects do not bind a local authority path")
+            if project.remote is None or project.remote.root_commit is None:
+                raise ValueError("remote project has no repository fingerprint")
+            transport = self._remote_transport_pool().get(pid, remote_access)
+            try:
+                probe = transport.probe_repository(project.remote.root_path)
+            except RemoteTransportError as exc:
+                self._remote_transport_pool().close(pid)
+                raise ValueError(str(exc)) from exc
+            if probe.root_commit != project.remote.root_commit:
+                self._remote_transport_pool().close(pid)
+                raise ValueError("remote repository fingerprint does not match")
             projection = (
                 self.store.root / "workspaces" / "remote" / project.id
             ).resolve(strict=False)
-            projection.mkdir(parents=True, exist_ok=True)
+            binding = RemoteProjectBinding(
+                remote=remote_access,
+                projection_path=str(projection),
+            )
+            try:
+                projection_result = update_remote_projection(
+                    binding,
+                    remote_root=project.remote.root_path,
+                    transport=transport,
+                )
+            except RemoteTransportError as exc:
+                if projection.is_relative_to(
+                    (self.store.root / "workspaces" / "remote").resolve(
+                        strict=False
+                    )
+                ):
+                    shutil.rmtree(projection, ignore_errors=True)
+                self._remote_transport_pool().close(pid)
+                raise ValueError(str(exc)) from exc
+            except Exception:
+                if projection.is_relative_to(
+                    (self.store.root / "workspaces" / "remote").resolve(
+                        strict=False
+                    )
+                ):
+                    shutil.rmtree(projection, ignore_errors=True)
+                self._remote_transport_pool().close(pid)
+                raise
             host_dir = (
                 self.store.root
                 / "projects"
@@ -746,17 +907,17 @@ class ProjectRegistry:
                 {
                     "label": self.store.machine.label,
                     "bound_at": time.time(),
-                    "repo": {},
+                    "repo": {
+                        "root_commit": probe.root_commit,
+                        "root_commits": list(probe.root_commits),
+                    },
                     "is_repo": True,
                     "remote_access_configured": True,
                 },
             )
             self.store._write_json(
                 host_dir / "local.json",
-                RemoteProjectBinding(
-                    remote=remote_access,
-                    projection_path=str(projection),
-                ).model_dump(),
+                projection_result.binding.model_dump(),
             )
             if not (host_dir / "node-layout.json").exists():
                 self.store._write_json(
@@ -765,6 +926,7 @@ class ProjectRegistry:
                 )
             (host_dir / "nodes").mkdir(parents=True, exist_ok=True)
             project.root_path = str(projection)
+            self._configure_remote_git_execution(project)
             project.node_positions = self.store.read_node_positions(pid)
             self.store.invalidate_owner_index()
             self.store.sync.schedule_commit(
@@ -875,11 +1037,39 @@ class ProjectRegistry:
             / "local.json"
         )
         local_file.unlink(missing_ok=True)
+        if project.persistence_mode is ProjectPersistenceMode.REMOTE:
+            self._unregister_remote_git_execution(project)
+            self._remote_transport_pool().close(pid)
         project.root_path = UNBOUND_ROOT_PATH
         self.store.sync.schedule_commit(
             f'unbind project "{project.name or pid}" on this device'
         )
         return project
+
+    def sync_remote_projection(self, pid: str) -> ProjectionSyncResult:
+        """Refresh one bound remote project's disposable local projection."""
+        project = self.require_native(pid)
+        if project.persistence_mode is not ProjectPersistenceMode.REMOTE:
+            raise ValueError("project is not remote")
+        if project.remote is None:
+            raise ValueError("remote project identity is missing")
+        binding = self.store.read_remote_binding(pid)
+        if binding is None:
+            raise ValueError("remote project access is not configured on this device")
+        transport = self._remote_transport_pool().get(pid, binding.remote)
+        register_remote_git_execution(
+            project.root_path,
+            remote_root=project.remote.root_path,
+            transport=transport,
+        )
+        self._remote_git_roots.add(project.root_path)
+        result = update_remote_projection(
+            binding,
+            remote_root=project.remote.root_path,
+            transport=transport,
+        )
+        self.store.write_remote_binding(pid, result.binding)
+        return result
 
     def rename_project(self, pid: str, name: str) -> Project | None:
         rt = self._runtimes.get(pid)
@@ -1195,6 +1385,9 @@ class ProjectRegistry:
         delete_project_contextspace(rt.project, store_root=self.store.root)
         if rt.project.temporary:
             remove_temporary_root(rt.project.root_path)
+        if rt.project.persistence_mode is ProjectPersistenceMode.REMOTE:
+            self._unregister_remote_git_execution(rt.project)
+            self._remote_transport_pool().close(pid)
         self._publish_project_nodes_removed(rt.project)
         self.store.delete_project(pid)
         self._runtimes.pop(pid, None)
@@ -1621,6 +1814,15 @@ class ProjectRegistry:
             on_state_change=lambda changed, previous: self._publish_workspace_node(
                 rt.project, changed.model_copy(deep=True), previous
             ),
+            prepare_workspace=(
+                (
+                    lambda: asyncio.to_thread(
+                        self.sync_remote_projection, rt.project.id
+                    )
+                )
+                if rt.project.persistence_mode is ProjectPersistenceMode.REMOTE
+                else None
+            ),
         )
         task = asyncio.create_task(coro if coro is not None else runner.run())
         rt.runners[node.id] = runner
@@ -1637,7 +1839,6 @@ class ProjectRegistry:
             self._storage_sync_pending
             or self._self_update_pending
             or not self.is_native_project(rt.project)
-            or rt.project.persistence_mode is ProjectPersistenceMode.REMOTE
         ):
             return
         while rt.has_capacity():
@@ -1652,6 +1853,7 @@ class ProjectRegistry:
                     is not None
                     and node.state is NodeState.QUEUED
                     and self.is_native_node(rt.project, node)
+                    and self._can_launch_project_node(rt.project, node)
                 )
             ]
             rt.priority_node_ids = priority
@@ -1676,6 +1878,7 @@ class ProjectRegistry:
                     if node.state is NodeState.QUEUED
                     and node.id not in rt.runner_tasks
                     and self.is_native_node(rt.project, node)
+                    and self._can_launch_project_node(rt.project, node)
                 ),
                 key=lambda node: (node.created_at, node.id),
             )
@@ -1693,6 +1896,13 @@ class ProjectRegistry:
         return (
             node.kind is NodeKind.OP and node.op_kind == "pull"
         ) or node.subtype is ReviewSubtype.CODE_REVIEW
+
+    @staticmethod
+    def _can_launch_project_node(project: Project, node: Node) -> bool:
+        return (
+            project.persistence_mode is not ProjectPersistenceMode.REMOTE
+            or node.subtype is ReviewSubtype.CODE_REVIEW
+        )
 
     @classmethod
     def _exclusive_node_active(cls, rt: ProjectRuntime) -> bool:
@@ -1896,6 +2106,8 @@ class ProjectRegistry:
         if rt is None:
             return None
         self.require_git_project(pid)
+        if rt.project.persistence_mode is ProjectPersistenceMode.REMOTE:
+            raise ValueError("远端项目暂不支持 commit 或 pull")
         if op_kind not in {"commit", "pull"}:
             raise ValueError(f"unknown git op_kind: {op_kind}")
         node = Node(
@@ -1966,6 +2178,8 @@ class ProjectRegistry:
         if rt is None:
             return None
         self.require_git_project(pid)
+        if rt.project.persistence_mode is ProjectPersistenceMode.REMOTE:
+            raise ValueError("远端项目暂不支持 push")
         if self._pull_active(rt) or await asyncio.to_thread(self._queued_pull_exists, rt):
             from .git_state import git_status as read_git_status
 

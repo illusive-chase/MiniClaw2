@@ -50,6 +50,15 @@ class CodexRpcError(RuntimeError):
         self.code = code
 
 
+def _patch_review_prompt(patch: str, focus: str | None) -> str:
+    focus_text = f"\nReview focus: {' '.join(focus.split())}\n" if focus else ""
+    return (
+        "Review the following captured uncommitted Git patch. Treat this patch "
+        "as the complete audit target and report only actionable defects."
+        f"{focus_text}\n```diff\n{patch}\n```"
+    )
+
+
 class CodexProvider:
     name = "codex"
 
@@ -177,7 +186,7 @@ class CodexProvider:
                 observed_settings = _observed_codex_settings(initialized)
                 if observed_settings:
                     yield AgentProviderEvent(kind="settings", settings=observed_settings)
-                if not _codex_review_capable(initialized):
+                if spec.patch is None and not _codex_review_capable(initialized):
                     yield AgentProviderEvent(
                         kind="error",
                         error="native code review requires codex-cli 0.144.1 or newer",
@@ -197,10 +206,10 @@ class CodexProvider:
                     }
                     if context.system_context:
                         thread_base["developerInstructions"] = context.system_context
-                    started = await client.request(
-                        "thread/start",
-                        _thread_params(context, thread_base),
-                    )
+                    thread_params = _thread_params(context, thread_base)
+                    if spec.patch is not None:
+                        thread_params["sandbox"] = "read-only"
+                    started = await client.request("thread/start", thread_params)
                     thread_id = started.get("thread", {}).get("id")
                     if not thread_id:
                         raise RuntimeError(
@@ -220,31 +229,51 @@ class CodexProvider:
                         thread_id = resumed_id
                         yield AgentProviderEvent(kind="session", session_id=thread_id)
                 self._thread_id = thread_id
-                try:
-                    response = await client.request(
-                        "review/start",
-                        {
-                            "threadId": thread_id,
-                            "target": {"type": "uncommittedChanges"},
-                            "delivery": "inline",
-                        },
-                    )
-                except CodexRpcError as exc:
-                    if exc.code == -32601:
-                        yield AgentProviderEvent(
-                            kind="error",
-                            error="native code review requires codex-cli 0.144.1 or newer",
+                if spec.patch is not None:
+                    review_prompt = _patch_review_prompt(spec.patch, spec.focus)
+                    turn_params = _turn_params(context, thread_id, review_prompt)
+                    turn_params.pop("sandboxPolicy", None)
+                    response = await client.request("turn/start", turn_params)
+                else:
+                    try:
+                        response = await client.request(
+                            "review/start",
+                            {
+                                "threadId": thread_id,
+                                "target": {"type": "uncommittedChanges"},
+                                "delivery": "inline",
+                            },
                         )
-                        return
-                    raise
+                    except CodexRpcError as exc:
+                        if exc.code == -32601:
+                            yield AgentProviderEvent(
+                                kind="error",
+                                error="native code review requires codex-cli 0.144.1 or newer",
+                            )
+                            return
+                        raise
                 turn_id = response.get("turn", {}).get("id")
                 if not turn_id:
                     raise RuntimeError(f"Codex review/start returned no turn id: {response}")
                 self._turn_id = turn_id
                 yield AgentProviderEvent(kind="turn", turn_id=turn_id)
+                review_text: list[str] = []
                 while not self._stop:
                     message = await self._receive_turn_message(client)
                     async for event in self._handle_message(message, context, client):
+                        if (
+                            spec.patch is not None
+                            and event.kind == "event"
+                            and isinstance(event.event, TextDelta)
+                        ):
+                            review_text.append(event.event.text)
+                        if spec.patch is not None and event.kind == "done":
+                            report = "".join(review_text).strip()
+                            if report:
+                                yield AgentProviderEvent(
+                                    kind="review",
+                                    report=ReviewReport(raw_markdown=report),
+                                )
                         yield event
                         if event.kind in {"done", "error"}:
                             self._stop = True

@@ -44,6 +44,15 @@ def _pending_subagent_ask_reason(pending: list[str]) -> str:
         "如果确认某个子代理不会返回，用 TaskStop 终止它。"
     )
 
+
+def _patch_review_prompt(patch: str, focus: str | None) -> str:
+    focus_text = f"\nReview focus: {' '.join(focus.split())}\n" if focus else ""
+    return (
+        "Review the following captured uncommitted Git patch. Treat this patch "
+        "as the complete audit target and report only actionable defects."
+        f"{focus_text}\n```diff\n{patch}\n```"
+    )
+
 class ClaudeProvider:
     name = "claude"
 
@@ -159,9 +168,12 @@ class ClaudeProvider:
                 "Review only uncommitted changes: staged, unstaged, and untracked "
                 "files (git diff HEAD plus untracked files)."
             )
-            command = "/code-review " + scope
-            if spec.focus:
-                command += " Focus: " + " ".join(spec.focus.split())
+            if spec.patch is None:
+                command = "/code-review " + scope
+                if spec.focus:
+                    command += " Focus: " + " ".join(spec.focus.split())
+            else:
+                command = _patch_review_prompt(spec.patch, spec.focus)
             result = await self._session.send(command, confirmation_text=command)
             if not result.submitted:
                 yield AgentProviderEvent(
@@ -173,7 +185,7 @@ class ClaudeProvider:
             async for event in self._session.stream_events():
                 if event.kind == "done":
                     report = self._session.last_assistant_text.strip()
-                    if _unknown_code_review_command(report):
+                    if spec.patch is None and _unknown_code_review_command(report):
                         yield AgentProviderEvent(
                             kind="error",
                             error=(

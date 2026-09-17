@@ -16,6 +16,8 @@ from miniclaw2.domain import (
     Node,
     NodeState,
     Project,
+    ProjectPersistenceMode,
+    RemoteProjectIdentity,
     ReviewBrief,
     ReviewSubtype,
 )
@@ -129,6 +131,27 @@ class CodeReviewRunnerTests(unittest.IsolatedAsyncioTestCase):
             snapshot = store.node_dir(project.id, node.id) / "reviewed-diff.patch"
             self.assertIn("nothing to review", snapshot.read_text(encoding="utf-8"))
             self.assertTrue(repo.exists())
+
+    async def test_remote_review_passes_captured_patch_to_provider(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            repo, store, project, node = self._setup(Path(raw))
+            project.persistence_mode = ProjectPersistenceMode.REMOTE
+            project.remote = RemoteProjectIdentity(
+                target_id="gpu-box",
+                root_path="/srv/project",
+                root_commit="a" * 40,
+            )
+            (repo / "change.py").write_text("print('remote')\n", encoding="utf-8")
+            provider = _ReviewProvider()
+            runner = NodeRunner(
+                node, project, store, lambda _event: asyncio.sleep(0)
+            )
+
+            with patch("miniclaw2.runner._make_provider", return_value=provider):
+                await runner.run()
+
+            self.assertIsNotNone(provider.spec.patch)
+            self.assertIn("change.py", provider.spec.patch)
 
     async def test_published_report_survives_failed_turn_end(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

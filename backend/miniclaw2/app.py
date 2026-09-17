@@ -90,6 +90,7 @@ from .registry import (
     PlanspaceModePreconditionError,
     ProjectRegistry,
 )
+from .remote_transport import RemoteTransportError
 from .replay import LiveReplayBuffer
 from .skills import (
     SkillError,
@@ -133,6 +134,7 @@ logger = logging.getLogger(__name__)
 # family while giving long design docs room to render whole.
 MARKDOWN_READ_CAP = 4 * INLINE_TEXT_CAP
 
+
 class CreateSessionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -141,6 +143,10 @@ class CreateSessionRequest(BaseModel):
     auto_commit: bool | None = None
     preferred_language: str | None = None
     temporary: bool = False
+    persistence_mode: ProjectPersistenceMode | None = None
+    remote: RemoteProjectIdentity | None = None
+    remote_access: RemoteAccessConfig | None = None
+    remote_initialization: Literal["existing"] = "existing"
     name: str | None = None
     create_missing_cwd: bool = False
     concurrency: StrictInt | None = Field(default=None, ge=1)
@@ -241,6 +247,8 @@ class SessionInfo(BaseModel):
     persistence_mode: ProjectPersistenceMode = ProjectPersistenceMode.DURABLE
     capabilities: dict[str, bool] = Field(default_factory=dict)
     remote: RemoteProjectIdentity | None = None
+    projection_ready: bool = False
+    projection_synced_at: float | None = None
 
 
 class ActiveNodeGate(BaseModel):
@@ -668,7 +676,14 @@ def create_app(
             install_hooks()
         except Exception:  # noqa: BLE001
             logger.exception("failed to install claude hooks")
-        yield
+        try:
+            yield
+        finally:
+            close_remote_transports = getattr(
+                registry, "close_remote_transports", None
+            )
+            if close_remote_transports is not None:
+                close_remote_transports()
 
     app = FastAPI(title="MiniClaw2", lifespan=lifespan)
     app.state.storage_error = None
@@ -1199,9 +1214,22 @@ def create_app(
     @app.post("/sessions", response_model=SessionInfo)
     def create_session(req: CreateSessionRequest) -> SessionInfo:
         defaults = load_global_config(registry.store.root).defaults
+        persistence_mode = req.persistence_mode or (
+            ProjectPersistenceMode.EPHEMERAL
+            if req.temporary
+            else ProjectPersistenceMode.DURABLE
+        )
         try:
             project = registry.create_project(
-                cwd=None if req.temporary else (req.cwd or os.getcwd()),
+                cwd=(
+                    None
+                    if persistence_mode
+                    in {
+                        ProjectPersistenceMode.EPHEMERAL,
+                        ProjectPersistenceMode.REMOTE,
+                    }
+                    else (req.cwd or os.getcwd())
+                ),
                 model_preset_id=(
                     req.model_preset_id
                     if "model_preset_id" in req.model_fields_set
@@ -1220,6 +1248,10 @@ def create_app(
                 temporary=req.temporary,
                 name=req.name or "",
                 create_missing_cwd=req.create_missing_cwd,
+                persistence_mode=persistence_mode,
+                remote_identity=req.remote,
+                remote_access=req.remote_access,
+                remote_initialization=req.remote_initialization,
                 concurrency=(
                     req.concurrency
                     if req.concurrency is not None
@@ -1417,6 +1449,24 @@ def create_app(
             raise HTTPException(404, "session not found")
         return _session_info(registry, project)
 
+    @app.post("/sessions/{sid}/projection/sync", response_model=dict[str, Any])
+    def sync_session_projection(sid: str) -> dict[str, Any]:
+        project = registry.get_project(sid)
+        if project is None:
+            raise HTTPException(404, "session not found")
+        try:
+            result = registry.sync_remote_projection(sid)
+        except NonNativeProjectError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        except (RemoteTransportError, ValueError) as exc:
+            raise HTTPException(400, str(exc)) from exc
+        return {
+            "ok": True,
+            "file_count": result.file_count,
+            "distorted_paths": list(result.distorted_paths),
+            "projection_synced_at": result.binding.projection_synced_at,
+        }
+
     @app.delete("/sessions/{sid}/hosts/{mid}", response_model=SessionInfo)
     def unbind_session_host(sid: str, mid: str) -> SessionInfo:
         project = registry.get_project(sid)
@@ -1448,6 +1498,8 @@ def create_app(
             raise HTTPException(404, "session not found")
         if project.temporary:
             raise HTTPException(400, "临时项目没有持久工作目录")
+        if project.persistence_mode is ProjectPersistenceMode.REMOTE:
+            raise HTTPException(400, "远端项目没有可打开的本地权威目录")
         if not registry.is_native_project(project):
             raise HTTPException(409, "此设备尚未配置项目路径")
         try:
@@ -2790,6 +2842,12 @@ def _session_info(
     registry: ProjectRegistry, project: Any, *, include_positions: bool = True
 ) -> SessionInfo:
     bound_here = registry.is_native_project(project)
+    remote_binding = (
+        registry.store.read_remote_binding(project.id)
+        if bound_here
+        and project.persistence_mode is ProjectPersistenceMode.REMOTE
+        else None
+    )
     nodes = registry.store.list_nodes(project.id) if include_positions else None
     node_summary = registry.node_summary(project, nodes=nodes)
     return SessionInfo(
@@ -2841,7 +2899,7 @@ def _session_info(
             if project.persistence_mode is ProjectPersistenceMode.EPHEMERAL
             else {
                 "workspace": False,
-                "git_review": False,
+                "git_review": True,
             }
             if project.persistence_mode is ProjectPersistenceMode.REMOTE
             else {
@@ -2850,6 +2908,16 @@ def _session_info(
             }
         ),
         remote=project.remote,
+        projection_ready=(
+            remote_binding is not None
+            and remote_binding.projection_synced_at is not None
+            and Path(remote_binding.projection_path).is_dir()
+        ),
+        projection_synced_at=(
+            remote_binding.projection_synced_at
+            if remote_binding is not None
+            else None
+        ),
     )
 
 

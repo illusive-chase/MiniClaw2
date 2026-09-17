@@ -320,6 +320,74 @@ class CodexProviderTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(events[-1].kind, "done")
 
+    async def test_remote_patch_review_uses_read_only_regular_turn(self) -> None:
+        captured: list[tuple[str, dict[str, Any]]] = []
+        messages = iter(
+            [
+                {
+                    "method": "item/agentMessage/delta",
+                    "params": {"delta": "No actionable findings."},
+                },
+                {
+                    "method": "turn/completed",
+                    "params": {"turn": {"status": "completed"}},
+                },
+            ]
+        )
+
+        class _ClientStub:
+            async def initialize(self) -> dict[str, Any]:
+                return {"serverInfo": {"version": "0.200.0"}}
+
+            async def request(
+                self, method: str, params: dict[str, Any], **_kwargs: Any
+            ) -> dict[str, Any]:
+                captured.append((method, params))
+                if method == "thread/start":
+                    return {"thread": {"id": "thread-1"}}
+                if method == "turn/start":
+                    return {"turn": {"id": "turn-1"}}
+                raise AssertionError(method)
+
+            async def receive(self) -> dict[str, Any]:
+                return next(messages)
+
+            async def respond(self, *_args: Any, **_kwargs: Any) -> None:
+                return None
+
+        class _ClientCtx:
+            async def __aenter__(self) -> Any:
+                return _ClientStub()
+
+            async def __aexit__(self, *_exc: object) -> None:
+                return None
+
+        context = _FakeProviderContext()
+        with patch(
+            "miniclaw2.providers.codex._CodexJsonRpcClient",
+            return_value=_ClientCtx(),
+        ):
+            events = [
+                event
+                async for event in CodexProvider().run_review(
+                    context,  # type: ignore[arg-type]
+                    ReviewSpec(
+                        target=ReviewTarget(),
+                        focus="parsing",
+                        patch="diff --git a/a.py b/a.py\n",
+                    ),
+                )
+            ]
+
+        self.assertNotIn("review/start", [method for method, _ in captured])
+        thread = next(params for method, params in captured if method == "thread/start")
+        turn = next(params for method, params in captured if method == "turn/start")
+        self.assertEqual(thread["sandbox"], "read-only")
+        self.assertNotIn("sandboxPolicy", turn)
+        self.assertIn("diff --git a/a.py", turn["input"][0]["text"])
+        reports = [event.report for event in events if event.kind == "review"]
+        self.assertEqual(reports[0].raw_markdown, "No actionable findings.")
+
     async def test_review_error_classification_uses_json_rpc_code(self) -> None:
         async def collect_for(code: int) -> list[Any]:
             class _ClientStub:

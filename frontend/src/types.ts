@@ -238,6 +238,8 @@ export type SessionInfo = {
     root_path: string;
     root_commit?: string | null;
   } | null;
+  projection_ready?: boolean;
+  projection_synced_at?: number | null;
 };
 
 /** Global project tag (`$MINICLAW_HOME/tags.json`). `color` is a palette key
