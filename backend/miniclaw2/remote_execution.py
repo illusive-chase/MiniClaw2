@@ -69,6 +69,20 @@ if mode == "executor":
     env = dict(os.environ)
     env["PATH"] = os.path.dirname(executable) + os.pathsep + env.get("PATH", "")
     version = subprocess.check_output([executable, "--version"], text=True, env=env).strip()
+    # Codex enforces workspace-write with bubblewrap, which needs an
+    # unprivileged user namespace. Containers that deny CLONE_NEWUSER make
+    # every sandboxed command fail, and Codex then escalates each one to a
+    # human approval. Probe once here so the node fails before its turn
+    # instead of degrading into per-command prompts.
+    try:
+        probe = subprocess.run(
+            [executable, "sandbox", "--", "/bin/sh", "-c", "exit 0"],
+            env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=30,
+        )
+        sandbox_ok = probe.returncode == 0
+        sandbox_error = "" if sandbox_ok else (probe.stderr or probe.stdout or "").strip()[-400:]
+    except (OSError, subprocess.SubprocessError) as exc:
+        sandbox_ok, sandbox_error = False, str(exc)[-400:]
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
         port = sock.getsockname()[1]
@@ -97,7 +111,8 @@ try:
                 time.sleep(0.1)
         if process.poll() is not None:
             raise RuntimeError("exec-server exited during startup")
-        print(json.dumps({"port": port, "version": version}), flush=True)
+        print(json.dumps({"port": port, "version": version,
+                          "sandbox_ok": sandbox_ok, "sandbox_error": sandbox_error}), flush=True)
     while process.poll() is None:
         if select.select([sys.stdin], [], [], 0.2)[0]:
             if not sys.stdin.buffer.read1(1):
@@ -198,6 +213,18 @@ class RemoteExecutor:
             # before an agent turn, not after dispatching a mutating command.
             if self.version not in {"codex-cli 0.149.1", "codex-cli 0.154.0"}:
                 raise RemoteTransportError(f"未验证的远端 Codex 版本：{self.version}")
+            # workspaceWrite relies on the remote bubblewrap sandbox. Where the
+            # kernel or container denies unprivileged user namespaces it cannot
+            # be built, and Codex falls back to asking a human to approve every
+            # single command. Refuse here so the operator sees the cause once,
+            # rather than a node that runs but needs constant approvals.
+            if self.access.sandbox == "workspaceWrite" and info.get("sandbox_ok") is False:
+                raise RemoteTransportError(
+                    "远端 Codex 无法建立 workspaceWrite 沙箱，若继续执行每条命令都会要求人工授权："
+                    f"{info.get('sandbox_error') or '未知原因'}\n"
+                    "该远端（例如禁止非特权 user namespace 的容器）需在远端接入设置中改用"
+                    "「远端容器 / 账号承担隔离」（externalSandbox），由容器或账号承担权限边界。"
+                )
             remote_port = int(info["port"])
             if not 1024 <= remote_port <= 65535:
                 raise RemoteTransportError("远端执行器端口无效")

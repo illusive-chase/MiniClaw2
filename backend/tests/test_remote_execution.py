@@ -211,6 +211,104 @@ def test_executor_missing_codex_reports_configuration_hint(tmp_path: Path) -> No
     assert "Traceback" not in result.stderr
 
 
+def _fake_codex(tmp_path: Path, *, sandbox_exit: int, stderr: str = "") -> Path:
+    """A stand-in codex whose `sandbox` subcommand succeeds or fails on demand."""
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    codex = tmp_path / "codex"
+    codex.write_text(
+        "#!/bin/sh\n"
+        'if [ "$1" = "--version" ]; then echo "codex-cli 0.154.0"; exit 0; fi\n'
+        'if [ "$1" = "sandbox" ]; then\n'
+        f'  printf %s "{stderr}" >&2\n'
+        f"  exit {sandbox_exit}\n"
+        "fi\n"
+        # exec-server: hold the port open so the readiness probe succeeds.
+        'if [ "$1" = "exec-server" ]; then\n'
+        '  for a in "$@"; do last="$a"; done\n'
+        '  port=$(echo "$last" | sed "s#.*:##")\n'
+        f'  exec "{sys.executable}" -c "import socket,sys,time\n'
+        "s=socket.socket(); s.bind((\'127.0.0.1\', int(sys.argv[1]))); s.listen(8); time.sleep(30)\" \"$port\"\n"
+        "fi\n"
+        "exit 0\n"
+    )
+    codex.chmod(0o755)
+    return codex
+
+
+def _supervisor_handshake(tmp_path: Path, codex: Path) -> dict:
+    process = subprocess.Popen(
+        [sys.executable, "-u", "-c", _SUPERVISOR, "executor", str(tmp_path), str(codex)],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    )
+    try:
+        line = process.stdout.readline()
+        assert line, process.stderr.read()
+        return json.loads(line)
+    finally:
+        process.stdin.close()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
+
+
+def test_supervisor_reports_unusable_remote_sandbox(tmp_path: Path) -> None:
+    """The handshake carries the sandbox verdict, not just the version."""
+    bwrap_error = "bwrap: No permissions to create a new namespace"
+    broken = _supervisor_handshake(tmp_path, _fake_codex(tmp_path / "broken", sandbox_exit=1, stderr=bwrap_error))
+    assert broken["sandbox_ok"] is False
+    assert bwrap_error in broken["sandbox_error"]
+    healthy = _supervisor_handshake(tmp_path, _fake_codex(tmp_path / "healthy", sandbox_exit=0))
+    assert healthy["sandbox_ok"] is True
+    assert healthy["sandbox_error"] == ""
+
+
+@pytest.mark.parametrize(
+    "sandbox,sandbox_ok,expect_error",
+    [
+        ("workspaceWrite", False, True),
+        # externalSandbox delegates isolation to the remote container, so a
+        # missing bubblewrap sandbox is expected rather than fatal.
+        ("externalSandbox", False, False),
+        ("workspaceWrite", True, False),
+    ],
+)
+def test_workspace_write_refuses_a_remote_without_a_usable_sandbox(
+    sandbox: str, sandbox_ok: bool, expect_error: bool
+) -> None:
+    asyncio.run(_sandbox_gate(sandbox, sandbox_ok, expect_error))
+
+
+async def _sandbox_gate(sandbox: str, sandbox_ok: bool, expect_error: bool) -> None:
+    handshake = json.dumps({
+        "port": 45671, "version": "codex-cli 0.154.0",
+        "sandbox_ok": sandbox_ok,
+        "sandbox_error": "" if sandbox_ok else "bwrap: No permissions to create a new namespace",
+    }).encode()
+    process = Mock(returncode=None)
+    process.stdout.readline = AsyncMock(return_value=handshake)
+    process.stderr.read = AsyncMock(return_value=b"")
+    process.stdin = Mock()
+    process.wait = AsyncMock(return_value=0)
+    writer = Mock()
+    writer.wait_closed = AsyncMock()
+    access = RemoteAccessConfig(ssh_target="test", codex_remote_experimental=True, sandbox=sandbox)
+    executor = RemoteExecutor(access, "/srv/test")
+    with (
+        patch("asyncio.create_subprocess_exec", AsyncMock(return_value=process)),
+        patch("asyncio.open_connection", AsyncMock(return_value=(Mock(), writer))),
+    ):
+        if expect_error:
+            with pytest.raises(RemoteTransportError, match="每条命令都会要求人工授权"):
+                await executor.__aenter__()
+            return
+        try:
+            assert await executor.__aenter__() is executor
+        finally:
+            await executor.__aexit__()
+
+
 def test_disconnect_cancels_waiting_gate(tmp_path: Path) -> None:
     async def run():
         ctx = context(tmp_path)

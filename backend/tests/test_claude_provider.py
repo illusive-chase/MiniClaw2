@@ -1470,9 +1470,13 @@ class ClaudeNativeStreamTerminalTest(unittest.IsolatedAsyncioTestCase):
             session_id = "claude-session"
             seen_prompt: str | None = None
             seen_confirmation_text: str | None = None
+            seen_system_prompt: str | None = None
 
-            def __init__(self, **_: Any) -> None:
+            def __init__(self, **kwargs: Any) -> None:
                 self.closed = False
+                RecordingSession.seen_system_prompt = kwargs.get(
+                    "system_prompt_append"
+                )
 
             async def start(self) -> None:
                 return None
@@ -1504,6 +1508,7 @@ class ClaudeNativeStreamTerminalTest(unittest.IsolatedAsyncioTestCase):
             project=project,
             request_gate_handler=_request_gate,
             launch_instructions="Shared launch instructions",
+            system_context="Project CONTEXT.md",
         )
         with patch(
             "miniclaw2.providers.claude.ClaudeNativeSession",
@@ -1511,10 +1516,17 @@ class ClaudeNativeStreamTerminalTest(unittest.IsolatedAsyncioTestCase):
         ):
             await _collect(ClaudeProvider().run(ctx))
 
-        self.assertEqual(RecordingSession.seen_prompt, ctx.turn_text())
+        self.assertEqual(
+            RecordingSession.seen_prompt,
+            "Implement the concrete node prompt",
+        )
         self.assertEqual(
             RecordingSession.seen_confirmation_text,
             "Implement the concrete node prompt",
+        )
+        self.assertEqual(
+            RecordingSession.seen_system_prompt,
+            "Shared launch instructions\n\n---\n\nProject CONTEXT.md",
         )
 
     async def test_claude_review_appends_skill_suggestions_to_system_prompt(

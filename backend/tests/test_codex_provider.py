@@ -11,7 +11,11 @@ from typing import Any
 from unittest.mock import patch
 
 from miniclaw2.domain import GateSubtype, ReviewTarget
-from miniclaw2.providers.base import AgentProviderEvent, ReviewSpec
+from miniclaw2.providers.base import (
+    AgentProviderEvent,
+    ReviewSpec,
+    compose_system_prompt,
+)
 from miniclaw2.providers.codex import (
     CodexRpcError,
     CodexProvider,
@@ -170,11 +174,21 @@ class _FakeProviderContext:
             settings_override=settings_override or {},
         )
         self.system_context = ""
+        self.launch_instructions = ""
         self.gates: list[Any] = []
 
     async def request_gate(self, gate: Any) -> dict[str, Any]:
         self.gates.append(gate)
         return {"allow": False, "interrupt": False}
+
+    def turn_text(self) -> str:
+        return self.node.prompt
+
+    def system_prompt(self, *, include_context: bool = True) -> str:
+        return compose_system_prompt(
+            self.launch_instructions,
+            self.system_context if include_context else "",
+        )
 
 
 class CodexProviderTest(unittest.IsolatedAsyncioTestCase):
@@ -1153,7 +1167,7 @@ class CodexProviderTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(provider._retry_deadline)
         self.assertEqual(events[0].event.text, "recovered")  # type: ignore[union-attr]
 
-    async def test_thread_start_uses_project_sandbox_override(self) -> None:
+    async def test_thread_start_separates_system_and_user_prompts(self) -> None:
         provider = CodexProvider()
         ctx = _FakeProviderContext(
             settings_override={
@@ -1161,6 +1175,8 @@ class CodexProviderTest(unittest.IsolatedAsyncioTestCase):
                 "sandbox": "workspace-write",
             }
         )
+        ctx.launch_instructions = "Node instructions"
+        ctx.system_context = "Project CONTEXT.md"
         ctx.skill_materialization = SimpleNamespace(
             extra_roots=["/tmp/alpha"],
             audit=[],
@@ -1218,6 +1234,72 @@ class CodexProviderTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(requests[1]["params"]["sandbox"], "workspace-write")
         self.assertEqual(requests[1]["params"]["approvalPolicy"], "never")
         self.assertEqual(requests[1]["params"]["cwd"], "/tmp/workspace")
+        self.assertEqual(
+            requests[1]["params"]["developerInstructions"],
+            "Node instructions\n\n---\n\nProject CONTEXT.md",
+        )
+        self.assertEqual(
+            requests[2]["params"]["input"][0]["text"],
+            "Create README.md",
+        )
+
+    async def test_thread_resume_updates_system_prompt_and_keeps_user_prompt_clean(
+        self,
+    ) -> None:
+        provider = CodexProvider()
+        ctx = _FakeProviderContext()
+        ctx.node.provider_session_id = "thread-existing"
+        ctx.launch_instructions = "Current node instructions"
+        ctx.system_context = "Current project CONTEXT.md"
+        captured: list[tuple[str, dict[str, Any]]] = []
+
+        class _ClientStub:
+            async def initialize(self) -> dict[str, Any]:
+                return {"serverInfo": {"version": "0.200.0"}}
+
+            async def request(
+                self, method: str, params: dict[str, Any], **_kwargs: Any
+            ) -> dict[str, Any]:
+                captured.append((method, params))
+                if method == "thread/resume":
+                    return {"thread": {"id": "thread-existing"}}
+                if method == "turn/start":
+                    return {"turn": {"id": "turn-1"}}
+                raise AssertionError(method)
+
+            async def receive(self) -> dict[str, Any]:
+                return {
+                    "method": "turn/completed",
+                    "params": {"turn": {"status": "completed"}},
+                }
+
+            async def respond(self, *_args: Any, **_kwargs: Any) -> None:
+                return None
+
+        class _ClientCtx:
+            async def __aenter__(self) -> Any:
+                return _ClientStub()
+
+            async def __aexit__(self, *_exc: object) -> None:
+                return None
+
+        with patch(
+            "miniclaw2.providers.codex._CodexJsonRpcClient",
+            return_value=_ClientCtx(),
+        ):
+            events = [
+                event
+                async for event in provider.run(ctx)  # type: ignore[arg-type]
+            ]
+
+        resume = next(params for method, params in captured if method == "thread/resume")
+        turn = next(params for method, params in captured if method == "turn/start")
+        self.assertEqual(
+            resume["developerInstructions"],
+            "Current node instructions\n\n---\n\nCurrent project CONTEXT.md",
+        )
+        self.assertEqual(turn["input"][0]["text"], "Create README.md")
+        self.assertEqual(events[-1].kind, "done")
 
 
 if __name__ == "__main__":

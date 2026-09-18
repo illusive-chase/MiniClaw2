@@ -24,7 +24,6 @@ from .base import (
     ReviewFinding,
     ReviewReport,
     ReviewSpec,
-    compose_turn_text,
 )
 
 logger = logging.getLogger(__name__)
@@ -115,18 +114,27 @@ class CodexProvider:
                 await _configure_skill_roots(client, context)
                 thread_id = context.node.provider_session_id
                 fresh_thread = not thread_id
+                minimal_mode = getattr(context, "minimal_mode", False)
+                system_prompt = context.system_prompt(
+                    include_context=not minimal_mode
+                )
                 if (
                     fresh_thread
-                    and not getattr(context, "minimal_mode", False)
+                    and not minimal_mode
                     and not _codex_dynamic_tools_capable(initialized)
                 ):
                     raise RuntimeError(
                         "inline ask-user requires codex-cli 0.146.0 or newer"
                     )
                 if not thread_id:
+                    thread_base: dict[str, Any] = {
+                        "cwd": context.project.root_path,
+                    }
+                    if system_prompt:
+                        thread_base["developerInstructions"] = system_prompt
                     start = await client.request(
                         "thread/start",
-                        _thread_params(context, {"cwd": context.project.root_path}),
+                        _thread_params(context, thread_base),
                     )
                     thread_id = start.get("thread", {}).get("id")
                     if not thread_id:
@@ -136,15 +144,15 @@ class CodexProvider:
                         yield AgentProviderEvent(kind="settings", settings={"observed_model_provider": start["modelProvider"]})
                     yield AgentProviderEvent(kind="session", session_id=thread_id)
                 else:
+                    resume_base: dict[str, Any] = {
+                        "threadId": thread_id,
+                        "cwd": context.project.root_path,
+                    }
+                    if system_prompt:
+                        resume_base["developerInstructions"] = system_prompt
                     resumed = await client.request(
                         "thread/resume",
-                        _thread_params(
-                            context,
-                            {
-                                "threadId": thread_id,
-                                "cwd": context.project.root_path,
-                            },
-                        ),
+                        _thread_params(context, resume_base),
                     )
                     resumed_thread_id = resumed.get("thread", {}).get("id")
                     _validate_remote_thread(context, resumed)
@@ -155,19 +163,9 @@ class CodexProvider:
                         yield AgentProviderEvent(kind="session", session_id=thread_id)
 
                 self._thread_id = thread_id
-                turn_text = compose_turn_text(
-                    context.node.prompt,
-                    getattr(context, "launch_instructions", ""),
-                )
-                # Minimal mode (out-of-band framework agent) deliberately
-                # does not inject the project's own CONTEXT.md — the agent
-                # reads it as a tool when needed.
-                minimal_mode = getattr(context, "minimal_mode", False)
-                if fresh_thread and context.system_context and not minimal_mode:
-                    turn_text = f"{context.system_context}\n\n{turn_text}"
                 turn = await client.request(
                     "turn/start",
-                    _turn_params(context, thread_id, turn_text),
+                    _turn_params(context, thread_id, context.turn_text()),
                 )
                 turn_id = turn.get("turn", {}).get("id")
                 if not turn_id:
@@ -226,6 +224,7 @@ class CodexProvider:
                     )
                     return
                 await _configure_skill_roots(client, context)
+                system_prompt = context.system_prompt()
                 thread_id = context.node.provider_session_id
                 if not thread_id and not _codex_dynamic_tools_capable(initialized):
                     yield AgentProviderEvent(
@@ -237,8 +236,8 @@ class CodexProvider:
                     thread_base: dict[str, Any] = {
                         "cwd": context.project.root_path,
                     }
-                    if context.system_context:
-                        thread_base["developerInstructions"] = context.system_context
+                    if system_prompt:
+                        thread_base["developerInstructions"] = system_prompt
                     thread_params = _thread_params(context, thread_base)
                     if spec.patch is not None:
                         thread_params["sandbox"] = "read-only"
@@ -252,9 +251,13 @@ class CodexProvider:
                         yield AgentProviderEvent(kind="settings", settings={"observed_model_provider": started["modelProvider"]})
                     yield AgentProviderEvent(kind="session", session_id=thread_id)
                 else:
-                    resume_params = _thread_params(
-                        context, {"threadId": thread_id, "cwd": context.project.root_path},
-                    )
+                    resume_base: dict[str, Any] = {
+                        "threadId": thread_id,
+                        "cwd": context.project.root_path,
+                    }
+                    if system_prompt:
+                        resume_base["developerInstructions"] = system_prompt
+                    resume_params = _thread_params(context, resume_base)
                     if spec.patch is not None:
                         resume_params["sandbox"] = "read-only"
                     resumed = await client.request(

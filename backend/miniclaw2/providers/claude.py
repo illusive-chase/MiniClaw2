@@ -71,8 +71,8 @@ class ClaudeProvider:
                 model=self._resolve_model(context),
                 effort=self._resolve_effort(context),
                 session_id=self._resume_session_id(context),
-                system_prompt_append=(
-                    context.system_context if not context.minimal_mode else ""
+                system_prompt_append=context.system_prompt(
+                    include_context=not context.minimal_mode
                 ),
                 tool_allowlist=(
                     list(context.tool_allowlist or [])
@@ -155,7 +155,7 @@ class ClaudeProvider:
                 model=self._resolve_model(context),
                 effort=self._resolve_effort(context),
                 session_id=self._resume_session_id(context),
-                system_prompt_append=context.system_context,
+                system_prompt_append=context.system_prompt(),
                 plugin_dir=getattr(
                     getattr(context, "skill_materialization", None),
                     "plugin_dir",

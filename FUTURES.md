@@ -328,6 +328,18 @@ ready、shell 和 thread cwd 回显检查；断线后的远端写入结果可能
 通过重新发送回合或去掉 environment 自动恢复。externalSandbox 的隔离由
 远端容器或账号承担，而不是 Codex 提供的进程级沙箱。
 
+workspaceWrite 的强制手段是 Codex 自带的 bubblewrap，它要求远端能创建
+非特权 user namespace。禁止这一点的容器（AutoDL 的 Docker 实例即如此，
+`docker-default` AppArmor + seccomp 拦下 `CLONE_NEWUSER`，且 `/proc/sys`
+只读、无 root 可改）无法建成沙箱：Codex 不会失败退出，而是把每条命令都
+升级成一次人工授权，表现为「必须逐条批准才能起命令」。因此启动握手除
+版本外还必须回报一次沙箱自检结果，workspaceWrite 下自检失败即拒绝启动
+并提示改用 externalSandbox。该判据取自沙箱能否建立，不能用内核的
+`unprivileged_userns_clone` 值推断——AutoDL 上该值为 1 而 userns 依然被拒。
+Codex 的 `features.use_legacy_landlock` 在此类容器中确实可用（Landlock ABI
+可用且写入约束真实生效），但它只支持只读，与任何需要运行时强制的权限
+配置互斥，故不能作为 workspaceWrite 的替代后端。
+
 独立的 CONTEXT 初始化/刷新助手尚无远端控制通道，不能把本机源码投影当作
 权威文件写入；远端 CONTEXT 目前需由普通 Codex 执行任务维护。源码投影只含
 Git 跟踪文件，未 add 的新文件对本机 Claude 分析仍不可见。项目并发限制只

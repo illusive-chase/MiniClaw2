@@ -4,34 +4,46 @@ from __future__ import annotations
 
 import unittest
 
-from miniclaw2.providers.base import compose_turn_text
+from miniclaw2.domain import Node, Project
+from miniclaw2.providers.base import AgentProviderContext, compose_system_prompt
 
 
-class ComposeTurnTextTests(unittest.TestCase):
-    def test_prompt_is_unchanged_without_launch_instructions(self) -> None:
-        prompt = "Implement the requested workflow."
-
-        self.assertEqual(compose_turn_text(prompt), prompt)
-
-    def test_launch_instructions_are_distinguished_from_node_task(self) -> None:
+class ComposePromptTests(unittest.TestCase):
+    def test_launch_instructions_precede_context_in_system_prompt(self) -> None:
         instructions = "Framework constraints."
-        prompt = "Implement the requested workflow."
+        context = "Project CONTEXT.md"
 
-        composed = compose_turn_text(prompt, instructions)
+        composed = compose_system_prompt(instructions, context)
 
         self.assertTrue(composed.startswith(f"{instructions}\n\n---\n\n"))
-        self.assertIn("# MiniClaw2 — task to execute", composed)
-        self.assertIn("node instructions end above", composed)
-        self.assertIn("not another framework instruction", composed)
-        self.assertIn("primary objective", composed)
-        self.assertTrue(composed.endswith(prompt))
+        self.assertTrue(composed.endswith(context))
 
-    def test_user_task_is_preserved_verbatim(self) -> None:
+    def test_user_turn_is_only_the_node_prompt(self) -> None:
         prompt = "# Goal\n\nKeep this markdown structure.\n"
+        context = AgentProviderContext(
+            node=Node(project_id="p", prompt=prompt, model_preset_id="gpt-5.6"),
+            project=Project(root_path="/tmp/workspace"),
+            request_gate_handler=None,  # type: ignore[arg-type]
+            launch_instructions="Framework constraints.",
+            system_context="Project CONTEXT.md",
+        )
 
-        composed = compose_turn_text(prompt, "Framework constraints.")
+        self.assertEqual(context.turn_text(), prompt)
+        self.assertNotIn("Framework constraints.", context.turn_text())
 
-        self.assertTrue(composed.endswith(prompt))
+    def test_system_prompt_can_omit_context_without_dropping_instructions(self) -> None:
+        context = AgentProviderContext(
+            node=Node(project_id="p", model_preset_id="gpt-5.6"),
+            project=Project(root_path="/tmp/workspace"),
+            request_gate_handler=None,  # type: ignore[arg-type]
+            launch_instructions="Framework constraints.",
+            system_context="Project CONTEXT.md",
+        )
+
+        self.assertEqual(
+            context.system_prompt(include_context=False),
+            "Framework constraints.",
+        )
 
 
 if __name__ == "__main__":
