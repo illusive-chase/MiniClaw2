@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -13,7 +14,7 @@ import pytest
 from miniclaw2.domain import Node, Project, RemoteAccessConfig, RemoteProjectIdentity
 from miniclaw2.providers.base import AgentProviderContext
 from miniclaw2.providers.codex import CodexProvider, _thread_params, _turn_params
-from miniclaw2.remote_execution import RemoteExecutor, register_environment, ssh_command, start_verifier, stop_process
+from miniclaw2.remote_execution import _EXECUTABLE_RESOLVER, _SUPERVISOR, RemoteExecutor, register_environment, ssh_command, start_verifier, stop_process
 from miniclaw2.remote_graph import RemoteGraphTools
 from miniclaw2.remote_transport import RemoteTransportError, SSHProjectTransport
 
@@ -156,6 +157,58 @@ async def _experimental_flag() -> None:
             async with RemoteExecutor(RemoteAccessConfig(ssh_target="test"), "/srv/test"):
                 pass
     spawn.assert_not_called()
+
+
+def test_executor_resolves_bare_codex_from_login_shell_path(tmp_path: Path) -> None:
+    login_bin = tmp_path / "login-bin"
+    login_bin.mkdir()
+    shell = tmp_path / "login-shell"
+    shell.write_text(
+        "#!/bin/sh\n"
+        "printf 'PATH=%s\\n' \"$MINICLAW_TEST_LOGIN_PATH\"\n"
+    )
+    shell.chmod(0o755)
+    codex = login_bin / "codex"
+    codex.write_text("#!/bin/sh\n")
+    codex.chmod(0o755)
+    result = subprocess.run(
+        [sys.executable, "-c", (
+            "import os, pwd, shutil, subprocess\n"
+            + _EXECUTABLE_RESOLVER
+            + "\nprint(resolve_executable('codex') or '')\n"
+        )],
+        text=True,
+        capture_output=True,
+        env={
+            **os.environ,
+            "PATH": "/usr/bin:/bin",
+            "SHELL": str(shell),
+            "MINICLAW_TEST_LOGIN_PATH": f"{login_bin}:/usr/bin:/bin",
+        },
+        timeout=5,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == str(codex)
+
+
+def test_executor_missing_codex_reports_configuration_hint(tmp_path: Path) -> None:
+    shell = tmp_path / "empty-login-shell"
+    shell.write_text("#!/bin/sh\nprintf 'PATH=/usr/bin:/bin\\n'\n")
+    shell.chmod(0o755)
+    result = subprocess.run(
+        [
+            sys.executable, "-u", "-c", _SUPERVISOR,
+            "executor", str(tmp_path), "missing-miniclaw-codex",
+        ],
+        input="",
+        text=True,
+        capture_output=True,
+        env={**os.environ, "PATH": "/usr/bin:/bin", "SHELL": str(shell)},
+        timeout=5,
+    )
+    assert result.returncode == 127
+    assert "填写绝对 codex_path" in result.stderr
+    assert "Traceback" not in result.stderr
 
 
 def test_disconnect_cancels_waiting_gate(tmp_path: Path) -> None:

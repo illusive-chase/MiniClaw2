@@ -30,14 +30,44 @@ def ssh_command(access: RemoteAccessConfig, command: list[str]) -> list[str]:
 
 # The supervisor owns a process group, never a name-matched process. Closing
 # SSH stdin reaps the executor AND its children, including on cancellation.
+_EXECUTABLE_RESOLVER = r'''
+def resolve_executable(value):
+    value = os.path.expanduser(value)
+    resolved = shutil.which(value)
+    if resolved or os.path.dirname(value):
+        return resolved
+    try:
+        shell = os.environ.get("SHELL") or pwd.getpwuid(os.getuid()).pw_shell
+        output = subprocess.check_output(
+            [shell, "-lic", "env"], text=True, stdin=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL, timeout=5,
+        )
+    except (KeyError, OSError, subprocess.SubprocessError):
+        return None
+    login_path = next(
+        (line[5:] for line in reversed(output.splitlines()) if line.startswith("PATH=")),
+        "",
+    )
+    return shutil.which(value, path=login_path)
+'''
+
 _SUPERVISOR = r'''
-import json, os, select, signal, socket, subprocess, sys, time
+import json, os, pwd, select, shutil, signal, socket, subprocess, sys, time
+''' + _EXECUTABLE_RESOLVER + r'''
 mode, root, executable = sys.argv[1:4]
 os.chdir(root)
 if mode == "executor":
+    requested_executable = executable
+    executable = resolve_executable(executable)
+    if executable is None:
+        print(
+            "找不到远端 Codex 可执行文件 " + repr(requested_executable)
+            + "；请在远端安装 Codex，或在远端接入设置中填写绝对 codex_path",
+            file=sys.stderr, flush=True,
+        )
+        raise SystemExit(127)
     env = dict(os.environ)
-    if os.path.dirname(executable):
-        env["PATH"] = os.path.dirname(executable) + os.pathsep + env.get("PATH", "")
+    env["PATH"] = os.path.dirname(executable) + os.pathsep + env.get("PATH", "")
     version = subprocess.check_output([executable, "--version"], text=True, env=env).strip()
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
@@ -158,7 +188,10 @@ class RemoteExecutor:
             self.stderr_task = asyncio.create_task(self._drain_stderr())
             raw = await asyncio.wait_for(self.process.stdout.readline(), 20)
             if not raw:
-                raise RemoteTransportError(f"远端执行器未启动：{self.stderr_tail}")
+                await stop_process(self.process)
+                await self.stderr_task
+                detail = self.stderr_tail.strip() or f"SSH 进程退出码 {self.process.returncode}"
+                raise RemoteTransportError(f"远端执行器未启动：{detail}")
             info = json.loads(raw)
             self.version = str(info["version"])
             # Only this protocol family has been tested. Unknown versions fail
