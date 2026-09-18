@@ -3,12 +3,24 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from miniclaw2.contextspace import create_planspace
-from miniclaw2.domain import Node, NodeState, Project, RemoteAccessConfig, RemoteProjectBinding, RemoteProjectIdentity
+from miniclaw2.domain import (
+    Category,
+    Node,
+    NodeKind,
+    NodeState,
+    Project,
+    RemoteAccessConfig,
+    RemoteProjectBinding,
+    RemoteProjectIdentity,
+    ReviewBrief,
+    ReviewSubtype,
+)
 from miniclaw2.providers.base import AgentProviderEvent
 from miniclaw2.registry import ProjectRegistry
 from miniclaw2.remote_execution import execution_binding, local_codex_home
@@ -84,6 +96,87 @@ def test_claude_has_local_read_only_role(tmp_path: Path) -> None:
     assert "本机只读设计分析" in instructions
     assert "不能" in instructions or "不修改源码" in instructions
     assert node.settings_snapshot["execution_role"] == "local_read_only"
+
+
+def test_remote_verifier_using_miniclaw_home_runs_in_local_projection(
+    tmp_path: Path,
+) -> None:
+    store, project, lane = setup_remote(tmp_path)
+    projection = Path(project.root_path)
+    projection.mkdir(parents=True, exist_ok=True)
+    marker = projection / "verified"
+    script = tmp_path / "verify-framework-state.sh"
+    script.write_text(
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        'test -f "$MINICLAW_HOME/projects/$MINICLAW_PROJECT_ID/project.json"\n'
+        'printf "%s" "$MINICLAW_HOME" > verified\n',
+        encoding="utf-8",
+    )
+    node = store.create_node(
+        Node(
+            project_id=project.id,
+            kind=NodeKind.VERIFIER,
+            category=Category.REVIEW,
+            subtype=ReviewSubtype.PROGRAMMATIC_REVIEW,
+            brief=ReviewBrief(check_what="框架状态", expected="可读取", abnormal="缺失"),
+            verify_script_ref=str(script),
+            planspace_id=lane,
+            state=NodeState.QUEUED,
+        )
+    )
+
+    with (
+        patch("miniclaw2.runner.git_head", return_value="a" * 40),
+        patch("miniclaw2.runner.start_verifier", new_callable=AsyncMock) as remote,
+    ):
+        asyncio.run(NodeRunner(node, project, store, AsyncMock()).run())
+
+    assert node.state is NodeState.DONE, node.error
+    remote.assert_not_awaited()
+    assert marker.read_text(encoding="utf-8") == str(store.root)
+
+
+def test_remote_verifier_without_framework_state_stays_remote(tmp_path: Path) -> None:
+    store, project, lane = setup_remote(tmp_path)
+    script = tmp_path / "verify-source.sh"
+    script.write_text("#!/usr/bin/env bash\nprintf ok\n", encoding="utf-8")
+    node = store.create_node(
+        Node(
+            project_id=project.id,
+            kind=NodeKind.VERIFIER,
+            category=Category.REVIEW,
+            subtype=ReviewSubtype.PROGRAMMATIC_REVIEW,
+            brief=ReviewBrief(check_what="源码", expected="通过", abnormal="失败"),
+            verify_script_ref=str(script),
+            planspace_id=lane,
+            state=NodeState.QUEUED,
+        )
+    )
+    process = SimpleNamespace(
+        stdin=None,
+        stdout=SimpleNamespace(read=AsyncMock(return_value=b"ok")),
+        stderr=SimpleNamespace(read=AsyncMock(return_value=b"")),
+        returncode=0,
+        wait=AsyncMock(return_value=0),
+    )
+
+    with (
+        patch("miniclaw2.runner.git_head", return_value="a" * 40),
+        patch(
+            "miniclaw2.runner.start_verifier",
+            new=AsyncMock(return_value=process),
+        ) as remote,
+    ):
+        asyncio.run(NodeRunner(node, project, store, AsyncMock()).run())
+
+    assert node.state is NodeState.DONE, node.error
+    remote.assert_awaited_once()
+    assert remote.await_args.args[1:4] == (
+        project.remote.root_path,
+        project.id,
+        script.read_text(encoding="utf-8"),
+    )
 
 
 @pytest.mark.parametrize("change", ["target", "cwd", "profile", "host", "backend", "access"])

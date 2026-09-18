@@ -187,6 +187,7 @@ class NodeRunner:
         self._gate_records: dict[str, HumanGate] = {}
         self._provider: AgentProvider | None = None
         self._process: asyncio.subprocess.Process | None = None
+        self._process_is_remote = False
         self._lane_root: Path | None = None
         self._pre_snapshot: dict[str, str] = {}
         self._skill_materialization: SkillMaterialization | None = None
@@ -231,7 +232,7 @@ class NodeRunner:
         if self._provider is not None:
             await self._provider.interrupt()
         if self._process is not None and self._process.returncode is None:
-            if self.project.persistence_mode is ProjectPersistenceMode.REMOTE:
+            if self._process_is_remote:
                 await stop_process(self._process)
                 return
             self._process.terminate()
@@ -806,14 +807,19 @@ class NodeRunner:
             env["CI"] = "1"
             env["MINICLAW_PROJECT_ID"] = self.project.id
             env["MINICLAW_HOME"] = str(self.store.root)
-            remote_verifier = self.project.persistence_mode is ProjectPersistenceMode.REMOTE
+            script_text = script_path.read_text(encoding="utf-8")
+            remote_verifier = (
+                self.project.persistence_mode is ProjectPersistenceMode.REMOTE
+                and not _verifier_requires_local_framework_state(script_text)
+            )
             if remote_verifier:
                 binding = self.store.read_remote_binding(self.project.id)
                 if binding is None or self.project.remote is None:
                     raise ValueError("远端接入配置缺失")
+                self._process_is_remote = True
                 self._process = await start_verifier(
                     binding.remote, self.project.remote.root_path,
-                    self.project.id, script_path.read_text(encoding="utf-8"),
+                    self.project.id, script_text,
                     transport=SSHProjectTransport(binding.remote, project_id=self.project.id, store_root=self.store.root),
                 )
             else:
@@ -912,13 +918,14 @@ class NodeRunner:
             error_msg = f"Unexpected verifier error: {exc}"
             await self._emit(ErrorEvent(message=error_msg))
         finally:
-            if self._process is not None and self.project.persistence_mode is ProjectPersistenceMode.REMOTE:
+            if self._process is not None and self._process_is_remote:
                 await stop_process(self._process)
             if output_task is not None:
                 if not output_task.done():
                     output_task.cancel()
                 await asyncio.gather(output_task, return_exceptions=True)
             self._process = None
+            self._process_is_remote = False
 
         if error_msg is not None:
             self.node.error = error_msg
@@ -2291,6 +2298,11 @@ def _human_review_prose(response: Any) -> str:
         if isinstance(prose, str):
             return prose
     return ""
+
+
+def _verifier_requires_local_framework_state(script: str) -> bool:
+    """Keep verifiers using the local store contract beside that store."""
+    return re.search(r"\bMINICLAW_HOME\b", script) is not None
 
 
 def _decode_process_output(raw: bytes | str | None) -> str:
