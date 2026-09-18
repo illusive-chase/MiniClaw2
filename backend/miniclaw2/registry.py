@@ -638,8 +638,54 @@ class ProjectRegistry:
     def require_execution_project(self, pid: str) -> Project:
         project = self.require_native(pid)
         if project.persistence_mode is ProjectPersistenceMode.REMOTE:
-            raise ValueError("远端节点执行通道尚未实现")
+            if self.store.read_remote_binding(pid) is None:
+                raise ValueError("远端接入配置缺失")
         return project
+
+    def _remote_resume_settings(self, project: Project, source: Node) -> dict[str, Any]:
+        from .remote_execution import execution_binding, local_codex_home
+
+        if project.persistence_mode is not ProjectPersistenceMode.REMOTE:
+            return {}
+        if not self._can_resume_provider_session(source) or not source.provider_session_id:
+            raise ValueError("远端会话保存在启动设备上；当前设备不可续接，请新建执行")
+        binding = self.store.read_remote_binding(project.id)
+        if binding is None or project.remote is None:
+            raise ValueError("远端接入配置缺失")
+        expected = execution_binding(project.remote, binding.remote)
+        if source.settings_snapshot.get("execution_binding") != expected:
+            raise ValueError("续接来源的远端身份、目录或沙箱不匹配")
+        role = source.settings_snapshot.get("execution_role")
+        if not role:
+            raise ValueError("续接来源缺少执行角色审计记录")
+        snapshot: dict[str, Any] = {"execution_binding": expected, "resume_execution_role": role}
+        if source.provider == "codex":
+            home = source.settings_snapshot.get("observed_codex_home")
+            if not home or home != local_codex_home():
+                raise ValueError("续接来源的 Codex profile 不匹配或缺少审计记录")
+            snapshot["resume_codex_home"] = home
+            provider = source.settings_snapshot.get("observed_model_provider")
+            if not provider:
+                raise ValueError("续接来源缺少实际模型后端审计记录")
+            snapshot["resume_model_provider"] = provider
+        return snapshot
+
+    def _validate_remote_execution(self, project: Project, node: Node) -> None:
+        from .remote_execution import execution_role
+
+        if project.persistence_mode is not ProjectPersistenceMode.REMOTE:
+            return
+        binding = self.store.read_remote_binding(project.id)
+        if binding is None:
+            raise ValueError("远端接入配置缺失")
+        source_role = node.settings_snapshot.get("resume_execution_role")
+        if source_role and source_role != execution_role(node):
+            raise ValueError("续接不能改变本地分析、patch 审查与远端执行角色，请新建执行")
+        if node.agent_op_kind in {"library_edit", "principle_edit"}:
+            raise ValueError("本机资料库编辑请在本机项目中执行")
+        if node.kind is NodeKind.AGENT and node.provider == "codex" and node.subtype is not ReviewSubtype.CODE_REVIEW:
+            if not binding.remote.codex_remote_experimental:
+                raise ValueError("尚未启用 Codex 远端实验执行，请在远端设置中启用")
 
     def require_native_node(self, project: Project, node: Node) -> Node:
         if not self.is_native_node(project, node):
@@ -721,6 +767,7 @@ class ProjectRegistry:
         remote_identity: RemoteProjectIdentity | None = None,
         remote_access: RemoteAccessConfig | None = None,
         remote_initialization: str = "existing",
+        remote_clone_url: str | None = None,
     ) -> Project:
         if provider is not None:
             raise ValueError("provider is no longer accepted; use model_preset_id")
@@ -763,8 +810,10 @@ class ProjectRegistry:
                 raise ValueError(
                     "remote repository fingerprint must be observed by the server"
                 )
-            if remote_initialization != "existing":
-                raise ValueError("only existing remote repositories are supported")
+            if remote_initialization not in {"existing", "cloned", "init"}:
+                raise ValueError("远端初始化方式无效")
+            if remote_initialization != "cloned" and remote_clone_url:
+                raise ValueError("仅克隆模式接受克隆源")
             project = Project(
                 root_path=UNBOUND_ROOT_PATH,
                 name=name,
@@ -781,10 +830,15 @@ class ProjectRegistry:
             ).resolve(strict=False) / project.id
             transport = self._remote_transport_pool().get(project.id, remote_access)
             try:
+                if remote_initialization != "existing":
+                    transport.initialize_repository(remote_identity.root_path, remote_initialization, remote_clone_url)
                 probe = transport.probe_repository(remote_identity.root_path)
-            except RemoteTransportError as exc:
+            except (RemoteTransportError, ValueError) as exc:
                 self._remote_transport_pool().close(project.id)
-                raise ValueError(str(exc)) from exc
+                detail = str(exc)
+                if remote_initialization != "existing":
+                    detail += f"；远端目录 {remote_identity.root_path} 未自动删除，请人工检查"
+                raise ValueError(detail) from exc
             project.root_path = str(projection)
             project.remote = remote_identity.model_copy(
                 update={"root_commit": probe.root_commit}
@@ -799,6 +853,8 @@ class ProjectRegistry:
                     binding,
                     root_commits=probe.root_commits,
                     initialized_at=time.time(),
+                    initialization_mode=remote_initialization,
+                    clone_url=remote_clone_url,
                 )
             except Exception:
                 self._remote_transport_pool().close(project.id)
@@ -816,7 +872,7 @@ class ProjectRegistry:
                     exc_info=True,
                 )
             return project
-        if remote_identity is not None or remote_access is not None:
+        if remote_identity is not None or remote_access is not None or remote_clone_url or remote_initialization != "existing":
             raise ValueError("local projects do not accept remote project configuration")
         if temporary:
             root_path = create_temporary_root()
@@ -1102,6 +1158,28 @@ class ProjectRegistry:
         )
         self.store.write_remote_binding(pid, result.binding)
         return result
+
+    def configure_remote_access(self, pid: str, access: RemoteAccessConfig) -> Project:
+        project = self.require_execution_project(pid)
+        if project.persistence_mode is not ProjectPersistenceMode.REMOTE or project.remote is None:
+            raise ValueError("项目不是远端项目")
+        if not self.quiescent(pid):
+            raise RemoteProjectionBusyError("项目有执行中或排队任务，暂不能修改远端接入")
+        binding = self.store.read_remote_binding(pid)
+        if binding is None:
+            raise ValueError("远端接入配置缺失")
+        transport = self._remote_transport_pool().get(pid, access)
+        try:
+            probe = transport.probe_repository(project.remote.root_path)
+            if probe.root_commit != project.remote.root_commit:
+                raise ValueError("远端仓库指纹不匹配")
+        except Exception:
+            self._remote_transport_pool().close(pid)
+            self._configure_remote_git_execution(project)
+            raise
+        self.store.write_remote_binding(pid, binding.model_copy(update={"remote": access}))
+        self._configure_remote_git_execution(project)
+        return project
 
     def rename_project(self, pid: str, name: str) -> Project | None:
         rt = self._runtimes.get(pid)
@@ -1760,6 +1838,8 @@ class ProjectRegistry:
             store_root=self.store.root,
         )
         settings_snapshot: dict[str, Any] = {}
+        if resume_source is not None:
+            settings_snapshot.update(self._remote_resume_settings(rt.project, resume_source))
         if extra_principle_ids:
             settings_snapshot["extra_principles"] = extra_principle_ids
         if skill_selections:
@@ -1795,6 +1875,7 @@ class ProjectRegistry:
             scheduled_deps=list(scheduled_deps or []),
             settings_snapshot=settings_snapshot,
         )
+        self._validate_remote_execution(rt.project, node)
         self.store.create_node(node)
         self._schedule_workspace_node(rt.project, node, None, created=True)
         if node.category is Category.REVIEW:
@@ -2503,12 +2584,14 @@ class ProjectRegistry:
                     "Continuation source has no provider session to resume.",
                 )
             node.model_preset_id = resume_parent.model_preset_id
+            node.settings_snapshot.update(self._remote_resume_settings(rt.project, resume_parent))
             node.provider_session_id = (
                 resume_parent.provider_session_id
                 if self._can_resume_provider_session(resume_parent)
                 else None
             )
             node.parent_node_id = resume_parent.id
+        self._validate_remote_execution(rt.project, node)
         try:
             self.store.write_node_preview(pid, node.id, render_virtual_preview(node))
         except Exception:  # noqa: BLE001

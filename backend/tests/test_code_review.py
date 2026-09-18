@@ -133,6 +133,8 @@ class CodeReviewRunnerTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(repo.exists())
 
     async def test_remote_review_passes_captured_patch_to_provider(self) -> None:
+        from miniclaw2.domain import RemoteAccessConfig, RemoteProjectBinding
+
         with tempfile.TemporaryDirectory() as raw:
             repo, store, project, node = self._setup(Path(raw))
             project.persistence_mode = ProjectPersistenceMode.REMOTE
@@ -141,6 +143,9 @@ class CodeReviewRunnerTests(unittest.IsolatedAsyncioTestCase):
                 root_path="/srv/project",
                 root_commit="a" * 40,
             )
+            store.write_remote_binding(project.id, RemoteProjectBinding(
+                remote=RemoteAccessConfig(ssh_target="gpu-box"), projection_path=str(repo),
+            ))
             (repo / "change.py").write_text("print('remote')\n", encoding="utf-8")
             provider = _ReviewProvider()
             runner = NodeRunner(

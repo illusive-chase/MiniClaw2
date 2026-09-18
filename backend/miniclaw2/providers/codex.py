@@ -6,14 +6,17 @@ import asyncio
 import json
 import logging
 import os
+import re
 from collections import deque
 from collections.abc import AsyncIterator
+from contextlib import AsyncExitStack
 from pathlib import Path
 from typing import Any
 
 from ..domain import GateSubtype
 from ..events import Activity, TextDelta, Thinking, Usage
 from ..model_catalog import get_model_preset
+from ..remote_execution import RemoteExecutor, register_environment
 from .base import (
     AgentProviderContext,
     AgentProviderEvent,
@@ -68,11 +71,12 @@ class CodexProvider:
         self._turn_id: str | None = None
         self._stop = False
         self._retry_deadline: float | None = None
+        self._remote_executor: RemoteExecutor | None = None
 
     async def run(self, context: AgentProviderContext) -> AsyncIterator[AgentProviderEvent]:
         self._stop = False
         self._retry_deadline = None
-        async with _CodexJsonRpcClient(
+        async with AsyncExitStack() as stack, _CodexJsonRpcClient(
             cwd=context.project.root_path,
             env_overrides=getattr(
                 getattr(context, "skill_materialization", None),
@@ -84,6 +88,28 @@ class CodexProvider:
             try:
                 initialized = await client.initialize()
                 observed_settings = _observed_codex_settings(initialized)
+                remote = getattr(context, "remote_access", None)
+                if remote is not None:
+                    if not re.search(r"\b0\.154\.0\b", str(initialized.get("userAgent", ""))):
+                        raise RuntimeError("远端实验执行当前仅验证本机 Codex 0.154.0，拒绝未知版本")
+                    if context.project.remote is None:
+                        raise RuntimeError("远端项目身份缺失")
+                    expected_home = context.node.settings_snapshot.get("resume_codex_home") or (
+                        context.node.settings_snapshot.get("observed_codex_home") if context.node.provider_session_id else None
+                    )
+                    if expected_home and observed_settings.get("observed_codex_home") != expected_home:
+                        raise RuntimeError("续接会话的 Codex profile 已改变，拒绝启动")
+                    if not observed_settings.get("observed_codex_home"):
+                        raise RuntimeError("Codex 未报告实际 profile，拒绝远端执行")
+                    executor = await stack.enter_async_context(RemoteExecutor(remote, context.project.remote.root_path))
+                    self._remote_executor = executor
+                    context.remote_environment_id = f"miniclaw2-{context.project.id}"
+                    info = await register_environment(client, executor, context.remote_environment_id)
+                    observed_settings.update({
+                        "observed_remote_executor_version": executor.version,
+                        "observed_environment_id": context.remote_environment_id,
+                        "observed_remote_shell": info["shell"],
+                    })
                 if observed_settings:
                     yield AgentProviderEvent(kind="settings", settings=observed_settings)
                 await _configure_skill_roots(client, context)
@@ -105,6 +131,9 @@ class CodexProvider:
                     thread_id = start.get("thread", {}).get("id")
                     if not thread_id:
                         raise RuntimeError(f"Codex thread/start returned no thread id: {start}")
+                    _validate_remote_thread(context, start)
+                    if start.get("modelProvider"):
+                        yield AgentProviderEvent(kind="settings", settings={"observed_model_provider": start["modelProvider"]})
                     yield AgentProviderEvent(kind="session", session_id=thread_id)
                 else:
                     resumed = await client.request(
@@ -118,6 +147,9 @@ class CodexProvider:
                         ),
                     )
                     resumed_thread_id = resumed.get("thread", {}).get("id")
+                    _validate_remote_thread(context, resumed)
+                    if resumed.get("modelProvider"):
+                        yield AgentProviderEvent(kind="settings", settings={"observed_model_provider": resumed["modelProvider"]})
                     if resumed_thread_id and resumed_thread_id != thread_id:
                         thread_id = resumed_thread_id
                         yield AgentProviderEvent(kind="session", session_id=thread_id)
@@ -161,6 +193,7 @@ class CodexProvider:
             finally:
                 self._client = None
                 self._retry_deadline = None
+                self._remote_executor = None
 
     async def run_review(
         self, context: AgentProviderContext, spec: ReviewSpec
@@ -215,15 +248,21 @@ class CodexProvider:
                         raise RuntimeError(
                             f"Codex thread/start returned no thread id: {started}"
                         )
+                    if started.get("modelProvider"):
+                        yield AgentProviderEvent(kind="settings", settings={"observed_model_provider": started["modelProvider"]})
                     yield AgentProviderEvent(kind="session", session_id=thread_id)
                 else:
+                    resume_params = _thread_params(
+                        context, {"threadId": thread_id, "cwd": context.project.root_path},
+                    )
+                    if spec.patch is not None:
+                        resume_params["sandbox"] = "read-only"
                     resumed = await client.request(
                         "thread/resume",
-                        _thread_params(
-                            context,
-                            {"threadId": thread_id, "cwd": context.project.root_path},
-                        ),
+                        resume_params,
                     )
+                    if resumed.get("modelProvider"):
+                        yield AgentProviderEvent(kind="settings", settings={"observed_model_provider": resumed["modelProvider"]})
                     resumed_id = resumed.get("thread", {}).get("id")
                     if resumed_id and resumed_id != thread_id:
                         thread_id = resumed_id
@@ -309,6 +348,19 @@ class CodexProvider:
         client: "_CodexJsonRpcClient",
     ) -> dict[str, Any]:
         deadline = self._retry_deadline
+        if self._remote_executor is not None:
+            receive = asyncio.create_task(client.receive())
+            try:
+                while not receive.done():
+                    self._remote_executor.check()
+                    if deadline is not None and asyncio.get_running_loop().time() >= deadline:
+                        raise TimeoutError(_codex_retry_stall_message())
+                    await asyncio.wait({receive}, timeout=0.2)
+                return receive.result()
+            finally:
+                if not receive.done():
+                    receive.cancel()
+                    await asyncio.gather(receive, return_exceptions=True)
         if deadline is None:
             return await client.receive()
         loop = asyncio.get_running_loop()
@@ -332,6 +384,10 @@ class CodexProvider:
         method = message.get("method")
         params = message.get("params") or {}
 
+        if method == "thread/environment/disconnected" and getattr(context, "remote_access", None) is not None:
+            yield AgentProviderEvent(kind="error", error="远端环境已断开；操作结果可能未知，不会回落本地或自动重试")
+            return
+
         if method != "error" and method in {
             "turn/started",
             "turn/completed",
@@ -347,7 +403,17 @@ class CodexProvider:
             self._retry_deadline = None
 
         if "id" in message:
-            response = await self._handle_server_request(message, context)
+            request = asyncio.create_task(self._handle_server_request(message, context))
+            try:
+                while not request.done():
+                    if self._remote_executor is not None:
+                        self._remote_executor.check()
+                    await asyncio.wait({request}, timeout=0.2)
+                response = request.result()
+            finally:
+                if not request.done():
+                    request.cancel()
+                    await asyncio.gather(request, return_exceptions=True)
             await client.respond(message["id"], response)
             return
 
@@ -566,6 +632,9 @@ class CodexProvider:
         if method == "item/tool/call":
             if params.get("namespace") is None and params.get("tool") == "ask_user":
                 return await _handle_dynamic_ask_user(params, request_id, context)
+            graph_tools = getattr(context, "graph_tools", None)
+            if graph_tools is not None and params.get("namespace") is None:
+                return graph_tools.call(params.get("tool"), params.get("arguments"))
             return _dynamic_tool_error(
                 f"不支持的动态工具：{params.get('tool') or '<unknown>'}"
             )
@@ -854,7 +923,36 @@ def _thread_params(
         params["serviceName"] = "MiniClaw2"
         if not getattr(context, "minimal_mode", False):
             params["dynamicTools"] = [_ask_user_dynamic_tool()]
+            graph_tools = getattr(context, "graph_tools", None)
+            if graph_tools is not None:
+                params["dynamicTools"].extend(graph_tools.definitions())
+    if getattr(context, "remote_access", None) is not None:
+        params["environments"] = _remote_environments(context)
+        params["cwd"] = context.project.remote.root_path
+        params["sandbox"] = "workspace-write"
     return params
+
+
+def _remote_environments(context: AgentProviderContext) -> list[dict[str, Any]]:
+    if not context.remote_environment_id or context.project.remote is None:
+        raise RuntimeError("远端环境尚未通过探针，拒绝启动")
+    root = context.project.remote.root_path
+    return [{"environmentId": context.remote_environment_id, "cwd": root,
+             "runtimeWorkspaceRoots": [root]}]
+
+
+def _validate_remote_thread(context: AgentProviderContext, response: dict[str, Any]) -> None:
+    if getattr(context, "remote_access", None) is None:
+        return
+    environments = (response.get("thread") or {}).get("environments")
+    expected = _remote_environments(context)[0]
+    expected_provider = context.node.settings_snapshot.get("resume_model_provider")
+    if expected_provider and response.get("modelProvider") != expected_provider:
+        raise RuntimeError("续接会话的模型后端已改变，拒绝发送执行回合")
+    if not isinstance(environments, list) or len(environments) != 1 or any(
+        environments[0].get(key) != value for key, value in expected.items()
+    ):
+        raise RuntimeError("Codex 未确认指定远端 cwd 与环境，拒绝发送执行回合")
 
 
 def _ask_user_dynamic_tool() -> dict[str, Any]:
@@ -928,6 +1026,16 @@ def _turn_params(
         context.project.settings_override.get("sandbox") or "workspace-write"
     ) == "workspace-write":
         params["sandboxPolicy"] = _workspace_write_sandbox_policy(context)
+    remote = getattr(context, "remote_access", None)
+    if remote is not None:
+        params["environments"] = _remote_environments(context)
+        if remote.sandbox == "externalSandbox":
+            params["sandboxPolicy"] = {"type": "externalSandbox", "networkAccess": "restricted"}
+        else:
+            params["sandboxPolicy"] = {
+                "type": "workspaceWrite", "writableRoots": [context.project.remote.root_path],
+                "networkAccess": False,
+            }
     return params
 
 

@@ -13,10 +13,26 @@ from urllib.request import Request, urlopen
 from .domain import Node, NodeLayout, NodePosition
 from .migrations.errors import MigrationError
 from .migrations.inventory import safe_path
-from .migrations.steps.v0016_node_layout import coordinate_space
 from .migrations.transaction import backup_payload
 from .migrations.validation import read_object
 from .node_layout import node_coordinate_space, node_layout_owners
+
+
+def coordinate_space(node: dict[str, Any], nodes: dict[str, dict[str, Any]]) -> str:
+    """Resolve legacy backup coordinates independently of retired migrations."""
+    visited: set[str] = set()
+    while node["id"] not in visited:
+        visited.add(node["id"])
+        if node.get("planspace_id"):
+            return "planspace:" + node["planspace_id"]
+        snapshot = (node.get("settings_snapshot") or {}).get("active_planspace_id")
+        if isinstance(snapshot, str) and snapshot:
+            return "planspace:" + snapshot
+        parent = nodes.get(node.get("parent_node_id"))
+        if parent is None:
+            break
+        node = parent
+    return "canvas"
 
 
 def _verified_record(root: Path, journal: dict[str, Any], relative: str, inventory: dict[str, Any], identifier: str) -> dict[str, Any]:

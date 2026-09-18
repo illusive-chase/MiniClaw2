@@ -24,6 +24,7 @@ import type {
   SessionFileRole,
   NodePosition,
   SessionInfo,
+  RemoteAccessConfig,
   SessionContextSpaceInfo,
   ArtifactFile,
   ArtifactMode,
@@ -99,11 +100,9 @@ export async function createSession(
       target_id: string;
       root_path: string;
     };
-    remote_access?: {
-      ssh_target: string;
-      connect_via?: string | null;
-    };
-    remote_initialization?: "existing";
+    remote_access?: RemoteAccessConfig;
+    remote_initialization?: "existing" | "cloned" | "init";
+    remote_clone_url?: string;
     name?: string;
     create_missing_cwd?: boolean;
   } = {},
@@ -784,11 +783,19 @@ export type ProjectHostBinding =
       unverifiedAcknowledged?: boolean;
     }
   | {
-      remote: {
-        ssh_target: string;
-        connect_via?: string;
-      };
+      remote: RemoteAccessConfig;
     };
+
+export async function configureRemoteAccess(id: string, access: RemoteAccessConfig): Promise<SessionInfo> {
+  const res = await fetch(`/sessions/${id}/remote-access`, {
+    method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(access),
+  });
+  if (!res.ok) {
+    const detail = await res.json().catch(() => null) as { detail?: string } | null;
+    throw new Error(detail?.detail || `远端配置保存失败：${res.status}`);
+  }
+  return res.json();
+}
 
 export async function bindProjectHere(
   id: string,

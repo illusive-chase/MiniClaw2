@@ -102,6 +102,9 @@ from .preview import (
     validate_preview_for_node,
 )
 from .remote_projection import ProjectionSyncResult
+from .remote_execution import execution_binding, execution_role, start_verifier, stop_process
+from .remote_graph import RemoteGraphTools, remote_launch_block
+from .remote_transport import SSHProjectTransport
 from .providers import (
     AgentProvider,
     AgentProviderContext,
@@ -228,6 +231,9 @@ class NodeRunner:
         if self._provider is not None:
             await self._provider.interrupt()
         if self._process is not None and self._process.returncode is None:
+            if self.project.persistence_mode is ProjectPersistenceMode.REMOTE:
+                await stop_process(self._process)
+                return
             self._process.terminate()
             try:
                 await asyncio.wait_for(self._process.wait(), timeout=2.0)
@@ -257,6 +263,8 @@ class NodeRunner:
             else:
                 await self._run_agent()
         finally:
+            if self.project.persistence_mode is ProjectPersistenceMode.REMOTE:
+                await stop_process(self._process)
             self._cleanup_lane_projection()
 
     async def _fail_workspace_preparation(self, exc: Exception) -> None:
@@ -308,6 +316,14 @@ class NodeRunner:
                 if is_cold_start
                 else self._build_agent_launch_instructions(context_bundle)
             )
+            if is_cold_start and self.project.persistence_mode is ProjectPersistenceMode.REMOTE:
+                if self.node.provider == "codex":
+                    launch_instructions = remote_launch_block(self.node)
+                else:
+                    launch_instructions = (
+                        "本次只做本机投影的只读分析。不能修改源码、运行测试或连接远端。\n"
+                        + launch_instructions
+                    )
             self.node.launch_instructions_snapshot = launch_instructions
             system_context = (
                 "" if context_bundle is None else context_bundle.system_text
@@ -768,6 +784,7 @@ class NodeRunner:
         timed_out = False
         stdout_parts: list[str] = []
         stderr_parts: list[str] = []
+        output_task: asyncio.Task[tuple[bytes, bytes]] | None = None
 
         script = self.node.verify_script_ref or ""
         try:
@@ -789,30 +806,50 @@ class NodeRunner:
             env["CI"] = "1"
             env["MINICLAW_PROJECT_ID"] = self.project.id
             env["MINICLAW_HOME"] = str(self.store.root)
-            self._process = await asyncio.create_subprocess_exec(
-                "bash",
-                str(script_path),
-                cwd=self.project.root_path,
-                env=env,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
+            remote_verifier = self.project.persistence_mode is ProjectPersistenceMode.REMOTE
+            if remote_verifier:
+                binding = self.store.read_remote_binding(self.project.id)
+                if binding is None or self.project.remote is None:
+                    raise ValueError("远端接入配置缺失")
+                self._process = await start_verifier(
+                    binding.remote, self.project.remote.root_path,
+                    self.project.id, script_path.read_text(encoding="utf-8"),
+                    transport=SSHProjectTransport(binding.remote, project_id=self.project.id, store_root=self.store.root),
+                )
+            else:
+                self._process = await asyncio.create_subprocess_exec(
+                    "bash", str(script_path), cwd=self.project.root_path, env=env,
+                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                )
+            async def collect_output() -> tuple[bytes, bytes]:
+                if not remote_verifier:
+                    return await self._process.communicate()
+                stdout, stderr = await asyncio.gather(
+                    self._process.stdout.read(), self._process.stderr.read(),
+                )
+                await self._process.wait()
+                return stdout, stderr
+
+            output_task = asyncio.create_task(collect_output())
             try:
                 stdout_raw, stderr_raw = await asyncio.wait_for(
-                    self._process.communicate(),
+                    asyncio.shield(output_task),
                     timeout=60.0,
                 )
             except asyncio.TimeoutError:
                 timed_out = True
-                self._process.terminate()
+                if remote_verifier:
+                    await stop_process(self._process)
+                else:
+                    self._process.terminate()
                 try:
                     stdout_raw, stderr_raw = await asyncio.wait_for(
-                        self._process.communicate(),
+                        asyncio.shield(output_task),
                         timeout=2.0,
                     )
                 except asyncio.TimeoutError:
                     self._process.kill()
-                    stdout_raw, stderr_raw = await self._process.communicate()
+                    stdout_raw, stderr_raw = await output_task
                 exit_code = 124
             else:
                 exit_code = int(self._process.returncode or 0)
@@ -875,6 +912,12 @@ class NodeRunner:
             error_msg = f"Unexpected verifier error: {exc}"
             await self._emit(ErrorEvent(message=error_msg))
         finally:
+            if self._process is not None and self.project.persistence_mode is ProjectPersistenceMode.REMOTE:
+                await stop_process(self._process)
+            if output_task is not None:
+                if not output_task.done():
+                    output_task.cancel()
+                await asyncio.gather(output_task, return_exceptions=True)
             self._process = None
 
         if error_msg is not None:
@@ -920,11 +963,20 @@ class NodeRunner:
             store_root=self.store.root,
             skill_materialization=self._skill_materialization,
         )
+        if self.project.persistence_mode is ProjectPersistenceMode.REMOTE and preset.provider == "codex":
+            binding = self.store.read_remote_binding(self.project.id)
+            if binding is None:
+                return NodeState.ERROR, "远端接入配置缺失"
+            context.remote_access = binding.remote
+            context.graph_tools = RemoteGraphTools(self.project, turn_node)
+            if not launch_instructions:
+                context.launch_instructions = remote_launch_block(turn_node)
         final_state: NodeState | None = None
         error_msg: str | None = None
         terminal_seen = False
+        stream = provider.run(context)
         try:
-            async for ev in provider.run(context):
+            async for ev in stream:
                 await self._handle_provider_event(ev)
                 if ev.kind == "done":
                     terminal_seen = True
@@ -947,6 +999,7 @@ class NodeRunner:
                         await self._emit(ErrorEvent(message=error_msg))
                     break
         finally:
+            await stream.aclose()
             self._provider = None
         if not terminal_seen:
             error_msg = (
@@ -1382,6 +1435,23 @@ class NodeRunner:
 
     def _build_agent_launch_instructions(self, context_bundle: Any) -> str:
         temporary_contract = ""
+        if self.project.persistence_mode is ProjectPersistenceMode.REMOTE:
+            provider = get_model_preset(self.node.model_preset_id, store_root=self.store.root).provider
+            if provider == "codex":
+                return _compose_launch_instructions(
+                    remote_launch_block(self.node), context_bundle.turn_text,
+                    build_qa_mode_block(self.node, provider=provider),
+                    language_launch_instruction(project_preferred_language(self.project)),
+                    shared_host_processes_block(), subagent_synchronicity_block(),
+                    anti_self_poisoning_block(),
+                )
+            temporary_contract = (
+                "# 远端项目：本机只读设计分析\n\n"
+                "源码是远端 Git 跟踪文件的单向投影，不是权威工作树，也不含 .git 或未跟踪文件。"
+                "只分析和设计，不修改源码，不运行构建、测试或远端命令。"
+                "允许按下文契约写本机 lane 预览及产物。投影改动不会回传，"
+                "下次同步会检测失真、记录并覆盖；需要修改代码时交给 Codex 远端执行。\n"
+            )
         if self.project.temporary:
             temporary_contract = (
                 "# MiniClaw2 — temporary project contract\n\n"
@@ -1453,7 +1523,7 @@ class NodeRunner:
         attached = {
             key: value
             for key, value in self.node.settings_snapshot.items()
-            if key in {"extra_principles", "extra_skills"}
+            if key in {"extra_principles", "extra_skills", "resume_codex_home", "resume_model_provider", "resume_execution_role", "execution_binding"}
         }
         snapshot: dict[str, Any] = {
             key: value
@@ -1468,6 +1538,15 @@ class NodeRunner:
         }
         snapshot.update(attached)
         snapshot["cwd"] = self.project.root_path
+        if self.project.persistence_mode is ProjectPersistenceMode.REMOTE:
+            binding = self.store.read_remote_binding(self.project.id)
+            if binding is None or self.project.remote is None:
+                raise ValueError("远端接入配置缺失")
+            identity = execution_binding(self.project.remote, binding.remote)
+            if "execution_binding" in attached and attached["execution_binding"] != identity:
+                raise ValueError("排队后远端接入身份发生变化，拒绝续接")
+            snapshot["execution_binding"] = identity
+            snapshot["execution_role"] = execution_role(self.node)
         project_binding_id = (
             getattr(context_bundle, "project_binding_id", None)
             if context_bundle is not None
@@ -1725,7 +1804,7 @@ class NodeRunner:
             allowed = {
                 key: value
                 for key, value in ev.settings.items()
-                if key == "observed_codex_home"
+                if key in {"observed_codex_home", "observed_model_provider", "observed_remote_executor_version", "observed_environment_id"}
                 and isinstance(value, str)
                 and value
             }
@@ -1870,6 +1949,13 @@ class NodeRunner:
     # ---- inline gate flow ----
 
     async def _request_gate(self, request: GateRequest) -> dict[str, Any]:
+        if self.project.persistence_mode is ProjectPersistenceMode.REMOTE:
+            request.response_hint = {
+                **request.response_hint,
+                "execution_binding": self.node.settings_snapshot.get("execution_binding"),
+                "environment_id": self.node.settings_snapshot.get("observed_environment_id"),
+                "execution_role": self.node.settings_snapshot.get("execution_role"),
+            }
         gate = HumanGate(
             id=uuid4().hex[:12],
             node_id=self.node.id,

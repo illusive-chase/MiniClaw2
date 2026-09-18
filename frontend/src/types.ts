@@ -239,7 +239,16 @@ export type SessionInfo = {
     root_commit?: string | null;
   } | null;
   projection_ready?: boolean;
+  remote_access?: RemoteAccessConfig | null;
   projection_synced_at?: number | null;
+};
+
+export type RemoteAccessConfig = {
+  ssh_target: string;
+  connect_via?: string | null;
+  codex_remote_experimental?: boolean;
+  codex_path?: string;
+  sandbox?: "workspaceWrite" | "externalSandbox";
 };
 
 /** Global project tag (`$MINICLAW_HOME/tags.json`). `color` is a palette key

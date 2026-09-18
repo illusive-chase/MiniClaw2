@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { ApiError, createSession } from "../api";
 import { LANGUAGE_OPTIONS } from "../languages";
-import type { GlobalDefaults, ModelPreset, SessionInfo } from "../types";
+import type { GlobalDefaults, ModelPreset, RemoteAccessConfig, SessionInfo } from "../types";
+import { RemoteExecutionFields } from "./RemoteExecutionFields";
 import {
   defaultModelPresetId,
   modelPresetDetail,
@@ -52,6 +53,9 @@ export function NewProjectModal({
   const [remoteRootPath, setRemoteRootPath] = useState("");
   const [sshTarget, setSshTarget] = useState("");
   const [connectVia, setConnectVia] = useState("");
+  const [remoteExecution, setRemoteExecution] = useState<RemoteAccessConfig>({ ssh_target: "" });
+  const [remoteInitialization, setRemoteInitialization] = useState<"existing" | "cloned" | "init">("existing");
+  const [cloneUrl, setCloneUrl] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const nameRef = useRef<HTMLInputElement | null>(null);
@@ -72,6 +76,9 @@ export function NewProjectModal({
       setRemoteRootPath("");
       setSshTarget("");
       setConnectVia("");
+      setRemoteExecution({ ssh_target: "" });
+      setRemoteInitialization("existing");
+      setCloneUrl("");
       setSubmitting(false);
       setError(null);
       window.setTimeout(() => nameRef.current?.focus(), 0);
@@ -99,10 +106,12 @@ export function NewProjectModal({
             root_path: remoteRootPath.trim(),
           },
           remote_access: {
+            ...remoteExecution,
             ssh_target: sshTarget.trim(),
             ...(connectVia.trim() ? { connect_via: connectVia.trim() } : {}),
           },
-          remote_initialization: "existing" as const,
+          remote_initialization: remoteInitialization,
+          ...(remoteInitialization === "cloned" ? { remote_clone_url: cloneUrl.trim() } : {}),
         };
       }
       return {
@@ -294,6 +303,18 @@ export function NewProjectModal({
 
           {mode === "remote" && (
             <div className="grid grid-cols-2 gap-3">
+              <label className="col-span-2 flex flex-col gap-1 text-xs text-ink-muted">
+                初始化方式
+                <select value={remoteInitialization} onChange={(event) => setRemoteInitialization(event.target.value as typeof remoteInitialization)} className="rounded-md border border-line bg-surface-sunken px-3 py-2 text-xs text-ink">
+                  <option value="existing">接入现有仓库</option>
+                  <option value="cloned">克隆仓库到空目录</option>
+                  <option value="init">在空目录创建仓库</option>
+                </select>
+              </label>
+              {remoteInitialization === "cloned" && <label className="col-span-2 flex flex-col gap-1 text-xs text-ink-muted">
+                克隆源
+                <input value={cloneUrl} onChange={(event) => setCloneUrl(event.target.value)} placeholder="git@host:owner/repo.git" className="min-w-0 rounded-md border border-line bg-surface-sunken px-3 py-2 font-mono text-xs text-ink" />
+              </label>}
               <label className="col-span-2 flex flex-col gap-1 sm:col-span-1">
                 <span className="text-[10px] font-medium uppercase tracking-[0.14em] text-ink-subtle">远端标识</span>
                 <input value={remoteTargetId} onChange={(event) => setRemoteTargetId(event.target.value)} placeholder="autodl-a100" className="rounded-md border border-line bg-surface-sunken px-3 py-2 font-mono text-xs text-ink-strong placeholder:text-ink-subtle focus:border-brand focus:outline-none" />
@@ -310,8 +331,10 @@ export function NewProjectModal({
                 <span className="text-[10px] font-medium uppercase tracking-[0.14em] text-ink-subtle">跳板机 <span className="text-ink-subtle/70">(optional)</span></span>
                 <input value={connectVia} onChange={(event) => setConnectVia(event.target.value)} placeholder="bastion" className="rounded-md border border-line bg-surface-sunken px-3 py-2 font-mono text-xs text-ink-strong placeholder:text-ink-subtle focus:border-brand focus:outline-none" />
               </label>
+              <RemoteExecutionFields value={remoteExecution} onChange={setRemoteExecution} />
               <p className="col-span-2 text-[11px] leading-5 text-ink-muted">
-                当前仅接入已有 Git 工作树。远端是唯一权威，本机只保留单向只读投影；并发上限仅约束当前设备。
+                远端是唯一权威；本机为单向投影。Claude 只读分析，Codex 远端执行。并发上限仅约束当前设备。
+                {remoteInitialization === "init" && "新仓库会生成独立空根提交作为项目指纹。"}
               </p>
             </div>
           )}
@@ -359,6 +382,7 @@ export function NewProjectModal({
                 !remoteTargetId.trim()
                 || !remoteRootPath.trim()
                 || !sshTarget.trim()
+                || (remoteInitialization === "cloned" && !cloneUrl.trim())
               ))
             }
             onClick={() => void submit()}

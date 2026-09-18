@@ -105,6 +105,7 @@ export type AgentPanelProps = {
   onInterruptNode: (nodeId: string) => void;
   onRerunNode: (nodeId: string) => void;
   canInterrupt: boolean;
+  canPromote: boolean;
   canRerun: boolean;
   canMutate: boolean;
   mutationLock: NodeMutationLock;
@@ -146,6 +147,7 @@ export function AgentPanel({
   onInterruptNode,
   onRerunNode,
   canInterrupt,
+  canPromote,
   canRerun,
   canMutate,
   mutationLock,
@@ -217,7 +219,7 @@ export function AgentPanel({
     canMutate && node.state === "virtual" && isManualPlanspace(node.planspace_id);
 
   const promote = async () => {
-    if (promoting || !currentReadyToPromote) return;
+    if (promoting || !canPromote || !currentReadyToPromote) return;
     setPromoting(true);
     try {
       if (node.kind !== "verifier") {
@@ -381,9 +383,15 @@ export function AgentPanel({
               <button
                 type="button"
                 onClick={() => void promote()}
-                disabled={!currentReadyToPromote || promoting}
+                disabled={!canPromote || !currentReadyToPromote || promoting}
                 className="rounded-md bg-brand px-2.5 py-1 text-[11px] font-medium text-white shadow-card transition hover:brightness-[0.95] disabled:cursor-not-allowed disabled:opacity-40"
-                title={currentReadyToPromote ? "Promote virtual node" : "Virtual node is not ready"}
+                title={
+                  !canPromote
+                    ? "当前项目没有可用的节点执行通道"
+                    : currentReadyToPromote
+                      ? "Promote virtual node"
+                      : "Virtual node is not ready"
+                }
               >
                 {promoting ? "Promoting..." : "Promote"}
               </button>

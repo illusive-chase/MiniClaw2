@@ -422,7 +422,8 @@ export function ProjectPanel({
             <button
               type="button"
               onClick={notesExist ? onContextRefresh : onContextInit}
-              disabled={busy}
+              disabled={busy || session.persistence_mode === "remote"}
+              title={session.persistence_mode === "remote" ? "请通过远端 Codex 执行任务维护 CONTEXT.md" : undefined}
               className="rounded-md border border-line bg-surface-raised px-3 py-2 text-left text-[12px] text-ink transition hover:border-line-strong disabled:opacity-40"
             >
               {notesExist ? "Refresh project notes" : "Initialize project notes"}

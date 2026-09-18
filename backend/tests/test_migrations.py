@@ -29,7 +29,7 @@ def test_manifest_window() -> None:
     assert MINIMUM_VERSION == max(14, CURRENT_VERSION - 3)
 
 
-def legacy_layout_store(root: Path, source: int = 15, *, hints: bool = True) -> tuple[Store, str, str]:
+def legacy_layout_store(root: Path, source: int = 16, *, hints: bool = True) -> tuple[Store, str, str]:
     store = Store(root)
     project = store.create_project(Project(root_path=str(root / "workspace")))
     node = store.create_node(Node(project_id=project.id, model_preset_id=project.model_preset_id))
@@ -48,14 +48,30 @@ def legacy_layout_store(root: Path, source: int = 15, *, hints: bool = True) -> 
     return store, project.id, node.id
 
 
-@pytest.mark.parametrize("source", [15])
+def synthetic_repair_chain(monkeypatch: pytest.MonkeyPatch) -> None:
+    from miniclaw2.migrations.repairs import V16
+    from miniclaw2.migrations.sdk import Migration
+    from miniclaw2.migrations.steps.v0017_layout_recovery import MIGRATION
+
+    def discard_legacy(context):
+        for path in context.paths("projects/*/hosts/*/layout.json"):
+            context.delete(path)
+
+    loss = Migration(16, 17, ("shared",), "有损测试步骤", V16, discard_legacy, lambda context: None, True)
+    chain = [loss, replace(MIGRATION, source=17, target=18), *steps(18)]
+    for module in ("coordinator", "sync_tree", "plan"):
+        monkeypatch.setattr(f"miniclaw2.migrations.{module}.steps", lambda source: [step for step in chain if step.source >= source])
+
+
+@pytest.mark.parametrize("source", [16])
 @pytest.mark.parametrize("entrypoint", ["startup", "sync"])
-def test_repaired_chain_automatically_preserves_layout(tmp_path: Path, source: int, entrypoint: str) -> None:
+def test_repaired_chain_automatically_preserves_layout(tmp_path: Path, source: int, entrypoint: str, monkeypatch: pytest.MonkeyPatch) -> None:
     from miniclaw2.migrations.catalog import DIRECTORY
     from miniclaw2.migrations.sync_tree import normalize
 
     manifest_before = (DIRECTORY / "manifest.json").read_bytes()
     store, project_id, node_id = legacy_layout_store(tmp_path, source)
+    synthetic_repair_chain(monkeypatch)
     if entrypoint == "startup":
         assert open_storage(tmp_path) is store.coordinator
     else:
@@ -77,6 +93,7 @@ def test_repair_exemption_never_replaces_confirmation(tmp_path: Path, monkeypatc
     from miniclaw2.migrations.sync_tree import normalize
 
     store, project_id, _node_id = legacy_layout_store(tmp_path, hints=guard != "no_input")
+    synthetic_repair_chain(monkeypatch)
     if guard == "undeclared":
         monkeypatch.setattr(repairs, "REPAIRS", {})
     elif guard == "outside_chain":
@@ -647,6 +664,7 @@ def test_plan_endpoint_stays_reachable_while_storage_is_blocked(tmp_path: Path, 
     from miniclaw2.app import create_app
 
     store, project_id, _node_id = legacy_layout_store(tmp_path)
+    synthetic_repair_chain(monkeypatch)
     for host in (tmp_path / f"projects/{project_id}/hosts").iterdir():
         atomic_json(host / "layout.json", {"layout_hints": {}})
     monkeypatch.setenv("MINICLAW_HOME", str(tmp_path))
@@ -656,13 +674,13 @@ def test_plan_endpoint_stays_reachable_while_storage_is_blocked(tmp_path: Path, 
         response = client.get("/migrations/plan")
         assert response.status_code == 200
         plan = response.json()
-        assert plan["source"] == 15 and plan["target"] == CURRENT_VERSION
+        assert plan["source"] == 16 and plan["target"] == CURRENT_VERSION
         assert [step["destructive"] for step in plan["steps"]] == [True, False, False]
         assert plan["sync_confirmation_contracts"] and plan["sync_confirmation_note"]
         assert any(host["local"] for host in plan["confirmation_hosts"])
         assert "layout_impact" in plan and "layout_recovery" in plan
     # Reading the plan must not confirm anything, nor advance the storage.
-    assert read_object(tmp_path / "schema.json") == marker(15)
+    assert read_object(tmp_path / "schema.json") == marker(16)
     assert read_object(tmp_path / ".migration-local/state.json")["accepted_migration_contracts"] == []
     assert store.coordinator.root == tmp_path
 

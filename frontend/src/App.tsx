@@ -75,6 +75,8 @@ import { setTemplateGroupContext } from "./canvas/nodes/TemplateGroupNode";
 import { setTemplateInstanceBoxContext } from "./canvas/nodes/TemplateInstanceBoxNode";
 import { SidePanel } from "./panel/SidePanel";
 import { NewProjectModal } from "./components/NewProjectModal";
+import { RemoteAccessModal } from "./components/RemoteAccessModal";
+import { Settings2 } from "lucide-react";
 import { SaveAsTemplateModal } from "./components/SaveAsTemplateModal";
 import { InstantiateTemplateModal } from "./components/InstantiateTemplateModal";
 import { TemplateEditor } from "./components/TemplateEditor";
@@ -546,6 +548,7 @@ export function App() {
   >(null);
 
   const [newProjectModalOpen, setNewProjectModalOpen] = useState(false);
+  const [remoteAccessOpen, setRemoteAccessOpen] = useState(false);
 
   /* Template-library state: multi-selection on the canvas + right-click menu +
    * "save as template" modal + a bump to force the dock to refetch after a
@@ -979,6 +982,7 @@ export function App() {
     [isNodeNative, nodes],
   );
   const readOnly = session?.read_only ?? false;
+  const executionAvailable = session?.capabilities?.execution !== false;
   const canvasNodesById = useMemo(
     () => new Map(nodes.map((node) => [node.id, node])),
     [nodes],
@@ -1508,7 +1512,7 @@ export function App() {
 
   const promoteVirtualNode = useCallback(
     async (nodeId: string) => {
-      if (!session?.id || projectMutationPending) return;
+      if (!session?.id || projectMutationPending || !executionAvailable) return;
       setProjectMutationPending(true);
       setSessionContextSpaceError(null);
       try {
@@ -1527,7 +1531,13 @@ export function App() {
         setProjectMutationPending(false);
       }
     },
-    [session?.id, projectMutationPending, refreshNodes, selectAndOpenNode],
+    [
+      session?.id,
+      projectMutationPending,
+      executionAvailable,
+      refreshNodes,
+      selectAndOpenNode,
+    ],
   );
 
   const dequeueQueuedNode = useCallback(
@@ -1981,7 +1991,7 @@ export function App() {
 
   const rerunFailedNode = useCallback(
     async (nodeId: string) => {
-      if (!session?.id || projectMutationPending) return;
+      if (!session?.id || projectMutationPending || !executionAvailable) return;
       setProjectMutationPending(true);
       setSessionContextSpaceError(null);
       try {
@@ -2000,7 +2010,13 @@ export function App() {
         setProjectMutationPending(false);
       }
     },
-    [session?.id, projectMutationPending, refreshNodes, selectAndOpenNode],
+    [
+      session?.id,
+      projectMutationPending,
+      executionAvailable,
+      refreshNodes,
+      selectAndOpenNode,
+    ],
   );
 
   const runContextInit = useCallback(async () => {
@@ -2785,11 +2801,12 @@ export function App() {
       canCreateVirtual: !virtualCreateDisabled,
       canMutateNode: canMutateCanvasNode,
       canAcceptDependency: canAcceptCanvasDependency,
-      canPromoteVirtual: !projectMutationPending && !readOnly,
+      canPromoteVirtual:
+        executionAvailable && !projectMutationPending && !readOnly,
       canDequeue: !projectMutationPending && !readOnly,
       isManualPlanspace,
       canInterrupt: canInterruptRunner && !readOnly,
-      canRerun: !projectMutationPending && !readOnly,
+      canRerun: executionAvailable && !projectMutationPending && !readOnly,
       pendingGateForNode: (nodeId) => {
         if (readOnly) return null;
         const node = nodes.find((item) => item.id === nodeId);
@@ -2813,6 +2830,7 @@ export function App() {
     rerunFailedNode,
     virtualCreateDisabled,
     projectMutationPending,
+    executionAvailable,
     isManualPlanspace,
     readOnly,
     canInterruptRunner,
@@ -3083,30 +3101,7 @@ export function App() {
     if (!session?.can_bind_here || projectMutationPending) return;
 
     if (session.persistence_mode === "remote") {
-      const sshTarget = window.prompt(
-        "请输入 SSH 目标（主机名、SSH config 别名或 user@host）",
-        session.remote?.target_id ?? "",
-      );
-      if (!sshTarget?.trim()) return;
-      const connectVia = window.prompt(
-        "可选：请输入跳板机 SSH 目标；留空表示直连",
-        "",
-      );
-      if (connectVia === null) return;
-
-      setProjectMutationPending(true);
-      try {
-        setSession(await bindProjectHere(session.id, {
-          remote: {
-            ssh_target: sshTarget.trim(),
-            ...(connectVia.trim() ? { connect_via: connectVia.trim() } : {}),
-          },
-        }));
-      } catch (error) {
-        window.alert(error instanceof Error ? error.message : String(error));
-      } finally {
-        setProjectMutationPending(false);
-      }
+      setRemoteAccessOpen(true);
       return;
     }
 
@@ -3201,6 +3196,11 @@ export function App() {
                 </button>
               )}
               {session?.persistence_mode === "remote" && session.bound_here && (
+                <>
+                <button type="button" onClick={() => setRemoteAccessOpen(true)} disabled={projectMutationPending || readOnly}
+                  className="rounded border border-line px-1.5 py-0.5 font-sans text-ink-muted" title="本机远端接入设置">
+                  <Settings2 size={13} aria-label="远端设置" />
+                </button>
                 <button
                   type="button"
                   disabled={projectMutationPending}
@@ -3221,6 +3221,7 @@ export function App() {
                 >
                   {projectMutationPending ? "正在同步..." : "同步投影"}
                 </button>
+                </>
               )}
               {session?.bound_here && session.hosts.length > 0 && (
                 <span
@@ -3589,6 +3590,7 @@ export function App() {
                   isNodeNative(selectedNode)
                 }
                 canRerun={
+                  executionAvailable &&
                   !projectMutationPending &&
                   !readOnly &&
                   !!selectedNode &&
@@ -3628,6 +3630,9 @@ export function App() {
         })}
       />
     )}
+    {remoteAccessOpen && session?.persistence_mode === "remote" && <RemoteAccessModal
+      key={session.id} session={session} onClose={() => setRemoteAccessOpen(false)} onSaved={setSession}
+    />}
     <SaveAsTemplateModal
       open={saveTemplateOpen}
       sessionId={session?.id ?? null}

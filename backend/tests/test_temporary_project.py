@@ -93,7 +93,7 @@ class TemporaryProjectTest(unittest.TestCase):
             self.assertEqual(info["persistence_mode"], "remote")
             self.assertEqual(
                 info["capabilities"],
-                {"workspace": False, "git_review": True},
+                {"workspace": False, "git_review": True, "execution": False},
             )
             self.assertFalse(info["bound_here"])
             self.assertTrue(info["read_only"])
@@ -155,14 +155,14 @@ class TemporaryProjectTest(unittest.TestCase):
                     self.assertEqual(init_response.status_code, 400, init_response.text)
                     self.assertEqual(
                         init_response.json()["detail"],
-                        "远端节点执行通道尚未实现",
+                        "远端 CONTEXT 请通过 Codex 执行任务维护，不能改写本机投影",
                     )
                     self.assertEqual(
                         refresh_response.status_code, 400, refresh_response.text
                     )
                     self.assertEqual(
                         refresh_response.json()["detail"],
-                        "远端节点执行通道尚未实现",
+                        "远端 CONTEXT 请通过 Codex 执行任务维护，不能改写本机投影",
                     )
                     start.assert_not_called()
 
@@ -187,8 +187,8 @@ class TemporaryProjectTest(unittest.TestCase):
 
             bound = registry.get_project(project.id)
             assert bound is not None
-            with self.assertRaisesRegex(ValueError, "远端节点执行通道尚未实现"):
-                registry.start_node(project.id, "不得回落到本地执行")
+            with self.assertRaisesRegex(ValueError, "尚未启用 Codex 远端实验执行"):
+                registry.start_node(project.id, "不得回落到本地执行", model_preset_id="gpt-5.6")
             self.assertEqual(registry.list_nodes(project.id), [])
             bound.name = "Renamed"
             registry.store.update_project(bound)
@@ -273,6 +273,7 @@ class TemporaryProjectTest(unittest.TestCase):
             self.assertTrue(info["bound_here"])
             self.assertEqual(info["remote"]["root_commit"], "c" * 40)
             self.assertEqual(info["capabilities"]["git_review"], True)
+            self.assertEqual(info["capabilities"]["execution"], True)
             self.assertTrue(info["projection_ready"])
             self.assertEqual(reveal.status_code, 400)
             self.assertEqual(
@@ -510,7 +511,10 @@ class TemporaryProjectTest(unittest.TestCase):
                 self.assertTrue(info["bound_here"])
                 self.assertFalse(info["read_only"])
                 self.assertFalse(info["can_bind_here"])
-                self.assertEqual(info["capabilities"], {"workspace": False, "git_review": False})
+                self.assertEqual(
+                    info["capabilities"],
+                    {"workspace": False, "git_review": False, "execution": True},
+                )
                 response = client.get(
                     f"/sessions/{project.id}/nodes/{node.id}/artifacts/result.md?raw=1"
                 )

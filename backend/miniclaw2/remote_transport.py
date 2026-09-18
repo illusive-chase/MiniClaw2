@@ -10,8 +10,10 @@ import stat
 import subprocess
 import tempfile
 import threading
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from .domain import RemoteAccessConfig
 
@@ -100,6 +102,10 @@ class SSHProjectTransport:
             f"{store_root.resolve(strict=False)}\0{project_id}\0{os.getpid()}".encode()
         ).hexdigest()[:32]
         self.control_path = control_socket_path(digest)
+
+    def command(self, args: list[str]) -> list[str]:
+        """Build a session command using this project's shared SSH master."""
+        return [*self._ssh_prefix(), self.access.ssh_target, shlex.join(args)]
 
     def run(
         self,
@@ -193,6 +199,26 @@ class SSHProjectTransport:
                 self._bytes_failure("无法读取远端 Git 跟踪文件", archive)
             )
         return archive.stdout
+
+    def initialize_repository(self, root_path: str, mode: str, clone_url: str | None) -> None:
+        if mode not in {"cloned", "init"}:
+            raise ValueError("远端初始化方式无效")
+        if mode == "cloned":
+            if not clone_url or clone_url.startswith("-") or any(c in clone_url for c in "\x00\r\n"):
+                raise ValueError("克隆源地址无效")
+            parsed = urlsplit(clone_url)
+            if parsed.password or parsed.query or parsed.fragment or (parsed.scheme in {"http", "https"} and parsed.username):
+                raise ValueError("克隆源不能包含凭据或查询参数，请通过远端 Git/SSH 配置认证")
+        elif clone_url:
+            raise ValueError("git init 不接受克隆源地址")
+        result = self.run([
+            "python3", "-c", _INITIALIZE_REPOSITORY, root_path, mode,
+            clone_url or "", uuid.uuid4().hex,
+        ], timeout=120)
+        if result.returncode:
+            raise RemoteTransportError(self._failure(
+                f"远端初始化失败；未删除目录，请检查 {root_path}", result,
+            ))
 
     def probe_repository(self, root_path: str) -> RemoteRepositoryProbe:
         exists = self.run(["test", "-d", root_path])
@@ -317,3 +343,29 @@ class RemoteTransportPool:
             self._transports.clear()
         for transport in transports:
             transport.close()
+
+
+_INITIALIZE_REPOSITORY = r'''
+import fcntl, os, pathlib, subprocess, sys
+root, mode, source, identity = sys.argv[1:]
+path = pathlib.Path(root)
+if any(p.is_symlink() for p in [path, *path.parents]):
+    raise RuntimeError("初始化路径不能经过符号链接")
+path.mkdir(parents=True, exist_ok=True)
+fd = os.open(path, os.O_RDONLY)
+fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+if any(path.iterdir()):
+    raise RuntimeError("仅允许初始化空目录")
+def git(*args):
+    subprocess.run(["git", *args], cwd=root, check=True)
+if mode == "cloned":
+    git("clone", "--", source, ".")
+else:
+    git("init")
+    git("-c", "user.name=MiniClaw2", "-c", "user.email=miniclaw2@localhost",
+        "-c", "commit.gpgSign=false", "-c", "core.hooksPath=/dev/null",
+        "commit", "--allow-empty", "-m", "MiniClaw2 project " + identity)
+exclude = path / ".git/info/exclude"
+with exclude.open("a") as handle:
+    handle.write("\n/.miniclaw2/\n")
+'''

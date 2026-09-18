@@ -147,7 +147,8 @@ class CreateSessionRequest(BaseModel):
     persistence_mode: ProjectPersistenceMode | None = None
     remote: RemoteProjectIdentity | None = None
     remote_access: RemoteAccessConfig | None = None
-    remote_initialization: Literal["existing"] = "existing"
+    remote_initialization: Literal["existing", "cloned", "init"] = "existing"
+    remote_clone_url: str | None = None
     name: str | None = None
     create_missing_cwd: bool = False
     concurrency: StrictInt | None = Field(default=None, ge=1)
@@ -243,12 +244,13 @@ class SessionInfo(BaseModel):
     git_positions: dict[str, GitPosition] = Field(default_factory=dict)
     lane_positions: dict[str, LanePosition] = Field(default_factory=dict)
     context_positions: dict[str, NodePosition] = Field(default_factory=dict)
-    # Runtime capabilities are explicit so clients can hide workspace/Git
-    # controls for ephemeral sessions.
+    # Runtime capabilities are explicit so clients can hide controls that the
+    # selected persistence mode cannot support on this host.
     persistence_mode: ProjectPersistenceMode = ProjectPersistenceMode.DURABLE
     capabilities: dict[str, bool] = Field(default_factory=dict)
     remote: RemoteProjectIdentity | None = None
     projection_ready: bool = False
+    remote_access: RemoteAccessConfig | None = None
     projection_synced_at: float | None = None
 
 
@@ -1256,6 +1258,7 @@ def create_app(
                 remote_identity=req.remote,
                 remote_access=req.remote_access,
                 remote_initialization=req.remote_initialization,
+                remote_clone_url=req.remote_clone_url,
                 concurrency=(
                     req.concurrency
                     if req.concurrency is not None
@@ -1472,6 +1475,18 @@ def create_app(
             "distorted_paths": list(result.distorted_paths),
             "projection_synced_at": result.binding.projection_synced_at,
         }
+
+    @app.put("/sessions/{sid}/remote-access", response_model=SessionInfo)
+    def configure_remote_access(sid: str, req: RemoteAccessConfig) -> SessionInfo:
+        try:
+            project = registry.configure_remote_access(sid, req)
+        except KeyError as exc:
+            raise HTTPException(404, "session not found") from exc
+        except (NonNativeProjectError, RemoteProjectionBusyError) as exc:
+            raise HTTPException(409, str(exc)) from exc
+        except (ValueError, RemoteTransportError) as exc:
+            raise HTTPException(400, str(exc)) from exc
+        return _session_info(registry, project)
 
     @app.delete("/sessions/{sid}/hosts/{mid}", response_model=SessionInfo)
     def unbind_session_host(sid: str, mid: str) -> SessionInfo:
@@ -1825,6 +1840,8 @@ def create_app(
         if project is None:
             raise HTTPException(404, "session not found")
         require_execution_project(sid)
+        if project.persistence_mode is ProjectPersistenceMode.REMOTE:
+            raise HTTPException(400, "远端 CONTEXT 请通过 Codex 执行任务维护，不能改写本机投影")
         if registry.is_running(sid):
             raise HTTPException(409, "turn in progress")
         try:
@@ -1851,6 +1868,8 @@ def create_app(
         if project is None:
             raise HTTPException(404, "session not found")
         require_execution_project(sid)
+        if project.persistence_mode is ProjectPersistenceMode.REMOTE:
+            raise HTTPException(400, "远端 CONTEXT 请通过 Codex 执行任务维护，不能改写本机投影")
         if registry.is_running(sid):
             raise HTTPException(409, "turn in progress")
         try:
@@ -2053,6 +2072,7 @@ def create_app(
         project = registry.get_project(sid)
         if project is None:
             raise HTTPException(404, "session not found")
+        require_execution_project(sid)
         if _context_task_running(project.id):
             raise HTTPException(409, "context refresh in progress")
         result = registry.promote_virtual_result(sid, vid)
@@ -2901,19 +2921,23 @@ def _session_info(
             {
                 "workspace": False,
                 "git_review": False,
+                "execution": True,
             }
             if project.persistence_mode is ProjectPersistenceMode.EPHEMERAL
             else {
                 "workspace": False,
                 "git_review": True,
+                "execution": remote_binding is not None,
             }
             if project.persistence_mode is ProjectPersistenceMode.REMOTE
             else {
                 "workspace": True,
                 "git_review": True,
+                "execution": True,
             }
         ),
         remote=project.remote,
+        remote_access=remote_binding.remote if remote_binding is not None else None,
         projection_ready=(
             remote_binding is not None
             and remote_binding.projection_synced_at is not None

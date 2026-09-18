@@ -383,6 +383,9 @@ function Inner(props: SidePanelProps & {
         onInterruptNode={onInterruptNode}
         onRerunNode={onRerunNode}
         canInterrupt={canInterrupt && canMutateNode}
+        canPromote={
+          session.capabilities?.execution !== false && canMutateNode
+        }
         canRerun={canRerun && canMutateNode}
         canMutate={canMutateNode}
         mutationLock={mutationLock}

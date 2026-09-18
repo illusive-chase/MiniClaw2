@@ -503,6 +503,8 @@ class Store:
         *,
         root_commits: tuple[str, ...],
         initialized_at: float,
+        initialization_mode: str = "existing",
+        clone_url: str | None = None,
     ) -> Project:
         """Persist a probed existing remote repository and this host's binding."""
         self.assert_writable()
@@ -559,8 +561,10 @@ class Store:
                     "is_repo": True,
                     "remote_access_configured": True,
                     "remote_initialization": {
-                        "mode": "existing",
+                        "mode": initialization_mode,
                         "initialized_at": initialized_at,
+                        **({"clone_url": clone_url} if clone_url else {}),
+                        **({"miniclaw_git_excluded": True} if initialization_mode != "existing" else {}),
                     },
                 },
             )

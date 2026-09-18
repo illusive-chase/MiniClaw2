@@ -312,7 +312,7 @@ in the ignored `local.json`. The presence of that file remains the sole local
 write-authority gate. Removing the gate would turn reachability into shared
 state and recreate the consensus variable rejected by `PHILOSOPHY.md` §12.1.
 
-The remaining execution path must preserve three less obvious constraints.
+The execution boundary must preserve three less obvious constraints.
 First, every node in one project must resolve commits in the same repository;
 otherwise the existing single commit graph and review staleness comparison mix
 unrelated histories. Second, a source projection is remote-to-local only and is
@@ -321,6 +321,17 @@ code: remote Codex execution must either retrieve its lane changes before reap
 or expose local graph operations as explicit tools, without giving the remote
 host a reverse connection to the backend. Git review still requires both remote
 snapshots so concurrent changes remain visible as stale results.
+
+远端执行仍依赖实验性的 Codex environment 协议，兼容性必须按明确验证过的
+本机/执行器版本组合管理。仅有版本号不能证明工具可用，启动前还必须完成
+ready、shell 和 thread cwd 回显检查；断线后的远端写入结果可能未知，不能
+通过重新发送回合或去掉 environment 自动恢复。externalSandbox 的隔离由
+远端容器或账号承担，而不是 Codex 提供的进程级沙箱。
+
+独立的 CONTEXT 初始化/刷新助手尚无远端控制通道，不能把本机源码投影当作
+权威文件写入；远端 CONTEXT 目前需由普通 Codex 执行任务维护。源码投影只含
+Git 跟踪文件，未 add 的新文件对本机 Claude 分析仍不可见。项目并发限制只
+约束当前设备，多台设备仍可能同时写同一远端工作树。
 
 ### 3.9 Smaller deferrals with a stated reason
 

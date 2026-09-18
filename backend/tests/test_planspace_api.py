@@ -307,6 +307,40 @@ class PlanspaceApiTest(unittest.TestCase):
             self.assertEqual(body["node"]["state"], "queued")
             self.assertFalse(body["already_promoted"])
 
+    def test_promote_virtual_rejects_unavailable_execution_channel(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            project = Project(root_path=raw, name="Project")
+
+            class _Registry:
+                store = SimpleNamespace(root=Path(raw) / "store")
+                promotion_called = False
+
+                def get_project(self, sid: str) -> Project | None:
+                    return project if sid == project.id else None
+
+                def require_execution_project(self, sid: str) -> None:
+                    raise ValueError("远端节点执行通道尚未实现")
+
+                def promote_virtual_result(
+                    self, sid: str, vid: str
+                ) -> VirtualPromotionResult:
+                    self.promotion_called = True
+                    raise AssertionError("promotion must not run")
+
+            registry = _Registry()
+            with patch.object(app_module, "ProjectRegistry", return_value=registry):
+                client = TestClient(app_module.create_app())
+                try:
+                    res = client.post(
+                        f"/sessions/{project.id}/virtuals/virt-1/promote"
+                    )
+                finally:
+                    client.close()
+
+            self.assertEqual(res.status_code, 400, res.text)
+            self.assertEqual(res.json()["detail"], "远端节点执行通道尚未实现")
+            self.assertFalse(registry.promotion_called)
+
     def test_promote_virtual_retry_is_idempotent(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             project = Project(root_path=raw, name="Project")

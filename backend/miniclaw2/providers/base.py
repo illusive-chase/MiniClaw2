@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
-from ..domain import GateSubtype, Node, Project, ReviewTarget
+from ..domain import GateSubtype, Node, Project, RemoteAccessConfig, ReviewTarget
 from ..events import (
     Activity,
     ErrorEvent,
@@ -95,6 +95,9 @@ class AgentProviderContext:
     tool_allowlist: list[str] | None = None
     store_root: Path | None = None
     skill_materialization: Any | None = None
+    remote_access: RemoteAccessConfig | None = None
+    remote_environment_id: str | None = None
+    graph_tools: Any | None = None
 
     async def request_gate(self, gate: GateRequest) -> dict[str, Any]:
         return await self.request_gate_handler(gate)

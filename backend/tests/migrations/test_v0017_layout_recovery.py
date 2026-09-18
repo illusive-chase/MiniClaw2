@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import shutil
+from dataclasses import replace
 from pathlib import Path
 from urllib.parse import quote
 
@@ -15,11 +16,21 @@ from miniclaw2.migrations.errors import MigrationError
 from miniclaw2.migrations.impact import layout_impact, layout_recovery_guidance
 from miniclaw2.migrations.inventory import files
 from miniclaw2.migrations.sdk import MigrationContext
-from miniclaw2.migrations.steps.v0016_node_layout import MIGRATION as V16
+from legacy_layout_fixture import MIGRATION as V16
 from miniclaw2.migrations.steps.v0017_layout_recovery import MIGRATION, recover_layout
 from miniclaw2.migrations.sync_tree import normalize
 from miniclaw2.migrations.transaction import atomic_json, file_digest
 from miniclaw2.migrations.validation import read_object, validate
+
+
+@pytest.fixture(autouse=True)
+def retained_recovery_chain(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Exercise historical recovery with a synthetic supported chain. Production
+    # v15 admission is intentionally gone; v17's recovery algorithm is not.
+    from miniclaw2.migrations.catalog import steps
+    chain = [V16, replace(MIGRATION, source=17, target=18), *steps(18)]
+    for module in ("coordinator", "sync_tree", "plan"):
+        monkeypatch.setattr(f"miniclaw2.migrations.{module}.steps", lambda source: [step for step in chain if step.source >= source])
 
 
 ARTIFACT_NAME = "报告 a:b/#%~!*'().html"
@@ -40,7 +51,7 @@ def seed(root: Path, version: int = 15, *, published: int = 5) -> None:
         "commit:abc1234": {"x": 90, "y": 100}, "commit:ghost": {"x": 110, "y": 120},
         "planspace:history": {"x": 130, "y": 140}, "err:broken": {"x": 1, "y": 2},
     }
-    atomic_json(root / "schema.json", marker(version))
+    atomic_json(root / "schema.json", marker(16))
     project_payload = project.model_dump(exclude={"provider", "root_path", "node_positions"})
     if version == 14:
         project_payload.update(root_path=project.root_path, layout_hints=hints,
@@ -181,7 +192,7 @@ def test_plan_reports_recovery_without_touching_sources(tmp_path: Path, version:
     before = {relative: (tmp_path / relative).read_bytes() for relative in files(tmp_path)}
     main(["plan", "--root", str(tmp_path)])
     plan = json.loads(capsys.readouterr().out)
-    assert plan["target"] == 18 and plan["minimum"] == 15
+    assert plan["target"] == 19 and plan["minimum"] == 16
     assert "v17 显式修复 v16" in plan["layout_note"]
     assert "commit:ghost" in plan["layout_note"]
     assert "不恢复" in plan["layout_note"]
@@ -201,7 +212,7 @@ def test_v16_reports_history_but_does_not_restore_it(tmp_path: Path, capsys: pyt
         "phase": "ready", "inputs": [{relative: file_digest(backup / relative) for relative in files(backup)}],
     })
     V16.upgrade(MigrationContext(tmp_path, "shared", "host-a"))
-    atomic_json(tmp_path / "schema.json", marker(16))
+    atomic_json(tmp_path / "schema.json", marker(17))
     before = layouts(tmp_path)
     main(["plan", "--root", str(tmp_path)])
     plan = json.loads(capsys.readouterr().out)
@@ -294,6 +305,6 @@ def test_historical_backup_corruption_is_not_reported_as_recoverable(tmp_path: P
 def test_release_keeps_published_edges_and_confirmation() -> None:
     check_manifest()
     manifest = read_manifest()
-    assert manifest["minimum"] == 15 and manifest["target"] == 18
-    assert [(entry["source"], entry["target"]) for entry in manifest["steps"]] == [(15, 16), (16, 17), (17, 18)]
+    assert manifest["minimum"] == 16 and manifest["target"] == 19
+    assert [(entry["source"], entry["target"]) for entry in manifest["steps"]] == [(16, 17), (17, 18), (18, 19)]
     assert V16.destructive and not MIGRATION.destructive

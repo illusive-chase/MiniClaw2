@@ -119,6 +119,19 @@ class RemoteAccessConfig(BaseModel):
     connect_via: str | None = Field(
         default=None, pattern=r"^[A-Za-z0-9._@:-]+$"
     )
+    codex_remote_experimental: bool = False
+    codex_path: str = "codex"
+    sandbox: Literal["workspaceWrite", "externalSandbox"] = "workspaceWrite"
+
+    @field_validator("ssh_target", "connect_via", "codex_path")
+    @classmethod
+    def _validate_access_argument(cls, value: str | None) -> str | None:
+        if value is not None and (
+            not value.strip() or value.startswith("-")
+            or any(c in value for c in "\x00\r\n")
+        ):
+            raise ValueError("远端连接参数无效")
+        return value
 
 
 class RemoteProjectBinding(BaseModel):

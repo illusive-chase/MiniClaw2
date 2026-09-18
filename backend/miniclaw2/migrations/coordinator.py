@@ -93,7 +93,13 @@ class StorageCoordinator:
             if receipt.get("machine_id") == machine_id and receipt.get("root_identity") == identity:
                 return version
         scope = "external_context" if external else "local"
-        relevant = [relative for relative, domain in files(root, external=external).items() if domain == scope]
+        relevant = [
+            relative for relative, domain in files(root, external=external).items()
+            if domain == scope and (
+                external or not Path(relative).match("projects/*/hosts/*/local.json")
+                or Path(relative).parts[3] == machine_id
+            )
+        ]
         if relevant:
             from .catalog import MINIMUM_VERSION, steps
 
