@@ -1243,7 +1243,7 @@ class CodexProviderTest(unittest.IsolatedAsyncioTestCase):
             "Create README.md",
         )
 
-    async def test_thread_resume_updates_system_prompt_and_keeps_user_prompt_clean(
+    async def test_thread_resume_moves_current_contract_into_turn_prompt(
         self,
     ) -> None:
         provider = CodexProvider()
@@ -1294,12 +1294,120 @@ class CodexProviderTest(unittest.IsolatedAsyncioTestCase):
 
         resume = next(params for method, params in captured if method == "thread/resume")
         turn = next(params for method, params in captured if method == "turn/start")
-        self.assertEqual(
-            resume["developerInstructions"],
-            "Current node instructions\n\n---\n\nCurrent project CONTEXT.md",
-        )
-        self.assertEqual(turn["input"][0]["text"], "Create README.md")
+        self.assertNotIn("developerInstructions", resume)
+        turn_text = turn["input"][0]["text"]
+        self.assertIn("取代前一节点的所有框架契约", turn_text)
+        self.assertIn("Current node instructions", turn_text)
+        self.assertIn("Current project CONTEXT.md", turn_text)
+        self.assertTrue(turn_text.endswith("Create README.md"))
         self.assertEqual(events[-1].kind, "done")
+
+    async def test_terminal_rate_limit_waits_for_failed_turn_before_reporting(self) -> None:
+        provider = CodexProvider()
+        first = [
+            event
+            async for event in provider._handle_message(
+                {
+                    "method": "error",
+                    "params": {
+                        "error": {
+                            "message": "quota reached",
+                            "codexErrorInfo": "usageLimitExceeded",
+                        },
+                        "willRetry": False,
+                    },
+                },
+                _FakeProviderContext(),  # type: ignore[arg-type]
+                object(),  # type: ignore[arg-type]
+            )
+        ]
+        self.assertEqual(first, [])
+
+        events = [
+            event
+            async for event in provider._handle_message(
+                {
+                    "method": "turn/completed",
+                    "params": {
+                        "turn": {
+                            "status": "failed",
+                            "error": {"message": "quota reached"},
+                        }
+                    },
+                },
+                _FakeProviderContext(),  # type: ignore[arg-type]
+                object(),  # type: ignore[arg-type]
+            )
+        ]
+
+        self.assertEqual(events[0].kind, "rate_limit")
+        self.assertEqual(events[0].rate_limit_kind, "usageLimitExceeded")
+
+    async def test_run_ends_after_terminal_rate_limit_event(self) -> None:
+        provider = CodexProvider()
+        messages = iter(
+            [
+                {
+                    "method": "error",
+                    "params": {
+                        "error": {
+                            "message": "too many requests",
+                            "codexErrorInfo": "rateLimitExceeded",
+                        },
+                        "willRetry": False,
+                    },
+                },
+                {
+                    "method": "turn/completed",
+                    "params": {
+                        "turn": {
+                            "status": "failed",
+                            "error": {"message": "too many requests"},
+                        }
+                    },
+                },
+            ]
+        )
+
+        class _ClientStub:
+            async def initialize(self) -> dict[str, Any]:
+                return {"serverInfo": {"version": "0.200.0"}}
+
+            async def request(
+                self, method: str, _params: dict[str, Any], **_kwargs: Any
+            ) -> dict[str, Any]:
+                if method == "thread/start":
+                    return {"thread": {"id": "thread-1"}}
+                if method == "turn/start":
+                    return {"turn": {"id": "turn-1"}}
+                raise AssertionError(method)
+
+            async def receive(self) -> dict[str, Any]:
+                return next(messages)
+
+            async def respond(self, *_args: Any, **_kwargs: Any) -> None:
+                return None
+
+        class _ClientCtx:
+            async def __aenter__(self) -> Any:
+                return _ClientStub()
+
+            async def __aexit__(self, *_exc: object) -> None:
+                return None
+
+        with patch(
+            "miniclaw2.providers.codex._CodexJsonRpcClient",
+            return_value=_ClientCtx(),
+        ):
+            events = [
+                event
+                async for event in provider.run(
+                    _FakeProviderContext()  # type: ignore[arg-type]
+                )
+            ]
+
+        self.assertEqual(events[-1].kind, "rate_limit")
+        self.assertEqual(events[-1].rate_limit_kind, "rateLimitExceeded")
 
 
 if __name__ == "__main__":

@@ -73,6 +73,7 @@ class GlobalDefaults(BaseModel):
     auto_commit: bool = False
     preferred_language: str | None = None
     concurrency: StrictInt = Field(default=1, ge=1)
+    codex_rate_limit_auto_retry: bool = True
 
 
 class SyncSettings(BaseModel):

@@ -10,6 +10,7 @@ import stat
 import subprocess
 import tempfile
 import threading
+import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -23,6 +24,7 @@ _ROOT_COMMIT_RE = re.compile(r"^[0-9a-f]{40,64}$")
 # ssh(1) exits 255 for its own failures; reuse it so callers that tolerate
 # git's exit code 1 never mistake a dead transport for an empty result.
 SSH_TRANSPORT_FAILURE = 255
+SSH_READ_RETRY_DELAYS_SECONDS = (1.0, 2.0, 4.0)
 
 # sockaddr_un.sun_path holds 104 bytes on macOS and 108 on Linux; the smaller
 # limit applies everywhere. OpenSSH binds "<ControlPath>.<16 random chars>"
@@ -155,16 +157,45 @@ class SSHProjectTransport:
                 stderr=str(exc).encode("utf-8", errors="replace"),
             )
 
+    def run_readonly(
+        self,
+        args: list[str],
+        *,
+        timeout: float = 15,
+    ) -> subprocess.CompletedProcess[str]:
+        result = self.run(args, timeout=timeout)
+        for delay in SSH_READ_RETRY_DELAYS_SECONDS:
+            if result.returncode != SSH_TRANSPORT_FAILURE:
+                break
+            time.sleep(delay)
+            result = self.run(args, timeout=timeout)
+        return result
+
+    def run_bytes_readonly(
+        self,
+        args: list[str],
+        *,
+        input_data: bytes | None = None,
+        timeout: float = 60,
+    ) -> subprocess.CompletedProcess[bytes]:
+        result = self.run_bytes(args, input_data=input_data, timeout=timeout)
+        for delay in SSH_READ_RETRY_DELAYS_SECONDS:
+            if result.returncode != SSH_TRANSPORT_FAILURE:
+                break
+            time.sleep(delay)
+            result = self.run_bytes(args, input_data=input_data, timeout=timeout)
+        return result
+
     def export_tracked_files(self, root_path: str) -> bytes:
         """Return a tar archive of the current contents of tracked files."""
-        tracked = self.run_bytes(
+        tracked = self.run_bytes_readonly(
             ["git", "-C", root_path, "ls-files", "--cached", "-z"]
         )
         if tracked.returncode != 0:
             raise RemoteTransportError(
                 self._bytes_failure("无法列出远端 Git 跟踪文件", tracked)
             )
-        deleted = self.run_bytes(
+        deleted = self.run_bytes_readonly(
             ["git", "-C", root_path, "ls-files", "--deleted", "-z"]
         )
         if deleted.returncode != 0:
@@ -180,7 +211,7 @@ class SSHProjectTransport:
         file_list = b"\0".join(tracked_paths)
         if file_list:
             file_list += b"\0"
-        archive = self.run_bytes(
+        archive = self.run_bytes_readonly(
             [
                 "tar",
                 "-C",
@@ -221,7 +252,7 @@ class SSHProjectTransport:
             ))
 
     def probe_repository(self, root_path: str) -> RemoteRepositoryProbe:
-        exists = self.run(["test", "-d", root_path])
+        exists = self.run_readonly(["test", "-d", root_path])
         if exists.returncode == SSH_TRANSPORT_FAILURE:
             raise RemoteTransportError(
                 self._failure(f"无法通过 SSH 连接到 {self.access.ssh_target}", exists)
@@ -231,7 +262,7 @@ class SSHProjectTransport:
                 self._failure(f"远端目录不存在或不可访问：{root_path}", exists)
             )
 
-        repository = self.run(
+        repository = self.run_readonly(
             ["git", "-C", root_path, "rev-parse", "--is-inside-work-tree"]
         )
         if repository.returncode != 0 or repository.stdout.strip() != "true":
@@ -239,7 +270,7 @@ class SSHProjectTransport:
                 self._failure(f"远端路径不是 Git 工作树：{root_path}", repository)
             )
 
-        roots = self.run(
+        roots = self.run_readonly(
             ["git", "-C", root_path, "rev-list", "--max-parents=0", "HEAD"]
         )
         if roots.returncode != 0:

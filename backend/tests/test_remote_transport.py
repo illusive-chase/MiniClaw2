@@ -87,7 +87,7 @@ def test_probe_reports_ssh_failure_rather_than_missing_remote_directory() -> Non
     with patch(
         "miniclaw2.remote_transport.subprocess.run",
         side_effect=OSError("unix_listener: path too long for Unix domain socket"),
-    ):
+    ), patch("miniclaw2.remote_transport.time.sleep"):
         with pytest.raises(RemoteTransportError) as excinfo:
             transport.probe_repository("/srv/project")
 
@@ -109,6 +109,35 @@ def test_transport_failure_uses_ssh_exit_code_not_git_exit_one() -> None:
     assert text.returncode == SSH_TRANSPORT_FAILURE
     assert binary.returncode == SSH_TRANSPORT_FAILURE
     assert SSH_TRANSPORT_FAILURE != 1
+
+
+def test_readonly_command_retries_only_ssh_transport_failures() -> None:
+    transport = _transport()
+    responses = iter(
+        [
+            subprocess.CompletedProcess([], SSH_TRANSPORT_FAILURE, "", "lost"),
+            subprocess.CompletedProcess([], SSH_TRANSPORT_FAILURE, "", "lost"),
+            subprocess.CompletedProcess([], 0, "ok", ""),
+        ]
+    )
+    with patch.object(transport, "run", side_effect=lambda *_args, **_kwargs: next(responses)) as run, patch(
+        "miniclaw2.remote_transport.time.sleep"
+    ) as sleep:
+        result = transport.run_readonly(["git", "status"])
+
+    assert result.stdout == "ok"
+    assert run.call_count == 3
+    assert [call.args[0] for call in sleep.call_args_list] == [1.0, 2.0]
+
+    with patch.object(
+        transport,
+        "run",
+        return_value=subprocess.CompletedProcess([], 1, "", "git failed"),
+    ) as run, patch("miniclaw2.remote_transport.time.sleep") as sleep:
+        result = transport.run_readonly(["git", "status"])
+    assert result.returncode == 1
+    run.assert_called_once()
+    sleep.assert_not_called()
 
 
 def test_probe_uses_project_control_socket_and_quotes_remote_path(

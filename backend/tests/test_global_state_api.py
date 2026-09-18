@@ -34,6 +34,7 @@ class GlobalStateApiTest(unittest.TestCase):
         body = response.json()
         self.assertEqual(body["config_path"], str(self.root / "config.json"))
         self.assertEqual(body["defaults"]["default_model_preset_id"], "gpt-5.6")
+        self.assertTrue(body["defaults"]["codex_rate_limit_auto_retry"])
         self.assertEqual(body["code_review"]["model_preset_id"], "gpt-5.6")
         self.assertEqual(
             body["tool_requests"],
@@ -203,6 +204,7 @@ class GlobalStateApiTest(unittest.TestCase):
                 "auto_commit": True,
                 "preferred_language": "zh-CN",
                 "concurrency": 3,
+                "codex_rate_limit_auto_retry": False,
             },
         )
         self.assertEqual(updated.status_code, 200)
@@ -216,6 +218,7 @@ class GlobalStateApiTest(unittest.TestCase):
         self.assertEqual(body["model_preset_id"], "opus-4-8")
         self.assertEqual(body["preferred_language"], "Simplified Chinese")
         self.assertEqual(body["concurrency"], 3)
+        self.assertFalse(updated.json()["defaults"]["codex_rate_limit_auto_retry"])
         project = self.registry.get_project(body["id"])
         self.assertIsNotNone(project)
         assert project is not None

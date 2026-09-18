@@ -19,6 +19,7 @@ import shutil
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import asdict
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -152,6 +153,7 @@ _COLD_START_EMPTY_SUMMARY = "冷启动回合结束但没有产生最终文本"
 # Tail of the turn's assistant text kept for the summary. Same order of
 # magnitude as the summaries agents write for themselves.
 _COLD_START_SUMMARY_LIMIT = 4000
+_CODEX_RATE_LIMIT_RETRY_DELAYS_SECONDS = (60.0, 60.0, 300.0)
 
 
 class LibraryAuthoringError(ValueError):
@@ -669,23 +671,6 @@ class NodeRunner:
         preset = get_model_preset(
             self.node.model_preset_id, store_root=self.store.root
         )
-        provider = _make_provider(preset.provider)
-        run_review = getattr(provider, "run_review", None)
-        if run_review is None:
-            return (
-                NodeState.ERROR,
-                f"{provider.name} provider does not support native code review",
-                None,
-            )
-        self._provider = provider
-        context = AgentProviderContext(
-            node=self.node,
-            project=self.project,
-            request_gate_handler=self._request_gate,
-            system_context=system_context,
-            store_root=self.store.root,
-            skill_materialization=self._skill_materialization,
-        )
         focus = (
             self.node.brief.check_what
             if self.node.brief is not None
@@ -699,33 +684,100 @@ class NodeRunner:
             focus=focus,
             patch=patch,
         )
-        report: ReviewReport | None = None
-        terminal_seen = False
-        async for event in run_review(context, spec):
-            await self._handle_provider_event(event)
-            if event.kind == "review" and event.report is not None:
-                report = event.report
-            elif event.kind == "done":
-                terminal_seen = True
-                state = _state_from_provider(event.final_state)
-                if event.final_state is not None and state is None:
-                    return (
-                        NodeState.ERROR,
-                        f"{provider.name} provider returned unknown final_state: "
-                        f"{event.final_state}",
-                        report,
-                    )
-                return state or NodeState.DONE, None, report
-            elif event.kind == "error":
-                terminal_seen = True
-                return NodeState.ERROR, event.error or "provider review error", report
-        if not terminal_seen:
-            return (
-                NodeState.ERROR,
-                f"{provider.name} review stream ended without a terminal event",
-                report,
+        rate_limit_attempt = 0
+        while True:
+            provider = _make_provider(preset.provider)
+            run_review = getattr(provider, "run_review", None)
+            if run_review is None:
+                return (
+                    NodeState.ERROR,
+                    f"{provider.name} provider does not support native code review",
+                    None,
+                )
+            self._provider = provider
+            review_node = (
+                self.node
+                if rate_limit_attempt == 0
+                else self.node.model_copy(update={"provider_session_id": None})
             )
-        return NodeState.ERROR, "provider review failed", report
+            context = AgentProviderContext(
+                node=review_node,
+                project=self.project,
+                request_gate_handler=self._request_gate,
+                system_context=system_context,
+                store_root=self.store.root,
+                skill_materialization=self._skill_materialization,
+            )
+            report: ReviewReport | None = None
+            terminal_seen = False
+            rate_limit: AgentProviderEvent | None = None
+            stream = run_review(context, spec)
+            try:
+                async for event in stream:
+                    await self._handle_provider_event(event)
+                    if event.kind == "review" and event.report is not None:
+                        report = event.report
+                    elif event.kind == "done":
+                        terminal_seen = True
+                        state = _state_from_provider(event.final_state)
+                        if event.final_state is not None and state is None:
+                            return (
+                                NodeState.ERROR,
+                                f"{provider.name} provider returned unknown final_state: "
+                                f"{event.final_state}",
+                                report,
+                            )
+                        return state or NodeState.DONE, None, report
+                    elif event.kind == "error":
+                        terminal_seen = True
+                        return (
+                            NodeState.ERROR,
+                            event.error or "provider review error",
+                            report,
+                        )
+                    elif event.kind == "rate_limit":
+                        terminal_seen = True
+                        rate_limit = event
+                        break
+            finally:
+                await stream.aclose()
+                self._provider = None
+
+            if rate_limit is not None:
+                enabled = bool(
+                    self.node.settings_snapshot.get(
+                        "codex_rate_limit_auto_retry", True
+                    )
+                )
+                if enabled and rate_limit_attempt < len(
+                    _CODEX_RATE_LIMIT_RETRY_DELAYS_SECONDS
+                ):
+                    delay = _CODEX_RATE_LIMIT_RETRY_DELAYS_SECONDS[
+                        rate_limit_attempt
+                    ]
+                    rate_limit_attempt += 1
+                    await self._wait_for_codex_rate_limit(
+                        rate_limit, attempt=rate_limit_attempt, delay=delay
+                    )
+                    continue
+                suffix = (
+                    "；已达到自动续跑上限"
+                    if enabled
+                    else "；自动续跑已关闭"
+                )
+                return (
+                    NodeState.ERROR,
+                    (rate_limit.error or "Codex 请求受限") + suffix,
+                    report,
+                )
+
+            if not terminal_seen:
+                return (
+                    NodeState.ERROR,
+                    f"{provider.name} review stream ended without a terminal event",
+                    report,
+                )
+            return NodeState.ERROR, "provider review failed", report
 
     def _publish_code_review_report(
         self, report: ReviewReport, *, stale: bool
@@ -958,63 +1010,138 @@ class NodeRunner:
         preset = get_model_preset(
             self.node.model_preset_id, store_root=self.store.root
         )
-        provider = _make_provider(preset.provider)
-        self._provider = provider
-        turn_node = self.node.model_copy(update={"prompt": prompt})
-        context = AgentProviderContext(
-            node=turn_node,
-            project=self.project,
-            request_gate_handler=self._request_gate,
-            system_context=system_context,
-            launch_instructions=launch_instructions,
-            store_root=self.store.root,
-            skill_materialization=self._skill_materialization,
-        )
-        if self.project.persistence_mode is ProjectPersistenceMode.REMOTE and preset.provider == "codex":
-            binding = self.store.read_remote_binding(self.project.id)
-            if binding is None:
-                return NodeState.ERROR, "远端接入配置缺失"
-            context.remote_access = binding.remote
-            context.graph_tools = RemoteGraphTools(self.project, turn_node)
-            if not launch_instructions:
-                context.launch_instructions = remote_launch_block(turn_node)
-        final_state: NodeState | None = None
-        error_msg: str | None = None
-        terminal_seen = False
-        stream = provider.run(context)
-        try:
-            async for ev in stream:
-                await self._handle_provider_event(ev)
-                if ev.kind == "done":
-                    terminal_seen = True
-                    provider_state = _state_from_provider(ev.final_state)
-                    if ev.final_state is not None and provider_state is None:
-                        error_msg = (
-                            f"{provider.name} provider returned unknown final_state: "
-                            f"{ev.final_state}"
-                        )
-                        final_state = NodeState.ERROR
-                        await self._emit(ErrorEvent(message=error_msg))
-                    else:
-                        final_state = provider_state or NodeState.DONE
-                    break
-                if ev.kind == "error":
-                    terminal_seen = True
-                    error_msg = ev.error or "provider error"
-                    final_state = NodeState.ERROR
-                    if ev.error is None:
-                        await self._emit(ErrorEvent(message=error_msg))
-                    break
-        finally:
-            await stream.aclose()
-            self._provider = None
-        if not terminal_seen:
-            error_msg = (
-                f"{provider.name} provider stream ended without a terminal event"
+        turn_prompt = prompt
+        rate_limit_attempt = 0
+        while True:
+            provider = _make_provider(preset.provider)
+            self._provider = provider
+            turn_node = self.node.model_copy(update={"prompt": turn_prompt})
+            context = AgentProviderContext(
+                node=turn_node,
+                project=self.project,
+                request_gate_handler=self._request_gate,
+                system_context=system_context,
+                launch_instructions=launch_instructions,
+                store_root=self.store.root,
+                skill_materialization=self._skill_materialization,
             )
-            final_state = NodeState.ERROR
-            await self._emit(ErrorEvent(message=error_msg))
-        return final_state or NodeState.ERROR, error_msg
+            if self.project.persistence_mode is ProjectPersistenceMode.REMOTE and preset.provider == "codex":
+                binding = self.store.read_remote_binding(self.project.id)
+                if binding is None:
+                    return NodeState.ERROR, "远端接入配置缺失"
+                context.remote_access = binding.remote
+                context.graph_tools = RemoteGraphTools(self.project, turn_node)
+                if not launch_instructions:
+                    context.launch_instructions = remote_launch_block(turn_node)
+            final_state: NodeState | None = None
+            error_msg: str | None = None
+            terminal_seen = False
+            rate_limit: AgentProviderEvent | None = None
+            stream = provider.run(context)
+            try:
+                async for ev in stream:
+                    await self._handle_provider_event(ev)
+                    if ev.kind == "done":
+                        terminal_seen = True
+                        provider_state = _state_from_provider(ev.final_state)
+                        if ev.final_state is not None and provider_state is None:
+                            error_msg = (
+                                f"{provider.name} provider returned unknown final_state: "
+                                f"{ev.final_state}"
+                            )
+                            final_state = NodeState.ERROR
+                            await self._emit(ErrorEvent(message=error_msg))
+                        else:
+                            final_state = provider_state or NodeState.DONE
+                        break
+                    if ev.kind == "error":
+                        terminal_seen = True
+                        error_msg = ev.error or "provider error"
+                        final_state = NodeState.ERROR
+                        if ev.error is None:
+                            await self._emit(ErrorEvent(message=error_msg))
+                        break
+                    if ev.kind == "rate_limit":
+                        terminal_seen = True
+                        rate_limit = ev
+                        break
+            finally:
+                await stream.aclose()
+                self._provider = None
+
+            if rate_limit is not None:
+                enabled = bool(
+                    self.node.settings_snapshot.get(
+                        "codex_rate_limit_auto_retry", True
+                    )
+                )
+                if enabled and rate_limit_attempt < len(
+                    _CODEX_RATE_LIMIT_RETRY_DELAYS_SECONDS
+                ):
+                    delay = _CODEX_RATE_LIMIT_RETRY_DELAYS_SECONDS[
+                        rate_limit_attempt
+                    ]
+                    rate_limit_attempt += 1
+                    await self._wait_for_codex_rate_limit(
+                        rate_limit, attempt=rate_limit_attempt, delay=delay
+                    )
+                    turn_prompt = _codex_rate_limit_retry_prompt(
+                        rate_limit_attempt,
+                        len(_CODEX_RATE_LIMIT_RETRY_DELAYS_SECONDS),
+                    )
+                    continue
+                suffix = (
+                    "；已达到自动续跑上限"
+                    if enabled
+                    else "；自动续跑已关闭"
+                )
+                error_msg = (rate_limit.error or "Codex 请求受限") + suffix
+                await self._emit(ErrorEvent(message=error_msg))
+                return NodeState.ERROR, error_msg
+
+            if not terminal_seen:
+                error_msg = (
+                    f"{provider.name} provider stream ended without a terminal event"
+                )
+                final_state = NodeState.ERROR
+                await self._emit(ErrorEvent(message=error_msg))
+            return final_state or NodeState.ERROR, error_msg
+
+    async def _wait_for_codex_rate_limit(
+        self,
+        event: AgentProviderEvent,
+        *,
+        attempt: int,
+        delay: float,
+    ) -> None:
+        self._transition(NodeState.WAITING)
+        await self._emit_node_updated()
+        details = [
+            f"第 {attempt}/{len(_CODEX_RATE_LIMIT_RETRY_DELAYS_SECONDS)} 次，"
+            f"等待 {delay / 60:g} 分钟后自动续跑"
+        ]
+        if event.rate_limit_resets_at is not None:
+            details.append(
+                "配额重置时间 "
+                + _format_rate_limit_timestamp(event.rate_limit_resets_at)
+            )
+        if event.rate_limit_observed_at is not None:
+            details.append(
+                "快照时间 "
+                + _format_rate_limit_timestamp(event.rate_limit_observed_at)
+            )
+        await self._emit(
+            Activity(
+                kind="agent",
+                status="progress",
+                id=f"codex-rate-limit:{self.node.id}:{attempt}",
+                name="Codex 限流等待",
+                summary="；".join(details),
+            )
+        )
+        await asyncio.sleep(delay)
+        self._transition(NodeState.RUNNING)
+        await self._emit_node_updated()
 
     # ---- materialization + reap ----
 
@@ -1544,6 +1671,9 @@ class NodeRunner:
             }
         }
         snapshot.update(attached)
+        snapshot["codex_rate_limit_auto_retry"] = load_global_config(
+            self.store.root
+        ).defaults.codex_rate_limit_auto_retry
         snapshot["cwd"] = self.project.root_path
         if self.project.persistence_mode is ProjectPersistenceMode.REMOTE:
             binding = self.store.read_remote_binding(self.project.id)
@@ -2103,6 +2233,20 @@ def _make_provider(provider: str) -> AgentProvider:
     if normalized == "claude":
         return ClaudeProvider()
     raise ValueError(f"unknown provider: {provider}")
+
+
+def _codex_rate_limit_retry_prompt(attempt: int, maximum: int) -> str:
+    return (
+        "MiniClaw2 检测到上一 Codex 回合已因限流失败。请基于当前会话和工作区状态"
+        "继续本节点任务，不要重复已经成功的工具操作，并继续遵守当前节点契约。"
+        f"这是第 {attempt}/{maximum} 次自动续跑。"
+    )
+
+
+def _format_rate_limit_timestamp(value: float) -> str:
+    return datetime.fromtimestamp(value, tz=timezone.utc).isoformat(
+        timespec="seconds"
+    )
 
 
 def _compose_launch_instructions(*parts: str) -> str:

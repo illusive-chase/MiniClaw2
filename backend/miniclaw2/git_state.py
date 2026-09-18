@@ -807,9 +807,17 @@ def _git(
                 stdout="",
                 stderr="remote Git execution does not accept environment overrides",
             )
-        return remote.transport.run(
-            ["git", "-C", remote.root_path, *args], timeout=timeout
-        )
+        command = ["git", "-C", remote.root_path, *args]
+        if args and args[0] in {
+            "diff",
+            "ls-files",
+            "remote",
+            "rev-list",
+            "rev-parse",
+            "status",
+        } and hasattr(remote.transport, "run_readonly"):
+            return remote.transport.run_readonly(command, timeout=timeout)
+        return remote.transport.run(command, timeout=timeout)
     try:
         return subprocess.run(
             ["git", *args],
@@ -834,9 +842,16 @@ def _git_bytes(
 ) -> subprocess.CompletedProcess[bytes]:
     remote = _remote_git_location(cwd)
     if remote is not None:
-        return remote.transport.run_bytes(
-            ["git", "-C", remote.root_path, *args], timeout=timeout
-        )
+        command = ["git", "-C", remote.root_path, *args]
+        if args and args[0] in {
+            "diff",
+            "ls-files",
+            "rev-list",
+            "rev-parse",
+            "status",
+        } and hasattr(remote.transport, "run_bytes_readonly"):
+            return remote.transport.run_bytes_readonly(command, timeout=timeout)
+        return remote.transport.run_bytes(command, timeout=timeout)
     try:
         return subprocess.run(
             ["git", *args],

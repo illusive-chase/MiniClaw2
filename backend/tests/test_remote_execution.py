@@ -13,7 +13,7 @@ import pytest
 
 from miniclaw2.domain import Node, Project, RemoteAccessConfig, RemoteProjectIdentity
 from miniclaw2.providers.base import AgentProviderContext
-from miniclaw2.providers.codex import CodexProvider, _thread_params, _turn_params
+from miniclaw2.providers.codex import CodexProvider, _thread_params, _turn_params, _validate_remote_thread
 from miniclaw2.remote_execution import _EXECUTABLE_RESOLVER, _SUPERVISOR, RemoteExecutor, register_environment, ssh_command, start_verifier, stop_process
 from miniclaw2.remote_graph import RemoteGraphTools
 from miniclaw2.remote_transport import RemoteTransportError, SSHProjectTransport
@@ -48,6 +48,25 @@ def test_environment_parameters_are_remote_only(tmp_path: Path) -> None:
     assert _turn_params(ctx, "thread", "work")["sandboxPolicy"] == {
         "type": "externalSandbox", "networkAccess": "restricted",
     }
+
+
+def test_remote_thread_validation_accepts_unrelated_echoed_environments(tmp_path: Path) -> None:
+    ctx = context(tmp_path)
+    ctx.remote_environment_id = "remote"
+    expected = _thread_params(ctx, {})["environments"][0]
+
+    _validate_remote_thread(
+        ctx,
+        {
+            "thread": {
+                "environments": [
+                    {"environmentId": "configured", "cwd": "/elsewhere"},
+                    {"environmentId": "local", "cwd": str(tmp_path)},
+                    expected,
+                ]
+            }
+        },
+    )
 
 
 def test_ready_probe_requires_shell_and_never_recovers() -> None:

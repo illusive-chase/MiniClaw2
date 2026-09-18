@@ -161,6 +161,7 @@ class UpdateGlobalDefaultsRequest(BaseModel):
     auto_commit: bool | None = None
     preferred_language: str | None = None
     concurrency: StrictInt | None = Field(default=None, ge=1)
+    codex_rate_limit_auto_retry: bool | None = None
 
 
 class UpdateCodeReviewSettingsRequest(BaseModel):
@@ -884,6 +885,10 @@ def create_app(
             if req.concurrency is None:
                 raise HTTPException(422, "concurrency cannot be null")
             updates["concurrency"] = req.concurrency
+        if "codex_rate_limit_auto_retry" in req.model_fields_set:
+            if req.codex_rate_limit_auto_retry is None:
+                raise HTTPException(422, "codex_rate_limit_auto_retry 不能为 null")
+            updates["codex_rate_limit_auto_retry"] = req.codex_rate_limit_auto_retry
         try:
             save_global_config(
                 config.model_copy(

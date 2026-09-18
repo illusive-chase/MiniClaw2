@@ -4,7 +4,8 @@
     "default_model_preset_id": "gpt-5.6",
     "auto_commit": false,
     "preferred_language": null,
-    "concurrency": 1
+    "concurrency": 1,
+    "codex_rate_limit_auto_retry": true
   },
   "tool_requests": {
     "timeout_seconds": 120,

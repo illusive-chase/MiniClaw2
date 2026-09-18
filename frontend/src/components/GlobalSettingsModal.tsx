@@ -430,6 +430,9 @@ export function GlobalSettingsModal({ open, state, onClose, onChanged }: Props) 
                 <label className="flex items-center gap-2 self-end rounded-md border border-line bg-surface-sunken px-3 py-2 text-xs text-ink">
                   <input type="checkbox" checked={defaults.auto_commit} onChange={(event) => setDefaults({ ...defaults, auto_commit: event.target.checked })} className="accent-brand" /> Auto commit completed work
                 </label>
+                <label className="flex items-center gap-2 self-end rounded-md border border-line bg-surface-sunken px-3 py-2 text-xs text-ink sm:col-span-2">
+                  <input type="checkbox" checked={defaults.codex_rate_limit_auto_retry} onChange={(event) => setDefaults({ ...defaults, codex_rate_limit_auto_retry: event.target.checked })} className="accent-brand" /> Codex 限流失败后自动续跑（全局）
+                </label>
               </div>
               <div className="mt-3 flex justify-end"><button type="button" disabled={saving} onClick={() => void saveDefaults()} className={primaryButton}>Save defaults</button></div>
             </section>

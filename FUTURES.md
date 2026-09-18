@@ -328,6 +328,19 @@ ready、shell 和 thread cwd 回显检查；断线后的远端写入结果可能
 通过重新发送回合或去掉 environment 自动恢复。externalSandbox 的隔离由
 远端容器或账号承担，而不是 Codex 提供的进程级沙箱。
 
+`thread/resume` 的 environment 回显会混入配置文件环境和合成的 `local`
+环境，因此握手只能按 `environmentId` 定位 MiniClaw2 注册项并逐字段核对，
+不能要求回显列表只有一项。`thread/resume` 还会静默丢弃新传入的
+`developerInstructions`；续接节点当前回合的框架契约必须走 turn 输入通道，
+并明确替换前一节点契约。续接不会获得新传入的动态工具，工具集仍由原始
+rollout 回放；工具集合的持久化比对尚未实现。
+
+终态限流与断线不同：只有收到 `turn/completed(status=failed)` 且错误类型为
+`rateLimitExceeded`、`usageLimitExceeded` 或 `serverOverloaded` 后，才可把后续
+回合作为新操作自动续跑。默认开启，最多等待三次，固定间隔为 1、1、5 分钟；
+等待期间节点进入可见的 WAITING 状态。SSH 建链失败仅对只读探针和读取操作按
+1、2、4 秒重试；初始化、提交、push、pull/rebase 及执行中断线不自动重试。
+
 workspaceWrite 的强制手段是 Codex 自带的 bubblewrap，它要求远端能创建
 非特权 user namespace。禁止这一点的容器（AutoDL 的 Docker 实例即如此，
 `docker-default` AppArmor + seccomp 拦下 `CLONE_NEWUSER`，且 `/proc/sys`

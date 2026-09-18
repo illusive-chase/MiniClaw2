@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import re
+import time
 from collections import deque
 from collections.abc import AsyncIterator
 from contextlib import AsyncExitStack
@@ -34,6 +35,11 @@ _CODEX_STDERR_TAIL_LINES = 20
 _CODEX_STDIO_BUFFER_LIMIT_BYTES = 16 * 1024 * 1024
 _MIN_REVIEW_VERSION = (0, 144, 1)
 _MIN_DYNAMIC_TOOLS_VERSION = (0, 146, 0)
+_TERMINAL_RATE_LIMIT_ERRORS = {
+    "rateLimitExceeded",
+    "usageLimitExceeded",
+    "serverOverloaded",
+}
 
 
 def _observed_codex_settings(initialized: dict[str, Any]) -> dict[str, Any]:
@@ -71,10 +77,16 @@ class CodexProvider:
         self._stop = False
         self._retry_deadline: float | None = None
         self._remote_executor: RemoteExecutor | None = None
+        self._rate_limit_resets_at: float | None = None
+        self._rate_limit_observed_at: float | None = None
+        self._pending_terminal_rate_limit: tuple[str, str] | None = None
 
     async def run(self, context: AgentProviderContext) -> AsyncIterator[AgentProviderEvent]:
         self._stop = False
         self._retry_deadline = None
+        self._rate_limit_resets_at = None
+        self._rate_limit_observed_at = None
+        self._pending_terminal_rate_limit = None
         async with AsyncExitStack() as stack, _CodexJsonRpcClient(
             cwd=context.project.root_path,
             env_overrides=getattr(
@@ -148,8 +160,6 @@ class CodexProvider:
                         "threadId": thread_id,
                         "cwd": context.project.root_path,
                     }
-                    if system_prompt:
-                        resume_base["developerInstructions"] = system_prompt
                     resumed = await client.request(
                         "thread/resume",
                         _thread_params(context, resume_base),
@@ -163,9 +173,12 @@ class CodexProvider:
                         yield AgentProviderEvent(kind="session", session_id=thread_id)
 
                 self._thread_id = thread_id
+                turn_text = context.turn_text()
+                if not fresh_thread:
+                    turn_text = _resumed_turn_text(system_prompt, turn_text)
                 turn = await client.request(
                     "turn/start",
-                    _turn_params(context, thread_id, context.turn_text()),
+                    _turn_params(context, thread_id, turn_text),
                 )
                 turn_id = turn.get("turn", {}).get("id")
                 if not turn_id:
@@ -177,7 +190,7 @@ class CodexProvider:
                     message = await self._receive_turn_message(client)
                     async for ev in self._handle_message(message, context, client):
                         yield ev
-                        if ev.kind in {"done", "error"}:
+                        if ev.kind in {"done", "error", "rate_limit"}:
                             self._stop = True
                     if self._stop:
                         break
@@ -198,6 +211,9 @@ class CodexProvider:
     ) -> AsyncIterator[AgentProviderEvent]:
         self._stop = False
         self._retry_deadline = None
+        self._rate_limit_resets_at = None
+        self._rate_limit_observed_at = None
+        self._pending_terminal_rate_limit = None
         if spec.target.type != "uncommitted":
             yield AgentProviderEvent(
                 kind="error", error=f"unsupported Codex review target: {spec.target.type}"
@@ -255,8 +271,6 @@ class CodexProvider:
                         "threadId": thread_id,
                         "cwd": context.project.root_path,
                     }
-                    if system_prompt:
-                        resume_base["developerInstructions"] = system_prompt
                     resume_params = _thread_params(context, resume_base)
                     if spec.patch is not None:
                         resume_params["sandbox"] = "read-only"
@@ -273,6 +287,10 @@ class CodexProvider:
                 self._thread_id = thread_id
                 if spec.patch is not None:
                     review_prompt = _patch_review_prompt(spec.patch, spec.focus)
+                    if context.node.provider_session_id:
+                        review_prompt = _resumed_turn_text(
+                            system_prompt, review_prompt
+                        )
                     turn_params = _turn_params(context, thread_id, review_prompt)
                     turn_params.pop("sandboxPolicy", None)
                     response = await client.request("turn/start", turn_params)
@@ -317,7 +335,7 @@ class CodexProvider:
                                     report=ReviewReport(raw_markdown=report),
                                 )
                         yield event
-                        if event.kind in {"done", "error"}:
+                        if event.kind in {"done", "error", "rate_limit"}:
                             self._stop = True
                     if self._stop:
                         break
@@ -449,6 +467,17 @@ class CodexProvider:
             )
             return
 
+        if method == "account/rateLimits/updated":
+            rate_limits = params.get("rateLimits") or params
+            primary = rate_limits.get("primary") if isinstance(rate_limits, dict) else None
+            resets_at = primary.get("resetsAt") if isinstance(primary, dict) else None
+            if isinstance(resets_at, (int, float)) and not isinstance(resets_at, bool):
+                self._rate_limit_resets_at = float(resets_at)
+            else:
+                self._rate_limit_resets_at = None
+            self._rate_limit_observed_at = time.time()
+            return
+
         if method == "turn/started":
             turn_id = (params.get("turn") or {}).get("id")
             if turn_id:
@@ -510,16 +539,36 @@ class CodexProvider:
             if turn.get("status") == "interrupted":
                 yield AgentProviderEvent(kind="done", final_state="cancelled")
             elif turn.get("status") == "failed":
-                error = turn.get("error") or {}
-                text = error.get("message") or json.dumps(error, ensure_ascii=False)
-                yield AgentProviderEvent(kind="error", error=text)
+                raw_error = turn.get("error") or {}
+                error = raw_error if isinstance(raw_error, dict) else {}
+                text = error.get("message") or json.dumps(raw_error, ensure_ascii=False)
+                kind = _codex_error_kind(error)
+                pending = self._pending_terminal_rate_limit
+                if kind not in _TERMINAL_RATE_LIMIT_ERRORS and pending is not None:
+                    kind, pending_text = pending
+                    if not error.get("message"):
+                        text = pending_text
+                if kind in _TERMINAL_RATE_LIMIT_ERRORS:
+                    # turn/completed(status=failed) makes the previous operation
+                    # terminal. A later turn is therefore a new operation, not a
+                    # replay of an operation whose result is unknown.
+                    yield AgentProviderEvent(
+                        kind="rate_limit",
+                        error=text,
+                        rate_limit_kind=kind,
+                        rate_limit_resets_at=self._rate_limit_resets_at,
+                        rate_limit_observed_at=self._rate_limit_observed_at,
+                    )
+                else:
+                    yield AgentProviderEvent(kind="error", error=text)
             else:
                 yield AgentProviderEvent(kind="done")
             return
 
         if method == "error":
-            error = params.get("error") or {}
-            text = error.get("message") or json.dumps(error, ensure_ascii=False)
+            raw_error = params.get("error") or {}
+            error = raw_error if isinstance(raw_error, dict) else {}
+            text = error.get("message") or json.dumps(raw_error, ensure_ascii=False)
             if params.get("willRetry") is True:
                 logger.warning("Codex turn error is being retried: %s", text)
                 if self._retry_deadline is None:
@@ -527,6 +576,10 @@ class CodexProvider:
                         asyncio.get_running_loop().time()
                         + _codex_retry_stall_timeout_seconds()
                     )
+                return
+            kind = _codex_error_kind(error)
+            if kind in _TERMINAL_RATE_LIMIT_ERRORS:
+                self._pending_terminal_rate_limit = (kind, text)
                 return
             yield AgentProviderEvent(kind="error", error=text)
             return
@@ -896,6 +949,29 @@ def _codex_retry_stall_message() -> str:
     return f"Codex 重试后连续 {timeout:g} 秒没有回合进展"
 
 
+def _codex_error_kind(error: Any) -> str | None:
+    if not isinstance(error, dict):
+        return None
+    info = error.get("codexErrorInfo")
+    if isinstance(info, str):
+        return info
+    if isinstance(info, dict):
+        for key in ("type", "kind"):
+            value = info.get(key)
+            if isinstance(value, str):
+                return value
+    return None
+
+
+def _resumed_turn_text(system_prompt: str, turn_text: str) -> str:
+    if not system_prompt.strip():
+        return turn_text
+    return (
+        "以下是 MiniClaw2 对当前回合的续接契约，它取代前一节点的所有框架契约。\n\n"
+        f"{system_prompt.strip()}\n\n---\n\n{turn_text}"
+    )
+
+
 def _thread_params(
     context: AgentProviderContext,
     base: dict[str, Any],
@@ -952,8 +1028,19 @@ def _validate_remote_thread(context: AgentProviderContext, response: dict[str, A
     expected_provider = context.node.settings_snapshot.get("resume_model_provider")
     if expected_provider and response.get("modelProvider") != expected_provider:
         raise RuntimeError("续接会话的模型后端已改变，拒绝发送执行回合")
-    if not isinstance(environments, list) or len(environments) != 1 or any(
-        environments[0].get(key) != value for key, value in expected.items()
+    matched = None
+    if isinstance(environments, list):
+        matched = next(
+            (
+                item
+                for item in environments
+                if isinstance(item, dict)
+                and item.get("environmentId") == expected["environmentId"]
+            ),
+            None,
+        )
+    if matched is None or any(
+        matched.get(key) != value for key, value in expected.items()
     ):
         raise RuntimeError("Codex 未确认指定远端 cwd 与环境，拒绝发送执行回合")
 

@@ -39,9 +39,11 @@ class AgentProviderEvent:
     """Event emitted by an agent provider.
 
     Provider streams must terminate explicitly: before ``run()`` exhausts it
-    must yield either ``kind="done"`` (optionally with ``final_state`` set to
-    ``"done"`` or ``"cancelled"``) or ``kind="error"``. Consumers should treat
-    bare generator exhaustion as a provider failure.
+    must yield ``kind="done"`` (optionally with ``final_state`` set to
+    ``"done"`` or ``"cancelled"``), ``kind="error"``, or a structured terminal
+    event such as ``kind="rate_limit"``. Consumers must either handle that
+    structured terminal event or turn it into an error. Bare generator
+    exhaustion is a provider failure.
     """
 
     kind: str
@@ -53,6 +55,9 @@ class AgentProviderEvent:
     final_state: str | None = None
     report: ReviewReport | None = None
     settings: dict[str, Any] | None = None
+    rate_limit_kind: str | None = None
+    rate_limit_resets_at: float | None = None
+    rate_limit_observed_at: float | None = None
 
 
 @dataclass(slots=True)

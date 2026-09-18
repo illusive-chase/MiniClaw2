@@ -373,6 +373,7 @@ export type GlobalDefaults = {
   auto_commit: boolean;
   preferred_language?: string | null;
   concurrency: number;
+  codex_rate_limit_auto_retry: boolean;
 };
 export type ToolRequestSettings = {
   timeout_seconds: number;

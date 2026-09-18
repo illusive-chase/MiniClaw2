@@ -174,6 +174,9 @@ async def _run_agent_context_task(project: Project, record: ContextTask) -> None
             if ev.kind == "error":
                 terminal_seen = True
                 raise RuntimeError(ev.error or "provider error")
+            if ev.kind == "rate_limit":
+                terminal_seen = True
+                raise RuntimeError(ev.error or "provider rate limit")
             if ev.kind == "done":
                 terminal_seen = True
                 break
