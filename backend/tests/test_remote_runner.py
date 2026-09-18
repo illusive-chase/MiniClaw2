@@ -86,6 +86,88 @@ def test_remote_dynamic_preview_repair_reaps_and_publishes(tmp_path: Path) -> No
     assert node.artifacts[0].status == "published"
 
 
+def test_remote_registry_schedules_agents_and_verifiers(tmp_path: Path) -> None:
+    async def exercise() -> None:
+        store, project, lane = setup_remote(tmp_path)
+        project.concurrency = 2
+        store.update_project(project)
+        registry = ProjectRegistry(store)
+        runtime = registry._runtimes[project.id]
+        release = asyncio.Event()
+        started: list[str] = []
+
+        class BlockingRunner:
+            def __init__(
+                self,
+                node: Node,
+                _project: Project,
+                _store: Store,
+                _on_event: object,
+                **_kwargs: object,
+            ) -> None:
+                self.node = node
+                started.append(node.id)
+
+            async def run(self) -> None:
+                self.node.state = NodeState.RUNNING
+                store.update_node(self.node)
+                await release.wait()
+                self.node.state = NodeState.DONE
+                store.update_node(self.node)
+
+        try:
+            with patch("miniclaw2.registry.NodeRunner", BlockingRunner):
+                agent = registry.start_node(
+                    project.id,
+                    "执行远端任务",
+                    planspace_id=lane,
+                    model_preset_id="gpt-5.6",
+                )
+                assert agent is not None
+                verifier = store.create_node(
+                    Node(
+                        project_id=project.id,
+                        kind=NodeKind.VERIFIER,
+                        category=Category.REVIEW,
+                        subtype=ReviewSubtype.PROGRAMMATIC_REVIEW,
+                        brief=ReviewBrief(
+                            check_what="远端结果",
+                            expected="通过",
+                            abnormal="失败",
+                        ),
+                        verify_script_ref="printf ok",
+                        planspace_id=lane,
+                        state=NodeState.QUEUED,
+                    )
+                )
+                git_op = store.create_node(
+                    Node(
+                        project_id=project.id,
+                        kind=NodeKind.OP,
+                        op_kind="commit",
+                        state=NodeState.QUEUED,
+                    )
+                )
+
+                registry._schedule_queued(runtime)
+                await asyncio.sleep(0)
+
+                assert set(started) == {agent.id, verifier.id}
+                assert set(runtime.runners) == {agent.id, verifier.id}
+                assert git_op.id not in runtime.runners
+                persisted_op = store.load_node(project.id, git_op.id)
+                assert persisted_op is not None
+                assert persisted_op.state is NodeState.QUEUED
+
+                release.set()
+                await asyncio.gather(*list(runtime.runner_tasks.values()))
+                await asyncio.sleep(0)
+        finally:
+            registry.close_remote_transports()
+
+    asyncio.run(exercise())
+
+
 def test_claude_has_local_read_only_role(tmp_path: Path) -> None:
     store, project, lane = setup_remote(tmp_path)
     node = store.create_node(Node(project_id=project.id, model_preset_id="opus-4-8", planspace_id=lane))

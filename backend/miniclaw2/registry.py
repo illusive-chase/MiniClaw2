@@ -2017,7 +2017,7 @@ class ProjectRegistry:
     def _can_launch_project_node(project: Project, node: Node) -> bool:
         return (
             project.persistence_mode is not ProjectPersistenceMode.REMOTE
-            or node.subtype is ReviewSubtype.CODE_REVIEW
+            or node.kind is not NodeKind.OP
         )
 
     @classmethod
