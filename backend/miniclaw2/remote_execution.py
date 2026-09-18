@@ -13,7 +13,13 @@ from pathlib import Path
 from typing import Any
 
 from .domain import Node, NodeKind, RemoteAccessConfig, RemoteProjectIdentity, ReviewSubtype
-from .remote_transport import RemoteTransportError, SSHProjectTransport, control_socket_path
+from .remote_transport import (
+    SSH_READ_RETRY_DELAYS_SECONDS,
+    SSH_TRANSPORT_FAILURE,
+    RemoteTransportError,
+    SSHProjectTransport,
+    control_socket_path,
+)
 
 
 def ssh_command(access: RemoteAccessConfig, command: list[str]) -> list[str]:
@@ -187,26 +193,7 @@ class RemoteExecutor:
         if not self.access.codex_remote_experimental:
             raise RemoteTransportError("尚未启用 Codex 远端实验执行")
         try:
-            self.control_path = control_socket_path(uuid.uuid4().hex)
-            if self.control_path is None:
-                raise RemoteTransportError("无法为节点创建独立 SSH 控制套接字")
-            command = ssh_command(self.access, ["python3", "-u", "-c", _SUPERVISOR,
-                                                "executor", self.root, self.access.codex_path])
-            command[command.index("-oControlMaster=no")] = "-oControlMaster=yes"
-            command[command.index("-oControlPath=none")] = f"-oControlPath={self.control_path}"
-            self.process = await asyncio.create_subprocess_exec(
-                *command,
-                stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            assert self.process.stdout is not None
-            self.stderr_task = asyncio.create_task(self._drain_stderr())
-            raw = await asyncio.wait_for(self.process.stdout.readline(), 20)
-            if not raw:
-                await stop_process(self.process)
-                await self.stderr_task
-                detail = self.stderr_tail.strip() or f"SSH 进程退出码 {self.process.returncode}"
-                raise RemoteTransportError(f"远端执行器未启动：{detail}")
+            raw = await self._start_supervisor()
             info = json.loads(raw)
             self.version = str(info["version"])
             # Only this protocol family has been tested. Unknown versions fail
@@ -262,6 +249,72 @@ class RemoteExecutor:
             await self.__aexit__()
             raise
 
+    async def _start_supervisor(self) -> bytes:
+        """Start the executor, retrying only pre-handshake SSH failures."""
+        for attempt in range(len(SSH_READ_RETRY_DELAYS_SECONDS) + 1):
+            self.stderr_tail = ""
+            self.control_path = control_socket_path(uuid.uuid4().hex)
+            if self.control_path is None:
+                raise RemoteTransportError("无法为节点创建独立 SSH 控制套接字")
+            command = ssh_command(
+                self.access,
+                [
+                    "python3",
+                    "-u",
+                    "-c",
+                    _SUPERVISOR,
+                    "executor",
+                    self.root,
+                    self.access.codex_path,
+                ],
+            )
+            command[command.index("-oControlMaster=no")] = "-oControlMaster=yes"
+            command[command.index("-oControlPath=none")] = (
+                f"-oControlPath={self.control_path}"
+            )
+            self.process = await asyncio.create_subprocess_exec(
+                *command,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            assert self.process.stdout is not None
+            self.stderr_task = asyncio.create_task(self._drain_stderr())
+            raw = await asyncio.wait_for(self.process.stdout.readline(), 20)
+            if raw:
+                return raw
+
+            await stop_process(self.process)
+            await self.stderr_task
+            returncode = self.process.returncode
+            detail = self.stderr_tail.strip() or f"SSH 进程退出码 {returncode}"
+            await self._clear_supervisor_attempt()
+            if (
+                returncode == SSH_TRANSPORT_FAILURE
+                and attempt < len(SSH_READ_RETRY_DELAYS_SECONDS)
+            ):
+                await asyncio.sleep(SSH_READ_RETRY_DELAYS_SECONDS[attempt])
+                continue
+            retry_note = (
+                f"（SSH 建链已重试 {attempt} 次）"
+                if attempt
+                else ""
+            )
+            raise RemoteTransportError(
+                f"远端执行器未启动{retry_note}：{detail}"
+            )
+        raise AssertionError("unreachable")
+
+    async def _clear_supervisor_attempt(self) -> None:
+        await stop_process(self.process)
+        if self.stderr_task:
+            await asyncio.gather(self.stderr_task, return_exceptions=True)
+        if self.control_path:
+            self.control_path.unlink(missing_ok=True)
+        self.process = None
+        self.stderr_task = None
+        self.control_path = None
+
     async def _drain_stderr(self) -> None:
         assert self.process is not None and self.process.stderr is not None
         while chunk := await self.process.stderr.read(65536):
@@ -272,11 +325,7 @@ class RemoteExecutor:
             raise RemoteTransportError(f"远端执行连接已断开；已发送操作的结果可能未知，不会自动重试：{self.stderr_tail}")
 
     async def __aexit__(self, *_exc: object) -> None:
-        await stop_process(self.process)
-        if self.stderr_task:
-            await asyncio.gather(self.stderr_task, return_exceptions=True)
-        if self.control_path:
-            self.control_path.unlink(missing_ok=True)
+        await self._clear_supervisor_attempt()
 
 
 def local_codex_home() -> str:

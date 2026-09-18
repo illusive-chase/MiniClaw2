@@ -1343,6 +1343,75 @@ class CodexProviderTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(events[0].kind, "rate_limit")
         self.assertEqual(events[0].rate_limit_kind, "usageLimitExceeded")
 
+    async def test_unstructured_http_429_is_reported_as_rate_limit(self) -> None:
+        provider = CodexProvider()
+        message = "exceeded retry limit, last status: 429 Too Many Requests"
+
+        first = [
+            event
+            async for event in provider._handle_message(
+                {
+                    "method": "error",
+                    "params": {
+                        "error": {"message": message},
+                        "willRetry": False,
+                    },
+                },
+                _FakeProviderContext(),  # type: ignore[arg-type]
+                object(),  # type: ignore[arg-type]
+            )
+        ]
+        self.assertEqual(first, [])
+
+        events = [
+            event
+            async for event in provider._handle_message(
+                {
+                    "method": "turn/completed",
+                    "params": {
+                        "turn": {
+                            "status": "failed",
+                            "error": {"message": message},
+                        }
+                    },
+                },
+                _FakeProviderContext(),  # type: ignore[arg-type]
+                object(),  # type: ignore[arg-type]
+            )
+        ]
+
+        self.assertEqual(events[0].kind, "rate_limit")
+        self.assertEqual(events[0].rate_limit_kind, "rateLimitExceeded")
+
+    async def test_nested_http_429_status_is_reported_as_rate_limit(self) -> None:
+        provider = CodexProvider()
+        events = [
+            event
+            async for event in provider._handle_message(
+                {
+                    "method": "turn/completed",
+                    "params": {
+                        "turn": {
+                            "status": "failed",
+                            "error": {
+                                "message": "request failed",
+                                "codexErrorInfo": {
+                                    "httpConnectionFailed": {
+                                        "httpStatusCode": 429
+                                    }
+                                },
+                            },
+                        }
+                    },
+                },
+                _FakeProviderContext(),  # type: ignore[arg-type]
+                object(),  # type: ignore[arg-type]
+            )
+        ]
+
+        self.assertEqual(events[0].kind, "rate_limit")
+        self.assertEqual(events[0].rate_limit_kind, "rateLimitExceeded")
+
     async def test_run_ends_after_terminal_rate_limit_event(self) -> None:
         provider = CodexProvider()
         messages = iter(

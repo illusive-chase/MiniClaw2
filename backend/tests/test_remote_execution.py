@@ -328,6 +328,106 @@ async def _sandbox_gate(sandbox: str, sandbox_ok: bool, expect_error: bool) -> N
             await executor.__aexit__()
 
 
+def test_executor_retries_pre_handshake_ssh_failures() -> None:
+    asyncio.run(_executor_retries_pre_handshake_ssh_failures())
+
+
+async def _executor_retries_pre_handshake_ssh_failures() -> None:
+    failed = []
+    for _ in range(2):
+        process = Mock(returncode=255)
+        process.stdout.readline = AsyncMock(return_value=b"")
+        process.stderr.read = AsyncMock(
+            side_effect=[b"Connection closed by remote host\n", b""]
+        )
+        process.stdin = Mock()
+        process.wait = AsyncMock(return_value=255)
+        failed.append(process)
+
+    handshake = json.dumps({
+        "port": 45671,
+        "version": "codex-cli 0.154.0",
+        "sandbox_ok": True,
+        "sandbox_error": "",
+    }).encode()
+    connected = Mock(returncode=None)
+    connected.stdout.readline = AsyncMock(return_value=handshake)
+    connected.stderr.read = AsyncMock(return_value=b"")
+    connected.stdin = Mock()
+    connected.wait = AsyncMock(return_value=0)
+    forward = Mock(returncode=0)
+    forward.wait = AsyncMock(return_value=0)
+    forward.stdin = None
+    writer = Mock()
+    writer.wait_closed = AsyncMock()
+    local_socket = Mock()
+    local_socket.__enter__ = Mock(return_value=local_socket)
+    local_socket.__exit__ = Mock(return_value=None)
+    local_socket.getsockname.return_value = ("127.0.0.1", 45672)
+    executor = RemoteExecutor(
+        RemoteAccessConfig(
+            ssh_target="test",
+            codex_remote_experimental=True,
+            sandbox="externalSandbox",
+        ),
+        "/srv/test",
+    )
+
+    with (
+        patch(
+            "asyncio.create_subprocess_exec",
+            AsyncMock(side_effect=[*failed, connected, forward]),
+        ) as create,
+        patch("asyncio.sleep", AsyncMock()) as sleep,
+        patch(
+            "asyncio.open_connection",
+            AsyncMock(return_value=(Mock(), writer)),
+        ),
+        patch("miniclaw2.remote_execution.socket.socket", return_value=local_socket),
+    ):
+        try:
+            assert await executor.__aenter__() is executor
+        finally:
+            await executor.__aexit__()
+
+    assert create.await_count == 4
+    assert [call.args[0] for call in sleep.await_args_list] == [1.0, 2.0]
+
+
+def test_executor_does_not_retry_remote_command_failure() -> None:
+    asyncio.run(_executor_does_not_retry_remote_command_failure())
+
+
+async def _executor_does_not_retry_remote_command_failure() -> None:
+    process = Mock(returncode=127)
+    process.stdout.readline = AsyncMock(return_value=b"")
+    process.stderr.read = AsyncMock(
+        side_effect=[b"codex: command not found\n", b""]
+    )
+    process.stdin = Mock()
+    process.wait = AsyncMock(return_value=127)
+    executor = RemoteExecutor(
+        RemoteAccessConfig(
+            ssh_target="test",
+            codex_remote_experimental=True,
+        ),
+        "/srv/test",
+    )
+
+    with (
+        patch(
+            "asyncio.create_subprocess_exec",
+            AsyncMock(return_value=process),
+        ) as create,
+        patch("asyncio.sleep", AsyncMock()) as sleep,
+    ):
+        with pytest.raises(RemoteTransportError, match="command not found"):
+            await executor.__aenter__()
+
+    create.assert_awaited_once()
+    sleep.assert_not_awaited()
+
+
 def test_disconnect_cancels_waiting_gate(tmp_path: Path) -> None:
     async def run():
         ctx = context(tmp_path)

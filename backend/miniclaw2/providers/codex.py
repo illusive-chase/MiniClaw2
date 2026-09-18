@@ -40,6 +40,10 @@ _TERMINAL_RATE_LIMIT_ERRORS = {
     "usageLimitExceeded",
     "serverOverloaded",
 }
+_HTTP_429_MESSAGE_RE = re.compile(
+    r"(?:\b429\b[^\r\n]*\btoo many requests\b|\btoo many requests\b[^\r\n]*\b429\b)",
+    re.IGNORECASE,
+)
 
 
 def _observed_codex_settings(initialized: dict[str, Any]) -> dict[str, Any]:
@@ -960,7 +964,30 @@ def _codex_error_kind(error: Any) -> str | None:
             value = info.get(key)
             if isinstance(value, str):
                 return value
+        # Some Codex versions serialize tagged enum variants as the key.
+        for kind in _TERMINAL_RATE_LIMIT_ERRORS:
+            if kind in info:
+                return kind
+    if _has_http_status(error, 429):
+        return "rateLimitExceeded"
+    message = error.get("message")
+    if isinstance(message, str) and _HTTP_429_MESSAGE_RE.search(message):
+        # Codex 0.149.1 can exhaust its own retries and report only this
+        # message, without codexErrorInfo, on both error and turn/completed.
+        return "rateLimitExceeded"
     return None
+
+
+def _has_http_status(value: Any, expected: int) -> bool:
+    if not isinstance(value, dict):
+        return False
+    for key, item in value.items():
+        if key in {"httpStatusCode", "statusCode", "status"}:
+            if item == expected or item == str(expected):
+                return True
+        if isinstance(item, dict) and _has_http_status(item, expected):
+            return True
+    return False
 
 
 def _resumed_turn_text(system_prompt: str, turn_text: str) -> str:
