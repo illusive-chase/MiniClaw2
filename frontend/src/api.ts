@@ -41,6 +41,14 @@ import type {
 import type { TemplateRewritePayload } from "./templateEditor";
 import { toNodeInfo } from "./nodeProjection";
 
+export const AUTH_REQUIRED_EVENT = "miniclaw2:auth-required";
+
+function notifyAuthRequired(state: string | null): void {
+  if (state === "auth_required" && typeof window !== "undefined") {
+    window.dispatchEvent(new Event(AUTH_REQUIRED_EVENT));
+  }
+}
+
 /** The backend's `state` alongside `detail`; see `MigrationError.payload()`. */
 export type ErrorBody = { detail: string | null; state: string | null };
 
@@ -58,6 +66,7 @@ export class ApiError extends Error {
     this.status = status;
     this.detail = detail;
     this.state = state;
+    notifyAuthRequired(state);
   }
 }
 
@@ -69,6 +78,7 @@ async function readErrorDetail(res: Response): Promise<ErrorBody> {
       if (body && typeof body === "object") {
         const raw = (body as { state?: unknown }).state;
         const state = typeof raw === "string" ? raw : null;
+        notifyAuthRequired(state);
         if (!("detail" in body)) return { detail: null, state };
         const detail = (body as { detail?: unknown }).detail;
         if (typeof detail === "string") return { detail, state };
@@ -85,6 +95,38 @@ async function readErrorDetail(res: Response): Promise<ErrorBody> {
   }
   const text = await res.text();
   return { detail: text || null, state: null };
+}
+
+export type AuthState = {
+  required: boolean;
+  authenticated: boolean;
+  locked: boolean;
+};
+
+export async function getAuthState(): Promise<AuthState> {
+  const res = await fetch("/auth/state");
+  if (!res.ok) {
+    throw new ApiError("getAuthState", res.status, await readErrorDetail(res));
+  }
+  return res.json();
+}
+
+export async function loginWithPasscode(passcode: string): Promise<void> {
+  const res = await fetch("/auth/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ passcode }),
+  });
+  if (!res.ok) {
+    throw new ApiError("loginWithPasscode", res.status, await readErrorDetail(res));
+  }
+}
+
+export async function logoutWebSession(): Promise<void> {
+  const res = await fetch("/auth/logout", { method: "POST" });
+  if (!res.ok) {
+    throw new ApiError("logoutWebSession", res.status, await readErrorDetail(res));
+  }
 }
 
 export async function createSession(

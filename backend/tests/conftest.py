@@ -26,6 +26,7 @@ import pytest
 def _isolate_miniclaw_home() -> Iterator[None]:
     previous = os.environ.get("MINICLAW_HOME")
     previous_context = os.environ.pop("MINICLAW_CONTEXT_HOME", None)
+    previous_passcode = os.environ.pop("MINICLAW_PASSCODE", None)
     with tempfile.TemporaryDirectory(prefix="miniclaw-tests-") as directory:
         os.environ["MINICLAW_HOME"] = os.path.join(directory, "home")
         try:
@@ -39,3 +40,7 @@ def _isolate_miniclaw_home() -> Iterator[None]:
                 os.environ.pop("MINICLAW_CONTEXT_HOME", None)
             else:
                 os.environ["MINICLAW_CONTEXT_HOME"] = previous_context
+            if previous_passcode is None:
+                os.environ.pop("MINICLAW_PASSCODE", None)
+            else:
+                os.environ["MINICLAW_PASSCODE"] = previous_passcode

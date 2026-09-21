@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { AUTH_REQUIRED_EVENT } from "./api";
 import type { ClientMessage, ServerEvent, WorkspaceEvent } from "./types";
 
 export type WSStatus = "connecting" | "open" | "closed";
@@ -80,6 +81,7 @@ export function useSessionSocket(
       };
       ws.onclose = (e) => {
         setStatus("closed");
+        if (e.code === 4401) window.dispatchEvent(new Event(AUTH_REQUIRED_EVENT));
         // 4xxx codes are server-side rejections (e.g. 4404 session-not-found);
         // do not retry.
         if (!cancelled && (e.code < 4000 || e.code >= 5000)) {
@@ -201,6 +203,7 @@ export function useWorkspaceSocket(
       };
       ws.onclose = (event) => {
         setStatus("closed");
+        if (event.code === 4401) window.dispatchEvent(new Event(AUTH_REQUIRED_EVENT));
         if (!cancelled && (event.code < 4000 || event.code >= 5000)) {
           window.setTimeout(connect, 1000);
         }

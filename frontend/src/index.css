@@ -175,6 +175,23 @@ body {
   font-feature-settings: "ss01", "cv11";
 }
 
+@keyframes passcode-shake {
+  0%,
+  100% {
+    transform: translateX(0);
+  }
+  25% {
+    transform: translateX(-5px);
+  }
+  75% {
+    transform: translateX(5px);
+  }
+}
+
+.passcode-shake {
+  animation: passcode-shake 180ms ease-in-out;
+}
+
 /* ───────────── timeline canvas: graph paper ─────────────
  * Barely-perceptible 8px grid. Anchors the "instrument" register.
  */

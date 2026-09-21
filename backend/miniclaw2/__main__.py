@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import re
 import secrets
 import shutil
 import signal
@@ -31,6 +32,7 @@ from .sync import (
     resolve_machine_copy,
     resolve_machine_rename,
 )
+from .webauth import PASSCODE_ENV
 
 VITE_HOST = "127.0.0.1"
 VITE_PORT = 5173
@@ -80,7 +82,16 @@ def main() -> None:
         action="store_true",
         help="Spawn the Vite dev server alongside the backend at :5173.",
     )
+    parser.add_argument(
+        "--passcode",
+        default=None,
+        help=(
+            "启用网页端四位数字密码；也可用 MINICLAW_PASSCODE 提供。"
+            "命令行传值会出现在 shell 历史和进程列表中。"
+        ),
+    )
     args = parser.parse_args()
+    passcode = _resolve_passcode(parser, args.passcode)
 
     logging.basicConfig(level=args.log_level.upper())
     try:
@@ -92,6 +103,15 @@ def main() -> None:
     # spawn time; keeping this here lets the app compute the URL before
     # any spawn happens).
     os.environ["MINICLAW2_HOOK_PORT"] = str(args.port)
+    if passcode is not None:
+        os.environ[PASSCODE_ENV] = passcode
+        print("鉴权:               已启用（四位密码）", flush=True)
+        if args.passcode is not None:
+            print(
+                "提示: 命令行传入的密码会出现在 shell 历史与 ps 输出中；"
+                "MINICLAW_PASSCODE 可避免前者。",
+                flush=True,
+            )
 
     frontend_dir = Path(__file__).resolve().parents[2] / "frontend"
     if args.dev:
@@ -139,6 +159,18 @@ def main() -> None:
         reload=args.reload,
         log_level=args.log_level,
     )
+
+
+def _resolve_passcode(
+    parser: argparse.ArgumentParser,
+    cli_value: str | None,
+) -> str | None:
+    raw = cli_value if cli_value is not None else os.environ.get(PASSCODE_ENV)
+    if raw is None:
+        return None
+    if re.fullmatch(r"\d{4}", raw) is None:
+        parser.error("--passcode 必须是四位数字")
+    return raw
 
 
 def _run_dev(

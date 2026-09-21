@@ -126,6 +126,13 @@ from .templates import (
     serialize_embedded_session,
     serialize_selection,
 )
+from .webauth import (
+    PASSCODE_ENV,
+    SESSION_COOKIE,
+    PasscodeGuard,
+    PasscodeLockedError,
+    is_passcode_exempt,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -152,6 +159,12 @@ class CreateSessionRequest(BaseModel):
     name: str | None = None
     create_missing_cwd: bool = False
     concurrency: StrictInt | None = Field(default=None, ge=1)
+
+
+class PasscodeLoginRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    passcode: str
 
 
 class UpdateGlobalDefaultsRequest(BaseModel):
@@ -629,6 +642,10 @@ def create_app(
 
     registry = registry if registry is not None else ProjectRegistry(initialize=False)
     update_checker = update_checker if update_checker is not None else UpdateChecker()
+    configured_passcode = os.environ.get(PASSCODE_ENV)
+    passcode_guard = (
+        PasscodeGuard(configured_passcode) if configured_passcode is not None else None
+    )
 
     # Per-app so tests do not inherit one another's cached node facts.
     active_nodes_index = ActiveNodesIndex()
@@ -703,9 +720,19 @@ def create_app(
     )
 
     @app.middleware("http")
+    async def record_hook_port(request: Request, call_next):
+        if app.state.storage_error is None:
+            try:
+                initialize_registry()
+            except MigrationError as exc:
+                app.state.storage_error = exc.payload()
+        _record_hook_port_from_scope(request.scope)
+        return await call_next(request)
+
+    @app.middleware("http")
     async def storage_admission(request: Request, call_next):
         error = app.state.storage_error
-        exempt = request.url.path.startswith(("/migrations/", "/assets/")) or request.url.path in {"/", "/health"}
+        exempt = request.url.path.startswith(("/migrations/", "/assets/", "/auth/")) or request.url.path in {"/", "/health"}
         if error and not exempt:
             return JSONResponse(status_code=503, content=error)
         if exempt:
@@ -717,6 +744,20 @@ def create_app(
             return await call_next(request)
         finally:
             app.state.storage_requests -= 1
+
+    @app.middleware("http")
+    async def passcode_admission(request: Request, call_next):
+        if passcode_guard is None or is_passcode_exempt(request.url.path):
+            return await call_next(request)
+        if not passcode_guard.has_session(request.cookies.get(SESSION_COOKIE)):
+            return JSONResponse(
+                status_code=401,
+                content={
+                    "state": "auth_required",
+                    "detail": "需要输入访问密码",
+                },
+            )
+        return await call_next(request)
 
     @app.exception_handler(MigrationError)
     async def migration_error(_request: Request, exc: MigrationError) -> JSONResponse:
@@ -757,6 +798,72 @@ def create_app(
         if dev_instance:
             response.headers["X-MiniClaw-Dev-Instance"] = dev_instance
         return {"status": "maintenance" if app.state.storage_error or app.state.storage_syncing else "ok"}
+
+    @app.get("/auth/state")
+    def auth_state(request: Request) -> dict[str, bool]:
+        return {
+            "required": passcode_guard is not None,
+            "authenticated": passcode_guard is None
+            or passcode_guard.has_session(request.cookies.get(SESSION_COOKIE)),
+            "locked": passcode_guard.locked if passcode_guard is not None else False,
+        }
+
+    @app.post("/auth/login")
+    def auth_login(body: PasscodeLoginRequest) -> Response:
+        if passcode_guard is None:
+            return Response(status_code=204)
+        try:
+            token, remaining = passcode_guard.login(body.passcode)
+        except PasscodeLockedError:
+            return JSONResponse(
+                status_code=423,
+                content={
+                    "state": "auth_locked",
+                    "detail": "登录已锁定，请重启后端",
+                },
+            )
+        if token is None:
+            if remaining == 0:
+                logger.warning(
+                    "web passcode login locked after repeated failures at %s",
+                    time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                )
+                return JSONResponse(
+                    status_code=423,
+                    content={
+                        "state": "auth_locked",
+                        "detail": "登录已锁定，请重启后端",
+                    },
+                )
+            return JSONResponse(
+                status_code=401,
+                content={
+                    "state": "auth_invalid",
+                    "detail": f"密码错误，还可尝试 {remaining} 次",
+                },
+            )
+        response = Response(status_code=204)
+        response.set_cookie(
+            SESSION_COOKIE,
+            token,
+            httponly=True,
+            samesite="strict",
+            path="/",
+        )
+        return response
+
+    @app.post("/auth/logout")
+    def auth_logout(request: Request) -> Response:
+        if passcode_guard is not None:
+            passcode_guard.logout(request.cookies.get(SESSION_COOKIE))
+        response = Response(status_code=204)
+        response.delete_cookie(
+            SESSION_COOKIE,
+            httponly=True,
+            samesite="strict",
+            path="/",
+        )
+        return response
 
     @app.exception_handler(NonNativeProjectError)
     async def non_native_project_error(
@@ -1037,16 +1144,6 @@ def create_app(
         )
         registry.store.sync.schedule_commit(f"delete model preset {preset_id}")
         return Response(status_code=204)
-
-    @app.middleware("http")
-    async def record_hook_port(request: Request, call_next):
-        if app.state.storage_error is None:
-            try:
-                initialize_registry()
-            except MigrationError as exc:
-                app.state.storage_error = exc.payload()
-        _record_hook_port_from_scope(request.scope)
-        return await call_next(request)
 
     def _require_hook_token(request: Request) -> None:
         auth = request.headers.get("Authorization", "")
@@ -2623,6 +2720,11 @@ def create_app(
 
     @app.websocket("/ws/{sid}")
     async def ws(websocket: WebSocket, sid: str) -> None:
+        if passcode_guard is not None and not passcode_guard.has_session(
+            websocket.cookies.get(SESSION_COOKIE)
+        ):
+            await websocket.close(code=4401, reason="需要登录")
+            return
         if app.state.storage_error is not None or app.state.storage_syncing:
             await websocket.close(code=1013, reason="存储处于维护模式")
             return

@@ -1,6 +1,7 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import { App } from "./App";
+import { AuthGate } from "./AuthGate";
 import { MarkdownViewerPage } from "./pages/MarkdownViewerPage";
 import { parseMarkdownRoute } from "./markdownRoute";
 import "./index.css";
@@ -17,6 +18,8 @@ const route = parseMarkdownRoute(window.location.hash);
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
-    {route ? <MarkdownViewerPage route={route} /> : <App />}
+    <AuthGate>
+      {route ? <MarkdownViewerPage route={route} /> : <App />}
+    </AuthGate>
   </React.StrictMode>,
 );

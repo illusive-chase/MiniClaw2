@@ -9,6 +9,30 @@ import miniclaw2.__main__ as cli
 
 
 class MainTest(unittest.TestCase):
+    def test_passcode_must_be_exactly_four_digits(self) -> None:
+        parser = cli.argparse.ArgumentParser()
+        with self.assertRaises(SystemExit):
+            cli._resolve_passcode(parser, "12ab")
+
+    def test_cli_passcode_is_forwarded_through_the_environment(self) -> None:
+        with (
+            patch.object(sys, "argv", ["miniclaw2", "--dev", "--passcode", "1234"]),
+            patch.object(cli, "ensure_machine_identity"),
+            patch.object(cli.shutil, "which", return_value="/usr/bin/npm"),
+            patch.object(cli.Path, "is_dir", return_value=True),
+            patch.object(cli, "_run_dev", return_value=0) as run_dev,
+            patch.dict(os.environ, {}, clear=True),
+        ):
+            cli.main()
+            self.assertEqual(os.environ["MINICLAW_PASSCODE"], "1234")
+
+        run_dev.assert_called_once()
+
+    def test_environment_passcode_is_used_when_cli_value_is_absent(self) -> None:
+        parser = cli.argparse.ArgumentParser()
+        with patch.dict(os.environ, {"MINICLAW_PASSCODE": "5678"}, clear=True):
+            self.assertEqual(cli._resolve_passcode(parser, None), "5678")
+
     def _run_dev(
         self,
         *,

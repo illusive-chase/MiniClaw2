@@ -7,6 +7,10 @@ const loaded = await loadConfigFromFile(
 );
 assert.ok(loaded);
 assert.equal(
+  loaded.config.server.proxy["/auth"],
+  process.env.MINICLAW_BACKEND_URL ?? "http://127.0.0.1:8000",
+);
+assert.equal(
   loaded.config.server.proxy["/migrations"],
   process.env.MINICLAW_BACKEND_URL ?? "http://127.0.0.1:8000",
 );

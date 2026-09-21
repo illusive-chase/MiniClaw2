@@ -113,7 +113,7 @@ python -m miniclaw2 --host 127.0.0.1 --port 8000 [--reload]
 build` in `frontend/`) whenever you change UI code.
 
 **Dev** — same command spawns `npm run dev` alongside the backend so
-Vite's proxy routes the frontend API paths (including `/global-state`,
+Vite's proxy routes the frontend API paths (including `/auth`, `/global-state`,
 `/model-presets`, `/sessions`, `/principles`, `/skills`, `/templates`, and
 `/user-templates`) plus `/ws` back to the backend port. Add `--reload` to
 enable both backend auto-reload and frontend HMR; without it, neither side
@@ -126,6 +126,25 @@ python -m miniclaw2 --dev [--reload]
 ```
 
 Ctrl-C stops both processes.
+
+**Optional browser passcode** — add a four-digit passcode when the UI is
+reachable by other machines:
+
+```bash
+MINICLAW_PASSCODE=1234 python -m miniclaw2 --host 0.0.0.0
+# or: python -m miniclaw2 --host 0.0.0.0 --passcode 1234
+```
+
+The command-line form is visible in shell history and process listings. The
+passcode creates a browser-session cookie; restarting the backend signs every
+browser out. Ten consecutive failures lock new logins until the backend is
+restarted. Existing logged-in sessions keep working.
+
+This is a local/LAN access guard, not transport encryption or multi-user
+authorization. Anyone who knows the passcode has the full MiniClaw2 capability,
+including agent-driven code execution. Do not expose an HTTP MiniClaw2 server
+directly to the public internet; put HTTPS and suitable network controls in
+front of it.
 
 ## Metadata Sync
 

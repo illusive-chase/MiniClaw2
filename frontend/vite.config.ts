@@ -15,6 +15,7 @@ export default defineConfig({
     hmr: reloadEnabled,
     proxy: {
       "/active-nodes": backendUrl,
+      "/auth": backendUrl,
       "/global-state": backendUrl,
       "/migrations": backendUrl,
       "/model-presets": backendUrl,
