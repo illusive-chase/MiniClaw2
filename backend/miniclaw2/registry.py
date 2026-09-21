@@ -31,10 +31,12 @@ from .contextspace import (
     delete_project_contextspace,
     list_project_planspace_ids,
     normalize_principle_ids,
+    read_planspace_archived,
     read_planspace_mode,
     read_template_instances,
     remove_template_instance,
     resolve_project_binding,
+    set_planspace_archived,
     set_planspace_mode,
 )
 from .events import (
@@ -109,6 +111,18 @@ class PlanspaceModePreconditionError(ValueError):
 
 class RemoteProjectionBusyError(RuntimeError):
     """A manual projection refresh would replace an active workspace."""
+
+
+class ProjectArchivedError(PermissionError):
+    def __init__(self, project: Project) -> None:
+        super().__init__("项目已归档；取消归档后可继续操作")
+        self.project = project
+
+
+class PlanspaceArchivedError(PermissionError):
+    def __init__(self, planspace_id: str) -> None:
+        super().__init__("方向已归档；取消归档后可继续操作")
+        self.planspace_id = planspace_id
 
 
 def _process_is_alive(pid: int) -> bool:
@@ -388,7 +402,12 @@ class ProjectRegistry:
                 store.prepare_temporary_workspace(project)
             self._runtimes[project.id] = ProjectRuntime(project)
             self._configure_remote_git_execution(project)
-            if sweep and self.is_native_project(project) and store.read_only_reason is None:
+            if (
+                sweep
+                and project.archived_at is None
+                and self.is_native_project(project)
+                and store.read_only_reason is None
+            ):
                 self._repair_stale_nodes(project.id)
 
     def _claim_runtime_ownership(self) -> bool:
@@ -470,7 +489,10 @@ class ProjectRegistry:
         if self._storage_sync_pending or self._self_update_pending or self.store.read_only_reason is not None:
             return
         for runtime in self._runtimes.values():
-            if self.is_native_project(runtime.project):
+            if (
+                runtime.project.archived_at is None
+                and self.is_native_project(runtime.project)
+            ):
                 self._schedule_queued(runtime)
 
     def prepare_self_update(self) -> bool:
@@ -629,14 +651,40 @@ class ProjectRegistry:
             self.store.prepare_temporary_workspace(project)
         return project
 
-    def require_git_project(self, pid: str) -> Project:
+    def assert_unarchived(self, pid: str) -> Project:
+        project = self.get_project(pid)
+        if project is None:
+            raise KeyError(pid)
+        if project.archived_at is not None:
+            raise ProjectArchivedError(project)
+        return project
+
+    def require_unarchived(self, pid: str) -> Project:
         project = self.require_native(pid)
+        if project.archived_at is not None:
+            raise ProjectArchivedError(project)
+        return project
+
+    def require_unarchived_lane(
+        self,
+        project: Project,
+        lane_id: str | None,
+    ) -> None:
+        if lane_id and read_planspace_archived(
+            project,
+            lane_id,
+            store_root=self.store.root,
+        ):
+            raise PlanspaceArchivedError(lane_id)
+
+    def require_git_project(self, pid: str) -> Project:
+        project = self.require_unarchived(pid)
         if project.temporary:
             raise ValueError("临时项目不支持 Git 操作，请使用持久项目")
         return project
 
     def require_execution_project(self, pid: str) -> Project:
-        project = self.require_native(pid)
+        project = self.require_unarchived(pid)
         if project.persistence_mode is ProjectPersistenceMode.REMOTE:
             if self.store.read_remote_binding(pid) is None:
                 raise ValueError("远端接入配置缺失")
@@ -925,6 +973,8 @@ class ProjectRegistry:
         if rt is None:
             return None
         project = rt.project
+        if project.archived_at is not None:
+            raise ProjectArchivedError(project)
         if project.temporary:
             raise ValueError("temporary projects cannot be rebound")
         if self.is_native_project(project):
@@ -1104,7 +1154,7 @@ class ProjectRegistry:
         )
 
     def unbind_project_here(self, pid: str) -> Project | None:
-        project = self.require_native(pid)
+        project = self.require_unarchived(pid)
         if project.temporary:
             raise ValueError("temporary projects cannot be unbound")
         if not self.quiescent(pid):
@@ -1132,7 +1182,7 @@ class ProjectRegistry:
         self, pid: str, *, _allow_active: bool = False
     ) -> ProjectionSyncResult:
         """Refresh one bound remote project's disposable local projection."""
-        project = self.require_native(pid)
+        project = self.require_unarchived(pid)
         if project.persistence_mode is not ProjectPersistenceMode.REMOTE:
             raise ValueError("project is not remote")
         if not _allow_active and self.is_running(pid):
@@ -1206,6 +1256,112 @@ class ProjectRegistry:
         self.store.update_project(rt.project)
         return rt.project
 
+    def _archive_blockers(
+        self,
+        rt: ProjectRuntime,
+        *,
+        planspace_id: str | None = None,
+    ) -> list[str]:
+        nodes = self.store.list_nodes(rt.project.id)
+        return [
+            node.id
+            for node in nodes
+            if (planspace_id is None or node.planspace_id == planspace_id)
+            and (
+                node.id in rt.runner_tasks
+                or (
+                    node.state is not NodeState.VIRTUAL
+                    and node.state not in TERMINAL_NODE_STATES
+                )
+            )
+        ]
+
+    def archive_project(self, pid: str) -> tuple[Project | None, list[str]]:
+        rt = self._runtimes.get(pid)
+        if rt is None:
+            return None, []
+        project = self.require_native(pid)
+        if project.archived_at is not None:
+            return project, []
+        from .context_refresh import context_refresh_status
+
+        if context_refresh_status(pid).get("running"):
+            raise RuntimeError("context refresh in progress")
+        busy = self._archive_blockers(rt)
+        if busy:
+            return None, busy
+        project.archived_at = time.time()
+        self.store.update_project(project)
+        self.store.sync.schedule_commit(f'archive project "{project.name or pid}"')
+        for node in self.store.list_nodes(pid):
+            self._schedule_workspace_removed(project, node)
+        return project, []
+
+    def unarchive_project(self, pid: str) -> Project | None:
+        rt = self._runtimes.get(pid)
+        if rt is None:
+            return None
+        project = self.require_native(pid)
+        if project.archived_at is None:
+            return project
+        project.archived_at = None
+        self.store.update_project(project)
+        self.store.sync.schedule_commit(f'unarchive project "{project.name or pid}"')
+        return project
+
+    def set_planspace_archive(
+        self,
+        pid: str,
+        planspace_id: str,
+        *,
+        archived: bool,
+    ) -> tuple[bool, list[str]]:
+        rt = self._runtimes.get(pid)
+        if rt is None:
+            return False, []
+        self.require_unarchived(pid)
+        lane_id = planspace_id.strip()
+        if not lane_id:
+            raise ValueError("planspace id is required")
+        root = contextspace_root(self.store.root)
+        lane_ids = list_project_planspace_ids(rt.project, root)
+        if lane_id not in lane_ids:
+            return False, []
+        if read_planspace_archived(
+            rt.project,
+            lane_id,
+            store_root=self.store.root,
+        ) is archived:
+            return True, []
+        if archived:
+            from .context_refresh import context_refresh_status
+            from .templates.launcher import embedded_session_slug
+
+            if context_refresh_status(pid).get("running"):
+                raise RuntimeError("context refresh in progress")
+            if (
+                embedded_session_slug(rt.project.template_id) is not None
+                and len(lane_ids) <= 1
+            ):
+                raise ValueError("模板编辑会话必须保留一个可用方向")
+            busy = self._archive_blockers(rt, planspace_id=lane_id)
+            if busy:
+                return False, busy
+        set_planspace_archived(
+            rt.project,
+            lane_id,
+            archived,
+            store_root=self.store.root,
+        )
+        self.store.sync.schedule_commit(
+            f'{"archive" if archived else "unarchive"} planspace {lane_id}'
+        )
+        if archived:
+            for node in self.store.list_nodes(pid):
+                if node.planspace_id == lane_id:
+                    self._schedule_workspace_removed(rt.project, node)
+        return True, []
+
     def delete_tag(self, tag_id: str) -> bool:
         if not self.store.delete_tag(tag_id):
             return False
@@ -1229,7 +1385,7 @@ class ProjectRegistry:
         rt = self._runtimes.get(pid)
         if rt is None:
             return None
-        self.require_native(pid)
+        self.require_unarchived(pid)
         if preferred_language is not _UNSET:
             rt.project.preferred_language = normalize_preferred_language(
                 preferred_language
@@ -1257,7 +1413,7 @@ class ProjectRegistry:
         rt = self._runtimes.get(pid)
         if rt is None:
             return None
-        self.require_native(pid)
+        self.require_unarchived(pid)
         rt.project.node_positions = self.store.update_node_positions(pid, updates, remove or [], only_missing=only_missing)
         return rt.project
 
@@ -1267,7 +1423,7 @@ class ProjectRegistry:
         rt = self._runtimes.get(pid)
         if rt is None:
             return None
-        self.require_native(pid)
+        self.require_unarchived(pid)
         self.store.update_git_positions(pid, updates, remove or [])
         return rt.project
 
@@ -1277,7 +1433,7 @@ class ProjectRegistry:
         rt = self._runtimes.get(pid)
         if rt is None:
             return None
-        self.require_native(pid)
+        self.require_unarchived(pid)
         self.store.update_lane_positions(pid, updates, remove or [])
         return rt.project
 
@@ -1287,7 +1443,7 @@ class ProjectRegistry:
         rt = self._runtimes.get(pid)
         if rt is None:
             return None
-        self.require_native(pid)
+        self.require_unarchived(pid)
         self.store.update_context_positions(pid, updates, remove or [])
         return rt.project
 
@@ -1299,7 +1455,7 @@ class ProjectRegistry:
         rt = self._runtimes.get(pid)
         if rt is None:
             return None
-        self.require_native(pid)
+        self.require_unarchived(pid)
         merged = dict(rt.project.planspace_view)
         for planspace_id, pref in planspaces.items():
             if not isinstance(planspace_id, str) or not planspace_id.strip():
@@ -1326,7 +1482,8 @@ class ProjectRegistry:
         rt = self._runtimes.get(pid)
         if rt is None:
             return None
-        self.require_native(pid)
+        self.require_unarchived(pid)
+        self.require_unarchived_lane(rt.project, planspace_id)
         written = set_planspace_mode(
             rt.project,
             planspace_id,
@@ -1352,10 +1509,11 @@ class ProjectRegistry:
         rt = self._runtimes.get(pid)
         if rt is None:
             return False, []
-        self.require_native(pid)
+        self.require_unarchived(pid)
         lane_id = planspace_id.strip()
         if not lane_id:
             raise ValueError("planspace id is required")
+        self.require_unarchived_lane(rt.project, lane_id)
 
         root = contextspace_root(self.store.root)
         binding = resolve_project_binding(rt.project, root)
@@ -1576,7 +1734,14 @@ class ProjectRegistry:
     ) -> None:
         if (
             self.store.read_only_reason is not None
+            or project.archived_at is not None
             or not self.is_native_node(project, node)
+        ):
+            return
+        if node.planspace_id and read_planspace_archived(
+            project,
+            node.planspace_id,
+            store_root=self.store.root,
         ):
             return
         entry = active_entry_from_node(self, project, node)
@@ -1660,6 +1825,12 @@ class ProjectRegistry:
     def node_summary(
         self, project: Project, *, nodes: list[Node] | None = None
     ) -> ProjectNodeSummary:
+        if project.archived_at is not None:
+            return ProjectNodeSummary(
+                turns=0,
+                queued_count=0,
+                last_activity_at=project.archived_at,
+            )
         if nodes is None:
             summaries = self.store.node_summaries(project.id)
             return ProjectNodeSummary(
@@ -1721,12 +1892,35 @@ class ProjectRegistry:
     def list_nodes(self, pid: str) -> list[Node] | None:
         if pid not in self._runtimes:
             return None
-        return self.store.list_nodes(pid)
+        project = self.assert_unarchived(pid)
+        archived_lanes = {
+            lane_id
+            for lane_id in list_project_planspace_ids(
+                project,
+                contextspace_root(self.store.root),
+            )
+            if read_planspace_archived(
+                project,
+                lane_id,
+                store_root=self.store.root,
+            )
+        }
+        if not archived_lanes:
+            return self.store.list_nodes(pid)
+        return self.store.list_nodes(pid, exclude_lanes=archived_lanes)
 
     def get_node(self, pid: str, nid: str) -> Node | None:
         if pid not in self._runtimes:
             return None
-        return self.store.load_node(pid, nid)
+        self.assert_unarchived(pid)
+        node = self.store.load_node(pid, nid)
+        if node is not None and node.planspace_id and read_planspace_archived(
+            self._runtimes[pid].project,
+            node.planspace_id,
+            store_root=self.store.root,
+        ):
+            return None
+        return node
 
     def replay_node_events(
         self,
@@ -1736,6 +1930,7 @@ class ProjectRegistry:
     ) -> list[dict[str, Any]] | None:
         if pid not in self._runtimes:
             return None
+        self.assert_unarchived(pid)
         if not nid:
             latest = self.store.latest_node(pid)
             if latest is None:
@@ -1746,6 +1941,12 @@ class ProjectRegistry:
         records = self.store.replay_events(pid, nid, since_seq)
         node = self.store.load_node(pid, nid)
         if node is None:
+            return None
+        if node.planspace_id and read_planspace_archived(
+            self._runtimes[pid].project,
+            node.planspace_id,
+            store_root=self.store.root,
+        ):
             return None
         snapshot = node.model_dump()
         for record in records:
@@ -1954,6 +2155,7 @@ class ProjectRegistry:
         if (
             self._storage_sync_pending
             or self._self_update_pending
+            or rt.project.archived_at is not None
             or not self.is_native_project(rt.project)
         ):
             return
@@ -1969,6 +2171,14 @@ class ProjectRegistry:
                     is not None
                     and node.state is NodeState.QUEUED
                     and self.is_native_node(rt.project, node)
+                    and not (
+                        node.planspace_id
+                        and read_planspace_archived(
+                            rt.project,
+                            node.planspace_id,
+                            store_root=self.store.root,
+                        )
+                    )
                     and self._can_launch_project_node(rt.project, node)
                 )
             ]
@@ -1994,6 +2204,14 @@ class ProjectRegistry:
                     if node.state is NodeState.QUEUED
                     and node.id not in rt.runner_tasks
                     and self.is_native_node(rt.project, node)
+                    and not (
+                        node.planspace_id
+                        and read_planspace_archived(
+                            rt.project,
+                            node.planspace_id,
+                            store_root=self.store.root,
+                        )
+                    )
                     and self._can_launch_project_node(rt.project, node)
                 ),
                 key=lambda node: (node.created_at, node.id),
@@ -2323,7 +2541,7 @@ class ProjectRegistry:
         rt = self._runtimes.get(pid)
         if rt is None:
             return None
-        self.require_native(pid)
+        self.require_unarchived(pid)
         if not seed.strip():
             raise ValueError("seed must be non-empty")
         # An embedded template editing session owns exactly one lane, and its
@@ -2414,6 +2632,12 @@ class ProjectRegistry:
             return out
         for lane_id in lane_ids:
             try:
+                if read_planspace_archived(
+                    project,
+                    lane_id,
+                    store_root=self.store.root,
+                ):
+                    continue
                 mode = read_planspace_mode(
                     project, lane_id, store_root=self.store.root
                 )
@@ -2507,6 +2731,7 @@ class ProjectRegistry:
                 "virtual_not_found",
                 "Virtual node was not found.",
             )
+        self.require_unarchived_lane(rt.project, node.planspace_id)
         self.require_native_node(rt.project, node)
         if rt.project.temporary and node.subtype is ReviewSubtype.CODE_REVIEW:
             return VirtualPromotionResult(
@@ -2639,9 +2864,10 @@ class ProjectRegistry:
         rt = self._runtimes.get(pid)
         if rt is None:
             return None
-        self.require_native(pid)
+        self.require_unarchived(pid)
         node = self.store.load_node(pid, nid)
         if node is not None:
+            self.require_unarchived_lane(rt.project, node.planspace_id)
             self.require_native_node(rt.project, node)
         if (
             node is None
@@ -2753,7 +2979,7 @@ class ProjectRegistry:
         rt = self._runtimes.get(pid)
         if rt is None:
             return None
-        self.require_native(pid)
+        self.require_unarchived(pid)
         if provider is not None:
             raise ValueError("provider is no longer accepted; use model_preset_id")
         if subtype == ReviewSubtype.CODE_REVIEW:
@@ -3001,10 +3227,11 @@ class ProjectRegistry:
         rt = self._runtimes.get(pid)
         if rt is None:
             return None
-        self.require_native(pid)
+        self.require_unarchived(pid)
         existing = self.store.load_node(pid, vid)
         if existing is None:
             return None
+        self.require_unarchived_lane(rt.project, existing.planspace_id)
         self.require_native_node(rt.project, existing)
         if existing.kind is not NodeKind.AGENT or existing.state is not NodeState.VIRTUAL:
             return None
@@ -3277,10 +3504,11 @@ class ProjectRegistry:
         rt = self._runtimes.get(pid)
         if rt is None:
             return False, []
-        self.require_native(pid)
+        self.require_unarchived(pid)
         node = self.store.load_node(pid, vid)
         if node is None:
             return False, []
+        self.require_unarchived_lane(rt.project, node.planspace_id)
         self.require_native_node(rt.project, node)
         if node.state is not NodeState.VIRTUAL:
             raise ValueError("only virtual nodes can be deleted")
@@ -3336,11 +3564,12 @@ class ProjectRegistry:
         rt = self._runtimes.get(pid)
         if rt is None:
             return False, [], []
-        self.require_native(pid)
+        self.require_unarchived(pid)
         lane_id = planspace_id.strip()
         iid = instance_id.strip()
         if not lane_id:
             raise ValueError("planspace id is required")
+        self.require_unarchived_lane(rt.project, lane_id)
         if not iid:
             raise ValueError("template instance_id is required")
 
@@ -3441,10 +3670,11 @@ class ProjectRegistry:
         rt = self._runtimes.get(pid)
         if rt is None:
             return None
-        self.require_native(pid)
+        self.require_unarchived(pid)
         original = self.store.load_node(pid, nid)
         if original is None:
             return None
+        self.require_unarchived_lane(rt.project, original.planspace_id)
         if original.kind is not NodeKind.AGENT:
             raise ValueError("only agent nodes support rerun")
         if original.state not in {NodeState.ERROR, NodeState.CANCELLED}:
@@ -3511,6 +3741,7 @@ class ProjectRegistry:
         )
         if requested not in reachable:
             raise ValueError(f"unknown planspace: {requested}")
+        self.require_unarchived_lane(rt.project, requested)
         return requested
 
     def _resolve_virtual_create_lane(
@@ -3640,9 +3871,10 @@ class ProjectRegistry:
         rt = self._runtimes.get(pid)
         if rt is None:
             return False
-        self.require_native(pid)
+        self.require_unarchived(pid)
         node = self.store.load_node(pid, node_id)
         if node is not None:
+            self.require_unarchived_lane(rt.project, node.planspace_id)
             self.require_native_node(rt.project, node)
         runner = rt.get_runner(node_id)
         task = rt.runner_tasks.get(node_id)
@@ -3670,7 +3902,11 @@ class ProjectRegistry:
         rt = self._runtimes.get(pid)
         if rt is None:
             return False
-        self.require_native(pid)
+        self.require_unarchived(pid)
+        if node_id is not None:
+            node = self.store.load_node(pid, node_id)
+            if node is not None:
+                self.require_unarchived_lane(rt.project, node.planspace_id)
         runners = (
             [rt.get_runner(node_id)]
             if node_id is not None

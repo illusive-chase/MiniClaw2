@@ -307,6 +307,7 @@ class Project(BaseModel):
     template_id: str | None = None
     tag_ids: list[str] = Field(default_factory=list)
     created_at: float = Field(default_factory=_now)
+    archived_at: float | None = None
     node_positions: dict[str, NodePosition] = Field(default_factory=dict)
     planspace_view: dict[str, dict[str, bool]] = Field(default_factory=dict)
 

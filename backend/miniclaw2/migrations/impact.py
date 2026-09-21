@@ -10,7 +10,7 @@ from .catalog import steps, version_of
 from .errors import MigrationError
 from .inventory import files, safe_path
 from .sdk import MigrationContext
-from .steps.v0017_layout_recovery import finite_position, pristine_hints, recover_layout
+from .layout_recovery import finite_position, pristine_hints, recover_layout
 from .transaction import backup_payload, file_digest, hydrated_backup
 from .validation import read_object
 

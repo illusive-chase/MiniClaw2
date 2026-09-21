@@ -24,6 +24,7 @@ import {
   updateLaneLayout,
   updateContextLayout,
   deletePlanspace,
+  setPlanspaceArchived,
   updatePlanspaceMode,
   updatePlanspaceView,
   updateSessionPreferences,
@@ -1510,6 +1511,32 @@ export function App() {
     [projectMutationPending, refreshNodes, session?.id],
   );
 
+  const changePlanspaceArchive = useCallback(
+    async (planspaceId: string, archived: boolean) => {
+      if (!session?.id) throw new Error("No active project.");
+      if (projectMutationPending) throw new Error("Project is busy.");
+      setProjectMutationPending(true);
+      setSessionContextSpaceSaving(true);
+      setSessionContextSpaceError(null);
+      try {
+        const next = await setPlanspaceArchived(session.id, planspaceId, archived);
+        setSessionContextSpace(next);
+        if (archived) {
+          setSelection((current) =>
+            current.kind === "planspace" && current.planspaceId === planspaceId
+              ? { kind: "projectRoot" }
+              : current,
+          );
+        }
+        await refreshNodes();
+      } finally {
+        setProjectMutationPending(false);
+        setSessionContextSpaceSaving(false);
+      }
+    },
+    [projectMutationPending, refreshNodes, session?.id],
+  );
+
   const promoteVirtualNode = useCallback(
     async (nodeId: string) => {
       if (!session?.id || projectMutationPending || !executionAvailable) return;
@@ -2388,7 +2415,11 @@ export function App() {
     const seen = new Set<string>();
     for (const binding of sessionContextSpace?.bindings ?? []) {
       for (const plug of binding.plugs) {
-        if (plug.kind !== "planspace" || seen.has(plug.id)) continue;
+        if (
+          plug.kind !== "planspace"
+          || plug.archived_at
+          || seen.has(plug.id)
+        ) continue;
         seen.add(plug.id);
         out.push({ id: plug.id, label: plug.title || plug.id });
       }
@@ -2409,7 +2440,11 @@ export function App() {
     const out = new Set<string>();
     for (const binding of sessionContextSpace?.bindings ?? []) {
       for (const plug of binding.plugs) {
-        if (plug.kind === "planspace" && plug.mode === "auto") out.add(plug.id);
+        if (
+          plug.kind === "planspace"
+          && !plug.archived_at
+          && plug.mode === "auto"
+        ) out.add(plug.id);
       }
     }
     return out;
@@ -2429,6 +2464,7 @@ export function App() {
     for (const binding of sessionContextSpace?.bindings ?? []) {
       for (const plug of binding.plugs) {
         if (plug.kind === "planspace" && plug.hidden) hidden.add(plug.id);
+        if (plug.kind === "planspace" && plug.archived_at) hidden.add(plug.id);
       }
     }
     return Array.from(hidden);
@@ -3602,6 +3638,7 @@ export function App() {
                 onContextRefresh={runContextRefresh}
                 onContextCancel={runContextCancel}
                 onTogglePlanspaceVisibility={togglePlanspaceVisibility}
+                onSetPlanspaceArchived={changePlanspaceArchive}
                 onDeletePlanspace={deletePlanspaceLane}
                 contextReloadVersion={contextReloadVersion}
                 focusRequestVersion={focusRequestVersion}

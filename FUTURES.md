@@ -200,6 +200,10 @@ current destination rather than against the moment it was written.
 
 ### 3.1 The graph has no doctrine of forgetting
 
+Project 与 lane 归档现已提供粗粒度的遗忘层：归档对象停止执行，并从默认节点载荷、
+活跃扫描和索引重建中排除，同时保留全部历史且可 O(1) 恢复。这解决了“整项工作已经结束”
+的场景，但没有解决活跃 lane 内部的新旧层次；下述时间性细节层级仍是开放方向。
+
 The philosophy protects the *LLM projection* from accumulating noise and
 insists a coherent summary is produced on demand, never maintained. The
 *visual* projection has no equivalent discipline. "The graph is the state"

@@ -16,9 +16,11 @@ import {
   listSessions,
   listTags,
   renameSession,
+  setSessionArchived,
   updateSessionTags,
   updateTag,
 } from "../api";
+import { Archive, ArchiveRestore } from "lucide-react";
 import { languageLabel } from "../languages";
 import type { ModelPreset, SelfUpdateState, SessionInfo, Tag } from "../types";
 import { modelPresetLabel } from "../modelPresets";
@@ -168,6 +170,18 @@ export function ProjectsLanding({
     [refresh],
   );
 
+  const onArchive = useCallback(async (id: string, archived: boolean) => {
+    try {
+      const updated = await setSessionArchived(id, archived);
+      setSessions((prev) =>
+        prev ? prev.map((session) => (session.id === id ? updated : session)) : prev,
+      );
+    } catch (err) {
+      setError(String(err));
+      void refresh();
+    }
+  }, [refresh, setSessions]);
+
   const onApplyTags = useCallback(async (id: string, tagIds: string[]) => {
     const updated = await updateSessionTags(id, tagIds);
     setSessions((prev) =>
@@ -232,7 +246,8 @@ export function ProjectsLanding({
   }, []);
 
   const tagsById = useMemo(() => new Map(tags.map((tag) => [tag.id, tag])), [tags]);
-  const all = sessions ?? [];
+  const archivedSessions = (sessions ?? []).filter((session) => !!session.archived_at);
+  const all = (sessions ?? []).filter((session) => !session.archived_at);
   const recent = useMemo(() => recentProjects(all), [all]);
   const bindingFiltered = useMemo(
     () => filterByBinding(all, bindingFilter),
@@ -287,6 +302,7 @@ export function ProjectsLanding({
       onOpen={() => onOpen(session)}
       onRename={(name) => onRename(session.id, name)}
       onDelete={() => onDelete(session.id)}
+      onArchive={(archived) => onArchive(session.id, archived)}
       onApplyTags={(tagIds) => onApplyTags(session.id, tagIds)}
       onCreateTag={onCreateTag}
       onRecolorTag={onRecolorTag}
@@ -512,6 +528,21 @@ export function ProjectsLanding({
                 {flat.map((session) => renderCard(session))}
               </div>
             )}
+
+            {archivedSessions.length > 0 && (
+              <section className="mt-7 border-t border-line pt-4">
+                <div className="mb-2 flex items-center gap-2 text-[11px] font-medium uppercase tracking-[0.14em] text-ink-subtle">
+                  <Archive size={14} aria-hidden="true" />
+                  已归档
+                  <span className="font-mono text-[10px]">{archivedSessions.length}</span>
+                </div>
+                <div className="grid grid-cols-1 gap-3 opacity-80 sm:grid-cols-2 lg:grid-cols-3">
+                  {sortFlat(archivedSessions, sortMode === "name" ? "name" : "activity").map((session) =>
+                    renderCard(session, "archived-"),
+                  )}
+                </div>
+              </section>
+            )}
           </>
         )}
         </div>
@@ -535,6 +566,7 @@ function ProjectCard({
   onOpen,
   onRename,
   onDelete,
+  onArchive,
   onApplyTags,
   onCreateTag,
   onRecolorTag,
@@ -548,6 +580,7 @@ function ProjectCard({
   onOpen: () => void;
   onRename: (name: string) => Promise<void>;
   onDelete: () => Promise<void>;
+  onArchive: (archived: boolean) => Promise<void>;
   onApplyTags: (tagIds: string[]) => Promise<void>;
   onCreateTag: (name: string, color: TagColor) => Promise<Tag>;
   onRecolorTag: (tagId: string, color: TagColor) => Promise<void>;
@@ -558,6 +591,7 @@ function ProjectCard({
   const [draft, setDraft] = useState(session.name ?? "");
   const [saving, setSaving] = useState(false);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [archiveBusy, setArchiveBusy] = useState(false);
   const [tagAnchor, setTagAnchor] = useState<HTMLElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
 
@@ -598,7 +632,7 @@ function ProjectCard({
   };
 
   const handleCardClick = () => {
-    if (editing || confirmingDelete || tagAnchor) return;
+    if (session.archived_at || editing || confirmingDelete || tagAnchor) return;
     onOpen();
   };
 
@@ -607,8 +641,8 @@ function ProjectCard({
 
   return (
     <div
-      role="button"
-      tabIndex={0}
+      role={session.archived_at ? undefined : "button"}
+      tabIndex={session.archived_at ? -1 : 0}
       onClick={handleCardClick}
       onKeyDown={(e) => {
         if (e.key === "Enter" || e.key === " ") {
@@ -616,7 +650,12 @@ function ProjectCard({
           handleCardClick();
         }
       }}
-      className="group relative flex cursor-pointer flex-col gap-2.5 overflow-hidden rounded-lg border border-line bg-surface-raised px-4 py-3.5 shadow-card transition hover:-translate-y-0.5 hover:border-line-strong hover:shadow-raised"
+      className={
+        "group relative flex flex-col gap-2.5 overflow-hidden rounded-lg border border-line bg-surface-raised px-4 py-3.5 shadow-card transition "
+        + (session.archived_at
+          ? "cursor-default"
+          : "cursor-pointer hover:-translate-y-0.5 hover:border-line-strong hover:shadow-raised")
+      }
     >
       {/* hairline left accent on hover */}
       <span
@@ -702,6 +741,22 @@ function ProjectCard({
               <PencilIcon />
             </button>
           )}
+          {!editing && (session.archived_at ? session.can_unarchive : !session.read_only) && (
+            <button
+              type="button"
+              disabled={archiveBusy}
+              onClick={(event) => {
+                event.stopPropagation();
+                setArchiveBusy(true);
+                void onArchive(!session.archived_at).finally(() => setArchiveBusy(false));
+              }}
+              title={session.archived_at ? "取消归档" : "归档项目"}
+              aria-label={session.archived_at ? "取消归档项目" : "归档项目"}
+              className="rounded p-1 text-ink-muted transition hover:bg-surface-sunken hover:text-ink disabled:opacity-40"
+            >
+              {session.archived_at ? <ArchiveRestore size={14} /> : <Archive size={14} />}
+            </button>
+          )}
           {session.can_delete && <button
             type="button"
             onClick={handleDelete}
@@ -736,6 +791,11 @@ function ProjectCard({
       <TagChipRow tags={tags} />
 
       <div className="flex flex-wrap items-center gap-1.5 text-[10px]">
+        {session.archived_at && (
+          <span className="rounded border border-line-strong bg-surface-sunken px-1.5 py-0.5 text-ink-muted">
+            已归档 · {new Date(session.archived_at * 1000).toLocaleDateString()}
+          </span>
+        )}
         {!session.bound_here && (
           <span className="rounded border border-state-waiting/40 bg-state-waiting-soft px-1.5 py-0.5 text-state-waiting">
             ○ 需要配置
@@ -774,8 +834,9 @@ function ProjectCard({
               : `创建于 ${new Date(session.created_at * 1000).toLocaleString()}`
           }
         >
-          {session.turns} node{session.turns === 1 ? "" : "s"} ·{" "}
-          {formatRelative(activityAt(session))}
+          {session.archived_at
+            ? `归档于 ${formatRelative(session.archived_at)}`
+            : `${session.turns} node${session.turns === 1 ? "" : "s"} · ${formatRelative(activityAt(session))}`}
         </span>
         <span className="font-mono text-ink-subtle">{session.id.slice(0, 8)}</span>
       </div>

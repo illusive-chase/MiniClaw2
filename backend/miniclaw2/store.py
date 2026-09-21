@@ -212,7 +212,10 @@ class Store:
         """Rebuild project activity timestamps from all persisted nodes."""
         self._last_activity_index.clear()
         self._node_summary_index.clear()
-        for project in self.list_projects(include_node_positions=False):
+        for project in self.list_projects(
+            include_node_positions=False,
+            include_archived=False,
+        ):
             self._list_nodes_for_project(project.id, project)
 
     def _refresh_last_activity_after_sync(self) -> None:
@@ -226,6 +229,8 @@ class Store:
             project = self._load_project(pid)
             if project is None:
                 return None
+            if project.archived_at is not None:
+                return project.archived_at
             self._list_nodes_for_project(project.id, project)
         return self._last_activity_index.get(pid)
 
@@ -808,7 +813,12 @@ class Store:
         except (OSError, ValueError, ValidationError) as exc:
             raise MigrationError("migration_failed", str(exc), project_file) from exc
 
-    def list_projects(self, *, include_node_positions: bool = True) -> list[Project]:
+    def list_projects(
+        self,
+        *,
+        include_node_positions: bool = True,
+        include_archived: bool = True,
+    ) -> list[Project]:
         projects_dir = self.root / "projects"
         out: list[Project] = []
         if not projects_dir.exists():
@@ -823,6 +833,8 @@ class Store:
                 continue
             project = self._load_project(pdir.name)
             if project is None:
+                continue
+            if not include_archived and project.archived_at is not None:
                 continue
             project.tag_ids = [
                 tag_id for tag_id in project.tag_ids if tag_id in known_tag_ids
@@ -909,14 +921,25 @@ class Store:
         self.sync.schedule_commit(f"delete node {nid}")
         return True
 
-    def list_nodes(self, pid: str) -> list[Node]:
+    def list_nodes(
+        self,
+        pid: str,
+        *,
+        exclude_lanes: set[str] | None = None,
+    ) -> list[Node]:
         project = self._load_project(pid)
-        return self._list_nodes_for_project(pid, project)
+        return self._list_nodes_for_project(
+            pid,
+            project,
+            exclude_lanes=exclude_lanes,
+        )
 
     def _list_nodes_for_project(
         self,
         pid: str,
         project: Project | None,
+        *,
+        exclude_lanes: set[str] | None = None,
     ) -> list[Node]:
         node_files = list(self._hosts_dir(pid).glob("*/nodes/*/node.json"))
         out: list[Node] = []
@@ -925,7 +948,14 @@ class Store:
         for nf in node_files:
             try:
                 signature = self._node_signature(nf)
-                node = Node.model_validate(self._read_json(nf)).bind_model_catalog(
+                payload = self._read_json(nf)
+                if (
+                    exclude_lanes
+                    and isinstance(payload, dict)
+                    and payload.get("planspace_id") in exclude_lanes
+                ):
+                    continue
+                node = Node.model_validate(payload).bind_model_catalog(
                     self.root
                 )
                 owner = nf.parents[2].name

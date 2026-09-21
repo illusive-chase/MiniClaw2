@@ -3,7 +3,6 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 from .sdk import Migration, MigrationContext
-from .steps.v0017_layout_recovery import recover_layout
 
 
 V16 = "miniclaw2/store/v16:owner-node-layout-v1;explicit-coordinate-space;browser-viewport"
@@ -24,6 +23,8 @@ def repaired_contracts(migrations: Sequence[Migration], context: MigrationContex
     }
     if context.scope != "shared" or (V17, V16) not in declared:
         return frozenset()
+    from .layout_recovery import recover_layout
+
     reports = recover_layout(context, write=False)
     # 必须有本次输入可补回的坐标；缺失来源或空影响不代表净无损，不读取历史备份兜底。
     if any(report["source"] == "missing" for report in reports):

@@ -4,6 +4,7 @@ import type { ReactNode } from "react";
 import { LANGUAGE_OPTIONS } from "../languages";
 import {
   ApiError,
+  ArchiveBusyError,
   DeletePlanspaceBusyError,
   createTag,
   deleteTag,
@@ -54,6 +55,7 @@ export type ProjectPanelProps = {
   onContextRefresh: () => void;
   onContextCancel: () => void;
   onTogglePlanspaceVisibility: (planspaceId: string, hidden: boolean) => void;
+  onSetPlanspaceArchived: (planspaceId: string, archived: boolean) => Promise<void>;
   onDeletePlanspace: (planspaceId: string) => Promise<void>;
   newDirectionRequestVersion: number;
   onNewDirectionRequestHandled: () => void;
@@ -84,6 +86,7 @@ export function ProjectPanel({
   onContextRefresh,
   onContextCancel,
   onTogglePlanspaceVisibility,
+  onSetPlanspaceArchived,
   onDeletePlanspace,
   newDirectionRequestVersion,
   onNewDirectionRequestHandled,
@@ -566,6 +569,7 @@ export function ProjectPanel({
                       !isEmbeddedTemplateSession || directions.length > 1
                     }
                     onTogglePlanspaceVisibility={onTogglePlanspaceVisibility}
+                    onSetPlanspaceArchived={onSetPlanspaceArchived}
                     onDeletePlanspace={onDeletePlanspace}
                   />
                 </li>
@@ -597,17 +601,21 @@ function DirectionRow({
   saving,
   canDelete,
   onTogglePlanspaceVisibility,
+  onSetPlanspaceArchived,
   onDeletePlanspace,
 }: {
   plug: ContextSpacePlugSummary;
   saving: boolean;
   canDelete: boolean;
   onTogglePlanspaceVisibility: (planspaceId: string, hidden: boolean) => void;
+  onSetPlanspaceArchived: (planspaceId: string, archived: boolean) => Promise<void>;
   onDeletePlanspace: (planspaceId: string) => Promise<void>;
 }) {
   const hidden = !!plug.hidden;
+  const archived = !!plug.archived_at;
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [archiveBusy, setArchiveBusy] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
 
   const runDelete = async () => {
@@ -638,18 +646,34 @@ function DirectionRow({
               {plug.slug}
               {plug.mode ? ` · ${plug.mode}` : ""}
               {hidden ? " · hidden" : ""}
+              {archived ? " · archived" : ""}
             </span>
           </span>
         </div>
         <button
           type="button"
-          disabled={saving}
+          disabled={saving || archived}
           onClick={() => onTogglePlanspaceVisibility(plug.id, !hidden)}
           className="flex-none rounded border border-line bg-surface px-2 py-1 text-[11px] text-ink-muted transition hover:border-line-strong hover:text-ink disabled:opacity-40"
         >
           {hidden ? "Show" : "Hide"}
         </button>
-        {canDelete && (
+        <button
+          type="button"
+          disabled={saving || archiveBusy || (!archived && !canDelete)}
+          title={archived ? "恢复此方向" : "归档此方向并停止自动推进"}
+          onClick={() => {
+            setArchiveBusy(true);
+            setDeleteError(null);
+            void onSetPlanspaceArchived(plug.id, !archived)
+              .catch((err) => setDeleteError(describeDeleteError(err)))
+              .finally(() => setArchiveBusy(false));
+          }}
+          className="flex-none rounded border border-line bg-surface px-2 py-1 text-[11px] text-ink-muted transition hover:border-line-strong hover:text-ink disabled:opacity-40"
+        >
+          {archived ? "Restore" : "Archive"}
+        </button>
+        {canDelete && !archived && (
           <button
             type="button"
             disabled={saving || deleting}
@@ -702,6 +726,9 @@ function DirectionRow({
 
 /** Turns a delete rejection into one sentence the panel can show inline. */
 function describeDeleteError(err: unknown): string {
+  if (err instanceof ArchiveBusyError) {
+    return `该方向还有 ${err.busy.length} 个节点正在运行或排队，请等待结束后再归档。`;
+  }
   if (err instanceof DeletePlanspaceBusyError) {
     return `该方向还有 ${err.busy.length} 个节点正在运行或排队，请等待结束后再删除。`;
   }

@@ -65,6 +65,7 @@ def synthetic_repair_chain(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.mark.parametrize("source", [16])
 @pytest.mark.parametrize("entrypoint", ["startup", "sync"])
+@pytest.mark.skipif(MINIMUM_VERSION > 16, reason="v16 已移出三步支持窗口")
 def test_repaired_chain_automatically_preserves_layout(tmp_path: Path, source: int, entrypoint: str, monkeypatch: pytest.MonkeyPatch) -> None:
     from miniclaw2.migrations.catalog import DIRECTORY
     from miniclaw2.migrations.sync_tree import normalize
@@ -88,6 +89,7 @@ def test_repaired_chain_automatically_preserves_layout(tmp_path: Path, source: i
 
 @pytest.mark.parametrize("entrypoint", ["startup", "sync"])
 @pytest.mark.parametrize("guard", ["undeclared", "outside_chain", "repair_outside_chain", "no_input", "empty_impact"])
+@pytest.mark.skipif(MINIMUM_VERSION > 16, reason="v16 已移出三步支持窗口")
 def test_repair_exemption_never_replaces_confirmation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, entrypoint: str, guard: str) -> None:
     from miniclaw2.migrations import repairs
     from miniclaw2.migrations.sync_tree import normalize
@@ -110,6 +112,7 @@ def test_repair_exemption_never_replaces_confirmation(tmp_path: Path, monkeypatc
 
 
 @pytest.mark.parametrize("entrypoint", ["startup", "sync"])
+@pytest.mark.skipif(MINIMUM_VERSION > 16, reason="v16 已移出三步支持窗口")
 def test_new_destructive_step_cannot_borrow_retired_repair(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, entrypoint: str) -> None:
     from miniclaw2.migrations import repairs
     from miniclaw2.migrations.sdk import Migration
@@ -658,6 +661,7 @@ def test_maintenance_api_does_not_load_incompatible_store(tmp_path: Path, monkey
     assert not (tmp_path / "config.json").exists()
 
 
+@pytest.mark.skipif(MINIMUM_VERSION > 16, reason="v16 已移出三步支持窗口")
 def test_plan_endpoint_stays_reachable_while_storage_is_blocked(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """The maintenance page is the only surface a blocked user has, so the plan
     it reads must survive the admission middleware that 503s everything else."""

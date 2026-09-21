@@ -214,6 +214,7 @@ export type SessionInfo = {
   /** Newest node start/finish across every host, derived server-side rather
    * than persisted — it can change after a backend restart or a sync. */
   last_activity_at?: number | null;
+  archived_at?: number | null;
   name?: string;
   machine_id: string;
   local_machine_id: string;
@@ -222,6 +223,7 @@ export type SessionInfo = {
   read_only: boolean;
   can_delete: boolean;
   can_bind_here: boolean;
+  can_unarchive: boolean;
   /** Absolute project directory on this device, or "" when unbound here. */
   root_path?: string;
   hosts: SessionHost[];
@@ -637,6 +639,7 @@ export type ContextSpacePlugSummary = {
   auto_update: boolean;
   source: string;
   hidden?: boolean;
+  archived_at?: number | null;
   exists: boolean;
   path?: string | null;
   title: string;
@@ -783,6 +786,18 @@ export type MarkdownFile = {
   absolute_path: string;
   text: string;
   truncated: boolean;
+};
+
+/** Absolute store paths for one node (`GET /sessions/{id}/nodes/{nid}/paths`).
+ * The store copy, not the workspace one: it survives reruns and keeps the
+ * preview beside the published artifacts. Reported even before the files
+ * exist, so a path is copyable while the node is still running. */
+export type NodePaths = {
+  node_dir: string;
+  preview_path: string;
+  artifacts_dir: string;
+  /** Published artifact name to its absolute path. */
+  artifact_paths: Record<string, string>;
 };
 
 export type NodePosition = { x: number; y: number; space: string };

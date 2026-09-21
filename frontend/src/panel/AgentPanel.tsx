@@ -9,8 +9,9 @@ import {
   useState,
 } from "react";
 
-import { getNodePreview } from "../api";
+import { getNodePaths, getNodePreview } from "../api";
 import { artifactExtension } from "../artifactSelection";
+import { writeClipboard } from "../clipboard";
 import type {
   Activity,
   ArtifactExtension,
@@ -507,6 +508,7 @@ export function AgentPanel({
                 preview={preview}
                 loading={previewLoading}
                 sessionId={sessionId}
+                nodeId={node.id}
               />
             </section>
 
@@ -2617,10 +2619,12 @@ function PreviewCard({
   preview,
   loading,
   sessionId,
+  nodeId,
 }: {
   preview: string | null;
   loading: boolean;
   sessionId: string;
+  nodeId: string;
 }) {
   const fields = useMemo(() => parsePreviewFields(preview), [preview]);
 
@@ -2629,11 +2633,14 @@ function PreviewCard({
       <div className="border-b border-line px-3 py-2">
         <SectionHeading
           right={
-            loading ? (
-              <span className="text-[10px] font-normal normal-case tracking-normal text-ink-subtle">
-                loading...
-              </span>
-            ) : null
+            <div className="flex items-center gap-2">
+              {loading ? (
+                <span className="text-[10px] font-normal normal-case tracking-normal text-ink-subtle">
+                  loading...
+                </span>
+              ) : null}
+              <CopyNodePathButton sessionId={sessionId} nodeId={nodeId} />
+            </div>
           }
         >
           Preview
@@ -2675,6 +2682,104 @@ function PreviewCard({
         )}
       </div>
     </div>
+  );
+}
+
+/** Copies the node's durable store directory, for pasting to an agent working
+ * in a different project. That directory is the one worth handing over: it
+ * holds `preview.json` next to `artifacts/`, and unlike the workspace
+ * `.miniclaw2/outputs/<id>` it is not rewritten when the node reruns. */
+function CopyNodePathButton({
+  sessionId,
+  nodeId,
+}: {
+  sessionId: string;
+  nodeId: string;
+}) {
+  const [state, setState] = useState<"idle" | "copying" | "copied" | "error">("idle");
+
+  useEffect(() => setState("idle"), [sessionId, nodeId]);
+
+  useEffect(() => {
+    if (state !== "copied" && state !== "error") return;
+    const timeout = window.setTimeout(() => setState("idle"), 2000);
+    return () => window.clearTimeout(timeout);
+  }, [state]);
+
+  const copy = async () => {
+    if (state === "copying") return;
+    setState("copying");
+    try {
+      const paths = await getNodePaths(sessionId, nodeId);
+      await writeClipboard(paths.node_dir);
+      setState("copied");
+    } catch {
+      setState("error");
+    }
+  };
+
+  const label =
+    state === "copying"
+      ? "复制中…"
+      : state === "copied"
+        ? "已复制"
+        : state === "error"
+          ? "复制失败"
+          : "复制路径";
+
+  return (
+    <button
+      type="button"
+      onClick={() => void copy()}
+      disabled={state === "copying"}
+      className={`inline-flex h-6 items-center gap-1 rounded-sm border px-1.5 text-[10px] font-normal normal-case tracking-normal transition disabled:cursor-not-allowed disabled:opacity-45 ${
+        state === "error"
+          ? "border-state-error/40 bg-state-error-soft text-state-error"
+          : state === "copied"
+            ? "border-state-done/40 bg-state-done-soft text-state-done"
+            : "border-line bg-surface-raised text-ink-muted hover:border-line-strong hover:text-ink-strong"
+      }`}
+      title="复制此节点的存储目录（含 preview.json 与 artifacts/），可交给其他项目的 agent 直接读取"
+    >
+      {state === "copied" ? <CopyCheckIcon /> : <CopyIcon />}
+      <span aria-live="polite">{label}</span>
+    </button>
+  );
+}
+
+function CopyIcon() {
+  return (
+    <svg
+      viewBox="0 0 16 16"
+      width="11"
+      height="11"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.4"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <rect x="5.25" y="5.25" width="7.5" height="7.5" rx="1" />
+      <path d="M10.75 5.25v-2a1 1 0 0 0-1-1h-6.5a1 1 0 0 0-1 1v6.5a1 1 0 0 0 1 1h2" />
+    </svg>
+  );
+}
+
+function CopyCheckIcon() {
+  return (
+    <svg
+      viewBox="0 0 16 16"
+      width="11"
+      height="11"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.6"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="m3 8.25 3.1 3.1L13 4.75" />
+    </svg>
   );
 }
 

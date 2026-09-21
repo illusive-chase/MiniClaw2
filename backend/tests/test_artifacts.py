@@ -188,6 +188,56 @@ class ArtifactApiTests(unittest.TestCase):
         self.assertEqual(len(raw.content), INLINE_TEXT_CAP + 10)
         self.assertEqual(raw.headers["content-type"], "text/plain; charset=utf-8")
 
+    def test_paths_report_durable_store_locations(self) -> None:
+        response = self.client.get(
+            f"/sessions/{self.sid}/nodes/{self.node.id}/paths"
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        body = response.json()
+
+        node_dir = self.registry.store.node_dir(self.sid, self.node.id)
+        self.assertEqual(body["node_dir"], str(node_dir))
+        self.assertEqual(body["preview_path"], str(node_dir / "preview.json"))
+        self.assertEqual(body["artifacts_dir"], str(node_dir / "artifacts"))
+        self.assertTrue(Path(body["artifacts_dir"]).is_dir())
+
+        # Only published artifacts are addressable; `undeclared.md` never was.
+        self.assertEqual(
+            sorted(body["artifact_paths"]),
+            ["demo.html", "diagram.svg", "large.md"],
+        )
+        for name, path in body["artifact_paths"].items():
+            self.assertEqual(path, str(node_dir / "artifacts" / name))
+            self.assertTrue(Path(path).is_file())
+
+    def test_paths_are_reported_before_the_preview_is_written(self) -> None:
+        """A path stays copyable while the node still has no preview on disk."""
+        pending = Node(
+            id="pending-node",
+            project_id=self.sid,
+            category=Category.REGULAR,
+            state=NodeState.RUNNING,
+            model_preset_id="opus-4-8",
+        )
+        self.registry.store.create_node(pending)
+
+        response = self.client.get(f"/sessions/{self.sid}/nodes/{pending.id}/paths")
+
+        self.assertEqual(response.status_code, 200, response.text)
+        body = response.json()
+        self.assertFalse(Path(body["preview_path"]).exists())
+        self.assertEqual(body["artifact_paths"], {})
+
+    def test_paths_reject_unknown_session_and_node(self) -> None:
+        self.assertEqual(
+            self.client.get(f"/sessions/nope/nodes/{self.node.id}/paths").status_code,
+            404,
+        )
+        self.assertEqual(
+            self.client.get(f"/sessions/{self.sid}/nodes/nope/paths").status_code,
+            404,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -146,6 +146,16 @@ python -m miniclaw2.restore_git_layout --root /path/to/store --transaction TRANS
 
 默认优先本机备份、其他 host 补缺，对全部仍存在的项目恢复；校验、仅创建、不覆盖和可重跑规则与 Git 恢复相同。不会修改已有 `git-layout.json`、`node-layout.json` 或旧备份。
 
+## v20：项目与方向归档
+
+v20 在共享的 `projects/<pid>/project.json` 中增加可空的 `archived_at` 时间戳；
+19→20 迁移为存量项目写入 `null`。最低接纳版本随三步窗口从 v16 提升到 v17。
+
+方向归档不增加根 schema 字段，而是把 `archived_at` 写入对应 planspace 的
+`manifest.yaml`。两种归档都只改变授权状态，不搬迁或删除节点、事件、产物和布局。
+项目列表仍返回归档项目，画布读取和执行入口要求先取消归档；归档方向从节点列表、
+auto 推进、活跃节点视图和模板端口扫描中排除。
+
 ## 数据域清单
 
 唯一文件归属规则位于 `migrations/inventory.py`，供暂存、备份、恢复与同步候选树使用。

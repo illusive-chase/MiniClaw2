@@ -104,6 +104,7 @@ export type SidePanelProps = {
   onContextRefresh: () => void;
   onContextCancel: () => void;
   onTogglePlanspaceVisibility: (planspaceId: string, hidden: boolean) => void;
+  onSetPlanspaceArchived: (planspaceId: string, archived: boolean) => Promise<void>;
   onDeletePlanspace: (planspaceId: string) => Promise<void>;
 
   /* Bumped each time a CONTEXT.md refresh completes, so PlanspaceFilePanel
@@ -219,6 +220,7 @@ function Inner(props: SidePanelProps & {
     onContextRefresh,
     onContextCancel,
     onTogglePlanspaceVisibility,
+    onSetPlanspaceArchived,
     onDeletePlanspace,
     contextReloadVersion,
     focusRequestVersion,
@@ -261,6 +263,7 @@ function Inner(props: SidePanelProps & {
         onContextRefresh={onContextRefresh}
         onContextCancel={onContextCancel}
         onTogglePlanspaceVisibility={onTogglePlanspaceVisibility}
+        onSetPlanspaceArchived={onSetPlanspaceArchived}
         onDeletePlanspace={onDeletePlanspace}
         newDirectionRequestVersion={newDirectionRequestVersion}
         onNewDirectionRequestHandled={onNewDirectionRequestHandled}

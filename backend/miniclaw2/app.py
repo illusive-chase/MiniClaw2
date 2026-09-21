@@ -29,7 +29,7 @@ from .migrations.catalog import CURRENT_VERSION, MINIMUM_VERSION
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, ValidationError
 
 from .active_nodes import ACTIVE_STATES, ActiveNodesIndex, collect_active_entries
-from .artifacts import INLINE_TEXT_CAP, stored_artifact_path
+from .artifacts import INLINE_TEXT_CAP, stored_artifact_path, stored_artifacts_dir
 from .contextspace import (
     delete_principle,
     describe_project_contextspace,
@@ -87,7 +87,9 @@ from .providers.claude_native.hook_installer import install_hooks
 from .registry import (
     NonNativeNodeError,
     NonNativeProjectError,
+    PlanspaceArchivedError,
     PlanspaceModePreconditionError,
+    ProjectArchivedError,
     ProjectRegistry,
     RemoteProjectionBusyError,
 )
@@ -240,6 +242,7 @@ class SessionInfo(BaseModel):
     template_id: str | None = None
     tag_ids: list[str] = Field(default_factory=list)
     last_activity_at: float | None = None
+    archived_at: float | None = None
     name: str = ""
     machine_id: str = ""
     local_machine_id: str = ""
@@ -248,6 +251,7 @@ class SessionInfo(BaseModel):
     read_only: bool = False
     can_delete: bool = True
     can_bind_here: bool = False
+    can_unarchive: bool = False
     # Empty unless this host has a local binding: an unbound project's
     # `root_path` is a sentinel, not a directory anyone could open.
     root_path: str = ""
@@ -350,6 +354,12 @@ class UpdatePlanspaceModeRequest(BaseModel):
     mode: str
 
 
+class ArchiveRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    archived: bool
+
+
 class UpdateVirtualRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -409,6 +419,21 @@ class NodeDiffResponse(BaseModel):
     kind: str
     text: str
     error: str | None = None
+
+
+class NodePathsResponse(BaseModel):
+    """Durable filesystem locations an agent in another project can read.
+
+    These point at the store copy rather than the workspace one: the workspace
+    `.miniclaw2/outputs/<nid>` is rewritten on every rerun and holds no
+    preview, while the store directory keeps the validated preview and the
+    published artifacts side by side under a single path.
+    """
+
+    node_dir: str
+    preview_path: str
+    artifacts_dir: str
+    artifact_paths: dict[str, str]
 
 
 class GitCommitRequest(BaseModel):
@@ -664,6 +689,11 @@ def create_app(
         if guard is not None:
             guard(sid)
 
+    def require_unarchived_project(sid: str) -> None:
+        guard = getattr(registry, "assert_unarchived", None)
+        if guard is not None:
+            guard(sid)
+
     def require_execution_project(sid: str) -> None:
         guard = getattr(registry, "require_execution_project", None)
         if guard is not None:
@@ -757,6 +787,24 @@ def create_app(
                     "detail": "需要输入访问密码",
                 },
             )
+        return await call_next(request)
+
+    @app.middleware("http")
+    async def archived_project_admission(request: Request, call_next):
+        parts = [part for part in request.url.path.split("/") if part]
+        if len(parts) >= 2 and parts[0] == "sessions":
+            sid = parts[1]
+            allowed = (
+                len(parts) == 2
+                or (len(parts) == 3 and parts[2] in {"archive", "tags"})
+            )
+            if not allowed:
+                project = registry.get_project(sid)
+                if project is not None and project.archived_at is not None:
+                    return JSONResponse(
+                        status_code=409,
+                        content={"detail": "项目已归档；取消归档后可继续操作"},
+                    )
         return await call_next(request)
 
     @app.exception_handler(MigrationError)
@@ -870,6 +918,18 @@ def create_app(
         _request: Request, exc: NonNativeProjectError
     ) -> JSONResponse:
         return JSONResponse(status_code=403, content={"detail": str(exc)})
+
+    @app.exception_handler(ProjectArchivedError)
+    async def project_archived_error(
+        _request: Request, exc: ProjectArchivedError
+    ) -> JSONResponse:
+        return JSONResponse(status_code=409, content={"detail": str(exc)})
+
+    @app.exception_handler(PlanspaceArchivedError)
+    async def planspace_archived_error(
+        _request: Request, exc: PlanspaceArchivedError
+    ) -> JSONResponse:
+        return JSONResponse(status_code=409, content={"detail": str(exc)})
 
     @app.exception_handler(NonNativeNodeError)
     async def non_native_node_error(
@@ -1539,6 +1599,21 @@ def create_app(
             raise HTTPException(404, "session not found")
         return _session_info(registry, project)
 
+    @app.patch("/sessions/{sid}/archive", response_model=SessionInfo)
+    async def set_session_archive(sid: str, req: ArchiveRequest) -> SessionInfo:
+        try:
+            if req.archived:
+                project, busy = registry.archive_project(sid)
+                if busy:
+                    raise HTTPException(409, {"busy": busy})
+            else:
+                project = registry.unarchive_project(sid)
+        except RuntimeError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        if project is None:
+            raise HTTPException(404, "session not found")
+        return _session_info(registry, project, include_positions=False)
+
     @app.post("/sessions/{sid}/hosts", response_model=SessionInfo)
     def bind_session_host(sid: str, req: BindProjectRequest) -> SessionInfo:
         project = registry.get_project(sid)
@@ -2042,6 +2117,34 @@ def create_app(
             raise HTTPException(404, "session not found")
         return describe_project_contextspace(project, store_root=registry.store.root)
 
+    @app.patch(
+        "/sessions/{sid}/planspaces/{planspace_id}/archive",
+        response_model=dict[str, Any],
+    )
+    async def set_planspace_archive(
+        sid: str,
+        planspace_id: str,
+        req: ArchiveRequest,
+    ) -> dict[str, Any]:
+        project = registry.get_project(sid)
+        if project is None:
+            raise HTTPException(404, "session not found")
+        try:
+            updated, busy = registry.set_planspace_archive(
+                sid,
+                planspace_id,
+                archived=req.archived,
+            )
+        except RuntimeError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        if busy:
+            raise HTTPException(409, {"busy": busy})
+        if not updated:
+            raise HTTPException(404, "planspace not found")
+        return describe_project_contextspace(project, store_root=registry.store.root)
+
     @app.delete("/sessions/{sid}/planspaces/{planspace_id}", response_model=dict[str, Any])
     async def delete_planspace(sid: str, planspace_id: str) -> dict[str, Any]:
         project = registry.get_project(sid)
@@ -2329,6 +2432,36 @@ def create_app(
         if text is None:
             raise HTTPException(404, "preview not yet written")
         return {"text": text}
+
+    @app.get(
+        "/sessions/{sid}/nodes/{nid}/paths",
+        response_model=NodePathsResponse,
+    )
+    def get_node_paths(sid: str, nid: str) -> NodePathsResponse:
+        """Absolute paths for handing this node's output to another project.
+
+        Unlike `/reveal`, this needs no local project binding: the store lives
+        under `$MINICLAW_HOME` regardless of whether the workspace is bound on
+        this device. It reports where the files would be, so a path stays
+        copyable before the preview exists.
+        """
+        if registry.get_project(sid) is None:
+            raise HTTPException(404, "session not found")
+        node = registry.get_node(sid, nid)
+        if node is None:
+            raise HTTPException(404, "node not found")
+        node_dir = registry.store.node_dir(sid, nid)
+        artifacts_dir = stored_artifacts_dir(registry.store, sid, nid)
+        return NodePathsResponse(
+            node_dir=str(node_dir),
+            preview_path=str(node_dir / "preview.json"),
+            artifacts_dir=str(artifacts_dir),
+            artifact_paths={
+                ref.name: str(artifacts_dir / ref.name)
+                for ref in node.artifacts
+                if ref.status == "published"
+            },
+        )
 
     @app.get(
         "/sessions/{sid}/nodes/{nid}/artifacts/{name}",
@@ -2754,6 +2887,9 @@ def create_app(
         if project is None:
             await websocket.close(code=4404, reason="session not found")
             return
+        if project.archived_at is not None:
+            await websocket.close(code=4403, reason="项目已归档；取消归档后可继续操作")
+            return
 
         await websocket.accept()
         send_lock = asyncio.Lock()
@@ -2787,6 +2923,17 @@ def create_app(
         try:
             async def handle_message(raw: dict[str, Any]) -> None:
                 msg_type = raw.get("type")
+
+                if (
+                    msg_type in {"user_message", "interaction_response", "interrupt"}
+                    and project.archived_at is not None
+                ):
+                    await mark_live_ready()
+                    await _send(send_now, {
+                        "type": "error",
+                        "message": str(ProjectArchivedError(project)),
+                    })
+                    return
 
                 if msg_type in {"user_message", "interaction_response", "interrupt"} and not project_is_native(sid):
                     await mark_live_ready()
@@ -2981,6 +3128,7 @@ def _session_info(
         and project.persistence_mode is ProjectPersistenceMode.REMOTE
         else None
     )
+    include_positions = include_positions and project.archived_at is None
     nodes = registry.store.list_nodes(project.id) if include_positions else None
     node_summary = registry.node_summary(project, nodes=nodes)
     return SessionInfo(
@@ -2997,6 +3145,7 @@ def _session_info(
         template_id=project.template_id,
         tag_ids=project.tag_ids,
         last_activity_at=node_summary.last_activity_at,
+        archived_at=project.archived_at,
         name=project.name,
         machine_id=project.machine_id,
         local_machine_id=registry.store.machine.id,
@@ -3010,6 +3159,11 @@ def _session_info(
         can_bind_here=(
             not bound_here
             and not project.temporary
+            and registry.store.read_only_reason is None
+        ),
+        can_unarchive=(
+            project.archived_at is not None
+            and bound_here
             and registry.store.read_only_reason is None
         ),
         root_path=project.root_path if bound_here else "",

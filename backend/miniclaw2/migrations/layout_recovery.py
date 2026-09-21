@@ -5,7 +5,7 @@ import re
 from typing import Any
 from urllib.parse import quote
 
-from ..sdk import Migration, MigrationContext
+from .sdk import MigrationContext
 
 
 def coordinate_space(node: dict[str, Any], nodes: dict[str, dict[str, Any]]) -> str:
@@ -29,8 +29,11 @@ def artifact_owners(nodes: dict[str, dict[str, Any]]) -> dict[str, str]:
     for node_id, node in nodes.items():
         if node.get("kind") == "op":
             continue
-        published = [artifact for artifact in node.get("artifacts", [])
-                     if artifact.get("status") == "published"]
+        published = [
+            artifact
+            for artifact in node.get("artifacts", [])
+            if artifact.get("status") == "published"
+        ]
         for artifact in published:
             name = quote(artifact["name"], safe="~!*'()-._")
             owners[f"artifact:{node_id}:{name}"] = node_id
@@ -59,12 +62,19 @@ def finite_position(position: Any, space: str) -> dict[str, Any] | None:
 
 def pristine_hints(context: MigrationContext) -> list[tuple[str, dict[str, Any]]]:
     shards = sorted(context.input_records("projects/*/hosts/*/layout.json"))
-    projects = sorted((relative, payload) for relative, payload in context.input_records("projects/*/project.json")
-                      if "layout_hints" in payload or "layout_viewport" in payload)
+    projects = sorted(
+        (relative, payload)
+        for relative, payload in context.input_records("projects/*/project.json")
+        if "layout_hints" in payload or "layout_viewport" in payload
+    )
     return shards + projects
 
 
-def recover_layout(context: MigrationContext, *, write: bool = True) -> list[dict[str, Any]]:
+def recover_layout(
+    context: MigrationContext,
+    *,
+    write: bool = True,
+) -> list[dict[str, Any]]:
     sources: dict[str, list[tuple[str, dict[str, Any]]]] = {}
     for relative, payload in pristine_hints(context):
         sources.setdefault(relative.split("/")[1], []).append((relative, payload))
@@ -78,7 +88,11 @@ def recover_layout(context: MigrationContext, *, write: bool = True) -> list[dic
             node = context.read(relative)
             parts = relative.split("/")
             node_id = parts[5]
-            if node.get("id") != node_id or node.get("project_id") != project_id or node_id in nodes:
+            if (
+                node.get("id") != node_id
+                or node.get("project_id") != project_id
+                or node_id in nodes
+            ):
                 raise ValueError(f"节点路径或跨 host 唯一性无效：{relative}")
             nodes[node_id] = node
             owners[node_id] = parts[3]
@@ -87,20 +101,37 @@ def recover_layout(context: MigrationContext, *, write: bool = True) -> list[dic
         changed: set[str] = set()
         project_sources = sources.get(project_id, [])
         source_paths = {relative for relative, _payload in project_sources}
-        present_hosts = {relative.split("/")[3] if relative.endswith("/layout.json") else payload.get("machine_id", "")
-                         for relative, payload in project_sources}
-        hosts = set(owners.values()) | {relative.split("/")[3] for relative in context.paths(project_dir + "hosts/*/host.json")}
-        project_sources = project_sources + [(project_dir + f"hosts/{host}/layout.json", {}) for host in sorted(hosts - present_hosts)]
+        present_hosts = {
+            relative.split("/")[3]
+            if relative.endswith("/layout.json")
+            else payload.get("machine_id", "")
+            for relative, payload in project_sources
+        }
+        hosts = set(owners.values()) | {
+            relative.split("/")[3]
+            for relative in context.paths(project_dir + "hosts/*/host.json")
+        }
+        project_sources += [
+            (project_dir + f"hosts/{host}/layout.json", {})
+            for host in sorted(hosts - present_hosts)
+        ]
         for relative, payload in project_sources:
-            host = relative.split("/")[3] if relative.endswith("/layout.json") else payload.get("machine_id", "")
+            host = (
+                relative.split("/")[3]
+                if relative.endswith("/layout.json")
+                else payload.get("machine_id", "")
+            )
             hints = payload.get("layout_hints", {})
             report: dict[str, Any] = {
-                "project_id": project_id, "host_id": host, "path": relative,
+                "project_id": project_id,
+                "host_id": host,
+                "path": relative,
                 "source": "present" if hints else "empty" if relative in source_paths else "missing",
                 "retained": 0,
                 "restored": {kind: 0 for kind in ("node", "foreign_node", "artifact", "git", "lane")},
                 "not_restored": {kind: 0 for kind in ("synthetic", "missing", "invalid")},
-                "skipped_entries": [], "viewport_discarded": payload.get("layout_viewport") is not None,
+                "skipped_entries": [],
+                "viewport_discarded": payload.get("layout_viewport") is not None,
             }
             reports.append(report)
             if not isinstance(hints, dict):
@@ -123,9 +154,12 @@ def recover_layout(context: MigrationContext, *, write: bool = True) -> list[dic
                     if tile_id.startswith(("commit:", "planspace:")):
                         excluded = "invalid"
                     report["not_restored"][excluded] += 1
-                    report["skipped_entries"].append({"id": tile_id, "reason": {
-                        "synthetic": "合成图元由布局派生，不恢复", "missing": "节点或有效产物不存在", "invalid": "布局图元标识无效",
-                    }[excluded]})
+                    reasons = {
+                        "synthetic": "合成图元由布局派生，不恢复",
+                        "missing": "节点或有效产物不存在",
+                        "invalid": "布局图元标识无效",
+                    }
+                    report["skipped_entries"].append({"id": tile_id, "reason": reasons[excluded]})
                     continue
                 recovered = finite_position(position, space)
                 if recovered is None:
@@ -144,23 +178,3 @@ def recover_layout(context: MigrationContext, *, write: bool = True) -> list[dic
             for target in sorted(changed):
                 context.replace(target, layouts[target])
     return sorted(reports, key=lambda report: (report["project_id"], report["host_id"], report["path"]))
-
-
-def upgrade(context: MigrationContext) -> None:
-    recover_layout(context)
-
-
-def verify(context: MigrationContext) -> None:
-    if any(sum(report["restored"].values()) for report in recover_layout(context, write=False)):
-        raise ValueError("原始输入中的有效布局尚未全部补回")
-
-
-MIGRATION = Migration(
-    source=16,
-    target=17,
-    scopes=("shared",),
-    summary="从本次事务原始快照补回节点、产物、Git 与方向坐标；只补缺，不恢复合成图元与旧 viewport",
-    contract="miniclaw2/store/v17:layout-recovery-v1",
-    upgrade=upgrade,
-    verify=verify,
-)

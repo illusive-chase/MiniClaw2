@@ -6,6 +6,7 @@ import type {
   NodeDiff,
   NodeInfo,
   NodeDetail,
+  NodePaths,
   ModelPreset,
   GlobalDefaults,
   CodeReviewSettings,
@@ -506,6 +507,47 @@ export async function deleteSession(id: string): Promise<void> {
   if (!res.ok) throw new Error(`deleteSession failed: ${res.status}`);
 }
 
+export class ArchiveBusyError extends Error {
+  busy: string[];
+
+  constructor(busy: string[]) {
+    super(`archive blocked by: ${busy.join(", ")}`);
+    this.name = "ArchiveBusyError";
+    this.busy = busy;
+  }
+}
+
+async function throwArchiveError(operation: string, res: Response): Promise<never> {
+  const body: unknown = await res.json().catch(() => null);
+  const detail = (body as { detail?: unknown } | null)?.detail;
+  const busy = (detail as { busy?: unknown } | undefined)?.busy;
+  if (Array.isArray(busy)) {
+    throw new ArchiveBusyError(
+      busy.filter((value): value is string => typeof value === "string"),
+    );
+  }
+  throw new ApiError(
+    operation,
+    res.status,
+    typeof detail === "string" ? detail : detail ? JSON.stringify(detail) : null,
+  );
+}
+
+export async function setSessionArchived(
+  id: string,
+  archived: boolean,
+): Promise<SessionInfo> {
+  const res = await fetch(`/sessions/${id}/archive`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ archived }),
+  });
+  if (!res.ok) {
+    await throwArchiveError("setSessionArchived", res);
+  }
+  return res.json();
+}
+
 export async function getSessionContextSpace(
   sessionId: string,
 ): Promise<SessionContextSpaceInfo> {
@@ -552,6 +594,25 @@ export async function updatePlanspaceMode(
     },
   );
   if (!res.ok) throw new Error(`updatePlanspaceMode failed: ${res.status}`);
+  return res.json();
+}
+
+export async function setPlanspaceArchived(
+  sessionId: string,
+  planspaceId: string,
+  archived: boolean,
+): Promise<SessionContextSpaceInfo> {
+  const res = await fetch(
+    `/sessions/${sessionId}/planspaces/${encodeURIComponent(planspaceId)}/archive`,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ archived }),
+    },
+  );
+  if (!res.ok) {
+    await throwArchiveError("setPlanspaceArchived", res);
+  }
   return res.json();
 }
 
@@ -1047,6 +1108,20 @@ export function artifactRawUrl(
   name: string,
 ): string {
   return `/sessions/${encodeURIComponent(sessionId)}/nodes/${encodeURIComponent(nodeId)}/artifacts/${encodeURIComponent(name)}?raw=1`;
+}
+
+/** Durable store paths for this node, for handing to an agent elsewhere. */
+export async function getNodePaths(
+  sessionId: string,
+  nodeId: string,
+): Promise<NodePaths> {
+  const res = await fetch(
+    `/sessions/${encodeURIComponent(sessionId)}/nodes/${encodeURIComponent(nodeId)}/paths`,
+  );
+  if (!res.ok) {
+    throw new ApiError("getNodePaths", res.status, await readErrorDetail(res));
+  }
+  return res.json();
 }
 
 export async function getNodeArtifact(

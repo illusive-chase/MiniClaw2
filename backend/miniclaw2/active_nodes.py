@@ -32,7 +32,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .contextspace import contextspace_root, planspace_display_title
+from .contextspace import (
+    contextspace_root,
+    planspace_display_title,
+    read_planspace_archived,
+)
 from .domain import NodeState, Project
 
 logger = logging.getLogger(__name__)
@@ -254,7 +258,11 @@ def collect_active_entries(
     context_root = contextspace_root(store_root)
     entries: list[ActiveEntry] = []
 
-    projects = registry.list_projects()
+    projects = [
+        project
+        for project in registry.list_projects()
+        if project.archived_at is None
+    ]
     index.retain_projects({project.id for project in projects})
 
     for project in projects:
@@ -266,7 +274,16 @@ def collect_active_entries(
         visible = [
             facts
             for facts in facts_list
-            if _is_visible(facts, now=moment) and _is_native(registry, project, facts)
+            if _is_visible(facts, now=moment)
+            and _is_native(registry, project, facts)
+            and not (
+                facts.planspace_id
+                and read_planspace_archived(
+                    project,
+                    facts.planspace_id,
+                    store_root=store_root,
+                )
+            )
         ]
         if not visible:
             continue

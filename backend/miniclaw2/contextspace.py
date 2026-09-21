@@ -462,6 +462,8 @@ def describe_project_contextspace(
     template_ports: list[dict[str, Any]] = []
     template_port_lane_id: str | None = None
     for lane_id in list_project_planspace_ids(project, root):
+        if read_planspace_archived(project, lane_id, store_root=store_root):
+            continue
         try:
             lane_ports = read_template_ports(
                 project,
@@ -597,6 +599,48 @@ def set_planspace_mode(
     raw["mode"] = normalized.value
     _write_yaml(manifest_path, raw)
     return normalized
+
+
+@storage_function
+def read_planspace_archived(
+    project: Project,
+    lane_id: str,
+    *,
+    store_root: Path | None = None,
+) -> bool:
+    """Return whether a planspace is archived."""
+    del project  # reserved for future per-project override
+    if not lane_id:
+        return False
+    manifest = _plug_manifest(contextspace_root(store_root), lane_id)
+    value = manifest.get("archived_at") if isinstance(manifest, dict) else None
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+@storage_function
+def set_planspace_archived(
+    project: Project,
+    lane_id: str,
+    archived: bool,
+    *,
+    store_root: Path | None = None,
+) -> float | None:
+    """Persist a planspace archive timestamp, or clear it when restoring."""
+    del project  # reserved for future per-project override
+    if not lane_id:
+        raise ValueError("planspace id is required")
+    root = contextspace_root(store_root)
+    plug_dir = _plug_dir(root, lane_id)
+    if plug_dir is None or _plug_kind(lane_id) != "planspace":
+        raise ValueError(f"unknown planspace: {lane_id}")
+    manifest_path = plug_dir / "manifest.yaml"
+    raw = _read_yaml(manifest_path)
+    if not isinstance(raw, dict):
+        raise ValueError(f"unknown planspace: {lane_id}")
+    archived_at = time.time() if archived else None
+    raw["archived_at"] = archived_at
+    _write_yaml(manifest_path, raw)
+    return archived_at
 
 
 @storage_function
@@ -1465,6 +1509,11 @@ def _plug_summary(
             ).value
         except ValueError:
             mode = PlanspaceMode.MANUAL.value
+    archived_at = (
+        manifest.get("archived_at")
+        if kind == "planspace" and isinstance(manifest, dict)
+        else None
+    )
     summary: dict[str, Any] = {
         "id": ref.id,
         "kind": kind,
@@ -1475,6 +1524,11 @@ def _plug_summary(
         "auto_update": False,
         "source": ref.source,
         "hidden": bool(project.planspace_view.get(ref.id, {}).get("hidden")),
+        "archived_at": (
+            float(archived_at)
+            if isinstance(archived_at, (int, float)) and not isinstance(archived_at, bool)
+            else None
+        ),
         "exists": bool(plug_dir and plug_dir.exists()),
         "path": _display_path(plug_dir, root) if plug_dir is not None else None,
         "title": title,
