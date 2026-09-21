@@ -31,7 +31,6 @@ import type {
   SessionInfo,
   Tag,
 } from "../types";
-import { EMBEDDED_SESSION_PREFIX } from "../types";
 
 export type ProjectPanelProps = {
   session: SessionInfo | null;
@@ -125,14 +124,7 @@ export function ProjectPanel({
    * does not gate on a save in flight elsewhere in the panel. */
   const tagsLocked = !!session?.read_only;
   const activeModelPresets = selectableModelPresets(modelPresets);
-  /* A template editing session owns one lane, so it may create only when an
-   * older persisted session is already empty. This preserves a recovery path
-   * without offering a second lane that the template format cannot save. */
-  const isEmbeddedTemplateSession =
-    session?.template_id?.startsWith(EMBEDDED_SESSION_PREFIX) ?? false;
-  const canCreateDirection =
-    !isEmbeddedTemplateSession ||
-    (contextSpace !== null && directions.length === 0);
+  const canCreateDirection = true;
 
   useEffect(() => {
     setNewDirectionModelPresetId(
@@ -565,9 +557,7 @@ export function ProjectPanel({
                   <DirectionRow
                     plug={item.plug}
                     saving={busy}
-                    canDelete={
-                      !isEmbeddedTemplateSession || directions.length > 1
-                    }
+                    canDelete
                     onTogglePlanspaceVisibility={onTogglePlanspaceVisibility}
                     onSetPlanspaceArchived={onSetPlanspaceArchived}
                     onDeletePlanspace={onDeletePlanspace}

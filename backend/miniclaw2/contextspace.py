@@ -363,7 +363,63 @@ def list_project_bindings(root: Path) -> list[ProjectBinding]:
         binding = _load_binding_file(path)
         if binding is not None:
             out.append(binding)
+    _validate_unique_planspace_references(out)
     return out
+
+
+def validate_contextspace_planspace_ownership(root: Path) -> None:
+    """Validate the persisted one-project-per-planspace contract.
+
+    This is intentionally callable by migration/sync validation, where the
+    files may have arrived through Git rather than through the runtime helpers.
+    """
+    list_project_bindings(root)  # loading validates scope and unique references
+
+    planspaces_root = root / "plugs" / "planspaces"
+    if planspaces_root.exists():
+        for plug_dir in sorted(planspaces_root.iterdir()):
+            if not plug_dir.is_dir():
+                continue
+            manifest_path = plug_dir / "manifest.yaml"
+            if not manifest_path.exists():
+                continue
+            raw = _read_yaml(manifest_path)
+            scope, separator, lane_slug = plug_dir.name.partition(".")
+            expected_id = f"planspaces.{plug_dir.name}"
+            if (
+                not separator
+                or not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", scope)
+                or not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", lane_slug)
+                or not isinstance(raw, dict)
+                or raw.get("kind") != "planspace"
+                or raw.get("id") != expected_id
+            ):
+                raise ValueError(
+                    f"planspace manifest identity does not match its path: {manifest_path}"
+                )
+
+    plugs_root = root / "plugs"
+    if not plugs_root.exists():
+        return
+    for manifest_path in sorted(plugs_root.rglob("manifest.yaml")):
+        raw = _read_yaml(manifest_path)
+        if not isinstance(raw, dict):
+            continue
+        requires = raw.get("requires")
+        if requires is None:
+            continue
+        if not isinstance(requires, list):
+            raise ValueError(f"plug requires must be a list: {manifest_path}")
+        required_planspaces = [
+            value
+            for value in requires
+            if isinstance(value, str) and _plug_kind(value) == "planspace"
+        ]
+        if required_planspaces:
+            raise ValueError(
+                "planspaces must be bound directly and cannot be introduced "
+                f"through requires: {required_planspaces[0]}"
+            )
 
 
 @storage_function
@@ -372,16 +428,12 @@ def delete_project_contextspace(
     *,
     store_root: Path | None = None,
 ) -> dict[str, Any]:
-    """Delete ContextSpace bindings and (private) planspace plugs owned by
-    the project. Planspaces that another binding still references are
-    retained.
-    """
+    """Delete ContextSpace bindings and planspace plugs owned by the project."""
     root = contextspace_root(store_root)
     summary: dict[str, Any] = {
         "root": str(root),
         "deleted_bindings": [],
         "deleted_planspaces": [],
-        "retained_shared_planspaces": [],
         "skipped_planspaces": [],
     }
     if not root.exists():
@@ -392,7 +444,6 @@ def delete_project_contextspace(
     if not target_bindings:
         return summary
 
-    target_binding_ids = {binding.id for binding in target_bindings}
     target_planspace_ids = sorted(
         {
             ref.id
@@ -401,19 +452,8 @@ def delete_project_contextspace(
             if _plug_kind(ref.id) == "planspace"
         }
     )
-    referenced_by_other_bindings = {
-        ref.id
-        for binding in bindings
-        if binding.id not in target_binding_ids
-        for ref in binding.plugs
-        if _plug_kind(ref.id) == "planspace"
-    }
-
     planspaces_root = root / "plugs" / "planspaces"
     for planspace_id in target_planspace_ids:
-        if planspace_id in referenced_by_other_bindings:
-            summary["retained_shared_planspaces"].append(planspace_id)
-            continue
         plug_dir = _plug_dir(root, planspace_id)
         if plug_dir is None:
             summary["skipped_planspaces"].append(planspace_id)
@@ -451,41 +491,12 @@ def describe_project_contextspace(
     root = contextspace_root(store_root)
     binding = resolve_project_binding(project, root)
     bindings = [binding] if binding is not None else []
-    #: Ports live on one lane's manifest, and only an embedded template session
-    #: declares any — every ordinary project reports an empty list, which is
-    #: what keeps the canvas addition invisible there. The owning lane is found
-    #: by asking the manifests rather than by counting the project's lanes: a
-    #: project-wide count answers a question about lanes the ports have nothing
-    #: to do with, so a second direction would silently erase the ports of the
-    #: first. Reporting the lane id alongside the ports also spares the
-    #: frontend from re-deriving it and reaching a different answer.
-    template_ports: list[dict[str, Any]] = []
-    template_port_lane_id: str | None = None
-    for lane_id in list_project_planspace_ids(project, root):
-        if read_planspace_archived(project, lane_id, store_root=store_root):
-            continue
-        try:
-            lane_ports = read_template_ports(
-                project,
-                lane_id,
-                store_root=store_root,
-            )
-        except ValueError:
-            # A corrupt or unreachable manifest must not make the whole
-            # contextspace summary unreadable — the lane still renders.
-            continue
-        if lane_ports:
-            template_ports = lane_ports
-            template_port_lane_id = lane_id
-            break
     return {
         "root": str(root),
         "exists": root.exists(),
         "project_context_binding_id": project.project_context_binding_id,
         "resolved_binding_id": binding.id if binding else None,
         "planspace_view": project.planspace_view,
-        "template_ports": template_ports,
-        "template_port_lane_id": template_port_lane_id,
         "context_file": {
             "exists": (Path(project.root_path) / "CONTEXT.md").exists(),
         },
@@ -561,11 +572,14 @@ def read_planspace_mode(
     ``planspaces.my-project.foo``). Defaults to ``MANUAL`` when the manifest
     is missing or the field is unset.
     """
-    del project  # reserved for future per-project override
     if not lane_id:
         return PlanspaceMode.MANUAL
-    root = contextspace_root(store_root)
-    manifest = _plug_manifest(root, lane_id)
+    resolved = _find_project_planspace_manifest(
+        project,
+        lane_id,
+        store_root=store_root,
+    )
+    manifest = resolved[1] if resolved is not None else {}
     raw = manifest.get("mode") if isinstance(manifest, dict) else None
     try:
         return normalize_planspace_mode(raw if isinstance(raw, str) else None)
@@ -582,20 +596,16 @@ def set_planspace_mode(
     store_root: Path | None = None,
 ) -> PlanspaceMode:
     """Persist ``mode`` to a planspace plug manifest and return it."""
-    del project  # reserved for future per-project override
     if not lane_id:
         raise ValueError("planspace id is required")
     normalized = (
         mode if isinstance(mode, PlanspaceMode) else normalize_planspace_mode(mode)
     )
-    root = contextspace_root(store_root)
-    plug_dir = _plug_dir(root, lane_id)
-    if plug_dir is None or _plug_kind(lane_id) != "planspace":
-        raise ValueError(f"unknown planspace: {lane_id}")
-    manifest_path = plug_dir / "manifest.yaml"
-    raw = _read_yaml(manifest_path)
-    if not isinstance(raw, dict):
-        raise ValueError(f"unknown planspace: {lane_id}")
+    manifest_path, raw = _project_planspace_manifest(
+        project,
+        lane_id,
+        store_root=store_root,
+    )
     raw["mode"] = normalized.value
     _write_yaml(manifest_path, raw)
     return normalized
@@ -609,10 +619,14 @@ def read_planspace_archived(
     store_root: Path | None = None,
 ) -> bool:
     """Return whether a planspace is archived."""
-    del project  # reserved for future per-project override
     if not lane_id:
         return False
-    manifest = _plug_manifest(contextspace_root(store_root), lane_id)
+    resolved = _find_project_planspace_manifest(
+        project,
+        lane_id,
+        store_root=store_root,
+    )
+    manifest = resolved[1] if resolved is not None else {}
     value = manifest.get("archived_at") if isinstance(manifest, dict) else None
     return isinstance(value, (int, float)) and not isinstance(value, bool)
 
@@ -626,17 +640,13 @@ def set_planspace_archived(
     store_root: Path | None = None,
 ) -> float | None:
     """Persist a planspace archive timestamp, or clear it when restoring."""
-    del project  # reserved for future per-project override
     if not lane_id:
         raise ValueError("planspace id is required")
-    root = contextspace_root(store_root)
-    plug_dir = _plug_dir(root, lane_id)
-    if plug_dir is None or _plug_kind(lane_id) != "planspace":
-        raise ValueError(f"unknown planspace: {lane_id}")
-    manifest_path = plug_dir / "manifest.yaml"
-    raw = _read_yaml(manifest_path)
-    if not isinstance(raw, dict):
-        raise ValueError(f"unknown planspace: {lane_id}")
+    manifest_path, raw = _project_planspace_manifest(
+        project,
+        lane_id,
+        store_root=store_root,
+    )
     archived_at = time.time() if archived else None
     raw["archived_at"] = archived_at
     _write_yaml(manifest_path, raw)
@@ -735,136 +745,6 @@ def remove_template_instance(
     return True
 
 
-#: Port names accept the same shape as template arguments. Kept as a literal
-#: rather than imported from ``templates.loader``: that module imports this one,
-#: so the dependency only runs one way. Must stay byte-identical to
-#: ``loader.PARAM_NAME_RE`` — a divergence would only surface at commit time,
-#: when the rewritten template fails to load.
-_PORT_NAME_RE = re.compile(r"^[a-z][a-z0-9_]*$")
-
-
-@storage_function
-def read_template_ports(
-    project: Project,
-    lane_id: str,
-    *,
-    store_root: Path | None = None,
-) -> list[dict[str, Any]]:
-    """Return the input ports an embedded template session declares.
-
-    Ports live on the planspace manifest rather than on ``domain.Node``: a port
-    is part of the template's signature, not a schedulable step, and nothing in
-    the runtime should be able to mistake one for a node.
-    """
-    manifest_path, raw = _project_planspace_manifest(
-        project,
-        lane_id,
-        store_root=store_root,
-    )
-    del manifest_path
-    return _coerce_template_ports(raw.get("template_ports"), lane_id)
-
-
-@storage_function
-def write_template_ports(
-    project: Project,
-    lane_id: str,
-    ports: list[dict[str, Any]],
-    *,
-    store_root: Path | None = None,
-) -> None:
-    """Replace the input-port list on a project planspace manifest.
-
-    Whole-list replacement, not append: the embedded editor always holds the
-    complete signature, so a partial update would have no meaning.
-    """
-    manifest_path, raw = _project_planspace_manifest(
-        project,
-        lane_id,
-        store_root=store_root,
-    )
-    normalized = _normalize_template_ports(ports, lane_id)
-    if normalized:
-        raw["template_ports"] = normalized
-    else:
-        # Drop the key rather than leaving `[]`, matching
-        # `remove_template_instance` — an absent key and an empty list mean the
-        # same thing, and only one of them round-trips through YAML cleanly.
-        raw.pop("template_ports", None)
-    _write_yaml(manifest_path, raw)
-
-
-def _coerce_template_ports(
-    records: Any,
-    lane_id: str,
-) -> list[dict[str, Any]]:
-    if records is None:
-        return []
-    if not isinstance(records, list) or any(
-        not isinstance(record, dict) for record in records
-    ):
-        raise ValueError(f"invalid template ports in planspace: {lane_id}")
-    return [dict(record) for record in records]
-
-
-def _normalize_template_ports(
-    ports: list[dict[str, Any]],
-    lane_id: str,
-) -> list[dict[str, Any]]:
-    """Validate port shape by hand — an untyped manifest key gets no schema."""
-    if not isinstance(ports, list):
-        raise ValueError(f"invalid template ports in planspace: {lane_id}")
-    normalized: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    for port in ports:
-        if not isinstance(port, dict):
-            raise ValueError(f"invalid template ports in planspace: {lane_id}")
-        name = port.get("name")
-        if not isinstance(name, str) or not _PORT_NAME_RE.match(name):
-            raise ValueError(f"invalid template port name: {name!r}")
-        if name in seen:
-            raise ValueError(f"duplicate template port: {name}")
-        seen.add(name)
-        description = port.get("description", "")
-        if description is None:
-            description = ""
-        if not isinstance(description, str):
-            raise ValueError(f"template port {name!r} description must be a string")
-        normalized.append(
-            {
-                "name": name,
-                "description": description,
-                "consumers": _normalize_port_consumers(name, port.get("consumers")),
-            }
-        )
-    return normalized
-
-
-def _normalize_port_consumers(name: str, raw: Any) -> list[str]:
-    """Node ids that depend on this port.
-
-    The edge lives here rather than in ``Node.scheduled_deps`` because
-    ``registry._normalize_virtual_scheduled_deps`` resolves every dep through
-    ``load_node`` and rejects what it cannot find — an ``in:<port>`` literal
-    resolves to nothing. Keeping the edge on the manifest is what lets a
-    definition's ``in:<port>`` dep survive the round trip.
-    """
-    if raw is None:
-        return []
-    if not isinstance(raw, list):
-        raise ValueError(f"template port {name!r} consumers must be a list")
-    consumers: list[str] = []
-    for entry in raw:
-        if not isinstance(entry, str) or not entry.strip():
-            raise ValueError(
-                f"template port {name!r} consumers must be non-empty strings"
-            )
-        node_id = entry.strip()
-        if node_id not in consumers:
-            consumers.append(node_id)
-    return consumers
-
-
 def _project_planspace_manifest(
     project: Project,
     lane_id: str,
@@ -873,21 +753,42 @@ def _project_planspace_manifest(
 ) -> tuple[Path, dict[str, Any]]:
     if not lane_id:
         raise ValueError("planspace id is required")
+    resolved = _find_project_planspace_manifest(
+        project,
+        lane_id,
+        store_root=store_root,
+    )
+    if resolved is None:
+        raise ValueError(f"unknown planspace for project: {lane_id}")
+    return resolved
+
+
+def _find_project_planspace_manifest(
+    project: Project,
+    lane_id: str,
+    *,
+    store_root: Path | None,
+) -> tuple[Path, dict[str, Any]] | None:
+    if not lane_id:
+        return None
     root = contextspace_root(store_root)
     binding = resolve_project_binding(project, root)
-    refs = _expand_required_plugs(root, binding.plugs) if binding is not None else []
+    refs = _direct_planspace_refs(binding)
     if not any(
-        ref.id == lane_id and _plug_kind(ref.id) == "planspace"
-        for ref in refs
+        ref.id == lane_id for ref in refs
     ):
-        raise ValueError(f"unknown planspace for project: {lane_id}")
+        return None
     plug_dir = _plug_dir(root, lane_id)
     if plug_dir is None:
-        raise ValueError(f"unknown planspace for project: {lane_id}")
+        return None
     manifest_path = plug_dir / "manifest.yaml"
     raw = _read_yaml(manifest_path)
-    if not isinstance(raw, dict):
-        raise ValueError(f"unknown planspace for project: {lane_id}")
+    if (
+        not isinstance(raw, dict)
+        or raw.get("kind") != "planspace"
+        or raw.get("id") != lane_id
+    ):
+        return None
     return manifest_path, raw
 
 
@@ -942,8 +843,17 @@ def add_planspace_to_binding(
     plug_id: str,
 ) -> None:
     """Append a planspace plug ref to ``binding`` if not already present."""
+    _validate_binding_planspace_id(binding, plug_id)
     raw = dict(binding.raw)
     plugs = list(raw.get("plugs") or [])
+    root = binding.path.parents[2]
+    for other in list_project_bindings(root):
+        if other.path == binding.path:
+            continue
+        if any(ref.id == plug_id for ref in other.plugs):
+            raise ValueError(
+                f"planspace {plug_id!r} is already owned by binding {other.id!r}"
+            )
     if any(_extract_plug_id(item) == plug_id for item in plugs):
         return
     plugs.append({"id": plug_id, "enabled": True})
@@ -977,12 +887,7 @@ def delete_planspace(
     *,
     store_root: Path | None = None,
 ) -> bool:
-    """Remove one planspace from the project's binding and delete its plug.
-
-    The plug directory is retained when another binding still references it,
-    matching ``delete_project_contextspace``. Returns True when the plug ref
-    was removed from this project's binding.
-    """
+    """Remove one planspace from the project's binding and delete its plug."""
     if _plug_kind(plug_id) != "planspace":
         raise ValueError(f"not a planspace plug: {plug_id!r}")
     root = contextspace_root(store_root)
@@ -991,15 +896,6 @@ def delete_planspace(
         return False
     if not remove_planspace_from_binding(binding, plug_id):
         return False
-
-    referenced_elsewhere = any(
-        ref.id == plug_id
-        for other in list_project_bindings(root)
-        if other.id != binding.id
-        for ref in other.plugs
-    )
-    if referenced_elsewhere:
-        return True
 
     plug_dir = _plug_dir(root, plug_id)
     if plug_dir is None or not plug_dir.exists():
@@ -1064,21 +960,9 @@ def planspace_display_title(root: Path, planspace_id: str) -> str | None:
 
 
 def list_project_planspace_ids(project: Project, root: Path) -> list[str]:
-    """Every planspace plug id reachable from ``project``'s binding.
-
-    Same expansion as :func:`resolve_planspace_lane` (disabled plugs
-    dropped, ``requires`` followed) but without selecting one — callers that
-    act on all lanes rather than a single named lane use this. Binding order is
-    preserved so sweeps over the result are deterministic.
-    """
+    """Every directly bound planspace owned by ``project``."""
     binding = resolve_project_binding(project, root)
-    if binding is None:
-        return []
-    return [
-        plug.id
-        for plug in _expand_required_plugs(root, binding.plugs)
-        if _plug_kind(plug.id) == "planspace"
-    ]
+    return [plug.id for plug in _direct_planspace_refs(binding)]
 
 
 def resolve_planspace_lane(
@@ -1096,7 +980,7 @@ def resolve_planspace_lane(
     binding = resolve_project_binding(project, root)
     if binding is None:
         return None
-    refs = _expand_required_plugs(root, binding.plugs)
+    refs = _direct_planspace_refs(binding)
     ref = _select_planspace(lane_id, refs)
     if ref is None:
         return None
@@ -1133,7 +1017,7 @@ def require_resolvable_planspace(
             available=[],
         )
         return
-    refs = _expand_required_plugs(root, binding.plugs)
+    refs = _direct_planspace_refs(binding)
     if _select_planspace(requested, refs) is not None:
         return
     available = [ref.id for ref in refs if _plug_kind(ref.id) == "planspace"]
@@ -1338,12 +1222,68 @@ def _load_binding_file(path: Path) -> ProjectBinding | None:
     if not isinstance(binding_id, str) or not binding_id:
         binding_id = path.stem
     plugs = [_plug_ref(item) for item in (raw.get("plugs") or [])]
-    return ProjectBinding(
+    binding = ProjectBinding(
         id=binding_id,
         path=path,
         plugs=[plug for plug in plugs if plug is not None],
         raw=raw,
     )
+    seen: set[str] = set()
+    for ref in binding.plugs:
+        if _plug_kind(ref.id) != "planspace":
+            continue
+        _validate_binding_planspace_id(binding, ref.id)
+        if ref.id in seen:
+            raise ValueError(
+                f"planspace {ref.id!r} is listed more than once in binding {binding.id!r}"
+            )
+        seen.add(ref.id)
+    return binding
+
+
+def _validate_binding_planspace_id(
+    binding: ProjectBinding,
+    planspace_id: str,
+) -> None:
+    if _plug_kind(planspace_id) != "planspace":
+        raise ValueError(f"not a planspace plug: {planspace_id!r}")
+    expected_prefix = f"planspaces.{_planspace_scope(binding)}."
+    lane_slug = planspace_id.removeprefix(expected_prefix)
+    if (
+        not planspace_id.startswith(expected_prefix)
+        or not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", lane_slug)
+    ):
+        raise ValueError(
+            f"planspace {planspace_id!r} does not belong to binding {binding.id!r}"
+        )
+
+
+def _validate_unique_planspace_references(
+    bindings: list[ProjectBinding],
+) -> None:
+    owners: dict[str, ProjectBinding] = {}
+    for binding in bindings:
+        for ref in binding.plugs:
+            if _plug_kind(ref.id) != "planspace":
+                continue
+            owner = owners.setdefault(ref.id, binding)
+            if owner.path != binding.path:
+                raise ValueError(
+                    f"planspace {ref.id!r} is referenced by bindings "
+                    f"{owner.id!r} and {binding.id!r}"
+                )
+
+
+def _direct_planspace_refs(
+    binding: ProjectBinding | None,
+) -> list[PlugRef]:
+    if binding is None:
+        return []
+    return [
+        ref
+        for ref in binding.plugs
+        if ref.enabled and _plug_kind(ref.id) == "planspace"
+    ]
 
 
 def _bindings_for_project_contextspace_delete(
@@ -1409,6 +1349,11 @@ def _expand_required_plugs(root: Path, plugs: list[PlugRef]) -> list[PlugRef]:
         for req_id in requires:
             if not isinstance(req_id, str) or not req_id or req_id in seen:
                 continue
+            if _plug_kind(req_id) == "planspace":
+                raise ValueError(
+                    "planspaces must be bound directly and cannot be introduced "
+                    f"through requires: {req_id}"
+                )
             seen.add(req_id)
             out.append(PlugRef(id=req_id, source=f"requires:{plug.id}"))
     return out

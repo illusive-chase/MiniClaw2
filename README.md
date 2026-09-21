@@ -355,7 +355,8 @@ contextspace/
 Planspace IDs are project-scoped as
 `planspaces.<project-binding-slug>.<lane-slug>`. The lane slug is unique only
 inside its project binding, so two projects can both have an unnumbered
-`direction` lane.
+`direction` lane. A planspace belongs to exactly that one project binding; it
+cannot be bound by another project or imported through a plug's `requires`.
 
 The launching node's own lane is materialized in the project workspace
 before a run:

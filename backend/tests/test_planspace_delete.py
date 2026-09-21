@@ -70,7 +70,7 @@ class DeletePlanspacePlugTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             delete_planspace(self.project, "principles.house-style")
 
-    def test_shared_planspace_dir_is_retained_for_other_bindings(self) -> None:
+    def test_planspace_cannot_be_shared_with_another_binding(self) -> None:
         other = Project(
             root_path=str(Path(self.tmp.name) / "other-repo"),
             name="billing",
@@ -80,15 +80,18 @@ class DeletePlanspacePlugTests(unittest.TestCase):
         other_binding = ensure_project_binding(other)
         from miniclaw2.contextspace import add_planspace_to_binding
 
-        add_planspace_to_binding(other_binding, shared)
+        with self.assertRaisesRegex(ValueError, "does not belong"):
+            add_planspace_to_binding(other_binding, shared)
 
         self.assertTrue(delete_planspace(self.project, shared))
-
-        root = contextspace_root()
-        self.assertTrue((root / "plugs" / "planspaces" / "auth-flow.shared").exists())
-        binding = resolve_project_binding(self.project, root)
-        assert binding is not None
-        self.assertEqual([ref.id for ref in binding.plugs], [])
+        self.assertFalse(
+            (
+                contextspace_root()
+                / "plugs"
+                / "planspaces"
+                / "auth-flow.shared"
+            ).exists()
+        )
 
 
 class DeletePlanspaceRegistryTests(unittest.TestCase):

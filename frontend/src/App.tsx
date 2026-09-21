@@ -98,7 +98,6 @@ import {
 } from "./templateInstantiate";
 /* The canvas and the template loader must agree on what a placeholder is, so the
  * argument chips reuse the editor's scanner rather than re-deriving the rule. */
-import { scanPlaceholders } from "./templateEditor";
 import { ProjectsLanding } from "./components/ProjectsLanding";
 import { StorageMaintenance } from "./components/StorageMaintenance";
 import { storageGuidance, type StorageFailure } from "./storageMaintenance";
@@ -131,7 +130,6 @@ import type {
   Tag,
   WorkspaceEvent,
 } from "./types";
-import { EMBEDDED_SESSION_PREFIX } from "./types";
 import { useSessionSocket } from "./ws";
 import { useActiveNodes, useReadKeys } from "./activeNodes";
 import { useNotices } from "./notices";
@@ -1181,48 +1179,6 @@ export function App() {
       session?.id ? collapsedTemplateInstancesBySession[session.id] ?? [] : [],
     [collapsedTemplateInstancesBySession, session?.id],
   );
-
-  /* An embedded template session, identified by the ports its one lane
-   * declares. Everything below degrades to empty for an ordinary project. */
-  const templatePorts = useMemo(
-    () => sessionContextSpace?.template_ports ?? [],
-    [sessionContextSpace?.template_ports],
-  );
-  /* The lane those ports belong to. The backend reads them off one lane's
-   * manifest and reports that lane by id, so the canvas draws them exactly
-   * where they were declared. Deriving it here instead — by counting lanes, or
-   * by picking the focused one — would let a port and the node that declares it
-   * land in different lanes, and a consumer edge would cross lanes. */
-  const templatePortLaneId = useMemo(
-    () =>
-      templatePorts.length > 0
-        ? sessionContextSpace?.template_port_lane_id ?? null
-        : null,
-    [sessionContextSpace?.template_port_lane_id, templatePorts.length],
-  );
-  /* The backend marks an embedded editing session with an `embedded:` prefix;
-   * a bundled template test run carries a bare template name. A port-less
-   * template is still an editing session, so the marker — not the port list —
-   * is what decides whether this project shows template affordances. */
-  const isEmbeddedTemplateSession =
-    session?.template_id?.startsWith(EMBEDDED_SESSION_PREFIX) ?? false;
-
-  /* Argument chips come from scanning the prompt each node actually holds, not
-   * from the template's declared argument list: an embedded session keeps its
-   * `{{placeholder}}` text unrendered, and a placeholder typed into the session
-   * is a new argument the moment it appears. Reuses the editor's scanner so the
-   * canvas and the template loader agree on what counts as a placeholder. */
-  const templateArgumentsByNodeId = useMemo(() => {
-    if (!isEmbeddedTemplateSession) return {};
-    const out: Record<string, string[]> = {};
-    for (const node of nodes) {
-      if (node.kind !== "agent") continue;
-      const argumentNames = node.prompt_argument_names ??
-        scanPlaceholders(node.prompt_draft || node.prompt || "").argumentNames;
-      if (argumentNames.length > 0) out[node.id] = argumentNames;
-    }
-    return out;
-  }, [nodes, isEmbeddedTemplateSession]);
 
   const toggleTemplateInstanceCollapsed = useCallback(
     (instanceId: string, collapsed: boolean) => {
@@ -3422,13 +3378,10 @@ export function App() {
               knownPlanspaceIds={knownPlanspaceIds}
               hiddenPlanspaceIds={hiddenPlanspaceIds}
               focusedPlanspaceId={focusedPlanspaceId}
-              templatePortLaneId={templatePortLaneId}
               autoPlanspaceIds={Array.from(autoPlanspaceIds)}
               canCreateVirtual={!virtualCreateDisabled}
               templateInstances={templateInstances}
               collapsedTemplateInstanceIds={collapsedTemplateInstanceIds}
-              templatePorts={templatePorts}
-              templateArgumentsByNodeId={templateArgumentsByNodeId}
               nodePositionTarget={nodePositionTarget}
               centerOnNodeRequest={centerOnNodeRequest}
               onNodePositionTargetApplied={(nodeId) => {

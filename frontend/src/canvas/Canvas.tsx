@@ -66,7 +66,6 @@ import {
   type RFNode,
   type PrincipleEnumeration,
   type SkillEnumeration,
-  type TemplatePortRecord,
 } from "./layout";
 import { AgentNode } from "./nodes/AgentNode";
 import { OpNode } from "./nodes/OpNode";
@@ -74,7 +73,6 @@ import { ContextNode } from "./nodes/ContextNode";
 import { PlanspaceLaneNode } from "./nodes/PlanspaceLaneNode";
 import { TemplateGroupNode } from "./nodes/TemplateGroupNode";
 import { TemplateInstanceBoxNode } from "./nodes/TemplateInstanceBoxNode";
-import { TemplatePortNode } from "./nodes/TemplatePortNode";
 import {
   DependencyEdge,
   LoadsEdge,
@@ -120,7 +118,6 @@ const NODE_TYPES = {
   planspaceLane: PlanspaceLaneNode,
   templateGroup: TemplateGroupNode,
   templateInstanceBox: TemplateInstanceBoxNode,
-  templatePort: TemplatePortNode,
   errorTerminal: ErrorTerminalNode,
   artifact: ArtifactNode,
   commit: CommitNode,
@@ -201,10 +198,6 @@ export type CanvasProps = {
    * the double-click create target and the vertical jump controls. View
    * state only — the backend never sees it. */
   focusedPlanspaceId: string | null;
-  /** The lane an embedded template session's ports were loaded from, and so
-   * the only lane they may be drawn in. Null for every ordinary project,
-   * which supplies no ports. */
-  templatePortLaneId?: string | null;
   autoPlanspaceIds: string[];
   canCreateVirtual: boolean;
   /** Stamped instance records, for the group header's name and arguments. */
@@ -213,11 +206,6 @@ export type CanvasProps = {
    * toggle itself goes through `setTemplateGroupContext` /
    * `setTemplateInstanceBoxContext`, as the lane and agent tiles do. */
   collapsedTemplateInstanceIds?: string[];
-  /** Input ports of the template being edited, when this project is an embedded
-   * template session. Ordinary projects pass nothing and render unchanged. */
-  templatePorts?: TemplatePortRecord[];
-  /** Template argument names per node id, for the prompt-parameter chips. */
-  templateArgumentsByNodeId?: Record<string, string[]>;
   nodePositionTarget?: CanvasNodePositionTarget | null;
   onNodePositionTargetApplied?: (nodeId: string) => void;
   /** Bring a node into view. Version-counted so repeat requests re-fire. */
@@ -315,13 +303,10 @@ function CanvasInner({
   knownPlanspaceIds,
   hiddenPlanspaceIds,
   focusedPlanspaceId,
-  templatePortLaneId = null,
   autoPlanspaceIds,
   canCreateVirtual,
   templateInstances,
   collapsedTemplateInstanceIds,
-  templatePorts,
-  templateArgumentsByNodeId,
   nodePositionTarget,
   onNodePositionTargetApplied,
   centerOnNodeRequest,
@@ -487,13 +472,10 @@ function CanvasInner({
         knownPlanspaceIds,
               hiddenPlanspaceIds,
         focusedPlanspaceId,
-        templatePortLaneId,
         autoPlanspaceIds,
         canCreateVirtual,
         templateInstances,
         collapsedTemplateInstanceIds,
-        templatePorts,
-        templateArgumentsByNodeId,
         principles,
         skills,
         gitCommits,
@@ -508,13 +490,10 @@ function CanvasInner({
       knownPlanspaceIds,
           hiddenPlanspaceIds,
       focusedPlanspaceId,
-      templatePortLaneId,
       autoPlanspaceIds,
       canCreateVirtual,
       templateInstances,
       collapsedTemplateInstanceIds,
-      templatePorts,
-      templateArgumentsByNodeId,
       principles,
       skills,
       gitCommits,

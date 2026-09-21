@@ -1234,6 +1234,25 @@ class UserTemplateHttpApiTest(unittest.TestCase):
         os.environ.pop("MINICLAW_HOME", None)
         self._home.cleanup()
 
+    def test_embedded_session_endpoints_are_retired(self) -> None:
+        _write_user_function_template(
+            self.store,
+            "editable",
+            prompt="Static editor source.",
+        )
+
+        responses = [
+            self.client.post("/user-templates/editable/session"),
+            self.client.post("/user-templates/editable/session/commit"),
+            self.client.delete("/user-templates/editable/session"),
+        ]
+
+        self.assertTrue(
+            all(response.status_code in {404, 405} for response in responses),
+            [(response.status_code, response.text) for response in responses],
+        )
+        self.assertEqual(self.registry.list_projects(), [])
+
     def test_delete_virtual_template_instance_endpoint(self) -> None:
         sid, lane = _make_project_with_lane(self.registry)
         _write_user_function_template(
@@ -1375,6 +1394,7 @@ class UserTemplateHttpApiTest(unittest.TestCase):
         detail = self.client.get("/user-templates/editable")
         self.assertEqual(detail.status_code, 200, detail.text)
         self.assertEqual(detail.json()["slug"], "editable")
+        self.assertEqual(self.registry.list_projects(), [])
 
     def test_rewrite_validation_failure_preserves_existing_directory(self) -> None:
         _write_user_function_template(

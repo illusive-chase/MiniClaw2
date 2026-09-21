@@ -395,9 +395,8 @@ class Node(BaseModel):
     provider_turn_id: str | None = None
     origin_machine_id: str = ""
     template_instance_id: str | None = None
-    # Embedded template sessions resolve inherited models and reuse ``summary``
-    # for execution output. Keep the authored values separately so committing a
-    # tested node writes the definition rather than those runtime projections.
+    # Read-only compatibility for nodes persisted by the retired embedded
+    # template editor. New code does not populate or interpret these fields.
     template_source_node_id: str | None = None
     template_source_model_preset_id: str | None = None
     template_source_motivation: str | None = None

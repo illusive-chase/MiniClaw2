@@ -21,6 +21,7 @@ def read_object(path: Path) -> dict[str, Any]:
 
 
 def validate(root: Path, *, external: bool = False) -> None:
+    from ..contextspace import validate_contextspace_planspace_ownership
     from ..domain import ContextLayout, GitLayout, HumanGate, LaneLayout, Node, NodeLayout, Project, RemoteProjectBinding, UNBOUND_ROOT_PATH
     from ..global_config import GlobalConfig
     from ..templates.loader import TemplateError, _load_from_root
@@ -103,3 +104,10 @@ def validate(root: Path, *, external: bool = False) -> None:
             raise
         except (OSError, ValueError, KeyError, TypeError, yaml.YAMLError, TemplateError) as exc:
             raise MigrationError("migration_failed", str(exc), path) from exc
+
+    contextspace = root if external else root / "contextspace"
+    if contextspace.exists():
+        try:
+            validate_contextspace_planspace_ownership(contextspace)
+        except (OSError, ValueError, TypeError, yaml.YAMLError) as exc:
+            raise MigrationError("migration_failed", str(exc), contextspace) from exc

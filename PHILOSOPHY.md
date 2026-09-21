@@ -305,24 +305,25 @@ Plug      <─ requires ─>  Plug
 
 The important consequence: **context is not hardcoded into a project
 directory.** A project can have several context plugs attached, and the
-same plug can be reused across projects. The user can think of plugs as
-durable resources connected to projects through editable bindings —
-not as files baked into a repo.
+same global or principle plug can be reused across projects. Planspaces are
+the exception: each belongs to exactly one project binding. The user can think
+of reusable context plugs and project-owned planspaces as durable resources
+connected through editable bindings — not as files baked into a repo.
 
 ContextSpace lives in its own git-maintained repo, separate from any
 code project. Its layout:
 
-- **Plugs** — reusable context objects that participate in bundle
-  composition. Three types:
+- **Plugs** — durable context objects. Three types:
   - `global` — user-wide behavior and conventions.
   - `principle` — a named piece of durable behavior guidance.
   - `planspace` — a single direction's DAG of nodes (executed and
     virtual). The LLM-facing form is a real filesystem materialized
     under `.miniclaw2/graph/runs/<node-id>/lanes/<active-lane>/` per launch; there
     is no STATUS.md or PLAN.md on disk.
-- **Bindings** — many-to-many connections between projects and plugs.
-  One project can bind several planspaces (parallel directions); one
-  plug can bind many projects.
+- **Bindings** — global and principle plugs form many-to-many connections with
+  projects. A project can own several planspaces (parallel directions), but a
+  planspace is directly bound to exactly one project and cannot arrive through
+  another plug's `requires` list.
 - **Snapshots** — every node launch persists exactly which sources were
   included, with hashes and injection modes, for audit.
 

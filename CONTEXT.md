@@ -91,9 +91,10 @@ not what it currently supports. Read the code for behavior.
   composition, the preview contract with its inline repair retries, and
   artifact publication. The registry owns project lifecycle, the bounded
   scheduler, and Git operations.
-- **ContextSpace** — user-wide reusable context (global, principles,
-  planspace manifests) plus the native skill library, connected to projects
-  through editable bindings and snapshotted per launch for audit.
+- **ContextSpace** — user-wide reusable global/principle context, project-owned
+  planspace manifests, and the native skill library. Editable bindings may
+  reuse global/principle plugs across projects, while each planspace belongs to
+  exactly one project; launch inputs are snapshotted for audit.
 - **Graph projection** — each launch materializes the launching node's own
   planspace as a real filesystem subtree the agent reads and writes; reap
   validates what came back and folds it into durable state.

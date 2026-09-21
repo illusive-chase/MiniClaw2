@@ -656,39 +656,12 @@ export type ContextSpaceBindingSummary = {
   plugs: ContextSpacePlugSummary[];
 };
 
-/** `Project.template_id` prefix marking an embedded template editing session.
- *
- * Must stay in step with `templates.launcher.EMBEDDED_SESSION_PREFIX`. A bundled
- * template test run stores a bare template name, and every bundled template's
- * display name equals its directory name, so the prefix is what distinguishes
- * an editing session from a test run. */
-export const EMBEDDED_SESSION_PREFIX = "embedded:";
-
-/** One declared input port of a template, as stored on its planspace manifest.
- *
- * The `consumers` list is where the `in:<port>` edge actually lives: the backend
- * resolves every `scheduled_deps` entry through `load_node`, so an `in:<port>`
- * literal cannot be stored there. */
-export type TemplatePortInfo = {
-  name: string;
-  description?: string;
-  consumers?: string[];
-};
-
 export type SessionContextSpaceInfo = {
   root: string;
   exists: boolean;
   project_context_binding_id?: string | null;
   resolved_binding_id?: string | null;
   planspace_view?: Record<string, { hidden?: boolean }>;
-  /** Input ports of the template being edited, when this project is an embedded
-   * template session. Empty for every ordinary project. */
-  template_ports?: TemplatePortInfo[];
-  /** The lane whose manifest declared `template_ports`, and therefore the only
-   * lane they may be drawn in. Null whenever `template_ports` is empty. The
-   * backend resolves it, so the canvas never has to guess which lane owns the
-   * ports. */
-  template_port_lane_id?: string | null;
   context_file?: {
     exists: boolean;
   };

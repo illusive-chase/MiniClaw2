@@ -98,12 +98,19 @@ class PlanspaceCreationTests(unittest.TestCase):
     def test_add_planspace_to_binding_is_idempotent(self) -> None:
         root = Path(os.environ["MINICLAW_CONTEXT_HOME"])
         binding = ensure_project_binding(self.project)
-        add_planspace_to_binding(binding, "planspaces.foo")
-        add_planspace_to_binding(binding, "planspaces.foo")
+        plug_id = "planspaces.auth-flow.foo"
+        add_planspace_to_binding(binding, plug_id)
+        add_planspace_to_binding(binding, plug_id)
         reloaded = resolve_project_binding(self.project, root)
         assert reloaded is not None
         plug_ids = [ref.id for ref in reloaded.plugs]
-        self.assertEqual(plug_ids.count("planspaces.foo"), 1)
+        self.assertEqual(plug_ids.count(plug_id), 1)
+
+    def test_add_planspace_to_binding_rejects_foreign_scope(self) -> None:
+        binding = ensure_project_binding(self.project)
+
+        with self.assertRaisesRegex(ValueError, "does not belong"):
+            add_planspace_to_binding(binding, "planspaces.billing.foo")
 
     def test_binding_owner_id_prevents_duplicate_when_project_link_is_missing(self) -> None:
         root = Path(os.environ["MINICLAW_CONTEXT_HOME"])
@@ -161,6 +168,19 @@ class ReadPlanspaceModeTests(unittest.TestCase):
 
         self.assertEqual(written, "auto")
         self.assertEqual(read_planspace_mode(self.project, plug_id), "auto")
+
+    def test_project_cannot_read_or_write_another_projects_mode(self) -> None:
+        other = Project(
+            root_path=str(Path(self.tmp.name) / "other-repo"),
+            name="billing",
+        )
+        Path(other.root_path).mkdir(parents=True, exist_ok=True)
+        foreign = create_planspace(other, title="Owned", mode="manual")
+
+        self.assertEqual(read_planspace_mode(self.project, foreign), "manual")
+        with self.assertRaisesRegex(ValueError, "unknown planspace for project"):
+            set_planspace_mode(self.project, foreign, "auto")
+        self.assertEqual(read_planspace_mode(other, foreign), "manual")
 
     def test_describe_project_contextspace_includes_bindings_and_mode(self) -> None:
         plug_id = create_planspace(

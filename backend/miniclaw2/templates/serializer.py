@@ -34,28 +34,20 @@ from uuid import uuid4
 
 import yaml
 
-from ..contextspace import (
-    contextspace_root,
-    list_project_planspace_ids,
-    read_template_ports,
-)
 from ..domain import (
     ArtifactMode,
     Category,
     Node,
     NodeKind,
     NodeState,
-    Project,
     TERMINAL_NODE_STATES,
 )
 from ..store import Store
 from ..virtual_graph import is_connected
 from .loader import (
-    INPUT_DEP_PREFIX,
     SCHEMA_VERSION,
     Template,
     TemplateError,
-    load_user_template,
     user_templates_root,
     _load_from_root,
     _scan_placeholders,
@@ -309,140 +301,6 @@ def rewrite_user_template(
         asset_copies=seed_copies,
         store_root=store_root,
         overwrite=True,
-    )
-
-
-@storage_function
-def serialize_embedded_session(
-    registry: Any,
-    project: Project,
-    slug: str,
-    *,
-    name: str | None = None,
-    brief: str | None = None,
-) -> Template:
-    """Commit an embedded editing session back onto its user template.
-
-    The inverse of ``launcher.materialize_embedded_session``. Because that
-    stamp never rendered placeholders, the nodes still hold the definition's own
-    ``{{placeholder}}`` text and this is a lossless write-back — the property
-    the ``test_embedded_session`` round-trip test pins down.
-
-    Reuses ``rewrite_user_template`` rather than ``serialize_selection``:
-    the rewrite path already accepts ``inputs`` and ``motivation`` and already
-    validates a candidate directory before replacing the live one, whereas
-    ``serialize_selection`` hardcodes ``inputs: []`` and would drop every port.
-    An embedded editing session owns exactly one lane: ``launcher`` creates one,
-    ``registry.create_blank_planspace`` refuses to add another, and the registry
-    refuses to delete the last one. The zero- and multi-lane checks below remain
-    backstops for sessions stored before those guards existed.
-    """
-    lane_ids = list_project_planspace_ids(
-        project, contextspace_root(registry.store.root)
-    )
-    if not lane_ids:
-        raise SerializerError("embedded session has no direction")
-    if len(lane_ids) > 1:
-        raise SerializerError(
-            "模板编辑会话有多个方向，无法保存；请先删除多余的方向"
-        )
-    lane_id = lane_ids[0]
-
-    store = registry.store
-    nodes = [
-        node
-        for node in store.list_nodes(project.id)
-        if (node.planspace_id or "") == lane_id and node.kind is not NodeKind.OP
-    ]
-    if not nodes:
-        raise SerializerError("embedded session has no nodes to save")
-
-    ports = read_template_ports(project, lane_id, store_root=store.root)
-    ordered = _topological_order(nodes)
-    slug_by_node_id = {node.id: f"n{index}" for index, node in enumerate(ordered)}
-    # Port edges live on the manifest, so a node's `in:<port>` deps have to be
-    # rebuilt from the consumer lists rather than read off `scheduled_deps`.
-    ports_by_consumer: dict[str, list[str]] = {}
-    for port in ports:
-        port_name = port.get("name")
-        if not isinstance(port_name, str):
-            continue
-        for consumer in port.get("consumers") or []:
-            ports_by_consumer.setdefault(consumer, []).append(port_name)
-
-    node_payloads: list[dict[str, Any]] = []
-    for node in ordered:
-        if node.kind is not NodeKind.AGENT:
-            raise SerializerError(
-                "用户模板只能包含 agent 节点；不支持 verifier 节点"
-            )
-        deps = [
-            slug_by_node_id[dep]
-            for dep in node.scheduled_deps
-            if dep in slug_by_node_id
-        ]
-        deps.extend(
-            f"{INPUT_DEP_PREFIX}{port_name}"
-            for port_name in ports_by_consumer.get(node.id, [])
-        )
-        resume_from = ""
-        if node.resume_from_node_id in slug_by_node_id:
-            resume_from = slug_by_node_id[node.resume_from_node_id]
-        node_payloads.append(
-            {
-                "id": slug_by_node_id[node.id],
-                "kind": node.kind.value,
-                "category": node.category.value,
-                "subtype": node.subtype.value if node.subtype else None,
-                "brief": node.brief.model_dump() if node.brief else None,
-                "scheduled_deps": deps,
-                "resume_from": resume_from,
-                "motivation": (
-                    node.template_source_motivation
-                    if node.template_source_node_id is not None
-                    else node.summary or ""
-                ),
-                "model_preset_id": (
-                    node.template_source_model_preset_id
-                    if node.template_source_node_id is not None
-                    else node.model_preset_id
-                ),
-                "artifact_mode": node.artifact_mode.value,
-                "artifact_spec": node.artifact_spec,
-                # Reads `prompt_draft` for a virtual and `prompt` otherwise:
-                # promotion moves the text across and clears the draft, so a
-                # node that has run would otherwise save an empty prompt.
-                "prompt": _prompt_text(node),
-            }
-        )
-
-    current = load_user_template(slug, store.root)
-    return rewrite_user_template(
-        slug,
-        name=name if name is not None else current.name,
-        brief=brief if brief is not None else current.brief,
-        nodes=node_payloads,
-        # Only the three keys `_parse_arguments` reads. `TemplateArgument.
-        # metadata()` also carries `required` and `declared`, which are derived
-        # for the UI — writing them back would put keys into `template.yaml`
-        # that the editor's own write schema rejects.
-        arguments=[
-            {
-                "name": argument.name,
-                "description": argument.description,
-                "default": argument.default,
-            }
-            for argument in current.arguments
-        ],
-        inputs=[
-            {
-                "name": port["name"],
-                "description": port.get("description", ""),
-            }
-            for port in ports
-            if isinstance(port.get("name"), str)
-        ],
-        store_root=store.root,
     )
 
 

@@ -9,9 +9,11 @@ from unittest.mock import patch
 from types import SimpleNamespace
 
 import pytest
+import yaml
 from fastapi.testclient import TestClient
 
 from miniclaw2.domain import Node, Project
+from miniclaw2.contextspace import create_planspace, resolve_project_binding
 from miniclaw2.migrations.catalog import CURRENT_VERSION, MINIMUM_VERSION, check_manifest, marker, steps, version_of
 from miniclaw2.migrations.coordinator import coordinator, open_storage
 from miniclaw2.migrations.errors import MigrationError
@@ -243,6 +245,89 @@ def test_metadata_records_still_require_valid_content(tmp_path: Path, name: str,
     atomic_json(path, payload)
     with pytest.raises(MigrationError):
         validate(tmp_path)
+
+
+def test_validation_rejects_foreign_scope_planspace_binding(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("MINICLAW_CONTEXT_HOME", raising=False)
+    store = Store(tmp_path)
+    project = store.create_project(Project(root_path="/tmp/ownership", name="owner"))
+    lane_id = create_planspace(project, title="Lane", store_root=store.root)
+    binding = resolve_project_binding(project, store.root / "contextspace")
+    assert binding is not None
+    raw = yaml.safe_load(binding.path.read_text(encoding="utf-8"))
+    raw["plugs"][0]["id"] = lane_id.replace("planspaces.owner.", "planspaces.foreign.")
+    binding.path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+
+    with pytest.raises(MigrationError, match="does not belong"):
+        validate(store.root)
+
+
+def test_validation_rejects_planspace_requires(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("MINICLAW_CONTEXT_HOME", raising=False)
+    store = Store(tmp_path)
+    project = store.create_project(Project(root_path="/tmp/requires", name="owner"))
+    lane_id = create_planspace(project, title="Lane", store_root=store.root)
+    manifest = (
+        store.root
+        / "contextspace"
+        / "plugs"
+        / "planspaces"
+        / lane_id.removeprefix("planspaces.")
+        / "manifest.yaml"
+    )
+    raw = yaml.safe_load(manifest.read_text(encoding="utf-8"))
+    raw["requires"] = [lane_id]
+    manifest.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+
+    with pytest.raises(MigrationError, match="cannot be introduced through requires"):
+        validate(store.root)
+
+
+def test_validation_rejects_duplicate_planspace_owners(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("MINICLAW_CONTEXT_HOME", raising=False)
+    store = Store(tmp_path)
+    project = store.create_project(Project(root_path="/tmp/duplicate", name="owner"))
+    create_planspace(project, title="Lane", store_root=store.root)
+    binding = resolve_project_binding(project, store.root / "contextspace")
+    assert binding is not None
+    duplicate = binding.path.with_name("project.duplicate.yaml")
+    duplicate.write_bytes(binding.path.read_bytes())
+
+    with pytest.raises(MigrationError, match="referenced by bindings"):
+        validate(store.root)
+
+
+def test_validation_rejects_planspace_manifest_identity_mismatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("MINICLAW_CONTEXT_HOME", raising=False)
+    store = Store(tmp_path)
+    project = store.create_project(Project(root_path="/tmp/manifest", name="owner"))
+    lane_id = create_planspace(project, title="Lane", store_root=store.root)
+    manifest = (
+        store.root
+        / "contextspace"
+        / "plugs"
+        / "planspaces"
+        / lane_id.removeprefix("planspaces.")
+        / "manifest.yaml"
+    )
+    raw = yaml.safe_load(manifest.read_text(encoding="utf-8"))
+    raw["id"] = "planspaces.owner.somewhere-else"
+    manifest.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+
+    with pytest.raises(MigrationError, match="identity does not match its path"):
+        validate(store.root)
 
 
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -9,8 +10,14 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 import miniclaw2.app as app_module
+from miniclaw2.contextspace import create_planspace, read_planspace_mode
 from miniclaw2.domain import Node, NodeState, Project
-from miniclaw2.registry import PlanspaceCreationResult, VirtualPromotionResult
+from miniclaw2.registry import (
+    PlanspaceCreationResult,
+    ProjectRegistry,
+    VirtualPromotionResult,
+)
+from miniclaw2.store import Store
 
 
 class PlanspaceApiTest(unittest.TestCase):
@@ -260,6 +267,49 @@ class PlanspaceApiTest(unittest.TestCase):
             body = res.json()
             self.assertEqual(body["resolved_binding_id"], "project.project")
             self.assertEqual(body["bindings"][0]["plugs"][0]["mode"], "auto")
+
+    def test_update_planspace_mode_rejects_another_projects_lane(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            base = Path(raw)
+            with patch.dict(
+                os.environ,
+                {"MINICLAW_CONTEXT_HOME": str(base / "context")},
+            ):
+                store = Store(base / "store")
+                project_a = store.create_project(
+                    Project(root_path=str(base / "a"), name="A")
+                )
+                project_b = store.create_project(
+                    Project(root_path=str(base / "b"), name="B")
+                )
+                Path(project_a.root_path).mkdir()
+                Path(project_b.root_path).mkdir()
+                foreign_lane = create_planspace(
+                    project_b,
+                    title="Owned by B",
+                    mode="manual",
+                    store_root=store.root,
+                )
+                registry = ProjectRegistry(store)
+
+                with patch("miniclaw2.app.install_hooks"), TestClient(
+                    app_module.create_app(registry)
+                ) as client:
+                    response = client.patch(
+                        f"/sessions/{project_a.id}/planspaces/{foreign_lane}/mode",
+                        json={"mode": "auto"},
+                    )
+
+                self.assertEqual(response.status_code, 400, response.text)
+                self.assertIn("unknown planspace for project", response.text)
+                self.assertEqual(
+                    read_planspace_mode(
+                        project_b,
+                        foreign_lane,
+                        store_root=store.root,
+                    ),
+                    "manual",
+                )
 
     def test_promote_virtual_returns_node_payload(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

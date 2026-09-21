@@ -93,8 +93,6 @@ const args: BuildGraphArgs = {
   gitCommits: [{ sha: "head", message: "head", aliases: [], column: 0, external_count_before: 0, live: true }],
   gitHead: "head",
   gitDirtyCount: 1,
-  templatePortLaneId: "history",
-  templatePorts: [{ name: "input", consumers: ["native"] }],
 };
 const original = buildGraph(args);
 const forged = Object.fromEntries(original.rfNodes.filter((item) => !nodes.some((node) => node.id === item.id)).map((item) => [item.id, { x: 999, y: 999 }]));

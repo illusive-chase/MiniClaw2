@@ -9,7 +9,12 @@ from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
 from miniclaw2.app import create_app
-from miniclaw2.contextspace import read_planspace_archived, set_planspace_mode
+from miniclaw2.contextspace import (
+    create_planspace,
+    read_planspace_archived,
+    set_planspace_archived,
+    set_planspace_mode,
+)
 from miniclaw2.domain import Node, NodeState, Project
 from miniclaw2.registry import (
     PlanspaceArchivedError,
@@ -138,6 +143,34 @@ def test_lane_archive_filters_nodes_before_registry_projection(
         archived_lane,
         visible_lane,
     }
+
+
+def test_project_cannot_archive_another_projects_lane(
+    archive_registry: tuple[ProjectRegistry, Project],
+    tmp_path: Path,
+) -> None:
+    registry, project = archive_registry
+    other = registry.store.create_project(
+        Project(root_path=str(tmp_path / "other"), name="other")
+    )
+    foreign_lane = create_planspace(
+        other,
+        title="Foreign",
+        store_root=registry.store.root,
+    )
+
+    with pytest.raises(ValueError, match="unknown planspace for project"):
+        set_planspace_archived(
+            project,
+            foreign_lane,
+            True,
+            store_root=registry.store.root,
+        )
+    assert not read_planspace_archived(
+        other,
+        foreign_lane,
+        store_root=registry.store.root,
+    )
 
 
 def test_archive_api_keeps_metadata_entry_but_closes_canvas(
