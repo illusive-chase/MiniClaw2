@@ -46,6 +46,7 @@ from .events import (
     WorkspaceNodeUpdated,
 )
 from .git_state import (
+    cleanup_snapshot_refs,
     ensure_miniclaw_git_excluded,
     git_status,
     is_git_repo,
@@ -409,6 +410,18 @@ class ProjectRegistry:
                 and store.read_only_reason is None
             ):
                 self._repair_stale_nodes(project.id)
+            if (
+                sweep
+                and project.persistence_mode is ProjectPersistenceMode.DURABLE
+                and self.is_native_project(project)
+            ):
+                active = {
+                    node.id
+                    for node in store.list_nodes(project.id)
+                    if node.state not in TERMINAL_NODE_STATES
+                    and node.state is not NodeState.VIRTUAL
+                }
+                cleanup_snapshot_refs(project.root_path, active)
 
     def _claim_runtime_ownership(self) -> bool:
         """Record this process as the store's runtime owner; may we sweep?
@@ -2912,6 +2925,7 @@ class ProjectRegistry:
         pending_extra_principles: list[str] | None = None,
         pending_extra_skills: list[str | dict[str, Any]] | None = None,
         qa_mode: bool = False,
+        diff_review: bool = False,
         artifact_mode: str | ArtifactMode | None = None,
         artifact_spec: str | None = None,
         agent_op_kind: str | None = None,
@@ -2937,6 +2951,10 @@ class ProjectRegistry:
         if rt is None:
             return None
         self.require_unarchived(pid)
+        if diff_review and rt.project.persistence_mode is not ProjectPersistenceMode.DURABLE:
+            raise ValueError("diff_review is only available for local durable projects")
+        if diff_review and not is_git_repo(rt.project.root_path):
+            raise ValueError("diff_review requires a Git repository")
         if provider is not None:
             raise ValueError("provider is no longer accepted; use model_preset_id")
         if subtype == ReviewSubtype.CODE_REVIEW:
@@ -3092,6 +3110,7 @@ class ProjectRegistry:
                 store_root=self.store.root,
             ),
             qa_mode=bool(qa_mode),
+            diff_review=bool(diff_review),
             artifact_mode=next_artifact_mode,
             artifact_spec=next_artifact_spec,
             resume_from_node_id=normalized_resume_id,
@@ -3165,6 +3184,7 @@ class ProjectRegistry:
         pending_extra_principles: list[str] | None | object = _UNSET,
         pending_extra_skills: list[str | dict[str, Any]] | None | object = _UNSET,
         qa_mode: bool | None | object = _UNSET,
+        diff_review: bool | None | object = _UNSET,
         artifact_mode: str | ArtifactMode | None | object = _UNSET,
         artifact_spec: str | None | object = _UNSET,
         agent_op_kind: str | None | object = _UNSET,
@@ -3302,6 +3322,8 @@ class ProjectRegistry:
                     raise ValueError(
                         "review_target is only valid on code_review virtuals"
                     )
+        if next_category is Category.REVIEW and diff_review is _UNSET:
+            update["diff_review"] = False
         next_agent_op_kind = existing.agent_op_kind
         if agent_op_kind is not _UNSET:
             if agent_op_kind is None or str(agent_op_kind) == "":
@@ -3351,6 +3373,12 @@ class ProjectRegistry:
 
         if qa_mode is not _UNSET:
             update["qa_mode"] = bool(qa_mode)
+        if diff_review is not _UNSET:
+            if bool(diff_review) and rt.project.persistence_mode is not ProjectPersistenceMode.DURABLE:
+                raise ValueError("diff_review is only available for local durable projects")
+            if bool(diff_review) and not is_git_repo(rt.project.root_path):
+                raise ValueError("diff_review requires a Git repository")
+            update["diff_review"] = bool(diff_review)
 
         # Both artifact fields are resolved in one branch: a request that only
         # moves the mode back to default would otherwise leave a stale custom
@@ -3651,6 +3679,7 @@ class ProjectRegistry:
             ),
             agent_op_kind=original.agent_op_kind,
             qa_mode=original.qa_mode,
+            diff_review=original.diff_review,
             artifact_mode=original.artifact_mode,
             artifact_spec=original.artifact_spec,
             model_preset_id=original.model_preset_id,

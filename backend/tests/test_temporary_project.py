@@ -93,7 +93,12 @@ class TemporaryProjectTest(unittest.TestCase):
             self.assertEqual(info["persistence_mode"], "remote")
             self.assertEqual(
                 info["capabilities"],
-                {"workspace": False, "git_review": True, "execution": False},
+                {
+                    "workspace": False,
+                    "git_review": True,
+                    "diff_review": False,
+                    "execution": False,
+                },
             )
             self.assertFalse(info["bound_here"])
             self.assertTrue(info["read_only"])
@@ -513,7 +518,12 @@ class TemporaryProjectTest(unittest.TestCase):
                 self.assertFalse(info["can_bind_here"])
                 self.assertEqual(
                     info["capabilities"],
-                    {"workspace": False, "git_review": False, "execution": True},
+                    {
+                        "workspace": False,
+                        "git_review": False,
+                        "diff_review": False,
+                        "execution": True,
+                    },
                 )
                 response = client.get(
                     f"/sessions/{project.id}/nodes/{node.id}/artifacts/result.md?raw=1"

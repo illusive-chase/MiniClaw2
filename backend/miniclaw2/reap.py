@@ -381,6 +381,9 @@ def reap_lane(
         updated.qa_mode = (
             existing.qa_mode if updated.category is not Category.REVIEW else False
         )
+        updated.diff_review = (
+            existing.diff_review if updated.category is not Category.REVIEW else False
+        )
         updated.scheduled_deps = _rewrite_scheduled_deps(
             updated.scheduled_deps,
             slug_to_canonical,

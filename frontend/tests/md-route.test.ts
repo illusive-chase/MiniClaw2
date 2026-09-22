@@ -65,6 +65,16 @@ import {
         name: "report.md",
     });
 
+    const diff = parseMarkdownRoute(
+        "#/diff?src=diff&session=s1&node=n1&name=run-diff.json",
+    );
+    assert.deepEqual(diff, {
+        src: "diff",
+        sessionId: "s1",
+        nodeId: "n1",
+        name: "run-diff.json",
+    });
+
     const projectFile = parseMarkdownRoute("#/md?src=project-file&session=s1&path=FUTURES.md");
     assert.deepEqual(projectFile, {
         src: "project-file",
@@ -90,6 +100,7 @@ import {
 {
     const routes = [
         { src: "artifact", sessionId: "s1", nodeId: "n1", name: "r e.md" },
+        { src: "diff", sessionId: "s1", nodeId: "n1", name: "run-diff.json" },
         { src: "project-file", sessionId: "s1", path: "docs/a b.md" },
         { src: "stash", key: "k1" },
     ] as const;

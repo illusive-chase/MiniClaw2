@@ -57,6 +57,7 @@ from .domain import (
     ReviewSubtype,
     TokenUsage,
 )
+from .diff_review import DIFF_ARTIFACT_NAME, build_diff_artifact, write_diff_artifact
 from .events import (
     Activity,
     ErrorEvent,
@@ -69,10 +70,12 @@ from .events import (
 )
 from .git_state import (
     commit_all,
+    delete_snapshot_ref,
     git_head,
     git_pull_rebase,
     git_review_snapshot,
     local_only_shas,
+    write_tree_snapshot,
 )
 from .global_config import load_global_config
 from .language import language_launch_instruction, project_preferred_language
@@ -196,6 +199,10 @@ class NodeRunner:
         self._cold_start_text = ""
         self._projection_distortions: tuple[str, ...] = ()
         self._projection_report_emitted = False
+        self._diff_review_base_tree: str | None = None
+        self._diff_review_base_at: float | None = None
+        self._diff_review_artifact: str | None = None
+        self._diff_review_ref = f"refs/miniclaw2/snapshots/{self.node.id}/base"
 
     # ---- public surface (used by the WS layer via ProjectRuntime) ----
 
@@ -285,6 +292,7 @@ class NodeRunner:
 
     async def _run_agent(self) -> None:
         self.node.commit_before = self._workspace_head()
+        self._start_diff_review()
         if self.project.temporary:
             self.node.provider_session_id = None
         # A cold start runs this same state machine — the transitions, commit
@@ -397,6 +405,7 @@ class NodeRunner:
                 if error_msg is not None:
                     self.node.error = error_msg
                 self.node.commit_after = self._workspace_head()
+                self._finish_diff_review()
                 if is_cold_start:
                     # No reap: the agent was never told the lane or the preview
                     # contract exists, so there is nothing of its own to fold in.
@@ -441,6 +450,7 @@ class NodeRunner:
             error_msg = str(exc)
             self.node.error = error_msg
             self.node.commit_after = self._workspace_head()
+            self._finish_diff_review()
             self._write_stub_preview(NodeState.ERROR, reason=error_msg)
             self._transition(NodeState.ERROR, started=True, finished=True)
             await self._emit_node_started()
@@ -452,6 +462,7 @@ class NodeRunner:
             error_msg = f"Unexpected runner error: {exc}"
             self.node.error = error_msg
             self.node.commit_after = self._workspace_head()
+            self._finish_diff_review()
             self._write_stub_preview(NodeState.ERROR, reason=error_msg)
             self._transition(NodeState.ERROR, started=True, finished=True)
             await self._emit_node_started()
@@ -1240,6 +1251,66 @@ class NodeRunner:
             and entry.suffix in ALLOWED_ARTIFACT_SUFFIXES
         ]
 
+    def _declared_artifacts(self, declared: list[str]) -> list[str]:
+        names = list(declared)
+        if self._diff_review_artifact and self._diff_review_artifact not in names:
+            names.append(self._diff_review_artifact)
+        return names
+
+    def _start_diff_review(self) -> None:
+        if (
+            not self.node.diff_review
+            or self.project.persistence_mode is not ProjectPersistenceMode.DURABLE
+        ):
+            return
+        self._diff_review_base_at = time.time()
+        self._diff_review_base_tree = write_tree_snapshot(
+            self.project.root_path,
+            ref_name=self._diff_review_ref,
+        )
+        if self._diff_review_base_tree is None:
+            logger.warning("could not capture diff-review base for %s", self.node.id)
+
+    def _finish_diff_review(self) -> None:
+        base = self._diff_review_base_tree
+        if base is None:
+            return
+        try:
+            ended_at = time.time()
+            head = write_tree_snapshot(self.project.root_path)
+            if head is None:
+                logger.warning("could not capture diff-review head for %s", self.node.id)
+                return
+            started_at = self._diff_review_base_at or self.node.started_at or ended_at
+            concurrent = []
+            for other in self.store.list_nodes(self.project.id):
+                if other.id == self.node.id or other.started_at is None:
+                    continue
+                other_end = other.finished_at or ended_at
+                if other.started_at <= ended_at and other_end >= started_at:
+                    concurrent.append(other.id)
+            payload = build_diff_artifact(
+                self.project.root_path,
+                base_tree=base,
+                head_tree=head,
+                started_at=started_at,
+                ended_at=ended_at,
+                concurrent_node_ids=concurrent,
+            )
+            if write_diff_artifact(
+                workspace_artifacts_dir(self.project, self.node.id), payload
+            ):
+                self._diff_review_artifact = DIFF_ARTIFACT_NAME
+            else:
+                logger.warning(
+                    "diff-review artifact name already exists for %s", self.node.id
+                )
+        except Exception:  # noqa: BLE001
+            logger.exception("failed to build diff-review artifact for %s", self.node.id)
+        finally:
+            delete_snapshot_ref(self.project.root_path, self._diff_review_ref)
+            self._diff_review_base_tree = None
+
     def _write_cold_start_preview(
         self, final_state: NodeState, *, reason: str = ""
     ) -> None:
@@ -1250,7 +1321,7 @@ class NodeRunner:
             self._cold_start_text.strip(), _COLD_START_SUMMARY_LIMIT
         )
         self.node.summary = summary or _COLD_START_EMPTY_SUMMARY
-        declared = self._scan_workspace_artifacts()
+        declared = self._declared_artifacts(self._scan_workspace_artifacts())
         publish_artifacts(self.project, self.node, declared, self.store)
         self._persist_executed_preview(
             final_state,
@@ -1397,7 +1468,7 @@ class NodeRunner:
             refs = publish_artifacts(
                 self.project,
                 self.node,
-                preview.artifacts,
+                self._declared_artifacts(preview.artifacts),
                 self.store,
             )
         except OSError as exc:
@@ -1477,7 +1548,7 @@ class NodeRunner:
             refs = publish_artifacts(
                 self.project,
                 self.node,
-                preview.artifacts,
+                self._declared_artifacts(preview.artifacts),
                 self.store,
             )
             artifact_issue = artifact_requirement_issue(
@@ -1520,12 +1591,19 @@ class NodeRunner:
             self.node.state = original_state
 
     def _write_stub_preview(self, final_state: NodeState, *, reason: str = "") -> None:
-        clear_published_artifacts(self.project, self.node, self.store)
+        declared = self._declared_artifacts([])
+        if declared:
+            publish_artifacts(self.project, self.node, declared, self.store)
+        else:
+            clear_published_artifacts(self.project, self.node, self.store)
         self._persist_executed_preview(
             final_state,
             motivation=self.node.prompt[:200] if self.node.prompt else "(no motivation recorded)",
             summary=reason or "(framework stub — agent did not write its own preview)",
             next_implications="(framework stub — agent did not record next implications)",
+            artifacts=[
+                ref.name for ref in self.node.artifacts if ref.status == "published"
+            ],
         )
 
     def _write_op_preview(self, final_state: NodeState) -> None:

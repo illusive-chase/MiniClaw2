@@ -231,6 +231,12 @@ export function qaModeAvailable(
   return classification !== "review" && classification !== "cold";
 }
 
+export function diffReviewAvailable(
+  classification: NodeClassification,
+): boolean {
+  return classification !== "review";
+}
+
 /** Dependencies and extra principles both reach the agent as injected prompt
  * text, which is exactly what a cold start excludes. Skills stay available:
  * mounting one supplies a capability without telling the model about it. */

@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from miniclaw2.git_state import (
+    cleanup_snapshot_refs,
     commit_all,
     commit_graph,
     ensure_miniclaw_git_excluded,
@@ -15,6 +16,9 @@ from miniclaw2.git_state import (
     git_status,
     register_remote_git_execution,
     unregister_remote_git_execution,
+    tree_diff,
+    tree_file_bytes,
+    write_tree_snapshot,
 )
 
 
@@ -41,6 +45,48 @@ def _head(path: Path) -> str:
 
 
 class GitStateTest(unittest.TestCase):
+    def test_tree_snapshots_capture_interval_and_respect_ignores(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            repo = Path(raw)
+            _init_repo(repo)
+            (repo / ".gitignore").write_text("ignored.txt\n", encoding="utf-8")
+            (repo / "ignored.txt").write_text("ignored\n", encoding="utf-8")
+            generated = repo / ".miniclaw2" / "graph"
+            generated.mkdir(parents=True)
+            (generated / "preview.json").write_text("{}", encoding="utf-8")
+
+            ref = "refs/miniclaw2/snapshots/node-a/base"
+            base = write_tree_snapshot(str(repo), ref_name=ref)
+            self.assertIsNotNone(base)
+            (repo / "seed.txt").write_text("changed\n", encoding="utf-8")
+            (repo / "new.txt").write_text("new\n", encoding="utf-8")
+            head = write_tree_snapshot(str(repo))
+            self.assertIsNotNone(head)
+
+            changed = {item.path: item for item in tree_diff(str(repo), base or "", head or "")}
+            self.assertEqual(set(changed), {"new.txt", "seed.txt"})
+            self.assertEqual(tree_file_bytes(str(repo), head or "", "new.txt"), b"new\n")
+            cleanup_snapshot_refs(str(repo), set())
+            refs = subprocess.run(
+                ["git", "for-each-ref", "--format=%(refname)", ref],
+                cwd=repo,
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout
+            self.assertEqual(refs, "")
+
+    def test_tree_snapshot_supports_unborn_repository(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            repo = Path(raw)
+            subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+            (repo / "first.txt").write_text("first\n", encoding="utf-8")
+
+            tree = write_tree_snapshot(str(repo))
+
+            self.assertIsNotNone(tree)
+            self.assertEqual(tree_file_bytes(str(repo), tree or "", "first.txt"), b"first\n")
+
     def test_remote_execution_routes_text_and_binary_git_calls(self) -> None:
         class Transport:
             def __init__(self) -> None:

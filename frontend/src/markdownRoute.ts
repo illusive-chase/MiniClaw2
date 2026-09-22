@@ -60,19 +60,20 @@ export function markdownUrlTransform(url: string): string {
 
 export type MarkdownRoute =
   | { src: "artifact"; sessionId: string; nodeId: string; name: string }
+  | { src: "diff"; sessionId: string; nodeId: string; name: string }
   | { src: "project-file"; sessionId: string; path: string }
   | { src: "stash"; key: string };
 
 export function parseMarkdownRoute(hash: string): MarkdownRoute | null {
   const raw = hash.startsWith("#") ? hash.slice(1) : hash;
-  if (!raw.startsWith("/md")) return null;
+  if (!raw.startsWith("/md") && !raw.startsWith("/diff")) return null;
   const query = raw.slice(raw.indexOf("?") + 1);
   if (!raw.includes("?")) return null;
   const params = new URLSearchParams(query);
   const src = params.get("src");
   const session = params.get("session") ?? "";
 
-  if (src === "artifact") {
+  if (src === "artifact" || src === "diff") {
     const nodeId = params.get("node") ?? "";
     const name = params.get("name") ?? "";
     if (!session || !nodeId || !name) return null;
@@ -94,7 +95,7 @@ export function parseMarkdownRoute(hash: string): MarkdownRoute | null {
 export function markdownRouteUrl(route: MarkdownRoute): string {
   const params = new URLSearchParams();
   params.set("src", route.src);
-  if (route.src === "artifact") {
+  if (route.src === "artifact" || route.src === "diff") {
     params.set("session", route.sessionId);
     params.set("node", route.nodeId);
     params.set("name", route.name);
@@ -104,5 +105,6 @@ export function markdownRouteUrl(route: MarkdownRoute): string {
   } else {
     params.set("key", route.key);
   }
-  return `${window.location.pathname}#/md?${params.toString()}`;
+  const page = route.src === "diff" ? "diff" : "md";
+  return `${window.location.pathname}#/${page}?${params.toString()}`;
 }

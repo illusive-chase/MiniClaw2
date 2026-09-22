@@ -419,6 +419,8 @@ class Node(BaseModel):
     pending_extra_skills: list[dict[str, Any]] = Field(default_factory=list)
     # Draft-time intent: inject the ask-user encouragement block at launch.
     qa_mode: bool = False
+    # Framework-side observation: publish the worktree delta for this run.
+    diff_review: bool = False
     # Draft-time intent: what shape of deliverable this node must publish.
     # Unlike pending_extra_*, these are read directly off the node at launch
     # and therefore survive promotion untouched.
@@ -462,6 +464,8 @@ class Node(BaseModel):
                 )
             if self.qa_mode:
                 raise ValueError("qa_mode is only valid on agent nodes")
+            if self.diff_review:
+                raise ValueError("diff_review is only valid on agent nodes")
             if self.artifact_mode is not ArtifactMode.DEFAULT:
                 raise ValueError(
                     "artifact_mode is only valid on agent nodes"
@@ -519,6 +523,8 @@ class Node(BaseModel):
                 )
         if self.qa_mode and self.category is Category.REVIEW:
             raise ValueError("qa_mode is not available on review nodes")
+        if self.diff_review and self.category is Category.REVIEW:
+            raise ValueError("diff_review is not available on review nodes")
         if self.artifact_mode is ArtifactMode.CUSTOM:
             if not self.artifact_spec.strip():
                 raise ValueError(

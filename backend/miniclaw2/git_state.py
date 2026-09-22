@@ -7,6 +7,7 @@ import hashlib
 import os
 import re
 import subprocess
+import tempfile
 import threading
 from collections import deque
 from dataclasses import dataclass, field
@@ -707,6 +708,139 @@ def git_head(cwd: str) -> str | None:
         return None
     text = result.stdout.strip()
     return text or None
+
+
+def write_tree_snapshot(cwd: str, *, ref_name: str | None = None) -> str | None:
+    """Write the current worktree, including untracked files, as a Git tree."""
+    if _remote_git_location(cwd) is not None or not is_git_repo(cwd):
+        return None
+    git_path = _git(cwd, ["rev-parse", "--git-path", "miniclaw2-snapshots"])
+    if git_path.returncode != 0 or not git_path.stdout.strip():
+        return None
+    snapshot_dir = Path(git_path.stdout.strip())
+    if not snapshot_dir.is_absolute():
+        snapshot_dir = Path(cwd) / snapshot_dir
+    try:
+        snapshot_dir.mkdir(parents=True, exist_ok=True)
+        fd, raw_index = tempfile.mkstemp(prefix="index-", dir=snapshot_dir)
+        os.close(fd)
+        index_path = Path(raw_index)
+        index_path.unlink()
+    except OSError:
+        return None
+
+    env = {"GIT_INDEX_FILE": str(index_path)}
+    try:
+        read = _git(cwd, ["read-tree", "HEAD"], env=env, timeout=30)
+        if read.returncode != 0 and git_head(cwd) is None:
+            read = _git(cwd, ["read-tree", "--empty"], env=env, timeout=30)
+        if read.returncode != 0:
+            return None
+        add = _git(
+            cwd,
+            [
+                "add", "-A", "--", ".",
+                ":(exclude).miniclaw2",
+                ":(exclude).miniclaw2/**",
+            ],
+            env=env,
+            timeout=120,
+        )
+        if add.returncode != 0:
+            return None
+        written = _git(cwd, ["write-tree"], env=env, timeout=30)
+        tree = written.stdout.strip() if written.returncode == 0 else ""
+        if not tree:
+            return None
+        if ref_name:
+            protected = _git(cwd, ["update-ref", ref_name, tree], timeout=30)
+            if protected.returncode != 0:
+                return None
+        return tree
+    finally:
+        index_path.unlink(missing_ok=True)
+
+
+def delete_snapshot_ref(cwd: str, ref_name: str) -> None:
+    """Best-effort removal of a temporary snapshot ref."""
+    if _remote_git_location(cwd) is None:
+        _git(cwd, ["update-ref", "-d", ref_name], timeout=30)
+
+
+def cleanup_snapshot_refs(cwd: str, active_node_ids: set[str]) -> None:
+    """Remove snapshot refs not owned by a node that can still be running."""
+    if _remote_git_location(cwd) is not None:
+        return
+    listed = _git(
+        cwd,
+        ["for-each-ref", "--format=%(refname)", "refs/miniclaw2/snapshots/"],
+        timeout=30,
+    )
+    if listed.returncode != 0:
+        return
+    prefix = "refs/miniclaw2/snapshots/"
+    for ref in listed.stdout.splitlines():
+        suffix = ref.removeprefix(prefix)
+        node_id = suffix.split("/", 1)[0]
+        if ref.startswith(prefix) and node_id not in active_node_ids:
+            delete_snapshot_ref(cwd, ref)
+
+
+def tree_diff(cwd: str, base: str, head: str) -> list[GitFileStatus]:
+    """Return stable file-level changes between two tree objects."""
+    names = _git(
+        cwd,
+        ["diff", "--name-status", "-z", "--find-renames", base, head],
+        timeout=60,
+    )
+    if names.returncode != 0:
+        raise RuntimeError(names.stderr.strip() or "git tree diff failed")
+    stats: dict[str, tuple[int, int, bool]] = {}
+    _merge_numstat(
+        stats,
+        _git(
+            cwd,
+            ["diff", "--numstat", "-z", "--find-renames", base, head],
+            timeout=60,
+        ),
+    )
+    files: list[GitFileStatus] = []
+    records = names.stdout.split("\x00")
+    index = 0
+    while index < len(records):
+        status = records[index]
+        index += 1
+        if not status or index >= len(records):
+            continue
+        code = status[:1]
+        old_path: str | None = None
+        if code in {"R", "C"}:
+            old_path = records[index]
+            index += 1
+            if index >= len(records):
+                break
+        path = records[index]
+        index += 1
+        if not path or (_is_generated_path(path) and (
+            old_path is None or _is_generated_path(old_path)
+        )):
+            continue
+        additions, deletions, binary = stats.get(path, (0, 0, False))
+        files.append(GitFileStatus(
+            path=path,
+            old_path=old_path,
+            index_status="R" if code == "C" else code,
+            additions=additions,
+            deletions=deletions,
+            binary=binary,
+        ))
+    return sorted(files, key=lambda item: item.path)
+
+
+def tree_file_bytes(cwd: str, tree: str, path: str) -> bytes | None:
+    """Read one blob from a tree; gitlinks and missing paths return ``None``."""
+    result = _git_bytes(cwd, ["show", f"{tree}:{path}"], timeout=60)
+    return result.stdout if result.returncode == 0 else None
 
 
 def commit_all(cwd: str, message: str) -> tuple[str | None, str | None]:

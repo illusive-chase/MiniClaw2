@@ -46,6 +46,7 @@ import {
   artifactModeAvailable,
   canResumeNode,
   categoryForClassification,
+  diffReviewAvailable,
   extraPrinciplesAvailable,
   isLibraryOpKind,
   nodeClassification,
@@ -109,6 +110,7 @@ export type AgentPanelProps = {
   canPromote: boolean;
   canRerun: boolean;
   canMutate: boolean;
+  canDiffReview: boolean;
   mutationLock: NodeMutationLock;
   isManualPlanspace: (planspaceId: string | null | undefined) => boolean;
   focusRequestVersion: number;
@@ -151,6 +153,7 @@ export function AgentPanel({
   canPromote,
   canRerun,
   canMutate,
+  canDiffReview,
   mutationLock,
   isManualPlanspace,
   focusRequestVersion,
@@ -459,6 +462,7 @@ export function AgentPanel({
                 focusRequestVersion={canMutate ? focusRequestVersion : 0}
                 sessionId={sessionId}
                 autosaveToServer={autosaveToServer}
+                canDiffReview={canDiffReview}
               />
             </fieldset>
           ) : (
@@ -685,6 +689,7 @@ export type VirtualDraft = {
   pendingExtraPrinciples: string[];
   pendingExtraSkills: SkillSelection[];
   qaMode: boolean;
+  diffReview: boolean;
   artifactMode: ArtifactMode;
   artifactSpec: string;
   obsoleteReason: string;
@@ -724,6 +729,7 @@ type VirtualNodeBodyProps = {
   /* False on auto lanes and read-only nodes: the draft is stashed locally but
    * never pushed on a timer. See `autosaveToServer` in AgentPanel. */
   autosaveToServer: boolean;
+  canDiffReview: boolean;
 };
 
 const VirtualNodeBody = forwardRef<VirtualNodeBodyHandle, VirtualNodeBodyProps>(function VirtualNodeBody({
@@ -737,6 +743,7 @@ const VirtualNodeBody = forwardRef<VirtualNodeBodyHandle, VirtualNodeBodyProps>(
   focusRequestVersion,
   sessionId,
   autosaveToServer,
+  canDiffReview,
 }, ref) {
   if (node.kind === "verifier") {
     return <VerifierVirtualBody node={node} nodesById={nodesById} />;
@@ -754,6 +761,7 @@ const VirtualNodeBody = forwardRef<VirtualNodeBodyHandle, VirtualNodeBodyProps>(
       focusRequestVersion={focusRequestVersion}
       sessionId={sessionId}
       autosaveToServer={autosaveToServer}
+      canDiffReview={canDiffReview}
     />
   );
 });
@@ -769,6 +777,7 @@ const EditableVirtualNodeBody = forwardRef<VirtualNodeBodyHandle, VirtualNodeBod
   focusRequestVersion,
   sessionId,
   autosaveToServer,
+  canDiffReview,
 }, ref) {
 
   const persistedDraft = virtualDraftFromNode(node);
@@ -1550,6 +1559,40 @@ const EditableVirtualNodeBody = forwardRef<VirtualNodeBodyHandle, VirtualNodeBod
         </section>
       )}
 
+      {diffReviewAvailable(draft.classification) && (
+        <section className="mb-5">
+          <div className="overflow-hidden rounded-md border border-line bg-surface-sunken">
+            <div className="border-b border-line px-3 py-2">
+              <SectionHeading>Diff Review</SectionHeading>
+            </div>
+            <div className="space-y-2 px-3 py-3">
+              <label className={`flex items-start gap-2 ${canDiffReview ? "cursor-pointer" : "cursor-not-allowed opacity-60"}`}>
+                <input
+                  type="checkbox"
+                  checked={draft.diffReview}
+                  disabled={!canDiffReview}
+                  onChange={(e) =>
+                    setDraft((current) => ({
+                      ...current,
+                      diffReview: e.target.checked,
+                    }))
+                  }
+                  className="mt-0.5"
+                />
+                <span className="text-[11.5px] leading-relaxed text-ink">
+                  发布本次运行开始至结束之间的工作树改动。
+                </span>
+              </label>
+              {!canDiffReview && (
+                <p className="text-[11px] leading-relaxed text-ink-muted">
+                  此项目没有可用的本地 Git 工作树。
+                </p>
+              )}
+            </div>
+          </div>
+        </section>
+      )}
+
       {extraPrinciplesAvailable(draft.classification) && (
         <PrinciplesAttachSection
           principles={principles}
@@ -2118,6 +2161,7 @@ export function virtualDraftFromNode(node: NodeInfo): VirtualDraft {
     pendingExtraPrinciples: [...(node.pending_extra_principles ?? [])],
     pendingExtraSkills: [...(node.pending_extra_skills ?? [])],
     qaMode: node.qa_mode ?? false,
+    diffReview: node.diff_review ?? false,
     artifactMode: node.artifact_mode || "default",
     artifactSpec: node.artifact_spec || "",
     obsoleteReason: node.obsolete_reason || "",
@@ -2135,6 +2179,7 @@ const DRAFT_FIELD_LABELS: Record<keyof VirtualDraft, string> = {
   pendingExtraPrinciples: "附加准则",
   pendingExtraSkills: "附加技能",
   qaMode: "允许提问",
+  diffReview: "Diff review",
   artifactMode: "产出物",
   artifactSpec: "产出物描述",
   obsoleteReason: "作废原因",
@@ -2224,6 +2269,9 @@ export function virtualDraftAfterSave(draft: VirtualDraft): VirtualDraft {
     qaMode: qaModeAvailable(classified.classification)
       ? classified.qaMode
       : false,
+    diffReview: diffReviewAvailable(classified.classification)
+      ? classified.diffReview
+      : false,
     artifactMode,
     artifactSpec:
       artifactMode === "custom" ? classified.artifactSpec.trim() : "",
@@ -2260,6 +2308,7 @@ export function virtualDraftWithClassification(
       ? draft.pendingExtraPrinciples
       : [],
     qaMode: qaModeAvailable(classification) ? draft.qaMode : false,
+    diffReview: diffReviewAvailable(classification) ? draft.diffReview : false,
     artifactMode: artifactModeAvailable(classification)
       ? draft.artifactMode
       : "default",
@@ -2367,6 +2416,9 @@ export function virtualPayloadFromDraft(
    * alongside a stale artifact_mode, and the backend's paired invariant
    * rejects that with a 400 the user cannot connect to what they just did. */
   payload.qa_mode = qaModeAvailable(draft.classification) ? draft.qaMode : false;
+  payload.diff_review = diffReviewAvailable(draft.classification)
+    ? draft.diffReview
+    : false;
   if (artifactModeAvailable(draft.classification)) {
     payload.artifact_mode = draft.artifactMode;
     payload.artifact_spec =
@@ -2502,6 +2554,9 @@ export function nodeIntentRows(node: NodeInfo): Array<[string, string]> {
   }
   if (qaModeAvailable(classification)) {
     rows.push(["Q/A mode", node.qa_mode ? "开启" : "关闭"]);
+  }
+  if (diffReviewAvailable(classification)) {
+    rows.push(["Diff review", node.diff_review ? "开启" : "关闭"]);
   }
   return rows;
 }

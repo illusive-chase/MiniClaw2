@@ -3,6 +3,7 @@ import ReactDOM from "react-dom/client";
 import { App } from "./App";
 import { AuthGate } from "./AuthGate";
 import { MarkdownViewerPage } from "./pages/MarkdownViewerPage";
+import { DiffViewerPage } from "./pages/DiffViewerPage";
 import { parseMarkdownRoute } from "./markdownRoute";
 import "./index.css";
 // Single hljs theme: github (light). Dark mode tolerates the slight contrast
@@ -19,7 +20,11 @@ const route = parseMarkdownRoute(window.location.hash);
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <AuthGate>
-      {route ? <MarkdownViewerPage route={route} /> : <App />}
+      {route?.src === "diff"
+        ? <DiffViewerPage route={route} />
+        : route
+          ? <MarkdownViewerPage route={route} />
+          : <App />}
     </AuthGate>
   </React.StrictMode>,
 );

@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import tempfile
 import unittest
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -429,6 +430,30 @@ class VirtualEditRegistryTests(unittest.TestCase):
         )
         assert off is not None
         self.assertFalse(off.qa_mode)
+
+    def test_diff_review_requires_git_and_clears_for_review(self) -> None:
+        node = self._virtual("diff-node")
+        with self.assertRaisesRegex(ValueError, "Git repository"):
+            self.registry.update_virtual(
+                self.project.id, node.id, diff_review=True
+            )
+
+        Path(self.project.root_path).mkdir(parents=True, exist_ok=True)
+        subprocess.run(["git", "init", "-q"], cwd=self.project.root_path, check=True)
+        enabled = self.registry.update_virtual(
+            self.project.id, node.id, diff_review=True
+        )
+        assert enabled is not None
+        self.assertTrue(enabled.diff_review)
+        review = self.registry.update_virtual(
+            self.project.id,
+            node.id,
+            category=Category.REVIEW,
+            subtype=ReviewSubtype.AGENTIC_REVIEW,
+            brief=ReviewBrief(check_what="c", expected="e", abnormal="a"),
+        )
+        assert review is not None
+        self.assertFalse(review.diff_review)
 
     def test_update_virtual_leaves_qa_mode_alone_when_not_sent(self) -> None:
         node = self._virtual("qa-keep")

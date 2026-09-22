@@ -719,6 +719,7 @@ export type UpdateVirtualPayload = {
   pending_extra_principles?: string[];
   pending_extra_skills?: SkillSelection[];
   qa_mode?: boolean;
+  diff_review?: boolean;
   artifact_mode?: ArtifactMode;
   artifact_spec?: string;
   agent_op_kind?: string | null;
@@ -737,6 +738,7 @@ export type CreateVirtualPayload = {
   pending_extra_principles?: string[];
   pending_extra_skills?: SkillSelection[];
   qa_mode?: boolean;
+  diff_review?: boolean;
   artifact_mode?: ArtifactMode;
   artifact_spec?: string;
   agent_op_kind?: string | null;

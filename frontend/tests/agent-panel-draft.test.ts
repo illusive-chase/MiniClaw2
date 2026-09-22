@@ -65,6 +65,7 @@ function node(over: Partial<NodeDetail> = {}): NodeDetail {
     canInterrupt: false,
     canRerun: false,
     canMutate: true,
+    canDiffReview: true,
     mutationLock: null,
     isManualPlanspace: () => true,
     focusRequestVersion: 0,
@@ -187,6 +188,7 @@ function node(over: Partial<NodeDetail> = {}): NodeDetail {
   assert.equal(draft.artifactMode, "default");
   assert.equal(draft.artifactSpec, "");
   assert.equal(draft.qaMode, false);
+  assert.equal(draft.diffReview, false);
 }
 
 /* 工作、规划和冷启动节点的所有产物模式均应原样进入请求。 */
@@ -221,12 +223,14 @@ function node(over: Partial<NodeDetail> = {}): NodeDetail {
     artifactMode: "markdown" as const,
     artifactSpec: "leftover",
     qaMode: true,
+    diffReview: true,
   };
   const payload = virtualPayloadFromDraft(draft, node());
   assert.equal(payload.category, "review");
   assert.equal(payload.artifact_mode, "default");
   assert.equal(payload.artifact_spec, "");
   assert.equal(payload.qa_mode, false);
+  assert.equal(payload.diff_review, false);
 }
 
 /* Library nodes get no artifact intent — their deliverable is one library
@@ -237,6 +241,7 @@ function node(over: Partial<NodeDetail> = {}): NodeDetail {
     classification: "library" as const,
     artifactMode: "html" as const,
     qaMode: true,
+    diffReview: true,
   };
   const payload = virtualPayloadFromDraft(draft, node());
   assert.equal(payload.artifact_mode, "default");
@@ -308,6 +313,7 @@ function node(over: Partial<NodeDetail> = {}): NodeDetail {
   assert.equal(normalized.artifactMode, "default");
   assert.equal(normalized.artifactSpec, "");
   assert.equal(normalized.qaMode, false);
+  assert.equal(normalized.diffReview, false);
 }
 
 /* The canvas writes scheduled_deps alone. Reconciling that against a draft
@@ -533,12 +539,14 @@ function node(over: Partial<NodeDetail> = {}): NodeDetail {
   assert.deepEqual(nodeIntentRows(node({ state: "done" })), [
     ["Artifact", "不要求产出物"],
     ["Q/A mode", "关闭"],
+    ["Diff review", "关闭"],
   ]);
   assert.deepEqual(
     nodeIntentRows(node({ state: "done", artifact_mode: "html", qa_mode: true })),
     [
       ["Artifact", "HTML"],
       ["Q/A mode", "开启"],
+      ["Diff review", "关闭"],
     ],
   );
 }
@@ -559,6 +567,7 @@ function node(over: Partial<NodeDetail> = {}): NodeDetail {
       ["Artifact", "自定义"],
       ["Artifact spec", "a summary and a risk list"],
       ["Q/A mode", "关闭"],
+      ["Diff review", "关闭"],
     ],
   );
   // Custom without a spec is unreachable on a saved node; no empty row either way.
@@ -567,6 +576,7 @@ function node(over: Partial<NodeDetail> = {}): NodeDetail {
     [
       ["Artifact", "自定义"],
       ["Q/A mode", "关闭"],
+      ["Diff review", "关闭"],
     ],
   );
 }
@@ -581,15 +591,15 @@ function node(over: Partial<NodeDetail> = {}): NodeDetail {
   );
   assert.deepEqual(
     nodeIntentRows(node({ state: "done", agent_op_kind: "library_edit" })),
-    [["Q/A mode", "关闭"]],
+    [["Q/A mode", "关闭"], ["Diff review", "关闭"]],
   );
   assert.deepEqual(
     nodeIntentRows(node({ state: "done", agent_op_kind: "cold_start" })),
-    [["Artifact", "不要求产出物"]],
+    [["Artifact", "不要求产出物"], ["Diff review", "关闭"]],
   );
   assert.deepEqual(
     nodeIntentRows(node({ state: "done", agent_op_kind: "cold_start", artifact_mode: "svg" })),
-    [["Artifact", "SVG"]],
+    [["Artifact", "SVG"], ["Diff review", "关闭"]],
   );
   assert.deepEqual(
     nodeIntentRows(node({
@@ -598,13 +608,14 @@ function node(over: Partial<NodeDetail> = {}): NodeDetail {
       artifact_mode: "custom",
       artifact_spec: "一份风险清单",
     })),
-    [["Artifact", "自定义"], ["Artifact spec", "一份风险清单"]],
+    [["Artifact", "自定义"], ["Artifact spec", "一份风险清单"], ["Diff review", "关闭"]],
   );
   assert.deepEqual(
     nodeIntentRows(node({ state: "done", category: "planning", qa_mode: true })),
     [
       ["Artifact", "不要求产出物"],
       ["Q/A mode", "开启"],
+      ["Diff review", "关闭"],
     ],
   );
 }

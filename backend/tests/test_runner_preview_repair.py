@@ -98,6 +98,21 @@ class _BareProvider:
         return None
 
 
+class _DiffReviewProvider:
+    name = "stub"
+
+    async def run(self, context: AgentProviderContext):
+        (Path(context.project.root_path) / "seed.txt").write_text(
+            "changed by node\n", encoding="utf-8"
+        )
+        _write_own_preview(context)
+        yield AgentProviderEvent(kind="session", session_id="stub-session")
+        yield AgentProviderEvent(kind="done", final_state="done")
+
+    async def interrupt(self) -> None:
+        return None
+
+
 class _UnlanedArtifactProvider:
     name = "stub"
 
@@ -337,6 +352,32 @@ class RunnerPreviewRepairTests(unittest.IsolatedAsyncioTestCase):
                 for ev in emitted
             )
         )
+
+    async def test_diff_review_is_published_with_agent_artifacts(self) -> None:
+        node = self._node()
+        node.diff_review = True
+        self.store.update_node(node)
+        runner = NodeRunner(node, self.project, self.store, lambda _event: asyncio.sleep(0))
+
+        with patch.object(runner_module, "_make_provider", return_value=_DiffReviewProvider()):
+            await asyncio.wait_for(runner.run(), timeout=5.0)
+
+        self.assertEqual(node.state, NodeState.DONE)
+        self.assertIn("run-diff.json", [ref.name for ref in node.artifacts])
+        artifact = json.loads(
+            (stored_artifacts_dir(self.store, self.project.id, node.id) / "run-diff.json")
+            .read_text(encoding="utf-8")
+        )
+        self.assertEqual(artifact["kind"], "miniclaw2.diff/v1")
+        self.assertEqual(artifact["files"][0]["path"], "seed.txt")
+        refs = subprocess.run(
+            ["git", "for-each-ref", "--format=%(refname)", f"refs/miniclaw2/snapshots/{node.id}"],
+            cwd=self.repo,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+        self.assertEqual(refs, "")
 
     def test_launch_snapshot_preserves_queued_node_planspace(self) -> None:
         node = self._node()

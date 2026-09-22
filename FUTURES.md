@@ -306,6 +306,11 @@ artifact — preview one click behind — moves the canvas from "status board
 about the work" toward the work itself, which is where a graph *IDE*
 should sit.
 
+Agent 节点现已可选择 `diff_review`，并把运行起止两个工作树快照之间的
+文件统计和可内联文本发布为 `miniclaw2.diff/v1` artifact。这提供了 tile
+可直接消费的稳定 diff stat 数据；本节仍未完成的部分是让 tile 本身以该
+artifact 为主视图，而不只是从 artifact tile 打开专用 viewer。
+
 ### 3.8 Remote execution keeps authority and access separate
 
 A remote project has one authoritative Git worktree on the remote machine and

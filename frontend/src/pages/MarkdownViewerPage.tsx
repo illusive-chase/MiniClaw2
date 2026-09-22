@@ -77,6 +77,9 @@ export function MarkdownViewerPage({ route }: { route: MarkdownRoute }) {
     setError(null);
 
     const load = async (): Promise<Loaded> => {
+      if (route.src === "diff") {
+        throw new Error("diff 产物应由专用查看器打开");
+      }
       if (route.src === "artifact") {
         const file = await getNodeArtifact(route.sessionId, route.nodeId, route.name);
         return {

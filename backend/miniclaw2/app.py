@@ -69,7 +69,7 @@ from .file_manager import (
     reveal_directory,
     reveal_path,
 )
-from .git_state import commit_graph, node_diff
+from .git_state import commit_graph, is_git_repo, node_diff
 from .global_config import (
     CodeReviewSettings,
     ModelPreset,
@@ -371,6 +371,7 @@ class UpdateVirtualRequest(BaseModel):
     pending_extra_principles: list[str] | None = None
     pending_extra_skills: list[str | dict[str, Any]] | None = None
     qa_mode: bool | None = None
+    diff_review: bool | None = None
     artifact_mode: str | None = None
     artifact_spec: str | None = None
     agent_op_kind: str | None = None
@@ -391,6 +392,7 @@ class CreateVirtualRequest(BaseModel):
     pending_extra_principles: list[str] | None = None
     pending_extra_skills: list[str | dict[str, Any]] | None = None
     qa_mode: bool | None = None
+    diff_review: bool | None = None
     artifact_mode: str | None = None
     artifact_spec: str | None = None
     agent_op_kind: str | None = None
@@ -2234,6 +2236,7 @@ def create_app(
                 pending_extra_principles=req.pending_extra_principles,
                 pending_extra_skills=req.pending_extra_skills,
                 qa_mode=bool(req.qa_mode),
+                diff_review=bool(req.diff_review),
                 artifact_mode=req.artifact_mode,
                 artifact_spec=req.artifact_spec,
                 agent_op_kind=req.agent_op_kind,
@@ -3094,18 +3097,21 @@ def _session_info(
             {
                 "workspace": False,
                 "git_review": False,
+                "diff_review": False,
                 "execution": True,
             }
             if project.persistence_mode is ProjectPersistenceMode.EPHEMERAL
             else {
                 "workspace": False,
                 "git_review": True,
+                "diff_review": False,
                 "execution": remote_binding is not None,
             }
             if project.persistence_mode is ProjectPersistenceMode.REMOTE
             else {
                 "workspace": True,
                 "git_review": True,
+                "diff_review": is_git_repo(project.root_path),
                 "execution": True,
             }
         ),

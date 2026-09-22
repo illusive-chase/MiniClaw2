@@ -4,6 +4,11 @@ import { artifactRawUrl, getNodeArtifact } from "../api";
 import { writeClipboard } from "../clipboard";
 import { MarkdownView } from "../components/MarkdownView";
 import { ZoomableText } from "../components/TextZoom";
+import {
+  DiffViewerOverlay,
+  parseDiffArtifact,
+  type DiffArtifact,
+} from "../components/DiffViewer";
 import type { ArtifactExtension, ArtifactFile, ArtifactRef } from "../types";
 import { SvgArtifactPreview } from "./SvgArtifactPreview";
 
@@ -18,6 +23,8 @@ export function ArtifactPanel({ sessionId, nodeId, artifact, ext }: ArtifactPane
   const [file, setFile] = useState<ArtifactFile | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [diffArtifact, setDiffArtifact] = useState<DiffArtifact | null>(null);
+  const [diffOpen, setDiffOpen] = useState(false);
   const [copyState, setCopyState] = useState<"idle" | "copying" | "copied" | "error">(
     "idle",
   );
@@ -28,10 +35,27 @@ export function ArtifactPanel({ sessionId, nodeId, artifact, ext }: ArtifactPane
     setFile(null);
     setLoading(true);
     setError(null);
+    setDiffArtifact(null);
+    setDiffOpen(false);
     setCopyState("idle");
     getNodeArtifact(sessionId, nodeId, artifact.name)
-      .then((next) => {
-        if (!cancelled) setFile(next);
+      .then(async (next) => {
+        let loaded = next;
+        if (ext === "json") {
+          const response = await fetch(rawUrl);
+          if (!response.ok) throw new Error(`Raw artifact request failed: ${response.status}`);
+          loaded = { ...next, text: await response.text(), truncated: false };
+        }
+        if (!cancelled) {
+          setFile(loaded);
+          if (ext === "json") {
+            try {
+              setDiffArtifact(parseDiffArtifact(JSON.parse(loaded.text)));
+            } catch {
+              setDiffArtifact(null);
+            }
+          }
+        }
       })
       .catch((reason) => {
         if (!cancelled) {
@@ -45,7 +69,7 @@ export function ArtifactPanel({ sessionId, nodeId, artifact, ext }: ArtifactPane
     return () => {
       cancelled = true;
     };
-  }, [sessionId, nodeId, artifact.name, artifact.sha256]);
+  }, [sessionId, nodeId, artifact.name, artifact.sha256, ext, rawUrl]);
 
   const jsonPreview = useMemo(() => {
     if (ext !== "json" || !file) return "";
@@ -194,6 +218,24 @@ export function ArtifactPanel({ sessionId, nodeId, artifact, ext }: ArtifactPane
                   className="px-4 py-3 leading-relaxed text-ink-strong"
                 />
               </ZoomableText>
+            ) : diffArtifact ? (
+              <div className="rounded-md border border-line bg-surface-raised p-3 shadow-card">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <div className="text-[12px] font-medium text-ink-strong">
+                      {diffArtifact.totals.files} files changed
+                    </div>
+                    <div className="mt-1 font-mono text-[10.5px] text-ink-muted">
+                      <span className="text-state-review">+{diffArtifact.totals.additions}</span>{" "}
+                      <span className="text-state-error">-{diffArtifact.totals.deletions}</span>
+                      {diffArtifact.truncated ? " · 部分文件未内联" : ""}
+                    </div>
+                  </div>
+                  <button type="button" onClick={() => setDiffOpen(true)} className="rounded-md bg-brand px-3 py-1.5 text-[12px] font-medium text-white shadow-card transition hover:brightness-[0.95]">
+                    打开对比
+                  </button>
+                </div>
+              </div>
             ) : (
               <ZoomableText
                 title={artifact.name}
@@ -221,6 +263,15 @@ export function ArtifactPanel({ sessionId, nodeId, artifact, ext }: ArtifactPane
           </section>
         )}
       </div>
+      {diffOpen && diffArtifact && (
+        <DiffViewerOverlay
+          artifact={diffArtifact}
+          sessionId={sessionId}
+          nodeId={nodeId}
+          name={artifact.name}
+          onClose={() => setDiffOpen(false)}
+        />
+      )}
     </div>
   );
 }

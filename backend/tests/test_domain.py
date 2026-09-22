@@ -305,5 +305,34 @@ class QaModeInvariantTests(unittest.TestCase):
             )
 
 
+class DiffReviewInvariantTests(unittest.TestCase):
+    def test_defaults_off_and_regular_agents_accept_it(self) -> None:
+        node = Node(
+            project_id="p1",
+            kind=NodeKind.AGENT,
+            model_preset_id="gpt-5.5",
+            diff_review=True,
+        )
+        self.assertTrue(node.diff_review)
+
+    def test_non_agents_and_review_agents_reject_it(self) -> None:
+        with self.assertRaises(ValidationError):
+            Node(
+                project_id="p1",
+                kind=NodeKind.OP,
+                op_kind="commit",
+                diff_review=True,
+            )
+        with self.assertRaises(ValidationError):
+            Node(
+                project_id="p1",
+                kind=NodeKind.AGENT,
+                model_preset_id="gpt-5.5",
+                category=Category.REVIEW,
+                subtype=ReviewSubtype.AGENTIC_REVIEW,
+                brief=ReviewBrief(check_what="c", expected="e", abnormal="a"),
+                diff_review=True,
+            )
+
 if __name__ == "__main__":
     unittest.main()

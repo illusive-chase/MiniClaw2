@@ -566,6 +566,7 @@ export type NodeInfo = {
   pending_extra_principles?: string[];
   pending_extra_skills?: SkillSelection[];
   qa_mode?: boolean;
+  diff_review?: boolean;
   artifact_mode?: ArtifactMode | null;
   artifact_spec?: string | null;
   resume_from_node_id?: string | null;

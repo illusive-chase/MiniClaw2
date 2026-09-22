@@ -15,6 +15,7 @@
     "build": "tsc -b && vite build",
     "test:svg": "node tests/run-artifacts.mjs",
     "test:svg:browser": "node tests/run-svg-browser.mjs",
+    "test:diff:browser": "npm run build && node tests/run-diff-browser.mjs",
     "test:tags:browser": "node tests/run-tag-edit-browser.mjs",
     "test:sync:browser": "node tests/run-sync-progress-browser.mjs",
     "posttest": "npm run test:nodes && npm run test:context && npm run test:viewport && node tests/run-dev-proxy.mjs && npm run test:svg",

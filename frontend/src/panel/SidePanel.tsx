@@ -391,6 +391,7 @@ function Inner(props: SidePanelProps & {
         }
         canRerun={canRerun && canMutateNode}
         canMutate={canMutateNode}
+        canDiffReview={session.capabilities?.diff_review !== false}
         mutationLock={mutationLock}
         isManualPlanspace={isManualPlanspace}
         focusRequestVersion={focusRequestVersion}
