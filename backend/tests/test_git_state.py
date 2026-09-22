@@ -49,7 +49,9 @@ class GitStateTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as raw:
             repo = Path(raw)
             _init_repo(repo)
-            (repo / ".gitignore").write_text("ignored.txt\n", encoding="utf-8")
+            (repo / ".gitignore").write_text(
+                "ignored.txt\n.miniclaw2/\n", encoding="utf-8"
+            )
             (repo / "ignored.txt").write_text("ignored\n", encoding="utf-8")
             generated = repo / ".miniclaw2" / "graph"
             generated.mkdir(parents=True)

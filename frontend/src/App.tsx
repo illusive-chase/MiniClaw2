@@ -37,6 +37,7 @@ import {
   getGlobalState,
   getMigrationStatus,
   getGitState,
+  getWorkingTreeDiff,
   gitCommit,
   gitReview,
   gitPull,
@@ -107,6 +108,7 @@ import { RunStatusButton } from "./components/RunStatusButton";
 import { ThemeToggle } from "./components/ThemeToggle";
 import { UsageStrip } from "./components/UsageStrip";
 import { GitWorkspaceStatus } from "./components/GitWorkspaceStatus";
+import { DiffViewerOverlay, type DiffArtifact } from "./components/DiffViewer";
 import { TextZoomProvider } from "./components/TextZoom";
 import { writeClipboard } from "./clipboard";
 import type {
@@ -353,6 +355,8 @@ export function App() {
   const [gitCommits, setGitCommits] = useState<CommitDescriptor[]>([]);
   const [gitAction, setGitAction] = useState<"commit" | "review" | "pull" | "push" | null>(null);
   const [gitError, setGitError] = useState<string | null>(null);
+  const [workingTreeDiff, setWorkingTreeDiff] = useState<DiffArtifact | null>(null);
+  const [workingTreeDiffLoading, setWorkingTreeDiffLoading] = useState(false);
   const pendingUiCommitNodeIdsRef = useRef<Map<string, NodePosition | null>>(new Map());
   const [uiCommitPositionTargets, setUiCommitPositionTargets] = useState<CommitPositionTarget[]>([]);
 
@@ -706,6 +710,7 @@ export function App() {
   const lastLayoutSaveRef = useRef<Promise<SessionInfo> | null>(null);
   const layoutSaveChainRef = useRef<Promise<void>>(Promise.resolve());
   const openProjectRequestRef = useRef(0);
+  const workingTreeDiffRequestRef = useRef(0);
 
   /* Keyboard focus must not enter the panel while it's translated offscreen —
    * pointer-events-none only blocks the mouse, and aria-hidden without inert
@@ -763,6 +768,9 @@ export function App() {
     setGitCommits([]);
     setGitAction(null);
     setGitError(null);
+    workingTreeDiffRequestRef.current += 1;
+    setWorkingTreeDiff(null);
+    setWorkingTreeDiffLoading(false);
     pendingUiCommitNodeIdsRef.current.clear();
     setUiCommitPositionTargets([]);
     setProjectMutationPending(false);
@@ -3088,6 +3096,30 @@ export function App() {
   };
   const commitGitMessage = (message: string) => runGitAction("commit", message);
   const reviewGitChanges = () => runGitAction("review");
+  const viewWorkingTreeDiff = async () => {
+    if (
+      !session?.id ||
+      currentSessionIdRef.current !== session.id ||
+      workingTreeDiffLoading
+    ) return;
+    const requestedSessionId = session.id;
+    const requestId = ++workingTreeDiffRequestRef.current;
+    const requestIsCurrent = () =>
+      currentSessionIdRef.current === requestedSessionId &&
+      workingTreeDiffRequestRef.current === requestId;
+    setWorkingTreeDiffLoading(true);
+    setGitError(null);
+    try {
+      const diff = await getWorkingTreeDiff(requestedSessionId);
+      if (requestIsCurrent()) setWorkingTreeDiff(diff);
+    } catch (err) {
+      if (requestIsCurrent()) {
+        setGitError(err instanceof Error ? err.message : String(err));
+      }
+    } finally {
+      if (requestIsCurrent()) setWorkingTreeDiffLoading(false);
+    }
+  };
 
   const configureProjectBinding = async () => {
     if (!session?.can_bind_here || projectMutationPending) return;
@@ -3156,7 +3188,10 @@ export function App() {
                 canCommit={session?.persistence_mode !== "remote" && !readOnly && !!gitStatus?.is_repo && !gitAction && !!gitStatus.dirty_count}
                 canPull={session?.persistence_mode !== "remote" && !readOnly && !!gitStatus?.is_repo && !gitAction && gitQuiescent}
                 canPush={session?.persistence_mode !== "remote" && !readOnly && !!gitStatus?.is_repo && !gitAction && !pullInFlight}
+                canViewDiff={session?.capabilities?.diff_review !== false}
+                diffLoading={workingTreeDiffLoading}
                 onRefresh={refreshGit}
+                onViewDiff={viewWorkingTreeDiff}
                 onCommit={() => {
                   setSelection({ kind: "commit", sha: null });
                   inspectNode(null);
@@ -3655,6 +3690,13 @@ export function App() {
         void refreshNodes();
       }}
     />
+    {workingTreeDiff && (
+      <DiffViewerOverlay
+        artifact={workingTreeDiff}
+        name="Working tree diff"
+        onClose={() => setWorkingTreeDiff(null)}
+      />
+    )}
     </TextZoomProvider>
   );
 }

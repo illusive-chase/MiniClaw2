@@ -40,6 +40,7 @@ import type {
   MarkdownFile,
 } from "./types";
 import type { TemplateRewritePayload } from "./templateEditor";
+import type { DiffArtifact } from "./components/DiffViewer";
 import { toNodeInfo } from "./nodeProjection";
 
 export const AUTH_REQUIRED_EVENT = "miniclaw2:auth-required";
@@ -455,6 +456,14 @@ export async function getSession(id: string): Promise<SessionInfo> {
 export async function getGitState(sessionId: string): Promise<GitState> {
   const res = await fetch(`/sessions/${sessionId}/git`);
   if (!res.ok) throw new ApiError("getGitState", res.status, await readErrorDetail(res));
+  return res.json();
+}
+
+export async function getWorkingTreeDiff(sessionId: string): Promise<DiffArtifact> {
+  const res = await fetch(`/sessions/${sessionId}/git/diff`);
+  if (!res.ok) {
+    throw new ApiError("getWorkingTreeDiff", res.status, await readErrorDetail(res));
+  }
   return res.json();
 }
 

@@ -41,6 +41,7 @@ from .contextspace import (
     read_template_instances,
 )
 from .context_refresh import cancel_context_task, context_refresh_status, start_context_task
+from .diff_review import build_diff_artifact
 from .domain import (
     TERMINAL_NODE_STATES,
     ContextNodeId,
@@ -69,7 +70,14 @@ from .file_manager import (
     reveal_directory,
     reveal_path,
 )
-from .git_state import commit_graph, is_git_repo, node_diff
+from .git_state import (
+    GIT_EMPTY_TREE_SHA,
+    commit_graph,
+    git_head,
+    is_git_repo,
+    node_diff,
+    write_tree_snapshot,
+)
 from .global_config import (
     CodeReviewSettings,
     ModelPreset,
@@ -140,6 +148,7 @@ logger = logging.getLogger(__name__)
 # inline cap allows. Four times INLINE_TEXT_CAP keeps the two in the same
 # family while giving long design docs room to render whole.
 MARKDOWN_READ_CAP = 4 * INLINE_TEXT_CAP
+WORKING_TREE_DIFF_CAPTURE_ATTEMPTS = 3
 
 
 class CreateSessionRequest(BaseModel):
@@ -1742,6 +1751,34 @@ def create_app(
             },
         )
         return {"status": asdict(status), "commits": [asdict(item) for item in commits]}
+
+    @app.get("/sessions/{sid}/git/diff", response_model=dict[str, Any])
+    def get_working_tree_diff(sid: str) -> dict[str, Any]:
+        project = registry.get_project(sid)
+        if project is None:
+            raise HTTPException(404, "session not found")
+        if project.temporary:
+            raise HTTPException(400, "临时项目不支持 Git 差异查看")
+        require_native_project(sid)
+        # The temporary index is seeded from HEAD. If HEAD moves while it is
+        # populated, that tree must not be paired with either commit state.
+        for _attempt in range(WORKING_TREE_DIFF_CAPTURE_ATTEMPTS):
+            captured_at = time.time()
+            base_tree = git_head(project.root_path) or GIT_EMPTY_TREE_SHA
+            head_tree = write_tree_snapshot(project.root_path)
+            if head_tree is None:
+                raise HTTPException(500, "无法捕获当前 Git working tree")
+            if (git_head(project.root_path) or GIT_EMPTY_TREE_SHA) != base_tree:
+                continue
+            return build_diff_artifact(
+                project.root_path,
+                base_tree=base_tree,
+                head_tree=head_tree,
+                started_at=captured_at,
+                ended_at=captured_at,
+                concurrent_node_ids=[],
+            )
+        raise HTTPException(409, "Git HEAD 在捕获 working tree 时持续变化，请重试")
 
     @app.post("/sessions/{sid}/git/commit", response_model=dict[str, Any])
     async def git_commit(sid: str, req: GitCommitRequest) -> dict[str, Any]:

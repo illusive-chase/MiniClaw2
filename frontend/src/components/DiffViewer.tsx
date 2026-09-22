@@ -296,8 +296,8 @@ function DiffCell({ side, line, changed, mobileSide }: {
 
 export function DiffViewerOverlay({ artifact, sessionId, nodeId, name, onClose }: {
   artifact: DiffArtifact;
-  sessionId: string;
-  nodeId: string;
+  sessionId?: string;
+  nodeId?: string;
   name: string;
   onClose: () => void;
 }) {
@@ -319,8 +319,8 @@ export function DiffViewerOverlay({ artifact, sessionId, nodeId, name, onClose }
 
 export function DiffHeader({ artifact, sessionId, nodeId, name, onClose }: {
   artifact: DiffArtifact;
-  sessionId: string;
-  nodeId: string;
+  sessionId?: string;
+  nodeId?: string;
   name: string;
   onClose?: () => void;
 }) {
@@ -328,12 +328,16 @@ export function DiffHeader({ artifact, sessionId, nodeId, name, onClose }: {
     <header className="flex min-h-14 items-center justify-between gap-4 border-b border-line bg-surface-raised px-4">
       <div className="min-w-0">
         <div className="truncate text-sm font-semibold text-ink-strong">{name}</div>
-        <div className="font-mono text-[10px] text-ink-subtle">node {nodeId.slice(0, 8)} · {artifact.totals.files} files</div>
+        <div className="font-mono text-[10px] text-ink-subtle">
+          {nodeId ? `node ${nodeId.slice(0, 8)} · ` : "working tree · "}{artifact.totals.files} files
+        </div>
       </div>
       <div className="flex flex-none items-center gap-1">
-        <button type="button" title="在新标签页打开" aria-label="在新标签页打开" onClick={() => window.open(markdownRouteUrl({ src: "diff", sessionId, nodeId, name }), "_blank", "noopener")} className="flex h-8 w-8 items-center justify-center rounded border border-line text-ink-muted hover:text-ink-strong">
-          <ExternalLink size={15} />
-        </button>
+        {sessionId && nodeId && (
+          <button type="button" title="在新标签页打开" aria-label="在新标签页打开" onClick={() => window.open(markdownRouteUrl({ src: "diff", sessionId, nodeId, name }), "_blank", "noopener")} className="flex h-8 w-8 items-center justify-center rounded border border-line text-ink-muted hover:text-ink-strong">
+            <ExternalLink size={15} />
+          </button>
+        )}
         {onClose && <button type="button" title="关闭" aria-label="关闭" onClick={onClose} className="flex h-8 w-8 items-center justify-center rounded border border-line text-ink-muted hover:text-ink-strong"><X size={16} /></button>}
       </div>
     </header>

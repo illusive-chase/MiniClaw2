@@ -740,15 +740,26 @@ def write_tree_snapshot(cwd: str, *, ref_name: str | None = None) -> str | None:
             return None
         add = _git(
             cwd,
-            [
-                "add", "-A", "--", ".",
-                ":(exclude).miniclaw2",
-                ":(exclude).miniclaw2/**",
-            ],
+            ["add", "-A", "--", "."],
             env=env,
             timeout=120,
         )
         if add.returncode != 0:
+            return None
+        remove_generated = _git(
+            cwd,
+            [
+                "rm",
+                "--cached",
+                "-r",
+                "--ignore-unmatch",
+                "--",
+                MINICLAW_GENERATED_DIR,
+            ],
+            env=env,
+            timeout=30,
+        )
+        if remove_generated.returncode != 0:
             return None
         written = _git(cwd, ["write-tree"], env=env, timeout=30)
         tree = written.stdout.strip() if written.returncode == 0 else ""

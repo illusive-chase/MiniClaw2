@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties } from "react";
+import { FileDiff } from "lucide-react";
 import type { GitFileStatus, GitStatus } from "../types";
 
 type GitWorkspaceStatusProps = {
@@ -8,7 +9,10 @@ type GitWorkspaceStatusProps = {
   canCommit: boolean;
   canPull: boolean;
   canPush: boolean;
+  canViewDiff: boolean;
+  diffLoading: boolean;
   onRefresh: () => Promise<void> | void;
+  onViewDiff: () => Promise<void> | void;
   onCommit: () => void;
   onPull: () => void;
   onPush: () => void;
@@ -30,7 +34,10 @@ export function GitWorkspaceStatus({
   canCommit,
   canPull,
   canPush,
+  canViewDiff,
+  diffLoading,
   onRefresh,
+  onViewDiff,
   onCommit,
   onPull,
   onPush,
@@ -163,6 +170,19 @@ export function GitWorkspaceStatus({
                 </div>
               </div>
               <div className="flex shrink-0 items-center gap-1">
+                <button
+                  type="button"
+                  disabled={!canViewDiff || files.length === 0 || diffLoading}
+                  onClick={() => {
+                    setOpen(false);
+                    void onViewDiff();
+                  }}
+                  className="inline-flex h-7 w-7 items-center justify-center rounded-sm text-ink-muted transition hover:bg-surface-sunken hover:text-ink-strong disabled:cursor-not-allowed disabled:opacity-40"
+                  aria-label="View working tree diff"
+                  title="View working tree diff"
+                >
+                  <FileDiff size={15} />
+                </button>
                 <button
                   type="button"
                   onClick={() => void onRefresh()}

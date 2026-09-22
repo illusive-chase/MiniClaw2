@@ -94,6 +94,63 @@ class GitEndpointTests(unittest.IsolatedAsyncioTestCase):
         ).stdout.strip()
         self.assertEqual(subject, "message from endpoint")
 
+    async def test_working_tree_diff_returns_diff_viewer_artifact(self) -> None:
+        (self.repo / "seed.txt").write_text("changed\n", encoding="utf-8")
+        (self.repo / "new.txt").write_text("new\n", encoding="utf-8")
+
+        response = await self.client.get(f"/sessions/{self.project.id}/git/diff")
+
+        self.assertEqual(response.status_code, 200, response.text)
+        payload = response.json()
+        self.assertEqual(payload["kind"], "miniclaw2.diff/v1")
+        self.assertEqual(payload["base"]["tree"], self.initial)
+        self.assertEqual(payload["totals"]["files"], 2)
+        self.assertEqual(
+            {item["path"] for item in payload["files"]},
+            {"new.txt", "seed.txt"},
+        )
+
+    async def test_working_tree_diff_retries_if_head_changes_after_snapshot(self) -> None:
+        from miniclaw2.git_state import write_tree_snapshot
+
+        captures = 0
+
+        def commit_after_first_snapshot(cwd: str) -> str | None:
+            nonlocal captures
+            tree = write_tree_snapshot(cwd)
+            captures += 1
+            if captures == 1:
+                (self.repo / "concurrent.txt").write_text(
+                    "committed\n", encoding="utf-8"
+                )
+                subprocess.run(["git", "add", "-A"], cwd=self.repo, check=True)
+                subprocess.run(
+                    ["git", "commit", "-qm", "concurrent commit"],
+                    cwd=self.repo,
+                    check=True,
+                )
+            return tree
+
+        with patch(
+            "miniclaw2.app.write_tree_snapshot",
+            side_effect=commit_after_first_snapshot,
+        ):
+            response = await self.client.get(f"/sessions/{self.project.id}/git/diff")
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(captures, 2)
+        self.assertEqual(response.json()["files"], [])
+        self.assertEqual(
+            response.json()["base"]["tree"],
+            subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=self.repo,
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip(),
+        )
+
     async def test_pull_endpoint_runs_serializes_and_recovers(self) -> None:
         release = threading.Event()
 
