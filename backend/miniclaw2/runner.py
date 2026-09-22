@@ -44,6 +44,7 @@ from .contextspace import (
 from .domain import (
     COLD_START_AGENT_OP_KIND,
     ArtifactMode,
+    ArtifactRef,
     Category,
     GateKind,
     GateState,
@@ -292,7 +293,7 @@ class NodeRunner:
 
     async def _run_agent(self) -> None:
         self.node.commit_before = self._workspace_head()
-        self._start_diff_review()
+        await self._start_diff_review()
         if self.project.temporary:
             self.node.provider_session_id = None
         # A cold start runs this same state machine — the transitions, commit
@@ -405,7 +406,7 @@ class NodeRunner:
                 if error_msg is not None:
                     self.node.error = error_msg
                 self.node.commit_after = self._workspace_head()
-                self._finish_diff_review()
+                await self._finish_diff_review()
                 if is_cold_start:
                     # No reap: the agent was never told the lane or the preview
                     # contract exists, so there is nothing of its own to fold in.
@@ -450,7 +451,7 @@ class NodeRunner:
             error_msg = str(exc)
             self.node.error = error_msg
             self.node.commit_after = self._workspace_head()
-            self._finish_diff_review()
+            await self._finish_diff_review()
             self._write_stub_preview(NodeState.ERROR, reason=error_msg)
             self._transition(NodeState.ERROR, started=True, finished=True)
             await self._emit_node_started()
@@ -462,7 +463,7 @@ class NodeRunner:
             error_msg = f"Unexpected runner error: {exc}"
             self.node.error = error_msg
             self.node.commit_after = self._workspace_head()
-            self._finish_diff_review()
+            await self._finish_diff_review()
             self._write_stub_preview(NodeState.ERROR, reason=error_msg)
             self._transition(NodeState.ERROR, started=True, finished=True)
             await self._emit_node_started()
@@ -1257,27 +1258,28 @@ class NodeRunner:
             names.append(self._diff_review_artifact)
         return names
 
-    def _start_diff_review(self) -> None:
+    async def _start_diff_review(self) -> None:
         if (
             not self.node.diff_review
             or self.project.persistence_mode is not ProjectPersistenceMode.DURABLE
         ):
             return
         self._diff_review_base_at = time.time()
-        self._diff_review_base_tree = write_tree_snapshot(
+        self._diff_review_base_tree = await asyncio.to_thread(
+            write_tree_snapshot,
             self.project.root_path,
             ref_name=self._diff_review_ref,
         )
         if self._diff_review_base_tree is None:
             logger.warning("could not capture diff-review base for %s", self.node.id)
 
-    def _finish_diff_review(self) -> None:
+    async def _finish_diff_review(self) -> None:
         base = self._diff_review_base_tree
         if base is None:
             return
         try:
             ended_at = time.time()
-            head = write_tree_snapshot(self.project.root_path)
+            head = await asyncio.to_thread(write_tree_snapshot, self.project.root_path)
             if head is None:
                 logger.warning("could not capture diff-review head for %s", self.node.id)
                 return
@@ -1289,7 +1291,8 @@ class NodeRunner:
                 other_end = other.finished_at or ended_at
                 if other.started_at <= ended_at and other_end >= started_at:
                     concurrent.append(other.id)
-            payload = build_diff_artifact(
+            payload = await asyncio.to_thread(
+                build_diff_artifact,
                 self.project.root_path,
                 base_tree=base,
                 head_tree=head,
@@ -1297,8 +1300,10 @@ class NodeRunner:
                 ended_at=ended_at,
                 concurrent_node_ids=concurrent,
             )
-            if write_diff_artifact(
-                workspace_artifacts_dir(self.project, self.node.id), payload
+            if await asyncio.to_thread(
+                write_diff_artifact,
+                workspace_artifacts_dir(self.project, self.node.id),
+                payload,
             ):
                 self._diff_review_artifact = DIFF_ARTIFACT_NAME
             else:
@@ -1308,8 +1313,21 @@ class NodeRunner:
         except Exception:  # noqa: BLE001
             logger.exception("failed to build diff-review artifact for %s", self.node.id)
         finally:
-            delete_snapshot_ref(self.project.root_path, self._diff_review_ref)
+            await asyncio.to_thread(
+                delete_snapshot_ref, self.project.root_path, self._diff_review_ref
+            )
             self._diff_review_base_tree = None
+
+    def _agent_artifact_refs(
+        self, declared: list[str], refs: list[ArtifactRef]
+    ) -> list[ArtifactRef]:
+        declared_names = set(declared)
+        framework_name = self._diff_review_artifact
+        return [
+            ref
+            for ref in refs
+            if ref.name in declared_names and ref.name != framework_name
+        ]
 
     def _write_cold_start_preview(
         self, final_state: NodeState, *, reason: str = ""
@@ -1476,7 +1494,7 @@ class NodeRunner:
             return False, f"failed to publish artifacts: {exc}"
         artifact_issue = artifact_requirement_issue(
             self.node.artifact_mode,
-            refs,
+            self._agent_artifact_refs(preview.artifacts, refs),
         )
         if artifact_issue is not None:
             return False, artifact_issue
@@ -1553,7 +1571,7 @@ class NodeRunner:
             )
             artifact_issue = artifact_requirement_issue(
                 self.node.artifact_mode,
-                refs,
+                self._agent_artifact_refs(preview.artifacts, refs),
             )
             if artifact_issue is not None:
                 return False, artifact_issue

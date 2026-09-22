@@ -379,6 +379,43 @@ class RunnerPreviewRepairTests(unittest.IsolatedAsyncioTestCase):
         ).stdout
         self.assertEqual(refs, "")
 
+    async def test_diff_review_does_not_satisfy_custom_artifact_requirement(self) -> None:
+        node = self._node()
+        node.diff_review = True
+        node.artifact_mode = ArtifactMode.CUSTOM
+        node.artifact_spec = "生成一份自定义报告"
+        self.store.update_node(node)
+        provider = _DiffReviewProvider()
+        runner = NodeRunner(node, self.project, self.store, lambda _event: asyncio.sleep(0))
+
+        with patch.object(runner_module, "_make_provider", return_value=provider):
+            await asyncio.wait_for(runner.run(), timeout=5.0)
+
+        self.assertEqual(node.state, NodeState.ERROR)
+        self.assertIn("artifact_mode=custom requires", node.error or "")
+        self.assertIn("run-diff.json", [ref.name for ref in node.artifacts])
+
+    async def test_diff_review_git_capture_does_not_block_event_loop(self) -> None:
+        node = self._node()
+        node.diff_review = True
+        self.store.update_node(node)
+        runner = NodeRunner(node, self.project, self.store, lambda _event: asyncio.sleep(0))
+        completed = False
+
+        def slow_snapshot(*_args, **_kwargs):
+            nonlocal completed
+            import time
+
+            time.sleep(0.1)
+            completed = True
+            return None
+
+        with patch.object(runner_module, "write_tree_snapshot", side_effect=slow_snapshot):
+            task = asyncio.create_task(runner._start_diff_review())
+            await asyncio.sleep(0.02)
+            self.assertFalse(completed)
+            await task
+
     def test_launch_snapshot_preserves_queued_node_planspace(self) -> None:
         node = self._node()
         queued_planspace_id = node.planspace_id

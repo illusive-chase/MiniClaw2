@@ -8,7 +8,6 @@ from pathlib import Path
 from typing import Any
 
 from .artifacts import MAX_ARTIFACT_BYTES
-from .domain import Node
 from .git_state import GitFileStatus, tree_diff, tree_file_bytes
 
 
@@ -39,6 +38,12 @@ def _text_blob(cwd: str, tree: str, path: str) -> tuple[str | None, bool]:
         return None, True
 
 
+def _serialized_artifact(payload: dict[str, Any]) -> bytes:
+    return (
+        json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n"
+    ).encode("utf-8")
+
+
 def build_diff_artifact(
     cwd: str,
     *,
@@ -48,7 +53,7 @@ def build_diff_artifact(
     ended_at: float,
     concurrent_node_ids: list[str],
 ) -> dict[str, Any]:
-    """Build a complete file inventory while inlining content within budget."""
+    """Build a bounded file inventory while inlining content within budget."""
     changed = tree_diff(cwd, base_tree, head_tree)
     files: list[dict[str, Any]] = []
     used = 0
@@ -59,6 +64,8 @@ def build_diff_artifact(
             "path": item.path,
             "status": status,
             "old_path": item.old_path,
+            "old_mode": item.old_mode,
+            "new_mode": item.new_mode,
             "additions": item.additions,
             "deletions": item.deletions,
             "binary": item.binary,
@@ -97,11 +104,11 @@ def build_diff_artifact(
             "deletions": sum(item.deletions for item in changed),
         },
         "truncated": truncated,
+        "omitted_files": 0,
         "files": files,
     }
-    # The content budget is conservative, but keep the publication cap as a
-    # hard invariant if paths or metadata are unexpectedly huge.
-    if len(json.dumps(artifact, ensure_ascii=False).encode("utf-8")) > MAX_ARTIFACT_BYTES:
+    # Enforce the cap against exactly the bytes write_diff_artifact writes.
+    if len(_serialized_artifact(artifact)) > MAX_ARTIFACT_BYTES:
         for entry in reversed(files):
             if not entry.get("inlined"):
                 continue
@@ -110,8 +117,28 @@ def build_diff_artifact(
             entry["inlined"] = False
             entry["omitted_reason"] = "exceeds artifact size cap"
             artifact["truncated"] = True
-            if len(json.dumps(artifact, ensure_ascii=False).encode("utf-8")) <= MAX_ARTIFACT_BYTES:
+            if len(_serialized_artifact(artifact)) <= MAX_ARTIFACT_BYTES:
                 break
+    if len(_serialized_artifact(artifact)) > MAX_ARTIFACT_BYTES:
+        # A pathological inventory can exceed the cap even without blob content.
+        # Keep the largest leading inventory that fits and record the exact loss.
+        complete_files = list(files)
+        low = 0
+        high = len(complete_files)
+        while low < high:
+            keep = (low + high + 1) // 2
+            artifact["files"] = complete_files[:keep]
+            artifact["omitted_files"] = len(complete_files) - keep
+            artifact["truncated"] = True
+            if len(_serialized_artifact(artifact)) <= MAX_ARTIFACT_BYTES:
+                low = keep
+            else:
+                high = keep - 1
+        artifact["files"] = complete_files[:low]
+        artifact["omitted_files"] = len(complete_files) - low
+        artifact["truncated"] = True
+    if len(_serialized_artifact(artifact)) > MAX_ARTIFACT_BYTES:
+        raise ValueError("diff artifact metadata exceeds the artifact size cap")
     return artifact
 
 
@@ -121,8 +148,5 @@ def write_diff_artifact(output_dir: Path, payload: dict[str, Any]) -> bool:
     if path.exists():
         return False
     output_dir.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
+    path.write_bytes(_serialized_artifact(payload))
     return True

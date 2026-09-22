@@ -12,7 +12,7 @@ const artifact = {
   base: { tree: "a".repeat(40), at: "2026-09-22T10:00:00Z" },
   head: { tree: "b".repeat(40), at: "2026-09-22T10:05:00Z" },
   concurrent_node_ids: ["abcd1234efgh", "9876fedcba"],
-  totals: { files: 3, additions: 18, deletions: 6 },
+  totals: { files: 5, additions: 18, deletions: 6 },
   truncated: true,
   files: [
     {
@@ -43,6 +43,30 @@ const artifact = {
       binary: false,
       inlined: false,
       omitted_reason: "exceeds inline budget",
+    },
+    {
+      path: "scripts/check.sh",
+      status: "modified",
+      old_mode: "100644",
+      new_mode: "100755",
+      additions: 0,
+      deletions: 0,
+      binary: false,
+      inlined: true,
+      before: "#!/bin/sh\n",
+      after: "#!/bin/sh\n",
+    },
+    {
+      path: "config/value.txt",
+      status: "modified",
+      old_mode: "100644",
+      new_mode: "100644",
+      additions: 0,
+      deletions: 0,
+      binary: false,
+      inlined: true,
+      before: "VALUE=1",
+      after: "VALUE=1\n",
     },
   ],
 };
@@ -86,8 +110,12 @@ try {
   const page = await browser.newPage({ viewport: { width: 1366, height: 850 } });
   await page.goto(`http://127.0.0.1:${address.port}/#/diff?src=diff&session=p1&node=n1&name=run-diff.json`);
   await page.locator("section").getByText("backend/miniclaw2/runner.py", { exact: true }).waitFor();
-  assert.ok(await page.getByText("3 files", { exact: true }).count() >= 1);
+  assert.ok(await page.getByText("5 files", { exact: true }).count() >= 1);
   assert.equal(await page.locator("text=以下改动可能包含它们的产出").count(), 1);
+  await page.getByRole("button", { name: /scripts\/check\.sh/ }).click();
+  assert.equal(await page.getByText("100644 -> 100755", { exact: true }).count(), 1);
+  await page.getByRole("button", { name: /config\/value\.txt/ }).click();
+  assert.equal(await page.getByText("\\ 文件末尾没有换行符", { exact: true }).count(), 1);
   await page.screenshot({ path: "/tmp/miniclaw2-diff-review-desktop.png", fullPage: true });
 
   await page.setViewportSize({ width: 390, height: 844 });

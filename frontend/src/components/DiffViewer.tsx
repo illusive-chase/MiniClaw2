@@ -15,6 +15,8 @@ export type DiffFile = {
   path: string;
   status: "added" | "modified" | "deleted" | "renamed";
   old_path?: string | null;
+  old_mode?: string | null;
+  new_mode?: string | null;
   additions: number;
   deletions: number;
   binary: boolean;
@@ -31,6 +33,7 @@ export type DiffArtifact = {
   concurrent_node_ids: string[];
   totals: { files: number; additions: number; deletions: number };
   truncated: boolean;
+  omitted_files?: number;
   files: DiffFile[];
 };
 
@@ -49,23 +52,31 @@ export function parseDiffArtifact(value: unknown): DiffArtifact | null {
 }
 
 type AlignedLine = {
-  left?: { number: number; text: string };
-  right?: { number: number; text: string };
+  left?: { number?: number; text: string; eofMarker?: boolean };
+  right?: { number?: number; text: string; eofMarker?: boolean };
   changed: boolean;
 };
 
-function alignLines(before: string, after: string): AlignedLine[] {
-  const left = before.split("\n");
-  const right = after.split("\n");
+export function alignLines(before: string | null, after: string | null): AlignedLine[] {
+  const leftText = before ?? "";
+  const rightText = after ?? "";
+  const leftMissingNewline = before !== null && before.length > 0 && !before.endsWith("\n");
+  const rightMissingNewline = after !== null && after.length > 0 && !after.endsWith("\n");
+  const left = leftText.split("\n");
+  const right = rightText.split("\n");
   if (left.at(-1) === "") left.pop();
   if (right.at(-1) === "") right.pop();
+  if (leftText === "") left.length = 0;
+  if (rightText === "") right.length = 0;
   if (left.length * right.length > 250_000) {
     const size = Math.max(left.length, right.length);
-    return Array.from({ length: size }, (_, index) => ({
+    const rows = Array.from({ length: size }, (_, index) => ({
       left: index < left.length ? { number: index + 1, text: left[index] } : undefined,
       right: index < right.length ? { number: index + 1, text: right[index] } : undefined,
       changed: left[index] !== right[index],
     }));
+    appendEofMarker(rows, before, after, leftMissingNewline, rightMissingNewline);
+    return rows;
   }
   const dp = Array.from({ length: left.length + 1 }, () =>
     new Uint32Array(right.length + 1),
@@ -97,7 +108,24 @@ function alignLines(before: string, after: string): AlignedLine[] {
       i += 1;
     }
   }
+  appendEofMarker(rows, before, after, leftMissingNewline, rightMissingNewline);
   return rows;
+}
+
+function appendEofMarker(
+  rows: AlignedLine[],
+  before: string | null,
+  after: string | null,
+  leftMissingNewline: boolean,
+  rightMissingNewline: boolean,
+) {
+  if (before === after || (!leftMissingNewline && !rightMissingNewline)) return;
+  const marker = { text: "\\ 文件末尾没有换行符", eofMarker: true };
+  rows.push({
+    left: leftMissingNewline ? marker : undefined,
+    right: rightMissingNewline ? marker : undefined,
+    changed: true,
+  });
 }
 
 function statusIcon(status: DiffFile["status"]) {
@@ -114,7 +142,7 @@ export function DiffViewer({ artifact }: { artifact: DiffArtifact }) {
   const selected = artifact.files.find((file) => file.path === selectedPath) ?? artifact.files[0];
   const rows = useMemo(
     () => selected?.inlined
-      ? alignLines(selected.before ?? "", selected.after ?? "")
+      ? alignLines(selected.before ?? null, selected.after ?? null)
       : [],
     [selected],
   );
@@ -158,6 +186,7 @@ export function DiffViewer({ artifact }: { artifact: DiffArtifact }) {
           <span className="font-medium text-ink-strong">{artifact.totals.files} files</span>
           <span className="ml-2 text-state-review">+{artifact.totals.additions}</span>
           <span className="ml-1 text-state-error">-{artifact.totals.deletions}</span>
+          {!!artifact.omitted_files && <span className="ml-2">省略 {artifact.omitted_files}</span>}
         </div>
         <select
           value={selected?.path ?? ""}
@@ -192,8 +221,15 @@ export function DiffViewer({ artifact }: { artifact: DiffArtifact }) {
         {selected ? (
           <>
             <div className="flex min-h-11 items-center justify-between gap-3 border-b border-line bg-surface-raised px-3">
-              <div className="min-w-0 truncate font-mono text-[11px] text-ink-strong" title={selected.path}>
-                {selected.old_path ? `${selected.old_path} -> ` : ""}{selected.path}
+              <div className="flex min-w-0 items-center gap-2 font-mono text-[11px] text-ink-strong">
+                <span className="min-w-0 truncate" title={selected.path}>
+                  {selected.old_path ? `${selected.old_path} -> ` : ""}{selected.path}
+                </span>
+                {selected.old_mode && selected.new_mode && selected.old_mode !== selected.new_mode && (
+                  <span className="flex-none text-[10px] text-ink-muted">
+                    {selected.old_mode} -&gt; {selected.new_mode}
+                  </span>
+                )}
               </div>
               <div className="inline-flex flex-none rounded border border-line bg-surface-sunken p-0.5 md:hidden">
                 {(["before", "after"] as const).map((side) => (
@@ -232,7 +268,9 @@ export function DiffViewer({ artifact }: { artifact: DiffArtifact }) {
             )}
           </>
         ) : (
-          <div className="m-auto text-sm text-ink-muted">本次运行没有文件改动。</div>
+          <div className="m-auto text-sm text-ink-muted">
+            {artifact.omitted_files ? "文件清单超过产物大小限制，条目已省略。" : "本次运行没有文件改动。"}
+          </div>
         )}
       </section>
     </div>
@@ -241,7 +279,7 @@ export function DiffViewer({ artifact }: { artifact: DiffArtifact }) {
 
 function DiffCell({ side, line, changed, mobileSide }: {
   side: "before" | "after";
-  line?: { number: number; text: string };
+  line?: { number?: number; text: string; eofMarker?: boolean };
   changed: boolean;
   mobileSide: "before" | "after";
 }) {
@@ -251,7 +289,7 @@ function DiffCell({ side, line, changed, mobileSide }: {
   return (
     <div className={`min-w-0 grid-cols-[48px_minmax(0,1fr)] border-line md:grid ${side === "after" ? "md:border-l" : ""} ${mobileSide === side ? "grid" : "hidden"} ${changedClass}`}>
       <span className="select-none border-r border-line px-2 text-right text-ink-subtle">{line?.number ?? ""}</span>
-      <pre className="min-h-5 overflow-visible whitespace-pre px-2 text-ink">{line?.text ?? " "}</pre>
+      <pre className={`min-h-5 overflow-visible whitespace-pre px-2 ${line?.eofMarker ? "italic text-ink-muted" : "text-ink"}`}>{line?.text ?? " "}</pre>
     </div>
   );
 }

@@ -80,6 +80,8 @@ class GitFileStatus:
     index_status: str = "."
     worktree_status: str = "."
     old_path: str | None = None
+    old_mode: str | None = None
+    new_mode: str | None = None
     additions: int = 0
     deletions: int = 0
     binary: bool = False
@@ -790,7 +792,7 @@ def tree_diff(cwd: str, base: str, head: str) -> list[GitFileStatus]:
     """Return stable file-level changes between two tree objects."""
     names = _git(
         cwd,
-        ["diff", "--name-status", "-z", "--find-renames", base, head],
+        ["diff", "--raw", "-z", "--find-renames", base, head],
         timeout=60,
     )
     if names.returncode != 0:
@@ -808,11 +810,16 @@ def tree_diff(cwd: str, base: str, head: str) -> list[GitFileStatus]:
     records = names.stdout.split("\x00")
     index = 0
     while index < len(records):
-        status = records[index]
+        header = records[index]
         index += 1
-        if not status or index >= len(records):
+        if not header or index >= len(records):
             continue
-        code = status[:1]
+        fields = header.split()
+        if len(fields) != 5 or not fields[0].startswith(":"):
+            continue
+        old_mode = fields[0][1:]
+        new_mode = fields[1]
+        code = fields[4][:1]
         old_path: str | None = None
         if code in {"R", "C"}:
             old_path = records[index]
@@ -829,6 +836,8 @@ def tree_diff(cwd: str, base: str, head: str) -> list[GitFileStatus]:
         files.append(GitFileStatus(
             path=path,
             old_path=old_path,
+            old_mode=None if old_mode == "000000" else old_mode,
+            new_mode=None if new_mode == "000000" else new_mode,
             index_status="R" if code == "C" else code,
             additions=additions,
             deletions=deletions,
