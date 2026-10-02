@@ -3,8 +3,10 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
+from typing import Any, Iterator
 from unittest.mock import patch
 from types import SimpleNamespace
 
@@ -804,6 +806,92 @@ def test_context_root_change_does_not_reuse_previous_receipt(tmp_path: Path, mon
     second_receipt = (second / ".migration-local" / "state.json").read_text()
     assert first_receipt != second_receipt
     assert storage._context.root == second.resolve()
+
+
+@contextmanager
+def mounted(root: Path, *, device: int, birth: float) -> Iterator[None]:
+    """Report `root` with this mount device and creation time.
+
+    APFS hands out `st_dev` per mount, so a reboot changes it while the
+    inode and creation time stay. Patching keeps the test meaningful on
+    platforms whose real stat carries no creation time.
+    """
+    real_stat = Path.stat
+    target = root.resolve()
+
+    class Status:
+        st_dev = device
+        st_birthtime = birth
+
+        def __init__(self, status: os.stat_result) -> None:
+            self._status = status
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(self._status, name)
+
+    def stat(self: Path, *, follow_symlinks: bool = True) -> Any:
+        status = real_stat(self, follow_symlinks=follow_symlinks)
+        return Status(status) if self == target else status
+
+    with patch.object(Path, "stat", stat):
+        yield
+
+
+def bound_store(root: Path) -> Store:
+    store = Store(root)
+    store.create_project(Project(root_path=str(root / "workspace")))
+    assert list(root.glob(f"projects/*/hosts/{store.machine.id}/local.json")), "需要本机域数据才会检查完成凭据"
+    return store
+
+
+def test_reboot_remount_keeps_local_receipt_trusted(tmp_path: Path) -> None:
+    with mounted(tmp_path, device=7, birth=100.0):
+        store = bound_store(tmp_path)
+    receipt = (tmp_path / ".migration-local" / "state.json").read_bytes()
+    store.coordinator.ready = False
+    with mounted(tmp_path, device=8, birth=100.0):
+        assert open_storage(tmp_path) is store.coordinator
+    assert (tmp_path / ".migration-local" / "state.json").read_bytes() == receipt
+
+
+def test_legacy_device_receipt_survives_remount_and_is_rewritten(tmp_path: Path) -> None:
+    receipt_path = tmp_path / ".migration-local" / "state.json"
+    with mounted(tmp_path, device=7, birth=100.0):
+        store = bound_store(tmp_path)
+        inode = tmp_path.stat().st_ino
+    accepted = ["miniclaw2/store/v16:example-contract"]
+    atomic_json(receipt_path, {**read_object(receipt_path), "root_identity": {"device": 7, "inode": inode},
+                               "accepted_migration_contracts": accepted})
+    store.coordinator.ready = False
+    with mounted(tmp_path, device=8, birth=100.0):
+        assert open_storage(tmp_path) is store.coordinator
+    rewritten = read_object(receipt_path)
+    assert rewritten["root_identity"] == {"inode": inode, "birth": 100.0}
+    assert rewritten["accepted_migration_contracts"] == accepted
+
+
+def test_copied_or_reused_root_does_not_inherit_receipt(tmp_path: Path) -> None:
+    import shutil
+
+    from miniclaw2.migrations.coordinator import receipt_identity_matches
+
+    source = tmp_path / "source"
+    store = bound_store(source)
+    receipt = read_object(source / ".migration-local" / "state.json")
+    assert receipt_identity_matches(receipt, source, store.machine.id)
+    copy = tmp_path / "copy"
+    shutil.copytree(source, copy)
+    assert not receipt_identity_matches(read_object(copy / ".migration-local" / "state.json"), copy, store.machine.id)
+    legacy = {**receipt, "root_identity": {"device": 7, "inode": source.stat().st_ino}}
+    with mounted(source, device=7, birth=100.0):
+        trusted = {**receipt, "root_identity": {"inode": source.stat().st_ino, "birth": 100.0}}
+        assert receipt_identity_matches(trusted, source, store.machine.id)
+        assert not receipt_identity_matches(trusted, source, "another-machine")
+    with mounted(source, device=7, birth=200.0):
+        # Same inode, different creation time: a new directory that reused the number.
+        assert not receipt_identity_matches(trusted, source, store.machine.id)
+    with mounted(copy, device=7, birth=100.0):
+        assert not receipt_identity_matches(legacy, copy, store.machine.id)
 
 
 def test_current_corrupt_config_enters_maintenance(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

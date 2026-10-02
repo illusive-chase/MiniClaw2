@@ -19,6 +19,35 @@ _COORDINATORS: weakref.WeakValueDictionary[Path, StorageCoordinator] = weakref.W
 _LOCK = threading.RLock()
 
 
+def root_identity(root: Path) -> dict[str, Any]:
+    """Identify the physical data root across reboots but not across copies.
+
+    APFS assigns `st_dev` per mount, so it can change on any boot while the
+    directory stays put. Where the platform reports a creation time, the
+    inode plus that time is what a copy cannot reproduce; elsewhere the
+    device number remains the boot-stable half.
+    """
+    status = root.stat()
+    birth = getattr(status, "st_birthtime", None)
+    if birth is None:
+        return {"device": status.st_dev, "inode": status.st_ino}
+    return {"inode": status.st_ino, "birth": birth}
+
+
+def receipt_identity_matches(receipt: dict[str, Any], root: Path, machine_id: str) -> bool:
+    if receipt.get("machine_id") != machine_id:
+        return False
+    stored, current = receipt.get("root_identity"), root_identity(root)
+    if stored == current:
+        return True
+    # Receipts written before creation time was recorded carry the device
+    # number of the boot they were written in. On a platform that reports
+    # creation time only their inode is still comparable; the next apply
+    # rewrites them in the current form.
+    return ("birth" in current and isinstance(stored, dict) and set(stored) == {"device", "inode"}
+            and stored["inode"] == current["inode"])
+
+
 class StorageCoordinator:
     def __init__(self, root: Path) -> None:
         self.root = root
@@ -30,7 +59,7 @@ class StorageCoordinator:
         path = safe_path(root, LOCAL_DIRECTORY + "/lock")
         durable_mkdir(path.parent)
         self._lock_file = path.open("a+b")
-        self.root_identity = (root.stat().st_dev, root.stat().st_ino)
+        self.root_identity = root_identity(root)
         try:
             if os.name == "nt":
                 import msvcrt
@@ -50,7 +79,7 @@ class StorageCoordinator:
     def assert_current(self) -> None:
         if self.maintaining:
             return
-        if not self.root.exists() or (self.root.stat().st_dev, self.root.stat().st_ino) != self.root_identity:
+        if not self.root.exists() or root_identity(self.root) != self.root_identity:
             raise MigrationError("migration_failed", "运行中的数据根已被替换，请重启并重新准入", self.root)
         if (self.root / LOCAL_DIRECTORY / "pending.json").exists():
             raise MigrationError("migration_failed", "迁移事务尚未完成，请先执行 migrations recover", self.root)
@@ -89,8 +118,7 @@ class StorageCoordinator:
         if path.exists():
             receipt = read_object(path)
             version = version_of(receipt, path)
-            identity = {"device": root.stat().st_dev, "inode": root.stat().st_ino}
-            if receipt.get("machine_id") == machine_id and receipt.get("root_identity") == identity:
+            if receipt_identity_matches(receipt, root, machine_id):
                 return version
         scope = "external_context" if external else "local"
         relevant = [
@@ -122,8 +150,7 @@ class StorageCoordinator:
         return CURRENT_VERSION
 
     def receipt(self, root: Path, machine_id: str) -> dict[str, Any]:
-        return {**marker(), "machine_id": machine_id,
-                "root_identity": {"device": root.stat().st_dev, "inode": root.stat().st_ino}}
+        return {**marker(), "machine_id": machine_id, "root_identity": root_identity(root)}
 
     def apply(self, machine_id: str, *, accept_data_loss: bool = False) -> None:
         with self.mutex:
@@ -139,15 +166,20 @@ class StorageCoordinator:
                         local = min(local, shared)
                     external = self.receipt_version(roots[1], machine_id, external=True) if len(roots) > 1 else CURRENT_VERSION
                     sources = {"shared": shared, "local": local, "external_context": external}
-                    has_receipts = all((root / LOCAL_DIRECTORY / "state.json").exists() for root in roots)
+                    # A receipt that matched only through its legacy device
+                    # number takes the publication path once, which rewrites it.
+                    receipts_fresh = all(
+                        (root / LOCAL_DIRECTORY / "state.json").exists()
+                        and read_object(root / LOCAL_DIRECTORY / "state.json").get("root_identity") == root_identity(root)
+                        for root in roots
+                    )
                     receipt_path = self.root / LOCAL_DIRECTORY / "state.json"
                     old_receipt = read_object(receipt_path) if receipt_path.exists() else {}
-                    identity = {"device": self.root.stat().st_dev, "inode": self.root.stat().st_ino}
-                    receipt_matches = old_receipt.get("machine_id") == machine_id and old_receipt.get("root_identity") == identity
+                    receipt_matches = receipt_identity_matches(old_receipt, self.root, machine_id)
                     accepted = set(old_receipt.get("accepted_migration_contracts", [])) if receipt_matches else set()
                     if accept_data_loss:
                         accepted.update(migration.contract for migration in steps(MINIMUM_VERSION) if migration.destructive)
-                    if all(version == CURRENT_VERSION for version in sources.values()) and has_receipts and receipt_matches and not accept_data_loss:
+                    if all(version == CURRENT_VERSION for version in sources.values()) and receipts_fresh and receipt_matches and not accept_data_loss:
                         self.ready = True
                         return
                     owner_path = self.root / ".runtime-owner.json"
