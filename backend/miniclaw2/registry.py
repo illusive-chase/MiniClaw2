@@ -82,6 +82,7 @@ from .domain import (
     UNBOUND_ROOT_PATH,
     normalize_planspace_mode,
 )
+from .gate_observer import NULL_GATE_OBSERVER, GateObserver
 from .language import normalize_preferred_language
 from .materialize import ARTIFACTS_DIRNAME, GRAPH_DIRNAME, lane_root
 from .model_catalog import (
@@ -379,6 +380,10 @@ class ProjectRegistry:
         self._storage_sync_pending = False
         self._remote_transports: RemoteTransportPool | None = None
         self._remote_git_roots: set[str] = set()
+        self._runtime_owner = False
+        #: Extra answer channels (the Feishu bridge) observe every inline gate.
+        #: Read when a runner is built, so attach before scheduling work.
+        self.gate_observer: GateObserver = NULL_GATE_OBSERVER
         if initialize:
             self.initialize()
 
@@ -398,6 +403,7 @@ class ProjectRegistry:
         store.sync.add_pre_commit_callback(self._record_host_heads)
         store.sync.add_idle_callback(self.require_storage_idle)
         sweep = self._claim_runtime_ownership()
+        self._runtime_owner = sweep
         for project in store.list_projects():
             if project.temporary and store.read_only_reason is None:
                 store.prepare_temporary_workspace(project)
@@ -473,6 +479,25 @@ class ProjectRegistry:
         except OSError:
             logger.exception("failed to record runtime ownership at %s", path)
         return True
+
+    @property
+    def is_runtime_owner(self) -> bool:
+        """Whether this process claimed the store; only the owner talks to Feishu."""
+        self.initialize()
+        return self._runtime_owner
+
+    def publish_project_event(self, pid: str, event: dict[str, Any]) -> None:
+        """Broadcast an ephemeral, never-persisted event to a project's observers."""
+        rt = self._runtimes.get(pid)
+        if rt is None:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        task = loop.create_task(rt.broadcast(event))
+        rt.background_tasks.add(task)
+        task.add_done_callback(rt.background_tasks.discard)
 
     def _record_host_heads(self) -> None:
         """Stamp each bound project's local repository state before sync."""
@@ -2134,6 +2159,7 @@ class ProjectRegistry:
                 if rt.project.persistence_mode is ProjectPersistenceMode.REMOTE
                 else None
             ),
+            gate_observer=self.gate_observer,
         )
         task = asyncio.create_task(coro if coro is not None else runner.run())
         rt.runners[node.id] = runner
@@ -3877,6 +3903,8 @@ class ProjectRegistry:
         interrupt: bool = False,
         permission_mode: str | None = None,
         clear_context: bool = False,
+        source: str = "web",
+        via: str | None = None,
     ) -> bool:
         rt = self._runtimes.get(pid)
         if rt is None:
@@ -3902,6 +3930,8 @@ class ProjectRegistry:
                 interrupt=interrupt,
                 permission_mode=permission_mode,
                 clear_context=clear_context,
+                source=source,
+                via=via,
             ):
                 return True
         return False

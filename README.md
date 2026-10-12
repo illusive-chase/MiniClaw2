@@ -271,6 +271,61 @@ curl -X POST http://127.0.0.1:8000/sessions \
   -d '{"cwd":"'"$PWD"'","auto_commit":true}'
 ```
 
+## Feishu Remote Answers
+
+An agent's `ask_user` question (Claude `AskUserQuestion`, Codex
+`request_user_input` and the dynamic `ask_user` tool) can be pushed to Feishu
+as an interactive card and answered from a phone. It is another answer
+channel for the same gate: whichever of the web dialog and the card answers
+first wins, and the other side shows that it was answered elsewhere.
+Permission requests and human-review prose stay web-only, and questions
+marked `isSecret` are never sent.
+
+Install the optional SDK into the backend environment and restart:
+
+```bash
+pip install -e 'backend[feishu]'   # pins lark-oapi==1.7.3
+```
+
+Then open **Global settings → 飞书远程回答**:
+
+- **扫码创建** on the first machine scans once and creates a dedicated app
+  with exactly two scopes (`im:message:send_as_bot`, `im:message:readonly`)
+  and the `card.action.trigger` callback over the long connection. No
+  developer-console setup or version release is needed; the scanner becomes
+  the bound account.
+- **加入已有应用** on every other machine: paste the first machine's App ID
+  and scan with the same Feishu account. The join reuses the same secret and
+  binding and keeps the two scopes; the settings page lists the app's scopes
+  and flags anything extra.
+- **手动填写** reuses an existing app (App ID/Secret plus a pairing code sent
+  to the bot in a direct message). That app also needs
+  `im:message.p2p_msg:readonly` and the `im.message.receive_v1` event.
+
+Cards are pushed only after a question has waited `delay_seconds` (default
+60) without an answer. Credentials live in `$MINICLAW_HOME/feishu.local.json`
+(mode 0600) and the per-host card ledger in `$MINICLAW_HOME/feishu/`; neither
+is synced. Only the process that owns the store connects, so a second
+backend on the same `MINICLAW_HOME` stays offline. Unbinding retires this
+machine's live cards first; if Feishu cannot be reached to do so, it asks
+before forgetting the credentials, because those cards would stay clickable
+with nobody left to read the answers relayed onto them.
+
+Several machines can share one app. Feishu delivers each card click to one
+random connected machine, so a machine that receives a click for another
+machine's card replaces the card with a receipt holding the answer; the
+owner reads its pending cards back every `poll_seconds` (default 30) and
+settles the receipt after checking it against its own ledger. A click that
+lands on the owner settles at once, so relayed answers are the only ones
+that wait for the next poll. With a single connection no polling happens;
+a lone connection is rechecked every minute, so a machine that comes online
+while a card is waiting starts relaying within about a minute plus one poll.
+Keep the app dedicated to MiniClaw2: any other program on the same long
+connection receives some of the clicks and makes them fail. The settings page
+shows the live connection count to make that visible, along with a local
+estimate of this machine's monthly API calls; the tenant's monthly quota is
+shared with every other self-built app, and polling stops on `99991403`.
+
 ## Layout
 
 ```

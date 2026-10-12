@@ -16,6 +16,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Feishu remote answers. Pinned: stopping the long connection relies on
+# private SDK members (see feishu_transport.py and its test).
+feishu = [
+    "lark-oapi==1.7.3",
+]
 test = [
     "httpx2>=2.0",
     "pytest>=8.0",

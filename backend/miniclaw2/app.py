@@ -64,6 +64,7 @@ from .events import (
     ReplayRequest,
     UserMessage,
 )
+from .feishu_bridge import FeishuBridge, FeishuBridgeError
 from .file_manager import (
     RevealError,
     RevealUnsupportedError,
@@ -196,6 +197,26 @@ class UpdateToolRequestSettingsRequest(BaseModel):
 
     timeout_seconds: StrictInt | None = Field(default=None, ge=1)
     timeout_action: Literal["accept", "reject"] | None = None
+
+
+class FeishuRegisterRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    mode: Literal["create", "join"]
+    app_id: str | None = None
+
+
+class FeishuSettingsRequest(BaseModel):
+    """Only the fields present change; ``app_secret`` is write-only."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool | None = None
+    brand: Literal["feishu", "lark"] | None = None
+    app_id: str | None = Field(default=None, max_length=128)
+    app_secret: str | None = Field(default=None, max_length=256)
+    delay_seconds: StrictInt | None = Field(default=None, ge=0, le=24 * 3600)
+    poll_seconds: StrictInt | None = Field(default=None, ge=5, le=3600)
 
 
 class SetupSyncRequest(BaseModel):
@@ -670,11 +691,13 @@ def _template_detail_payload(template: Template) -> dict[str, Any]:
 def create_app(
     registry: ProjectRegistry | None = None,
     update_checker: UpdateChecker | None = None,
+    feishu_bridge: FeishuBridge | None = None,
 ) -> FastAPI:
     from contextlib import asynccontextmanager
 
     registry = registry if registry is not None else ProjectRegistry(initialize=False)
     update_checker = update_checker if update_checker is not None else UpdateChecker()
+    feishu = feishu_bridge if feishu_bridge is not None else FeishuBridge(registry)
     configured_passcode = os.environ.get(PASSCODE_ENV)
     passcode_guard = (
         PasscodeGuard(configured_passcode) if configured_passcode is not None else None
@@ -723,6 +746,9 @@ def create_app(
         if consume_pending_exit(registry.store.root):
             yield
             return
+        # Attach before scheduling: runners read the observer when built.
+        registry.gate_observer = feishu
+        await feishu.start()
         schedule_all = getattr(registry, "schedule_all", None)
         if schedule_all is not None:
             schedule_all()
@@ -738,6 +764,12 @@ def create_app(
         try:
             yield
         finally:
+            # Close the long connection gracefully: a connection that dies
+            # without a close frame keeps receiving clicks it cannot answer.
+            try:
+                await feishu.stop()
+            except Exception:  # noqa: BLE001
+                logger.exception("failed to stop the feishu bridge")
             close_remote_transports = getattr(
                 registry, "close_remote_transports", None
             )
@@ -749,6 +781,7 @@ def create_app(
     app.state.storage_syncing = False
     app.state.storage_requests = 0
     app.state.update_checker = update_checker
+    app.state.feishu = feishu
     app.add_middleware(GZipMiddleware, minimum_size=1024, compresslevel=6)
     app.add_middleware(
         CORSMiddleware,
@@ -950,6 +983,57 @@ def create_app(
         _request: Request, exc: StoreReadOnlyError
     ) -> JSONResponse:
         return JSONResponse(status_code=409, content={"detail": str(exc)})
+
+    @app.exception_handler(FeishuBridgeError)
+    async def feishu_bridge_error(
+        _request: Request, exc: FeishuBridgeError
+    ) -> JSONResponse:
+        content: dict[str, Any] = {"detail": str(exc)}
+        if exc.state is not None:
+            content["state"] = exc.state
+        return JSONResponse(status_code=exc.status, content=content)
+
+    # Bridge state lives on the event loop: every handler below is async so
+    # FastAPI never runs it on a worker thread beside the loop.
+    @app.get("/feishu/status", response_model=dict[str, Any])
+    async def feishu_status(refresh: bool = False) -> dict[str, Any]:
+        return await feishu.status(refresh=refresh)
+
+    @app.put("/feishu/settings", response_model=dict[str, Any])
+    async def feishu_settings(body: FeishuSettingsRequest) -> dict[str, Any]:
+        await feishu.update_settings(body.model_dump(exclude_unset=True))
+        return await feishu.status()
+
+    @app.post("/feishu/register", response_model=dict[str, Any])
+    async def feishu_register(body: FeishuRegisterRequest) -> dict[str, Any]:
+        return await feishu.begin_registration(body.mode, body.app_id)
+
+    @app.get("/feishu/register", response_model=dict[str, Any] | None)
+    async def feishu_registration() -> dict[str, Any] | None:
+        return feishu.registration_status()
+
+    @app.delete("/feishu/register", response_model=dict[str, Any] | None)
+    async def feishu_cancel_registration() -> dict[str, Any] | None:
+        return await feishu.cancel_registration()
+
+    @app.post("/feishu/pairing", response_model=dict[str, Any])
+    async def feishu_pairing() -> dict[str, Any]:
+        return feishu.start_pairing()
+
+    @app.delete("/feishu/binding", response_model=dict[str, Any])
+    async def feishu_unbind(force: bool = False) -> dict[str, Any]:
+        await feishu.unbind(force=force)
+        return await feishu.status()
+
+    @app.post("/feishu/test", response_model=dict[str, Any])
+    async def feishu_test() -> dict[str, Any]:
+        return await feishu.send_test()
+
+    @app.get("/sessions/{sid}/feishu-relays", response_model=dict[str, dict[str, Any]])
+    async def feishu_relays(sid: str) -> dict[str, dict[str, Any]]:
+        if registry.get_project(sid) is None:
+            raise HTTPException(404, "session not found")
+        return feishu.relays_for(sid)
 
     @app.get("/model-presets", response_model=list[dict[str, Any]])
     def list_model_presets_endpoint() -> list[dict[str, Any]]:

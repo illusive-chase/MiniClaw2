@@ -38,6 +38,10 @@ import type {
   MarkdownLinkBase,
   MarkdownLinkVerdict,
   MarkdownFile,
+  FeishuRegistration,
+  FeishuSettingsPatch,
+  FeishuStatus,
+  GateRelayUpdated,
 } from "./types";
 import type { TemplateRewritePayload } from "./templateEditor";
 import type { DiffArtifact } from "./components/DiffViewer";
@@ -314,6 +318,75 @@ export async function updateToolRequestSettings(
       await readErrorDetail(res),
     );
   }
+  return res.json();
+}
+
+export async function getFeishuStatus(refresh = false): Promise<FeishuStatus> {
+  const res = await fetch(`/feishu/status${refresh ? "?refresh=true" : ""}`);
+  if (!res.ok) throw new ApiError("getFeishuStatus", res.status, await readErrorDetail(res));
+  return res.json();
+}
+
+export async function updateFeishuSettings(body: FeishuSettingsPatch): Promise<FeishuStatus> {
+  const res = await fetch("/feishu/settings", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new ApiError("updateFeishuSettings", res.status, await readErrorDetail(res));
+  return res.json();
+}
+
+export async function beginFeishuRegistration(
+  mode: "create" | "join",
+  appId?: string,
+): Promise<FeishuRegistration> {
+  const res = await fetch("/feishu/register", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ mode, app_id: appId ?? null }),
+  });
+  if (!res.ok) throw new ApiError("beginFeishuRegistration", res.status, await readErrorDetail(res));
+  return res.json();
+}
+
+export async function getFeishuRegistration(): Promise<FeishuRegistration | null> {
+  const res = await fetch("/feishu/register");
+  if (!res.ok) throw new ApiError("getFeishuRegistration", res.status, await readErrorDetail(res));
+  return res.json();
+}
+
+export async function cancelFeishuRegistration(): Promise<FeishuRegistration | null> {
+  const res = await fetch("/feishu/register", { method: "DELETE" });
+  if (!res.ok) throw new ApiError("cancelFeishuRegistration", res.status, await readErrorDetail(res));
+  return res.json();
+}
+
+export async function startFeishuPairing(): Promise<{ code: string; expires_at: number }> {
+  const res = await fetch("/feishu/pairing", { method: "POST" });
+  if (!res.ok) throw new ApiError("startFeishuPairing", res.status, await readErrorDetail(res));
+  return res.json();
+}
+
+/** `state` of the 409 when some cards could not be retired before unbinding. */
+export const FEISHU_CARDS_UNRETIRED = "feishu_cards_unretired";
+
+export async function unbindFeishu(force = false): Promise<FeishuStatus> {
+  const res = await fetch(`/feishu/binding${force ? "?force=true" : ""}`, { method: "DELETE" });
+  if (!res.ok) throw new ApiError("unbindFeishu", res.status, await readErrorDetail(res));
+  return res.json();
+}
+
+export async function sendFeishuTest(): Promise<void> {
+  const res = await fetch("/feishu/test", { method: "POST" });
+  if (!res.ok) throw new ApiError("sendFeishuTest", res.status, await readErrorDetail(res));
+}
+
+export async function listFeishuRelays(
+  sessionId: string,
+): Promise<Record<string, GateRelayUpdated>> {
+  const res = await fetch(`/sessions/${encodeURIComponent(sessionId)}/feishu-relays`);
+  if (!res.ok) throw new ApiError("listFeishuRelays", res.status, await readErrorDetail(res));
   return res.json();
 }
 

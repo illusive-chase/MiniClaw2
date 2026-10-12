@@ -143,6 +143,20 @@ export type ContextRefreshUpdated = {
   seq: 0;
 };
 
+/* Ephemeral (seq 0): the Feishu bridge's progress on one ask_user gate.
+ * Never persisted or replayed; a page that reloads reads the current
+ * state from GET /sessions/{id}/feishu-relays. */
+export type GateRelayUpdated = {
+  type: "gate_relay_updated";
+  node_id: string;
+  gate_id: string;
+  state: "scheduled" | "sent" | "failed" | "cancelled";
+  at: number;
+  send_at?: number;
+  detail?: string;
+  seq: 0;
+};
+
 export type ServerEvent =
   | TextDelta
   | Thinking
@@ -155,6 +169,7 @@ export type ServerEvent =
   | NodeUpdated
   | NodeRemoved
   | ContextRefreshUpdated
+  | GateRelayUpdated
   | GitStatusEvent;
 
 export type ClientMessage =
@@ -775,3 +790,59 @@ export type NodePaths = {
 };
 
 export type NodePosition = { x: number; y: number; space: string };
+
+export type FeishuRegistration = {
+  mode: "create" | "join";
+  state: "starting" | "polling" | "succeeded" | "failed" | "cancelled";
+  /* Present only while polling. It carries the device code, so it is
+   * rendered locally and never sent to a third-party QR service. */
+  url: string | null;
+  expires_at: number | null;
+  error: string | null;
+  detail: string | null;
+  started_at: number;
+  app_id: string | null;
+};
+
+export type FeishuStatus = {
+  installed: boolean;
+  sdk: string;
+  runtime_owner: boolean;
+  configured: boolean;
+  enabled: boolean;
+  brand: "feishu" | "lark";
+  app_id: string | null;
+  binding_source: "created" | "joined" | "manual" | null;
+  bound: { open_id: string; at: number | null } | null;
+  host: { id: string; label: string; color: string };
+  connection: {
+    state: "off" | "connecting" | "connected" | "error";
+    detail: string | null;
+    since: number | null;
+  };
+  online_connections: { count: number | null; checked_at: number; error: string | null } | null;
+  scopes: {
+    granted?: string[];
+    unexpected?: string[];
+    missing?: string[];
+    error?: string;
+    checked_at: number;
+  } | null;
+  relay: { pending: number; last_poll_at: number | null; last_poll_error: string | null };
+  usage_this_month: { month: string; calls: number; by_kind: Record<string, number> };
+  quota_exhausted: boolean;
+  last_error: string | null;
+  delay_seconds: number;
+  poll_seconds: number;
+  pairing: { code: string; expires_at: number } | null;
+  registration: FeishuRegistration | null;
+};
+
+export type FeishuSettingsPatch = Partial<{
+  enabled: boolean;
+  brand: "feishu" | "lark";
+  app_id: string;
+  app_secret: string;
+  delay_seconds: number;
+  poll_seconds: number;
+}>;

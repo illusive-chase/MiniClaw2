@@ -39,6 +39,7 @@ from .contextspace import (
     StaleLaunchSettingsError,
     compose_context_bundle,
     contextspace_root,
+    planspace_display_title,
     require_resolvable_planspace,
 )
 from .domain import (
@@ -78,6 +79,7 @@ from .git_state import (
     local_only_shas,
     write_tree_snapshot,
 )
+from .gate_observer import NULL_GATE_OBSERVER, GateNotice, GateObserver, GateOutcome
 from .global_config import load_global_config
 from .language import language_launch_instruction, project_preferred_language
 from .launch_prompt import (
@@ -179,6 +181,7 @@ class NodeRunner:
         prepare_workspace: Callable[
             [], Awaitable[ProjectionSyncResult]
         ] | None = None,
+        gate_observer: GateObserver | None = None,
     ) -> None:
         self.node = node
         self.project = project
@@ -186,6 +189,7 @@ class NodeRunner:
         self.on_event = on_event
         self.on_state_change = on_state_change
         self.prepare_workspace = prepare_workspace
+        self.gate_observer = gate_observer or NULL_GATE_OBSERVER
         self._reap_lock = reap_lock or asyncio.Lock()
 
         self._seq = 0
@@ -219,23 +223,38 @@ class NodeRunner:
         interrupt: bool = False,
         permission_mode: str | None = None,
         clear_context: bool = False,
+        source: str = "web",
+        via: str | None = None,
     ) -> bool:
         fut = self._gates.get(gate_id)
         if fut is None or fut.done():
             return False
-        fut.get_loop().call_soon_threadsafe(
-            fut.set_result,
-            {
-                "allow": allow,
-                "message": message,
-                "updated_input": updated_input,
-                "response": response,
-                "scope": scope,
-                "interrupt": interrupt,
-                "permission_mode": permission_mode,
-                "clear_context": clear_context,
-            },
-        )
+        result = {
+            "allow": allow,
+            "message": message,
+            "updated_input": updated_input,
+            "response": response,
+            "scope": scope,
+            "interrupt": interrupt,
+            "permission_mode": permission_mode,
+            "clear_context": clear_context,
+            # Which answer channel won; providers ignore it, gates.jsonl
+            # keeps it so a resolved record says where its answer came from.
+            "source": source,
+            "via": via,
+        }
+        loop = fut.get_loop()
+        try:
+            running = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+        if running is loop:
+            # On the gate's own loop, settle now so a second channel answering
+            # in the same iteration sees ``done()`` and loses, instead of both
+            # being told they won.
+            fut.set_result(result)
+            return True
+        loop.call_soon_threadsafe(_set_if_pending, fut, result)
         return True
 
     async def interrupt(self) -> None:
@@ -2217,7 +2236,9 @@ class NodeRunner:
                 response_hint=request.response_hint,
             )
         )
+        self._notify_gate_opened(gate)
 
+        response: dict[str, Any] | None = None
         try:
             if request.subtype is GateSubtype.ASK_USER:
                 response = await future
@@ -2244,6 +2265,7 @@ class NodeRunner:
                     response = {"allow": allow, "message": message}
         finally:
             self._gates.pop(gate.id, None)
+            self._notify_gate_closed(gate.id, response)
             if gate.state is GateState.PENDING:
                 gate.state = GateState.RESOLVED
                 gate.resolved_at = time.time()
@@ -2253,7 +2275,72 @@ class NodeRunner:
         gate.response = response
         self.store.append_gate(self.project.id, gate, "resolved")
         self._gate_records.pop(gate.id, None)
+        if response.get("source") == "feishu":
+            via = response.get("via")
+            await self._emit(
+                Activity(
+                    kind="tool",
+                    status="finish",
+                    id=f"feishu-answer:{gate.id}",
+                    name="feishu",
+                    summary=(
+                        f"通过飞书回答（经 {via} 中转）" if via else "通过飞书回答"
+                    ),
+                )
+            )
         return response
+
+    def _notify_gate_opened(self, gate: HumanGate) -> None:
+        """Tell the observer a gate opened; it must never affect the gate."""
+        try:
+            lane_title = None
+            if self.node.planspace_id:
+                lane_title = planspace_display_title(
+                    contextspace_root(self.store.root), self.node.planspace_id
+                )
+            questions = gate.tool_input.get("questions")
+            self.gate_observer.opened(
+                GateNotice(
+                    gate_id=gate.id,
+                    project_id=self.project.id,
+                    node_id=self.node.id,
+                    subtype=gate.subtype.value,
+                    tool_name=gate.tool_name,
+                    questions=[
+                        item for item in questions if isinstance(item, dict)
+                    ] if isinstance(questions, list) else [],
+                    project_name=(
+                        self.project.name.strip()
+                        or Path(self.project.root_path).name
+                    ),
+                    lane_title=lane_title,
+                    node_label=" ".join(
+                        (self.node.summary or self.node.prompt or "").split()
+                    ),
+                    created_at=gate.created_at,
+                )
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("gate observer failed on open gate=%s", gate.id)
+
+    def _notify_gate_closed(
+        self, gate_id: str, response: dict[str, Any] | None
+    ) -> None:
+        source = response.get("source") if response else None
+        outcome = (
+            GateOutcome(
+                kind="answered",
+                source=str(source),
+                via=response.get("via") if response else None,
+                response=response.get("response") if response else None,
+            )
+            if source
+            else GateOutcome(kind="ended")
+        )
+        try:
+            self.gate_observer.closed(gate_id, outcome)
+        except Exception:  # noqa: BLE001
+            logger.exception("gate observer failed on close gate=%s", gate_id)
 
     def current_gate_summary(self) -> dict[str, Any] | None:
         """Describe the gate this node is currently blocked on, if any.
@@ -2290,6 +2377,11 @@ class NodeRunner:
                     self.store.append_gate(self.project.id, record, "resolved")
         self._gates.clear()
         self._gate_records.clear()
+
+
+def _set_if_pending(fut: asyncio.Future[dict[str, Any]], result: dict[str, Any]) -> None:
+    if not fut.done():
+        fut.set_result(result)
 
 
 GATE_SUMMARY_MAX_CHARS = 80

@@ -18,6 +18,7 @@ import {
 import { canApplyUpdate } from "../selfUpdate";
 import { storageGuidance, type StorageFailure } from "../storageMaintenance";
 import { StorageGuidanceBody } from "./StorageGuidanceBody";
+import { FeishuSettingsSection } from "./FeishuSettingsSection";
 import { useSyncProgress } from "../useSyncProgress";
 import { LANGUAGE_OPTIONS } from "../languages";
 import type {
@@ -409,6 +410,14 @@ export function GlobalSettingsModal({ open, state, onClose, onChanged }: Props) 
               </div>
             </section>
           ) : null}
+
+          <FeishuSettingsSection
+            open={open}
+            inputClass={inputClass}
+            labelClass={labelClass}
+            primaryButton={primaryButton}
+            secondaryButton={secondaryButton}
+          />
 
           {defaults && (
             <section className="rounded-lg border border-line bg-surface-raised p-4 shadow-card">

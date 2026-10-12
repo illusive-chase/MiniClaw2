@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { gateRelayLabel, useGateRelay } from "../gateRelays";
 import type { InteractionRequest } from "../types";
 
 type AskQuestion = {
@@ -22,6 +23,8 @@ export function AskUserDialog({ request, onRespond, variant = "panel" }: Props) 
   const questions = (request.tool_input.questions as AskQuestion[]) || [];
   const [answers, setAnswers] = useState<Record<string, string[]>>({});
   const [other, setOther] = useState<Record<string, string>>({});
+  const relay = useGateRelay(request.id);
+  const relayLabel = gateRelayLabel(relay);
   const compact = variant === "compact";
 
   const submit = () => {
@@ -41,8 +44,23 @@ export function AskUserDialog({ request, onRespond, variant = "panel" }: Props) 
         (compact ? "space-y-2 p-2" : "space-y-3 p-4")
       }
     >
-      <div className={(compact ? "text-[11px]" : "text-sm") + " font-medium text-brand-ink dark:text-brand"}>
-        Agent is asking:
+      <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1">
+        <div className={(compact ? "text-[11px]" : "text-sm") + " font-medium text-brand-ink dark:text-brand"}>
+          Agent is asking:
+        </div>
+        {relayLabel && (
+          <span
+            className={
+              "rounded border px-1.5 py-0.5 text-[10px] " +
+              (relay?.state === "failed"
+                ? "border-state-error/30 bg-state-error-soft text-state-error"
+                : "border-line bg-surface-raised text-ink-muted")
+            }
+            title="先答先生效：在这里或在飞书卡片上回答都可以"
+          >
+            {relayLabel}
+          </span>
+        )}
       </div>
       {questions.map((q, i) => {
         const key = questionKey(q, i);

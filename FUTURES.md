@@ -99,6 +99,12 @@ the skill-root protocol call was verified manually once, and at runtime it
 degrades on any exception. A silent regression there looks like "skills
 just didn't load."
 
+The Feishu bridge pins `lark-oapi==1.7.3`: stopping its long connection
+cleanly needs the private `_auto_reconnect` and `_disconnect` members, and
+the mailbox reads an undocumented connection-count endpoint. A test asserts
+the members exist when the SDK is installed; the endpoint is only observed
+at runtime, and polling treats an unknown count as "poll anyway".
+
 Separately, one mapping is pinned against the *shape* of another tool's
 review findings. No test can catch a change in that shape, so it has to be
 re-confirmed on upgrade by hand.
@@ -383,6 +389,15 @@ Kept because the reason, not the absence, is the content:
   命令行保留为后备；确认后重试同步仍需用户明确触发。该入口尚待产品确认，
   不随同步性能修复直接上线。凭据不跨机器传播：一台机器的知情同意不能代表
   另一台机器，改变这一边界需要单独决策。
+- **Feishu remote answers beyond one user and `ask_user`.** A shared app
+  binds a single Feishu account on every host. Letting several people share
+  one app and answer only their own hosts' questions needs agreement across
+  hosts about who may answer what, which the card mailbox deliberately does
+  not carry: it moves a human's input, never host state (§12.5), and only
+  the owning host's local ledger decides. Pushing permission requests waits
+  for the same reason the tool-request timeout exists — the push delay must
+  stay well under it, and the card must show the deadline and the allowed
+  scope.
 - **Store compaction and retention** — transcripts grow the metadata repo
   monotonically. Deferred until repo size actually hurts, at which point
   archiving, compaction, or large-file storage are the options.

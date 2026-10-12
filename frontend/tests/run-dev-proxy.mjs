@@ -14,4 +14,8 @@ assert.equal(
   loaded.config.server.proxy["/migrations"],
   process.env.MINICLAW_BACKEND_URL ?? "http://127.0.0.1:8000",
 );
+assert.equal(
+  loaded.config.server.proxy["/feishu"],
+  process.env.MINICLAW_BACKEND_URL ?? "http://127.0.0.1:8000",
+);
 console.log("开发模式迁移状态代理校验通过");

@@ -16,6 +16,7 @@ export default defineConfig({
     proxy: {
       "/active-nodes": backendUrl,
       "/auth": backendUrl,
+      "/feishu": backendUrl,
       "/global-state": backendUrl,
       "/migrations": backendUrl,
       "/model-presets": backendUrl,

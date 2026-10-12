@@ -33,6 +33,7 @@ import {
   deletePrinciple,
   listSkills,
   deleteSkill,
+  listFeishuRelays,
   importSkill,
   getGlobalState,
   getMigrationStatus,
@@ -72,6 +73,7 @@ import {
   writeFocusedLane,
 } from "./focusedLane";
 import { setAgentNodeContext } from "./canvas/nodes/AgentNode";
+import { applyGateRelayEvent, replaceGateRelays } from "./gateRelays";
 import { setPlanspaceLaneContext } from "./canvas/nodes/PlanspaceLaneNode";
 import { setTemplateGroupContext } from "./canvas/nodes/TemplateGroupNode";
 import { setTemplateInstanceBoxContext } from "./canvas/nodes/TemplateInstanceBoxNode";
@@ -1265,9 +1267,22 @@ export function App() {
     [session?.id],
   );
 
+  /* `gate_relay_updated` is ephemeral too; re-read the bridge's view so the
+   * "pushed to Feishu" badge survives a reload or a dropped socket. */
+  const refreshGateRelays = useCallback((sessionId: string) => {
+    listFeishuRelays(sessionId)
+      .then((relays) => {
+        if (currentSessionIdRef.current === sessionId) replaceGateRelays(relays);
+      })
+      .catch(() => {
+        /* The badge is optional; the web dialog works without it. */
+      });
+  }, []);
+
   const reconcileContextSpace = useCallback(() => {
     void refreshContextSpace({ quiet: true });
-  }, [refreshContextSpace]);
+    if (currentSessionIdRef.current) refreshGateRelays(currentSessionIdRef.current);
+  }, [refreshContextSpace, refreshGateRelays]);
 
   /* Coordinated bootstrap: fetch nodes and contextspace in parallel and hold
    * the canvas off-screen until BOTH resolve. Otherwise the faster of the two
@@ -1275,6 +1290,7 @@ export function App() {
    * before getSessionContextSpace, nodes from hidden planspaces flash visible
    * for one frame and then disappear as the hidden-planspace filter kicks in. */
   useEffect(() => {
+    replaceGateRelays({});
     if (!session?.id) {
       setInitialLoadComplete(false);
       setPrinciples([]);
@@ -1282,6 +1298,7 @@ export function App() {
       return;
     }
     setInitialLoadComplete(false);
+    refreshGateRelays(session.id);
     let cancelled = false;
     void Promise.allSettled([refreshNodes(), refreshContextSpace(), refreshGit()]).then(() => {
       if (!cancelled) setInitialLoadComplete(true);
@@ -1301,6 +1318,7 @@ export function App() {
     refreshGit,
     refreshPrinciples,
     refreshSkills,
+    refreshGateRelays,
   ]);
 
   useEffect(() => {
@@ -2339,6 +2357,8 @@ export function App() {
           files: ev.files ?? current?.files ?? [],
         }));
         void refreshGit();
+      } else if (ev.type === "gate_relay_updated") {
+        applyGateRelayEvent(ev);
       } else if (ev.type === "context_refresh_updated") {
         setSessionContextSpace((current) =>
           current
