@@ -41,6 +41,11 @@ import type {
   FeishuRegistration,
   FeishuSettingsPatch,
   FeishuStatus,
+  RemoteAnswerChannel,
+  RemoteAnswersStatus,
+  WecomRegistration,
+  WecomSettingsPatch,
+  WecomStatus,
   GateRelayUpdated,
 } from "./types";
 import type { TemplateRewritePayload } from "./templateEditor";
@@ -382,12 +387,86 @@ export async function sendFeishuTest(): Promise<void> {
   if (!res.ok) throw new ApiError("sendFeishuTest", res.status, await readErrorDetail(res));
 }
 
-export async function listFeishuRelays(
+/** The active remote-answer channel's view of a project's open gates. */
+export async function listGateRelays(
   sessionId: string,
 ): Promise<Record<string, GateRelayUpdated>> {
-  const res = await fetch(`/sessions/${encodeURIComponent(sessionId)}/feishu-relays`);
-  if (!res.ok) throw new ApiError("listFeishuRelays", res.status, await readErrorDetail(res));
+  const res = await fetch(`/sessions/${encodeURIComponent(sessionId)}/gate-relays`);
+  if (!res.ok) throw new ApiError("listGateRelays", res.status, await readErrorDetail(res));
   return res.json();
+}
+
+export async function getRemoteAnswers(): Promise<RemoteAnswersStatus> {
+  const res = await fetch("/remote-answers");
+  if (!res.ok) throw new ApiError("getRemoteAnswers", res.status, await readErrorDetail(res));
+  return res.json();
+}
+
+export async function setRemoteAnswerChannel(channel: RemoteAnswerChannel): Promise<RemoteAnswersStatus> {
+  const res = await fetch("/remote-answers", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ channel }),
+  });
+  if (!res.ok) throw new ApiError("setRemoteAnswerChannel", res.status, await readErrorDetail(res));
+  return res.json();
+}
+
+export async function getWecomStatus(): Promise<WecomStatus> {
+  const res = await fetch("/wecom/status");
+  if (!res.ok) throw new ApiError("getWecomStatus", res.status, await readErrorDetail(res));
+  return res.json();
+}
+
+export async function updateWecomSettings(body: WecomSettingsPatch): Promise<WecomStatus> {
+  const res = await fetch("/wecom/settings", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new ApiError("updateWecomSettings", res.status, await readErrorDetail(res));
+  return res.json();
+}
+
+export async function beginWecomRegistration(): Promise<WecomRegistration> {
+  const res = await fetch("/wecom/register", { method: "POST" });
+  if (!res.ok) throw new ApiError("beginWecomRegistration", res.status, await readErrorDetail(res));
+  return res.json();
+}
+
+export async function getWecomRegistration(): Promise<WecomRegistration | null> {
+  const res = await fetch("/wecom/register");
+  if (!res.ok) throw new ApiError("getWecomRegistration", res.status, await readErrorDetail(res));
+  return res.json();
+}
+
+export async function cancelWecomRegistration(): Promise<WecomRegistration | null> {
+  const res = await fetch("/wecom/register", { method: "DELETE" });
+  if (!res.ok) throw new ApiError("cancelWecomRegistration", res.status, await readErrorDetail(res));
+  return res.json();
+}
+
+export async function startWecomPairing(): Promise<{ code: string; expires_at: number }> {
+  const res = await fetch("/wecom/pairing", { method: "POST" });
+  if (!res.ok) throw new ApiError("startWecomPairing", res.status, await readErrorDetail(res));
+  return res.json();
+}
+
+export async function reconnectWecom(): Promise<WecomStatus> {
+  const res = await fetch("/wecom/reconnect", { method: "POST" });
+  if (!res.ok) throw new ApiError("reconnectWecom", res.status, await readErrorDetail(res));
+  return res.json();
+}
+
+export async function unbindWecom(): Promise<WecomStatus> {
+  const res = await fetch("/wecom/binding", { method: "DELETE" });
+  if (!res.ok) throw new ApiError("unbindWecom", res.status, await readErrorDetail(res));
+  return res.json();
+}
+
+export async function sendWecomTest(): Promise<void> {
+  const res = await fetch("/wecom/test", { method: "POST" });
+  if (!res.ok) throw new ApiError("sendWecomTest", res.status, await readErrorDetail(res));
 }
 
 export async function getSelfUpdate(): Promise<SelfUpdateState> {

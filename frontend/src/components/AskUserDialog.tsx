@@ -56,7 +56,7 @@ export function AskUserDialog({ request, onRespond, variant = "panel" }: Props) 
                 ? "border-state-error/30 bg-state-error-soft text-state-error"
                 : "border-line bg-surface-raised text-ink-muted")
             }
-            title="先答先生效：在这里或在飞书卡片上回答都可以"
+            title={`先答先生效：在这里或在${relay?.channel === "wecom" ? "企业微信" : "飞书"}上回答都可以`}
           >
             {relayLabel}
           </span>

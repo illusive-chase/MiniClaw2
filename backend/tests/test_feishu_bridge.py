@@ -791,6 +791,17 @@ class FeishuClusterTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(status["configured"])
         self.assertEqual(status["connection"]["state"], "off")
 
+    async def test_deactivate_retires_cards_and_keeps_credentials(self) -> None:
+        mid = await self.ask(self.b, "gb")
+
+        await self.b.bridge.deactivate("此主机已改用企业微信远程回答。")
+
+        self.assertNotIn(self.b.transport, self.feishu.connected)
+        self.assertEqual(self.feishu.title(mid), "提问已转回网页端")
+        self.assertTrue(feishu_config_path(self.b.root).exists())
+        self.assertEqual(load_relay_ledger(self.b.root)["gb"]["state"], "stale")
+        self.assertEqual(self.b.bridge.relays_for("p1"), {})
+
 
 class FeishuRegistrationTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
@@ -987,7 +998,11 @@ class FeishuApiTests(unittest.TestCase):
         self.tmp.cleanup()
 
     def test_lifespan_attaches_bridge_and_stops_it(self) -> None:
-        self.assertIs(self.registry.gate_observer, self.bridge)
+        # The router forwards to the active channel, Feishu by default.
+        router = self.registry.gate_observer
+        self.assertIs(router, self.client.app.state.remote_answers)  # type: ignore[attr-defined]
+        self.assertEqual(router.channel, "feishu")
+        self.assertIs(router._active(), self.bridge)
         body = self.client.get("/feishu/status").json()
         self.assertTrue(body["runtime_owner"])
         self.assertFalse(body["configured"])

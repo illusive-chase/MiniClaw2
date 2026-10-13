@@ -65,6 +65,8 @@ from .events import (
     UserMessage,
 )
 from .feishu_bridge import FeishuBridge, FeishuBridgeError
+from .remote_answers import RemoteAnswers, RemoteAnswersError
+from .wecom_bridge import WecomBridge, WecomBridgeError
 from .file_manager import (
     RevealError,
     RevealUnsupportedError,
@@ -217,6 +219,23 @@ class FeishuSettingsRequest(BaseModel):
     app_secret: str | None = Field(default=None, max_length=256)
     delay_seconds: StrictInt | None = Field(default=None, ge=0, le=24 * 3600)
     poll_seconds: StrictInt | None = Field(default=None, ge=5, le=3600)
+
+
+class WecomSettingsRequest(BaseModel):
+    """Only the fields present change; ``secret`` is write-only."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool | None = None
+    bot_id: str | None = Field(default=None, max_length=128)
+    secret: str | None = Field(default=None, max_length=256)
+    delay_seconds: StrictInt | None = Field(default=None, ge=0, le=24 * 3600)
+
+
+class RemoteAnswersRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    channel: Literal["none", "feishu", "wecom"]
 
 
 class SetupSyncRequest(BaseModel):
@@ -692,12 +711,17 @@ def create_app(
     registry: ProjectRegistry | None = None,
     update_checker: UpdateChecker | None = None,
     feishu_bridge: FeishuBridge | None = None,
+    wecom_bridge: WecomBridge | None = None,
 ) -> FastAPI:
     from contextlib import asynccontextmanager
 
     registry = registry if registry is not None else ProjectRegistry(initialize=False)
     update_checker = update_checker if update_checker is not None else UpdateChecker()
     feishu = feishu_bridge if feishu_bridge is not None else FeishuBridge(registry)
+    wecom = wecom_bridge if wecom_bridge is not None else WecomBridge(registry)
+    # Each host answers remotely through one channel; the router forwards
+    # gates to the active bridge only.
+    remote = RemoteAnswers(registry, feishu=feishu, wecom=wecom)
     configured_passcode = os.environ.get(PASSCODE_ENV)
     passcode_guard = (
         PasscodeGuard(configured_passcode) if configured_passcode is not None else None
@@ -747,8 +771,8 @@ def create_app(
             yield
             return
         # Attach before scheduling: runners read the observer when built.
-        registry.gate_observer = feishu
-        await feishu.start()
+        registry.gate_observer = remote
+        await remote.start()
         schedule_all = getattr(registry, "schedule_all", None)
         if schedule_all is not None:
             schedule_all()
@@ -767,9 +791,9 @@ def create_app(
             # Close the long connection gracefully: a connection that dies
             # without a close frame keeps receiving clicks it cannot answer.
             try:
-                await feishu.stop()
+                await remote.stop()
             except Exception:  # noqa: BLE001
-                logger.exception("failed to stop the feishu bridge")
+                logger.exception("failed to stop the remote-answer bridge")
             close_remote_transports = getattr(
                 registry, "close_remote_transports", None
             )
@@ -782,6 +806,8 @@ def create_app(
     app.state.storage_requests = 0
     app.state.update_checker = update_checker
     app.state.feishu = feishu
+    app.state.wecom = wecom
+    app.state.remote_answers = remote
     app.add_middleware(GZipMiddleware, minimum_size=1024, compresslevel=6)
     app.add_middleware(
         CORSMiddleware,
@@ -993,20 +1019,45 @@ def create_app(
             content["state"] = exc.state
         return JSONResponse(status_code=exc.status, content=content)
 
+    @app.exception_handler(WecomBridgeError)
+    async def wecom_bridge_error(
+        _request: Request, exc: WecomBridgeError
+    ) -> JSONResponse:
+        return JSONResponse(status_code=exc.status, content={"detail": str(exc)})
+
+    @app.exception_handler(RemoteAnswersError)
+    async def remote_answers_error(
+        _request: Request, exc: RemoteAnswersError
+    ) -> JSONResponse:
+        return JSONResponse(status_code=exc.status, content={"detail": str(exc)})
+
     # Bridge state lives on the event loop: every handler below is async so
-    # FastAPI never runs it on a worker thread beside the loop.
+    # FastAPI never runs it on a worker thread beside the loop. Changes made
+    # through a bridge hold the router's lock, so none interleaves with a
+    # channel switch.
+    @app.get("/remote-answers", response_model=dict[str, Any])
+    async def remote_answers_status() -> dict[str, Any]:
+        return remote.status()
+
+    @app.put("/remote-answers", response_model=dict[str, Any])
+    async def remote_answers_channel(body: RemoteAnswersRequest) -> dict[str, Any]:
+        await remote.set_channel(body.channel)
+        return remote.status()
+
     @app.get("/feishu/status", response_model=dict[str, Any])
     async def feishu_status(refresh: bool = False) -> dict[str, Any]:
         return await feishu.status(refresh=refresh)
 
     @app.put("/feishu/settings", response_model=dict[str, Any])
     async def feishu_settings(body: FeishuSettingsRequest) -> dict[str, Any]:
-        await feishu.update_settings(body.model_dump(exclude_unset=True))
+        async with remote.while_active("feishu"):
+            await feishu.update_settings(body.model_dump(exclude_unset=True))
         return await feishu.status()
 
     @app.post("/feishu/register", response_model=dict[str, Any])
     async def feishu_register(body: FeishuRegisterRequest) -> dict[str, Any]:
-        return await feishu.begin_registration(body.mode, body.app_id)
+        async with remote.while_active("feishu"):
+            return await feishu.begin_registration(body.mode, body.app_id)
 
     @app.get("/feishu/register", response_model=dict[str, Any] | None)
     async def feishu_registration() -> dict[str, Any] | None:
@@ -1018,22 +1069,79 @@ def create_app(
 
     @app.post("/feishu/pairing", response_model=dict[str, Any])
     async def feishu_pairing() -> dict[str, Any]:
-        return feishu.start_pairing()
+        async with remote.while_active("feishu"):
+            return feishu.start_pairing()
 
     @app.delete("/feishu/binding", response_model=dict[str, Any])
     async def feishu_unbind(force: bool = False) -> dict[str, Any]:
-        await feishu.unbind(force=force)
+        async with remote.while_active("feishu"):
+            await feishu.unbind(force=force)
         return await feishu.status()
 
     @app.post("/feishu/test", response_model=dict[str, Any])
     async def feishu_test() -> dict[str, Any]:
-        return await feishu.send_test()
+        async with remote.while_active("feishu"):
+            return await feishu.send_test()
 
-    @app.get("/sessions/{sid}/feishu-relays", response_model=dict[str, dict[str, Any]])
-    async def feishu_relays(sid: str) -> dict[str, dict[str, Any]]:
+    @app.get("/wecom/status", response_model=dict[str, Any])
+    async def wecom_status() -> dict[str, Any]:
+        return await wecom.status()
+
+    @app.put("/wecom/settings", response_model=dict[str, Any])
+    async def wecom_settings(body: WecomSettingsRequest) -> dict[str, Any]:
+        async with remote.while_active("wecom"):
+            await wecom.update_settings(body.model_dump(exclude_unset=True))
+        return await wecom.status()
+
+    @app.post("/wecom/register", response_model=dict[str, Any])
+    async def wecom_register() -> dict[str, Any]:
+        async with remote.while_active("wecom"):
+            return await wecom.begin_registration()
+
+    @app.get("/wecom/register", response_model=dict[str, Any] | None)
+    async def wecom_registration() -> dict[str, Any] | None:
+        return wecom.registration_status()
+
+    @app.delete("/wecom/register", response_model=dict[str, Any] | None)
+    async def wecom_cancel_registration() -> dict[str, Any] | None:
+        return await wecom.cancel_registration()
+
+    @app.post("/wecom/pairing", response_model=dict[str, Any])
+    async def wecom_pairing() -> dict[str, Any]:
+        async with remote.while_active("wecom"):
+            return wecom.start_pairing()
+
+    @app.post("/wecom/reconnect", response_model=dict[str, Any])
+    async def wecom_reconnect() -> dict[str, Any]:
+        async with remote.while_active("wecom"):
+            await wecom.reconnect()
+        return await wecom.status()
+
+    @app.delete("/wecom/binding", response_model=dict[str, Any])
+    async def wecom_unbind() -> dict[str, Any]:
+        async with remote.while_active("wecom"):
+            await wecom.unbind()
+        return await wecom.status()
+
+    @app.post("/wecom/test", response_model=dict[str, Any])
+    async def wecom_test() -> dict[str, Any]:
+        async with remote.while_active("wecom"):
+            return await wecom.send_test()
+
+    async def gate_relays(sid: str) -> dict[str, dict[str, Any]]:
         if registry.get_project(sid) is None:
             raise HTTPException(404, "session not found")
-        return feishu.relays_for(sid)
+        return remote.relays_for(sid)
+
+    app.add_api_route(
+        "/sessions/{sid}/gate-relays", gate_relays,
+        methods=["GET"], response_model=dict[str, dict[str, Any]],
+    )
+    # The pre-WeCom name of the same view.
+    app.add_api_route(
+        "/sessions/{sid}/feishu-relays", gate_relays,
+        methods=["GET"], response_model=dict[str, dict[str, Any]],
+    )
 
     @app.get("/model-presets", response_model=list[dict[str, Any]])
     def list_model_presets_endpoint() -> list[dict[str, Any]]:

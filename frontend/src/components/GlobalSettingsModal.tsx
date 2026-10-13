@@ -18,7 +18,7 @@ import {
 import { canApplyUpdate } from "../selfUpdate";
 import { storageGuidance, type StorageFailure } from "../storageMaintenance";
 import { StorageGuidanceBody } from "./StorageGuidanceBody";
-import { FeishuSettingsSection } from "./FeishuSettingsSection";
+import { RemoteAnswersSection } from "./RemoteAnswersSection";
 import { useSyncProgress } from "../useSyncProgress";
 import { LANGUAGE_OPTIONS } from "../languages";
 import type {
@@ -411,7 +411,7 @@ export function GlobalSettingsModal({ open, state, onClose, onChanged }: Props) 
             </section>
           ) : null}
 
-          <FeishuSettingsSection
+          <RemoteAnswersSection
             open={open}
             inputClass={inputClass}
             labelClass={labelClass}

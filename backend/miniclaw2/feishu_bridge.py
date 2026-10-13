@@ -266,18 +266,41 @@ class FeishuBridge:
         self._spawn(self._boot())
 
     async def stop(self) -> None:
-        for task in [*self._loops, *self._tasks]:
-            task.cancel()
+        tasks = [*self._loops, *self._tasks]
         registration = self._registration
         if registration is not None and registration.task is not None:
-            registration.task.cancel()
-        await asyncio.gather(*self._loops, *self._tasks, return_exceptions=True)
+            # Awaited too, so a scan that was finishing cannot reconnect later.
+            tasks.append(registration.task)
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
         self._loops = []
         for relay in self._open.values():
             if relay.timer is not None:
                 relay.timer.cancel()
         await self._disconnect()
         self._started = False
+
+    async def deactivate(self, line: str) -> None:
+        """Hand remote answers to another channel; the credentials stay.
+
+        This host's live cards are retired first. One Feishu cannot be
+        reached for keeps its ledger record, so the startup sweep of the next
+        activation retries it. Gates still open are forgotten: the router
+        announces them to whichever channel becomes active.
+        """
+        if self._started and self._owner:
+            self._app_epoch += 1
+            live = await self._retire_all(line)
+            if live:
+                self._last_error = (
+                    f"切换通道时有 {len(live)} 张卡片未能改为失效，下次启用飞书时重试"
+                )
+        await self.stop()
+        self._open.clear()
+        self._pairing = None
+        # A later activation sends nothing until its startup sweep has run.
+        self._booted = False
 
     async def _boot(self) -> None:
         if not self.config.has_credentials:
@@ -1326,6 +1349,7 @@ class FeishuBridge:
         notice = relay.notice
         event = {
             "type": "gate_relay_updated",
+            "channel": "feishu",
             "node_id": notice.node_id,
             "gate_id": notice.gate_id,
             "state": state,

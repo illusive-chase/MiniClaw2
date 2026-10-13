@@ -287,7 +287,10 @@ Install the optional SDK into the backend environment and restart:
 pip install -e 'backend[feishu]'   # pins lark-oapi==1.7.3
 ```
 
-Then open **Global settings → 飞书远程回答**:
+Then open **Global settings → 远程回答** and pick **飞书**. Each machine
+answers remotely through one channel (飞书, 企业微信 or none); the choice is
+local (`$MINICLAW_HOME/remote_answers.local.json`) and switching keeps the
+other channel's credentials:
 
 - **扫码创建** on the first machine scans once and creates a dedicated app
   with exactly two scopes (`im:message:send_as_bot`, `im:message:readonly`)
@@ -325,6 +328,51 @@ connection receives some of the clicks and makes them fail. The settings page
 shows the live connection count to make that visible, along with a local
 estimate of this machine's monthly API calls; the tenant's monthly quota is
 shared with every other self-built app, and polling stops on `99991403`.
+
+## WeCom Remote Answers
+
+The same `ask_user` gates can go to WeCom (企业微信) instead, through an
+intelligent bot on its long connection. Pick **企业微信** under **Global
+settings → 远程回答**. The client is MiniClaw2's own, over `websockets`
+(already installed with `uvicorn[standard]`; `pip install -e 'backend[wecom]'`
+declares it explicitly).
+
+- **扫码创建机器人** calls the undocumented scan endpoints WeCom's own CLI
+  uses and creates a new bot in the scanner's company. Scanning returns only
+  the bot's credentials, never the scanner, and a bot cannot message anyone
+  who has not written to it, so the settings page then shows a six-digit
+  pairing code: whoever sends it to the bot first becomes the bound user, and
+  only that user's clicks and replies count. **手动填写** takes a Bot ID and
+  Secret from a bot created by hand (API mode, long connection) and pairs the
+  same way.
+- **One bot per machine.** A bot holds one connection at a time; a newer one
+  kicks the older. A kicked machine does not reconnect on its own (that would
+  kick the other back) and shows a 重新连接 button instead. Never enter the
+  same credentials on two machines.
+- **Split cards.** WeCom cards have no text input and hold at most three
+  dropdowns or one checkbox question, so a gate is sent as one markdown
+  message with every question and option in full, followed by cards: one tap
+  answers a lone single-select question; other single-select questions share
+  dropdown cards of up to three; each multi-select question gets its own
+  checkbox card. Every option list ends with 「其他（文字回答）」. The gate
+  resolves once every question has an answer.
+- **Text answers only by quoting.** Choosing 「其他」 sends a prompt message
+  for that question; a question without options gets one up front. A text
+  reply counts only when it *quotes* a question message (the prompt, the
+  card, or the detail when that leaves exactly one question to answer);
+  every such message carries a marker like `#K7QD-2` that WeCom returns in
+  the quoted text. A plain message is never taken as an answer.
+- **Cards change only when clicked.** WeCom lets a card be updated only in
+  the response to a click on it, within 5 s. When a question is answered on
+  the web, its node ends or the machine stops, the user gets one message
+  saying so, and the cards turn into closed cards the next time they are
+  clicked.
+
+Credentials live in `$MINICLAW_HOME/wecom.local.json` (mode 0600) and are
+never synced or returned by any endpoint. They are as powerful as the bot
+itself: the same pair can be traded for a token on WeCom's office-API
+gateway, which MiniClaw2 never does. Unbinding forgets them; the bot itself
+stays in WeCom until deleted there.
 
 ## Layout
 

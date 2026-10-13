@@ -161,6 +161,25 @@ class GateObserverTests(unittest.IsolatedAsyncioTestCase):
         activity = [ev for ev in emitted if ev.get("type") == "activity" and ev.get("name") == "feishu"]
         self.assertEqual(activity[0]["summary"], "通过飞书回答（经 MBP-2 中转）")
 
+    async def test_wecom_answer_is_recorded_with_its_source(self) -> None:
+        observer, provider = _RecordingObserver(), _AskProvider()
+        runner, emitted = self._runner(observer, provider)
+        with patch.object(runner_module, "_make_provider", return_value=provider):
+            task = asyncio.create_task(runner.run())
+            notice = await self._wait_for_gate(observer)
+            answers = {"answers": {"q": {"answers": ["A"]}}}
+            self.assertTrue(
+                runner.resolve_gate(notice.gate_id, allow=True, response=answers, source="wecom")
+            )
+            provider.hold.set()
+            await asyncio.wait_for(task, timeout=5)
+
+        self.assertEqual(observer.closed_outcomes[0][1].source, "wecom")
+        record = self._resolved_records(runner)[0]["gate"]["response"]
+        self.assertEqual(record["source"], "wecom")
+        activity = [ev for ev in emitted if ev.get("type") == "activity" and ev.get("name") == "wecom"]
+        self.assertEqual(activity[0]["summary"], "通过企业微信回答")
+
     async def test_racing_channels_only_one_wins(self) -> None:
         observer, provider = _RecordingObserver(), _AskProvider()
         runner, _ = self._runner(observer, provider)

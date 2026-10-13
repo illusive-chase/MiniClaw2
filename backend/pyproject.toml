@@ -21,6 +21,11 @@ dependencies = [
 feishu = [
     "lark-oapi==1.7.3",
 ]
+# WeCom remote answers: a small long-connection client of our own over
+# websockets (already present through uvicorn[standard]).
+wecom = [
+    "websockets>=13.0",
+]
 test = [
     "httpx2>=2.0",
     "pytest>=8.0",

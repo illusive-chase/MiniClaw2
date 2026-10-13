@@ -205,14 +205,10 @@ export function FeishuSettingsSection({
   const needsPairing = status?.configured && !status.bound && status.binding_source === "manual";
 
   return (
-    <section className="rounded-lg border border-line bg-surface-raised p-4 shadow-card">
+    <div>
       <div className="flex items-start justify-between gap-4">
-        <div>
-          <div className="font-display text-sm font-semibold text-ink-strong">飞书远程回答</div>
-          <div className="mt-1 text-[11px] leading-relaxed text-ink-muted">
-            agent 提问后在网页端等待一段时间仍未回答时，推送到飞书，可在手机上作答。
-            问题、选项、项目名和节点名会经过飞书服务器；敏感输入不会发送。
-          </div>
+        <div className="text-[11px] leading-relaxed text-ink-muted">
+          问题、选项、项目名和节点名会经过飞书服务器；敏感输入不会发送。
         </div>
         {status && (
           <span
@@ -408,7 +404,7 @@ export function FeishuSettingsSection({
           </div>
         </div>
       )}
-    </section>
+    </div>
   );
 }
 

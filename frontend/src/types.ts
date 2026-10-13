@@ -143,11 +143,12 @@ export type ContextRefreshUpdated = {
   seq: 0;
 };
 
-/* Ephemeral (seq 0): the Feishu bridge's progress on one ask_user gate.
- * Never persisted or replayed; a page that reloads reads the current
- * state from GET /sessions/{id}/feishu-relays. */
+/* Ephemeral (seq 0): the remote-answer bridge's progress on one ask_user
+ * gate. Never persisted or replayed; a page that reloads reads the current
+ * state from GET /sessions/{id}/gate-relays. */
 export type GateRelayUpdated = {
   type: "gate_relay_updated";
+  channel?: "feishu" | "wecom";
   node_id: string;
   gate_id: string;
   state: "scheduled" | "sent" | "failed" | "cancelled";
@@ -845,4 +846,54 @@ export type FeishuSettingsPatch = Partial<{
   app_secret: string;
   delay_seconds: number;
   poll_seconds: number;
+}>;
+
+export type RemoteAnswerChannel = "none" | "feishu" | "wecom";
+
+export type RemoteAnswersStatus = {
+  channel: RemoteAnswerChannel;
+  runtime_owner: boolean;
+};
+
+export type WecomRegistration = {
+  state: "starting" | "polling" | "succeeded" | "failed" | "cancelled";
+  /* Present only while polling: the QR payload, rendered locally. */
+  url: string | null;
+  /* The scan page, to open on this computer instead of scanning. */
+  page_url: string | null;
+  expires_at: number | null;
+  error: string | null;
+  detail: string | null;
+  started_at: number;
+  bot_id: string | null;
+};
+
+export type WecomStatus = {
+  installed: boolean;
+  package: string;
+  runtime_owner: boolean;
+  configured: boolean;
+  enabled: boolean;
+  bot_id: string | null;
+  binding_source: "created" | "manual" | null;
+  bound: { userid: string; at: number | null } | null;
+  /* source.desc_color on the cards: 0 grey, 1 black, 2 red, 3 green. */
+  host: { id: string; label: string; color: number };
+  connection: {
+    state: "off" | "connecting" | "connected" | "error" | "kicked";
+    detail: string | null;
+    since: number | null;
+  };
+  pending: number;
+  last_error: string | null;
+  delay_seconds: number;
+  pairing: { code: string; expires_at: number } | null;
+  registration: WecomRegistration | null;
+};
+
+export type WecomSettingsPatch = Partial<{
+  enabled: boolean;
+  bot_id: string;
+  secret: string;
+  delay_seconds: number;
 }>;

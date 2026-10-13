@@ -2288,6 +2288,16 @@ class NodeRunner:
                     ),
                 )
             )
+        elif response.get("source") == "wecom":
+            await self._emit(
+                Activity(
+                    kind="tool",
+                    status="finish",
+                    id=f"wecom-answer:{gate.id}",
+                    name="wecom",
+                    summary="通过企业微信回答",
+                )
+            )
         return response
 
     def _notify_gate_opened(self, gate: HumanGate) -> None:

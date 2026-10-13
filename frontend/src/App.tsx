@@ -33,7 +33,7 @@ import {
   deletePrinciple,
   listSkills,
   deleteSkill,
-  listFeishuRelays,
+  listGateRelays,
   importSkill,
   getGlobalState,
   getMigrationStatus,
@@ -1268,9 +1268,9 @@ export function App() {
   );
 
   /* `gate_relay_updated` is ephemeral too; re-read the bridge's view so the
-   * "pushed to Feishu" badge survives a reload or a dropped socket. */
+   * "pushed to Feishu / WeCom" badge survives a reload or a dropped socket. */
   const refreshGateRelays = useCallback((sessionId: string) => {
-    listFeishuRelays(sessionId)
+    listGateRelays(sessionId)
       .then((relays) => {
         if (currentSessionIdRef.current === sessionId) replaceGateRelays(relays);
       })

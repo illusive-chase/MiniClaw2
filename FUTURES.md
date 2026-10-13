@@ -105,6 +105,12 @@ the mailbox reads an undocumented connection-count endpoint. A test asserts
 the members exist when the SDK is installed; the endpoint is only observed
 at runtime, and polling treats an unknown count as "poll anyway".
 
+The WeCom bridge creates bots through WeCom's undocumented scan endpoints
+(`work.weixin.qq.com/ai/qc/generate` and `query_result`, as used by
+`wecom-cli`). Nothing pins them: a changed response fails the scan with a
+"use manual entry" message and is never retried by guesswork, and manual
+Bot ID/Secret entry stays as the fallback.
+
 Separately, one mapping is pinned against the *shape* of another tool's
 review findings. No test can catch a change in that shape, so it has to be
 re-confirmed on upgrade by hand.
@@ -398,6 +404,13 @@ Kept because the reason, not the absence, is the content:
   for the same reason the tool-request timeout exists — the push delay must
   stay well under it, and the card must show the deadline and the allowed
   scope.
+- **WeCom remote answers beyond single chat.** The bot answers one bound
+  user in a direct chat. Group chats, several users per bot and several
+  machines sharing a bot are out: a bot holds one connection at a time, so
+  sharing it would need the relaying Feishu does through its card mailbox,
+  and WeCom cards cannot carry a receipt. What scanning WeCom's "choose an
+  existing bot" branch returns, and whether an admin can forbid scan-created
+  bots, is still unmeasured.
 - **Store compaction and retention** — transcripts grow the metadata repo
   monotonically. Deferred until repo size actually hurts, at which point
   archiving, compaction, or large-file storage are the options.
