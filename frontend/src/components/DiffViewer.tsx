@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
   ArrowRightLeft,
@@ -6,9 +6,11 @@ import {
   FilePenLine,
   FilePlus2,
   FileX2,
+  WrapText,
   X,
 } from "lucide-react";
 
+import { readDiffWrap, writeDiffWrap, type DiffWrapMode } from "../diffWrap";
 import { markdownRouteUrl } from "../markdownRoute";
 
 export type DiffFile = {
@@ -51,11 +53,21 @@ export function parseDiffArtifact(value: unknown): DiffArtifact | null {
   return candidate as DiffArtifact;
 }
 
+type DiffLine = { number?: number; text: string; eofMarker?: boolean };
+
 type AlignedLine = {
-  left?: { number?: number; text: string; eofMarker?: boolean };
-  right?: { number?: number; text: string; eofMarker?: boolean };
+  left?: DiffLine;
+  right?: DiffLine;
   changed: boolean;
 };
+
+type DiffSide = "before" | "after";
+
+const DIFF_SIDES = ["before", "after"] as const;
+
+/** A rendered row: an aligned line pair, or a fold standing in for `hidden`
+ *  unchanged lines. `key` is unique within one file's visible rows. */
+type VisibleRow = { row?: AlignedLine; hidden?: number; key: number };
 
 export function alignLines(before: string | null, after: string | null): AlignedLine[] {
   const leftText = before ?? "";
@@ -138,7 +150,10 @@ function statusIcon(status: DiffFile["status"]) {
 export function DiffViewer({ artifact }: { artifact: DiffArtifact }) {
   const [selectedPath, setSelectedPath] = useState(artifact.files[0]?.path ?? "");
   const [expandedRuns, setExpandedRuns] = useState<Set<number>>(new Set());
-  const [mobileSide, setMobileSide] = useState<"before" | "after">("after");
+  const [mobileSide, setMobileSide] = useState<DiffSide>("after");
+  const [wrap, setWrap] = useState<DiffWrapMode>(readDiffWrap);
+  const scrollerRef = useRef<HTMLDivElement>(null);
+  const wrapAnchorRef = useRef<RowAnchor | null>(null);
   const selected = artifact.files.find((file) => file.path === selectedPath) ?? artifact.files[0];
   const rows = useMemo(
     () => selected?.inlined
@@ -150,7 +165,7 @@ export function DiffViewer({ artifact }: { artifact: DiffArtifact }) {
   useEffect(() => setExpandedRuns(new Set()), [selected?.path]);
 
   const visibleRows = useMemo(() => {
-    const result: Array<{ row?: AlignedLine; hidden?: number; key: number }> = [];
+    const result: VisibleRow[] = [];
     let index = 0;
     while (index < rows.length) {
       if (rows[index].changed) {
@@ -178,6 +193,41 @@ export function DiffViewer({ artifact }: { artifact: DiffArtifact }) {
     }
     return result;
   }, [rows, expandedRuns]);
+
+  const expandRun = useCallback(
+    (foldKey: number) => setExpandedRuns((current) => new Set(current).add(foldKey - 4)),
+    [],
+  );
+
+  /* Switching modes changes every row's height, so without help the scroll
+   * position would land somewhere unrelated. Remember which row sits at the
+   * top before the switch and put it back at the same offset afterwards. */
+  const toggleWrap = useCallback(() => {
+    wrapAnchorRef.current = topVisibleRow(scrollerRef.current);
+    setWrap((current) => (current === "wrap" ? "nowrap" : "wrap"));
+  }, []);
+
+  useLayoutEffect(() => {
+    const anchor = wrapAnchorRef.current;
+    wrapAnchorRef.current = null;
+    if (anchor && scrollerRef.current) restoreRowAnchor(scrollerRef.current, anchor);
+  }, [wrap]);
+
+  useEffect(() => writeDiffWrap(wrap), [wrap]);
+
+  /* Alt+Z, as in VS Code. `code` rather than `key`: on macOS Option+Z types
+   * "Ω", so the key value never reads as "z". */
+  useEffect(() => {
+    const listener = (event: KeyboardEvent) => {
+      if (event.code !== "KeyZ" || !event.altKey || event.ctrlKey || event.metaKey || event.repeat) return;
+      const target = event.target as HTMLElement | null;
+      if (target && (["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName) || target.isContentEditable)) return;
+      event.preventDefault();
+      toggleWrap();
+    };
+    window.addEventListener("keydown", listener);
+    return () => window.removeEventListener("keydown", listener);
+  }, [toggleWrap]);
 
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-surface md:flex-row">
@@ -231,12 +281,27 @@ export function DiffViewer({ artifact }: { artifact: DiffArtifact }) {
                   </span>
                 )}
               </div>
-              <div className="inline-flex flex-none rounded border border-line bg-surface-sunken p-0.5 md:hidden">
-                {(["before", "after"] as const).map((side) => (
-                  <button key={side} type="button" onClick={() => setMobileSide(side)} className={`rounded px-2 py-1 text-[10px] ${mobileSide === side ? "bg-surface-raised text-ink-strong" : "text-ink-muted"}`}>
-                    {side}
+              <div className="flex flex-none items-center gap-2">
+                {selected.inlined && (
+                  <button
+                    type="button"
+                    aria-pressed={wrap === "wrap"}
+                    aria-label="自动换行"
+                    title="自动换行（Alt+Z）"
+                    onClick={toggleWrap}
+                    className={`flex h-7 items-center gap-1.5 rounded border px-2 text-[10px] transition ${wrap === "wrap" ? "border-brand/50 bg-brand-soft text-brand-ink" : "border-line text-ink-muted hover:text-ink-strong"}`}
+                  >
+                    <WrapText size={13} />
+                    <span className="hidden md:inline">自动换行</span>
                   </button>
-                ))}
+                )}
+                <div className="inline-flex rounded border border-line bg-surface-sunken p-0.5 md:hidden">
+                  {DIFF_SIDES.map((side) => (
+                    <button key={side} type="button" onClick={() => setMobileSide(side)} className={`rounded px-2 py-1 text-[10px] ${mobileSide === side ? "bg-surface-raised text-ink-strong" : "text-ink-muted"}`}>
+                      {side}
+                    </button>
+                  ))}
+                </div>
               </div>
             </div>
             {!selected.inlined ? (
@@ -244,26 +309,16 @@ export function DiffViewer({ artifact }: { artifact: DiffArtifact }) {
                 {selected.binary ? "二进制文件不提供文本预览。" : "文件过大，未内联到 diff 产物中。"}
               </div>
             ) : (
-              <div className="flex-1 overflow-auto font-mono text-[11px] leading-5">
+              <div ref={scrollerRef} className="flex-1 overflow-y-auto overflow-x-hidden font-mono text-[11px] leading-5">
                 <div className="sticky top-0 z-10 grid grid-cols-1 border-b border-line bg-surface-raised text-[10px] font-medium uppercase text-ink-subtle md:grid-cols-2">
                   <div className={`px-3 py-1.5 md:block ${mobileSide === "before" ? "block" : "hidden"}`}>Before</div>
                   <div className={`border-l border-line px-3 py-1.5 md:block ${mobileSide === "after" ? "block" : "hidden"}`}>After</div>
                 </div>
-                {visibleRows.map((item) => item.hidden ? (
-                  <button
-                    key={`fold-${item.key}`}
-                    type="button"
-                    onClick={() => setExpandedRuns((current) => new Set(current).add(item.key - 4))}
-                    className="block w-full border-y border-line bg-surface-sunken py-1 text-center text-[10px] text-ink-muted hover:text-ink-strong"
-                  >
-                    展开 {item.hidden} 行未改动内容
-                  </button>
+                {wrap === "wrap" ? (
+                  <WrappedRows items={visibleRows} mobileSide={mobileSide} onExpand={expandRun} />
                 ) : (
-                  <div key={item.key} className="grid min-h-5 grid-cols-1 md:grid-cols-2">
-                    <DiffCell side="before" line={item.row?.left} changed={!!item.row?.changed} mobileSide={mobileSide} />
-                    <DiffCell side="after" line={item.row?.right} changed={!!item.row?.changed} mobileSide={mobileSide} />
-                  </div>
-                ))}
+                  <UnwrappedRows key={selected.path} items={visibleRows} mobileSide={mobileSide} onExpand={expandRun} />
+                )}
               </div>
             )}
           </>
@@ -277,21 +332,218 @@ export function DiffViewer({ artifact }: { artifact: DiffArtifact }) {
   );
 }
 
-function DiffCell({ side, line, changed, mobileSide }: {
-  side: "before" | "after";
-  line?: { number?: number; text: string; eofMarker?: boolean };
-  changed: boolean;
-  mobileSide: "before" | "after";
+type RowAnchor = { key: string; offset: number };
+
+/** The first row whose bottom edge is below the sticky column header. Rows of
+ *  a hidden side (the mobile single-pane view) have no box and are skipped. */
+function topVisibleRow(scroller: HTMLElement | null): RowAnchor | null {
+  if (!scroller) return null;
+  const top = scroller.getBoundingClientRect().top;
+  const header = scroller.firstElementChild?.getBoundingClientRect().height ?? 0;
+  for (const element of scroller.querySelectorAll<HTMLElement>("[data-row]")) {
+    const rect = element.getBoundingClientRect();
+    if (rect.height > 0 && rect.bottom > top + header) {
+      return { key: element.dataset.row ?? "", offset: rect.top - top };
+    }
+  }
+  return null;
+}
+
+function restoreRowAnchor(scroller: HTMLElement, anchor: RowAnchor) {
+  const element = Array.from(
+    scroller.querySelectorAll<HTMLElement>(`[data-row="${anchor.key}"]`),
+  ).find((candidate) => candidate.getBoundingClientRect().height > 0);
+  if (!element) return;
+  const offset = element.getBoundingClientRect().top - scroller.getBoundingClientRect().top;
+  scroller.scrollTop += offset - anchor.offset;
+}
+
+function changedBackground(side: DiffSide, changed: boolean): string {
+  if (!changed) return "";
+  return side === "before" ? "bg-state-error-soft" : "bg-state-review-soft";
+}
+
+function mobileVisibility(side: DiffSide, mobileSide: DiffSide): string {
+  return `${mobileSide === side ? "block" : "hidden"} md:block`;
+}
+
+/* Wrapped mode keeps both sides in one grid row per line pair, so a line that
+ * wraps on one side grows the whole row and the next line numbers still meet. */
+function WrappedRows({ items, mobileSide, onExpand }: {
+  items: VisibleRow[];
+  mobileSide: DiffSide;
+  onExpand: (foldKey: number) => void;
 }) {
-  const changedClass = changed
-    ? side === "before" ? "bg-state-error-soft" : "bg-state-review-soft"
-    : "";
   return (
-    <div className={`min-w-0 grid-cols-[48px_minmax(0,1fr)] border-line md:grid ${side === "after" ? "md:border-l" : ""} ${mobileSide === side ? "grid" : "hidden"} ${changedClass}`}>
+    <>
+      {items.map((item) => item.hidden ? (
+        <button
+          key={`fold-${item.key}`}
+          data-row={item.key}
+          type="button"
+          onClick={() => onExpand(item.key)}
+          className="block w-full border-y border-line bg-surface-sunken py-1 text-center text-[10px] text-ink-muted hover:text-ink-strong"
+        >
+          展开 {item.hidden} 行未改动内容
+        </button>
+      ) : (
+        <div key={item.key} data-row={item.key} className="grid min-h-5 grid-cols-1 md:grid-cols-2">
+          <DiffCell side="before" line={item.row?.left} changed={!!item.row?.changed} mobileSide={mobileSide} />
+          <DiffCell side="after" line={item.row?.right} changed={!!item.row?.changed} mobileSide={mobileSide} />
+        </div>
+      ))}
+    </>
+  );
+}
+
+function DiffCell({ side, line, changed, mobileSide }: {
+  side: DiffSide;
+  line?: DiffLine;
+  changed: boolean;
+  mobileSide: DiffSide;
+}) {
+  return (
+    <div className={`min-w-0 grid-cols-[48px_minmax(0,1fr)] border-line md:grid ${side === "after" ? "md:border-l" : ""} ${mobileSide === side ? "grid" : "hidden"} ${changedBackground(side, changed)}`}>
       <span className="select-none border-r border-line px-2 text-right text-ink-subtle">{line?.number ?? ""}</span>
-      <pre className={`min-h-5 overflow-visible whitespace-pre px-2 ${line?.eofMarker ? "italic text-ink-muted" : "text-ink"}`}>{line?.text ?? " "}</pre>
+      <pre className={`min-h-5 whitespace-pre-wrap px-2 [overflow-wrap:anywhere] ${line?.eofMarker ? "italic text-ink-muted" : "text-ink"}`}>{line?.text ?? " "}</pre>
     </div>
   );
+}
+
+/* Unwrapped mode gives each side its own horizontal scroller, so the two sides
+ * scroll sideways independently while the outer container scrolls both
+ * vertically. Every line is exactly one `h-5` row and both sides render the
+ * same row list, which is what keeps them aligned without a shared grid row.
+ *
+ * A pane is as tall as the whole file, so its native scrollbar would sit below
+ * the last line. Panes hide it and a sticky strip at the bottom of the viewport
+ * carries a proxy scrollbar per side, kept in step with the pane. */
+function UnwrappedRows({ items, mobileSide, onExpand }: {
+  items: VisibleRow[];
+  mobileSide: DiffSide;
+  onExpand: (foldKey: number) => void;
+}) {
+  const panes = useRef<Record<DiffSide, HTMLDivElement | null>>({ before: null, after: null });
+  const proxies = useRef<Record<DiffSide, HTMLDivElement | null>>({ before: null, after: null });
+  /** How far each pane can scroll sideways; 0 when its lines fit. */
+  const [ranges, setRanges] = useState<Record<DiffSide, number>>({ before: 0, after: 0 });
+
+  useLayoutEffect(() => {
+    const measure = () => {
+      const next = {
+        before: horizontalRange(panes.current.before),
+        after: horizontalRange(panes.current.after),
+      };
+      setRanges((current) =>
+        current.before === next.before && current.after === next.after ? current : next,
+      );
+    };
+    measure();
+    /* The pane resizes with the viewport (and from nothing when the mobile
+     * switch reveals it); its content resizes when folds expand. */
+    const observer = new ResizeObserver(measure);
+    for (const side of DIFF_SIDES) {
+      const pane = panes.current[side];
+      if (!pane) continue;
+      observer.observe(pane);
+      if (pane.firstElementChild) observer.observe(pane.firstElementChild);
+    }
+    return () => observer.disconnect();
+  }, []);
+
+  /* A proxy mounts at scrollLeft 0 when its side starts overflowing. */
+  useLayoutEffect(() => {
+    for (const side of DIFF_SIDES) follow(panes.current[side], proxies.current[side]);
+  }, [ranges]);
+
+  return (
+    <>
+      <div className="grid grid-cols-1 md:grid-cols-2">
+        {DIFF_SIDES.map((side) => (
+          <div
+            key={side}
+            ref={(element) => { panes.current[side] = element; }}
+            onScroll={() => follow(panes.current[side], proxies.current[side])}
+            className={`diff-pane-scroll overflow-x-auto overflow-y-hidden border-line [container-type:inline-size] ${side === "after" ? "md:border-l" : ""} ${mobileVisibility(side, mobileSide)}`}
+          >
+            <div className="w-max min-w-full">
+              {items.map((item) => item.hidden ? (
+                <button
+                  key={`fold-${item.key}`}
+                  data-row={item.key}
+                  type="button"
+                  aria-label={`展开 ${item.hidden} 行未改动内容`}
+                  onClick={() => onExpand(item.key)}
+                  className="block w-full whitespace-nowrap border-y border-line bg-surface-sunken py-1 text-left text-[10px] text-ink-muted hover:text-ink-strong"
+                >
+                  {/* Pinned to the pane's visible width, so the label stays in
+                    * view however far the pane is scrolled. On desktop the
+                    * fold reads as one band, so only the left half is labelled. */}
+                  <span className={`sticky left-0 inline-block w-[100cqw] text-center ${side === "after" ? "md:invisible" : ""}`}>
+                    展开 {item.hidden} 行未改动内容
+                  </span>
+                </button>
+              ) : (
+                <UnwrappedLine
+                  key={item.key}
+                  rowKey={item.key}
+                  line={side === "before" ? item.row?.left : item.row?.right}
+                  background={changedBackground(side, !!item.row?.changed) || "bg-surface"}
+                />
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+      {(ranges.before > 0 || ranges.after > 0) && (
+        <div className="sticky bottom-0 z-10 grid grid-cols-1 border-t border-line bg-surface-raised md:grid-cols-2">
+          {DIFF_SIDES.map((side) => (
+            <div key={side} className={mobileVisibility(side, mobileSide)}>
+              {ranges[side] > 0 && (
+                <div
+                  ref={(element) => { proxies.current[side] = element; }}
+                  onScroll={() => follow(proxies.current[side], panes.current[side])}
+                  aria-hidden
+                  className="min-h-[10px] overflow-x-auto overflow-y-hidden"
+                >
+                  {/* Wider than the proxy by exactly the pane's range, so the
+                    * two scroll the same distance and scrollLeft maps 1:1. */}
+                  <div className="h-px" style={{ width: `calc(100% + ${ranges[side]}px)` }} />
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </>
+  );
+}
+
+function UnwrappedLine({ rowKey, line, background }: {
+  rowKey: number;
+  line?: DiffLine;
+  background: string;
+}) {
+  /* The row carries an opaque background so the sticky gutter can inherit it
+   * and cover the text scrolling underneath. */
+  return (
+    <div data-row={rowKey} className={`flex h-5 ${background}`}>
+      <span className="sticky left-0 w-[48px] flex-none select-none border-r border-line bg-inherit px-2 text-right text-ink-subtle">
+        {line?.number ?? ""}
+      </span>
+      <pre className={`whitespace-pre px-2 ${line?.eofMarker ? "italic text-ink-muted" : "text-ink"}`}>{line?.text ?? " "}</pre>
+    </div>
+  );
+}
+
+function horizontalRange(pane: HTMLElement | null): number {
+  return pane ? Math.max(0, pane.scrollWidth - pane.clientWidth) : 0;
+}
+
+/** Copy `from`'s scrollLeft onto `to`. The tolerance stops a pane and its proxy
+ *  from echoing sub-pixel values back at each other. */
+function follow(from: HTMLElement | null, to: HTMLElement | null) {
+  if (from && to && Math.abs(to.scrollLeft - from.scrollLeft) > 0.5) to.scrollLeft = from.scrollLeft;
 }
 
 export function DiffViewerOverlay({ artifact, sessionId, nodeId, name, onClose }: {

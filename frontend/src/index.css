@@ -604,3 +604,13 @@ html.dark .hljs-emphasis {
 .notice-rail-viewport:hover::-webkit-scrollbar-thumb {
   background: rgb(var(--ink-muted) / 0.45);
 }
+
+/* Unwrapped diff panes scroll sideways, but each is as tall as the whole file,
+ * so a native scrollbar would sit below the last line. `DiffViewer` hides it
+ * and drives the pane from a proxy scrollbar pinned to the viewport bottom. */
+.diff-pane-scroll {
+  scrollbar-width: none;
+}
+.diff-pane-scroll::-webkit-scrollbar {
+  display: none;
+}
