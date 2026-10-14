@@ -43,33 +43,39 @@ def plan(questions: list[dict]) -> cards.PushPlan:
     )
 
 
-def shape(result: cards.PushPlan) -> list[tuple[str, tuple[int, ...]]]:
-    return [(spec.kind, spec.questions) for spec in result.cards]
+def shape(result: cards.PushPlan) -> list[tuple[str, int]]:
+    return [(spec.kind, spec.question) for spec in result.cards]
 
 
 class PlanTests(unittest.TestCase):
-    def test_split_by_question_shape(self) -> None:
+    def test_one_card_per_question(self) -> None:
         single = lambda i: {"question": f"Q{i}", "options": [{"label": "x"}, {"label": "y"}]}  # noqa: E731
         cases = {
-            "one single-select": ([SINGLE], [("button", (0,))]),
-            "two single-selects": ([single(0), single(1)], [("select", (0, 1))]),
-            "three single-selects": ([single(0), single(1), single(2)], [("select", (0, 1, 2))]),
-            "four single-selects": (
-                [single(i) for i in range(4)],
-                [("select", (0, 1, 2)), ("select", (3,))],
-            ),
-            "multi-select": ([MULTI], [("vote", (0,))]),
+            "one single-select": ([SINGLE], [("button", 0)]),
+            "two single-selects": ([single(0), single(1)], [("button", 0), ("button", 1)]),
+            "four single-selects": ([single(i) for i in range(4)], [("button", i) for i in range(4)]),
+            "multi-select": ([MULTI], [("vote", 0)]),
             "text only": ([TEXT], []),
-            "mixed": ([SINGLE, MULTI, TEXT, single(3)], [("select", (0, 3)), ("vote", (1,))]),
+            "mixed": ([SINGLE, MULTI, TEXT, single(3)], [("button", 0), ("vote", 1), ("button", 3)]),
         }
         for name, (questions, expected) in cases.items():
             with self.subTest(name):
                 self.assertEqual(shape(plan(questions)), expected)
+        # A question without options gets its prompt in its place among the cards.
+        mixed = plan([SINGLE, MULTI, TEXT, single(3)])
+        self.assertEqual(
+            [message.question if isinstance(message, cards.CardSpec) else "prompt" for message in mixed.messages],
+            [0, 1, "prompt", 3],
+        )
+        self.assertEqual(cards.find_markers(mixed.messages[2]), [("ABCD", 2)])
+        self.assertEqual(len({spec.task_id for spec in mixed.cards}), 3)
 
     def test_long_option_lists_move_to_checkbox_or_web(self) -> None:
-        many = {"question": "多", "options": [{"label": f"o{i}"} for i in range(9)]}
-        self.assertEqual(shape(plan([many, SINGLE])), [("vote", (0,)), ("select", (1,))])
-        self.assertEqual(shape(plan([many])), [("vote", (0,))])
+        six = {"question": "六", "options": [{"label": f"o{i}"} for i in range(6)]}
+        self.assertEqual(shape(plan([six, SINGLE])), [("vote", 0), ("button", 1)])
+        self.assertEqual(plan([six]).cards[0].card["checkbox"]["mode"], 0)
+        many = {"question": "多", "options": [{"label": f"o{i}"} for i in range(19)]}
+        self.assertEqual(shape(plan([many])), [("vote", 0)])
         too_many = {"question": "太多", "options": [{"label": f"o{i}"} for i in range(20)]}
         result = plan([too_many])
         self.assertTrue(result.notice_only)
@@ -86,26 +92,37 @@ class PlanTests(unittest.TestCase):
         lone = plan([TEXT])
         self.assertEqual(lone.text_questions, (0,))
         self.assertTrue(lone.detail_is_prompt)
+        self.assertEqual(lone.messages, ())
         mixed = plan([SINGLE, TEXT])
         self.assertEqual(mixed.text_questions, (1,))
         self.assertFalse(mixed.detail_is_prompt)
+        self.assertIn("请用文字回答", mixed.messages[1])
 
-    def test_cards_carry_placeholder_other_and_markers(self) -> None:
+    def test_each_card_names_only_its_own_question(self) -> None:
         result = plan([SINGLE, MULTI, {**SINGLE, "id": "b"}])
-        select = result.cards[0].card
-        self.assertEqual(select["card_type"], "multiple_interaction")
-        first = select["select_list"][0]["option_list"]
-        self.assertEqual(first[0]["id"], cards.PLACEHOLDER_ID)
-        self.assertEqual(first[-1], {"id": cards.OTHER_ID, "text": cards.OTHER_TEXT})
-        self.assertTrue(select["sub_title_text"].endswith("#ABCD-1 #ABCD-3"))
-        vote = result.cards[1].card
-        self.assertEqual(vote["checkbox"]["mode"], 1)
-        self.assertEqual(vote["checkbox"]["option_list"][-1]["id"], cards.OTHER_ID)
-        self.assertEqual(select["source"], {"desc": "HOST-A", "desc_color": 1})
-        self.assertEqual(select["main_title"]["desc"], "demo · lane · build")
-        self.assertTrue(select["main_title"]["title"].startswith("(1/2) "))
-        button = plan([SINGLE]).cards[0].card
+        button, vote, second = (spec.card for spec in result.cards)
+        self.assertEqual(button["card_type"], "button_interaction")
         self.assertEqual([item["key"] for item in button["button_list"]], ["q0:0", "q0:1", "q0:o"])
+        self.assertEqual(button["button_list"][-1]["text"], cards.OTHER_TEXT)
+        self.assertEqual(vote["card_type"], "vote_interaction")
+        self.assertEqual(vote["checkbox"]["mode"], 1)
+        self.assertEqual(vote["checkbox"]["option_list"][-1], {"id": cards.OTHER_ID, "text": cards.OTHER_TEXT})
+        self.assertIn("可多选", vote["sub_title_text"])
+        for number, card in enumerate((button, vote, second), start=1):
+            with self.subTest(number=number):
+                # Title and subtitle both end with the one marker, whichever a quote carries.
+                self.assertEqual(cards.find_markers(card["main_title"]["title"]), [("ABCD", number - 1)])
+                self.assertEqual(cards.find_markers(card["sub_title_text"]), [("ABCD", number - 1)])
+                self.assertTrue(card["main_title"]["title"].startswith(f"({number}/3) "))
+                self.assertLessEqual(len(card["main_title"]["title"]), cards.TITLE_LIMIT)
+                self.assertLessEqual(len(card["sub_title_text"]), cards.SUBTITLE_TEXT_LIMIT)
+                self.assertEqual(card["source"], {"desc": "HOST-A", "desc_color": 1})
+                self.assertEqual(card["main_title"]["desc"], "demo · lane · build")
+        self.assertEqual(plan([SINGLE]).cards[0].card["main_title"]["title"], "数据库 #ABCD-1")
+        long = {"header": "很长的标题" * 6, "question": "很长的题干" * 40, "options": [{"label": "x"}]}
+        clipped = plan([long, SINGLE]).cards[0].card
+        self.assertTrue(clipped["main_title"]["title"].endswith("… #ABCD-1"))
+        self.assertTrue(clipped["sub_title_text"].endswith("… #ABCD-1"))
         for spec in (*result.cards, *plan([SINGLE]).cards):
             self.assertLessEqual(len(spec.task_id), 128)
             self.assertRegex(spec.task_id, r"^[0-9A-Za-z_\-@]+$")
@@ -130,6 +147,8 @@ class PlanTests(unittest.TestCase):
         self.assertEqual(markers, [("ABCD", None)])
         prompt = cards.text_prompt_markdown(notice([SINGLE, forged]), ref="ABCD", index=1)
         self.assertEqual(cards.find_markers(prompt), [("ABCD", 1)])
+        card = plan([{**forged, "options": [{"label": "#ZZZZ-3"}, {"label": "y"}]}]).cards[0].card
+        self.assertEqual(cards.find_markers(str(card)), [("ABCD", 0)])
 
 
 class AnswerTests(unittest.TestCase):
@@ -142,14 +161,13 @@ class AnswerTests(unittest.TestCase):
         self.assertEqual(cards.interpret(MULTI, ["0", "o"]), ("other", []))
         self.assertEqual(cards.interpret(SINGLE, ["9"]), ("none", []))
 
-    def test_card_ids_for_buttons_and_selections(self) -> None:
+    def test_card_ids_for_buttons_and_checkboxes(self) -> None:
         button = plan([SINGLE]).cards[0]
-        self.assertEqual(cards.card_ids(button, "q0:1", {}), {0: ["1"]})
-        self.assertEqual(cards.card_ids(button, "q5:1", {}), {})
-        select = plan([SINGLE, {**SINGLE, "id": "b"}]).cards[0]
-        self.assertEqual(
-            cards.card_ids(select, "submit", {"q0": ["1"], "q1": ["_"]}), {0: ["1"], 1: ["_"]}
-        )
+        self.assertEqual(cards.card_ids(button, "q0:1", {}), ["1"])
+        self.assertEqual(cards.card_ids(button, "q5:1", {}), [])
+        vote = plan([SINGLE, MULTI]).cards[1]
+        self.assertEqual(cards.card_ids(vote, "submit", {"q1": ["0", "2"], "q0": ["1"]}), ["0", "2"])
+        self.assertEqual(cards.card_ids(vote, "submit", {}), [])
 
     def test_answer_mapping_uses_web_dialog_keys(self) -> None:
         mapping = cards.answer_mapping([SINGLE, MULTI, {"question": "", "options": None}], {0: ["SQLite"], 1: ["A"], 2: ["文本"]})
@@ -167,17 +185,24 @@ class AnswerTests(unittest.TestCase):
         self.assertEqual(cards.find_markers("#TODO #ABCD"), [("ABCD", None)])  # O is not in the alphabet
 
     def test_after_click_and_closed_cards(self) -> None:
-        spec = plan([SINGLE, {**SINGLE, "id": "b"}]).cards[0]
-        pending = cards.card_after_click(spec, {0: ["1"], 1: ["_"]}, done=False, status="第 2 题还没选")
-        self.assertEqual([item["selected_id"] for item in pending["select_list"]], ["1", "_"])
-        self.assertNotIn("disable", pending["select_list"][0])
-        done = cards.card_after_click(spec, {0: ["1"], 1: ["0"]}, done=True, status="已回答")
-        self.assertTrue(all(item["disable"] for item in done["select_list"]))
+        spec = plan([MULTI]).cards[0]
+        pending = cards.card_after_click(spec, [], done=False, status="还没有选择")
+        self.assertNotIn("disable", pending["checkbox"])
+        self.assertEqual(pending["submit_button"]["text"], "提交")
+        done = cards.card_after_click(spec, ["0", "2"], done=True, status="已回答")
+        self.assertTrue(done["checkbox"]["disable"])
+        self.assertEqual(
+            [option["is_checked"] for option in done["checkbox"]["option_list"]], [True, False, True, False]
+        )
         self.assertEqual(done["submit_button"]["text"], "已提交")
         closed = cards.closed_card(spec.card, kind=spec.kind, status="已失效", answered=False)
         self.assertEqual(closed["submit_button"]["text"], "已失效")
+        self.assertTrue(closed["checkbox"]["disable"])
         self.assertEqual(closed["task_id"], spec.task_id)
         button = plan([SINGLE]).cards[0]
+        other = cards.card_after_click(button, ["o"], done=True, status="已选「其他」")
+        self.assertEqual(other["button_list"][-1]["text"], cards._clip("✔ " + cards.OTHER_TEXT, cards.BUTTON_TEXT_LIMIT))
+        self.assertEqual(other["main_title"]["title"], button.card["main_title"]["title"])
         closed_button = cards.closed_card(button.card, kind="button", status="已失效", answered=False)
         self.assertEqual([item["text"] for item in closed_button["button_list"]], ["已失效"])
 

@@ -1,24 +1,22 @@
 """Pure WeCom (企业微信) message builders and answer handling for ``ask_user``.
 
-An intelligent bot's template cards have no text input and hold at most
-three dropdowns or a single checkbox question, so a gate is split:
+An intelligent bot's template cards have no text input, so a gate is split:
 
 - one markdown *detail* message with every question, every option and its
   description in full;
-- then cards by question shape: a lone single-select question becomes one
-  ``button_interaction`` card (one tap answers); other single-select
-  questions share ``multiple_interaction`` cards of up to three dropdowns,
-  whose first entry is a 「请选择」 placeholder so an untouched dropdown
-  reads as unanswered; each multi-select question, and a single-select one
-  too long for a dropdown, gets its own ``vote_interaction`` card. Every
-  option list ends with 「其他（文字回答）」.
+- then one message per question, in order: a single-select question with
+  few options becomes a ``button_interaction`` card (one tap answers), any
+  other question with options a ``vote_interaction`` card (single- or
+  multi-select checkbox), and a question without options a markdown prompt.
+  Every option list ends with 「其他（文字回答）」.
 
-Free text is accepted only from a reply that *quotes* a question message.
-The markers survive in the quoted text WeCom sends back: the detail's first
-line carries the gate's ``#<ref>`` (all of its questions; first, so a quote
-clipped at the end still has it), and each per-question prompt and card
-carries ``#<ref>-<n>``. So the bridge knows which question a reply answers;
-a message that quotes nothing is never taken as an answer.
+One question per card is what keeps free text unambiguous: text is accepted
+only from a reply that *quotes* a question message, and the marker in the
+quoted text WeCom sends back names exactly one question. Each card and
+prompt carries ``#<ref>-<n>``; the detail's first line carries the gate's
+``#<ref>`` (first, so a quote clipped at the end still has it), which names
+a question only when the gate has just one. A message that quotes nothing
+is never taken as an answer.
 
 A card can be changed only by the response to a click on it, within 5 s of
 the click, so a card whose gate is gone is replaced by a closed card the next
@@ -38,16 +36,10 @@ from typing import Any, Literal
 from .feishu_cards import card_subtitle, clock, has_secret_question, option_labels, question_key
 from .gate_observer import GateNotice
 
-PLACEHOLDER_ID = "_"
 OTHER_ID = "o"
 OTHER_TEXT = "其他（文字回答）"
-PLACEHOLDER_TEXT = "请选择"
 SUBMIT_KEY = "submit"
 
-#: Dropdowns per ``multiple_interaction`` card.
-SELECTS_PER_CARD = 3
-#: Real options that fit a dropdown (10, minus the placeholder and 其他).
-SELECT_OPTIONS = 8
 #: Real options that fit a checkbox (20, minus 其他).
 VOTE_OPTIONS = 19
 #: Real options shown as buttons (6, minus 其他).
@@ -59,8 +51,6 @@ TITLE_LIMIT = 26
 DESC_LIMIT = 30
 SUBTITLE_TEXT_LIMIT = 112
 SOURCE_LIMIT = 13
-SELECT_TITLE_LIMIT = 13
-SELECT_OPTION_LIMIT = 10
 VOTE_OPTION_LIMIT = 11
 BUTTON_TEXT_LIMIT = 10
 QUESTION_TEXT_LIMIT = 1500
@@ -76,9 +66,10 @@ _TASK_UNSAFE = re.compile(r"[^0-9A-Za-z_\-@]")
 HOST_COLORS = (0, 1, 2, 3)
 
 QUOTE_HOW = "长按本条消息，选择「引用」后回复你的答案。"
+QUOTE_CARD = "要用文字回答，请长按该题的卡片，选择「引用」后回复。"
 QUOTE_RULE = "只有引用了提问消息的回复才会被记录为答案；网页端也可以随时作答，先答先生效。"
 
-CardKind = Literal["button", "select", "vote"]
+CardKind = Literal["button", "vote"]
 Choice = Literal["none", "other", "answer"]
 
 
@@ -86,21 +77,27 @@ Choice = Literal["none", "other", "answer"]
 class CardSpec:
     task_id: str
     kind: CardKind
-    #: Indices into the gate's questions.
-    questions: tuple[int, ...]
+    #: Index into the gate's questions.
+    question: int
     card: dict[str, Any] = field(compare=False)
 
 
 @dataclass(frozen=True)
 class PushPlan:
     detail: str
-    cards: tuple[CardSpec, ...] = ()
+    #: What follows the detail, one per question in order: its card, or
+    #: the markdown prompt of a question without options.
+    messages: tuple[str | CardSpec, ...] = ()
     #: Questions without options: answered only by a quoted reply.
     text_questions: tuple[int, ...] = ()
     #: The detail itself is the prompt for the only (text) question.
     detail_is_prompt: bool = False
     #: The gate cannot be answered here; the detail says why.
     notice_only: bool = False
+
+    @property
+    def cards(self) -> tuple[CardSpec, ...]:
+        return tuple(message for message in self.messages if isinstance(message, CardSpec))
 
 
 def host_color(host_short: str) -> int:
@@ -169,84 +166,68 @@ def plan_push(
             notice_only=True,
         )
 
-    groups: list[tuple[CardKind, tuple[int, ...]]] = []
-    first = questions[0]
-    if (
-        len(questions) == 1
-        and not first.get("multiSelect")
-        and 0 < len(option_labels(first)) <= BUTTON_OPTIONS
-    ):
-        groups.append(("button", (0,)))
-    else:
-        selects: list[int] = []
-        for index, question in enumerate(questions):
-            labels = option_labels(question)
-            if not labels:
-                continue
-            if question.get("multiSelect") or len(labels) > SELECT_OPTIONS:
-                groups.append(("vote", (index,)))
-                continue
-            selects.append(index)
-            if len(selects) == SELECTS_PER_CARD:
-                groups.append(("select", tuple(selects)))
-                selects = []
-        if selects:
-            groups.append(("select", tuple(selects)))
-        groups.sort(key=lambda group: group[1][0])
-
+    subtitle = card_subtitle(notice)
+    gate = _TASK_UNSAFE.sub("", notice.gate_id)[:64] or "gate"
+    total = len(questions)
     text_questions = tuple(
         index for index, question in enumerate(questions) if not option_labels(question)
     )
-    detail_is_prompt = len(questions) == 1 and bool(text_questions)
-    subtitle = card_subtitle(notice)
-    gate = _TASK_UNSAFE.sub("", notice.gate_id)[:64] or "gate"
-    specs: list[CardSpec] = []
-    for position, (kind, indices) in enumerate(groups):
-        task_id = f"mc2-{gate}-{position + 1}-{nonce}"
+    detail_is_prompt = total == 1 and bool(text_questions)
+    messages: list[str | CardSpec] = []
+    for index, question in enumerate(questions):
+        labels = option_labels(question)
+        if not labels:
+            if not detail_is_prompt:
+                messages.append(text_prompt_markdown(notice, ref=ref, index=index))
+            continue
+        kind: CardKind = (
+            "button"
+            if not question.get("multiSelect") and len(labels) <= BUTTON_OPTIONS
+            else "vote"
+        )
+        task_id = f"mc2-{gate}-{index + 1}-{nonce}"
         card = _question_card(
             kind,
-            questions,
-            indices,
+            question,
+            index,
             ref=ref,
             task_id=task_id,
-            prefix=f"({position + 1}/{len(groups)}) " if len(groups) > 1 else "",
+            prefix=f"({index + 1}/{total}) " if total > 1 else "",
             subtitle=subtitle,
             host_label=host_label,
             color=color,
         )
-        specs.append(CardSpec(task_id=task_id, kind=kind, questions=indices, card=card))
+        messages.append(CardSpec(task_id=task_id, kind=kind, question=index, card=card))
     if detail_is_prompt:
         footer = [f"**{QUOTE_HOW}**"]
-    elif not specs:
-        footer = ["每道题下方会单独发一条提示消息，请分别长按它们，选择「引用」后回复文字。"]
     else:
-        footer = [
-            "在下方卡片中作答。选了「其他（文字回答）」或没有选项的题目，"
-            "请长按对应的提示消息，选择「引用」后回复文字。"
-        ]
+        how = ["下方每道题单独一条消息。"] if total > 1 else []
+        if len(text_questions) < total:
+            how.append(
+                "在卡片中作答；选了「其他（文字回答）」的题目，请长按该题的卡片，选择「引用」后回复文字。"
+            )
+        if text_questions:
+            how.append("没有选项的题目，请长按它的提示消息，选择「引用」后回复文字。")
+        footer = ["".join(how)]
     return PushPlan(
         detail=detail_markdown(notice, ref=ref, host_label=host_label, now=now, footer=footer),
-        cards=tuple(specs),
+        messages=tuple(messages),
         text_questions=text_questions,
         detail_is_prompt=detail_is_prompt,
     )
 
 
-def card_ids(spec: CardSpec, event_key: str, selections: dict[str, list[str]]) -> dict[int, list[str]]:
-    """The option ids a click chose, per question on the card."""
+def card_ids(spec: CardSpec, event_key: str, selections: dict[str, list[str]]) -> list[str]:
+    """The option ids a click chose for the card's question."""
     if spec.kind == "button":
         key, _, option = (event_key or "").partition(":")
-        index = _question_index(key)
-        return {index: [option]} if index in spec.questions and option else {}
-    return {
-        index: [str(item) for item in selections.get(f"q{index}") or []]
-        for index in spec.questions
-    }
+        return [option] if _question_index(key) == spec.question and option else []
+    return [str(item) for item in selections.get(f"q{spec.question}") or []]
 
 
 def interpret(question: dict[str, Any], ids: list[str]) -> tuple[Choice, list[str]]:
     """Read one question's chosen ids: nothing, 「其他」, or labels."""
-    chosen = [item for item in ids if item != PLACEHOLDER_ID]
+    chosen = [item for item in ids if item]
     if not chosen:
         return "none", []
     if OTHER_ID in chosen:
@@ -273,31 +254,23 @@ def answer_mapping(
     }
 
 
-def card_after_click(
-    spec: CardSpec, ids: dict[int, list[str]], *, done: bool, status: str
-) -> dict[str, Any]:
-    """The clicked card again, showing what was chosen; ``done`` locks it."""
+def card_after_click(spec: CardSpec, ids: list[str], *, done: bool, status: str) -> dict[str, Any]:
+    """The clicked card again, showing what was chosen; ``done`` locks a checkbox."""
     card = copy.deepcopy(spec.card)
     card["main_title"]["desc"] = _clip(status, DESC_LIMIT)
-    if spec.kind == "select":
-        for item in card["select_list"]:
-            chosen = ids.get(_question_index(item["question_key"])) or []
-            item["selected_id"] = chosen[0] if chosen else PLACEHOLDER_ID
-            if done:
-                item["disable"] = True
-    elif spec.kind == "vote":
-        chosen_set = set(ids.get(spec.questions[0]) or [])
+    if spec.kind == "vote":
+        chosen = set(ids)
         for option in card["checkbox"]["option_list"]:
-            option["is_checked"] = option["id"] in chosen_set
+            option["is_checked"] = option["id"] in chosen
         if done:
             card["checkbox"]["disable"] = True
+            card["submit_button"]["text"] = "已提交"
     else:
-        chosen = (ids.get(spec.questions[0]) or [""])[0]
+        # Buttons stay live, so a choice (「其他」 too) can be changed by another tap.
+        chosen_id = ids[0] if ids else ""
         for button in card["button_list"]:
-            if button["key"].partition(":")[2] == chosen:
+            if button["key"].partition(":")[2] == chosen_id:
                 button["text"] = _clip("✔ " + button["text"], BUTTON_TEXT_LIMIT)
-    if done and "submit_button" in card:
-        card["submit_button"]["text"] = "已提交"
     return card
 
 
@@ -307,8 +280,6 @@ def closed_card(
     """The card as last shown, locked, for any click after its gate closed."""
     card = copy.deepcopy(shown)
     card["main_title"]["desc"] = _clip(status, DESC_LIMIT)
-    for item in card.get("select_list") or []:
-        item["disable"] = True
     if "checkbox" in card:
         card["checkbox"]["disable"] = True
     if "submit_button" in card:
@@ -326,7 +297,11 @@ def expired_card(
     color: int,
     task_id: str,
 ) -> dict[str, Any] | None:
-    """A closed card for a click whose card this process no longer knows."""
+    """A closed card for a click whose card this process no longer knows.
+
+    Dropdown cards are no longer sent, but ones pushed by an older version
+    can still be clicked.
+    """
     keys = question_keys or ["q0"]
     card: dict[str, Any] = {
         "card_type": card_type,
@@ -334,11 +309,11 @@ def expired_card(
         "main_title": {"title": "提问已失效", "desc": "请回网页端作答"},
         "task_id": task_id,
     }
-    closed = [{"id": PLACEHOLDER_ID, "text": "已失效"}]
+    closed = [{"id": "_", "text": "已失效"}]
     if card_type == "multiple_interaction":
         card["select_list"] = [
             {"question_key": key, "title": "已失效", "option_list": closed, "disable": True}
-            for key in keys[:SELECTS_PER_CARD]
+            for key in keys[:3]
         ]
         card["submit_button"] = {"text": "已失效", "key": SUBMIT_KEY}
     elif card_type == "vote_interaction":
@@ -462,7 +437,7 @@ def recorded_markdown(
 
 def hint_markdown() -> str:
     return (
-        "要用文字回答，请长按对应的提问消息，选择「引用」后回复。"
+        "要用文字回答，请长按该题的卡片（没有选项的题目是它的提示消息），选择「引用」后回复。"
         "没有引用提问的消息不会被记录为答案。"
     )
 
@@ -472,8 +447,8 @@ def hint_markdown() -> str:
 
 def _question_card(
     kind: CardKind,
-    questions: list[dict[str, Any]],
-    indices: tuple[int, ...],
+    question: dict[str, Any],
+    index: int,
     *,
     ref: str,
     task_id: str,
@@ -482,70 +457,35 @@ def _question_card(
     host_label: str,
     color: int,
 ) -> dict[str, Any]:
-    first = questions[indices[0]]
-    # Markers stay whole at the end, so a reply quoting the card still names its questions.
-    markers = " ".join(marker(ref, index) for index in indices)
-    budget = SUBTITLE_TEXT_LIMIT - len(markers) - 1
-    if kind == "select" and len(indices) > 1:
-        title = "请选择"
-        share = max(8, budget // len(indices) - 4)
-        sub_title = "；".join(
-            f"{index + 1}. {_clip(_question_text(questions[index]), share)}" for index in indices
-        )
-    else:
-        title = _heading(first, indices[0])
-        sub_title = _question_text(first)
-        if kind == "vote" and first.get("multiSelect"):
-            sub_title += "（可多选）"
-    sub_title = f"{_clip(sub_title, budget)} {markers}"
+    # The marker ends both the title and the subtitle, kept whole, so a reply
+    # quoting the card names its question whichever field the quote carries.
+    tag = marker(ref, index)
+    title = f"{_clip(prefix + _heading(question, index), TITLE_LIMIT - len(tag) - 1)} {tag}"
+    text = _question_text(question)
+    if question.get("multiSelect"):
+        text += "（可多选）"
     card: dict[str, Any] = {
-        "card_type": {
-            "button": "button_interaction",
-            "select": "multiple_interaction",
-            "vote": "vote_interaction",
-        }[kind],
+        "card_type": {"button": "button_interaction", "vote": "vote_interaction"}[kind],
         "source": _source(host_label, color),
-        "main_title": {
-            "title": _clip(prefix + title, TITLE_LIMIT),
-            "desc": _clip(subtitle, DESC_LIMIT),
-        },
-        "sub_title_text": sub_title,
+        "main_title": {"title": title, "desc": _clip(subtitle, DESC_LIMIT)},
+        "sub_title_text": f"{_clip(text, SUBTITLE_TEXT_LIMIT - len(tag) - 1)} {tag}",
         "task_id": task_id,
     }
     if kind == "button":
-        texts = _option_texts(option_labels(first), BUTTON_TEXT_LIMIT)
+        texts = _option_texts(option_labels(question), BUTTON_TEXT_LIMIT)
         card["button_list"] = [
-            {"text": text, "style": 1, "key": f"q{indices[0]}:{position}"}
+            {"text": text, "style": 1, "key": f"q{index}:{position}"}
             for position, text in enumerate(texts)
-        ] + [{"text": OTHER_TEXT, "style": 2, "key": f"q{indices[0]}:{OTHER_ID}"}]
-    elif kind == "select":
-        card["select_list"] = [
-            {
-                "question_key": f"q{index}",
-                "title": _clip(f"{index + 1}. {_heading(questions[index], index)}", SELECT_TITLE_LIMIT),
-                "option_list": [
-                    {"id": PLACEHOLDER_ID, "text": PLACEHOLDER_TEXT},
-                    *(
-                        {"id": str(position), "text": text}
-                        for position, text in enumerate(
-                            _option_texts(option_labels(questions[index]), SELECT_OPTION_LIMIT)
-                        )
-                    ),
-                    {"id": OTHER_ID, "text": OTHER_TEXT},
-                ],
-            }
-            for index in indices
-        ]
-        card["submit_button"] = {"text": "提交", "key": SUBMIT_KEY}
+        ] + [{"text": OTHER_TEXT, "style": 2, "key": f"q{index}:{OTHER_ID}"}]
     else:
         card["checkbox"] = {
-            "question_key": f"q{indices[0]}",
-            "mode": 1 if first.get("multiSelect") else 0,
+            "question_key": f"q{index}",
+            "mode": 1 if question.get("multiSelect") else 0,
             "option_list": [
                 *(
                     {"id": str(position), "text": text}
                     for position, text in enumerate(
-                        _option_texts(option_labels(first), VOTE_OPTION_LIMIT)
+                        _option_texts(option_labels(question), VOTE_OPTION_LIMIT)
                     )
                 ),
                 {"id": OTHER_ID, "text": OTHER_TEXT},

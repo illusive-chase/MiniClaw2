@@ -349,19 +349,18 @@ declares it explicitly).
   kicks the older. A kicked machine does not reconnect on its own (that would
   kick the other back) and shows a 重新连接 button instead. Never enter the
   same credentials on two machines.
-- **Split cards.** WeCom cards have no text input and hold at most three
-  dropdowns or one checkbox question, so a gate is sent as one markdown
-  message with every question and option in full, followed by cards: one tap
-  answers a lone single-select question; other single-select questions share
-  dropdown cards of up to three; each multi-select question gets its own
-  checkbox card. Every option list ends with 「其他（文字回答）」. The gate
-  resolves once every question has an answer.
-- **Text answers only by quoting.** Choosing 「其他」 sends a prompt message
-  for that question; a question without options gets one up front. A text
-  reply counts only when it *quotes* a question message (the prompt, the
-  card, or the detail when that leaves exactly one question to answer);
-  every such message carries a marker like `#K7QD-2` that WeCom returns in
-  the quoted text. A plain message is never taken as an answer.
+- **One card per question.** WeCom cards have no text input, so a gate is
+  sent as one markdown message with every question and option in full,
+  followed by one message per question: a button card for a single-select
+  question with up to five options (one tap answers it), a checkbox card for
+  a multi-select question or a longer option list, and a markdown prompt for
+  a question without options. Every option list ends with
+  「其他（文字回答）」. The gate resolves once every question has an answer.
+- **Text answers only by quoting.** A text reply counts only when it *quotes*
+  one question's card or prompt; each carries a marker like `#K7QD-2` that
+  WeCom returns in the quoted text, so a reply names exactly one question
+  even when several chose 「其他」. Quoting the detail counts only when the
+  gate has a single question. A plain message is never taken as an answer.
 - **Cards change only when clicked.** WeCom lets a card be updated only in
   the response to a click on it, within 5 s. When a question is answered on
   the web, its node ends or the machine stops, the user gets one message

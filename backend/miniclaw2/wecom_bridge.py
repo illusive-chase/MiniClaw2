@@ -13,11 +13,11 @@ WeCom shapes the design differently from Feishu:
   cannot message anyone who has not written to it first, so the user claims
   the bot by sending it a pairing code; only that user's clicks and replies
   count afterwards.
-- Cards hold at most three dropdowns or one checkbox question and no text
-  input, so a gate becomes a markdown detail plus cards (``wecom_cards``),
-  answers accumulate per question, and the gate resolves when the last one
-  arrives. Free text counts only from a reply that quotes a question
-  message; a plain message is never taken as an answer.
+- Cards have no text input, so a gate becomes a markdown detail plus one
+  card per question (``wecom_cards``), answers accumulate per question, and
+  the gate resolves when the last one arrives. Free text counts only from a
+  reply that quotes one question's card or prompt, so a reply never has to
+  be guessed at; a plain message is never taken as an answer.
 - A card can be changed only in the response to a click on it, so a gate
   that closes elsewhere is announced with one markdown message, and its
   cards turn into closed cards the next time they are clicked.
@@ -130,8 +130,6 @@ class _Push:
     answers: dict[int, list[str]] = field(default_factory=dict)
     #: Questions waiting for a quoted text reply.
     awaiting: set[int] = field(default_factory=set)
-    #: Questions whose text prompt has been sent (or is the detail itself).
-    prompted: set[int] = field(default_factory=set)
     delivered: int = 0
     #: The gate was resolved from here; its close is still on the way.
     resolved: bool = False
@@ -145,7 +143,6 @@ class _Push:
         self.plan = None
         self.answers = {}
         self.awaiting = set()
-        self.prompted = set()
         self.delivered = 0
 
 
@@ -448,13 +445,7 @@ class WecomBridge:
         push.ref, push.plan = ref, plan
         push.awaiting = set(plan.text_questions)
         self._remember(self._refs, ref, notice.gate_id)
-        messages: list[str | cards.CardSpec] = [plan.detail, *plan.cards]
-        if plan.detail_is_prompt:
-            push.prompted.update(plan.text_questions)
-        else:
-            for index in plan.text_questions:
-                messages.append(cards.text_prompt_markdown(notice, ref=ref, index=index))
-                push.prompted.add(index)
+        messages: list[str | cards.CardSpec] = [plan.detail, *plan.messages]
         error: str | None = None
         for message in messages:
             if push.closed is not None or epoch != self._epoch:
@@ -578,32 +569,21 @@ class WecomBridge:
                 entry.card, kind=entry.spec.kind, status=entry.closed, answered=entry.answered
             )
         assert push is not None
-        questions = push.notice.questions
+        index = entry.spec.question
         ids = cards.card_ids(entry.spec, event.event_key, event.selections)
-        choices = {
-            index: cards.interpret(questions[index], ids.get(index, []))
-            for index in entry.spec.questions
-        }
-        missing = [index for index, (choice, _) in choices.items() if choice == "none"]
-        if missing:
+        choice, labels = cards.interpret(push.notice.questions[index], ids)
+        if choice == "none":
             if entry.spec.kind == "button":
                 return None
-            entry.card = cards.card_after_click(
-                entry.spec,
-                ids,
-                done=False,
-                status=f"第 {'、'.join(str(index + 1) for index in missing)} 题还没选",
-            )
+            entry.card = cards.card_after_click(entry.spec, ids, done=False, status="还没有选择")
             return entry.card
-        others: list[int] = []
-        for index, (choice, labels) in choices.items():
-            if choice == "other":
-                push.answers.pop(index, None)
-                push.awaiting.add(index)
-                others.append(index)
-            else:
-                push.answers[index] = labels
-                push.awaiting.discard(index)
+        if choice == "other":
+            # The text comes from a reply quoting this very card.
+            push.answers.pop(index, None)
+            push.awaiting.add(index)
+        else:
+            push.answers[index] = labels
+            push.awaiting.discard(index)
         result, error = self._try_resolve(push)
         if error is not None:
             entry.card = cards.card_after_click(entry.spec, ids, done=False, status=error)
@@ -615,17 +595,10 @@ class WecomBridge:
             )
         if result == "resolved":
             status = f"已回答 · {clock(self._clock())}"
-        elif others:
-            status = "已选「其他」· 请引用提示消息回复"
+        elif choice == "other":
+            status = "已选「其他」· 请长按本卡片引用回复"
         else:
             status = f"已记录 · 还差 {len(self._remaining(push))} 题"
-        for index in others:
-            if index not in push.prompted:
-                push.prompted.add(index)
-                assert push.ref is not None
-                self._spawn(
-                    self._deliver(cards.text_prompt_markdown(push.notice, ref=push.ref, index=index))
-                )
         entry.card = cards.card_after_click(entry.spec, ids, done=True, status=status)
         return entry.card
 
@@ -703,11 +676,12 @@ class WecomBridge:
     ) -> tuple[tuple[_Push, int] | None, str | None]:
         """The question a quoted reply answers, or what to tell the user instead.
 
-        A quoted prompt names one question; the quoted detail names its whole
-        gate, which settles a reply only when exactly one of its questions
-        is the answer's obvious target.
+        A quoted card or prompt names one question. The quoted detail names
+        its whole gate, which is one question only when the gate has one;
+        otherwise the reply is refused, whichever questions still wait for
+        text, so what a reply answers never depends on the moment it lands.
         """
-        candidates: list[tuple[_Push, int]] = []
+        targets: list[tuple[_Push, int]] = []
         for ref, index in markers:
             gate_id = self._refs.get(ref)
             push = self._open.get(gate_id) if gate_id else None
@@ -720,19 +694,15 @@ class WecomBridge:
             ):
                 continue
             count = len(push.notice.questions)
-            indices = range(count) if index is None else [index] if index < count else []
-            for item in indices:
-                if (push, item) not in candidates:
-                    candidates.append((push, item))
-        awaiting = [(push, index) for push, index in candidates if index in push.awaiting]
-        if len(awaiting) == 1:
-            return awaiting[0], None
-        if not awaiting and len(candidates) == 1:
-            return candidates[0], None
-        if candidates:
+            for item in range(count) if index is None else [index] if index < count else []:
+                if (push, item) not in targets:
+                    targets.append((push, item))
+        if len(targets) == 1:
+            return targets[0], None
+        if targets:
             return None, (
                 "你引用的消息包含多道题，无法确定回答的是哪一题，这条回复没有记录。"
-                "请引用该题单独的提示消息回复；还没有提示消息的题，先在卡片中选「其他（文字回答）」。"
+                "请长按该题的卡片（没有选项的题目是它的提示消息），选择「引用」后回复。"
             )
         return None, "你引用的提问已结束或已失效，这条回复没有记录。"
 

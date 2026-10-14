@@ -1,4 +1,4 @@
-"""WeCom remote answers: one bot per host, split cards, quoted text replies.
+"""WeCom remote answers: one bot per host, one card per question, quoted text replies.
 
 ``FakeWecom`` stands in for the WeCom side: one bot, one live connection at a
 time (a newer connection kicks the older with ``disconnected_event``), pushes
@@ -114,7 +114,7 @@ class FakeWecom:
             req_id=f"req{self._req}",
             userid=userid,
             chattype="single",
-            card_type=card.get("card_type", "multiple_interaction"),
+            card_type=card.get("card_type", "vote_interaction"),
             task_id=task_id,
             event_key=key,
             selections=selections or {},
@@ -285,6 +285,12 @@ def prompt_for(wecom: FakeWecom, number: int) -> str:
     return [text for text in wecom.markdowns() if text.startswith(f"**第 {number} 题 · 请用文字回答**")][-1]
 
 
+def quoted(card: dict[str, Any]) -> str:
+    """What a quote of a card may carry; untested on a real client, so the
+    bridge reads any of its strings (``parse_message`` joins them all)."""
+    return "\n".join([card["main_title"]["title"], card["main_title"].get("desc", ""), card["sub_title_text"]])
+
+
 class WecomBridgeTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         patcher = mock.patch.object(wecom_bridge, "SEND_RETRY_DELAYS", (0.0, 0.0))
@@ -332,44 +338,84 @@ class WecomBridgeTests(unittest.IsolatedAsyncioTestCase):
         event = self.host.registry.events[-1][1]
         self.assertEqual((event["channel"], event["state"]), ("wecom", "sent"))
 
-    async def test_dropdowns_with_placeholder_are_unanswered_until_all_chosen(self) -> None:
+    async def test_each_question_gets_its_own_card_answered_in_any_order(self) -> None:
         sent = await self.ask("g1", [DB, AUTH, EXTRAS])
-        select, vote = sent
-        self.assertEqual(select["card_type"], "multiple_interaction")
-        self.assertEqual(vote["card_type"], "vote_interaction")
+        self.assertEqual(
+            [card["card_type"] for card in sent],
+            ["button_interaction", "button_interaction", "vote_interaction"],
+        )
+        db, auth, extras = sent
 
-        partial = await self.wecom.click(select["task_id"], selections={"q0": ["1"], "q1": ["_"]})
-        assert partial is not None
-        self.assertIn("第 2 题还没选", partial["main_title"]["desc"])
-        self.assertNotIn("disable", partial["select_list"][0])
-        self.assertEqual(self.resolutions, [])
+        unchosen = await self.wecom.click(extras["task_id"], selections={})
+        assert unchosen is not None
+        self.assertIn("还没有选择", unchosen["main_title"]["desc"])
+        self.assertNotIn("disable", unchosen["checkbox"])
 
-        recorded = await self.wecom.click(select["task_id"], selections={"q0": ["1"], "q1": ["0"]})
+        recorded = await self.wecom.click(extras["task_id"], selections={"q2": ["2", "0"]})
         assert recorded is not None
-        self.assertIn("还差 1 题", recorded["main_title"]["desc"])
-        self.assertTrue(all(item["disable"] for item in recorded["select_list"]))
+        self.assertIn("还差 2 题", recorded["main_title"]["desc"])
+        self.assertTrue(recorded["checkbox"]["disable"])
+        await self.wecom.click(auth["task_id"], key="q1:0")
         self.assertEqual(self.resolutions, [])
 
-        await self.wecom.click(vote["task_id"], selections={"q2": ["2", "0"]})
+        await self.wecom.click(db["task_id"], key="q0:1")
         self.assertEqual(
             self.resolutions[0]["response"]["answers"],
             {"db": {"answers": ["SQLite"]}, "auth": {"answers": ["JWT"]}, "extras": {"answers": ["缓存", "搜索"]}},
         )
 
-    async def test_other_then_quoted_reply_answers(self) -> None:
+    async def test_other_then_reply_quoting_the_card_answers(self) -> None:
         sent = await self.ask("g1", [DB])
+        before = len(self.wecom.markdowns())
         await self.wecom.click(sent[0]["task_id"], key="q0:o")
 
         self.assertEqual(self.resolutions, [])
-        prompt = prompt_for(self.wecom, 1)
-        self.assertIn("引用", prompt)
+        # No separate prompt: the card itself is what to quote.
+        self.assertEqual(len(self.wecom.markdowns()), before)
         card = self.wecom.cards[sent[0]["task_id"]]
-        self.assertIn("其他", card["main_title"]["desc"])
+        self.assertIn("引用", card["main_title"]["desc"])
 
-        await self.wecom.say("用 k8s 自建", quote=prompt)
+        await self.wecom.say("用 k8s 自建", quote=quoted(card))
 
         self.assertEqual(self.resolutions[0]["response"]["answers"], {"db": {"answers": ["用 k8s 自建"]}})
         self.assertIn("全部题目已回答", self.wecom.markdowns()[-1])
+
+    async def test_several_others_each_answered_by_quoting_their_card(self) -> None:
+        """The case one card per question exists for: two 「其他」 at once."""
+        sent = await self.ask("g1", [DB, AUTH, EXTRAS])
+        db, auth, extras = sent
+        await self.wecom.click(db["task_id"], key="q0:o")
+        await self.wecom.click(extras["task_id"], selections={"q2": ["o"]})
+        await self.wecom.click(auth["task_id"], key="q1:1")
+
+        # Quoting either card names exactly one question, whatever else waits for text.
+        await self.wecom.say("队列和对象存储", quote=quoted(extras))
+        self.assertIn("第 3 题", self.wecom.markdowns()[-1])
+        self.assertIn("还差第 1 题", self.wecom.markdowns()[-1])
+        await self.wecom.say("用 TiDB", quote=quoted(self.wecom.cards[db["task_id"]]))
+
+        self.assertEqual(
+            self.resolutions[0]["response"]["answers"],
+            {
+                "db": {"answers": ["用 TiDB"]},
+                "auth": {"answers": ["Session"]},
+                "extras": {"answers": ["队列和对象存储"]},
+            },
+        )
+
+    async def test_quoting_a_card_overrides_its_choice_and_a_tap_overrides_other(self) -> None:
+        sent = await self.ask("g1", [DB, AUTH])
+        db, auth = sent
+        await self.wecom.click(db["task_id"], key="q0:o")
+        # Changing one's mind: a tap on a real option replaces 「其他」.
+        await self.wecom.click(db["task_id"], key="q0:0")
+        # Text quoting a card answers its question even without 「其他」 first.
+        await self.wecom.say("JWT + 刷新令牌", quote=quoted(auth))
+
+        self.assertEqual(
+            self.resolutions[0]["response"]["answers"],
+            {"db": {"answers": ["Postgres"]}, "auth": {"answers": ["JWT + 刷新令牌"]}},
+        )
 
     async def test_plain_message_is_never_an_answer(self) -> None:
         """Only replies that quote a question message count (user decision)."""
@@ -403,40 +449,50 @@ class WecomBridgeTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(self.resolutions[0]["response"]["answers"], {"note": {"answers": ["无"]}})
 
-    async def test_quote_picks_the_question_by_marker(self) -> None:
-        sent = await self.ask("g1", [DB, NOTE])
-        self.assertEqual([card["card_type"] for card in sent], ["multiple_interaction"])
-        detail = detail_of(self.wecom)
-        prompt = prompt_for(self.wecom, 2)
+    async def test_question_without_options_gets_its_prompt_in_place(self) -> None:
+        self.host.registry.open_gate("g1", [DB, NOTE, AUTH])
+        await settle()
+        kinds = [
+            item["payload"].get("card_type") if item["kind"] == "card" else item["payload"].split("\n")[0]
+            for item in self.wecom.messages
+        ]
+        self.assertTrue(kinds[0].startswith("**MiniClaw2 需要你的回答**"))
+        self.assertEqual(kinds[1], "button_interaction")
+        self.assertTrue(kinds[2].startswith("**第 2 题 · 请用文字回答** #"))
+        self.assertEqual(kinds[3], "button_interaction")
+        db, auth = self.wecom.sent_cards()
 
-        # Quoting the detail names both questions; only the note awaits text.
-        await self.wecom.say("先记一笔", quote=detail)
-        self.assertEqual(self.resolutions, [])
-        self.assertIn("第 2 题", self.wecom.markdowns()[-1])
-        self.assertIn("还差第 1 题", self.wecom.markdowns()[-1])
-
-        await self.wecom.say("改一下备注", quote=prompt)
-        await self.wecom.click(sent[0]["task_id"], selections={"q0": ["0"]})
+        await self.wecom.say("改一下备注", quote=prompt_for(self.wecom, 2))
+        await self.wecom.click(db["task_id"], key="q0:0")
+        await self.wecom.click(auth["task_id"], key="q2:1")
 
         self.assertEqual(
             self.resolutions[0]["response"]["answers"],
-            {"db": {"answers": ["Postgres"]}, "note": {"answers": ["改一下备注"]}},
+            {"db": {"answers": ["Postgres"]}, "note": {"answers": ["改一下备注"]}, "auth": {"answers": ["Session"]}},
         )
 
-    async def test_ambiguous_quote_is_refused(self) -> None:
-        await self.ask("g1", [NOTE, {**NOTE, "id": "note2"}])
+    async def test_quoting_the_detail_of_several_questions_is_refused(self) -> None:
+        """Even when only one question waits for text: a reply never depends on timing."""
+        sent = await self.ask("g1", [DB, NOTE])
+        await self.wecom.click(sent[0]["task_id"], key="q0:0")
         detail = detail_of(self.wecom)
 
-        await self.wecom.say("哪题？", quote=detail)
+        await self.wecom.say("先记一笔", quote=detail)
 
         self.assertEqual(self.resolutions, [])
         self.assertIn("无法确定", self.wecom.markdowns()[-1])
-        await self.wecom.say("第一题的答案", quote=prompt_for(self.wecom, 1))
-        await self.wecom.say("第二题的答案", quote=prompt_for(self.wecom, 2))
+        self.assertIn("卡片", self.wecom.markdowns()[-1])
+        await self.wecom.say("备注的答案", quote=prompt_for(self.wecom, 2))
         self.assertEqual(
             self.resolutions[0]["response"]["answers"],
-            {"note": {"answers": ["第一题的答案"]}, "note2": {"answers": ["第二题的答案"]}},
+            {"db": {"answers": ["Postgres"]}, "note": {"answers": ["备注的答案"]}},
         )
+
+    async def test_quote_naming_several_questions_is_refused(self) -> None:
+        sent = await self.ask("g1", [DB, AUTH])
+        await self.wecom.say("两题一起答", quote=quoted(sent[0]) + "\n" + quoted(sent[1]))
+        self.assertEqual(self.resolutions, [])
+        self.assertIn("无法确定", self.wecom.markdowns()[-1])
 
     async def test_quote_from_another_user_or_unknown_gate_is_ignored(self) -> None:
         await self.ask("g1", [NOTE])
@@ -450,16 +506,19 @@ class WecomBridgeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("已结束或已失效", self.wecom.markdowns()[-1])
 
     async def test_web_answer_first_announces_and_click_gets_closed_card(self) -> None:
-        sent = await self.ask("g1", [DB, AUTH])
+        sent = await self.ask("g1", [DB, EXTRAS])
 
         self.host.registry.answer_on_web("g1")
         await settle()
 
         self.assertIn("已在网页端回答", self.wecom.markdowns()[-1])
-        replacement = await self.wecom.click(sent[0]["task_id"], selections={"q0": ["0"], "q1": ["0"]})
+        replacement = await self.wecom.click(sent[1]["task_id"], selections={"q1": ["0"]})
         assert replacement is not None
         self.assertEqual(replacement["main_title"]["desc"], "已在网页端回答")
-        self.assertTrue(all(item["disable"] for item in replacement["select_list"]))
+        self.assertTrue(replacement["checkbox"]["disable"])
+        self.assertEqual(self.resolutions, [])
+        await self.wecom.say("晚到的文字", quote=quoted(sent[0]))
+        self.assertIn("已结束或已失效", self.wecom.markdowns()[-1])
         self.assertEqual(self.resolutions, [])
 
     async def test_node_end_and_unknown_task_get_expired_cards(self) -> None:

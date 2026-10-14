@@ -111,6 +111,14 @@ The WeCom bridge creates bots through WeCom's undocumented scan endpoints
 "use manual entry" message and is never retried by guesswork, and manual
 Bot ID/Secret entry stays as the fallback.
 
+WeCom text answers rest on a reply that quotes a question's *card*: the
+bridge reads the `#REF-n` marker from any string in the returned `quote`,
+and the marker ends both the card's title and its subtitle. That quoting a
+markdown message returns its text is measured; what quoting a template card
+returns (its type, which fields, or whether a card can be quoted at all) is
+not. If a client returns no marker, 「其他」 on a card has no text path and
+the question must be answered on the web.
+
 Separately, one mapping is pinned against the *shape* of another tool's
 review findings. No test can catch a change in that shape, so it has to be
 re-confirmed on upgrade by hand.

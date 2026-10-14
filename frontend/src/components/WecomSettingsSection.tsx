@@ -305,7 +305,7 @@ export function WecomSettingsSection({
             </div>
           )}
           <div className="rounded-md border border-line bg-surface-sunken px-3 py-2 text-[11px] leading-relaxed text-ink-muted">
-            企业微信卡片没有输入框：选「其他（文字回答）」或遇到没有选项的题目时，请长按对应的提问消息，选择「引用」后回复文字。
+            企业微信卡片没有输入框，所以每道题单独一张卡片：选了「其他（文字回答）」的题目，请长按该题的卡片，选择「引用」后回复文字；没有选项的题目，引用它的提示消息回复。
             没有引用提问的普通消息不会被记录为答案。
           </div>
           <div className="text-[11px] leading-relaxed text-ink-muted">
