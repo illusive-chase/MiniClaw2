@@ -98,6 +98,7 @@ class TemporaryProjectTest(unittest.TestCase):
                     "git_review": True,
                     "diff_review": False,
                     "execution": False,
+                    "code_reading": False,
                 },
             )
             self.assertFalse(info["bound_here"])
@@ -523,6 +524,7 @@ class TemporaryProjectTest(unittest.TestCase):
                         "git_review": False,
                         "diff_review": False,
                         "execution": True,
+                        "code_reading": False,
                     },
                 )
                 response = client.get(

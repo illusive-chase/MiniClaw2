@@ -18,19 +18,26 @@
     "test:diff:browser": "npm run build && node tests/run-diff-browser.mjs",
     "test:tags:browser": "node tests/run-tag-edit-browser.mjs",
     "test:sync:browser": "node tests/run-sync-progress-browser.mjs",
+    "test:code:browser": "npm run build && node tests/run-code-reader-browser.mjs",
     "posttest": "npm run test:nodes && npm run test:context && npm run test:viewport && node tests/run-dev-proxy.mjs && npm run test:svg",
-    "test": "node tests/run-canvas-layout.mjs && node tests/run-template-instantiate.mjs && node tests/run-template-editor.mjs && node tests/run-hierarchy.mjs && node tests/run-library-tree.mjs && node tests/run-focused-lane.mjs && node tests/run-project-tags.mjs && node tests/run-active-nodes.mjs && node tests/run-notices.mjs && node tests/run-node-authority.mjs && node tests/run-self-update.mjs && node tests/run-storage-maintenance.mjs && node tests/run-agent-panel-draft.mjs && node tests/run-canvas-wiring.mjs && node tests/run-canvas-interaction.mjs && node tests/run-wiring-drag-store.mjs && node tests/run-panel-overflow.mjs && node tests/run-draft-stash.mjs && node tests/run-permission-dialog.mjs && node tests/run-gate-relays.mjs && node tests/run-diff-viewer.mjs && node tests/run-md-route.mjs && node tests/run-md-link.mjs && node tests/run-md-font.mjs && node tests/run-md-reader.mjs && node tests/run-md-handoff.mjs",
+    "test": "node tests/run-canvas-layout.mjs && node tests/run-template-instantiate.mjs && node tests/run-template-editor.mjs && node tests/run-hierarchy.mjs && node tests/run-library-tree.mjs && node tests/run-focused-lane.mjs && node tests/run-project-tags.mjs && node tests/run-active-nodes.mjs && node tests/run-notices.mjs && node tests/run-node-authority.mjs && node tests/run-self-update.mjs && node tests/run-storage-maintenance.mjs && node tests/run-agent-panel-draft.mjs && node tests/run-canvas-wiring.mjs && node tests/run-canvas-interaction.mjs && node tests/run-wiring-drag-store.mjs && node tests/run-panel-overflow.mjs && node tests/run-draft-stash.mjs && node tests/run-permission-dialog.mjs && node tests/run-gate-relays.mjs && node tests/run-diff-viewer.mjs && node tests/run-md-route.mjs && node tests/run-md-link.mjs && node tests/run-md-font.mjs && node tests/run-md-reader.mjs && node tests/run-md-handoff.mjs && node tests/run-md-math.mjs && node tests/run-code-route.mjs && node tests/run-code-tabs.mjs && node tests/run-code-tokens.mjs",
     "preview": "vite preview"
   },
   "dependencies": {
     "highlight.js": "^11.11.1",
+    "katex": "^0.16.47",
+    "lowlight": "^3.3.0",
     "lucide-react": "^1.47.0",
+    "mdast-util-math": "^3.0.0",
+    "micromark-extension-math": "^3.1.0",
+    "micromark-util-character": "^2.1.1",
     "qrcode-generator": "^2.0.4",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-markdown": "^10.1.0",
     "reactflow": "^11.11.4",
     "rehype-highlight": "^7.0.2",
+    "rehype-katex": "^7.0.1",
     "remark-gfm": "^4.0.1"
   },
   "devDependencies": {
@@ -38,10 +45,12 @@
     "@types/react-dom": "^18.3.0",
     "@vitejs/plugin-react": "^4.3.1",
     "autoprefixer": "^10.4.19",
+    "micromark-util-types": "^2.0.3",
     "playwright-core": "^1.63.0",
     "postcss": "^8.4.39",
     "tailwindcss": "^3.4.6",
     "typescript": "^5.5.3",
+    "unified": "^11.0.5",
     "vite": "^5.3.4"
   }
 }

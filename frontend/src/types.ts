@@ -897,3 +897,63 @@ export type WecomSettingsPatch = Partial<{
   secret: string;
   delay_seconds: number;
 }>;
+
+/* ── code reading (`/sessions/{sid}/code/*`) ───────────────────────────── */
+
+export type CodeTreeEntry = { path: string; size: number; directory?: boolean };
+
+export type CodeTree = {
+  root_name: string;
+  is_git: boolean;
+  truncated: boolean;
+  files: CodeTreeEntry[];
+};
+
+export type CodeFile = {
+  path: string;
+  text: string;
+  sha256: string;
+  size: number;
+  language: "python" | "other";
+  binary: boolean;
+  too_large: boolean;
+};
+
+export type CodeIndexStatus = {
+  state: "idle" | "running" | "ready" | "error";
+  phase: "parse" | "resolve" | null;
+  done: number;
+  total: number;
+  failed: number;
+  updated_at: number | null;
+  error: string | null;
+};
+
+export type CodeTarget = { path: string; line: number; col: number; end_col: number };
+
+export type CodeSymbol = {
+  kind: string;
+  name: string;
+  qualname: string;
+  signature: string;
+  type: string | null;
+  doc: string | null;
+  /** `null`: hover only (builtins and anything outside the project). */
+  target: CodeTarget | null;
+  external: boolean;
+  origin?: "builtin" | "external";
+  /** Builtins: the analysing interpreter's version, e.g. "3.13". */
+  python?: string;
+};
+
+export type CodeAnalysis = {
+  v: number;
+  path: string;
+  sha256: string;
+  syntax_error: { line: number; col: number; msg: string } | null;
+  /** Groups of five: Δline, Δcol, length, type, modifiers (LSP-style). */
+  tokens: number[];
+  /** Pairs: token index, symbol index. */
+  refs: number[];
+  symbols: CodeSymbol[];
+};

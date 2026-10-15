@@ -80,7 +80,7 @@ import { setTemplateInstanceBoxContext } from "./canvas/nodes/TemplateInstanceBo
 import { SidePanel } from "./panel/SidePanel";
 import { NewProjectModal } from "./components/NewProjectModal";
 import { RemoteAccessModal } from "./components/RemoteAccessModal";
-import { Settings2 } from "lucide-react";
+import { CodeXml, Settings2 } from "lucide-react";
 import { SaveAsTemplateModal } from "./components/SaveAsTemplateModal";
 import { InstantiateTemplateModal } from "./components/InstantiateTemplateModal";
 import { TemplateEditor } from "./components/TemplateEditor";
@@ -113,6 +113,7 @@ import { GitWorkspaceStatus } from "./components/GitWorkspaceStatus";
 import { DiffViewerOverlay, type DiffArtifact } from "./components/DiffViewer";
 import { TextZoomProvider } from "./components/TextZoom";
 import { writeClipboard } from "./clipboard";
+import { codeRouteUrl, codeWindowName } from "./codeRoute";
 import type {
   ActiveNodeEntry,
   ArtifactExtension,
@@ -519,6 +520,8 @@ export function App() {
 
   const [projectMutationPending, setProjectMutationPending] = useState(false);
   const [revealPending, setRevealPending] = useState(false);
+  /* Shown when the browser blocks the reading tab, like the Markdown link fallback. */
+  const [codeReaderFallback, setCodeReaderFallback] = useState<string | null>(null);
   const [nodePositionTarget, setNodePositionTarget] =
     useState<CanvasNodePositionTarget | null>(null);
 
@@ -3351,6 +3354,50 @@ export function App() {
               <path d="m6 14 1.45-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.55 6a2 2 0 0 1-1.94 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2" />
             </svg>
           </button>}
+
+          {session?.persistence_mode === "durable" && !session.temporary && (
+            <span className="relative inline-flex">
+              <button
+                type="button"
+                onClick={() => {
+                  if (!session?.id) return;
+                  const url = new URL(codeRouteUrl(session.id), window.location.href).href;
+                  /* A window name, not `noopener`: with noopener the browser
+                   * cannot find the existing tab by name and opens a new one
+                   * on every click. The opener is cut by hand instead. */
+                  let reader: Window | null = null;
+                  try {
+                    reader = window.open(url, codeWindowName(session.id));
+                  } catch {
+                    reader = null;
+                  }
+                  if (!reader) {
+                    setCodeReaderFallback(url);
+                    return;
+                  }
+                  reader.opener = null;
+                  reader.focus();
+                  setCodeReaderFallback(null);
+                }}
+                disabled={session.capabilities?.code_reading !== true}
+                className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-line bg-surface text-ink-muted transition hover:border-line-strong hover:bg-surface-sunken hover:text-ink disabled:cursor-not-allowed disabled:opacity-40"
+                title={session.capabilities?.code_reading === true ? "代码阅读" : "此设备尚未配置项目路径"}
+                aria-label="在新标签页打开代码阅读"
+              >
+                <CodeXml size={17} strokeWidth={1.7} aria-hidden="true" />
+              </button>
+              {codeReaderFallback && (
+                <a
+                  href={codeReaderFallback}
+                  target={codeWindowName(session.id)}
+                  onClick={() => setCodeReaderFallback(null)}
+                  className="absolute right-0 top-full z-50 mt-1 whitespace-nowrap rounded-md border border-line-strong bg-surface-raised px-2.5 py-1.5 text-[11px] text-brand shadow-lg hover:underline"
+                >
+                  未能自动打开阅读页，请点击打开
+                </a>
+              )}
+            </span>
+          )}
 
           {session?.persistence_mode === "remote" && session.remote && (
             <button

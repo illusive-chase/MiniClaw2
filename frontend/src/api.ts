@@ -47,6 +47,10 @@ import type {
   WecomSettingsPatch,
   WecomStatus,
   GateRelayUpdated,
+  CodeAnalysis,
+  CodeFile,
+  CodeIndexStatus,
+  CodeTree,
 } from "./types";
 import type { TemplateRewritePayload } from "./templateEditor";
 import type { DiffArtifact } from "./components/DiffViewer";
@@ -1661,4 +1665,52 @@ export async function revealPath(
     throw new ApiError("revealPath", res.status, await readErrorDetail(res));
   }
   return res.json();
+}
+
+/* ── code reading ─────────────────────────────────────────────────────── */
+
+export async function getCodeTree(sessionId: string): Promise<CodeTree> {
+  const res = await fetch(`/sessions/${sessionId}/code/tree`);
+  if (!res.ok) throw new ApiError("getCodeTree", res.status, await readErrorDetail(res));
+  return res.json();
+}
+
+export async function getCodeFile(sessionId: string, path: string): Promise<CodeFile> {
+  const res = await fetch(`/sessions/${sessionId}/code/file?path=${encodeURIComponent(path)}`);
+  if (!res.ok) throw new ApiError("getCodeFile", res.status, await readErrorDetail(res));
+  return res.json();
+}
+
+export async function getCodeIndex(sessionId: string): Promise<CodeIndexStatus> {
+  const res = await fetch(`/sessions/${sessionId}/code/index`);
+  if (!res.ok) throw new ApiError("getCodeIndex", res.status, await readErrorDetail(res));
+  return res.json();
+}
+
+export async function ensureCodeIndex(
+  sessionId: string,
+  prioritize: string[] = [],
+): Promise<CodeIndexStatus> {
+  const res = await fetch(`/sessions/${sessionId}/code/index`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ prioritize }),
+  });
+  if (!res.ok) throw new ApiError("ensureCodeIndex", res.status, await readErrorDetail(res));
+  return res.json();
+}
+
+/** `pending`: not analysed yet (202). `none`: never will be (404).
+ * `etag` names the whole result, so a re-ask can tell "unchanged" cheaply. */
+export type CodeAnalysisResult =
+  | { kind: "ready"; analysis: CodeAnalysis; etag: string | null }
+  | { kind: "pending" }
+  | { kind: "none" };
+
+export async function getCodeAnalysis(sessionId: string, path: string): Promise<CodeAnalysisResult> {
+  const res = await fetch(`/sessions/${sessionId}/code/analysis?path=${encodeURIComponent(path)}`);
+  if (res.status === 202) return { kind: "pending" };
+  if (res.status === 404) return { kind: "none" };
+  if (!res.ok) throw new ApiError("getCodeAnalysis", res.status, await readErrorDetail(res));
+  return { kind: "ready", analysis: await res.json(), etag: res.headers.get("ETag") };
 }

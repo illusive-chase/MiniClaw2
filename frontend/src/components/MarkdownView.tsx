@@ -13,6 +13,7 @@ import { useState } from "react";
 import type { AnchorHTMLAttributes, MouseEvent } from "react";
 import ReactMarkdown from "react-markdown";
 import rehypeHighlight from "rehype-highlight";
+import rehypeKatex from "rehype-katex";
 import remarkGfm from "remark-gfm";
 
 import { followMarkdownLink } from "../markdownLink";
@@ -23,6 +24,7 @@ import {
 } from "../markdownRoute";
 import type { MarkdownDensity } from "../markdownFont";
 import { defaultFontIndex, fontPxAt } from "../markdownFont";
+import { katexOptions, remarkMath } from "../markdownMath";
 import type { MarkdownLinkBase } from "../types";
 
 export type MarkdownViewProps = {
@@ -72,8 +74,13 @@ export function MarkdownView({
     <div className={className}>
       <div className="md-prose" style={{ fontSize: `${size}px` }}>
         <ReactMarkdown
-          remarkPlugins={[remarkGfm]}
-          rehypePlugins={[[rehypeHighlight, { detect: true, ignoreMissing: true }]]}
+          remarkPlugins={[remarkGfm, remarkMath]}
+          rehypePlugins={[
+            // KaTeX first: it replaces ```math blocks, which highlight.js
+            // would otherwise claim as code.
+            [rehypeKatex, katexOptions],
+            [rehypeHighlight, { detect: true, ignoreMissing: true }],
+          ]}
           urlTransform={markdownUrlTransform}
           components={{
             a: ({ href, children, ...props }: AnchorHTMLAttributes<HTMLAnchorElement>) => (

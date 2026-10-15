@@ -212,6 +212,20 @@ names a node, it never proves one. Any future hook that lets the child
 influence node lifecycle needs a credential the child cannot inherit.
 
 
+### 2.11 Any website can read the project through the local API
+
+The backend sends `Access-Control-Allow-Origin: *` and, without a
+passcode, admits every request. A page open in the same browser can
+therefore read `127.0.0.1:8000` like the UI does. The Markdown reader
+already exposed in-project `.md` files this way; the code-reading page
+widens that to every Git-visible file and its analysis. Ignored files and
+`.miniclaw2/` stay unreadable, but source code itself does not. The user
+chose not to address it in the change that added code reading, so the
+new endpoints behave like the old ones rather than differently. A fix
+should cover every endpoint at once: either reject cross-site requests
+(`Sec-Fetch-Site`) or narrow CORS to the UI's own origin.
+
+
 ## 3. Open directions
 
 Design work argued through and not built. Each names the philosophical
@@ -459,6 +473,15 @@ Kept because the reason, not the absence, is the content:
   workflow pattern the user composes, not a hard constraint on commit
   ops — and report-only stays the contract, so the reviewer never edits
   or comments on its own.
+- **Code-reading index recomputes phase 2 for the whole project** whenever
+  any file's summary changes, and a summary includes definition positions,
+  so nearly every real edit triggers it. It stays this simple while
+  phase 2 is seconds. The next step is a reverse import graph, re-resolving
+  only the files that import a changed module, transitively.
+- **Code-reading features beyond read, hover and jump.** Find references,
+  an outline, quick open and folding were left out by choice. The cached
+  per-file `refs` already map every use to its definition, so find
+  references needs only an inverted index, not a second analysis.
 
 ### 3.10 Explicit non-goals
 

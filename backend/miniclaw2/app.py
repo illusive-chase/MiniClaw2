@@ -8,6 +8,7 @@ source.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import os
 import time
@@ -40,6 +41,16 @@ from .contextspace import (
     read_project_context,
     read_template_instances,
 )
+from .code_files import (
+    ANALYSIS_CAP as CODE_ANALYSIS_CAP,
+    CodeFileError,
+    is_python_path,
+    list_tree as list_code_tree,
+    read_code_file,
+    resolve_visible as resolve_visible_code_path,
+)
+from .code_index import CodeIndexService
+from .code_analysis import ANALYZER_VERSION
 from .context_refresh import cancel_context_task, context_refresh_status, start_context_task
 from .diff_review import build_diff_artifact
 from .domain import (
@@ -498,6 +509,12 @@ class LinkBaseModel(BaseModel):
     path: str | None = None
 
 
+class CodeIndexRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    prioritize: list[str] = Field(default_factory=list)
+
+
 class ResolveLinkRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -729,6 +746,8 @@ def create_app(
 
     # Per-app so tests do not inherit one another's cached node facts.
     active_nodes_index = ActiveNodesIndex()
+    # The code-reading cache follows whichever store this app serves.
+    code_index = CodeIndexService(lambda: registry.store.root)
 
     def initialize_registry() -> None:
         initialize = getattr(registry, "initialize", None)
@@ -799,6 +818,10 @@ def create_app(
             )
             if close_remote_transports is not None:
                 close_remote_transports()
+            try:
+                await code_index.shutdown()
+            except Exception:  # noqa: BLE001
+                logger.exception("failed to stop code analysis processes")
 
     app = FastAPI(title="MiniClaw2", lifespan=lifespan)
     app.state.storage_error = None
@@ -808,6 +831,7 @@ def create_app(
     app.state.feishu = feishu
     app.state.wecom = wecom
     app.state.remote_answers = remote
+    app.state.code_index = code_index
     app.add_middleware(GZipMiddleware, minimum_size=1024, compresslevel=6)
     app.add_middleware(
         CORSMiddleware,
@@ -1866,7 +1890,12 @@ def create_app(
         return _session_info(registry, project)
 
     @app.delete("/sessions/{sid}/hosts/{mid}", response_model=SessionInfo)
-    def unbind_session_host(sid: str, mid: str) -> SessionInfo:
+    async def unbind_session_host(sid: str, mid: str) -> SessionInfo:
+        info = await run_in_threadpool(_unbind_session_host, sid, mid)
+        await code_index.forget(sid)
+        return info
+
+    def _unbind_session_host(sid: str, mid: str) -> SessionInfo:
         project = registry.get_project(sid)
         if project is None:
             raise HTTPException(404, "session not found")
@@ -2124,9 +2153,12 @@ def create_app(
         return describe_project_contextspace(project, store_root=registry.store.root)
 
     @app.delete("/sessions/{sid}")
-    def delete_session(sid: str) -> dict[str, bool]:
-        if not registry.delete_project(sid):
+    async def delete_session(sid: str) -> dict[str, bool]:
+        # In the threadpool, exactly as when this endpoint was synchronous;
+        # only the cache cleanup below needs the loop.
+        if not await run_in_threadpool(registry.delete_project, sid):
             raise HTTPException(404, "session not found")
+        await code_index.forget(sid)
         return {"ok": True}
 
     @app.get("/sessions/{sid}/contextspace", response_model=dict[str, Any])
@@ -2220,6 +2252,96 @@ def create_app(
             "text": content,
             "truncated": truncated,
         }
+
+    # ── code reading ───────────────────────────────────────────────────
+
+    def require_code_reading_project(sid: str) -> Path:
+        """The bound root of a project the reading page may read.
+
+        Not ``require_native``: that also demands a writable store, and a
+        read-only store (say, a newer schema on disk) must still be readable.
+        """
+        project = registry.get_project(sid)
+        if project is None:
+            raise HTTPException(404, "session not found")
+        if not _code_reading_available(registry, project):
+            raise HTTPException(400, "代码阅读仅支持本机绑定的项目")
+        return Path(project.root_path)
+
+    def _code_error(exc: CodeFileError) -> HTTPException:
+        return HTTPException(exc.status, exc.detail)
+
+    @app.get("/sessions/{sid}/code/tree", response_model=dict[str, Any])
+    async def get_code_tree(sid: str) -> dict[str, Any]:
+        root = require_code_reading_project(sid)
+        entries, is_git, truncated = await asyncio.to_thread(list_code_tree, root)
+        return {
+            "root_name": root.name,
+            "is_git": is_git,
+            "truncated": truncated,
+            "files": [
+                {"path": e.path, "size": e.size, **({"directory": True} if e.directory else {})}
+                for e in entries
+            ],
+        }
+
+    @app.get("/sessions/{sid}/code/file", response_model=dict[str, Any])
+    async def get_code_file(sid: str, path: str) -> dict[str, Any]:
+        root = require_code_reading_project(sid)
+        try:
+            return await asyncio.to_thread(read_code_file, root, path)
+        except CodeFileError as exc:
+            raise _code_error(exc) from exc
+
+    @app.get("/sessions/{sid}/code/index", response_model=dict[str, Any])
+    def get_code_index(sid: str) -> dict[str, Any]:
+        require_code_reading_project(sid)
+        return code_index.status(sid)
+
+    @app.post("/sessions/{sid}/code/index", response_model=dict[str, Any])
+    async def ensure_code_index(
+        sid: str, req: CodeIndexRequest | None = None
+    ) -> dict[str, Any]:
+        root = require_code_reading_project(sid)
+        return await code_index.ensure(sid, root, req.prioritize if req else [])
+
+    @app.get("/sessions/{sid}/code/analysis")
+    async def get_code_analysis(sid: str, path: str, request: Request) -> Response:
+        """The pre-compressed analysis of one Python file.
+
+        202 means "not analysed yet" — the client adds the path to its next
+        ``POST /code/index`` priority list. The bytes are stored gzipped and
+        sent as such; GZipMiddleware passes a response that already carries
+        ``Content-Encoding`` through untouched.
+        """
+        root = require_code_reading_project(sid)
+        try:
+            resolved, relative = await asyncio.to_thread(resolve_visible_code_path, root, path)
+        except CodeFileError as exc:
+            raise _code_error(exc) from exc
+        if not is_python_path(relative):
+            raise HTTPException(404, "只有 Python 文件有分析结果")
+        try:
+            size = resolved.stat().st_size
+        except OSError as exc:
+            raise HTTPException(404, "文件不存在") from exc
+        if size > CODE_ANALYSIS_CAP:
+            return JSONResponse(status_code=404, content={"skipped": "too_large", "detail": "文件过大，未做分析"})
+        data = await asyncio.to_thread(code_index.read_result, sid, relative)
+        if data is None:
+            return JSONResponse(status_code=202, content={"pending": True})
+        # The whole result, not its source hash: phase 2 rewrites a file's
+        # targets and hovers when only a module it imports changed.
+        digest = (await asyncio.to_thread(hashlib.sha256, data)).hexdigest()
+        etag = f'"{ANALYZER_VERSION}-{digest}"'
+        headers = {"ETag": etag, "Cache-Control": "no-cache"}
+        if request.headers.get("if-none-match") == etag:
+            return Response(status_code=304, headers=headers)
+        return Response(
+            content=data,
+            media_type="application/json",
+            headers={**headers, "Content-Encoding": "gzip"},
+        )
 
     @app.post("/sessions/{sid}/files/reveal", response_model=dict[str, Any])
     def reveal_session_path(sid: str, req: RevealPathRequest) -> dict[str, Any]:
@@ -3328,6 +3450,7 @@ def _session_info(
                 "git_review": False,
                 "diff_review": False,
                 "execution": True,
+                "code_reading": False,
             }
             if project.persistence_mode is ProjectPersistenceMode.EPHEMERAL
             else {
@@ -3335,6 +3458,7 @@ def _session_info(
                 "git_review": True,
                 "diff_review": False,
                 "execution": remote_binding is not None,
+                "code_reading": False,
             }
             if project.persistence_mode is ProjectPersistenceMode.REMOTE
             else {
@@ -3342,6 +3466,7 @@ def _session_info(
                 "git_review": True,
                 "diff_review": is_git_repo(project.root_path),
                 "execution": True,
+                "code_reading": _code_reading_available(registry, project),
             }
         ),
         remote=project.remote,
@@ -3356,6 +3481,16 @@ def _session_info(
             if remote_binding is not None
             else None
         ),
+    )
+
+
+def _code_reading_available(registry: ProjectRegistry, project: Any) -> bool:
+    """Only a durable project bound on this host has a tree to read here."""
+    return (
+        project.persistence_mode is ProjectPersistenceMode.DURABLE
+        and not project.temporary
+        and project.archived_at is None
+        and registry.is_native_project(project)
     )
 
 

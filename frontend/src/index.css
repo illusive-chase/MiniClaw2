@@ -514,6 +514,16 @@ body {
   border: none;
   border-top: 1px solid rgb(var(--border));
 }
+/* KaTeX lays a display formula out on one unbreakable line, and a long one
+ * would push the 380px side panel sideways exactly as a wide table does.
+ * Scroll it in place instead; the vertical padding keeps `overflow-y: hidden`
+ * (which `overflow-x: auto` would otherwise turn into a second scrollbar)
+ * from clipping tall glyphs such as integral signs. */
+.md-prose .katex-display {
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 0.2em 0;
+}
 
 /* ───────────── highlight.js theme bridge ─────────────
  * main.tsx loads github.css (light tokens). We override the background
@@ -614,3 +624,136 @@ html.dark .hljs-emphasis {
 .diff-pane-scroll::-webkit-scrollbar {
   display: none;
 }
+
+/* ───────────── code reading ─────────────
+ * One palette for both colour sources: the Python analysis emits `.tok-*`,
+ * lowlight emits `.hljs-*`, and inside `.code-reader` both map to the same
+ * variables, so lexical colour upgrading to semantic colour never jumps.
+ * Markdown code blocks keep the global github hljs theme: the mapping is
+ * scoped to `.code-reader`. Body text contrast is ≥ 4.5:1 against
+ * `--surface` in both themes.
+ */
+:root {
+  --tok-keyword: #8a3a9c;
+  --tok-string: #a1452a;
+  --tok-number: #1d7350;
+  --tok-comment: #6f695e;
+  --tok-class: #1f6f86;
+  --tok-function: #7a5300;
+  --tok-parameter: #2b4f9e;
+  --tok-constant: #0b6aa3;
+  --tok-variable: rgb(var(--ink-strong));
+  --tok-operator: rgb(var(--ink));
+  --tok-link: rgb(var(--brand));
+  --tok-flash: rgba(204, 120, 92, 0.28);
+  --tok-line: rgb(var(--brand-soft) / 0.5);
+}
+
+html.dark {
+  --tok-keyword: #c49bd8;
+  --tok-string: #d8a878;
+  --tok-number: #b5d69c;
+  --tok-comment: #9b9489;
+  --tok-class: #7cc4b8;
+  --tok-function: #e0c98a;
+  --tok-parameter: #a8cbf0;
+  --tok-constant: #4fb3e8;
+  --tok-flash: rgba(224, 138, 110, 0.3);
+}
+
+.code-reader {
+  tab-size: 4;
+  color: var(--tok-operator);
+}
+
+.code-reader .code-lines {
+  min-width: max-content;
+  padding: 4px 0 40vh;
+}
+
+.code-reader .cl {
+  position: relative;
+  height: var(--code-line);
+  white-space: pre;
+  padding-left: calc(var(--code-gutter) + 1ch);
+  padding-right: 2ch;
+}
+
+/* Line numbers are a pseudo-element: never copied, never found by Cmd+F. */
+.code-reader .cl::before {
+  content: attr(data-ln);
+  position: sticky;
+  left: 0;
+  display: inline-block;
+  width: var(--code-gutter);
+  margin-left: calc(-1 * var(--code-gutter) - 1ch);
+  margin-right: 1ch;
+  padding-right: 1ch;
+  text-align: right;
+  color: rgb(var(--ink-subtle));
+  background: rgb(var(--surface));
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.code-reader .cl.target-line,
+.code-reader .cl.target-line::before {
+  background: var(--tok-line);
+}
+
+.code-reader .tok-keyword, .code-reader .hljs-keyword { color: var(--tok-keyword); }
+.code-reader .tok-string, .code-reader .hljs-string, .code-reader .hljs-regexp { color: var(--tok-string); }
+.code-reader .tok-number, .code-reader .hljs-number { color: var(--tok-number); }
+.code-reader .tok-comment, .code-reader .hljs-comment, .code-reader .hljs-quote {
+  color: var(--tok-comment);
+  font-style: italic;
+}
+.code-reader .tok-class,
+.code-reader .tok-module,
+.code-reader .tok-typeParameter,
+.code-reader .hljs-title\.class_,
+.code-reader .hljs-title\.class_\.inherited__,
+.code-reader .hljs-type { color: var(--tok-class); }
+.code-reader .tok-function,
+.code-reader .tok-method,
+.code-reader .tok-decorator,
+.code-reader .hljs-title\.function_,
+.code-reader .hljs-built_in,
+.code-reader .hljs-meta { color: var(--tok-function); }
+.code-reader .tok-parameter, .code-reader .hljs-params { color: var(--tok-parameter); }
+.code-reader .tok-selfParameter { color: var(--tok-parameter); font-style: italic; }
+.code-reader .tok-constant, .code-reader .hljs-literal { color: var(--tok-constant); }
+.code-reader .tok-variable,
+.code-reader .tok-property,
+.code-reader .hljs-variable,
+.code-reader .hljs-attr,
+.code-reader .hljs-property { color: var(--tok-variable); }
+.code-reader .hljs-title { color: var(--tok-function); }
+.code-reader .tok-operator { color: var(--tok-operator); }
+.code-reader .tok-decl { font-weight: 600; }
+
+.code-reader [data-r].link {
+  color: var(--tok-link);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.code-reader .flash {
+  background: var(--tok-flash);
+  border-radius: 2px;
+  animation: code-flash 1.2s ease-out;
+}
+
+@keyframes code-flash {
+  0%, 60% { background: var(--tok-flash); }
+  100% { background: transparent; }
+}
+
+.code-hover .tok-keyword { color: var(--tok-keyword); }
+.code-hover .tok-class, .code-hover .tok-module { color: var(--tok-class); }
+.code-hover .tok-function, .code-hover .tok-method, .code-hover .tok-decorator { color: var(--tok-function); }
+.code-hover .tok-parameter { color: var(--tok-parameter); }
+.code-hover .tok-constant { color: var(--tok-constant); }
+
+.code-tabs { scrollbar-width: thin; }
