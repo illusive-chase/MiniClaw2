@@ -32,3 +32,16 @@ def node_event_projection(event: dict[str, Any]) -> dict[str, Any]:
     if event.get("type") in NODE_EVENTS and isinstance(event.get("node"), dict):
         return {**event, "node": node_list_projection(event["node"])}
     return event
+
+
+def node_event_persisted(event: dict[str, Any]) -> dict[str, Any]:
+    """Drop launch snapshots from node events before they are written to disk.
+
+    The snapshots stay in ``node.json``; repeating them in every event only
+    inflates ``events.jsonl``. Unlike ``node_event_projection`` this keeps the
+    node otherwise intact, since the log is durable data, not a display view.
+    """
+    if event.get("type") in NODE_EVENTS and isinstance(event.get("node"), dict):
+        node = {key: value for key, value in event["node"].items() if key not in NODE_DETAIL_FIELDS}
+        return {**event, "node": node}
+    return event

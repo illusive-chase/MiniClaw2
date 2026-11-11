@@ -9,9 +9,17 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from miniclaw2.app import create_app
-from miniclaw2.domain import Node, NodeState, Project
-from miniclaw2.node_projection import node_event_projection, node_list_projection
+from miniclaw2.domain import Node, NodeState, Project, TokenUsage
+from miniclaw2.events import TurnDone
+from miniclaw2.node_projection import (
+    NODE_DETAIL_FIELDS,
+    node_event_persisted,
+    node_event_projection,
+    node_list_projection,
+)
+from miniclaw2.replay import EVENT_SCHEMA_VERSION
 from miniclaw2.registry import ProjectRegistry, ProjectRuntime
+from miniclaw2.runner import NodeRunner
 from miniclaw2.store import Store
 
 
@@ -83,17 +91,84 @@ class NodeProjectionTests(unittest.TestCase):
         text_event = {"type": "text_delta", "text": "完整文本"}
         self.assertIs(node_event_projection(text_event), text_event)
 
+    def _raw_events(self) -> list[dict]:
+        path = self.store.node_dir(self.project.id, self.node.id) / "events.jsonl"
+        return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
+
     def test_historical_replay_is_slim_without_rewriting_event_log(self) -> None:
-        for seq, event_type in enumerate(("node_started", "node_updated", "turn_done"), 1):
-            self.store.append_event(self.project.id, self.node.id, seq, {
-                "type": event_type, "node_id": self.node.id, "node": self.node.model_dump(mode="json"),
-            })
+        path = self.store.node_dir(self.project.id, self.node.id) / "events.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("w", encoding="utf-8") as f:
+            for seq, event_type in enumerate(("node_started", "node_updated", "turn_done"), 1):
+                f.write(json.dumps({
+                    "schema_version": EVENT_SCHEMA_VERSION,
+                    "seq": seq,
+                    "event": {
+                        "type": event_type, "node_id": self.node.id,
+                        "node": self.node.model_dump(mode="json"),
+                    },
+                }, ensure_ascii=False) + "\n")
         records = self.registry.replay_node_events(self.project.id, self.node.id)
         self.assertIsNotNone(records)
         for record in records or []:
             self.assertEqual(record["event"]["node"], node_list_projection(self.node))
         persisted = self.store.replay_events(self.project.id, self.node.id)
         self.assertEqual(persisted[0]["event"]["node"], self.node.model_dump(mode="json"))
+
+    def test_persisted_node_events_drop_snapshots_only(self) -> None:
+        received: list[dict] = []
+
+        async def receive(event: dict) -> None:
+            received.append(event)
+
+        async def emit() -> None:
+            runner = NodeRunner(self.node, self.project, self.store, receive)
+            await runner._emit_node_started()
+            await runner._emit_node_updated()
+            await runner._emit(TurnDone(node=self.node.model_dump()))
+
+        self.node.usage = TokenUsage(input_tokens=12, output_tokens=34)
+        asyncio.run(emit())
+
+        full = self.node.model_dump(mode="json")
+        expected = {k: v for k, v in full.items() if k not in NODE_DETAIL_FIELDS}
+        raw = self._raw_events()
+        self.assertEqual(
+            [record["event"]["type"] for record in raw],
+            ["node_started", "node_updated", "turn_done"],
+        )
+        for record in raw:
+            with self.subTest(event_type=record["event"]["type"]):
+                node = record["event"]["node"]
+                self.assertNotIn("system_context_snapshot", node)
+                self.assertNotIn("launch_instructions_snapshot", node)
+                self.assertEqual(node, expected)
+                self.assertEqual(node["prompt"], self.node.prompt)
+        self.assertEqual(raw[0]["event"]["prompt"], self.node.prompt)
+
+        # The live payload handed to on_event is untouched; broadcast projects it.
+        for event in received:
+            self.assertEqual(event["node"]["system_context_snapshot"], self.node.system_context_snapshot)
+            self.assertEqual(event["node"]["launch_instructions_snapshot"], self.node.launch_instructions_snapshot)
+
+        stored = self.store.load_node(self.project.id, self.node.id)
+        assert stored is not None
+        self.assertEqual(stored.system_context_snapshot, "系统上下文" * 1500)
+        self.assertEqual(stored.launch_instructions_snapshot, "节点规则" * 1500)
+
+        records = self.registry.replay_node_events(self.project.id, self.node.id)
+        self.assertIsNotNone(records)
+        for record in records or []:
+            self.assertEqual(record["event"]["node"], node_list_projection(full))
+
+    def test_persisted_projection_does_not_mutate_or_touch_other_events(self) -> None:
+        event = {"type": "node_updated", "node": self.node.model_dump()}
+        slim = node_event_persisted(event)
+        self.assertIn("system_context_snapshot", event["node"])
+        self.assertNotIn("system_context_snapshot", slim["node"])
+        self.assertEqual(node_event_projection(slim), node_event_projection(event))
+        text_event = {"type": "text_delta", "text": "完整文本"}
+        self.assertIs(node_event_persisted(text_event), text_event)
 
     def test_missing_project_and_node_are_still_not_found(self) -> None:
         self.assertEqual(self.client.get("/sessions/missing/nodes").status_code, 404)

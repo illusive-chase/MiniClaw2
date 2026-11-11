@@ -757,3 +757,27 @@ html.dark {
 .code-hover .tok-constant { color: var(--tok-constant); }
 
 .code-tabs { scrollbar-width: thin; }
+
+/* Node search: matched terms in result snippets, and the inspector block a
+ * hit jumped to. `::highlight` paints the terms inside that block without
+ * touching the rendered markdown's DOM. */
+mark.search-hit {
+  background: rgb(var(--brand) / 0.22);
+  color: inherit;
+  border-radius: 2px;
+  padding: 0 1px;
+}
+
+::highlight(node-search) {
+  background-color: rgb(var(--brand) / 0.32);
+  color: inherit;
+}
+
+.search-flash {
+  animation: search-flash 1.6s ease-out;
+}
+
+@keyframes search-flash {
+  0%, 55% { box-shadow: 0 0 0 2px rgb(var(--brand) / 0.65); }
+  100% { box-shadow: 0 0 0 2px rgb(var(--brand) / 0); }
+}

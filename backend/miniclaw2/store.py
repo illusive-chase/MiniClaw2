@@ -48,6 +48,7 @@ from .domain import (
     RemoteProjectBinding,
 )
 from .node_layout import node_coordinate_space, node_layout_owners
+from .node_projection import node_event_persisted
 from .git_layout import GHOST_GIT_NODE_ID
 from .git_state import is_git_repo, normalized_origin_url, root_commits
 from .replay import EVENT_SCHEMA_VERSION
@@ -1018,7 +1019,7 @@ class Store:
                     {
                         "schema_version": EVENT_SCHEMA_VERSION,
                         "seq": seq,
-                        "event": event,
+                        "event": node_event_persisted(event),
                     },
                     ensure_ascii=False,
                 )

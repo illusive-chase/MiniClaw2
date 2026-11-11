@@ -517,6 +517,41 @@ export type ActiveNodesResponse = {
   entries: ActiveNodeEntry[];
 };
 
+/* GET /sessions/{sid}/search — nodes whose preview or plain-text responses
+ * contain every query term. */
+export type NodeSearchField =
+  | "motivation"
+  | "summary"
+  | "next_implications"
+  | "prompt_draft"
+  | "text";
+
+export type NodeSearchMatch = {
+  field: NodeSearchField;
+  snippet: string;
+};
+
+export type NodeSearchResult = {
+  node_id: string;
+  kind: NodeKind;
+  state: NodeState;
+  category?: NodeCategory | null;
+  planspace_id?: string | null;
+  planspace_title?: string | null;
+  label: string;
+  /** Preview fields first, then up to three response blocks. */
+  matches: NodeSearchMatch[];
+  /** Every response block that matched, including the ones not snippeted. */
+  text_match_count: number;
+};
+
+export type NodeSearchResponse = {
+  terms: string[];
+  results: NodeSearchResult[];
+  total: number;
+  truncated: boolean;
+};
+
 export type WorkspaceNodeUpdated = {
   type: "workspace_node_updated";
   project_id: string;

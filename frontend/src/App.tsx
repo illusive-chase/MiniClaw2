@@ -80,7 +80,9 @@ import { setTemplateInstanceBoxContext } from "./canvas/nodes/TemplateInstanceBo
 import { SidePanel } from "./panel/SidePanel";
 import { NewProjectModal } from "./components/NewProjectModal";
 import { RemoteAccessModal } from "./components/RemoteAccessModal";
-import { CodeXml, Settings2 } from "lucide-react";
+import { CodeXml, Search, Settings2 } from "lucide-react";
+import { NodeSearchPanel } from "./components/NodeSearchPanel";
+import type { NodeSearchFocusRequest } from "./nodeSearch";
 import { SaveAsTemplateModal } from "./components/SaveAsTemplateModal";
 import { InstantiateTemplateModal } from "./components/InstantiateTemplateModal";
 import { TemplateEditor } from "./components/TemplateEditor";
@@ -121,6 +123,7 @@ import type {
   InteractionRequest,
   NodeDiff,
   NodeInfo,
+  NodeSearchResult,
   ServerEvent,
   NodePosition,
   ModelPreset,
@@ -408,6 +411,12 @@ export function App() {
   );
   const [activityFocusRequestVersion, setActivityFocusRequestVersion] =
     useState(0);
+  /* Node search lives on the canvas's left edge, independent of the right
+   * panel, so its result list stays open while hits open in the inspector. */
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchFocusVersion, setSearchFocusVersion] = useState(0);
+  const [searchFocusRequest, setSearchFocusRequest] =
+    useState<NodeSearchFocusRequest | null>(null);
   /* For data-fetching purposes we track the "currently inspected nodeId" — the
    * agent/op whose events, diff, and context bundle we should load. For context
    * selections, this stays pointed at the owning node. */
@@ -784,6 +793,7 @@ export function App() {
     setPendingReviews({});
     setFocusRequestVersion(0);
     setActivityFocusRequestVersion(0);
+    setSearchFocusRequest(null);
     setNewDirectionRequestVersion(0);
     setCenterOnNodeRequest(null);
     setHiddenLaneNotice(null);
@@ -985,6 +995,20 @@ export function App() {
     [isNodeNative, nodes, session],
   );
   const selectedCanvasNodeId = useMemo(() => graphNodeIdForSelection(selection), [selection]);
+  /* What an open search should re-run on: nodes appearing, disappearing or
+   * reaching a terminal state. Not every streamed delta — a running node's
+   * text is picked up once it finishes, or on the user's next keystroke. */
+  const searchRefreshKey = useMemo(() => {
+    let settled = 0;
+    let latest = 0;
+    for (const node of nodes) {
+      if (node.finished_at) {
+        settled += 1;
+        latest = Math.max(latest, node.finished_at);
+      }
+    }
+    return `${nodes.length}:${settled}:${latest}`;
+  }, [nodes]);
   const activeNodesFromList = useMemo(
     () => nodes.filter((n) => isNodeNative(n) && INTERRUPTIBLE_STATES.has(n.state)),
     [isNodeNative, nodes],
@@ -2794,6 +2818,55 @@ export function App() {
     [focusPlanspace, inspectNode, nodes, openDetails],
   );
 
+  /* A search hit is a jump like any other — select, open, center, and
+   * surface a hidden lane — plus a request for the inspector to scroll to
+   * the matching preview or response block once its data has loaded. */
+  const openSearchResult = useCallback(
+    (
+      result: NodeSearchResult,
+      target: "preview" | "text",
+      textIndex: number,
+      terms: string[],
+    ) => {
+      if (!nodesRef.current.some((node) => node.id === result.node_id)) return;
+      setSearchFocusRequest((current) => ({
+        nodeId: result.node_id,
+        target,
+        textIndex,
+        terms,
+        version: (current?.version ?? 0) + 1,
+      }));
+      revealJumpTarget(result.node_id);
+    },
+    [revealJumpTarget],
+  );
+
+  const toggleSearch = useCallback(() => {
+    setSearchOpen((open) => !open);
+    setSearchFocusVersion((version) => version + 1);
+  }, []);
+
+  /* Ctrl/Cmd+Shift+F, the editor convention for "search everywhere". It
+   * only opens: a second press refocuses the field instead of closing the
+   * panel out from under the user's typing. */
+  useEffect(() => {
+    if (route !== "project") return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (
+        (event.ctrlKey || event.metaKey) &&
+        event.shiftKey &&
+        !event.altKey &&
+        event.key.toLowerCase() === "f"
+      ) {
+        event.preventDefault();
+        setSearchOpen(true);
+        setSearchFocusVersion((version) => version + 1);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [route]);
+
   const onSelectArtifact = useCallback(
     (nodeId: string, name: string, ext: ArtifactExtension) => {
       if (!nodes.some((node) => node.id === nodeId)) return;
@@ -3311,6 +3384,22 @@ export function App() {
             </span>
           )}
 
+          <button
+            type="button"
+            onClick={toggleSearch}
+            aria-pressed={searchOpen}
+            className={
+              "inline-flex h-8 w-8 items-center justify-center rounded-md border transition " +
+              (searchOpen
+                ? "border-line-strong bg-surface-sunken text-ink"
+                : "border-line bg-surface text-ink-muted hover:border-line-strong hover:bg-surface-sunken hover:text-ink")
+            }
+            title="搜索节点 (Ctrl/⌘+Shift+F)"
+            aria-label="展开 / 收起节点搜索"
+          >
+            <Search size={17} strokeWidth={1.7} aria-hidden="true" />
+          </button>
+
           <RunStatusButton
             enabled
             entries={activeNodesFeed.entries}
@@ -3569,6 +3658,20 @@ export function App() {
             />
           )}
 
+          <NodeSearchPanel
+            open={searchOpen}
+            sessionId={session?.id ?? null}
+            focusRequestVersion={searchFocusVersion}
+            refreshKey={searchRefreshKey}
+            selectedNodeId={
+              selection.kind === "agent" || selection.kind === "op"
+                ? selection.nodeId
+                : null
+            }
+            onOpenResult={openSearchResult}
+            onClose={() => setSearchOpen(false)}
+          />
+
           {/* Floating side panel — slides in from the right, swapping between
               the node inspector and the project library. */}
           <aside
@@ -3698,6 +3801,7 @@ export function App() {
                 contextReloadVersion={contextReloadVersion}
                 focusRequestVersion={focusRequestVersion}
                 activityFocusRequestVersion={activityFocusRequestVersion}
+                searchFocusRequest={searchFocusRequest}
                 newDirectionRequestVersion={newDirectionRequestVersion}
                 onNewDirectionRequestHandled={acknowledgeNewDirectionRequest}
                 principles={principles}

@@ -6,6 +6,7 @@ import type {
   NodeDiff,
   NodeInfo,
   NodeDetail,
+  NodeSearchResponse,
   NodePaths,
   ModelPreset,
   GlobalDefaults,
@@ -1266,6 +1267,17 @@ export async function getNodePreview(
   );
   if (res.status === 404) return null;
   if (!res.ok) throw new Error(`getNodePreview failed: ${res.status}`);
+  return res.json();
+}
+
+export async function searchNodes(
+  sessionId: string,
+  query: string,
+  signal?: AbortSignal,
+): Promise<NodeSearchResponse> {
+  const params = new URLSearchParams({ q: query });
+  const res = await fetch(`/sessions/${sessionId}/search?${params}`, { signal });
+  if (!res.ok) throw new ApiError("searchNodes", res.status, await readErrorDetail(res));
   return res.json();
 }
 

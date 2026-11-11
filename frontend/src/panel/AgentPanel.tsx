@@ -58,6 +58,11 @@ import {
   type NodeMutationLock,
 } from "../nodeUtil";
 import { MarkdownView } from "../components/MarkdownView";
+import {
+  clearSearchHighlights,
+  paintSearchHighlights,
+  type NodeSearchFocusRequest,
+} from "../nodeSearch";
 import { GateReviewForm } from "./gateReview";
 import { InspectDrawer } from "./InspectDrawer";
 import {
@@ -115,6 +120,8 @@ export type AgentPanelProps = {
   isManualPlanspace: (planspaceId: string | null | undefined) => boolean;
   focusRequestVersion: number;
   activityFocusRequestVersion: number;
+  /** Set when a search hit opened this node: scroll to and mark the hit. */
+  searchFocusRequest?: NodeSearchFocusRequest | null;
   onSelectArtifact: (
     nodeId: string,
     name: string,
@@ -158,6 +165,7 @@ export function AgentPanel({
   isManualPlanspace,
   focusRequestVersion,
   activityFocusRequestVersion,
+  searchFocusRequest = null,
   onSelectArtifact,
 }: AgentPanelProps) {
   const node = useMemo(
@@ -184,6 +192,10 @@ export function AgentPanel({
 
   const [preview, setPreview] = useState<string | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
+  /* Which node `preview` was fetched for. The loading flag flips inside an
+   * effect, so on the first commit after a selection it still reads false
+   * while `preview` holds the previous node's text. */
+  const [previewNodeId, setPreviewNodeId] = useState<string | null>(null);
   const [promoting, setPromoting] = useState(false);
   const [dequeueing, setDequeueing] = useState(false);
   const [draftPromotability, setDraftPromotability] = useState<{
@@ -194,7 +206,9 @@ export function AgentPanel({
   const panelScrollRef = useRef<HTMLDivElement | null>(null);
   const activityDetailsRef = useRef<HTMLDetailsElement | null>(null);
   const latestActivityRef = useRef<HTMLDivElement | null>(null);
+  const previewSectionRef = useRef<HTMLElement | null>(null);
   const handledActivityFocusRef = useRef(0);
+  const handledSearchFocusRef = useRef(0);
   const eventsLoadingRef = useRef(eventsLoading);
   eventsLoadingRef.current = eventsLoading;
   const currentReadyToPromote =
@@ -254,7 +268,8 @@ export function AgentPanel({
     }
     let cancelled = false;
     setPreviewLoading(true);
-    getNodePreview(sessionId, node.id)
+    const requestedNodeId = node.id;
+    getNodePreview(sessionId, requestedNodeId)
       .then((next) => {
         if (!cancelled) setPreview(next?.text ?? null);
       })
@@ -265,7 +280,9 @@ export function AgentPanel({
         }
       })
       .finally(() => {
-        if (!cancelled) setPreviewLoading(false);
+        if (cancelled) return;
+        setPreviewLoading(false);
+        setPreviewNodeId(requestedNodeId);
       });
     return () => {
       cancelled = true;
@@ -319,6 +336,92 @@ export function AgentPanel({
     scrollToLatestActivity,
     transcriptItems.length,
   ]);
+
+  /* A search hit names a field, not a DOM node, so the target is resolved
+   * here once the data it lives in has arrived: the preview fetch for a
+   * preview hit, the event replay for a response hit. Until then the request
+   * stays pending and this effect re-runs as that data lands. */
+  useEffect(() => {
+    const request = searchFocusRequest;
+    if (
+      !request ||
+      request.nodeId !== node.id ||
+      handledSearchFocusRef.current === request.version
+    ) {
+      return;
+    }
+    if (node.state === "virtual") {
+      handledSearchFocusRef.current = request.version;
+      return;
+    }
+    const container = panelScrollRef.current;
+    if (!container) return;
+    const reveal = (element: HTMLElement) => {
+      handledSearchFocusRef.current = request.version;
+      const containerRect = container.getBoundingClientRect();
+      const rect = element.getBoundingClientRect();
+      container.scrollTo({
+        top: Math.max(0, container.scrollTop + rect.top - containerRect.top - 24),
+        behavior: "smooth",
+      });
+      paintSearchHighlights(element, request.terms);
+      element.classList.remove("search-flash");
+      /* Reading layout restarts the animation when the same block is
+       * targeted twice in a row. */
+      void element.offsetWidth;
+      element.classList.add("search-flash");
+    };
+    let frame = 0;
+    let timer = 0;
+    if (request.target === "preview") {
+      if (previewLoading || previewNodeId !== node.id) return;
+      const section = previewSectionRef.current;
+      if (!section) return;
+      frame = window.requestAnimationFrame(() => reveal(section));
+    } else {
+      const hits = transcriptItems.filter(
+        (item) =>
+          item.kind === "text" &&
+          request.terms.some((term) => item.text.toLowerCase().includes(term)),
+      );
+      const hit = hits[Math.min(request.textIndex, hits.length - 1)];
+      const block = hit
+        ? container.querySelector<HTMLElement>(
+            `[data-transcript-item="${CSS.escape(hit.id)}"]`,
+          )
+        : null;
+      const details = activityDetailsRef.current;
+      if (block) {
+        if (details) details.open = true;
+        frame = window.requestAnimationFrame(() => reveal(block));
+      } else if (details && !eventsLoading) {
+        /* No matching block yet. Either the replay has not started (its
+         * loading flag lags a commit behind the selection) or the text
+         * changed since the search ran. Any event arriving re-runs this
+         * effect and cancels the fallback; if none does, the Activity
+         * section is still the nearest true answer. */
+        timer = window.setTimeout(() => {
+          details.open = true;
+          reveal(details);
+        }, SEARCH_FOCUS_FALLBACK_MS);
+      }
+    }
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.clearTimeout(timer);
+    };
+  }, [
+    eventsLoading,
+    node.id,
+    node.state,
+    previewLoading,
+    previewNodeId,
+    searchFocusRequest,
+    transcriptItems,
+  ]);
+
+  /* Highlights belong to the node they were painted on. */
+  useEffect(() => clearSearchHighlights, [node.id]);
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
@@ -507,7 +610,7 @@ export function AgentPanel({
               />
             </section>
 
-            <section className="mb-5">
+            <section ref={previewSectionRef} className="mb-5 rounded-md">
               <PreviewCard
                 preview={preview}
                 loading={previewLoading}
@@ -2964,6 +3067,10 @@ function PreviewFieldIcon({ tone }: { tone: PreviewFieldTone }) {
   );
 }
 
+/* How long a response-block jump waits for the event replay before settling
+ * on the Activity section. */
+const SEARCH_FOCUS_FALLBACK_MS = 1500;
+
 type TranscriptItem =
   | { kind: "user"; id: string; text: string }
   | { kind: "text"; id: string; text: string }
@@ -3066,7 +3173,9 @@ function ActivityTranscript({
   return (
     <div className="space-y-2">
       {items.map((item) => (
-        <TranscriptItemView key={item.id} item={item} sessionId={sessionId} />
+        <div key={item.id} data-transcript-item={item.id} className="rounded-md">
+          <TranscriptItemView item={item} sessionId={sessionId} />
+        </div>
       ))}
     </div>
   );

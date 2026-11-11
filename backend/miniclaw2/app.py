@@ -32,12 +32,14 @@ from pydantic import BaseModel, ConfigDict, Field, StrictInt, ValidationError
 from .active_nodes import ACTIVE_STATES, ActiveNodesIndex, collect_active_entries
 from .artifacts import INLINE_TEXT_CAP, stored_artifact_path, stored_artifacts_dir
 from .contextspace import (
+    contextspace_root,
     delete_principle,
     describe_project_contextspace,
     get_principle,
     list_principles,
     load_context_bundle_for_node,
     load_context_bundle_sources_for_node,
+    planspace_display_title,
     read_project_context,
     read_template_instances,
 )
@@ -53,6 +55,7 @@ from .code_index import CodeIndexService
 from .code_analysis import ANALYZER_VERSION
 from .context_refresh import cancel_context_task, context_refresh_status, start_context_task
 from .diff_review import build_diff_artifact
+from .node_search import NodeSearchIndex
 from .domain import (
     TERMINAL_NODE_STATES,
     ContextNodeId,
@@ -746,6 +749,7 @@ def create_app(
 
     # Per-app so tests do not inherit one another's cached node facts.
     active_nodes_index = ActiveNodesIndex()
+    node_search_index = NodeSearchIndex()
     # The code-reading cache follows whichever store this app serves.
     code_index = CodeIndexService(lambda: registry.store.root)
 
@@ -2159,6 +2163,7 @@ def create_app(
         if not await run_in_threadpool(registry.delete_project, sid):
             raise HTTPException(404, "session not found")
         await code_index.forget(sid)
+        node_search_index.forget_project(sid)
         return {"ok": True}
 
     @app.get("/sessions/{sid}/contextspace", response_model=dict[str, Any])
@@ -2691,6 +2696,35 @@ def create_app(
         if nodes is None:
             raise HTTPException(404, "session not found")
         return [node_list_projection(node) for node in nodes]
+
+    @app.get("/sessions/{sid}/search", response_model=dict[str, Any])
+    def search_nodes(sid: str, q: str = "", limit: int = 200) -> dict[str, Any]:
+        """Nodes whose preview or plain-text responses contain every term.
+
+        Same visibility as ``GET /nodes``: archived lanes are left out, so a
+        hit always names a node the canvas can select.
+        """
+        nodes = registry.list_nodes(sid)
+        if nodes is None:
+            raise HTTPException(404, "session not found")
+        context_root = contextspace_root(registry.store.root)
+        titles: dict[str, str | None] = {}
+        for node in nodes:
+            if node.planspace_id and node.planspace_id not in titles:
+                try:
+                    titles[node.planspace_id] = planspace_display_title(
+                        context_root, node.planspace_id
+                    )
+                except Exception:  # noqa: BLE001
+                    titles[node.planspace_id] = None
+        return node_search_index.search(
+            registry.store,
+            sid,
+            nodes,
+            q,
+            limit=max(1, min(limit, 500)),
+            planspace_titles=titles,
+        )
 
     @app.get("/sessions/{sid}/nodes/{nid}", response_model=dict[str, Any])
     def get_node(sid: str, nid: str) -> dict[str, Any]:

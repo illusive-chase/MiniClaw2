@@ -31,6 +31,7 @@ import { OpPanel } from "./OpPanel";
 import { PlanspaceFilePanel } from "./PlanspaceFilePanel";
 import { ProjectPanel } from "./ProjectPanel";
 import { ArtifactPanel } from "./ArtifactPanel";
+import type { NodeSearchFocusRequest } from "../nodeSearch";
 
 type ResolveGatePayload = Omit<
   Extract<ClientMessage, { type: "interaction_response" }>,
@@ -112,6 +113,7 @@ export type SidePanelProps = {
   contextReloadVersion?: number;
   focusRequestVersion: number;
   activityFocusRequestVersion: number;
+  searchFocusRequest?: NodeSearchFocusRequest | null;
   newDirectionRequestVersion: number;
   onNewDirectionRequestHandled: () => void;
 
@@ -396,6 +398,7 @@ function Inner(props: SidePanelProps & {
         isManualPlanspace={isManualPlanspace}
         focusRequestVersion={focusRequestVersion}
         activityFocusRequestVersion={activityFocusRequestVersion}
+        searchFocusRequest={props.searchFocusRequest}
         onSelectArtifact={onSelectArtifact}
       />
     );
