@@ -286,8 +286,10 @@ def prompt_for(wecom: FakeWecom, number: int) -> str:
 
 
 def quoted(card: dict[str, Any]) -> str:
-    """What a quote of a card may carry; untested on a real client, so the
-    bridge reads any of its strings (``parse_message`` joins them all)."""
+    """Compatibility fixture for clients that return actual card content.
+
+    The measured placeholder-only callback is tested separately.
+    """
     return "\n".join([card["main_title"]["title"], card["main_title"].get("desc", ""), card["sub_title_text"]])
 
 
@@ -317,6 +319,9 @@ class WecomBridgeTests(unittest.IsolatedAsyncioTestCase):
     def resolutions(self) -> list[dict[str, Any]]:
         return self.host.registry.resolutions
 
+    def completion_receipts(self) -> list[str]:
+        return [text for text in self.wecom.markdowns() if "全部题目已回答" in text]
+
     async def test_single_question_button_click_resolves_at_once(self) -> None:
         sent = await self.ask("g1", [DB])
 
@@ -335,6 +340,8 @@ class WecomBridgeTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any(button["text"].startswith("✔") for button in replacement["button_list"]))
         # Answered here: no "answered elsewhere" message follows.
         self.assertFalse(any("已在网页端" in text or "已结束" in text for text in self.wecom.markdowns()))
+        self.assertEqual(len(self.completion_receipts()), 1)
+        self.assertIn("答案已交给 agent", self.completion_receipts()[0])
         event = self.host.registry.events[-1][1]
         self.assertEqual((event["channel"], event["state"]), ("wecom", "sent"))
 
@@ -357,42 +364,101 @@ class WecomBridgeTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(recorded["checkbox"]["disable"])
         await self.wecom.click(auth["task_id"], key="q1:0")
         self.assertEqual(self.resolutions, [])
+        self.assertEqual(self.completion_receipts(), [])
 
         await self.wecom.click(db["task_id"], key="q0:1")
         self.assertEqual(
             self.resolutions[0]["response"]["answers"],
             {"db": {"answers": ["SQLite"]}, "auth": {"answers": ["JWT"]}, "extras": {"answers": ["缓存", "搜索"]}},
         )
+        self.assertEqual(len(self.completion_receipts()), 1)
 
-    async def test_other_then_reply_quoting_the_card_answers(self) -> None:
+    async def test_vote_as_final_answer_sends_one_completion_receipt(self) -> None:
+        db, extras = await self.ask("g1", [DB, EXTRAS])
+        await self.wecom.click(db["task_id"], key="q0:0")
+        self.assertEqual(self.completion_receipts(), [])
+        await self.wecom.click(extras["task_id"], selections={"q1": ["0", "1"]})
+        self.assertEqual(len(self.resolutions), 1)
+        self.assertEqual(len(self.completion_receipts()), 1)
+
+    async def test_close_during_card_delivery_sends_one_completion_receipt(self) -> None:
+        transport = self.wecom.live
+        assert transport is not None
+        send_card = transport.send_card
+        release = asyncio.Event()
+
+        async def held_send(chatid: str, card: dict[str, Any]) -> None:
+            await send_card(chatid, card)
+            await release.wait()
+
+        with mock.patch.object(transport, "send_card", side_effect=held_send):
+            try:
+                sent = await self.ask("g1", [DB])
+                await self.wecom.click(sent[0]["task_id"], key="q0:0")
+                self.assertEqual(len(self.resolutions), 1)
+                self.assertEqual(self.completion_receipts(), [])
+            finally:
+                release.set()
+                await settle()
+        self.assertEqual(len(self.completion_receipts()), 1)
+        self.host.bridge.closed("g1", GateOutcome(kind="answered", source="wecom"))
+        await settle()
+        self.assertEqual(len(self.completion_receipts()), 1)
+
+    async def test_completion_delivery_failure_does_not_undo_answer(self) -> None:
+        sent = await self.ask("g1", [DB])
+        self.wecom.fail_next = [WecomApiError("aibot_send_msg", 400, "refused")]
+        await self.wecom.click(sent[0]["task_id"], key="q0:0")
+        self.assertEqual(len(self.resolutions), 1)
+        self.assertIn("提问结束通知发送失败", (await self.host.bridge.status())["last_error"])
+        self.assertEqual(self.completion_receipts(), [])
+
+    async def test_unsuccessful_resolution_never_sends_completion_receipt(self) -> None:
+        from miniclaw2.registry import ProjectArchivedError
+
+        sent = await self.ask("g1", [DB])
+        with mock.patch.object(self.host.registry, "resolve_gate", side_effect=ProjectArchivedError("archived")):
+            await self.wecom.click(sent[0]["task_id"], key="q0:0")
+        self.assertEqual(self.resolutions, [])
+        self.assertEqual(self.completion_receipts(), [])
+        with mock.patch.object(self.host.registry, "resolve_gate", return_value=False):
+            await self.wecom.say("晚到", quote=quoted(sent[0]))
+        self.assertEqual(self.resolutions, [])
+        self.assertEqual(self.completion_receipts(), [])
+
+    async def test_other_then_reply_quoting_text_prompt_answers(self) -> None:
         sent = await self.ask("g1", [DB])
         before = len(self.wecom.markdowns())
         await self.wecom.click(sent[0]["task_id"], key="q0:o")
 
         self.assertEqual(self.resolutions, [])
-        # No separate prompt: the card itself is what to quote.
-        self.assertEqual(len(self.wecom.markdowns()), before)
+        self.assertEqual(len(self.wecom.markdowns()), before + 1)
         card = self.wecom.cards[sent[0]["task_id"]]
-        self.assertIn("引用", card["main_title"]["desc"])
+        self.assertIn("引用文字提示", card["main_title"]["desc"])
 
-        await self.wecom.say("用 k8s 自建", quote=quoted(card))
+        await self.wecom.say("用 k8s 自建", quote=prompt_for(self.wecom, 1))
 
         self.assertEqual(self.resolutions[0]["response"]["answers"], {"db": {"answers": ["用 k8s 自建"]}})
         self.assertIn("全部题目已回答", self.wecom.markdowns()[-1])
+        self.assertEqual(len(self.wecom.markdowns()), before + 2)
+        self.assertEqual(len(self.completion_receipts()), 1)
 
-    async def test_several_others_each_answered_by_quoting_their_card(self) -> None:
+    async def test_several_others_each_answered_by_quoting_their_prompt(self) -> None:
         """The case one card per question exists for: two 「其他」 at once."""
         sent = await self.ask("g1", [DB, AUTH, EXTRAS])
         db, auth, extras = sent
         await self.wecom.click(db["task_id"], key="q0:o")
-        await self.wecom.click(extras["task_id"], selections={"q2": ["o"]})
+        other = await self.wecom.click(extras["task_id"], selections={"q2": ["o"]})
+        assert other is not None
+        self.assertFalse(other["checkbox"].get("disable", False))
+        self.assertEqual(other["submit_button"]["text"], "提交")
         await self.wecom.click(auth["task_id"], key="q1:1")
 
-        # Quoting either card names exactly one question, whatever else waits for text.
-        await self.wecom.say("队列和对象存储", quote=quoted(extras))
+        # A prompt names one question even when several are waiting for text.
+        await self.wecom.say("队列和对象存储", quote=prompt_for(self.wecom, 3))
         self.assertIn("第 3 题", self.wecom.markdowns()[-1])
         self.assertIn("还差第 1 题", self.wecom.markdowns()[-1])
-        await self.wecom.say("用 TiDB", quote=quoted(self.wecom.cards[db["task_id"]]))
+        await self.wecom.say("用 TiDB", quote=prompt_for(self.wecom, 1))
 
         self.assertEqual(
             self.resolutions[0]["response"]["answers"],
@@ -402,6 +468,101 @@ class WecomBridgeTests(unittest.IsolatedAsyncioTestCase):
                 "extras": {"answers": ["队列和对象存储"]},
             },
         )
+        self.assertEqual(len(self.completion_receipts()), 1)
+
+    async def test_real_placeholder_quote_is_refused_without_guessing(self) -> None:
+        sent = await self.ask("g1", [DB, AUTH])
+        await self.wecom.click(sent[0]["task_id"], key="q0:o")
+        await self.wecom.click(sent[1]["task_id"], key="q1:o")
+        # Captured from WeCom before and after clicking Other: no card identity.
+        message = wecom_transport.parse_message({
+            "from": {"userid": USER},
+            "chattype": "single",
+            "msgtype": "text",
+            "text": {"content": "测试一"},
+            "quote": {"msgtype": "text", "text": {"content": "[该消息类型暂不能展示]"}},
+        })
+        await self.host.bridge._on_message(message)
+        self.assertEqual(self.resolutions, [])
+        self.assertEqual(self.host.bridge._open["g1"].answers, {})
+        self.assertIn("回复没有记录", self.wecom.markdowns()[-1])
+        self.assertIn("文字提示", self.wecom.markdowns()[-1])
+        self.assertNotIn("长按该题的卡片", self.wecom.markdowns()[-1])
+        await self.wecom.say("SQLite", quote=prompt_for(self.wecom, 1))
+        await self.host.bridge._on_message(message)
+        self.assertEqual(self.resolutions, [])  # Still refuse with only one question left.
+        self.assertEqual(self.host.bridge._open["g1"].answers, {0: ["SQLite"]})
+        await self.wecom.say("JWT", quote=prompt_for(self.wecom, 2))
+        self.assertEqual(len(self.resolutions), 1)
+
+    async def test_other_prompt_deduplicates_and_failed_send_can_retry(self) -> None:
+        sent = await self.ask("g1", [DB])
+        self.wecom.fail_next = [WecomApiError("aibot_send_msg", 400, "refused")]
+        await self.wecom.click(sent[0]["task_id"], key="q0:o")
+        self.assertEqual(self.host.bridge._open["g1"].prompted, set())
+        self.assertIn("文字回答提示发送失败", (await self.host.bridge.status())["last_error"])
+        await self.wecom.click(sent[0]["task_id"], key="q0:o")
+        prompt = prompt_for(self.wecom, 1)
+        await self.wecom.click(sent[0]["task_id"], key="q0:o")
+        await self.wecom.click(sent[0]["task_id"], key="q0:0")
+        self.assertEqual(self.wecom.markdowns().count(prompt), 1)
+
+    async def test_queued_prompt_does_not_outlive_gate(self) -> None:
+        sent = await self.ask("g1", [DB])
+        event = CardEvent(req_id="r", userid=USER, chattype="single", card_type="button_interaction", task_id=sent[0]["task_id"], event_key="q0:o")
+        await self.host.bridge.on_card_event(event)
+        self.host.registry.end_node("g1")
+        await settle()
+        self.assertFalse(any("请用文字回答**" in text for text in self.wecom.markdowns()))
+
+    async def test_vote_other_can_retry_failed_prompt_or_change_to_an_option(self) -> None:
+        sent = await self.ask("g1", [EXTRAS])
+        self.wecom.fail_next = [WecomApiError("aibot_send_msg", 400, "refused")]
+        other = await self.wecom.click(sent[0]["task_id"], selections={"q0": ["o"]})
+        assert other is not None
+        self.assertFalse(other["checkbox"].get("disable", False))
+        await self.wecom.click(sent[0]["task_id"], selections={"q0": ["o"]})
+        self.assertTrue(prompt_for(self.wecom, 1))
+        await self.wecom.click(sent[0]["task_id"], selections={"q0": ["1"]})
+        self.assertEqual(self.resolutions[0]["response"]["answers"], {"extras": {"answers": ["队列"]}})
+
+    async def test_prompt_send_does_not_delay_card_update_or_duplicate_on_repeat_click(self) -> None:
+        sent = await self.ask("g1", [DB])
+        event = CardEvent(req_id="r", userid=USER, chattype="single", card_type="button_interaction", task_id=sent[0]["task_id"], event_key="q0:o")
+        transport = self.wecom.live
+        assert transport is not None
+        release = asyncio.Event()
+        send_markdown = transport.send_markdown
+
+        async def held_send(chatid: str, content: str) -> None:
+            await release.wait()
+            await send_markdown(chatid, content)
+
+        with mock.patch.object(transport, "send_markdown", side_effect=held_send):
+            try:
+                updated = await asyncio.wait_for(self.host.bridge.on_card_event(event), timeout=0.5)
+                self.assertIsNotNone(updated)
+                await settle()
+                await self.host.bridge.on_card_event(event)
+                await settle()
+            finally:
+                release.set()
+                await settle()
+        self.assertEqual(self.wecom.markdowns().count(prompt_for(self.wecom, 1)), 1)
+
+    async def test_prompts_for_different_gates_do_not_cross_answers(self) -> None:
+        first = await self.ask("g1", [DB])
+        second = await self.ask("g2", [AUTH])
+        await self.wecom.click(first[0]["task_id"], key="q0:o")
+        first_prompt = prompt_for(self.wecom, 1)
+        await self.wecom.click(second[0]["task_id"], key="q0:o")
+        second_prompt = prompt_for(self.wecom, 1)
+        await self.wecom.say("自定义鉴权", quote=second_prompt)
+        self.assertEqual([item["gate_id"] for item in self.resolutions], ["g2"])
+        await self.wecom.say("旧引用", quote=second_prompt)
+        self.assertEqual(len(self.resolutions), 1)
+        await self.wecom.say("TiDB", quote=first_prompt)
+        self.assertEqual([item["gate_id"] for item in self.resolutions], ["g2", "g1"])
 
     async def test_quoting_a_card_overrides_its_choice_and_a_tap_overrides_other(self) -> None:
         sent = await self.ask("g1", [DB, AUTH])
@@ -448,6 +609,7 @@ class WecomBridgeTests(unittest.IsolatedAsyncioTestCase):
         await self.wecom.say("无", quote=detail)
 
         self.assertEqual(self.resolutions[0]["response"]["answers"], {"note": {"answers": ["无"]}})
+        self.assertEqual(len(self.completion_receipts()), 1)
 
     async def test_question_without_options_gets_its_prompt_in_place(self) -> None:
         self.host.registry.open_gate("g1", [DB, NOTE, AUTH])
@@ -512,6 +674,7 @@ class WecomBridgeTests(unittest.IsolatedAsyncioTestCase):
         await settle()
 
         self.assertIn("已在网页端回答", self.wecom.markdowns()[-1])
+        self.assertEqual(self.completion_receipts(), [])
         replacement = await self.wecom.click(sent[1]["task_id"], selections={"q1": ["0"]})
         assert replacement is not None
         self.assertEqual(replacement["main_title"]["desc"], "已在网页端回答")
@@ -526,6 +689,7 @@ class WecomBridgeTests(unittest.IsolatedAsyncioTestCase):
         self.host.registry.end_node("g1")
         await settle()
         self.assertIn("已结束", self.wecom.markdowns()[-1])
+        self.assertEqual(self.completion_receipts(), [])
         replacement = await self.wecom.click(sent[0]["task_id"], key="q0:0")
         assert replacement is not None
         self.assertEqual([button["text"] for button in replacement["button_list"]], ["已失效"])
@@ -548,6 +712,7 @@ class WecomBridgeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.resolutions), 1)
         assert again is not None
         self.assertIn("已回答", again["main_title"]["desc"])
+        self.assertEqual(len(self.completion_receipts()), 1)
 
     async def test_secret_question_is_notice_only(self) -> None:
         sent = await self.ask("g1", [{**DB, "isSecret": True}])

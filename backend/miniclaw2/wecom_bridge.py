@@ -16,10 +16,10 @@ WeCom shapes the design differently from Feishu:
 - Cards have no text input, so a gate becomes a markdown detail plus one
   card per question (``wecom_cards``), answers accumulate per question, and
   the gate resolves when the last one arrives. Free text counts only from a
-  reply that quotes one question's card or prompt, so a reply never has to
+  reply that quotes one question's text prompt, so a reply never has to
   be guessed at; a plain message is never taken as an answer.
 - A card can be changed only in the response to a click on it, so a gate
-  that closes elsewhere is announced with one markdown message, and its
+  that closes is announced with one markdown message, and its
   cards turn into closed cards the next time they are clicked.
 
 Only the store's runtime owner connects. All bridge state lives on the
@@ -130,6 +130,8 @@ class _Push:
     answers: dict[int, list[str]] = field(default_factory=dict)
     #: Questions waiting for a quoted text reply.
     awaiting: set[int] = field(default_factory=set)
+    #: Text prompts sent or queued after choosing Other, one per question.
+    prompted: set[int] = field(default_factory=set)
     delivered: int = 0
     #: The gate was resolved from here; its close is still on the way.
     resolved: bool = False
@@ -143,6 +145,7 @@ class _Push:
         self.plan = None
         self.answers = {}
         self.awaiting = set()
+        self.prompted = set()
         self.delivered = 0
 
 
@@ -382,7 +385,7 @@ class WecomBridge:
         elif push.state == "sending":
             push.closed = outcome
         elif push.delivered:
-            self._spawn(self._announce_closed(push, outcome))
+            self._spawn(self._announce_closed(push, outcome, epoch=self._epoch))
 
     def _can_send(self) -> bool:
         config = self.config
@@ -472,7 +475,7 @@ class WecomBridge:
                 notice.gate_id, _closed_status(push.closed), answered=push.closed.kind == "answered"
             )
             if push.delivered:
-                await self._announce_closed(push, push.closed)
+                await self._announce_closed(push, push.closed, epoch=epoch)
             return
         if error is not None:
             push.state = "failed"
@@ -517,20 +520,23 @@ class WecomBridge:
             return None
         return error
 
-    async def _announce_closed(self, push: _Push, outcome: GateOutcome) -> None:
-        """One message when a pushed gate closed anywhere but here.
+    async def _announce_closed(self, push: _Push, outcome: GateOutcome, *, epoch: int) -> None:
+        """One receipt when a pushed gate closes, regardless of its last input.
 
         Its cards cannot be changed until clicked, so this is what tells the
-        user they are stale.
+        user the whole question set has finished.
         """
         if outcome.kind == "answered" and outcome.source == "wecom":
-            return
-        await self._deliver(
-            cards.closed_markdown(
+            message = cards.completed_markdown(push.notice)
+        else:
+            message = cards.closed_markdown(
                 push.notice,
                 answered_on_web=outcome.kind == "answered" and outcome.source == "web",
             )
-        )
+        error = await self._deliver(message, epoch=epoch)
+        if error is not None and epoch == self._epoch:
+            self._last_error = f"提问结束通知发送失败：{error}"
+            logger.warning("wecom close receipt failed: %s", error)
 
     def _close_cards(self, gate_id: str, status: str, *, answered: bool) -> None:
         for entry in self._cards.values():
@@ -578,9 +584,12 @@ class WecomBridge:
             entry.card = cards.card_after_click(entry.spec, ids, done=False, status="还没有选择")
             return entry.card
         if choice == "other":
-            # The text comes from a reply quoting this very card.
+            # Card quotes may contain only an unsupported-message placeholder.
             push.answers.pop(index, None)
             push.awaiting.add(index)
+            if index not in push.prompted:
+                push.prompted.add(index)
+                self._spawn(self._send_text_prompt(push, index, epoch=self._epoch))
         else:
             push.answers[index] = labels
             push.awaiting.discard(index)
@@ -596,11 +605,30 @@ class WecomBridge:
         if result == "resolved":
             status = f"已回答 · {clock(self._clock())}"
         elif choice == "other":
-            status = "已选「其他」· 请长按本卡片引用回复"
+            status = "已选「其他」· 请引用文字提示回复"
         else:
             status = f"已记录 · 还差 {len(self._remaining(push))} 题"
-        entry.card = cards.card_after_click(entry.spec, ids, done=True, status=status)
+        entry.card = cards.card_after_click(entry.spec, ids, done=choice != "other", status=status)
         return entry.card
+
+    async def _send_text_prompt(self, push: _Push, index: int, *, epoch: int) -> None:
+        if (
+            epoch != self._epoch
+            or self._open.get(push.notice.gate_id) is not push
+            or push.resolved
+            or index not in push.awaiting
+            or push.ref is None
+        ):
+            if epoch == self._epoch:
+                push.prompted.discard(index)
+            return
+        error = await self._deliver(
+            cards.text_prompt_markdown(push.notice, ref=push.ref, index=index), epoch=epoch
+        )
+        if error is not None and epoch == self._epoch:
+            push.prompted.discard(index)
+            self._last_error = f"文字回答提示发送失败：{error}"
+            logger.warning("wecom text prompt failed: %s", error)
 
     def _remaining(self, push: _Push) -> list[int]:
         return [index for index in range(len(push.notice.questions)) if index not in push.answers]
@@ -643,8 +671,11 @@ class WecomBridge:
             return
         markers = cards.find_markers(message.quote_text or "")
         if not markers:
-            # Only a reply quoting a question message answers anything.
-            await self._maybe_hint()
+            if message.quote_text is not None:
+                await self._deliver(cards.unrecognized_quote_markdown())
+            else:
+                # Never guess which question a plain message answers.
+                await self._maybe_hint()
             return
         target, reply = self._match_quote(markers)
         if target is None:
@@ -661,13 +692,15 @@ class WecomBridge:
             self._close_cards(push.notice.gate_id, "已在网页端回答", answered=True)
             await self._deliver("这个提问已在网页端回答，这条回复没有记录。")
             return
+        if result == "resolved":
+            # The observer sends the single completion receipt after gate closure.
+            return
         await self._deliver(
             cards.recorded_markdown(
                 push.notice,
                 index=index,
                 text=text,
                 remaining=self._remaining(push),
-                resolved=result == "resolved",
             )
         )
 
@@ -702,7 +735,7 @@ class WecomBridge:
         if targets:
             return None, (
                 "你引用的消息包含多道题，无法确定回答的是哪一题，这条回复没有记录。"
-                "请长按该题的卡片（没有选项的题目是它的提示消息），选择「引用」后回复。"
+                "请引用该题的文字提示回复；有选项的题目请先在卡片中选择「其他（文字回答）」。"
             )
         return None, "你引用的提问已结束或已失效，这条回复没有记录。"
 

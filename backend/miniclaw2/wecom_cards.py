@@ -10,10 +10,11 @@ An intelligent bot's template cards have no text input, so a gate is split:
   multi-select checkbox), and a question without options a markdown prompt.
   Every option list ends with 「其他（文字回答）」.
 
-One question per card is what keeps free text unambiguous: text is accepted
-only from a reply that *quotes* a question message, and the marker in the
-quoted text WeCom sends back names exactly one question. Each card and
-prompt carries ``#<ref>-<n>``; the detail's first line carries the gate's
+Choosing Other sends a separate markdown prompt: real clients can return
+only an unsupported-message placeholder when quoting a template card.
+Text is accepted only from a reply that *quotes* a question message with a
+marker naming exactly one question. Each card and prompt carries
+``#<ref>-<n>``; the detail's first line carries the gate's
 ``#<ref>`` (first, so a quote clipped at the end still has it), which names
 a question only when the gate has just one. A message that quotes nothing
 is never taken as an answer.
@@ -66,7 +67,7 @@ _TASK_UNSAFE = re.compile(r"[^0-9A-Za-z_\-@]")
 HOST_COLORS = (0, 1, 2, 3)
 
 QUOTE_HOW = "长按本条消息，选择「引用」后回复你的答案。"
-QUOTE_CARD = "要用文字回答，请长按该题的卡片，选择「引用」后回复。"
+QUOTE_CARD = "要用文字回答，请在卡片中选择「其他（文字回答）」，再引用机器人发出的该题文字提示回复。"
 QUOTE_RULE = "只有引用了提问消息的回复才会被记录为答案；网页端也可以随时作答，先答先生效。"
 
 CardKind = Literal["button", "vote"]
@@ -204,7 +205,7 @@ def plan_push(
         how = ["下方每道题单独一条消息。"] if total > 1 else []
         if len(text_questions) < total:
             how.append(
-                "在卡片中作答；选了「其他（文字回答）」的题目，请长按该题的卡片，选择「引用」后回复文字。"
+                "在卡片中作答；选择「其他（文字回答）」后，会收到该题的文字提示，请长按文字提示选择「引用」后回复。"
             )
         if text_questions:
             how.append("没有选项的题目，请长按它的提示消息，选择「引用」后回复文字。")
@@ -411,7 +412,8 @@ def welcome_markdown(*, host_label: str) -> str:
             f"**已连接 · 本机：{plain(host_label)}**",
             "之后这台主机上的 agent 提问，在网页端等待一段时间仍未回答时，会推送到这里。",
             "卡片左上角写明来自哪台主机，标题下方写明项目、方向和节点。",
-            "需要文字回答时，请长按提问消息选择「引用」后回复；没有引用提问的消息不会被记录。",
+            QUOTE_CARD,
+            "没有引用提问的消息不会被记录。",
         ]
     )
 
@@ -421,15 +423,17 @@ def closed_markdown(notice: GateNotice, *, answered_on_web: bool) -> str:
     return f"『{plain(card_subtitle(notice))}』的提问{what}，之前推送的卡片已失效。"
 
 
+def completed_markdown(notice: GateNotice) -> str:
+    return f"『{plain(card_subtitle(notice))}』的提问已完成。\n全部题目已回答，答案已交给 agent。"
+
+
 def recorded_markdown(
-    notice: GateNotice, *, index: int, text: str, remaining: list[int], resolved: bool
+    notice: GateNotice, *, index: int, text: str, remaining: list[int]
 ) -> str:
     head = (
         f"已记录『{plain(card_subtitle(notice))}』第 {index + 1} 题："
         f"{plain(_clip(text, ANSWER_ECHO_LIMIT))}"
     )
-    if resolved:
-        return f"{head}\n全部题目已回答，答案已交给 agent。"
     if remaining:
         return f"{head}\n还差第 {'、'.join(str(item + 1) for item in remaining)} 题。"
     return head
@@ -437,8 +441,17 @@ def recorded_markdown(
 
 def hint_markdown() -> str:
     return (
-        "要用文字回答，请长按该题的卡片（没有选项的题目是它的提示消息），选择「引用」后回复。"
+        QUOTE_CARD
+        + "勾选卡需点击「提交」；没有选项的题目，直接引用它的文字提示回复。"
         "没有引用提问的消息不会被记录为答案。"
+    )
+
+
+def unrecognized_quote_markdown() -> str:
+    return (
+        "这条引用中没有可识别的题号，回复没有记录。"
+        "企业微信可能只返回卡片的占位文字，无法识别是哪道题。"
+        + hint_markdown()
     )
 
 

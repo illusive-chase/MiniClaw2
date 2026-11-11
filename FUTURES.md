@@ -111,13 +111,11 @@ The WeCom bridge creates bots through WeCom's undocumented scan endpoints
 "use manual entry" message and is never retried by guesswork, and manual
 Bot ID/Secret entry stays as the fallback.
 
-WeCom text answers rest on a reply that quotes a question's *card*: the
-bridge reads the `#REF-n` marker from any string in the returned `quote`,
-and the marker ends both the card's title and its subtitle. That quoting a
-markdown message returns its text is measured; what quoting a template card
-returns (its type, which fields, or whether a card can be quoted at all) is
-not. If a client returns no marker, 「其他」 on a card has no text path and
-the question must be answered on the web.
+企业微信模板卡片引用的真机回调可只包含
+`quote.text.content = "[该消息类型暂不能展示]"`，没有题号或卡片 ID；不能把
+“客户端可引用卡片”等同于“机器人可识别被引用卡片”。文字回答现在通过选「其他」
+后补发的单题 Markdown 提示收集，依靠 `#REF-n` 精确定位；没有标识的引用拒收，
+不按最后点击或剩余题数猜测。若平台调整 Markdown 引用的回传格式，仍需真机确认。
 
 Separately, one mapping is pinned against the *shape* of another tool's
 review findings. No test can catch a change in that shape, so it has to be

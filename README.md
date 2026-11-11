@@ -356,11 +356,13 @@ declares it explicitly).
   a multi-select question or a longer option list, and a markdown prompt for
   a question without options. Every option list ends with
   「其他（文字回答）」. The gate resolves once every question has an answer.
-- **Text answers only by quoting.** A text reply counts only when it *quotes*
-  one question's card or prompt; each carries a marker like `#K7QD-2` that
-  WeCom returns in the quoted text, so a reply names exactly one question
-  even when several chose 「其他」. Quoting the detail counts only when the
-  gate has a single question. A plain message is never taken as an answer.
+- **文字回答需引用题目提示。** 选择「其他（文字回答）」后，机器人会补发该题的
+  Markdown 文字提示；勾选卡需先点「提交」。请引用文字提示回复，不要引用卡片：
+  实测卡片引用可能只返回「该消息类型暂不能展示」，没有题号。文字提示携带
+  `#K7QD-2` 一类标识，即使多题同时选择「其他」也能准确匹配。单题提问可以引用
+  提问详情，多题不可以。没有引用的普通消息不会作为答案，重复点击不会重复发提示。
+- **整组提问完成后发送回执。** 无论最后一题通过按钮、勾选还是文字回答，都在
+  整组答案成功提交后发送一次「全部题目已回答，答案已交给 agent」通知。
 - **Cards change only when clicked.** WeCom lets a card be updated only in
   the response to a click on it, within 5 s. When a question is answered on
   the web, its node ends or the machine stops, the user gets one message
