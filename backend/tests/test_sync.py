@@ -3,7 +3,9 @@ from __future__ import annotations
 import asyncio
 import json
 import subprocess
+import sys
 import tempfile
+import time
 import unittest
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
@@ -333,20 +335,33 @@ class GitMetadataSyncTests(unittest.TestCase):
 
     def test_remote_check_timeout_releases_the_manager_lock(self) -> None:
         manager = self.store_a.sync
-        original_git = sync_module._git
 
-        def timeout_fetch(root: Path, *args: str, **kwargs: object):
-            if args and args[0] == "fetch":
-                raise SyncError("git command timed out after 30 seconds")
-            return original_git(root, *args, **kwargs)
+        def timeout_fetch(command: list[str], **kwargs: object):
+            raise SyncError("git fetch timed out: no progress for 60 seconds")
 
-        with patch.object(sync_module, "_git", side_effect=timeout_fetch):
+        with patch.object(sync_module, "_run_transfer", side_effect=timeout_fetch):
             with self.assertRaisesRegex(SyncError, "timed out"):
                 manager.check_remote()
 
         self.assertTrue(manager._lock.acquire(blocking=False))
         manager._lock.release()
         self.assertIn("remote", manager.status())
+
+    def test_sync_reports_transfer_progress_while_pushing(self) -> None:
+        manager = self.store_a.sync
+        self.store_a.create_project(Project(root_path="/machine-a/progress", name="Progress"))
+        details: list[str] = []
+        original_report = manager._report_transfer
+
+        def record(line: str) -> None:
+            original_report(line)
+            details.append(manager.progress["detail"])
+
+        with patch.object(manager, "_report_transfer", side_effect=record):
+            manager.sync_now()
+
+        self.assertTrue(any(detail.startswith("正在推送元数据：") for detail in details), details)
+        self.assertEqual(manager.progress["phase"], "idle")
 
     def test_remote_check_endpoint_does_not_reload_the_registry(self) -> None:
         registry = ProjectRegistry(self.store_a)
@@ -364,6 +379,34 @@ class GitMetadataSyncTests(unittest.TestCase):
         with patch.object(sync_module.subprocess, "run", side_effect=timeout):
             with self.assertRaisesRegex(SyncError, "timed out after 0.01 seconds"):
                 sync_module._run_raw(["git", "fetch"], timeout=0.01)
+
+    def test_transfer_keeps_running_while_progress_continues(self) -> None:
+        script = "import sys, time\nfor i in range(6):\n    sys.stderr.write(f'Writing objects: {i}%\\r'); sys.stderr.flush(); time.sleep(0.1)\nprint('done')"
+        seen: list[str] = []
+        result = sync_module._run_transfer(
+            [sys.executable, "-c", script], label="git push",
+            on_progress=seen.append, stall_timeout=0.4, total_timeout=10,
+        )
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout.strip(), "done")
+        self.assertEqual(seen[-1], "Writing objects: 5%")
+
+    def test_transfer_stall_kills_the_whole_process_group(self) -> None:
+        marker_path = self.base / "child-survived"
+        child = f"import time, pathlib; time.sleep(1.5); pathlib.Path({str(marker_path)!r}).touch()"
+        script = (
+            "import subprocess, sys, time\n"
+            f"subprocess.Popen([sys.executable, '-c', {child!r}])\n"
+            "sys.stderr.write('Writing objects: 10%\\r'); sys.stderr.flush()\n"
+            "time.sleep(30)"
+        )
+        with self.assertRaisesRegex(SyncError, r"git push timed out: no progress .*Writing objects: 10%"):
+            sync_module._run_transfer(
+                [sys.executable, "-c", script], label="git push",
+                stall_timeout=0.5, total_timeout=10,
+            )
+        time.sleep(2)
+        self.assertFalse(marker_path.exists())
 
     def test_global_conflict_preserves_both_sides_until_manual_resolution(self) -> None:
         config_a = load_global_config(self.root_a)

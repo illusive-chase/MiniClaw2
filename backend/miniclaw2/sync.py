@@ -7,6 +7,8 @@ import json
 import logging
 import os
 import plistlib
+import re
+import signal
 import socket
 import subprocess
 import sys
@@ -32,6 +34,25 @@ SCHEMA_VERSION = CURRENT_VERSION
 SCHEMA_NAME = "miniclaw2-store"
 DEFAULT_COMMIT_DEBOUNCE_SECONDS = 30.0
 REMOTE_CHECK_TIMEOUT_SECONDS = 30.0
+# Transfers are bounded by silence rather than total size: a slow link that
+# keeps reporting progress may run long, a hung connection fails quickly.
+REMOTE_STALL_TIMEOUT_SECONDS = 60.0
+REMOTE_TRANSFER_TIMEOUT_SECONDS = 30 * 60.0
+_TRANSFER_PROGRESS = re.compile(
+    r"^(?:remote: )?(?:[A-Z][\w ]*:\s+\d|Total \d|Delta compression )"
+)
+_PROGRESS_DETAILS = {
+    "idle": "未在同步",
+    "preparing": "正在采集并提交本机状态",
+    "fetching": "正在拉取远端元数据",
+    "merging": "正在比较并合并元数据",
+    "normalizing_remote": "正在读取并迁移远端快照",
+    "normalizing_local": "正在读取并迁移本机快照",
+    "normalizing_base": "正在读取并迁移共同祖先快照",
+    "publishing": "正在校验并发布合并结果",
+    "pushing": "正在推送元数据",
+    "finishing": "正在记录同步结果",
+}
 
 
 logger = logging.getLogger(__name__)
@@ -307,7 +328,9 @@ def bootstrap_store(root: Path, remote_url: str) -> MachineIdentity:
         raise SyncError(f"fresh-machine bootstrap requires an empty directory: {root}")
     if root.exists():
         root.rmdir()
-    clone = _run_raw(["git", "clone", remote_url, str(root)], check=False)
+    clone = _run_transfer(
+        ["git", "clone", "--progress", remote_url, str(root)], label="git clone",
+    )
     if clone.returncode != 0:
         root.mkdir(parents=True, exist_ok=True)
         probe = _run_raw(["git", "ls-remote", remote_url], check=False)
@@ -366,24 +389,17 @@ class SyncManager:
         self.progress: dict[str, Any] = {"phase": "idle", "detail": "未在同步", "started_at": None, "phase_started_at": None}
 
     def _set_progress(self, phase: str) -> None:
-        details = {
-            "idle": "未在同步",
-            "preparing": "正在采集并提交本机状态",
-            "fetching": "正在拉取远端元数据",
-            "merging": "正在比较并合并元数据",
-            "normalizing_remote": "正在读取并迁移远端快照",
-            "normalizing_local": "正在读取并迁移本机快照",
-            "normalizing_base": "正在读取并迁移共同祖先快照",
-            "publishing": "正在校验并发布合并结果",
-            "pushing": "正在推送元数据",
-            "finishing": "正在记录同步结果",
-        }
         now = time.time()
         self.progress = {
-            "phase": phase, "detail": details[phase],
+            "phase": phase, "detail": _PROGRESS_DETAILS[phase],
             "started_at": None if phase == "idle" else now if phase == "preparing" else self.progress["started_at"],
             "phase_started_at": None if phase == "idle" else now,
         }
+
+    def _report_transfer(self, line: str) -> None:
+        phase = self.progress["phase"]
+        if phase in ("fetching", "pushing"):
+            self.progress = {**self.progress, "detail": f"{_PROGRESS_DETAILS[phase]}：{line}"}
 
     def add_pre_commit_callback(self, callback: Callable[[], None]) -> None:
         if callback not in self._pre_commit_callbacks:
@@ -439,14 +455,8 @@ class SyncManager:
                 _git(self.root, "remote", "set-url", "origin", remote_url)
             self.commit_now("initialize metadata sync")
             branch = self._branch()
-            pushed = _git(
-                self.root,
-                "push",
-                "--set-upstream",
-                "origin",
-                f"HEAD:{branch}",
-                check=False,
-                timeout=REMOTE_CHECK_TIMEOUT_SECONDS,
+            pushed = _git_transfer(
+                self.root, "push", "--set-upstream", "origin", f"HEAD:{branch}",
             )
             if pushed.returncode != 0:
                 self._record_failure()
@@ -534,14 +544,7 @@ class SyncManager:
             raise SyncError("metadata sync is not configured")
         with self._lock:
             branch = self._branch()
-            fetched = _git(
-                self.root,
-                "fetch",
-                "origin",
-                branch,
-                check=False,
-                timeout=REMOTE_CHECK_TIMEOUT_SECONDS,
-            )
+            fetched = _git_transfer(self.root, "fetch", "origin", branch)
             if fetched.returncode != 0:
                 raise SyncError(_command_error("fetch failed", fetched))
             return self.status()
@@ -619,7 +622,9 @@ class SyncManager:
                 branch = self._branch()
                 try:
                     self._set_progress("fetching")
-                    fetched = _git(self.root, "fetch", "origin", check=False, timeout=REMOTE_CHECK_TIMEOUT_SECONDS)
+                    fetched = _git_transfer(
+                        self.root, "fetch", "origin", on_progress=self._report_transfer,
+                    )
                     if fetched.returncode != 0:
                         raise SyncError(_command_error("fetch failed", fetched))
                     remote_ref = f"origin/{branch}"
@@ -633,14 +638,9 @@ class SyncManager:
                             for callback in tuple(self._publication_callbacks):
                                 callback()
                     self._set_progress("pushing")
-                    pushed = _git(
-                        self.root,
-                        "push",
-                        "--set-upstream",
-                        "origin",
-                        f"HEAD:{branch}",
-                        check=False,
-                        timeout=REMOTE_CHECK_TIMEOUT_SECONDS,
+                    pushed = _git_transfer(
+                        self.root, "push", "--set-upstream", "origin", f"HEAD:{branch}",
+                        on_progress=self._report_transfer,
                     )
                     if pushed.returncode != 0:
                         raise SyncError(_command_error("push failed", pushed))
@@ -815,6 +815,126 @@ def _git(
     if check and result.returncode != 0:
         raise SyncError(_command_error(f"git {' '.join(args)} failed", result))
     return result
+
+
+def _git_transfer(
+    root: Path, subcommand: str, *args: str,
+    on_progress: Callable[[str], None] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    return _run_transfer(
+        ["git", "-C", str(root), subcommand, "--progress", *args],
+        label=f"git {subcommand}", on_progress=on_progress,
+    )
+
+
+def _run_transfer(
+    command: list[str],
+    *,
+    label: str,
+    on_progress: Callable[[str], None] | None = None,
+    stall_timeout: float = REMOTE_STALL_TIMEOUT_SECONDS,
+    total_timeout: float = REMOTE_TRANSFER_TIMEOUT_SECONDS,
+) -> subprocess.CompletedProcess[str]:
+    """Run a network git command, failing on silence instead of total size.
+
+    git runs in its own process group so a timeout also stops the ssh and
+    pack-objects helpers; killing only git leaves them finishing the push in
+    the background while the caller records a failure.
+    """
+    isolation: dict[str, Any] = (
+        {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+        if sys.platform == "win32" else {"start_new_session": True}
+    )
+    try:
+        process = subprocess.Popen(
+            command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"}, **isolation,
+        )
+    except FileNotFoundError as exc:
+        raise SyncError("git is not installed or not available on PATH") from exc
+    last_activity = time.monotonic()
+    last_progress = ""
+    stdout: list[bytes] = []
+    messages: list[str] = []
+
+    def read_stdout() -> None:
+        nonlocal last_activity
+        assert process.stdout is not None
+        while chunk := process.stdout.read1(65536):
+            last_activity = time.monotonic()
+            stdout.append(chunk)
+
+    def read_stderr() -> None:
+        # Progress lines are redrawn with "\r", so split on both terminators.
+        nonlocal last_activity, last_progress
+        assert process.stderr is not None
+        pending = b""
+        while chunk := process.stderr.read1(65536):
+            last_activity = time.monotonic()
+            *lines, pending = re.split(rb"[\r\n]", pending + chunk)
+            for raw in lines:
+                line = raw.decode("utf-8", "replace").strip()
+                if not line:
+                    continue
+                if _TRANSFER_PROGRESS.match(line):
+                    last_progress = line
+                    if on_progress is not None:
+                        on_progress(line)
+                else:
+                    messages.append(line)
+        if tail := pending.decode("utf-8", "replace").strip():
+            messages.append(tail)
+
+    readers = [threading.Thread(target=target, daemon=True) for target in (read_stdout, read_stderr)]
+    for reader in readers:
+        reader.start()
+    started = time.monotonic()
+    failure: str | None = None
+    while True:
+        try:
+            process.wait(timeout=0.5)
+            break
+        except subprocess.TimeoutExpired:
+            pass
+        now = time.monotonic()
+        if now - started > total_timeout:
+            failure = f"timed out after {total_timeout:g} seconds"
+        elif now - last_activity > stall_timeout:
+            failure = f"timed out: no progress for {stall_timeout:g} seconds"
+        else:
+            continue
+        _kill_process_group(process)
+        break
+    for reader in readers:
+        reader.join(timeout=5)
+    if failure is not None:
+        context = f" (last progress: {last_progress})" if last_progress else ""
+        raise SyncError(f"{label} {failure}{context}")
+    return subprocess.CompletedProcess(
+        command, process.returncode,
+        b"".join(stdout).decode("utf-8", "replace"), "\n".join(messages),
+    )
+
+
+def _kill_process_group(process: subprocess.Popen[bytes]) -> None:
+    if sys.platform == "win32":
+        subprocess.run(
+            ["taskkill", "/F", "/T", "/PID", str(process.pid)], capture_output=True, check=False,
+        )
+    else:
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        logger.warning("git 进程 %s 未能在超时后退出", process.pid)
 
 
 def _git_init(root: Path) -> None:
