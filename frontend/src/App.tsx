@@ -1820,9 +1820,9 @@ export function App() {
       }, null);
       const modelPresetId = laneAnchor?.model_preset_id ?? session?.model_preset_id ?? null;
       /* Without an explicit position (the lane header "+" button, as opposed to
-       * a double-click that names a spot), append under the lane's existing
-       * work instead of letting the default cursor put the tile on the top row
-       * far off to the right. */
+       * a double-click that names a spot), place the tile under the lane's most
+       * recently active node, measured against the live canvas so tiles the
+       * user has dragged are respected. */
       const resolvedPosition =
         position ??
         resolveLaneAppendPosition(

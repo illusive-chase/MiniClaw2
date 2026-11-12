@@ -126,6 +126,10 @@ export type PlanspaceLaneData = {
   canCreateVirtual: boolean;
   canMove?: boolean;
   positionPinned?: boolean;
+  /** For a lane the user has not placed by hand: the lane it hangs beneath —
+   * the one holding the newest work when this lane appeared. Absent when the
+   * lane is pinned or nothing older exists to hang it from. */
+  anchorLaneId?: string;
 };
 
 /** One `key=value` pair from the instance record, for the group header. */
@@ -262,22 +266,122 @@ export function snapPlanspaceChildPosition(
   };
 }
 
+/** An axis-aligned box in one coordinate space (lane-relative or canvas). */
+export type LayoutRect = { x: number; y: number; width: number; height: number };
+
+/* Vertical gap left between a tile and the next one stacked beneath it — the
+ * same rhythm as `siblingYStep`, so a column of default placements reads as a
+ * single branch. */
+const STACK_GAP = LANE.siblingYStep - AGENT_NODE_HEIGHT;
+const SLOT_GAP_X = 16;
+
+/**
+ * Top-left of the first spot at or below `start` (same `x`, walking down) where
+ * a `width` x `height` box overlaps nothing in `occupied`.
+ *
+ * Every default placement goes through this one search: a new node lands under
+ * the newest node in its lane, and only drops further when that spot is taken.
+ * Jumping straight past the lowest blocker (rather than stepping a fixed row)
+ * keeps the result the nearest free gap, however the lane was rearranged.
+ */
+export function firstFreeSlotBelow(
+  occupied: readonly LayoutRect[],
+  start: { x: number; y: number },
+  width: number,
+  height: number,
+): { x: number; y: number } {
+  let y = start.y;
+  for (let guard = 0; guard <= occupied.length; guard++) {
+    const blockers = occupied.filter((rect) =>
+      start.x < rect.x + rect.width + SLOT_GAP_X &&
+      start.x + width + SLOT_GAP_X > rect.x &&
+      y < rect.y + rect.height + STACK_GAP &&
+      y + height + STACK_GAP > rect.y,
+    );
+    if (blockers.length === 0) break;
+    y = Math.max(...blockers.map((rect) => rect.y + rect.height + STACK_GAP));
+  }
+  return { x: start.x, y };
+}
+
+/** Where the search for a slot under `anchor` begins: one sibling step below
+ * its top, or further when the anchor is taller than an agent tile. */
+function stackStartBelow(anchor: LayoutRect): { x: number; y: number } {
+  return {
+    x: Math.max(LANE.planspaceLanePaddingX, anchor.x),
+    y: Math.max(
+      LANE.planspaceLanePaddingY,
+      anchor.y + Math.max(anchor.height, AGENT_NODE_HEIGHT) + STACK_GAP,
+    ),
+  };
+}
+
+/** The newest timestamp a node carried as of `at`: creation, start, finish —
+ * whichever happened last without being later than `at`. Ranking "the newest
+ * node when X appeared" by this keeps a default placement fixed once made,
+ * instead of following every later status change. */
+function activityAsOf(node: NodeInfo, at: number): number {
+  let best = Number.NEGATIVE_INFINITY;
+  for (const value of [node.created_at, node.started_at, node.finished_at]) {
+    if (typeof value === "number" && value <= at && value > best) best = value;
+  }
+  return best;
+}
+
+/**
+ * For each lane in `unpinnedLaneIds`, the lane it should hang beneath: the one
+ * holding the newest work at the moment this lane began (its first node's
+ * creation, or now for a lane with no nodes yet). Lanes absent from the result
+ * have nothing older to hang from and stack from the top as before.
+ */
+function resolveLaneAnchors(
+  unpinnedLaneIds: readonly string[],
+  laneIds: readonly string[],
+  nodes: readonly NodeInfo[],
+  byId: Map<string, NodeInfo>,
+): Map<string, string> {
+  const anchors = new Map<string, string>();
+  if (unpinnedLaneIds.length === 0) return anchors;
+  const rendered = new Set(laneIds);
+  const nodesByLane = new Map<string, NodeInfo[]>();
+  for (const node of nodes) {
+    const laneId = resolvePlanspaceId(node, byId);
+    if (!laneId || !rendered.has(laneId)) continue;
+    const list = nodesByLane.get(laneId);
+    if (list) list.push(node);
+    else nodesByLane.set(laneId, [node]);
+  }
+  for (const laneId of unpinnedLaneIds) {
+    const own = nodesByLane.get(laneId) ?? [];
+    const bornAt = own.length > 0
+      ? Math.min(...own.map((node) => node.created_at))
+      : Number.POSITIVE_INFINITY;
+    let best: string | null = null;
+    let bestAt = Number.NEGATIVE_INFINITY;
+    for (const [candidateId, candidates] of nodesByLane) {
+      if (candidateId === laneId) continue;
+      for (const node of candidates) {
+        const at = activityAsOf(node, bornAt);
+        if (at > bestAt) {
+          bestAt = at;
+          best = candidateId;
+        }
+      }
+    }
+    if (best) anchors.set(laneId, best);
+  }
+  return anchors;
+}
+
 /**
  * Lane-relative placement for a node the user just asked for — the lane header
- * "+" button and the Git "Review" button — as opposed to one the layout is
- * merely re-deriving.
+ * "+" button and the Git "Review" button — computed from the live React Flow
+ * geometry, which drag can move away from the built layout.
  *
- * The automatic default (`nextLanePosition`) appends along a horizontal cursor
- * on the agent row, which walks a busy lane far off to the right while leaving
- * the new tile pinned to the top row. A node created by an explicit click
- * should instead land where the user is already looking: under the work that
- * lane is currently doing.
- *
- * `x` follows `anchorNodeId` — the lane's most recently *active* node, chosen by
- * the caller from node timestamps rather than from geometry, so the new tile
- * lines up with the branch actually in play. `y` clears every existing child of
- * the lane, so the tile cannot land on top of one regardless of how the lane
- * has been rearranged by hand.
+ * Same rule as the automatic default in `buildGraph`: the tile goes under
+ * `anchorNodeId` — the lane's most recently *active* node, chosen by the
+ * caller from node timestamps — at the first spot down that column nothing
+ * occupies. Without an anchor the search starts at the lane's first slot.
  *
  * Returns null when the lane has no children yet; the caller then has nothing
  * to append to and the ordinary default is already correct. Also returns null
@@ -291,27 +395,28 @@ export function appendBelowLanePosition(
   anchorNodeId: string | null,
   forNodeId?: string,
 ): { x: number; y: number } | null {
-  let maxBottom: number | null = null;
-  let anchorX: number | null = null;
+  const occupied: LayoutRect[] = [];
+  let anchor: LayoutRect | null = null;
   for (const node of nodes) {
     if (node.parentNode !== laneNodeId) continue;
     if (forNodeId !== undefined && node.id === forNodeId) return null;
     /* Derived frames enclose their members rather than occupying the lane
-     * themselves, so counting them would leave a redundant gap. */
+     * themselves; the members already claim the space. */
     if (node.type === "templateGroup") continue;
-    const height = node.height ?? AGENT_NODE_HEIGHT;
-    const bottom = node.position.y + height;
-    if (maxBottom === null || bottom > maxBottom) maxBottom = bottom;
-    if (node.id === anchorNodeId) anchorX = node.position.x;
+    const rect = {
+      x: node.position.x,
+      y: node.position.y,
+      width: node.width ?? LANE.agentWidth,
+      height: node.height ?? AGENT_NODE_HEIGHT,
+    };
+    occupied.push(rect);
+    if (node.id === anchorNodeId) anchor = rect;
   }
-  if (maxBottom === null) return null;
-  return {
-    x: Math.max(LANE.planspaceLanePaddingX, anchorX ?? LANE.planspaceLanePaddingX),
-    y: Math.max(
-      LANE.planspaceLaneAgentRowY,
-      maxBottom + LANE.siblingYStep - AGENT_NODE_HEIGHT,
-    ),
-  };
+  if (occupied.length === 0) return null;
+  const start = anchor
+    ? stackStartBelow(anchor)
+    : { x: LANE.planspaceLanePaddingX, y: LANE.planspaceLaneAgentRowY };
+  return firstFreeSlotBelow(occupied, start, LANE.agentWidth, AGENT_NODE_HEIGHT);
 }
 
 /** Pick the newest candidate that has live geometry in this lane. The mapper
@@ -985,9 +1090,7 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
   const laneColors = new Map<string, PlanspaceColor>();
   const nodeRelativePositions = new Map<string, { x: number; y: number }>();
   const nodeRenderedHeights = new Map<string, number>();
-  const branchSiblingCounts = new Map<string, number>();
   const agentRowY = (_laneId: string): number => LANE.planspaceLaneAgentRowY;
-  const branchStep = Math.max(LANE.siblingYStep, AGENT_NODE_HEIGHT + 20);
 
   const shaSet = new Set(gitCommits.map((commit) => commit.sha));
   const columnIndexes = new Map<string, number>();
@@ -1188,7 +1291,8 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
 
   /* Main timeline. Two coordinate regimes coexist:
    *   - Nodes WITH a planspace become children of `planspace:<id>` lanes:
-   *     position is relative to lane, advanced by a per-lane cursor.
+   *     position is relative to lane, defaulting to the first free slot
+   *     under the node they hang from (see `defaultLanePosition`).
    *   - Nodes WITHOUT a planspace stay top-level in absolute coords,
    *     advanced by `freeCursorX`.
    * A one-sided extent protects the lane header and left padding without
@@ -1203,20 +1307,106 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
     allNodeById,
     nodePositions,
   );
-  const laneCursors = new Map<string, number>();
-  const nextLanePosition = (
+  /* Default placement inside a lane. Every tile without a saved position is
+   * placed by one rule: under the node it continues from (dependency, resumed
+   * session, or the failed node it reruns), or failing that under whichever
+   * node in the lane was newest when it was created — at the first spot down
+   * that column that nothing occupies. Nodes are visited in creation order, so
+   * a tile's default only sees work that already existed when it appeared, and
+   * hand-placed tiles are claimed up front so no default can land on them. */
+  const laneOccupied = new Map<string, LayoutRect[]>();
+  const occupy = (laneId: string, rect: LayoutRect): void => {
+    const rects = laneOccupied.get(laneId);
+    if (rects) rects.push(rect);
+    else laneOccupied.set(laneId, [rect]);
+  };
+  /* Rendered geometry of each placed lane tile, keyed by the durable node id.
+   * A collapsed member maps to the box drawn in its place. */
+  const placedLaneRects = new Map<string, { laneId: string; rect: LayoutRect }>();
+  /* The tiles a node drags along beneath it: its error terminal and published
+   * artifact row. Claimed together with the node so a later default placed
+   * under it clears them instead of covering them. */
+  const nodeFootprint = (
+    node: NodeInfo,
+    position: { x: number; y: number },
+  ): LayoutRect[] => {
+    const rects: LayoutRect[] = [
+      { x: position.x, y: position.y, width: LANE.agentWidth, height: AGENT_NODE_HEIGHT },
+    ];
+    if (node.state === "error" && node.error) {
+      const stored = nodePositions[`err:${node.id}`];
+      rects.push({
+        x: stored?.x ?? position.x,
+        y: stored?.y ?? position.y + LANE.errorTerminalOffsetY,
+        width: 180,
+        height: 88,
+      });
+    }
+    const published = (node.artifacts ?? []).filter((ref) => ref.status === "published");
+    if (published.length > 0) {
+      const tileCount = Math.min(published.length, 4);
+      const rowWidth = tileCount * 170 - 10;
+      const startX = Math.max(
+        LANE.planspaceLanePaddingX,
+        position.x + LANE.agentWidth / 2 - rowWidth / 2,
+      );
+      const storedTiles = published.slice(0, tileCount)
+        .map((artifact) => nodePositions[artifactNodeId(node.id, artifact.name)])
+        .filter((tile): tile is { x: number; y: number } => !!tile);
+      if (storedTiles.length < tileCount) {
+        rects.push({
+          x: startX,
+          y: position.y + LANE.artifactOffsetY,
+          width: rowWidth,
+          height: 70,
+        });
+      }
+      for (const tile of storedTiles) rects.push({ x: tile.x, y: tile.y, width: 160, height: 70 });
+    }
+    return rects;
+  };
+  for (const node of laneVisibleNodes) {
+    const stored = nodePositions[node.id];
+    const laneId = resolvePlanspaceId(node, allNodeById);
+    if (!stored || !laneId) continue;
+    for (const rect of nodeFootprint(node, stored)) occupy(laneId, rect);
+  }
+  /* Rect of the lane tile `node` should hang beneath when it has no anchor of
+   * its own: the lane's newest node as of `node`'s creation. */
+  const newestLaneRectAsOf = (laneId: string, node: NodeInfo): LayoutRect | null => {
+    let best: LayoutRect | null = null;
+    let bestAt = Number.NEGATIVE_INFINITY;
+    for (const [candidateId, placed] of placedLaneRects) {
+      if (placed.laneId !== laneId || candidateId === node.id) continue;
+      const candidate = allNodeById.get(candidateId);
+      if (!candidate) continue;
+      const at = activityAsOf(candidate, node.created_at);
+      if (at > bestAt) {
+        bestAt = at;
+        best = placed.rect;
+      }
+    }
+    return best;
+  };
+  /* `insetTop` is how far the box's top sits above the tile it frames — zero
+   * for a plain tile, the header band for a template group frame — so the
+   * framed tile, not the frame, lines up with the lane's first row. */
+  const defaultLanePosition = (
     laneId: string,
-    spacing: number,
-    stored: { x: number; y: number } | undefined,
-    defaultY: number,
+    node: NodeInfo,
+    anchorId: string | null,
+    width: number,
+    height: number,
+    insetTop = 0,
   ): { x: number; y: number } => {
-    const cursor = laneCursors.get(laneId) ?? LANE.planspaceLanePaddingX;
-    const position = stored ?? { x: cursor, y: defaultY };
-    /* Advance from the position that is actually on the canvas. When older
-     * nodes have been rearranged into rows, counting their historical slots
-     * would send the next unanchored node far beyond the visible layout. */
-    laneCursors.set(laneId, Math.max(cursor, position.x + spacing));
-    return position;
+    const own = anchorId ? placedLaneRects.get(anchorId) : undefined;
+    const anchor = own && own.laneId === laneId
+      ? own.rect
+      : newestLaneRectAsOf(laneId, node);
+    const start = anchor
+      ? stackStartBelow(anchor)
+      : { x: LANE.planspaceLanePaddingX, y: agentRowY(laneId) - insetTop };
+    return firstFreeSlotBelow(laneOccupied.get(laneId) ?? [], start, width, height);
   };
   const recordChildExtent = (
     laneId: string,
@@ -1234,13 +1424,13 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
     laneChildCount.set(laneId, (laneChildCount.get(laneId) ?? 0) + 1);
   };
 
-  /* Each expanded instance takes one contiguous block of the lane's agent row.
-   * The origin is claimed from the lane cursor the first time any member is
-   * placed, then every later member of that instance is positioned relative to
-   * it — so members cluster regardless of their order in the node list, and no
-   * unrelated node can land between them. The block reserves room for all
-   * members up front, which is what keeps the cursor monotonic and preserves
-   * append-don't-reflow for everything placed afterwards. */
+  /* Each expanded instance takes one contiguous row block. The origin is
+   * claimed the first time any member is placed — at the first free slot under
+   * the lane's newest work, like any other default — then every later member
+   * is positioned relative to it, so members cluster regardless of their order
+   * in the node list and no unrelated node can land between them. The block
+   * reserves room for all members up front, so nothing placed afterwards
+   * reflows into it. */
   const instanceOrigins = new Map<string, { x: number; y: number }>();
   const instanceMemberSlots = new Map<string, Map<string, number>>();
   const instanceOriginFor = (
@@ -1253,14 +1443,23 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
     const blockWidth =
       memberCount * LANE.agentWidth +
       (memberCount - 1) * (LANE.agentSpacing - LANE.agentWidth);
-    /* Reserve the frame's own inset so the border never overlaps a neighbour. */
-    const origin = nextLanePosition(
-      laneId,
-      blockWidth + LANE.templateGroupPadding * 2 + LANE.templateGroupGap,
-      undefined,
-      agentRowY(laneId),
-    );
-    const shifted = { x: origin.x + LANE.templateGroupPadding, y: origin.y };
+    /* The whole frame — inset and header included — claims one free block, so
+     * its border never overlaps a neighbour and no default lands inside it. */
+    const frameInsetTop = LANE.templateGroupPadding + LANE.templateGroupHeaderHeight;
+    const frameWidth = blockWidth + LANE.templateGroupPadding * 2;
+    const frameHeight = AGENT_NODE_HEIGHT + frameInsetTop + LANE.templateGroupPadding;
+    const firstMember = cluster.memberNodeIds
+      .map((id) => allNodeById.get(id))
+      .find((member): member is NodeInfo => !!member);
+    const frame = firstMember
+      ? defaultLanePosition(laneId, firstMember, null, frameWidth, frameHeight, frameInsetTop)
+      : { x: LANE.planspaceLanePaddingX, y: agentRowY(laneId) - frameInsetTop };
+    const top = Math.max(LANE.planspaceLanePaddingY, frame.y);
+    const shifted = {
+      x: frame.x + LANE.templateGroupPadding,
+      y: top + frameInsetTop,
+    };
+    occupy(laneId, { x: frame.x, y: top, width: frameWidth, height: frameHeight });
     instanceOrigins.set(cluster.instanceId, shifted);
     instanceMemberSlots.set(
       cluster.instanceId,
@@ -1283,15 +1482,34 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
     if (collapsedCluster) {
       const laneId = resolvePlanspaceId(node, allNodeById);
       if (laneId && !collapsedBoxPositions.has(collapsedCluster.instanceId)) {
-        collapsedBoxPositions.set(
-          collapsedCluster.instanceId,
-          nextLanePosition(
-            laneId,
-            LANE.agentSpacing,
-            nodePositions[node.id],
-            agentRowY(laneId),
-          ),
+        const storedBox = nodePositions[node.id];
+        const position = storedBox ?? defaultLanePosition(
+          laneId,
+          node,
+          null,
+          LANE.templateBoxWidth,
+          LANE.templateBoxHeight,
         );
+        const rect = {
+          ...position,
+          width: LANE.templateBoxWidth,
+          height: LANE.templateBoxHeight,
+        };
+        if (!storedBox) occupy(laneId, rect);
+        collapsedBoxPositions.set(collapsedCluster.instanceId, position);
+      }
+      const boxPosition = laneId
+        ? collapsedBoxPositions.get(collapsedCluster.instanceId)
+        : undefined;
+      if (laneId && boxPosition) {
+        placedLaneRects.set(node.id, {
+          laneId,
+          rect: {
+            ...boxPosition,
+            width: LANE.templateBoxWidth,
+            height: LANE.templateBoxHeight,
+          },
+        });
       }
       return;
     }
@@ -1307,100 +1525,53 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
     const agentExtentHeight = Math.max(LANE.agentHeight, AGENT_NODE_HEIGHT);
     nodeRenderedHeights.set(node.id, AGENT_NODE_HEIGHT);
     if (planspaceId && planspaceColor) laneColors.set(planspaceId, planspaceColor);
-    const placeInLane = (
-      spacing: number,
+    /* Record a lane tile wherever it ended up: lane sizing, the anchor map
+     * later defaults read, and — for a default — the space it now claims. */
+    const settleInLane = (
+      position: { x: number; y: number },
       width: number,
       height: number,
-      defaultY: number,
-    ) => {
-      const position = nextLanePosition(
-        planspaceId!,
-        spacing,
-        stored,
-        defaultY,
-      );
+    ): { x: number; y: number } => {
       recordChildExtent(planspaceId!, position.x, position.y, width, height);
       nodeRelativePositions.set(node.id, position);
+      placedLaneRects.set(node.id, {
+        laneId: planspaceId!,
+        rect: { x: position.x, y: position.y, width, height: AGENT_NODE_HEIGHT },
+      });
+      if (!stored) {
+        for (const rect of nodeFootprint(node, position)) occupy(planspaceId!, rect);
+      }
       return position;
     };
+    const placeInLane = (
+      anchorId: string | null,
+      width: number,
+      height: number,
+    ): { x: number; y: number } =>
+      settleInLane(
+        stored ?? defaultLanePosition(planspaceId!, node, anchorId, width, AGENT_NODE_HEIGHT),
+        width,
+        height,
+      );
     /* Cluster a member into its instance's reserved block. Placed before
-     * `placeInLane` in the chain so grouped members never consume a lane
-     * cursor slot of their own, and after the `stored` check inside so a
-     * manual drag still wins. */
+     * `placeInLane` in the chain so grouped members never claim a slot of
+     * their own, and a stored position still wins inside it so a manual drag
+     * is respected. */
     const placeInInstanceBlock = (): { x: number; y: number } | null => {
       if (!planspaceId) return null;
       const cluster = clusterByMemberId.get(node.id);
       if (!cluster || cluster.collapsed) return null;
-      if (stored) {
-        /* Claim the block anyway: the frame must still enclose this member,
-         * and skipping it would let the next instance reuse the same slot. */
-        instanceOriginFor(cluster, planspaceId);
-        recordChildExtent(
-          planspaceId,
-          stored.x,
-          stored.y,
-          LANE.agentWidth,
-          agentExtentHeight,
-        );
-        nodeRelativePositions.set(node.id, stored);
-        return stored;
-      }
+      /* Claim the block even for a hand-placed member: the frame must still
+       * enclose it, and skipping it would let the next instance reuse the
+       * same slot. */
       const origin = instanceOriginFor(cluster, planspaceId);
+      if (stored) return settleInLane(stored, LANE.agentWidth, agentExtentHeight);
       const slot = instanceMemberSlots.get(cluster.instanceId)?.get(node.id) ?? 0;
-      const position = {
-        x: origin.x + slot * LANE.agentSpacing,
-        y: origin.y,
-      };
-      recordChildExtent(
-        planspaceId,
-        position.x,
-        position.y,
+      return settleInLane(
+        { x: origin.x + slot * LANE.agentSpacing, y: origin.y },
         LANE.agentWidth,
         agentExtentHeight,
       );
-      nodeRelativePositions.set(node.id, position);
-      return position;
-    };
-    /* Stack a node directly beneath the node it continues from: a dependency
-     * parent, a resumed session, or the failed node it reruns. One shared
-     * sibling counter across all three is what keeps them from landing on each
-     * other — a failed node can have both a dependent virtual and a rerun
-     * queued beneath it, and separate counters would give both the same slot. */
-    const placeBelowAnchorInLane = (
-      anchorId: string | null,
-    ): { x: number; y: number } | null => {
-      if (!planspaceId || !anchorId) {
-        return null;
-      }
-      if (stored) {
-        recordChildExtent(
-          planspaceId,
-          stored.x,
-          stored.y,
-          LANE.agentWidth,
-          agentExtentHeight,
-        );
-        nodeRelativePositions.set(node.id, stored);
-        return stored;
-      }
-      const anchorPosition = nodeRelativePositions.get(anchorId);
-      if (!anchorPosition) return null;
-      const key = `${planspaceId}:${anchorId}`;
-      const siblingIndex = branchSiblingCounts.get(key) ?? 0;
-      branchSiblingCounts.set(key, siblingIndex + 1);
-      const position = {
-        x: anchorPosition.x,
-        y: anchorPosition.y + branchStep * (siblingIndex + 1),
-      };
-      recordChildExtent(
-        planspaceId,
-        position.x,
-        position.y,
-        LANE.agentWidth,
-        agentExtentHeight,
-      );
-      nodeRelativePositions.set(node.id, position);
-      return position;
     };
     const placeFree = (spacing: number) => {
       const position = stored ?? { x: freeCursorX, y: LANE.timelineY };
@@ -1412,7 +1583,7 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
       if (node.state === "done") return;
       const parent = node.parent_node_id ? (nodeById.get(node.parent_node_id) ?? null) : null;
       const position = planspaceId
-        ? placeInLane(LANE.opSpacing, LANE.opWidth, LANE.opHeight, agentRowY(planspaceId))
+        ? placeInLane(null, LANE.opWidth, LANE.opHeight)
         : placeFree(LANE.opSpacing);
       rfNodes.push({
         id: node.id,
@@ -1428,14 +1599,13 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
       });
     } else {
       const isLastInLane = !hasDescendantById.has(node.id);
-      /* A rerun anchors on the node it replaces whatever state it has reached.
-       * Unlike a planned virtual, it is created already runnable and an auto
-       * lane promotes it to `queued` immediately, so gating on "virtual" would
-       * drop the anchor for exactly the reruns that carry no dependency. */
-      const rerunAnchorId = rerunSourceId(node, nodeById);
+      /* The anchor is fixed by what the node *is*, never by the state it has
+       * reached: a rerun hangs under the node it replaces, anything else under
+       * what it continues from or depends on. Gating on "virtual" made a tile
+       * jump to the lane's top row the moment it was promoted — and an auto
+       * lane promotes a dependency-free rerun before the canvas ever sees it. */
       const branchAnchorId =
-        rerunAnchorId ??
-        (node.state === "virtual" ? virtualBranchAnchorId(node, nodeById) : null);
+        rerunSourceId(node, nodeById) ?? branchAnchorIdFor(node, nodeById);
       const position = planspaceId
         ? (
             /* Ahead of the anchored branch: a stamped member's scheduled_deps
@@ -1443,13 +1613,7 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
              * vertically instead of clustering it. Returns null for every
              * non-member, so ordinary layout is untouched. */
             placeInInstanceBlock() ??
-            placeBelowAnchorInLane(branchAnchorId) ??
-            placeInLane(
-              LANE.agentSpacing,
-              LANE.agentWidth,
-              agentExtentHeight,
-              agentRowY(planspaceId),
-            )
+            placeInLane(branchAnchorId, LANE.agentWidth, agentExtentHeight)
           )
         : placeFree(LANE.agentSpacing);
       rfNodes.push({
@@ -2008,11 +2172,11 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
        * box sits where its members were rather than at the end of the lane. */
       const position =
         collapsedBoxPositions.get(instanceId) ??
-        nextLanePosition(
-          planspaceId,
-          LANE.agentSpacing,
-          undefined,
-          agentRowY(planspaceId),
+        firstFreeSlotBelow(
+          laneOccupied.get(planspaceId) ?? [],
+          { x: LANE.planspaceLanePaddingX, y: agentRowY(planspaceId) },
+          LANE.templateBoxWidth,
+          LANE.templateBoxHeight,
         );
       recordChildExtent(
         planspaceId,
@@ -2109,6 +2273,12 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
    * their children. */
   const laneNodes: RFNode[] = [];
   let nextAutoLaneY = LANE.timelineY - LANE.planspaceLaneAgentRowY;
+  const laneAnchors = resolveLaneAnchors(
+    planspaceOrder.filter((id) => !lanePositions[`planspace:${id}`]),
+    planspaceOrder,
+    nodes,
+    allNodeById,
+  );
   for (const planspaceId of planspaceOrder) {
     const maxRight =
       laneChildMaxX.get(planspaceId) ?? (LANE.planspaceLanePaddingX + LANE.agentWidth);
@@ -2148,6 +2318,9 @@ export function buildGraph(args: BuildGraphArgs): BuildGraphResult {
         canCreateVirtual,
         canMove: canMutateLaneLayout,
         positionPinned: !!lanePositions[`planspace:${planspaceId}`],
+        ...(laneAnchors.has(planspaceId)
+          ? { anchorLaneId: `planspace:${laneAnchors.get(planspaceId)}` }
+          : {}),
       },
       selectable: true,
       draggable: canMutateLaneLayout,
@@ -2248,35 +2421,77 @@ export function resizePlanspaceLanes(
     };
   });
 
+  /* Lanes the user has not placed by hand are positioned here, after sizing,
+   * so they follow the lanes around them as those grow and shrink. A lane with
+   * an anchor hangs directly beneath it — new directions appear next to the
+   * work they came from, not at the top of the project. The rest stack from
+   * the top in order. Either way a lane skips past anything it would overlap. */
+  const laneSize = (node: RFNode) => ({
+    width: node.width ?? (node.data as PlanspaceLaneData).width,
+    height: node.height ?? (node.data as PlanspaceLaneData).height,
+  });
   let nextAutoLaneY = LANE.timelineY - LANE.planspaceLaneAgentRowY;
   let positionsChanged = false;
-  const occupied = resized.filter((node) => node.type === "planspaceLane" && (node.data as PlanspaceLaneData).positionPinned);
-  const positioned = resized.map((node) => {
-    if (node.type !== "planspaceLane") return node;
-    if ((node.data as PlanspaceLaneData).positionPinned) return node;
-    const height = node.height ?? (node.data as PlanspaceLaneData).height;
-    const width = node.width ?? (node.data as PlanspaceLaneData).width;
+  const placedById = new Map<string, RFNode>();
+  const occupied: RFNode[] = [];
+  for (const node of resized) {
+    if (node.type === "planspaceLane" && (node.data as PlanspaceLaneData).positionPinned) {
+      placedById.set(node.id, node);
+      occupied.push(node);
+    }
+  }
+  const anchorOf = (node: RFNode) => (node.data as PlanspaceLaneData).anchorLaneId;
+  const placeLane = (node: RFNode, useAnchor = true): void => {
+    const { width, height } = laneSize(node);
+    const anchor = useAnchor ? anchorOf(node) : undefined;
+    const anchorNode = anchor ? placedById.get(anchor) : undefined;
+    const x = anchorNode ? anchorNode.position.x : node.position.x;
+    let y = anchorNode
+      ? anchorNode.position.y + laneSize(anchorNode).height + LANE.planspaceLaneGap
+      : nextAutoLaneY;
     for (;;) {
-      const overlapping = occupied.filter((other) =>
-        node.position.x < other.position.x + (other.width ?? (other.data as PlanspaceLaneData).width) + LANE.planspaceLaneGap &&
-        node.position.x + width + LANE.planspaceLaneGap > other.position.x &&
-        nextAutoLaneY < other.position.y + (other.height ?? (other.data as PlanspaceLaneData).height) + LANE.planspaceLaneGap &&
-        nextAutoLaneY + height + LANE.planspaceLaneGap > other.position.y,
-      );
+      const overlapping = occupied.filter((other) => {
+        const size = laneSize(other);
+        return (
+          x < other.position.x + size.width + LANE.planspaceLaneGap &&
+          x + width + LANE.planspaceLaneGap > other.position.x &&
+          y < other.position.y + size.height + LANE.planspaceLaneGap &&
+          y + height + LANE.planspaceLaneGap > other.position.y
+        );
+      });
       if (overlapping.length === 0) break;
-      nextAutoLaneY = Math.max(...overlapping.map((other) =>
-        other.position.y + (other.height ?? (other.data as PlanspaceLaneData).height) + LANE.planspaceLaneGap,
+      y = Math.max(...overlapping.map((other) =>
+        other.position.y + laneSize(other).height + LANE.planspaceLaneGap,
       ));
     }
-    const position = node.position.y === nextAutoLaneY
+    if (!anchorNode) nextAutoLaneY = y + height + LANE.planspaceLaneGap;
+    const position = node.position.x === x && node.position.y === y
       ? node.position
-      : { ...node.position, y: nextAutoLaneY };
-    nextAutoLaneY += height + LANE.planspaceLaneGap;
+      : { ...node.position, x, y };
     positionsChanged ||= position !== node.position;
     const placed = position === node.position ? node : { ...node, position };
+    placedById.set(node.id, placed);
     occupied.push(placed);
-    return placed;
-  });
+  };
+  /* Unanchored lanes first, in order; then each anchored one as soon as its
+   * anchor has a position. An anchor that never resolves (absent from this
+   * list, or a timestamp tie that makes two lanes name each other) leaves the
+   * lane in the unanchored stack. */
+  const allLaneIds = new Set(resized.filter((node) => node.type === "planspaceLane").map((node) => node.id));
+  let pending: RFNode[] = [];
+  for (const node of resized) {
+    if (node.type !== "planspaceLane" || placedById.has(node.id)) continue;
+    const anchor = anchorOf(node);
+    if (anchor && allLaneIds.has(anchor)) pending.push(node);
+    else placeLane(node, false);
+  }
+  while (pending.length > 0) {
+    const ready = pending.filter((node) => placedById.has(anchorOf(node)!));
+    if (ready.length === 0) placeLane(pending[0], false);
+    for (const node of ready) placeLane(node);
+    pending = pending.filter((node) => !placedById.has(node.id));
+  }
+  const positioned = resized.map((node) => placedById.get(node.id) ?? node);
   return dimensionsChanged || positionsChanged ? positioned : nodes;
 }
 
@@ -2360,7 +2575,7 @@ function findContinueSourceId(
   return node.parent_node_id;
 }
 
-function virtualBranchAnchorId(
+function branchAnchorIdFor(
   node: NodeInfo,
   byId: Map<string, NodeInfo>,
 ): string | null {

@@ -4,7 +4,7 @@
  * "+" button and the Git "Review" button — live in App, which holds the node
  * records but not the canvas geometry those records were laid out into. Lane
  * children are positioned relative to their lane and can be dragged freely, so
- * "below everything currently in this lane" is only answerable from the live
+ * "the first free spot under this lane's newest work" is only answerable from the live
  * React Flow nodes. Canvas registers a resolver here so those handlers can ask
  * without React Flow state being lifted out of the canvas.
  *

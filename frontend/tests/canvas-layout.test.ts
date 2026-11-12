@@ -331,7 +331,13 @@ function testKnownLaneOrderSurvivesNodeCreationOrder(): void {
     lanes(populated).slice(0, 2).map((item) => item.position.x),
     lanes(empty).map((item) => item.position.x),
   );
-  assert.ok(lanes(populated)[1].position.y > lanes(populated)[0].position.y);
+  /* Render order follows the binding, but an unplaced lane hangs beneath the
+   * lane holding the newest work when it began: beta → legacy → alpha. */
+  const yOf = (graph: ReturnType<typeof buildGraph>, id: string) =>
+    lanes(graph).find((item) => item.id === `planspace:${id}`)!.position.y;
+  assert.ok(yOf(populated, "planspaces.legacy") > yOf(populated, "planspaces.beta"));
+  assert.ok(yOf(populated, "planspaces.alpha") > yOf(populated, "planspaces.legacy"));
+  assert.ok(lanes(empty)[1].position.y > lanes(empty)[0].position.y);
 }
 
 /* Auto is a permanent property of the lane, not a "waiting to be activated"
@@ -714,9 +720,10 @@ function testNewLaneNodeFollowsActualLayout(): void {
     },
   }));
 
+  /* Not appended to the top row: directly beneath the lane's newest node. */
   assert.deepEqual(
     graph.rfNodes.find((item) => item.id === "new")?.position,
-    { x: 600, y: LANE.planspaceLaneAgentRowY },
+    { x: 320, y: LANE.planspaceLaneAgentRowY + LANE.siblingYStep * 2 },
   );
 }
 
@@ -756,11 +763,12 @@ function testExplicitlyCreatedNodeAppendsBelowTheLane(): void {
   }
 }
 
-function testAppendedNodeClearsAHandPlacedBottomNode(): void {
+function testAppendedNodeTakesTheFirstFreeSlotUnderItsAnchor(): void {
   const planspaceId = "planspaces.alpha";
   const laneId = `planspace:${planspaceId}`;
-  /* A tile dragged far down still owns the lane's bottom edge, so the appended
-   * position must be derived from live geometry rather than the default row. */
+  /* A tile dragged far down elsewhere in the lane does not push the new node
+   * to the lane's bottom: it lands right under its anchor, and only steps
+   * further down when that spot is actually taken. */
   const draggedY = LANE.planspaceLaneAgentRowY + LANE.siblingYStep * 4;
   const built = buildGraph(args({
     nodes: [
@@ -774,16 +782,27 @@ function testAppendedNodeClearsAHandPlacedBottomNode(): void {
     },
   }));
 
-  const appended = appendBelowLanePosition(laneId, built.rfNodes, "top");
-  assert.ok(appended, "a lane with children must yield an append position");
-  assert.ok(
-    appended.y > draggedY,
-    "the append position must sit below the lowest tile, wherever it was dragged",
+  assert.deepEqual(
+    appendBelowLanePosition(laneId, built.rfNodes, "top"),
+    { x: 40, y: LANE.planspaceLaneAgentRowY + LANE.siblingYStep },
+    "the new tile sits one sibling step under its anchor",
   );
-  assert.equal(
-    appended.x,
-    40,
-    "x still follows the named anchor, not the bottom-most tile",
+
+  const blocked = buildGraph(args({
+    nodes: [
+      node("top", { planspace_id: planspaceId, created_at: 1 }),
+      node("under", { planspace_id: planspaceId, created_at: 2 }),
+    ],
+    knownPlanspaceIds: [planspaceId],
+    nodePositions: {
+      top: { x: 40, y: LANE.planspaceLaneAgentRowY },
+      under: { x: 80, y: LANE.planspaceLaneAgentRowY + LANE.siblingYStep },
+    },
+  }));
+  assert.deepEqual(
+    appendBelowLanePosition(laneId, blocked.rfNodes, "top"),
+    { x: 40, y: LANE.planspaceLaneAgentRowY + LANE.siblingYStep * 2 },
+    "an occupied slot pushes the tile to the next free one in the same column",
   );
 }
 
@@ -1743,7 +1762,7 @@ function testSameInstanceNodesClusterTogether(): void {
 
 function testInstanceGroupDoesNotConsumeExtraLaneSlots(): void {
   /* A node created after the instance must sit clear of the whole block, not
-   * inside it — the reserved block is what keeps the lane cursor monotonic. */
+   * inside it: it hangs below the frame rather than inside its header band. */
   const graph = buildGraph(templateArgs({
     nodes: [
       ...instanceNodes(),
@@ -1755,7 +1774,8 @@ function testInstanceGroupDoesNotConsumeExtraLaneSlots(): void {
   assert.ok(frame);
   assert.ok(after);
   assert.ok(
-    after.position.x >= frame.position.x + (frame.width ?? 0),
+    after.position.x >= frame.position.x + (frame.width ?? 0) ||
+      after.position.y >= frame.position.y + (frame.height ?? 0),
     "a later node must not be placed inside the instance frame",
   );
 }
@@ -2260,8 +2280,8 @@ function testCollapsingKeepsTheInstanceInPlace(): void {
   assert.equal(beforeX(collapsed), beforeX(expanded), "upstream tiles do not move");
   const afterCollapsed = collapsed.rfNodes.find((item) => item.id === "after")!;
   assert.ok(
-    afterCollapsed.position.x > box.position.x,
-    "a downstream tile stays to the right of the collapsed box",
+    afterCollapsed.position.y >= box.position.y + LANE.templateBoxHeight,
+    "a later tile hangs below the collapsed box rather than over it",
   );
   /* Collapsing frees the slots the hidden members held, so the lane shrinks. */
   const laneWidth = (graph: ReturnType<typeof buildGraph>) =>
@@ -2272,7 +2292,116 @@ function testCollapsingKeepsTheInstanceInPlace(): void {
   );
 }
 
+/* A lane the user has not placed hangs directly beneath the lane holding the
+ * newest work when it began — not at the top of the project, and not at the
+ * end of the binding order. */
+function testNewLaneHangsBelowTheLaneWithTheNewestWork(): void {
+  const ids = ["planspaces.a", "planspaces.b", "planspaces.c"];
+  const graph = buildGraph(args({
+    nodes: [
+      node("a1", { planspace_id: "planspaces.a", created_at: 1, finished_at: 2 }),
+      node("b1", { planspace_id: "planspaces.b", created_at: 3, finished_at: 10 }),
+      node("c1", { planspace_id: "planspaces.c", created_at: 20 }),
+    ],
+    knownPlanspaceIds: ids,
+    lanePositions: {
+      "planspace:planspaces.a": { x: 260, y: 64 },
+      "planspace:planspaces.b": { x: 900, y: 2000 },
+    },
+  }));
+  const lane = (id: string) =>
+    graph.rfNodes.find((item) => item.id === `planspace:${id}`)!;
+  const b = lane("planspaces.b");
+  const c = lane("planspaces.c");
+  assert.equal((c.data as { anchorLaneId?: string }).anchorLaneId, "planspace:planspaces.b");
+  assert.deepEqual(c.position, {
+    x: b.position.x,
+    y: b.position.y + (b.height ?? 0) + LANE.planspaceLaneGap,
+  });
+
+  /* A brand-new lane with no nodes yet hangs under the lane active right now. */
+  const fresh = buildGraph(args({
+    nodes: [
+      node("a1", { planspace_id: "planspaces.a", created_at: 1, finished_at: 50 }),
+      node("b1", { planspace_id: "planspaces.b", created_at: 3, finished_at: 10 }),
+    ],
+    knownPlanspaceIds: ["planspaces.a", "planspaces.b", "planspaces.new"],
+    lanePositions: {
+      "planspace:planspaces.a": { x: 260, y: 64 },
+      "planspace:planspaces.b": { x: 260, y: 3000 },
+    },
+  }));
+  const freshLane = (id: string) =>
+    fresh.rfNodes.find((item) => item.id === `planspace:${id}`)!;
+  const a = freshLane("planspaces.a");
+  assert.deepEqual(freshLane("planspaces.new").position, {
+    x: a.position.x,
+    y: a.position.y + (a.height ?? 0) + LANE.planspaceLaneGap,
+  });
+}
+
+/* A tile keeps its dependency anchor after leaving the virtual state, so
+ * promoting or running it does not send it to the lane's top row. */
+function testPromotedNodeStaysUnderItsDependency(): void {
+  const planspaceId = "planspaces.alpha";
+  const parentPosition = { x: 320, y: 900 };
+  for (const state of ["virtual", "queued", "running", "done"] as const) {
+    const graph = buildGraph(args({
+      nodes: [
+        node("first", { planspace_id: planspaceId, created_at: 1 }),
+        node("parent", { planspace_id: planspaceId, created_at: 2 }),
+        node("child", {
+          planspace_id: planspaceId,
+          state,
+          scheduled_deps: ["parent"],
+          proposed_by: "user",
+          created_at: 3,
+        }),
+      ],
+      knownPlanspaceIds: [planspaceId],
+      nodePositions: { first: { x: 40, y: 156 }, parent: parentPosition },
+    }));
+    assert.deepEqual(
+      graph.rfNodes.find((item) => item.id === "child")?.position,
+      { x: parentPosition.x, y: parentPosition.y + LANE.siblingYStep },
+      `a ${state} dependent stays under its dependency`,
+    );
+  }
+}
+
+/* With no anchor of its own, a tile hangs under whichever lane node was newest
+ * when it was created, skipping past the error terminal beneath it. */
+function testUnanchoredNodeHangsUnderTheNewestNodeAndClearsItsTerminal(): void {
+  const planspaceId = "planspaces.alpha";
+  const failedPosition = { x: 600, y: 600 };
+  const graph = buildGraph(args({
+    nodes: [
+      node("old", { planspace_id: planspaceId, created_at: 1, finished_at: 2 }),
+      node("failed", {
+        planspace_id: planspaceId,
+        state: "error",
+        error: "boom",
+        created_at: 3,
+        finished_at: 4,
+      }),
+      node("fresh", { planspace_id: planspaceId, state: "virtual", created_at: 5 }),
+    ],
+    knownPlanspaceIds: [planspaceId],
+    nodePositions: { old: { x: 40, y: 156 }, failed: failedPosition },
+  }));
+  const fresh = graph.rfNodes.find((item) => item.id === "fresh")!;
+  const terminal = graph.rfNodes.find((item) => item.id === "err:failed")!;
+  assert.equal(fresh.position.x, failedPosition.x);
+  assert.ok(
+    fresh.position.y >= terminal.position.y + (terminal.height ?? 0),
+    "the new tile must clear the failed node's error terminal",
+  );
+}
+
 testNoRootOrFabricatedDependencies();
+testNewLaneHangsBelowTheLaneWithTheNewestWork();
+testPromotedNodeStaysUnderItsDependency();
+testUnanchoredNodeHangsUnderTheNewestNodeAndClearsItsTerminal();
 testPromotedNodeDoesNotUseTransientParentFallback();
 testKnownLaneOrderSurvivesNodeCreationOrder();
 testAutoLaneIsMarkedRegardlessOfFocus();
@@ -2290,7 +2419,7 @@ testPlanspaceChildrenHaveOneSidedExtent();
 testSvgArtifactGetsACanvasNode();
 testNewLaneNodeFollowsActualLayout();
 testExplicitlyCreatedNodeAppendsBelowTheLane();
-testAppendedNodeClearsAHandPlacedBottomNode();
+testAppendedNodeTakesTheFirstFreeSlotUnderItsAnchor();
 testAppendedNodeFallsBackToLanePaddingWithoutAnAnchor();
 testEmptyLaneHasNothingToAppendBelow();
 testAppendedPositionSurvivesAsALayoutHint();
