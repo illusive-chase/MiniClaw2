@@ -54,7 +54,7 @@ export const HoverCard = forwardRef<HTMLDivElement, HoverCardProps>(function Hov
     <div
       ref={ref}
       role="tooltip"
-      className="code-hover fixed z-50 max-w-[560px] overflow-hidden rounded-md border border-line-strong bg-surface-raised text-[12px] text-ink shadow-lg"
+      className="code-hover mc-hover-card fixed z-50 max-w-[560px] overflow-hidden rounded-md border border-line-strong bg-surface-raised text-[12px] text-ink shadow-lg"
       style={style}
       onMouseEnter={onEnter}
       onMouseLeave={onLeave}

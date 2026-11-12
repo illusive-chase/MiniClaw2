@@ -49,6 +49,7 @@ import {
   type BindingFilter,
 } from "../projectGrouping";
 import type { GlobalState } from "../types";
+import { Collapse } from "./Collapse";
 
 type Props = {
   onOpen: (session: SessionInfo) => void;
@@ -292,8 +293,22 @@ export function ProjectsLanding({
     .join("\n") || undefined;
   const behindRemote = remoteBehind > 0 || sourceBehind > 0;
 
+  /* Cards rise in, staggered, the first time the list shows — the page
+   * assembling once. Re-sorting, filtering, and folding groups later must not
+   * replay it: those are high-frequency edits and a cascade on each would
+   * read as flicker. The window closes shortly after the first cards paint. */
+  const [introPlaying, setIntroPlaying] = useState(true);
+  const hasCards = (sessions?.length ?? 0) > 0;
+  useEffect(() => {
+    if (!hasCards || !introPlaying) return;
+    const timer = window.setTimeout(() => setIntroPlaying(false), 600);
+    return () => window.clearTimeout(timer);
+  }, [hasCards, introPlaying]);
+  let introIndex = 0;
+
   const renderCard = (session: SessionInfo, keyPrefix = "") => (
     <ProjectCard
+      introDelayMs={introPlaying ? Math.min(introIndex++, 8) * 30 : null}
       key={keyPrefix + session.id}
       session={session}
       tags={resolveTags(session, tagsById)}
@@ -488,7 +503,7 @@ export function ProjectsLanding({
                       >
                         <span
                           className={
-                            "text-[9px] text-ink-subtle transition-transform "
+                            "text-[9px] text-ink-subtle transition-transform duration-base ease-out "
                             + (collapsed ? "" : "rotate-90")
                           }
                           aria-hidden="true"
@@ -514,11 +529,13 @@ export function ProjectsLanding({
                         </span>
                         <span className="ml-2 h-px flex-1 bg-line" aria-hidden="true" />
                       </button>
-                      {!collapsed && (
+                      {/* Padded so card hover lift and focus rings are not
+                        * clipped by the collapse's overflow. */}
+                      <Collapse open={!collapsed} className="-m-1.5 p-1.5">
                         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
                           {group.sessions.map((session) => renderCard(session, group.id + "-"))}
                         </div>
-                      )}
+                      </Collapse>
                     </section>
                   );
                 })}
@@ -559,6 +576,7 @@ export function ProjectsLanding({
 }
 
 function ProjectCard({
+  introDelayMs,
   session,
   tags,
   allTags,
@@ -573,6 +591,8 @@ function ProjectCard({
   onRenameTag,
   onDeleteTag,
 }: {
+  /** Stagger for the landing's first paint; null once that has played. */
+  introDelayMs: number | null;
   session: SessionInfo;
   tags: Tag[];
   allTags: Tag[];
@@ -650,16 +670,18 @@ function ProjectCard({
           handleCardClick();
         }
       }}
+      style={introDelayMs !== null ? { animationDelay: `${introDelayMs}ms` } : undefined}
       className={
-        "group relative flex flex-col gap-2.5 overflow-hidden rounded-lg border border-line bg-surface-raised px-4 py-3.5 shadow-card transition "
+        "group relative flex flex-col gap-2.5 overflow-hidden rounded-lg border border-line bg-surface-raised px-4 py-3.5 shadow-card transition duration-quick ease-out "
+        + (introDelayMs !== null ? "mc-fade-rise " : "")
         + (session.archived_at
           ? "cursor-default"
-          : "cursor-pointer hover:-translate-y-0.5 hover:border-line-strong hover:shadow-raised")
+          : "cursor-pointer hover:-translate-y-0.5 hover:border-line-strong hover:shadow-raised active:translate-y-0 active:scale-[0.985]")
       }
     >
       {/* hairline left accent on hover */}
       <span
-        className="pointer-events-none absolute inset-y-0 left-0 w-[2px] origin-top scale-y-0 bg-brand transition-transform duration-200 group-hover:scale-y-100"
+        className="pointer-events-none absolute inset-y-0 left-0 w-[2px] origin-top scale-y-0 bg-brand transition-transform duration-base ease-out group-hover:scale-y-100"
         aria-hidden="true"
       />
 
@@ -841,19 +863,17 @@ function ProjectCard({
         <span className="font-mono text-ink-subtle">{session.id.slice(0, 8)}</span>
       </div>
 
-      {tagAnchor && (
-        <TagEditPopover
-          anchor={tagAnchor}
-          tags={allTags}
-          selectedIds={session.tag_ids ?? []}
-          onClose={() => setTagAnchor(null)}
-          onApply={onApplyTags}
-          onCreateTag={onCreateTag}
-          onRecolorTag={onRecolorTag}
-          onRenameTag={onRenameTag}
-          onDeleteTag={onDeleteTag}
-        />
-      )}
+      <TagEditPopover
+        anchor={tagAnchor}
+        tags={allTags}
+        selectedIds={session.tag_ids ?? []}
+        onClose={() => setTagAnchor(null)}
+        onApply={onApplyTags}
+        onCreateTag={onCreateTag}
+        onRecolorTag={onRecolorTag}
+        onRenameTag={onRenameTag}
+        onDeleteTag={onDeleteTag}
+      />
     </div>
   );
 }

@@ -1,5 +1,6 @@
 import { useMemo } from "react";
 import { buildHierarchy, searchEntries, type HierarchyNode } from "../hierarchy";
+import { Collapse } from "./Collapse";
 
 /** Everything the tree needs to render one selectable entry. */
 export type HierarchyEntry = {
@@ -77,7 +78,7 @@ function Caret({ open }: { open: boolean }) {
     <span
       aria-hidden
       className={
-        "inline-block w-2.5 shrink-0 text-[9px] leading-none text-ink-muted transition-transform " +
+        "inline-block w-2.5 shrink-0 text-[9px] leading-none text-ink-muted transition-transform duration-base ease-out " +
         (open ? "rotate-90" : "")
       }
     >
@@ -239,7 +240,7 @@ function TreeLevel({
               </span>
               <LeafCount count={node.leafCount} />
             </button>
-            {open && (
+            <Collapse open={open}>
               <>
                 {/* The directory's own entry leads its children (`lark-vc`
                   * above `lark-vc-agent`), per design §2.1. */}
@@ -268,7 +269,7 @@ function TreeLevel({
                   rowProps={rowProps}
                 />
               </>
-            )}
+            </Collapse>
           </div>
         );
       })}

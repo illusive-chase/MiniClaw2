@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { Handle, Position, type NodeProps } from "reactflow";
 import type { InteractionRequest, ModelPreset, NodeInfo, NodeState } from "../../types";
 import {
@@ -17,6 +17,8 @@ import { modelPresetDetail, modelPresetLabel, providerLabel } from "../../modelP
 import { useNodeInHoverGroup } from "../hoverStore";
 import { startWiringDrag, useWiringDrag } from "../wiringDragStore";
 import { useLongPressWiring } from "../useLongPressWiring";
+import { useNodeMotionProps } from "../nodeMotionStore";
+import { EXIT_MS, useLatest, usePresence } from "../../motion";
 
 /**
  * Agent tile: rounded rectangle, ~224x130. The primary work unit.
@@ -47,6 +49,8 @@ function AgentNodeImpl({ data, selected }: NodeProps<AgentNodeData>) {
     !isWiringSource &&
     agentNodeContext.canAcceptDependency(wiringDrag?.sourceId ?? "", node.id);
   const meta = stateMeta(node.state);
+  const motion = useNodeMotionProps(node.id);
+  const settle = useStateSettle(node.state);
   const pendingGate = agentNodeContext.pendingGateForNode(node.id);
   const headline = oneLine(
     node.summary ||
@@ -60,6 +64,11 @@ function AgentNodeImpl({ data, selected }: NodeProps<AgentNodeData>) {
   const [removeError, setRemoveError] = useState<string | null>(null);
   const [deleteBlockers, setDeleteBlockers] = useState<string[] | null>(null);
   const removeRef = useRef<HTMLDivElement | null>(null);
+  const removePresence = usePresence(removeOpen, EXIT_MS.menu);
+  const gatePresence = usePresence(Boolean(pendingGate), EXIT_MS.popover);
+  /* The gate card animates out after the gate resolves; it keeps showing the
+   * request it was answering rather than collapsing to empty. */
+  const shownGate = useLatest(pendingGate);
 
   useEffect(() => {
     if (!removeOpen) return;
@@ -250,7 +259,9 @@ function AgentNodeImpl({ data, selected }: NodeProps<AgentNodeData>) {
 
   return (
     <div
-      className="group relative w-[224px]"
+      className={"group relative w-[224px] " + motion.className}
+      style={motion.style}
+      onAnimationEnd={motion.onAnimationEnd}
       title={tooltipForAgent(node, isActive, agentNodeContext.modelPresets)}
     >
       {/* `relative` here so the rail/bar (absolute children below) treat THIS
@@ -278,7 +289,7 @@ function AgentNodeImpl({ data, selected }: NodeProps<AgentNodeData>) {
       {/* state rail */}
       <span
         className={
-          "pointer-events-none absolute inset-y-0 left-0 w-[3px] " +
+          "state-tint pointer-events-none absolute inset-y-0 left-0 w-[3px] " +
           (planspaceColor ? "" : meta.railBg)
         }
         style={planspaceColor ? { background: planspaceColor.accent } : undefined}
@@ -330,19 +341,11 @@ function AgentNodeImpl({ data, selected }: NodeProps<AgentNodeData>) {
 
       {/* state bar */}
       <span
-        className={"pointer-events-none absolute bottom-0 left-0 h-[2px] w-full " + meta.barTrack}
+        className={"state-tint pointer-events-none absolute bottom-0 left-0 h-[2px] w-full " + meta.barTrack}
         aria-hidden="true"
       >
-        <span className={"absolute inset-y-0 " + meta.barFill} />
+        <span className={"state-tint absolute inset-y-0 " + meta.barFill} />
       </span>
-
-      {/* human-input halo */}
-      {meta.ring && (
-        <span
-          className="pointer-events-none absolute inset-0 rounded-lg review-ring"
-          aria-hidden="true"
-        />
-      )}
 
       {/* react-flow handles — all six are programmatic anchors only.
         *
@@ -413,9 +416,34 @@ function AgentNodeImpl({ data, selected }: NodeProps<AgentNodeData>) {
       />
       </div>
 
-      {pendingGate && (
+      {/* human-input halo — outside the tile's `overflow-hidden`, which would
+       * otherwise clip the ring's outward spread to nothing. */}
+      {meta.ring && (
+        <span
+          className="pointer-events-none absolute inset-0 rounded-lg review-ring"
+          aria-hidden="true"
+        />
+      )}
+
+      {/* One-shot halos: birth, "here it is" after a jump, and a terminal
+       * state change. Same layer reason as above. */}
+      {(motion.ring || settle) && (
+        <span
+          key={motion.ring ?? settle?.key}
+          className={
+            "pointer-events-none absolute inset-0 rounded-lg " +
+            (motion.ring === "twice" ? "node-ring-twice" : "node-ring-once")
+          }
+          style={settle && !motion.ring ? ({ "--ring-color": settle.color } as CSSProperties) : undefined}
+          aria-hidden="true"
+        />
+      )}
+
+      {gatePresence.mounted && shownGate && (
         <div
-          className="nodrag absolute left-0 top-[calc(100%+8px)] z-30 w-[300px] rounded-md border border-state-waiting/45 bg-surface-raised p-2 shadow-modal"
+          data-phase={gatePresence.phase}
+          style={{ ["--pop-origin" as string]: "24px 0" }}
+          className="mc-pop nodrag absolute left-0 top-[calc(100%+8px)] z-30 w-[300px] rounded-md border border-state-waiting/45 bg-surface-raised p-2 shadow-modal"
           onClick={(e) => e.stopPropagation()}
           onMouseDown={(e) => e.stopPropagation()}
         >
@@ -424,14 +452,14 @@ function AgentNodeImpl({ data, selected }: NodeProps<AgentNodeData>) {
               Waiting for response
             </span>
             <span className="font-mono text-[9px] text-ink-subtle">
-              {pendingGate.interaction_type}
+              {shownGate.interaction_type}
             </span>
           </div>
           <PendingGateInline
             node={node}
-            pending={pendingGate}
+            pending={shownGate}
             compact
-            onResolve={(payload) => agentNodeContext.onResolveGate(pendingGate.id, payload)}
+            onResolve={(payload) => agentNodeContext.onResolveGate(shownGate.id, payload)}
           />
         </div>
       )}
@@ -463,14 +491,24 @@ function AgentNodeImpl({ data, selected }: NodeProps<AgentNodeData>) {
         />
       ))}
 
-      {removeOpen && removeIndex >= 0 && (
+      {removePresence.mounted && removeIndex >= 0 && (
         <div
           ref={removeRef}
-          className="nodrag absolute -right-[178px] z-40 w-40 -translate-y-1/2 rounded-md border border-line bg-surface-raised p-1 shadow-modal"
+          className={
+            "nodrag absolute -right-[178px] z-40 w-40 -translate-y-1/2 " +
+            (removePresence.phase === "exit" ? "pointer-events-none" : "")
+          }
           style={{ top: removeTop }}
           onClick={(e) => e.stopPropagation()}
           onMouseDown={(e) => e.stopPropagation()}
         >
+          {/* Grows out of the delete button on its left; the positioning
+            * transform stays on the wrapper so the two never fight. */}
+          <div
+            data-phase={removePresence.phase}
+            style={{ ["--pop-origin" as string]: "-12px 50%" }}
+            className="mc-menu rounded-md border border-line bg-surface-raised p-1 shadow-modal"
+          >
           {deleteBlockers ? (
             <div className="space-y-1.5 p-1">
               <div className="break-words text-[11px] leading-snug text-state-error">
@@ -502,6 +540,7 @@ function AgentNodeImpl({ data, selected }: NodeProps<AgentNodeData>) {
               )}
             </>
           )}
+          </div>
         </div>
       )}
     </div>
@@ -765,21 +804,57 @@ export function dependencyActionAlwaysVisible(state: NodeState): boolean {
 
 function StateChip({ state }: { state: NodeState }) {
   const meta = stateMeta(state);
+  /* The chip's fill cross-fades; its content is keyed on the state so a
+   * change replays a short rise — the label visibly turns over rather than
+   * being silently swapped. The first render plays nothing. */
+  const changed = useRef(false);
+  const first = useRef(state);
+  if (state !== first.current) changed.current = true;
   return (
     <span
       className={
-        "inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-[0.12em] " +
+        "state-tint inline-flex items-center rounded px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-[0.12em] " +
         meta.chipBg +
         " " +
         meta.chipText
       }
     >
-      <span className="inline-flex h-2 w-2 items-center justify-center">
-        <meta.Icon />
+      <span key={state} className={"inline-flex items-center gap-1 " + (changed.current ? "mc-chip-swap" : "")}>
+        <span className="inline-flex h-2 w-2 items-center justify-center">
+          <meta.Icon />
+        </span>
+        {meta.label}
       </span>
-      {meta.label}
     </span>
   );
+}
+
+const SETTLE_COLOR: Partial<Record<NodeState, string>> = {
+  done: "var(--state-done)",
+  error: "var(--state-error)",
+};
+
+/**
+ * A one-shot ring when a node lands in `done` or `error` while on screen —
+ * the end of a run is the moment worth marking. Mounting already in a
+ * terminal state (hydration, panning back into view) plays nothing.
+ */
+function useStateSettle(state: NodeState): { key: string; color: string } | null {
+  const previous = useRef(state);
+  const [settle, setSettle] = useState<{ key: string; color: string } | null>(null);
+  useEffect(() => {
+    if (previous.current === state) return;
+    previous.current = state;
+    const color = SETTLE_COLOR[state];
+    if (!color) {
+      setSettle(null);
+      return;
+    }
+    setSettle({ key: `${state}:${Date.now()}`, color });
+    const timer = window.setTimeout(() => setSettle(null), 900);
+    return () => window.clearTimeout(timer);
+  }, [state]);
+  return settle;
 }
 
 function CategoryChip({ node }: { node: NodeInfo }) {

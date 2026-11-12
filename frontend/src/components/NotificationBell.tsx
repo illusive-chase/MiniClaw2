@@ -45,6 +45,7 @@ import {
 import { stateMeta } from "../canvas/nodes/stateMeta";
 import { badgeCountable } from "../notices";
 import type { ActiveNodeEntry } from "../types";
+import { EXIT_MS, useCountMotion, usePresence } from "../motion";
 
 type Props = {
   enabled: boolean;
@@ -133,6 +134,10 @@ export function NotificationBell({
   );
   const badgeUnread = useMemo(() => badgeCountable(unread), [unread]);
   const tone = badgeTone(badgeUnread);
+  const panelPresence = usePresence(open, EXIT_MS.popover);
+  /* The bell swings once when unread grows — one swing per batch, since a
+   * batch lands as one change of the count. */
+  const badgeMotion = useCountMotion(badgeUnread.length);
   const badgeParts = useMemo(
     () => summaryParts(summarize(badgeUnread)),
     [badgeUnread],
@@ -286,6 +291,7 @@ export function NotificationBell({
         }
       >
         <svg
+          key={badgeMotion.grew ? badgeMotion.key : 0}
           viewBox="0 0 24 24"
           width="17"
           height="17"
@@ -295,15 +301,18 @@ export function NotificationBell({
           strokeLinecap="round"
           strokeLinejoin="round"
           aria-hidden="true"
+          className={badgeMotion.grew ? "mc-swing" : undefined}
         >
           <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
           <path d="M13.7 21a2 2 0 0 1-3.4 0" />
         </svg>
         {tone ? (
           <span
+            key={badgeMotion.key}
             aria-hidden="true"
             className={
-              "absolute -right-1 -top-1 inline-flex h-4 min-w-4 items-center justify-center rounded-full px-1 font-mono text-[9px] font-semibold leading-none tabular-nums shadow-sm " +
+              "absolute -right-1 -top-1 inline-flex h-4 min-w-4 items-center justify-center rounded-full px-1 font-mono text-[9px] font-semibold leading-none tabular-nums shadow-sm transition-colors duration-base ease-out " +
+              `${badgeMotion.className} ` +
               BADGE_TONE_CLASS[tone]
             }
           >
@@ -312,12 +321,13 @@ export function NotificationBell({
         ) : null}
       </button>
 
-      {open && panelTop !== null ? (
+      {panelPresence.mounted && panelTop !== null ? (
         <div
           ref={panelRef}
+          data-phase={panelPresence.phase}
           role="dialog"
           aria-label="通知"
-          className="active-nodes-panel-enter fixed left-0 right-0 z-50 overflow-hidden border-y border-line bg-surface-raised font-sans shadow-modal"
+          className="mc-drop fixed left-0 right-0 z-50 overflow-hidden border-y border-line bg-surface-raised font-sans shadow-modal"
           style={{ top: panelTop }}
         >
           <div className="flex items-center justify-between gap-4 border-b border-line px-4 py-2.5">

@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ApiError, applyUserTemplate } from "../api";
+import { useLatest } from "../motion";
+import { ModalShell } from "./ModalShell";
 import type { NodeInfo, TemplateSummary } from "../types";
 import {
   buildInstantiateRequest,
@@ -38,13 +40,15 @@ function errorMessage(err: unknown): string {
 export function InstantiateTemplateModal({
   open,
   sessionId,
-  template,
+  template: liveTemplate,
   nodes,
   planspaceId,
   anchorNodeId,
   onCancel,
   onApplied,
 }: Props) {
+  /* Held past close so the panel still has its content while it animates out. */
+  const template = useLatest(liveTemplate);
   const [values, setValues] = useState<Record<string, string>>({});
   const [bindings, setBindings] = useState<Record<string, string>>({});
   const [submitting, setSubmitting] = useState(false);
@@ -72,18 +76,6 @@ export function InstantiateTemplateModal({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, template?.slug]);
 
-  useEffect(() => {
-    if (!open) return;
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && !submitting) {
-        event.stopPropagation();
-        onCancel();
-      }
-    };
-    window.addEventListener("keydown", onKeyDown, true);
-    return () => window.removeEventListener("keydown", onKeyDown, true);
-  }, [open, submitting, onCancel]);
-
   /* The lane keeps refreshing underneath the dialog, so a bound node can be
    * deleted or obsoleted mid-edit. Clear those ports rather than submitting an
    * id the backend will reject. */
@@ -92,7 +84,7 @@ export function InstantiateTemplateModal({
     setBindings((prev) => pruneStaleBindings(prev, candidates));
   }, [open, candidates]);
 
-  if (!open || !template) return null;
+  if (!template) return null;
 
   const ready = canSubmitInstantiation(template, values, bindings);
   const missingArguments = missingRequiredArguments(template.arguments, values);
@@ -126,8 +118,13 @@ export function InstantiateTemplateModal({
   };
 
   return (
-    <div className="fixed inset-0 z-40 flex items-center justify-center bg-surface-scrim/60 backdrop-blur-sm">
-      <div className="flex max-h-[88vh] w-[560px] max-w-[95vw] flex-col rounded-xl border border-line bg-surface-raised shadow-modal">
+    <ModalShell
+      open={open && liveTemplate !== null}
+      onClose={onCancel}
+      label={`实例化模板 · ${template.name}`}
+      dismissible={!submitting}
+      panelClassName="flex max-h-[88vh] w-[560px] max-w-[95vw] flex-col rounded-xl border border-line bg-surface-raised shadow-modal"
+    >
         <div className="flex items-center justify-between gap-3 border-b border-line px-5 py-3.5">
           <div className="min-w-0">
             <div className="truncate font-display text-sm font-semibold text-ink-strong">
@@ -278,9 +275,10 @@ export function InstantiateTemplateModal({
           {error && (
             <div
               className={
-                retryable
+                "mc-fade-rise " +
+                (retryable
                   ? "rounded-md border border-state-waiting/30 bg-state-waiting-soft px-3 py-2 text-xs text-state-waiting"
-                  : "rounded-md border border-state-error/30 bg-state-error-soft px-3 py-2 text-xs text-state-error"
+                  : "rounded-md border border-state-error/30 bg-state-error-soft px-3 py-2 text-xs text-state-error")
               }
             >
               {error}
@@ -319,7 +317,6 @@ export function InstantiateTemplateModal({
             </button>
           </div>
         </div>
-      </div>
-    </div>
+    </ModalShell>
   );
 }

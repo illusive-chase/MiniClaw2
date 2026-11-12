@@ -31,6 +31,7 @@ import type {
   SessionInfo,
   Tag,
 } from "../types";
+import { SegmentedControl } from "../components/SegmentedControl";
 
 export type ProjectPanelProps = {
   session: SessionInfo | null;
@@ -466,7 +467,7 @@ export function ProjectPanel({
           )}
 
           {composerOpen && canCreateDirection && (
-            <div className="mt-3 rounded-md border border-line bg-surface-sunken p-3">
+            <div className="mc-fade-rise mt-3 rounded-md border border-line bg-surface-sunken p-3">
               <label className="block text-[10px] font-medium uppercase tracking-[0.14em] text-ink-subtle">
                 Direction
               </label>
@@ -478,26 +479,19 @@ export function ProjectPanel({
                 placeholder="What direction are you taking? A paragraph is fine."
                 className="mt-1 w-full resize-none rounded-md border border-line bg-surface px-3 py-2 text-[13px] leading-relaxed text-ink-strong placeholder:text-ink-subtle focus:border-brand focus:outline-none"
               />
-              <div className="mt-2 inline-flex rounded-md border border-line bg-surface p-0.5">
-                {([
-                  ["manual", "Wait for me to promote"],
-                  ["auto", "Auto-promote when ready"],
-                ] as const).map(([mode, label]) => (
-                  <button
-                    key={mode}
-                    type="button"
-                    onClick={() => setNewDirectionMode(mode)}
-                    className={
-                      "rounded px-2.5 py-1 text-[10.5px] font-medium transition " +
-                      (newDirectionMode === mode
-                        ? "bg-surface-raised text-ink-strong shadow-card"
-                        : "text-ink-muted hover:text-ink")
-                    }
-                  >
-                    {label}
-                  </button>
-                ))}
-              </div>
+              <SegmentedControl<"manual" | "auto">
+                value={newDirectionMode}
+                onChange={setNewDirectionMode}
+                options={[
+                  { value: "manual", label: "Wait for me to promote" },
+                  { value: "auto", label: "Auto-promote when ready" },
+                ]}
+                className="mt-2 rounded-md border border-line bg-surface p-0.5"
+                optionClassName="rounded px-2.5 py-1 text-[10.5px] font-medium"
+                activeClassName="text-ink-strong"
+                inactiveClassName="text-ink-muted hover:text-ink"
+                thumbClassName="inset-y-0.5 rounded bg-surface-raised shadow-card"
+              />
               <label className="mt-2 flex items-center justify-between gap-3 rounded-md border border-line bg-surface px-3 py-2 text-[11.5px]">
                 <span className="text-ink-subtle">Model preset</span>
                 <select
@@ -569,19 +563,17 @@ export function ProjectPanel({
         </section>
       </div>
 
-      {tagAnchor && (
-        <TagEditPopover
-          anchor={tagAnchor}
-          tags={tags}
-          selectedIds={tagIds}
-          onClose={() => setTagAnchor(null)}
-          onApply={applyTags}
-          onCreateTag={createProjectTag}
-          onRecolorTag={recolorProjectTag}
-          onRenameTag={renameProjectTag}
-          onDeleteTag={deleteProjectTag}
-        />
-      )}
+      <TagEditPopover
+        anchor={tagAnchor}
+        tags={tags}
+        selectedIds={tagIds}
+        onClose={() => setTagAnchor(null)}
+        onApply={applyTags}
+        onCreateTag={createProjectTag}
+        onRecolorTag={recolorProjectTag}
+        onRenameTag={renameProjectTag}
+        onDeleteTag={deleteProjectTag}
+      />
     </div>
   );
 }

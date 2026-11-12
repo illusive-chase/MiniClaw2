@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { createPortal } from "react-dom";
 import {
   getPrinciple,
   getSkill,
@@ -11,6 +10,8 @@ import {
 } from "../api";
 import type { ModelPreset, TemplateDetail, TemplateSummary } from "../types";
 import { MarkdownView } from "./MarkdownView";
+import { ModalShell } from "./ModalShell";
+import { useLatest } from "../motion";
 import { modelPresetLabel } from "../modelPresets";
 import { resolvedTemplateNodeModelPresetId } from "../templateModels";
 
@@ -394,7 +395,7 @@ const KIND_LABEL: Record<LibraryPreviewTarget["kind"], string> = {
 };
 
 export function LibraryEntryPreviewModal({
-  target,
+  target: liveTarget,
   modelPresets,
   onClose,
   onApplyTemplate,
@@ -403,6 +404,8 @@ export function LibraryEntryPreviewModal({
   attachTargetLabel,
   attachDisabledReason,
 }: LibraryPreviewProps) {
+  /* Held past close so the panel keeps its content while it animates out. */
+  const target = useLatest(liveTarget);
   const [state, setState] = useState<DetailState>({ status: "loading" });
   const closeRef = useRef<HTMLButtonElement | null>(null);
 
@@ -454,18 +457,6 @@ export function LibraryEntryPreviewModal({
     window.setTimeout(() => closeRef.current?.focus(), 0);
   }, [targetKey, target]);
 
-  useEffect(() => {
-    if (!target) return;
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.stopPropagation();
-        onClose();
-      }
-    };
-    window.addEventListener("keydown", onKeyDown, true);
-    return () => window.removeEventListener("keydown", onKeyDown, true);
-  }, [target, onClose]);
-
   const heading = useMemo(() => {
     if (!target) return "";
     if (target.kind === "template") return target.summary.name;
@@ -478,21 +469,14 @@ export function LibraryEntryPreviewModal({
   const canAttach = target.kind !== "template" && onAttachToVirtual !== undefined;
   const canApplyTemplate = target.kind === "template" && onApplyTemplate !== undefined;
 
-  /* Portalled for the same reason as the picker: the side panel animates with
-   * `transform`, which would otherwise make it the containing block for this
-   * fixed scrim and pin it to the 380px column. */
-  return createPortal(
-    <div
-      className="fixed inset-0 z-40 flex items-center justify-center bg-surface-scrim/60 backdrop-blur-sm"
-      onClick={onClose}
+  return (
+    <ModalShell
+      open={liveTarget !== null}
+      onClose={onClose}
+      label={`${KIND_LABEL[target.kind]} ${heading}`}
+      closeOnScrim
+      panelClassName="flex max-h-[85vh] w-[520px] max-w-[95vw] flex-col rounded-xl border border-line bg-surface-raised shadow-modal"
     >
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-label={`${KIND_LABEL[target.kind]} ${heading}`}
-        onClick={(event) => event.stopPropagation()}
-        className="flex max-h-[85vh] w-[520px] max-w-[95vw] flex-col rounded-xl border border-line bg-surface-raised shadow-modal"
-      >
         <div className="flex items-start justify-between gap-3 border-b border-line px-5 py-3.5">
           <div className="min-w-0">
             <div className="text-[10px] font-medium uppercase tracking-[0.14em] text-ink-subtle">
@@ -577,8 +561,6 @@ export function LibraryEntryPreviewModal({
             )}
           </div>
         </div>
-      </div>
-    </div>,
-    document.body,
+    </ModalShell>
   );
 }

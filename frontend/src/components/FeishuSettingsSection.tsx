@@ -226,7 +226,7 @@ export function FeishuSettingsSection({
       </div>
 
       {error && <div className="mt-3 rounded-md border border-state-error/30 bg-state-error-soft px-3 py-2 text-[11px] text-state-error">{error}</div>}
-      {notice && <div className="mt-3 rounded-md border border-state-done/30 bg-state-done-soft px-3 py-2 text-[11px] text-state-done">{notice}</div>}
+      {notice && <div key={notice} className="mc-fade-rise mt-3 rounded-md border border-state-done/30 bg-state-done-soft px-3 py-2 text-[11px] text-state-done">{notice}</div>}
 
       {status && !status.installed && (
         <div className="mt-3 rounded-md border border-state-waiting/30 bg-state-waiting-soft px-3 py-2 text-[11px] leading-relaxed text-ink">

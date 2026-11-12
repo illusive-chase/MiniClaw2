@@ -7,6 +7,7 @@ import {
 } from "reactflow";
 import type { NodeState } from "../../types";
 import { stateStroke } from "../nodes/stateMeta";
+import { useEdgeMotionClass } from "../nodeMotionStore";
 
 type EdgeData = {
   childState?: NodeState;
@@ -50,7 +51,10 @@ function TimelineEdgeImpl(props: EdgeProps<EdgeData>) {
       ? stateStroke(state)
       : "rgb(var(--border-strong))";
 
+  const motion = useEdgeMotionClass(props.source, props.target);
+
   return (
+    <g className={motion || undefined}>
     <BaseEdge
       path={path}
       style={{
@@ -63,6 +67,7 @@ function TimelineEdgeImpl(props: EdgeProps<EdgeData>) {
           : undefined,
       }}
     />
+    </g>
   );
 }
 
@@ -100,9 +105,10 @@ function DependencyEdgeImpl(props: EdgeProps<EdgeData>) {
       : data?.root
         ? "rgb(var(--border-strong))"
         : "rgb(var(--state-review))";
+  const motion = useEdgeMotionClass(props.source, props.target);
 
   return (
-    <>
+    <g className={motion || undefined}>
       <BaseEdge
         path={path}
         interactionWidth={DEPENDENCY_INTERACTION_WIDTH}
@@ -127,7 +133,7 @@ function DependencyEdgeImpl(props: EdgeProps<EdgeData>) {
           />
         </EdgeLabelRenderer>
       )}
-    </>
+    </g>
   );
 }
 
@@ -226,9 +232,10 @@ function ResumeEdgeImpl(props: EdgeProps<EdgeData>) {
     : state
       ? stateStroke(state)
       : "rgb(var(--border-strong))";
+  const motion = useEdgeMotionClass(props.source, props.target);
 
   return (
-    <>
+    <g className={motion || undefined}>
       <BaseEdge
         path={path}
         style={{
@@ -262,7 +269,7 @@ function ResumeEdgeImpl(props: EdgeProps<EdgeData>) {
           ↻
         </text>
       </g>
-    </>
+    </g>
   );
 }
 

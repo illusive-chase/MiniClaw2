@@ -1,6 +1,7 @@
 import type { Tag } from "../types";
 import { tagChipClass, tagDotClass } from "../tagPalette";
 import type { BindingFilter } from "../projectGrouping";
+import { SegmentedControl } from "./SegmentedControl";
 
 /* A tag chip is a rounded pill with a color dot; the card's other badges are
  * square-cornered and colorless. That keeps a tag from reading as node state,
@@ -81,28 +82,23 @@ export function TagFilterBar({
         {totalLabel}
       </div>
 
-      <div className="inline-flex overflow-hidden rounded-md border border-line bg-surface-raised">
-        {([
+      <SegmentedControl<BindingFilter>
+        value={bindingFilter}
+        onChange={onBindingFilterChange}
+        options={([
           ["all", "全部"],
           ["bound", "已绑定"],
           ["unbound", "未绑定"],
-        ] as const).map(([mode, label]) => (
-          <button
-            key={mode}
-            type="button"
-            onClick={() => onBindingFilterChange(mode)}
-            aria-pressed={bindingFilter === mode}
-            className={
-              "border-r border-line px-2 py-[3px] text-[10.5px] font-medium transition last:border-r-0 " +
-              (bindingFilter === mode
-                ? "bg-brand-soft text-brand-ink"
-                : "text-ink-muted hover:bg-surface-sunken hover:text-ink")
-            }
-          >
-            {label} {bindingCounts[mode]}
-          </button>
-        ))}
-      </div>
+        ] as const).map(([mode, label]) => ({
+          value: mode,
+          label: `${label} ${bindingCounts[mode]}`,
+        }))}
+        className="overflow-hidden rounded-md border border-line bg-surface-raised"
+        optionClassName="border-r border-line px-2 py-[3px] text-[10.5px] font-medium last-of-type:border-r-0"
+        activeClassName="text-brand-ink"
+        inactiveClassName="text-ink-muted hover:text-ink"
+        thumbClassName="inset-y-0 bg-brand-soft"
+      />
 
       {tags.length > 0 && (
         <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">

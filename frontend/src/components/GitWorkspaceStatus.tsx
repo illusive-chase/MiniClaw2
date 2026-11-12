@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import { FileDiff } from "lucide-react";
 import type { GitFileStatus, GitStatus } from "../types";
+import { EXIT_MS, usePresence } from "../motion";
 
 type GitWorkspaceStatusProps = {
   status: GitStatus | null;
@@ -43,6 +44,7 @@ export function GitWorkspaceStatus({
   onPush,
 }: GitWorkspaceStatusProps) {
   const [open, setOpen] = useState(false);
+  const popover = usePresence(open, EXIT_MS.popover);
   const [position, setPosition] = useState<PopoverPosition | null>(null);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const buttonRef = useRef<HTMLButtonElement | null>(null);
@@ -139,9 +141,10 @@ export function GitWorkspaceStatus({
         {summary}
       </button>
 
-      {open && position && status?.is_repo && (
+      {popover.mounted && position && status?.is_repo && (
         <div
           role="dialog"
+          data-phase={popover.phase}
           aria-label="Git working tree status"
           className="git-status-popover-enter fixed z-50 w-[min(32rem,calc(100vw-2rem))] font-sans text-ink"
           style={{

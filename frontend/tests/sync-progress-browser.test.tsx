@@ -63,6 +63,9 @@ globalThis.fetch = async (input, init) => {
 const container = document.createElement("div");
 document.body.append(container);
 const root = createRoot(container);
+/* The settings modal portals to `document.body` (so it escapes the side
+ * panel's transformed containing block); query where it actually renders. */
+const surface = document.body;
 const changed: GlobalState[] = [];
 const onChanged = (next: GlobalState) => { changed.push(next); };
 const onClose = () => {};
@@ -70,7 +73,7 @@ const render = async (open: boolean) => {
   await act(async () => { root.render(<GlobalSettingsModal open={open} state={state} onClose={onClose} onChanged={onChanged} />); });
 };
 const clickSync = async () => {
-  const button = Array.from(container.querySelectorAll("button")).find((candidate) => candidate.textContent === "Sync now");
+  const button = Array.from(surface.querySelectorAll("button")).find((candidate) => candidate.textContent === "Sync now");
   check(button, "应显示同步按钮");
   await act(async () => { button.click(); });
 };
@@ -80,10 +83,10 @@ const tick = async () => {
 };
 const waitForStatus = async (text: string) => {
   for (let attempt = 0; attempt < 20; attempt += 1) {
-    if (container.querySelector('[role="status"]')?.textContent?.includes(text)) return;
+    if (surface.querySelector('[role="status"]')?.textContent?.includes(text)) return;
     await act(async () => { await new Promise<void>((resolve) => window.setTimeout(resolve, 0)); });
   }
-  check(false, `同步状态应包含「${text}」，实际为：${container.querySelector('[role="status"]')?.textContent}`);
+  check(false, `同步状态应包含「${text}」，实际为：${surface.querySelector('[role="status"]')?.textContent}`);
 };
 
 async function main() {
@@ -91,18 +94,18 @@ async function main() {
   check(statusRequests === 0 && intervals.size === 0, "打开面板不应发起同步轮询");
   await clickSync();
   await waitForStatus(detail);
-  check(container.querySelector('[role="status"]')?.textContent?.includes(detail), "同步期间应显示后端阶段");
+  check(surface.querySelector('[role="status"]')?.textContent?.includes(detail), "同步期间应显示后端阶段");
   check(intervals.size === 1, "只应启动一个轮询器");
   pollingFailure = true;
   await tick();
-  check(!container.textContent?.includes("暂时无法获取阶段"), "轮询失败不得伪装成同步失败");
-  check(container.textContent?.includes("已用时 1 秒"), "轮询失败时仍应更新等待时长");
+  check(!surface.textContent?.includes("暂时无法获取阶段"), "轮询失败不得伪装成同步失败");
+  check(surface.textContent?.includes("已用时 1 秒"), "轮询失败时仍应更新等待时长");
   pollingFailure = false;
   phase = "normalizing_remote";
   detail = "正在读取并迁移远端快照";
   await tick();
   await waitForStatus(detail);
-  check(container.querySelector('[role="status"]')?.textContent?.includes(detail), "轮询失败后应继续重试并更新阶段");
+  check(surface.querySelector('[role="status"]')?.textContent?.includes(detail), "轮询失败后应继续重试并更新阶段");
   blockedStatus = deferred<Response>();
   await tick();
   const before = statusRequests;
@@ -116,16 +119,16 @@ async function main() {
   await render(true);
   check(intervals.size === 1, "重新打开仍在同步的面板应恢复轮询");
   await waitForStatus("已用时 6 秒");
-  const reopenedStatus = container.querySelector('[role="status"]')?.textContent;
+  const reopenedStatus = surface.querySelector('[role="status"]')?.textContent;
   check(reopenedStatus?.includes("已用时 6 秒"), `重新打开应显示后端开始时间对应的总耗时，实际为：${reopenedStatus}`);
   await act(async () => { syncRequest.resolve(Response.json(state)); });
   check(changed.length === 1 && intervals.size === 0, "同步成功应通知父组件并清理定时器");
-  check(!container.querySelector('[role="status"]'), "同步完成后不应残留运行阶段");
+  check(!surface.querySelector('[role="status"]'), "同步完成后不应残留运行阶段");
 
   syncRequest = deferred<Response>();
   await clickSync();
   await act(async () => { syncRequest.resolve(Response.json({ detail: "推送失败，请重试" }, { status: 409 })); });
-  check(container.textContent?.includes("推送失败，请重试"), "真实同步错误应保留");
+  check(surface.textContent?.includes("推送失败，请重试"), "真实同步错误应保留");
   check(intervals.size === 0, "同步失败也应清理定时器");
 
   syncRequest = deferred<Response>();

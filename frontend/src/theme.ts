@@ -28,9 +28,32 @@ export function systemPrefersDark(): boolean {
   );
 }
 
-export function applyTheme(pref: ThemePref): void {
+let themeFadeTimer: number | null = null;
+
+/**
+ * Apply a theme preference. With `fade`, colours cross-fade for one
+ * `--dur-base` instead of snapping: `.theme-fade` turns colour transitions
+ * on everywhere for just that window, so the rest of the time no element
+ * carries a standing transition. Skipped when the theme does not actually
+ * change, and under reduced motion.
+ */
+export function applyTheme(pref: ThemePref, options: { fade?: boolean } = {}): void {
   const dark = pref === "dark" || (pref === "system" && systemPrefersDark());
-  document.documentElement.classList.toggle("dark", dark);
+  const root = document.documentElement;
+  const changes = root.classList.contains("dark") !== dark;
+  const reduced =
+    typeof window !== "undefined" &&
+    !!window.matchMedia &&
+    window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  if (options.fade && changes && !reduced) {
+    root.classList.add("theme-fade");
+    if (themeFadeTimer !== null) window.clearTimeout(themeFadeTimer);
+    themeFadeTimer = window.setTimeout(() => {
+      root.classList.remove("theme-fade");
+      themeFadeTimer = null;
+    }, 240);
+  }
+  root.classList.toggle("dark", dark);
 }
 
 /** Apply whatever the user last chose. Used by surfaces that only read it. */

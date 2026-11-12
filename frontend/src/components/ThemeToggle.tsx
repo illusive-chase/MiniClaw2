@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import type { ThemePref } from "../theme";
 import { THEME_STORAGE_KEY, applyTheme, readStoredTheme } from "../theme";
@@ -6,9 +6,11 @@ import { THEME_STORAGE_KEY, applyTheme, readStoredTheme } from "../theme";
 export function ThemeToggle() {
   const [pref, setPref] = useState<ThemePref>(() => readStoredTheme());
 
-  // Apply on mount + whenever pref changes.
+  // Apply on mount + whenever pref changes; only a user's switch cross-fades.
+  const mountedRef = useRef(false);
   useEffect(() => {
-    applyTheme(pref);
+    applyTheme(pref, { fade: mountedRef.current });
+    mountedRef.current = true;
     try {
       localStorage.setItem(THEME_STORAGE_KEY, pref);
     } catch {
@@ -20,7 +22,7 @@ export function ThemeToggle() {
   useEffect(() => {
     if (pref !== "system") return;
     const mq = window.matchMedia("(prefers-color-scheme: dark)");
-    const onChange = () => applyTheme("system");
+    const onChange = () => applyTheme("system", { fade: true });
     mq.addEventListener("change", onChange);
     return () => mq.removeEventListener("change", onChange);
   }, [pref]);
@@ -46,10 +48,12 @@ export function ThemeToggle() {
       aria-label={tooltip}
       className="group inline-flex h-8 w-8 items-center justify-center rounded-md border border-line text-ink-muted transition hover:border-line-strong hover:bg-surface-raised hover:text-ink"
     >
+      {/* Keyed on the preference, so each switch mounts a fresh icon that plays
+          its one-shot swap. (A transition here could never run: a remounted
+          element has no previous transform to transition from.) */}
       <span
         key={pref}
-        className="inline-flex h-4 w-4 items-center justify-center transition-transform duration-300 ease-out"
-        style={{ transform: pref === "system" ? "rotate(0deg)" : pref === "dark" ? "rotate(-30deg)" : "rotate(20deg)" }}
+        className={`inline-flex h-4 w-4 items-center justify-center ${mountedRef.current ? "mc-icon-swap" : ""}`}
       >
         {pref === "light" ? <SunIcon /> : pref === "dark" ? <MoonIcon /> : <AutoThemeIcon />}
       </span>

@@ -82,6 +82,8 @@ import {
 } from "./edges/TimelineEdge";
 import { CommitEdge } from "./edges/CommitEdge";
 import { WiringOverlay } from "./edges/WiringOverlay";
+import { markNodeLocated, showPendingCreate } from "./nodeMotionStore";
+import { PendingCreateOverlay } from "./PendingCreateOverlay";
 import {
   canDisconnectDependency,
   resolveWiringDrop,
@@ -724,6 +726,7 @@ function CanvasInner({
         const lane = rfNodesRef.current.find(
           (node) => node.id === `planspace:${planspaceId}`,
         );
+        if (onCreateDependencyVirtualAt) showPendingCreate(event.clientX, event.clientY);
         onCreateDependencyVirtualAt?.(
           action.sourceId,
           lane
@@ -1467,6 +1470,7 @@ function CanvasInner({
       }
 
       event.preventDefault();
+      showPendingCreate(event.clientX, event.clientY);
       onCreateVirtualAt(
         focusedPlanspaceId,
         snapPlanspaceChildPosition(flowPosition, lane.position),
@@ -1729,6 +1733,7 @@ function CanvasInner({
         * screen coordinates, so it needs no transform and survives a pan
         * mid-gesture without re-running layout. */}
       {wiringDrag && <WiringOverlay drag={wiringDrag} />}
+      <PendingCreateOverlay wrapperRef={wrapperRef} />
     </div>
   );
 }
@@ -1761,6 +1766,7 @@ function CenterOnNode({
      * a jump that arrives marginally early silently does nothing. */
     let attempts = 0;
     let timer = 0;
+    let ringTimer = 0;
     const attempt = () => {
       const node = getNode(resolveRenderId(request.nodeId));
       if (!node) {
@@ -1779,9 +1785,14 @@ function CenterOnNode({
         duration: 200,
         zoom: getViewport().zoom,
       });
+      /* Ring the target once the pan has settled, so the eye lands on it. */
+      ringTimer = window.setTimeout(() => markNodeLocated(request.nodeId), 200);
     };
     timer = window.setTimeout(attempt, 60);
-    return () => window.clearTimeout(timer);
+    return () => {
+      window.clearTimeout(timer);
+      window.clearTimeout(ringTimer);
+    };
   }, [request, getNode, getViewport, resolveRenderId, setCenter]);
   return null;
 }
@@ -1795,7 +1806,9 @@ function FitOnInit({ enabled }: { enabled: boolean }) {
     if (!enabled) return;
     if (didFit.current) return;
     const id = window.setTimeout(() => {
-      fitView({ padding: 0.2, duration: 200 });
+      /* Instant: the canvas is still fading in, and a second animated jump
+       * right after the first paint reads as the page lurching. */
+      fitView({ padding: 0.2, duration: 0 });
       didFit.current = true;
     }, 50);
     return () => window.clearTimeout(id);

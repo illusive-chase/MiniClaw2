@@ -24,6 +24,7 @@ import {
 } from "../activeNodes";
 import { stateMeta } from "../canvas/nodes/stateMeta";
 import type { ActiveNodeEntry } from "../types";
+import { EXIT_MS, useCountMotion, usePresence } from "../motion";
 
 type Props = {
   enabled: boolean;
@@ -55,6 +56,10 @@ export function RunStatusButton({
   const rows = sortActiveEntries(runStatusEntries(entries));
   const summary = summarize(rows);
   const count = rows.length;
+  const panelPresence = usePresence(open, EXIT_MS.popover);
+  /* Remounting the badge on each change replays its bump, so a count that
+   * moves is noticed without a standing animation. */
+  const badgeMotion = useCountMotion(count);
 
   /* Durations tick off a clock rather than the poll, so an elapsed time
    * advances smoothly between pushes. Only while open — nothing else on
@@ -156,20 +161,24 @@ export function RunStatusButton({
           * — it is about the machine being busy, and busy has one meaning. */}
         {count > 0 ? (
           <span
+            key={badgeMotion.key}
             aria-hidden="true"
-            className="pulse-slow absolute -right-1 -top-1 inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-brand px-1 font-mono text-[9px] font-semibold leading-none text-white tabular-nums shadow-sm"
+            className={`absolute -right-1 -top-1 inline-flex ${badgeMotion.className}`}
           >
-            {badgeCountLabel(count)}
+            <span className="pulse-slow inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-brand px-1 font-mono text-[9px] font-semibold leading-none text-white tabular-nums shadow-sm">
+              {badgeCountLabel(count)}
+            </span>
           </span>
         ) : null}
       </button>
 
-      {open && panelTop !== null ? (
+      {panelPresence.mounted && panelTop !== null ? (
         <div
           ref={panelRef}
+          data-phase={panelPresence.phase}
           role="dialog"
           aria-label="运行状况"
-          className="active-nodes-panel-enter fixed left-0 right-0 z-50 overflow-hidden border-y border-line bg-surface-raised font-sans shadow-modal"
+          className="mc-drop fixed left-0 right-0 z-50 overflow-hidden border-y border-line bg-surface-raised font-sans shadow-modal"
           style={{ top: panelTop }}
         >
           <div className="flex items-center justify-between gap-4 border-b border-line px-4 py-2.5">

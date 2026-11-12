@@ -12,6 +12,8 @@ import {
 
 import { readDiffWrap, writeDiffWrap, type DiffWrapMode } from "../diffWrap";
 import { markdownRouteUrl } from "../markdownRoute";
+import { ModalShell } from "./ModalShell";
+import { useLatest } from "../motion";
 
 export type DiffFile = {
   path: string;
@@ -546,26 +548,33 @@ function follow(from: HTMLElement | null, to: HTMLElement | null) {
   if (from && to && Math.abs(to.scrollLeft - from.scrollLeft) > 0.5) to.scrollLeft = from.scrollLeft;
 }
 
-export function DiffViewerOverlay({ artifact, sessionId, nodeId, name, onClose }: {
-  artifact: DiffArtifact;
+/** The full-screen diff reader. Mounted permanently by its callers and driven
+ *  by `artifact`: null closes it, and the last artifact is held so the panel
+ *  still has content while it animates out. */
+export function DiffViewerOverlay({ artifact: liveArtifact, sessionId, nodeId, name, onClose }: {
+  artifact: DiffArtifact | null;
   sessionId?: string;
   nodeId?: string;
   name: string;
   onClose: () => void;
 }) {
-  useEffect(() => {
-    const listener = (event: KeyboardEvent) => event.key === "Escape" && onClose();
-    window.addEventListener("keydown", listener, true);
-    return () => window.removeEventListener("keydown", listener, true);
-  }, [onClose]);
+  const artifact = useLatest(liveArtifact);
+  if (!artifact) return null;
   return (
-    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-surface-scrim/60 p-3 backdrop-blur-sm md:p-6" onClick={onClose}>
-      <div role="dialog" aria-modal="true" aria-label={name} onClick={(event) => event.stopPropagation()} className="flex h-[88vh] w-[min(1280px,96vw)] flex-col overflow-hidden rounded-lg border border-line bg-surface-raised shadow-modal">
-        <DiffHeader artifact={artifact} nodeId={nodeId} name={name} sessionId={sessionId} onClose={onClose} />
-        <ConcurrentWarning ids={artifact.concurrent_node_ids} />
-        <DiffViewer artifact={artifact} />
-      </div>
-    </div>
+    <ModalShell
+      open={liveArtifact !== null}
+      onClose={onClose}
+      label={name}
+      closeOnScrim
+      variant="full"
+      zClassName="z-[60]"
+      scrimClassName="p-3 backdrop-blur-sm md:p-6"
+      panelClassName="flex h-[88vh] w-[min(1280px,96vw)] flex-col overflow-hidden rounded-lg border border-line bg-surface-raised shadow-modal"
+    >
+      <DiffHeader artifact={artifact} nodeId={nodeId} name={name} sessionId={sessionId} onClose={onClose} />
+      <ConcurrentWarning ids={artifact.concurrent_node_ids} />
+      <DiffViewer artifact={artifact} />
+    </ModalShell>
   );
 }
 

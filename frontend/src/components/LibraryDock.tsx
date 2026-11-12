@@ -30,6 +30,7 @@ import {
   LibraryEntryPreviewModal,
   type LibraryPreviewTarget,
 } from "./LibraryEntryPreviewModal";
+import { Collapse } from "./Collapse";
 
 export type LibraryEntrySelection = {
   identityKey: string;
@@ -490,10 +491,15 @@ function LibrarySection({
             * at, so it takes brand ink; a zero stays quiet and the section
             * folds itself. */}
           <span className={matching && count > 0 ? "text-brand" : undefined}>{count}</span>
-          <span aria-hidden="true">{open ? "▾" : "▸"}</span>
+          <span
+            aria-hidden="true"
+            className={"inline-block text-[9px] transition-transform duration-base ease-out " + (open ? "rotate-90" : "")}
+          >
+            ▶
+          </span>
         </span>
       </button>
-      {open && <div className="px-1.5 pb-2">{children}</div>}
+      <Collapse open={open} className="px-1.5 pb-2">{children}</Collapse>
     </section>
   );
 }

@@ -35,6 +35,7 @@ import {
   setTurnsStreaming,
 } from "../transcript";
 import { ToolActivity } from "../components/ToolActivity";
+import { useFreshIds } from "../motion";
 import { ZoomableText } from "../components/TextZoom";
 import { EntryPickerModal } from "../components/EntryPickerModal";
 import type { HierarchyEntry } from "../components/HierarchyTree";
@@ -422,6 +423,35 @@ export function AgentPanel({
 
   /* Highlights belong to the node they were painted on. */
   useEffect(() => clearSearchHighlights, [node.id]);
+  /* Follow the stream while the reader is at the bottom; otherwise leave
+   * their scroll alone and offer a pill instead. "At the bottom" is sampled
+   * on scroll, so a new item that grows the page does not itself count as
+   * the reader having scrolled away. */
+  const pinnedToBottomRef = useRef(true);
+  const [newActivity, setNewActivity] = useState(false);
+  const onPanelScroll = useCallback(() => {
+    const container = panelScrollRef.current;
+    if (!container) return;
+    const pinned = container.scrollHeight - container.scrollTop - container.clientHeight < 48;
+    pinnedToBottomRef.current = pinned;
+    if (pinned) setNewActivity(false);
+  }, []);
+  const lastTranscriptCountRef = useRef({ nodeId: node.id, count: transcriptItems.length });
+  useEffect(() => {
+    const last = lastTranscriptCountRef.current;
+    lastTranscriptCountRef.current = { nodeId: node.id, count: transcriptItems.length };
+    if (last.nodeId !== node.id) {
+      setNewActivity(false);
+      return;
+    }
+    if (transcriptItems.length <= last.count || node.state !== "running") return;
+    if (!activityDetailsRef.current?.open) return;
+    if (pinnedToBottomRef.current) {
+      const frame = window.requestAnimationFrame(scrollToLatestActivity);
+      return () => window.cancelAnimationFrame(frame);
+    }
+    setNewActivity(true);
+  }, [node.id, node.state, transcriptItems.length, scrollToLatestActivity]);
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
@@ -516,8 +546,10 @@ export function AgentPanel({
         </div>
       </div>
 
+      <div className="relative flex min-h-0 flex-1 flex-col">
       <div
         ref={panelScrollRef}
+        onScroll={onPanelScroll}
         className="flex-1 overflow-y-auto bg-surface px-4 py-3 text-sm"
       >
         {mutationLock === "project_unbound" && (
@@ -723,6 +755,24 @@ export function AgentPanel({
             </section>
           </>
         )}
+      </div>
+      {newActivity && (
+        /* Positioned by the wrapper so the entry keyframe's transform never
+         * fights the centring translate. */
+        <div className="absolute bottom-3 left-1/2 z-10 -translate-x-1/2">
+          <button
+            type="button"
+            onClick={() => {
+              setNewActivity(false);
+              pinnedToBottomRef.current = true;
+              scrollToLatestActivity();
+            }}
+            className="mc-fade-rise mc-press rounded-full border border-line bg-surface-raised px-3 py-1 text-[11px] font-medium text-ink shadow-raised hover:border-line-strong"
+          >
+            ↓ 新动态
+          </button>
+        </div>
+      )}
       </div>
     </div>
   );
@@ -1922,19 +1972,39 @@ function VerifierVirtualBody({
  * to the server, held only in this browser, or clean. The distinction matters
  * because on an auto lane the draft is deliberately never pushed — leaving that
  * as a bare "unsaved" would read as a bug. */
-function DraftSaveStatus({
-  dirty,
-  saving,
-  autosaveToServer,
-  autosavedAt,
-  stashWriteState,
-}: {
+type DraftSaveStatusProps = {
   dirty: boolean;
   saving: boolean;
   autosaveToServer: boolean;
   autosavedAt: number | null;
   stashWriteState: "idle" | "saved" | "failed";
-}) {
+};
+
+/* Keyed on the status, so a change remounts the line and it turns over with
+ * a short rise; the first status shown after mount does not animate. */
+function DraftSaveStatus(props: DraftSaveStatusProps) {
+  const status = props.saving
+    ? "saving"
+    : props.dirty
+      ? `dirty:${props.stashWriteState}`
+      : props.autosavedAt !== null
+        ? `saved:${props.autosavedAt}`
+        : "none";
+  const initial = useRef(status);
+  return (
+    <span key={status} className={status === initial.current ? "inline-flex" : "mc-chip-swap"}>
+      <DraftSaveStatusText {...props} />
+    </span>
+  );
+}
+
+function DraftSaveStatusText({
+  dirty,
+  saving,
+  autosaveToServer,
+  autosavedAt,
+  stashWriteState,
+}: DraftSaveStatusProps) {
   const baseClassName = "text-[10px] font-normal normal-case tracking-normal";
   const className = `${baseClassName} ${
     stashWriteState === "failed"
@@ -2890,7 +2960,7 @@ function CopyNodePathButton({
       type="button"
       onClick={() => void copy()}
       disabled={state === "copying"}
-      className={`inline-flex h-6 items-center gap-1 rounded-sm border px-1.5 text-[10px] font-normal normal-case tracking-normal transition disabled:cursor-not-allowed disabled:opacity-45 ${
+      className={`mc-press inline-flex h-6 items-center gap-1 rounded-sm border px-1.5 text-[10px] font-normal normal-case tracking-normal transition disabled:cursor-not-allowed disabled:opacity-45 ${
         state === "error"
           ? "border-state-error/40 bg-state-error-soft text-state-error"
           : state === "copied"
@@ -2899,8 +2969,12 @@ function CopyNodePathButton({
       }`}
       title="复制此节点的存储目录（含 preview.json 与 artifacts/），可交给其他项目的 agent 直接读取"
     >
-      {state === "copied" ? <CopyCheckIcon /> : <CopyIcon />}
-      <span aria-live="polite">{label}</span>
+      {/* Keyed so the icon swaps with a small spring and the label turns
+        * over, instead of both changing in place. */}
+      <span key={state === "copied" ? "check" : "copy"} className={state === "copied" ? "mc-icon-swap inline-flex" : "inline-flex"}>
+        {state === "copied" ? <CopyCheckIcon /> : <CopyIcon />}
+      </span>
+      <span key={state} aria-live="polite" className={state === "idle" ? undefined : "mc-chip-swap"}>{label}</span>
     </button>
   );
 }
@@ -3170,10 +3244,25 @@ function ActivityTranscript({
       </div>
     );
   }
+  return <TranscriptList items={items} sessionId={sessionId} />;
+}
+
+/* Split out so the fresh-id baseline is taken when the first items render,
+ * not while the empty placeholder shows: everything present at that moment
+ * is history, and only what streams in afterwards rises in. */
+function TranscriptList({
+  items,
+  sessionId,
+}: {
+  items: TranscriptItem[];
+  sessionId: string;
+}) {
+  const ids = useMemo(() => items.map((item) => item.id), [items]);
+  const fresh = useFreshIds(ids);
   return (
     <div className="space-y-2">
       {items.map((item) => (
-        <div key={item.id} data-transcript-item={item.id} className="rounded-md">
+        <div key={item.id} data-transcript-item={item.id} className={fresh.has(item.id) ? "mc-fade-rise" : undefined}>
           <TranscriptItemView item={item} sessionId={sessionId} />
         </div>
       ))}

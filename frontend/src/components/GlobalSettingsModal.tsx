@@ -18,6 +18,7 @@ import {
 import { canApplyUpdate } from "../selfUpdate";
 import { storageGuidance, type StorageFailure } from "../storageMaintenance";
 import { StorageGuidanceBody } from "./StorageGuidanceBody";
+import { ModalShell } from "./ModalShell";
 import { RemoteAnswersSection } from "./RemoteAnswersSection";
 import { useSyncProgress } from "../useSyncProgress";
 import { LANGUAGE_OPTIONS } from "../languages";
@@ -90,7 +91,6 @@ export function GlobalSettingsModal({ open, state, onClose, onChanged }: Props) 
     getSelfUpdate().then(setSelfUpdate).catch((err) => setError(String(err)));
   }, [open, state, onChanged]);
 
-  if (!open) return null;
   const presets = state?.model_presets ?? [];
 
   const saveDefaults = async () => {
@@ -246,8 +246,14 @@ export function GlobalSettingsModal({ open, state, onClose, onChanged }: Props) 
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-surface-scrim/60 backdrop-blur-sm">
-      <div className="flex max-h-[92vh] w-[860px] max-w-[96vw] flex-col overflow-hidden rounded-xl border border-line bg-surface-raised shadow-modal">
+    <ModalShell
+      open={open}
+      onClose={onClose}
+      label="Global settings"
+      dismissible={!saving}
+      zClassName="z-50"
+      panelClassName="flex max-h-[92vh] w-[860px] max-w-[96vw] flex-col overflow-hidden rounded-xl border border-line bg-surface-raised shadow-modal"
+    >
         <div className="flex items-center justify-between border-b border-line px-5 py-3.5">
           <div>
             <div className="font-display text-sm font-semibold text-ink-strong">Global settings</div>
@@ -259,7 +265,7 @@ export function GlobalSettingsModal({ open, state, onClose, onChanged }: Props) 
         </div>
 
         <div className="flex-1 space-y-6 overflow-y-auto bg-surface-sunken p-5">
-          {error && <div className="rounded-md border border-state-error/30 bg-state-error-soft px-3 py-2 text-xs text-state-error">{error}</div>}
+          {error && <div className="mc-fade-rise rounded-md border border-state-error/30 bg-state-error-soft px-3 py-2 text-xs text-state-error">{error}</div>}
 
           <section className="rounded-lg border border-line bg-surface-raised p-4 shadow-card">
             <div className="flex items-start justify-between gap-4">
@@ -547,8 +553,7 @@ export function GlobalSettingsModal({ open, state, onClose, onChanged }: Props) 
             </section>
           )}
         </div>
-      </div>
-    </div>
+    </ModalShell>
   );
 }
 

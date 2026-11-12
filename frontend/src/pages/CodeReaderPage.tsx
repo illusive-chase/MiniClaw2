@@ -762,8 +762,12 @@ export function CodeReaderPage({ route }: { route: CodeRoute }) {
         </main>
       </div>
       {toast && (
-        <div role="status" className="fixed bottom-4 left-1/2 z-50 -translate-x-1/2 rounded-md border border-line-strong bg-surface-raised px-3 py-2 text-[12px] text-ink shadow-lg">
-          {toast}
+        /* Outer box positions, inner box animates — a keyframe transform
+         * would otherwise overwrite the centring translate. */
+        <div role="status" className="fixed bottom-4 left-1/2 z-50 -translate-x-1/2">
+          <div key={toast} className="mc-fade-rise rounded-md border border-line-strong bg-surface-raised px-3 py-2 text-[12px] text-ink shadow-lg">
+            {toast}
+          </div>
         </div>
       )}
     </div>

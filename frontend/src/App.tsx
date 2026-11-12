@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { toNodeInfo } from "./nodeProjection";
 import { useContextBundleSources } from "./useContextBundleSources";
 import { useNodeContextBundle } from "./useNodeContextBundle";
@@ -155,6 +155,14 @@ import {
   shouldOpenInteractionNode,
 } from "./nodeUtil";
 import { defaultModelPresetId } from "./modelPresets";
+import { EXIT_MS, useSwapAnimation } from "./motion";
+import {
+  clearNodeMotion,
+  clearPendingCreate,
+  markNodeBorn,
+  markNodeLeaving,
+  markNodesArrived,
+} from "./canvas/nodeMotionStore";
 import {
   canConnectDependency,
   ScheduledDepsUpdateQueue,
@@ -575,6 +583,7 @@ export function App() {
   const [templateContextMenu, setTemplateContextMenu] = useState<
     { x: number; y: number; nodeId: string | null } | null
   >(null);
+  const closeTemplateContextMenu = useCallback(() => setTemplateContextMenu(null), []);
   const [saveTemplateOpen, setSaveTemplateOpen] = useState(false);
   const [saveTemplateNodeIds, setSaveTemplateNodeIds] = useState<string[]>([]);
   /* Slug currently open in the template editor. Templates are session-
@@ -1070,6 +1079,33 @@ export function App() {
     Object.values(validPendingReviews)[0] ||
     null;
   const composerLocked = !readOnly && (!!activePendingGate || !!activePendingReview);
+  /* Nodes that appear while the user is watching — an agent planned them, a
+   * template was stamped, another host synced them in — fade in, staggered in
+   * creation order. Ids known at hydration are the baseline and never
+   * animate, and a switch of project resets it. Layout effect, so a new
+   * tile's first paint already carries its mark. Births the user asked for
+   * are marked at the call site and are left alone here. */
+  const seenNodeIdsRef = useRef<{ sessionId: string; ids: Set<string> } | null>(null);
+  useLayoutEffect(() => {
+    const sessionId = session?.id ?? null;
+    if (!sessionId || nodesHydratedSessionId !== sessionId) {
+      seenNodeIdsRef.current = null;
+      return;
+    }
+    const seen = seenNodeIdsRef.current;
+    if (!seen || seen.sessionId !== sessionId) {
+      seenNodeIdsRef.current = { sessionId, ids: new Set(nodes.map((node) => node.id)) };
+      return;
+    }
+    const arrived: string[] = [];
+    for (const node of nodes) {
+      if (seen.ids.has(node.id)) continue;
+      seen.ids.add(node.id);
+      arrived.push(node.id);
+    }
+    if (arrived.length > 0) markNodesArrived(arrived);
+  }, [nodes, nodesHydratedSessionId, session?.id]);
+
   const virtualCreateDisabled =
     readOnly ||
     projectMutationPending ||
@@ -1757,8 +1793,14 @@ export function App() {
       model_preset_id?: string | null;
       resume_from_node_id?: string | null;
       position?: { x: number; y: number };
+      /** Where the birth grows from, as a tile-relative transform-origin:
+       * the click corner, the parent's side, or the lane header above. */
+      birthOrigin?: string;
     }) => {
-      if (!session?.id || virtualCreateDisabled) return;
+      if (!session?.id || virtualCreateDisabled) {
+        clearPendingCreate();
+        return;
+      }
       setProjectMutationPending(true);
       setSessionContextSpaceError(null);
       try {
@@ -1785,6 +1827,10 @@ export function App() {
             position: payload.position,
           });
         }
+        /* Marked before the node enters state, so its first paint is already
+         * the start of the birth; the drop placeholder hands over to it. */
+        markNodeBorn(result.node.id, payload.birthOrigin);
+        clearPendingCreate();
         setNodes((prev) => {
           const updated = upsertNode(prev, result.node);
           nodeCountRef.current = updated.length;
@@ -1794,6 +1840,7 @@ export function App() {
         selectAndOpenNode(result.node.id);
         setFocusRequestVersion((version) => version + 1);
       } catch (err) {
+        clearPendingCreate();
         setSessionContextSpaceError(String(err));
         throw err;
       } finally {
@@ -1834,6 +1881,9 @@ export function App() {
         planspace_id: planspaceId,
         model_preset_id: modelPresetId,
         position: resolvedPosition,
+        /* A double-click puts the tile's corner at the click; the lane "+"
+         * drops it in from the header above. */
+        birthOrigin: position ? "0% 0%" : "50% 0%",
       });
     },
     [createVirtualNode, nodes, session?.model_preset_id],
@@ -1848,6 +1898,7 @@ export function App() {
         planspace_id: planspaceId,
         scheduled_deps: [parent.id],
         model_preset_id: parent.model_preset_id ?? session?.model_preset_id ?? null,
+        birthOrigin: "0% 50%",
       });
     },
     [createVirtualNode, focusedPlanspaceId, nodes, session?.model_preset_id],
@@ -1867,6 +1918,7 @@ export function App() {
         scheduled_deps: [parent.id],
         model_preset_id: parent.model_preset_id ?? session?.model_preset_id ?? null,
         position,
+        birthOrigin: "0% 0%",
       });
     },
     [
@@ -1895,6 +1947,7 @@ export function App() {
         scheduled_deps: sinks.map((node) => node.id),
         model_preset_id:
           sinks[0].model_preset_id ?? session?.model_preset_id ?? null,
+        birthOrigin: "0% 50%",
       });
     },
     [
@@ -1914,6 +1967,7 @@ export function App() {
         planspace_id: planspaceId,
         model_preset_id: parent.model_preset_id ?? null,
         resume_from_node_id: parent.id,
+        birthOrigin: "0% 50%",
       });
     },
     [createVirtualNode, focusedPlanspaceId, nodes],
@@ -1927,6 +1981,12 @@ export function App() {
       }
       setSessionContextSpaceError(null);
       await deleteVirtual(session.id, nodeId);
+      /* The record is gone; the tile plays its exit before it leaves state.
+       * Selection is cleared below, after the wait, together with the
+       * removal, so the panel and the tile go away as one change. */
+      markNodeLeaving(nodeId);
+      await new Promise((resolve) => window.setTimeout(resolve, EXIT_MS.node));
+      clearNodeMotion(nodeId);
       setNodes((prev) => {
         const updated = prev.filter((node) => node.id !== nodeId);
         nodeCountRef.current = updated.length;
@@ -3010,11 +3070,13 @@ export function App() {
    * rather than rendering an empty shell. */
   if (route === "template" && editingTemplateSlug) {
     return (
+      <div key={`template:${editingTemplateSlug}`} className="mc-route-in h-screen">
       <TemplateEditor
         slug={editingTemplateSlug}
         onClose={closeTemplateEditor}
         onSaved={() => setLibraryRefreshToken((v) => v + 1)}
       />
+      </div>
     );
   }
 
@@ -3033,7 +3095,7 @@ export function App() {
 
   if (route === "landing") {
     return (
-      <div className="flex h-screen flex-col bg-surface text-ink">
+      <div key="landing" className="mc-route-in flex h-screen flex-col bg-surface text-ink">
         <div className="min-h-0 flex-1">
           <ProjectsLanding
           onOpen={openProject}
@@ -3251,7 +3313,7 @@ export function App() {
 
   return (
     <TextZoomProvider preferredLanguage={session?.preferred_language ?? null}>
-    <div className="flex h-screen flex-col bg-surface text-ink">
+    <div className="mc-route-in flex h-screen flex-col bg-surface text-ink">
       <header className="flex items-center justify-between gap-4 border-b border-line bg-surface-raised px-6 py-2.5">
         <div className="flex min-w-0 items-center gap-3">
           <button
@@ -3275,7 +3337,12 @@ export function App() {
               <span className="truncate">{session?.id ?? "—"}</span>
               <span className="text-line-strong">·</span>
               <span className={"inline-flex items-center gap-1 " + wsTone}>
-                <span className="inline-block h-1.5 w-1.5 rounded-full bg-current" />
+                <span
+                  className={
+                    "inline-block h-1.5 w-1.5 rounded-full bg-current " +
+                    (status === "connecting" ? "ws-connecting" : "")
+                  }
+                />
                 ws {status}
               </span>
               {session?.capabilities?.git_review !== false && <GitWorkspaceStatus
@@ -3606,9 +3673,7 @@ export function App() {
               onNodePositionsChange={onNodePositionsChange}
             />
           ) : (
-            <div className="flex h-full w-full items-center justify-center text-[11px] uppercase tracking-[0.18em] text-ink-subtle">
-              Loading canvas…
-            </div>
+            <CanvasSkeleton />
           )}
 
           {/* Sibling of the canvas, not a child: wheel events over a banner
@@ -3678,10 +3743,15 @@ export function App() {
             ref={panelRef}
             aria-hidden={!panelState.open}
             className={
-              "absolute inset-y-0 right-0 z-20 flex w-[380px] flex-col border-l border-line bg-surface-sunken shadow-modal transition-transform duration-200 ease-out will-change-transform " +
-              (panelState.open ? "translate-x-0" : "pointer-events-none translate-x-full")
+              "absolute inset-y-0 right-0 z-20 flex w-[380px] flex-col border-l border-line bg-surface-sunken shadow-modal transition-transform will-change-transform " +
+              /* Asymmetric: arrives on the modal beat with ease-out, leaves
+               * faster with ease-in so it clears the way for the next click. */
+              (panelState.open
+                ? "translate-x-0 duration-modal ease-out"
+                : "pointer-events-none translate-x-full duration-base ease-in")
             }
           >
+            <AsideModeSwap mode={panelState.mode} open={panelState.open}>
             {panelState.mode === "library" ? (
               <LibraryDock
                 refreshToken={libraryRefreshToken}
@@ -3711,6 +3781,7 @@ export function App() {
               />
             ) : (
               <SidePanel
+                open={panelState.open}
                 onClose={closePanel}
                 selection={selection}
                 gitCommits={gitCommits}
@@ -3810,24 +3881,24 @@ export function App() {
                 onDeleteSkill={handleDeleteSkill}
               />
             )}
+            </AsideModeSwap>
           </aside>
         </main>
       </div>
     </div>
-    {templateContextMenu && (
-      <ContextMenu
-        x={templateContextMenu.x}
-        y={templateContextMenu.y}
-        onClose={() => setTemplateContextMenu(null)}
-        items={buildTemplateContextMenuItems({
-          rightClickedNodeId: templateContextMenu.nodeId,
-          multiSelectedNodeIds,
-          onSaveAsTemplate: openSaveTemplateModal,
-        })}
-      />
-    )}
-    {remoteAccessOpen && session?.persistence_mode === "remote" && <RemoteAccessModal
-      key={session.id} session={session} onClose={() => setRemoteAccessOpen(false)} onSaved={setSession}
+    <ContextMenu
+      open={templateContextMenu !== null}
+      x={templateContextMenu?.x ?? 0}
+      y={templateContextMenu?.y ?? 0}
+      onClose={closeTemplateContextMenu}
+      items={templateContextMenu ? buildTemplateContextMenuItems({
+        rightClickedNodeId: templateContextMenu.nodeId,
+        multiSelectedNodeIds,
+        onSaveAsTemplate: openSaveTemplateModal,
+      }) : []}
+    />
+    {session?.persistence_mode === "remote" && <RemoteAccessModal
+      key={session.id} open={remoteAccessOpen} session={session} onClose={() => setRemoteAccessOpen(false)} onSaved={setSession}
     />}
     <SaveAsTemplateModal
       open={saveTemplateOpen}
@@ -3861,13 +3932,11 @@ export function App() {
         void refreshNodes();
       }}
     />
-    {workingTreeDiff && (
-      <DiffViewerOverlay
-        artifact={workingTreeDiff}
-        name="Working tree diff"
-        onClose={() => setWorkingTreeDiff(null)}
-      />
-    )}
+    <DiffViewerOverlay
+      artifact={workingTreeDiff}
+      name="Working tree diff"
+      onClose={() => setWorkingTreeDiff(null)}
+    />
     </TextZoomProvider>
   );
 }
@@ -3896,6 +3965,48 @@ function buildTemplateContextMenuItems(args: {
       onClick: () => onSaveAsTemplate(idsForSave),
     },
   ];
+}
+
+/** Placeholder while the first fetches settle: a lane band and a few tile
+ *  shapes, shimmering, where the canvas will be. Purely decorative; the
+ *  status text stays for assistive tech. */
+function CanvasSkeleton() {
+  return (
+    <div className="relative h-full w-full overflow-hidden" role="status" aria-label="Loading canvas">
+      <div className="mc-fade-in absolute inset-x-10 top-10 h-[260px] rounded-xl border border-line/60 bg-surface/40">
+        <div className="mc-skeleton absolute left-4 top-3 h-3 w-32 rounded" />
+        {[0, 1, 2].map((index) => (
+          <div
+            key={index}
+            className="mc-skeleton absolute top-12 h-[86px] w-[224px] rounded-lg"
+            style={{ left: 24 + index * 264 }}
+          />
+        ))}
+        <div className="mc-skeleton absolute left-6 top-[156px] h-[86px] w-[224px] rounded-lg" />
+      </div>
+      <span className="sr-only">Loading canvas…</span>
+    </div>
+  );
+}
+
+/** Switching the aside between library and details while it is open: the new
+ *  surface rises in (no remount — see `useSwapAnimation`). */
+function AsideModeSwap({
+  mode,
+  open,
+  children,
+}: {
+  mode: string;
+  open: boolean;
+  children: React.ReactNode;
+}) {
+  const ref = useRef<HTMLDivElement | null>(null);
+  useSwapAnimation(ref, mode, open);
+  return (
+    <div ref={ref} className="flex min-h-0 flex-1 flex-col">
+      {children}
+    </div>
+  );
 }
 
 function PendingBanner({
@@ -3932,7 +4043,9 @@ function CanvasNotice({
   return (
     <div
       className={
-        "absolute bottom-3 z-10 flex items-center gap-3 rounded-md border border-state-waiting/40 bg-state-waiting-soft px-3 py-1.5 text-[11px] text-state-waiting shadow-card transition-[right] duration-200 ease-out " +
+        "absolute bottom-3 z-10 flex items-center gap-3 rounded-md border border-state-waiting/40 bg-state-waiting-soft px-3 py-1.5 text-[11px] text-state-waiting shadow-card mc-fade-rise transition-[right] " +
+        /* Tracks the side panel's own beat so the two move as one. */
+        (panelOpen ? "duration-modal ease-out " : "duration-base ease-in ") +
         positionClass
       }
     >

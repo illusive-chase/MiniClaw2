@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { saveUserTemplate } from "../api";
+import { ModalShell } from "./ModalShell";
 
 type Props = {
   open: boolean;
@@ -38,8 +39,6 @@ export function SaveAsTemplateModal({
     }
   }, [open]);
 
-  if (!open) return null;
-
   const submit = async (thenEdit = false) => {
     if (!sessionId || !name.trim()) return;
     setSubmitting(true);
@@ -61,8 +60,13 @@ export function SaveAsTemplateModal({
   const nodeCount = nodeIds.length;
 
   return (
-    <div className="fixed inset-0 z-40 flex items-center justify-center bg-surface-scrim/60 backdrop-blur-sm">
-      <div className="flex w-[460px] max-w-[95vw] flex-col rounded-xl border border-line bg-surface-raised shadow-modal">
+    <ModalShell
+      open={open}
+      onClose={onCancel}
+      label="Save as template"
+      dismissible={!submitting}
+      panelClassName="flex w-[460px] max-w-[95vw] flex-col rounded-xl border border-line bg-surface-raised shadow-modal"
+    >
         <div className="flex items-center justify-between gap-3 border-b border-line px-5 py-3.5">
           <div className="min-w-0">
             <div className="font-display text-sm font-semibold text-ink-strong">
@@ -115,7 +119,7 @@ export function SaveAsTemplateModal({
           </label>
 
           {error && (
-            <div className="rounded-md border border-state-error/30 bg-state-error-soft px-3 py-2 text-xs text-state-error">
+            <div className="mc-fade-rise rounded-md border border-state-error/30 bg-state-error-soft px-3 py-2 text-xs text-state-error">
               {error}
             </div>
           )}
@@ -150,7 +154,6 @@ export function SaveAsTemplateModal({
             </button>
           )}
         </div>
-      </div>
-    </div>
+    </ModalShell>
   );
 }

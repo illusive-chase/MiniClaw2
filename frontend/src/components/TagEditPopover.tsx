@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 import { createPortal } from "react-dom";
 
 import type { Tag } from "../types";
+import { EXIT_MS, useLatest, usePresence, type PresencePhase } from "../motion";
 import { renameConflicts, shouldCommitRename } from "../tagEdits";
 import {
   TAG_COLORS,
@@ -19,7 +20,8 @@ const MAX_NAME_LENGTH = 24;
 const CONFIRM_WINDOW_MS = 3500;
 
 export type TagEditPopoverProps = {
-  /** Element the panel is positioned against — usually the button that opened it. */
+  /** Element the panel is positioned against — usually the button that opened
+   * it. Null closes the panel (with its exit animation). */
   anchor: HTMLElement | null;
   tags: Tag[];
   selectedIds: readonly string[];
@@ -44,8 +46,19 @@ export type TagEditPopoverProps = {
  * (`App.tsx:2600`). Either property makes the panel a containing block for
  * `position: fixed`, which would clip this popover to the panel's 380px column
  * instead of the viewport. `EntryPickerModal` was changed for the same reason.
+ *
+ * Grows out of its anchor and shrinks back into it on close; callers keep it
+ * mounted and drive it with `anchor`.
  */
-export function TagEditPopover({
+export function TagEditPopover(props: TagEditPopoverProps) {
+  const { mounted, phase } = usePresence(props.anchor !== null, EXIT_MS.popover);
+  const anchor = useLatest(props.anchor);
+  if (!mounted || !anchor) return null;
+  return <TagEditPanel {...props} anchor={anchor} phase={phase} />;
+}
+
+function TagEditPanel({
+  phase,
   anchor,
   tags,
   selectedIds,
@@ -55,13 +68,13 @@ export function TagEditPopover({
   onRecolorTag,
   onRenameTag,
   onDeleteTag,
-}: TagEditPopoverProps) {
+}: TagEditPopoverProps & { anchor: HTMLElement; phase: PresencePhase }) {
   const panelRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const renameRef = useRef<HTMLInputElement | null>(null);
   const confirmTimerRef = useRef<number | null>(null);
   const busyRef = useRef(false);
-  const [position, setPosition] = useState<{ top: number; left: number } | null>(null);
+  const [position, setPosition] = useState<{ top: number; left: number; origin: string } | null>(null);
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -76,7 +89,7 @@ export function TagEditPopover({
    * so the real panel height is known — the panel grows with the tag list, and
    * flipping above the trigger needs that height to be accurate. */
   useLayoutEffect(() => {
-    if (!anchor) return;
+    if (phase === "exit") return;
     const place = () => {
       const rect = anchor.getBoundingClientRect();
       const height = panelRef.current?.offsetHeight ?? 260;
@@ -88,7 +101,11 @@ export function TagEditPopover({
         Math.max(VIEWPORT_MARGIN, rect.left),
         Math.max(VIEWPORT_MARGIN, window.innerWidth - PANEL_WIDTH - VIEWPORT_MARGIN),
       );
-      setPosition({ top, left });
+      /* The panel grows out of the trigger: the origin sits on the trigger's
+       * centre, on whichever edge faces it. */
+      const originX = rect.left + rect.width / 2 - left;
+      const origin = `${originX}px ${top >= rect.bottom ? "0" : "100%"}`;
+      setPosition({ top, left, origin });
     };
     place();
     window.addEventListener("resize", place);
@@ -99,7 +116,7 @@ export function TagEditPopover({
       window.removeEventListener("resize", place);
       window.removeEventListener("scroll", place, true);
     };
-  }, [anchor, tags.length, paletteFor, renamingId]);
+  }, [anchor, phase, tags.length, paletteFor, renamingId]);
 
   useEffect(() => {
     window.setTimeout(() => inputRef.current?.focus(), 0);
@@ -155,6 +172,8 @@ export function TagEditPopover({
   }, [onRenameTag, renameDraft, tags, cancelRename, run]);
 
   useEffect(() => {
+    /* A panel on its way out no longer owns the keyboard or the pointer. */
+    if (phase === "exit") return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
       event.stopPropagation();
@@ -196,7 +215,7 @@ export function TagEditPopover({
       window.removeEventListener("keydown", onKeyDown, true);
       window.removeEventListener("mousedown", onPointerDown, true);
     };
-  }, [anchor, onClose, renamingId, confirmingDeleteId, paletteFor, cancelRename, tags, commitRename]);
+  }, [anchor, phase, onClose, renamingId, confirmingDeleteId, paletteFor, cancelRename, tags, commitRename]);
 
   /* Selected on focus so the common case — replacing the name outright — takes
    * one keystroke, while an edit-in-place is still possible with an arrow key. */
@@ -284,14 +303,16 @@ export function TagEditPopover({
       ref={panelRef}
       role="dialog"
       aria-label="编辑项目 tag"
+      data-phase={position ? phase : undefined}
       style={{
         position: "fixed",
         top: position?.top ?? -9999,
         left: position?.left ?? -9999,
         width: PANEL_WIDTH,
         visibility: position ? "visible" : "hidden",
+        ["--pop-origin" as string]: position?.origin,
       }}
-      className="z-50 flex max-h-[min(380px,80vh)] flex-col overflow-hidden rounded-lg border border-line bg-surface-raised shadow-modal"
+      className="mc-pop z-50 flex max-h-[min(380px,80vh)] flex-col overflow-hidden rounded-lg border border-line bg-surface-raised shadow-modal"
       onClick={(event) => event.stopPropagation()}
     >
       <div className="flex items-center justify-between border-b border-line px-2.5 py-1.5">

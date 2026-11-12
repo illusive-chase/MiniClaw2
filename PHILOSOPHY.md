@@ -691,6 +691,52 @@ looking and how far they are zoomed is their own reading position; it
 does not sync to other machines, and programmatic navigation does not
 override a view the user chose deliberately.
 
+### 10.6 Motion explains, it does not decorate
+
+Motion is part of the visual grammar, not a finish applied over it. Every
+transition answers one question the eye would otherwise have to solve
+by itself: where did this come from, where did it go, what just changed.
+An element that appears or disappears with no motion is a small
+investigation (§2) — the user has to notice that something changed and
+then work out what it was.
+
+- **Motion shows cause.** Things grow out of what produced them: a
+  popover from its trigger, a menu from the click point, a new node
+  from the spot or tile that asked for it, the side panel from the
+  edge it docks to. They leave the same way. An element with no source
+  only fades.
+- **Answer the gesture immediately.** When the effect waits on a
+  round-trip (creating a node, saving), the place the effect will land
+  responds at once, and the real result takes over when it arrives.
+  Dead time after a click reads as a missed click.
+- **Exits give way.** Leaving is faster than arriving (about 0.7×) and
+  eases in. An element on its way out takes no pointer events and no
+  keystrokes; the next action is never blocked by the previous one's
+  animation.
+- **Loops mean "in progress", and nothing else.** Running, waiting, and
+  awaiting human input are the only states allowed to animate
+  indefinitely. Everything else plays once and stops, so a moving
+  thing on screen is always a live thing.
+- **One emphasis at a time.** A birth, a "here it is" after a jump, a
+  run landing in done or error — at most one ring at a time per thing,
+  and batches stagger rather than flash together.
+- **Only what happens while the user watches.** Loading a page,
+  switching projects, or scrolling something back into view is not
+  news. Arrival motion is for changes that occur during the visit;
+  the hydrated baseline never animates.
+- **Never move what the user placed.** Positions are user intent
+  (§10.5). Node positions are not tweened, and motion on the canvas
+  stays inside a tile — it never touches the transform the layout owns.
+- **Restraint is the register.** Short (roughly 90–420ms), mostly
+  opacity and small translation, at most a few percent of overshoot on
+  small things. Motion tokens — durations, curves, distances — live in
+  one place, and components refer to them by name rather than by
+  number.
+- **Reduced motion degrades, it does not vanish.** Under the OS
+  setting, travel and scale go to zero and durations shorten to a
+  brief fade, at the token level, so no component branches on it.
+  Loops stop and their state stays legible as a static colour.
+
 
 ## 11. Templates are functions
 
@@ -918,3 +964,6 @@ The non-obvious commitments, restated as one-liners:
 - **Detect after the fact; never lock.** Synced metadata cannot express
   a truthful cross-host lock, so duplicates are shown rather than
   prevented, and peer state is always presented with its capture time.
+- **Motion explains, it does not decorate.** Transitions show cause and
+  change; loops are reserved for work in progress; nothing animates on
+  load, and node positions are never tweened.

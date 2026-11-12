@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { createPortal } from "react-dom";
+import { ModalShell } from "./ModalShell";
 import { buildHierarchy } from "../hierarchy";
 import { pathKey, HierarchyTree, type HierarchyEntry } from "./HierarchyTree";
 import { readRecentUsed, recordRecentUsed, type RecentUsedKind } from "../recentUsed";
@@ -71,20 +71,6 @@ export function EntryPickerModal({
     );
   }, [open, roots]);
 
-  useEffect(() => {
-    if (!open) return;
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.stopPropagation();
-        onCancel();
-      }
-    };
-    window.addEventListener("keydown", onKeyDown, true);
-    return () => window.removeEventListener("keydown", onKeyDown, true);
-  }, [open, onCancel]);
-
-  if (!open) return null;
-
   const byId = new Map(entries.map((entry) => [entry.id, entry]));
   const recent = recentIds
     .map((id) => byId.get(id))
@@ -106,15 +92,13 @@ export function EntryPickerModal({
     });
   };
 
-  /* Portalled to `document.body` because the dialog is opened from inside the
-   * side panel, and that panel animates its slide-in with `transform` +
-   * `will-change` (`App.tsx:2600`). Either property makes the panel a containing
-   * block for `position: fixed`, which would pin this scrim to the panel's
-   * 380px column instead of the viewport. The app's other modals render above
-   * that aside, so they never hit this. */
-  return createPortal(
-    <div className="fixed inset-0 z-40 flex items-center justify-center bg-surface-scrim/60 backdrop-blur-sm">
-      <div className="flex max-h-[80vh] w-[440px] max-w-[95vw] flex-col rounded-xl border border-line bg-surface-raised shadow-modal">
+  return (
+    <ModalShell
+      open={open}
+      onClose={onCancel}
+      label={title}
+      panelClassName="flex max-h-[80vh] w-[440px] max-w-[95vw] flex-col rounded-xl border border-line bg-surface-raised shadow-modal"
+    >
         <div className="flex items-center justify-between gap-3 border-b border-line px-4 py-3">
           <div className="truncate font-display text-sm font-semibold text-ink-strong">
             {title}
@@ -168,8 +152,6 @@ export function EntryPickerModal({
             emptyLabel={emptyLabel}
           />
         </div>
-      </div>
-    </div>,
-    document.body,
+    </ModalShell>
   );
 }

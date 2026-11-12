@@ -1,6 +1,7 @@
 import { memo } from "react";
 import { Handle, Position, type NodeProps } from "reactflow";
 import type { OpNodeData } from "../layout";
+import { useNodeMotionProps } from "../nodeMotionStore";
 
 /**
  * Op tile: small chevron rendered on the timeline lane between a parent and a
@@ -12,12 +13,17 @@ function OpNodeImpl({ data, selected }: NodeProps<OpNodeData>) {
   const opKind = node.op_kind ?? "op";
   const sha = (node.commit_after ?? node.commit_before ?? "").slice(0, 7);
   const summary = (node.summary || "").replace(/\s+/g, " ").trim();
+  const motion = useNodeMotionProps(node.id);
 
   return (
     <div
+      style={motion.style}
+      onAnimationEnd={motion.onAnimationEnd}
       title={`Op · ${opKind}${sha ? ` · ${sha}` : ""}${summary ? `\n${summary}` : ""}\n${node.id}`}
       className={
         "relative flex h-[48px] w-[96px] select-none items-center justify-center rounded-md border bg-surface-raised text-[10px] font-medium uppercase tracking-[0.12em] text-ink-muted shadow-card transition " +
+        motion.className +
+        " " +
         (selected
           ? "border-brand ring-2 ring-brand ring-offset-2 ring-offset-surface-sunken"
           : "border-line hover:border-line-strong hover:ring-2 hover:ring-line-strong/45 hover:ring-offset-2 hover:ring-offset-surface-sunken hover:text-ink")

@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { EXIT_MS, useLatest, usePresence } from "../motion";
 
 export type ContextMenuItem = {
   label: string;
@@ -7,10 +8,15 @@ export type ContextMenuItem = {
   onClick?: () => void;
 };
 
-type Props = {
+type MenuContent = {
   x: number;
   y: number;
   items: ContextMenuItem[];
+};
+
+type Props = MenuContent & {
+  /** Defaults to true for callers that mount the menu only while open. */
+  open?: boolean;
   onClose: () => void;
 };
 
@@ -18,11 +24,20 @@ type Props = {
  * Lightweight positioned context menu. Closes on click-outside, escape,
  * or item selection. Rendered at fixed coordinates on the viewport, so
  * callers pass raw ``event.clientX/clientY``.
+ *
+ * Grows out of the click point (its top-left corner) and, when `open` turns
+ * false, stays mounted just long enough to fade back into it.
  */
-export function ContextMenu({ x, y, items, onClose }: Props) {
+export function ContextMenu({ open = true, onClose, ...live }: Props) {
   const ref = useRef<HTMLDivElement | null>(null);
+  const { mounted, phase } = usePresence(open, EXIT_MS.menu);
+  /* The caller usually clears its menu state on close; keep the last open
+   * contents so the exit has something to draw. */
+  const content = useLatest<MenuContent>(open ? live : null) ?? live;
+  const { x, y, items } = content;
 
   useEffect(() => {
+    if (!open) return;
     /* Capture phase: some upstream handlers (React Flow, D3 pan/zoom) can call
      * stopPropagation on the native event, so a plain bubble-phase listener on
      * document occasionally misses "click elsewhere" and leaves the menu open. */
@@ -50,12 +65,15 @@ export function ContextMenu({ x, y, items, onClose }: Props) {
       window.removeEventListener("wheel", onWheel, { capture: true } as EventListenerOptions);
       window.removeEventListener("blur", onBlur);
     };
-  }, [onClose]);
+  }, [open, onClose]);
+
+  if (!mounted) return null;
 
   return (
     <div
       ref={ref}
-      className="fixed z-50 min-w-[220px] overflow-hidden rounded-md border border-line bg-surface-raised text-xs shadow-modal"
+      data-phase={phase}
+      className="mc-menu fixed z-50 min-w-[220px] overflow-hidden rounded-md border border-line bg-surface-raised text-xs shadow-modal"
       style={{ left: x, top: y }}
     >
       {items.map((item, idx) => (

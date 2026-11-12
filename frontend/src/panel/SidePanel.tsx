@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { useSwapAnimation } from "../motion";
 import type { CanvasSelection } from "../canvas/Canvas";
 import type {
   ArtifactExtension,
@@ -32,6 +33,7 @@ import { PlanspaceFilePanel } from "./PlanspaceFilePanel";
 import { ProjectPanel } from "./ProjectPanel";
 import { ArtifactPanel } from "./ArtifactPanel";
 import type { NodeSearchFocusRequest } from "../nodeSearch";
+import { SegmentedControl } from "../components/SegmentedControl";
 
 type ResolveGatePayload = Omit<
   Extract<ClientMessage, { type: "interaction_response" }>,
@@ -40,6 +42,8 @@ type ResolveGatePayload = Omit<
 
 export type SidePanelProps = {
   selection: CanvasSelection;
+  /** Whether the floating panel is showing; a hidden panel plays no swap. */
+  open?: boolean;
   nodes: NodeInfo[];
   session: SessionInfo | null;
   modelPresets: ModelPreset[];
@@ -146,8 +150,40 @@ export type SidePanelProps = {
  * Per PRD §2.3, this collapses the legacy six-tab NodeDetail; selection drives
  * the panel's structure rather than a tab label.
  */
+/** Identity of what the panel is showing, for the content-swap motion. */
+function selectionKey(selection: CanvasSelection): string {
+  switch (selection.kind) {
+    case "agent":
+    case "op":
+      return `${selection.kind}:${selection.nodeId}`;
+    case "context":
+      return `context:${selection.identityKey}`;
+    case "planspace":
+      return `planspace:${selection.planspaceId}`;
+    case "templateInstance":
+      return `template:${selection.instanceId}`;
+    case "artifact":
+      return `artifact:${selection.nodeId}:${selection.name}`;
+    case "commit":
+      return `commit:${selection.sha ?? ""}`;
+    default:
+      return selection.kind;
+  }
+}
+
 export function SidePanel(props: SidePanelProps) {
   const nodesById = new Map(props.nodes.map((n) => [n.id, n]));
+  const contentRef = useRef<HTMLDivElement | null>(null);
+  /* Selecting a different thing while the panel is open: the content rises
+   * in, so the change is visible even between two similar nodes. Opening the
+   * panel needs no swap — the panel itself is sliding in. */
+  const open = props.open !== false;
+  const wasOpenRef = useRef(open);
+  const wasOpen = wasOpenRef.current;
+  useEffect(() => {
+    wasOpenRef.current = open;
+  }, [open]);
+  useSwapAnimation(contentRef, selectionKey(props.selection), open && wasOpen);
   const detailState = useNodeDetail(
     props.session?.id,
     props.selection.kind === "agent" ? nodesById.get(props.selection.nodeId) : undefined,
@@ -169,7 +205,7 @@ export function SidePanel(props: SidePanelProps) {
           ×
         </button>
       </div>
-      <div className="min-h-0 flex-1">
+      <div ref={contentRef} className="min-h-0 flex-1">
       <Inner {...props} nodesById={nodesById} detailState={detailState} />
       </div>
     </div>
@@ -594,24 +630,21 @@ function PlanspaceLanePanel({
           <div className="text-[10px] font-medium uppercase tracking-[0.14em] text-ink-subtle">
             Promotion mode
           </div>
-          <div className="mt-2 inline-flex rounded-md border border-line bg-surface-sunken p-0.5">
-            {(["manual", "auto"] as const).map((option) => (
-              <button
-                key={option}
-                type="button"
-                disabled={saving || mode === option}
-                onClick={() => onModeChange(planspaceId, option)}
-                className={
-                  "rounded px-3 py-1.5 text-[12px] font-medium transition disabled:cursor-default " +
-                  (mode === option
-                    ? "bg-surface-raised text-ink-strong shadow-card"
-                    : "text-ink-muted hover:text-ink")
-                }
-              >
-                {option}
-              </button>
-            ))}
-          </div>
+          <SegmentedControl<"manual" | "auto">
+            value={mode}
+            onChange={(option) => onModeChange(planspaceId, option)}
+            options={[
+              { value: "manual", label: "manual" },
+              { value: "auto", label: "auto" },
+            ]}
+            disabled={saving}
+            disableActive
+            className="mt-2 rounded-md border border-line bg-surface-sunken p-0.5"
+            optionClassName="rounded px-3 py-1.5 text-[12px] font-medium"
+            activeClassName="text-ink-strong"
+            inactiveClassName="text-ink-muted hover:text-ink"
+            thumbClassName="inset-y-0.5 rounded bg-surface-raised shadow-card"
+          />
         </section>
 
         <dl className="rounded-md border border-line bg-surface-sunken px-3 py-2 text-[11.5px]">

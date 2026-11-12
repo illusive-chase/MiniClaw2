@@ -131,6 +131,22 @@ export default {
         modal: "0 24px 64px rgb(var(--shadow) / 0.18), 0 2px 8px rgb(var(--shadow) / 0.08)",
         rail: "inset 3px 0 0 0 currentColor",
       },
+      /* Motion tokens; values live in index.css so reduced motion can
+       * rewrite them in one place. */
+      transitionDuration: {
+        instant: "var(--dur-instant)",
+        quick: "var(--dur-quick)",
+        base: "var(--dur-base)",
+        modal: "var(--dur-modal)",
+        emphasis: "var(--dur-emphasis)",
+        slow: "var(--dur-slow)",
+      },
+      transitionTimingFunction: {
+        out: "var(--ease-out)",
+        in: "var(--ease-in)",
+        "in-out": "var(--ease-in-out)",
+        spring: "var(--ease-spring)",
+      },
       borderRadius: {
         sm: "4px",
         md: "6px",

@@ -11,6 +11,9 @@ import type { ReactNode } from "react";
 import { writeClipboard } from "../clipboard";
 import { googleTranslateCode } from "../languages";
 import { MarkdownView } from "./MarkdownView";
+import { ModalShell } from "./ModalShell";
+import { SegmentedControl } from "./SegmentedControl";
+import { useLatest } from "../motion";
 import type { MarkdownRoute } from "../markdownRoute";
 import { markdownRouteUrl } from "../markdownRoute";
 import { stashMarkdown } from "../mdHandoff";
@@ -67,18 +70,17 @@ export function TextZoomProvider({
     setRequest(next);
   }, []);
 
+  const close = useCallback(() => setRequest(null), []);
   const value = useMemo<TextZoomContextValue>(() => ({ open }), [open]);
 
   return (
     <TextZoomContext.Provider value={value}>
       {children}
-      {request && (
-        <TextZoomOverlay
-          request={request}
-          preferredLanguage={preferredLanguage}
-          onClose={() => setRequest(null)}
-        />
-      )}
+      <TextZoomOverlay
+        request={request}
+        preferredLanguage={preferredLanguage}
+        onClose={close}
+      />
     </TextZoomContext.Provider>
   );
 }
@@ -134,6 +136,33 @@ export function ZoomableText({
 }
 
 function TextZoomOverlay({
+  request: liveRequest,
+  preferredLanguage,
+  onClose,
+}: {
+  request: TextZoomRequest | null;
+  preferredLanguage?: string | null;
+  onClose: () => void;
+}) {
+  /* Held past close so the reader keeps its text while it animates out. */
+  const request = useLatest(liveRequest);
+  if (!request) return null;
+  return (
+    <ModalShell
+      open={liveRequest !== null}
+      onClose={onClose}
+      label={request.title}
+      closeOnScrim
+      zClassName="z-[60]"
+      scrimClassName="p-6 backdrop-blur-sm"
+      panelClassName="flex max-h-[88vh] w-[min(1040px,94vw)] flex-col overflow-hidden rounded-xl border border-line bg-surface-raised shadow-modal"
+    >
+      <TextZoomBody request={request} preferredLanguage={preferredLanguage} onClose={onClose} />
+    </ModalShell>
+  );
+}
+
+function TextZoomBody({
   request,
   preferredLanguage,
   onClose,
@@ -156,17 +185,6 @@ function TextZoomOverlay({
     setTranslateNote(null);
     setOpenNote(null);
   }, [request, rawOnly]);
-
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.stopPropagation();
-        onClose();
-      }
-    };
-    window.addEventListener("keydown", onKeyDown, true);
-    return () => window.removeEventListener("keydown", onKeyDown, true);
-  }, [onClose]);
 
   useEffect(() => {
     const previous = document.body.style.overflow;
@@ -248,18 +266,7 @@ function TextZoomOverlay({
   };
 
   return (
-    <div
-      className="fixed inset-0 z-[60] flex items-center justify-center bg-surface-scrim/60 p-6 backdrop-blur-sm"
-      onClick={onClose}
-      role="presentation"
-    >
-      <div
-        className="flex max-h-[88vh] w-[min(1040px,94vw)] flex-col overflow-hidden rounded-xl border border-line bg-surface-raised shadow-modal"
-        onClick={(event) => event.stopPropagation()}
-        role="dialog"
-        aria-modal="true"
-        aria-label={request.title}
-      >
+    <>
         <div className="flex items-start justify-between gap-4 border-b border-line px-5 py-3.5">
           <div className="min-w-0">
             <div className="truncate font-display text-sm font-semibold text-ink-strong">
@@ -272,28 +279,19 @@ function TextZoomOverlay({
           </div>
           <div className="flex flex-none items-center gap-2">
             {!rawOnly && (
-              <div className="inline-flex rounded-md border border-line bg-surface-sunken p-0.5">
-                {(
-                  [
-                    ["markdown", "Markdown"],
-                    ["raw", "Raw"],
-                  ] as Array<[TextZoomView, string]>
-                ).map(([option, label]) => (
-                  <button
-                    key={option}
-                    type="button"
-                    onClick={() => setView(option)}
-                    className={
-                      "rounded px-2.5 py-1 text-[11px] font-medium transition " +
-                      (view === option
-                        ? "bg-surface-raised text-ink-strong shadow-card"
-                        : "text-ink-muted hover:text-ink")
-                    }
-                  >
-                    {label}
-                  </button>
-                ))}
-              </div>
+              <SegmentedControl<TextZoomView>
+                value={view}
+                onChange={setView}
+                options={[
+                  { value: "markdown", label: "Markdown" },
+                  { value: "raw", label: "Raw" },
+                ]}
+                className="rounded-md border border-line bg-surface-sunken p-0.5"
+                optionClassName="rounded px-2.5 py-1 text-[11px] font-medium"
+                activeClassName="text-ink-strong"
+                inactiveClassName="text-ink-muted hover:text-ink"
+                thumbClassName="inset-y-0.5 rounded bg-surface-raised shadow-card"
+              />
             )}
             {!rawOnly && (
               <button
@@ -372,8 +370,7 @@ function TextZoomOverlay({
             </pre>
           )}
         </div>
-      </div>
-    </div>
+    </>
   );
 }
 

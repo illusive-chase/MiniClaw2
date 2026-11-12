@@ -189,7 +189,12 @@ body {
 }
 
 .passcode-shake {
-  animation: passcode-shake 180ms ease-in-out;
+  animation: passcode-shake 180ms var(--ease-in-out, ease-in-out);
+}
+@media (prefers-reduced-motion: reduce) {
+  .passcode-shake {
+    animation: none;
+  }
 }
 
 /* ───────────── timeline canvas: graph paper ─────────────
@@ -242,96 +247,477 @@ body {
   stroke-dasharray: none;
 }
 
-/* ───────────── animations (gated by reduced-motion) ───────────── */
-@media (prefers-reduced-motion: no-preference) {
-  @keyframes git-status-popover-in {
-    from {
-      opacity: 0;
-      transform: translateY(-6px) scale(0.98);
-    }
-    to {
-      opacity: 1;
-      transform: translateY(0) scale(1);
-    }
-  }
-  .git-status-popover-enter {
-    animation: git-status-popover-in 160ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
-    transform-origin: var(--git-popover-origin-x) top;
-  }
+/* ───────────── motion ─────────────
+ * One vocabulary for every transition in the app. Principles live in
+ * PHILOSOPHY.md §10.6; the short version:
+ *   - motion explains cause (where a thing came from / returns to),
+ *   - exits are faster than entries and never block the next click,
+ *   - only transform and opacity animate (grid-rows collapse is the one
+ *     exception, kept off the canvas),
+ *   - loops mean "in progress" and nothing else,
+ *   - reduced motion degrades through the tokens, not per component.
+ */
+:root {
+  --dur-instant: 90ms;
+  --dur-quick: 140ms;
+  --dur-base: 200ms;
+  --dur-modal: 240ms;
+  --dur-emphasis: 320ms;
+  --dur-slow: 420ms;
 
-  @keyframes active-nodes-panel-in {
-    from {
-      opacity: 0;
-      transform: translateY(-8px);
-    }
-    to {
-      opacity: 1;
-      transform: translateY(0);
-    }
-  }
-  .active-nodes-panel-enter {
-    animation: active-nodes-panel-in 160ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
-    transform-origin: top;
-  }
+  /* Exit durations. `src/motion.ts` EXIT_MS mirrors these for unmount timing. */
+  --exit-menu: 100ms;
+  --exit-popover: 140ms;
+  --exit-modal: 160ms;
+  --exit-panel: 160ms;
+  --exit-node: 160ms;
 
-  /* Banners slide in from off-rail and leave the same way, so the rail reads
-   * as one edge things enter and exit through. The leave keyframe also
-   * collapses height and margin: without that the banners below would hold
-   * their old position for the whole exit and then snap up at the end. */
-  @keyframes notice-banner-in {
-    from {
-      opacity: 0;
-      transform: translateX(-115%);
-    }
-    to {
-      opacity: 1;
-      transform: translateX(0);
-    }
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-in: cubic-bezier(0.4, 0, 1, 1);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --ease-spring: cubic-bezier(0.34, 1.36, 0.64, 1);
+
+  --rise-sm: 4px;
+  --rise-md: 8px;
+  --scale-pop: 0.96;
+  --scale-birth: 0.92;
+  --scale-route: 1.012;
+  --turn-swap: -30deg;
+}
+
+/* Reduced motion: distances and scales collapse to zero and every duration
+ * shortens, so each keyframe below becomes a brief fade. Components never
+ * branch on the preference themselves. Loops are stopped separately below. */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --dur-base: 120ms;
+    --dur-modal: 120ms;
+    --dur-emphasis: 120ms;
+    --dur-slow: 120ms;
+    --exit-popover: 100ms;
+    --exit-modal: 120ms;
+    --exit-panel: 120ms;
+    --exit-node: 120ms;
+    --rise-sm: 0px;
+    --rise-md: 0px;
+    --scale-pop: 1;
+    --scale-birth: 1;
+    --scale-route: 1;
+    --turn-swap: 0deg;
+    --ease-spring: var(--ease-out);
   }
+}
+
+/* Entry animations fill `backwards`: the first frame holds through any
+ * delay, and nothing lingers afterwards — a `both` fill would pin the final
+ * `transform: none` over the element's own transforms (centring translates,
+ * hover lifts) for as long as it stays mounted. Exits fill `both` so the
+ * element stays gone until it unmounts. */
+@keyframes mc-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes mc-fade-out {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+@keyframes mc-fade-rise {
+  from { opacity: 0; transform: translateY(var(--rise-sm)); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes mc-pop-in {
+  from { opacity: 0; transform: translateY(calc(var(--rise-sm) * -1)) scale(var(--scale-pop)); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes mc-pop-out {
+  from { opacity: 1; transform: none; }
+  to { opacity: 0; transform: translateY(calc(var(--rise-sm) * -0.5)) scale(calc((1 + var(--scale-pop)) / 2)); }
+}
+@keyframes mc-drop-in {
+  from { opacity: 0; transform: translateY(calc(var(--rise-md) * -1)); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes mc-drop-out {
+  from { opacity: 1; transform: none; }
+  to { opacity: 0; transform: translateY(calc(var(--rise-sm) * -1)); }
+}
+@keyframes mc-modal-in {
+  from { opacity: 0; transform: translateY(var(--rise-md)) scale(var(--scale-pop)); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes mc-modal-out {
+  from { opacity: 1; transform: none; }
+  to { opacity: 0; transform: scale(calc((1 + var(--scale-pop)) / 2 + 0.01)); }
+}
+@keyframes mc-zoom-in {
+  from { opacity: 0; transform: scale(calc((1 + var(--scale-pop)) / 2)); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes mc-node-birth {
+  from { opacity: 0; transform: scale(var(--scale-birth)); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes mc-node-exit {
+  from { opacity: 1; transform: none; }
+  to { opacity: 0; transform: scale(var(--scale-birth)); }
+}
+@keyframes mc-ring-once {
+  from { box-shadow: 0 0 0 0 rgb(var(--ring-color, var(--brand)) / 0.45); }
+  to { box-shadow: 0 0 0 10px rgb(var(--ring-color, var(--brand)) / 0); }
+}
+@keyframes mc-edge-draw {
+  from { stroke-dashoffset: 2400; }
+  to { stroke-dashoffset: 0; }
+}
+@keyframes mc-chip-swap {
+  from { opacity: 0; transform: translateY(calc(var(--rise-sm) * 0.75)); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes mc-icon-swap {
+  from { opacity: 0; transform: rotate(var(--turn-swap)) scale(var(--scale-birth)); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes mc-badge-in {
+  from { opacity: 0; transform: scale(calc(var(--scale-birth) * 0.6)); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes mc-bump {
+  0% { transform: none; }
+  40% { transform: scale(calc(2 - var(--scale-birth))); }
+  100% { transform: none; }
+}
+@keyframes mc-swing {
+  0%, 100% { transform: none; }
+  20% { transform: rotate(calc(var(--turn-swap) * -0.5)); }
+  45% { transform: rotate(calc(var(--turn-swap) * 0.35)); }
+  70% { transform: rotate(calc(var(--turn-swap) * -0.15)); }
+}
+@keyframes mc-route-in {
+  from { opacity: 0; transform: scale(var(--scale-route)); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes mc-drop-ripple {
+  0% { opacity: 0.55; transform: translate(-50%, -50%) scale(0.2); }
+  100% { opacity: 0; transform: translate(-50%, -50%) scale(1); }
+}
+
+/* ── modal ── */
+.mc-scrim[data-phase="enter"] {
+  animation: mc-fade-in var(--dur-base) var(--ease-out) backwards;
+}
+.mc-scrim[data-phase="exit"] {
+  animation: mc-fade-out var(--exit-modal) var(--ease-in) both;
+  pointer-events: none;
+}
+.mc-modal[data-phase="enter"] {
+  animation: mc-modal-in var(--dur-modal) var(--ease-out) backwards;
+}
+.mc-modal[data-phase="exit"] {
+  animation: mc-modal-out var(--exit-modal) var(--ease-in) both;
+}
+/* Full-screen surfaces have nowhere to rise from; they only settle in. */
+.mc-modal[data-variant="full"][data-phase="enter"] {
+  animation: mc-zoom-in var(--dur-modal) var(--ease-out) backwards;
+}
+
+/* ── popovers & menus ──
+ * `--pop-origin` names the anchor the surface grows out of. */
+.mc-pop {
+  transform-origin: var(--pop-origin, 50% 0);
+}
+.mc-pop[data-phase="enter"] {
+  animation: mc-pop-in var(--dur-base) var(--ease-out) backwards;
+}
+.mc-pop[data-phase="exit"] {
+  animation: mc-pop-out var(--exit-popover) var(--ease-in) both;
+  pointer-events: none;
+}
+.mc-menu {
+  transform-origin: var(--pop-origin, 0 0);
+}
+.mc-menu[data-phase="enter"] {
+  animation: mc-pop-in var(--dur-quick) var(--ease-out) backwards;
+}
+.mc-menu[data-phase="exit"] {
+  animation: mc-pop-out var(--exit-menu) var(--ease-in) both;
+  pointer-events: none;
+}
+.mc-menu[data-phase="enter"] > * {
+  animation: mc-fade-in var(--dur-quick) var(--ease-out) backwards;
+}
+.mc-menu > :nth-child(2) { animation-delay: 20ms; }
+.mc-menu > :nth-child(3) { animation-delay: 40ms; }
+.mc-menu > :nth-child(4) { animation-delay: 60ms; }
+.mc-menu > :nth-child(n + 5) { animation-delay: 80ms; }
+
+/* Full-width drop-downs from the header (run status, notifications). */
+.mc-drop[data-phase="enter"] {
+  animation: mc-drop-in var(--dur-base) var(--ease-out) backwards;
+}
+.mc-drop[data-phase="exit"] {
+  animation: mc-drop-out var(--exit-popover) var(--ease-in) both;
+  pointer-events: none;
+}
+
+.mc-hover-card {
+  animation: mc-fade-in var(--dur-instant) var(--ease-out) backwards;
+}
+
+/* ── content arriving ── */
+.mc-fade-rise {
+  animation: mc-fade-rise var(--dur-base) var(--ease-out) backwards;
+}
+.mc-fade-in {
+  animation: mc-fade-in var(--dur-base) var(--ease-out) backwards;
+}
+.mc-chip-swap {
+  display: inline-flex;
+  animation: mc-chip-swap var(--dur-base) var(--ease-out) backwards;
+}
+.mc-icon-swap {
+  animation: mc-icon-swap var(--dur-emphasis) var(--ease-spring) backwards;
+}
+.mc-badge-in {
+  animation: mc-badge-in var(--dur-emphasis) var(--ease-spring) backwards;
+}
+.mc-bump {
+  animation: mc-bump var(--dur-emphasis) var(--ease-spring);
+}
+.mc-swing {
+  transform-origin: 50% 2px;
+  animation: mc-swing var(--dur-slow) var(--ease-out);
+}
+.mc-route-in {
+  animation: mc-route-in var(--dur-modal) var(--ease-out) backwards;
+}
+
+/* ── collapse ──
+ * Height via grid rows: animatable without measuring. Kept to panels and
+ * the landing page; never used on the canvas. */
+.mc-collapse {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows var(--dur-base) var(--ease-out);
+}
+.mc-collapse[data-open="true"] {
+  grid-template-rows: 1fr;
+}
+.mc-collapse > .mc-collapse-inner {
+  min-height: 0;
+  overflow: hidden;
+}
+.mc-collapse[data-open="true"] > .mc-collapse-inner {
+  animation: mc-fade-in var(--dur-base) var(--ease-out) 40ms backwards;
+}
+/* Closing runs on the exit beat; `Collapse` unmounts the body after
+ * EXIT_MS.panel, which matches --exit-panel. */
+.mc-collapse[data-open="false"] {
+  transition-duration: var(--exit-panel);
+  transition-timing-function: var(--ease-in);
+}
+.mc-collapse[data-open="false"] > .mc-collapse-inner {
+  opacity: 0;
+  transition: opacity var(--exit-menu) var(--ease-in);
+}
+/* Open at first paint (a section that starts expanded): no motion. */
+.mc-collapse[data-instant="true"] {
+  transition: none;
+}
+.mc-collapse[data-instant="true"] > .mc-collapse-inner {
+  animation: none;
+}
+/* Native <details>: whatever follows the summary rises in on open, so every
+ * disclosure in the app gets it without extra markup. The keyframe replays
+ * each time the body goes from hidden to shown. Closing stays instant — the
+ * element hides its body before any transition could run. */
+details[open] > summary ~ * {
+  animation: mc-fade-rise var(--dur-base) var(--ease-out) backwards;
+}
+
+
+/* ── segmented control thumb ── */
+.mc-seg-thumb {
+  transition:
+    transform var(--dur-quick) var(--ease-in-out),
+    width var(--dur-quick) var(--ease-in-out);
+}
+.mc-seg-thumb[data-ready="false"] {
+  transition: none;
+}
+
+/* ── canvas: node lifecycle ──
+ * Applied to a node component's own root, never to `.react-flow__node`:
+ * React Flow positions nodes with that element's transform, and node
+ * positions are deliberately not tweened. */
+.node-birth {
+  animation: mc-node-birth var(--dur-emphasis) var(--ease-spring) backwards;
+  transform-origin: var(--birth-origin, 50% 50%);
+}
+.node-arrive {
+  animation: mc-fade-in var(--dur-base) var(--ease-out) backwards;
+}
+.node-leave {
+  animation: mc-node-exit var(--exit-node) var(--ease-in) both;
+  pointer-events: none;
+}
+/* One-shot ring: birth, a terminal state change, or "here it is" after a
+ * jump. `--ring-color` picks the state hue. */
+.node-ring-once {
+  animation: mc-ring-once 700ms var(--ease-out) 80ms both;
+}
+.node-ring-twice {
+  animation: mc-ring-once 560ms var(--ease-out) 60ms 2 both;
+}
+/* Edges joining a node in motion. React Flow's BaseEdge takes no
+ * `pathLength`, so the draw-in uses a dash longer than any on-screen edge. */
+.edge-draw .react-flow__edge-path {
+  stroke-dasharray: 2400;
+  animation: mc-edge-draw var(--dur-slow) var(--ease-out) both;
+}
+.edge-arrive {
+  animation: mc-fade-in var(--dur-base) var(--ease-out) backwards;
+}
+.edge-leave {
+  animation: mc-fade-out var(--exit-node) var(--ease-in) both;
+}
+
+/* Immediate feedback where a double-click asked for a node, shown while the
+ * create request is in flight. Screen-space, outside React Flow's nodes. */
+.drop-ripple {
+  position: absolute;
+  width: 72px;
+  height: 72px;
+  border-radius: 999px;
+  border: 1.5px solid rgb(var(--brand) / 0.6);
+  pointer-events: none;
+  animation: mc-drop-ripple var(--dur-slow) var(--ease-out) both;
+}
+.drop-placeholder {
+  position: absolute;
+  pointer-events: none;
+  transform: translate(-50%, -50%);
+  border: 1.5px dashed rgb(var(--brand) / 0.55);
+  border-radius: 8px;
+  background: rgb(var(--brand-soft) / 0.35);
+  animation: mc-fade-in var(--dur-base) var(--ease-out) backwards;
+}
+.drop-placeholder[data-phase="exit"] {
+  animation: mc-fade-out var(--exit-menu) var(--ease-in) both;
+}
+
+/* State colours on rails, chips and bars cross-fade rather than snap. */
+.state-tint {
+  transition:
+    background-color var(--dur-base) var(--ease-out),
+    color var(--dur-base) var(--ease-out),
+    border-color var(--dur-base) var(--ease-out),
+    width var(--dur-emphasis) var(--ease-out);
+}
+
+/* ── skeleton ── */
+.mc-skeleton {
+  background: rgb(var(--surface-raised) / 0.7);
+  border: 1px solid rgb(var(--border) / 0.7);
+}
+
+/* ── pressing ── */
+.mc-press {
+  transition: transform var(--dur-instant) var(--ease-out);
+}
+.mc-press:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+/* ── theme cross-fade ──
+ * Present on <html> for one --dur-base around a theme flip only; colour
+ * transitions on every element would be a standing cost otherwise. */
+html.theme-fade,
+html.theme-fade *,
+html.theme-fade *::before,
+html.theme-fade *::after {
+  transition:
+    background-color var(--dur-base) var(--ease-out),
+    border-color var(--dur-base) var(--ease-out),
+    color var(--dur-base) var(--ease-out),
+    fill var(--dur-base) var(--ease-out),
+    stroke var(--dur-base) var(--ease-out) !important;
+}
+
+/* Existing anchored popover / drop-down entries, now on the shared tokens. */
+.git-status-popover-enter {
+  animation: mc-pop-in var(--dur-base) var(--ease-out) backwards;
+  transform-origin: var(--git-popover-origin-x) top;
+}
+.git-status-popover-enter[data-phase="exit"] {
+  animation: mc-pop-out var(--exit-popover) var(--ease-in) both;
+  pointer-events: none;
+}
+
+/* Banners slide in from off-rail and leave the same way, so the rail reads
+ * as one edge things enter and exit through. The leave keyframe also
+ * collapses height and margin: without that the banners below would hold
+ * their old position for the whole exit and then snap up at the end. */
+@keyframes notice-banner-in {
+  from {
+    opacity: 0;
+    transform: translateX(-115%);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+.notice-banner-enter {
+  animation: notice-banner-in 260ms var(--ease-out) backwards;
+}
+
+@keyframes notice-banner-out {
+  from {
+    opacity: 1;
+    transform: translateX(0);
+    max-height: 220px;
+    margin-bottom: 0;
+  }
+  60% {
+    opacity: 0;
+    transform: translateX(-115%);
+    max-height: 220px;
+    margin-bottom: 0;
+  }
+  to {
+    opacity: 0;
+    transform: translateX(-115%);
+    max-height: 0;
+    /* Cancels the rail's `gap-3` as well as the banner's own height, so the
+     * banners below close the space exactly rather than keeping a stray row
+     * of padding where this one was. Track the gap if it ever changes. */
+    margin-bottom: -0.75rem;
+  }
+}
+.notice-banner-leave {
+  animation: notice-banner-out 200ms var(--ease-in) both;
+  /* The banner is on its way out; a hover or click landing mid-exit would
+   * act on a record the reducer has already dropped. */
+  pointer-events: none;
+  overflow: hidden;
+}
+
+/* The banner slide is a long horizontal travel, which reduced motion rules
+ * out; it becomes a plain fade instead. */
+@media (prefers-reduced-motion: reduce) {
   .notice-banner-enter {
-    animation: notice-banner-in 260ms cubic-bezier(0.22, 1, 0.36, 1) both;
-  }
-
-  @keyframes notice-banner-out {
-    from {
-      opacity: 1;
-      transform: translateX(0);
-      max-height: 220px;
-      margin-bottom: 0;
-    }
-    60% {
-      opacity: 0;
-      transform: translateX(-115%);
-      max-height: 220px;
-      margin-bottom: 0;
-    }
-    to {
-      opacity: 0;
-      transform: translateX(-115%);
-      max-height: 0;
-      /* Cancels the rail's `gap-3` as well as the banner's own height, so the
-       * banners below close the space exactly rather than keeping a stray row
-       * of padding where this one was. Track the gap if it ever changes. */
-      margin-bottom: -0.75rem;
-    }
+    animation: mc-fade-in var(--dur-quick) var(--ease-out) backwards;
   }
   .notice-banner-leave {
-    animation: notice-banner-out 200ms cubic-bezier(0.4, 0, 1, 1) both;
-    /* The banner is on its way out; a hover or click landing mid-exit would
-     * act on a record the reducer has already dropped. */
-    pointer-events: none;
-    overflow: hidden;
+    animation: mc-fade-out var(--exit-menu) var(--ease-in) both;
   }
+}
 
-  /* Both banner animations are pure decoration — the rail is equally readable
-   * without them, so honor the OS setting rather than scaling them down. */
-  @media (prefers-reduced-motion: reduce) {
-    .notice-banner-enter,
-    .notice-banner-leave {
-      animation-duration: 1ms;
-    }
-  }
-
+/* ── loops: only "in progress" ──
+ * Running sweep, waiting pulse, human-input ring, marching edges, stream
+ * dots. They are the one family that repeats, so they are also the one
+ * family reduced motion turns off outright. */
+@media (prefers-reduced-motion: no-preference) {
   /* sweep: the bar is w-1/3 of its parent track. Translating by % of self,
    * -100% places the right edge at 0 (just off-left); 300% places the left
    * edge at 100% (just off-right). The resulting motion fills the track. */
@@ -381,6 +767,29 @@ body {
   }
   .stream-dot {
     animation: stream-dot 1.4s ease-in-out infinite;
+  }
+
+  @keyframes mc-shimmer {
+    from { background-position: -200% 0; }
+    to { background-position: 200% 0; }
+  }
+  .mc-skeleton {
+    background-image: linear-gradient(
+      90deg,
+      transparent 0%,
+      rgb(var(--surface-sunken) / 0.9) 50%,
+      transparent 100%
+    );
+    background-size: 200% 100%;
+    animation: mc-shimmer 1.6s linear infinite;
+  }
+
+  @keyframes mc-ws-pulse {
+    0% { box-shadow: 0 0 0 0 currentColor; }
+    100% { box-shadow: 0 0 0 5px transparent; }
+  }
+  .ws-connecting {
+    animation: mc-ws-pulse 1.2s var(--ease-out) infinite;
   }
 }
 

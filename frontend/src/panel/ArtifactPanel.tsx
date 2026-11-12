@@ -263,15 +263,13 @@ export function ArtifactPanel({ sessionId, nodeId, artifact, ext }: ArtifactPane
           </section>
         )}
       </div>
-      {diffOpen && diffArtifact && (
-        <DiffViewerOverlay
-          artifact={diffArtifact}
-          sessionId={sessionId}
-          nodeId={nodeId}
-          name={artifact.name}
-          onClose={() => setDiffOpen(false)}
-        />
-      )}
+      <DiffViewerOverlay
+        artifact={diffOpen ? diffArtifact ?? null : null}
+        sessionId={sessionId}
+        nodeId={nodeId}
+        name={artifact.name}
+        onClose={() => setDiffOpen(false)}
+      />
     </div>
   );
 }
