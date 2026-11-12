@@ -75,7 +75,7 @@ class ProjectConcurrencyApiTests(unittest.TestCase):
     def test_create_update_and_persist_concurrency(self) -> None:
         created = self.client.post(
             "/sessions",
-            json={"temporary": True, "concurrency": 3},
+            json={"temporary": True, "concurrency": 3, "name": "Project", "icon": {"glyph": "code", "hue": "coral"}},
         )
         self.assertEqual(created.status_code, 200, created.text)
         body = created.json()
@@ -96,7 +96,7 @@ class ProjectConcurrencyApiTests(unittest.TestCase):
         self.assertEqual(project.concurrency, 2)
 
     def test_api_rejects_non_positive_concurrency(self) -> None:
-        created = self.client.post("/sessions", json={"temporary": True})
+        created = self.client.post("/sessions", json={"temporary": True, "name": "Project", "icon": {"glyph": "code", "hue": "coral"}})
         sid = created.json()["id"]
         self.assertEqual(
             self.client.patch(

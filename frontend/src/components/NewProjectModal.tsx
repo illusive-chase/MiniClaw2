@@ -4,6 +4,8 @@ import { ApiError, createSession } from "../api";
 import { LANGUAGE_OPTIONS } from "../languages";
 import type { GlobalDefaults, ModelPreset, RemoteAccessConfig, SessionInfo } from "../types";
 import { RemoteExecutionFields } from "./RemoteExecutionFields";
+import { IconPicker } from "./IconPicker";
+import { ProjectGlyph } from "./ProjectGlyph";
 import {
   defaultModelPresetId,
   modelPresetDetail,
@@ -44,6 +46,8 @@ export function NewProjectModal({
   onCreated,
 }: Props) {
   const [name, setName] = useState("");
+  const [glyph, setGlyph] = useState<string | null>(null);
+  const [hue, setHue] = useState<string | null>(null);
   const [preferredLanguage, setPreferredLanguage] = useState("");
   const [modelPresetId, setModelPresetId] = useState("");
   const [concurrency, setConcurrency] = useState(1);
@@ -65,6 +69,8 @@ export function NewProjectModal({
   useEffect(() => {
     if (open) {
       setName("");
+      setGlyph(null);
+      setHue(null);
       setPreferredLanguage(defaults?.preferred_language ?? "");
       setModelPresetId(
         defaultModelPresetId(modelPresets, defaults?.default_model_preset_id),
@@ -86,11 +92,21 @@ export function NewProjectModal({
     }
   }, [open, modelPresets, defaults]);
 
+  /* Name, glyph and color have no defaults: each is the user's choice. */
+  const missing = [
+    !name.trim() && "名称",
+    !glyph && "图标",
+    !hue && "颜色",
+  ].filter((item): item is string => !!item);
+
   const submit = async () => {
+    if (!glyph || !hue || !name.trim()) return;
+    const icon = { glyph, hue };
     const cwdInput = cwd.trim();
     const payload = (createMissingCwd: boolean) => {
       const common = {
-        name: name.trim() || undefined,
+        name: name.trim(),
+        icon,
         preferred_language: preferredLanguage || null,
         model_preset_id: modelPresetId || undefined,
         concurrency,
@@ -162,7 +178,7 @@ export function NewProjectModal({
       onClose={onCancel}
       label="New project"
       dismissible={!submitting}
-      panelClassName="flex max-h-[92vh] w-[520px] max-w-[95vw] flex-col rounded-xl border border-line bg-surface-raised shadow-modal"
+      panelClassName="flex max-h-[92vh] w-[560px] max-w-[95vw] flex-col rounded-xl border border-line bg-surface-raised shadow-modal"
     >
         <div className="flex items-center justify-between gap-3 border-b border-line px-5 py-3.5">
           <div className="min-w-0">
@@ -170,7 +186,7 @@ export function NewProjectModal({
               New project
             </div>
             <div className="text-[11px] text-ink-muted">
-              A project pins one git working tree; nodes are launched explicitly inside it.
+              名称、图标和颜色都需要先定好，项目会出现在主屏末尾。
             </div>
           </div>
           <button
@@ -183,19 +199,37 @@ export function NewProjectModal({
         </div>
 
         <div className="flex min-h-0 flex-col gap-4 overflow-y-auto px-5 py-4 text-sm">
-          <label className="flex flex-col gap-1">
-            <span className="text-[10px] font-medium uppercase tracking-[0.14em] text-ink-subtle">
-              Name <span className="text-ink-subtle/70">(optional)</span>
-            </span>
-            <input
-              ref={nameRef}
-              type="text"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="My experiment"
-              className="rounded-md border border-line bg-surface-sunken px-3 py-2 text-sm text-ink-strong placeholder:text-ink-subtle focus:border-brand focus:outline-none"
-            />
-          </label>
+          <div className="grid grid-cols-[96px_minmax(0,1fr)] items-start gap-4">
+            <div className="flex flex-col items-center gap-2 pt-1" aria-hidden="true">
+              <ProjectGlyph icon={glyph ? { glyph, hue } : null} size={64} />
+              <span className="max-w-[94px] truncate text-[12px] text-ink-strong">
+                {name.trim() || "未命名"}
+              </span>
+            </div>
+            <label className="flex flex-col gap-1">
+              <span className="text-[10px] font-medium uppercase tracking-[0.14em] text-ink-subtle">
+                Name <span className="text-ink-subtle/70">(必填)</span>
+              </span>
+              <input
+                ref={nameRef}
+                type="text"
+                value={name}
+                maxLength={80}
+                required
+                onChange={(e) => setName(e.target.value)}
+                placeholder="例如 payments-api"
+                className="rounded-md border border-line bg-surface-sunken px-3 py-2 text-sm text-ink-strong placeholder:text-ink-subtle focus:border-brand focus:outline-none"
+              />
+            </label>
+          </div>
+
+          <IconPicker
+            glyph={glyph}
+            hue={hue}
+            missing
+            onGlyph={setGlyph}
+            onHue={setHue}
+          />
 
           <label className="flex flex-col gap-1">
             <span className="text-[10px] font-medium uppercase tracking-[0.14em] text-ink-subtle">
@@ -369,6 +403,9 @@ export function NewProjectModal({
         </div>
 
         <div className="flex items-center justify-end gap-2 border-t border-line bg-surface-sunken px-5 py-3 rounded-b-xl">
+          {missing.length > 0 && (
+            <span className="mr-auto text-[11.5px] text-ink-subtle">还需填写{missing.join("、")}</span>
+          )}
           <button
             type="button"
             onClick={onCancel}
@@ -381,6 +418,7 @@ export function NewProjectModal({
             type="button"
             disabled={
               submitting
+              || missing.length > 0
               || !modelPresetId
               || (mode === "remote" && (
                 !remoteTargetId.trim()

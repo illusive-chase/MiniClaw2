@@ -11,7 +11,7 @@
  * read for scheduling could never safely do. Execution now reads each node's
  * own lane, and that field is gone.
  *
- * Same read/write shape as `projectSort.ts` and `libraryTreeState.ts`: total
+ * Same read/write shape as `recentUsed.ts` and `libraryTreeState.ts`: total
  * functions that fall back rather than throw, because localStorage can be
  * unavailable (private windows, disabled storage) and the canvas must still
  * render.

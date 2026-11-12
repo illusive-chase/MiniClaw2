@@ -1,9 +1,9 @@
 import { build } from "esbuild";
 import { pathToFileURL } from "node:url";
 
-const outfile = "/tmp/miniclaw2-project-tags.test.mjs";
+const outfile = "/tmp/miniclaw2-home-layout.test.mjs";
 await build({
-  entryPoints: [new URL("./project-tags.test.ts", import.meta.url).pathname],
+  entryPoints: [new URL("./home-layout.test.ts", import.meta.url).pathname],
   outfile,
   bundle: true,
   platform: "node",

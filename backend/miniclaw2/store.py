@@ -27,6 +27,7 @@ import shutil
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from collections.abc import Callable
 from typing import Any
 
 from pydantic import ValidationError
@@ -72,6 +73,16 @@ from .tags import (
     delete_tag as delete_global_tag,
     load_tags,
     update_tag as update_global_tag,
+)
+from .home_layout import (
+    HomeConflictError,
+    HomeLayout,
+    append_project as append_home_project,
+    check_membership as check_home_membership,
+    load_home,
+    reconcile as reconcile_home_layout,
+    remove_project as remove_home_project,
+    save_home,
 )
 
 
@@ -459,6 +470,56 @@ class Store:
             self.sync.schedule_commit(f"remove tag {tag_id} from projects")
         return changed
 
+    # ---- home layout ----
+
+    def reconcile_home(self, active_ids: list[str]) -> HomeLayout:
+        """Read ``home.json`` converged onto ``active_ids``, persisting any fix.
+
+        ``active_ids`` is in the order unlisted projects should be appended.
+        A read-only store still answers with the converged layout; it just
+        does not write it back.
+        """
+        layout, changed = reconcile_home_layout(load_home(self.root), active_ids)
+        if changed and self.read_only_reason is None:
+            save_home(self.root, layout)
+            self.sync.schedule_commit("reconcile home layout")
+        return layout
+
+    def replace_home(
+        self,
+        layout: HomeLayout,
+        *,
+        base_revision: str,
+        active_ids: list[str],
+    ) -> HomeLayout:
+        """Compare-and-swap the whole arrangement under the storage lock."""
+        self.assert_writable()
+        current = self.reconcile_home(active_ids)
+        if current.revision() != base_revision:
+            raise HomeConflictError("home layout changed since it was read")
+        check_home_membership(layout, active_ids)
+        save_home(self.root, layout)
+        self.sync.schedule_commit("update home layout")
+        return layout
+
+    def _edit_home(self, edit: Callable[[HomeLayout], HomeLayout]) -> None:
+        # Without a file there is nothing to keep in step: the next read
+        # builds one from the project set in creation order.
+        layout = load_home(self.root)
+        if layout is None:
+            return
+        updated = edit(layout)
+        if updated.model_dump() != layout.model_dump():
+            save_home(self.root, updated)
+
+    def add_project_to_home(self, pid: str) -> None:
+        self.assert_writable()
+        self._edit_home(lambda layout: append_home_project(layout, pid))
+
+    def remove_project_from_home(self, pid: str) -> None:
+        self.assert_writable()
+        self._edit_home(lambda layout: remove_home_project(layout, pid))
+
     def create_project(self, project: Project) -> Project:
         self.assert_writable()
         if project.persistence_mode is ProjectPersistenceMode.REMOTE:
@@ -499,6 +560,7 @@ class Store:
             exclude={"provider", "root_path", "node_positions"}
         )
         self._write_json(self._project_file(project.id), payload)
+        self.add_project_to_home(project.id)
         self.sync.schedule_commit(f'create project "{project.name or project.id}"')
         return project
 
@@ -583,6 +645,7 @@ class Store:
             if projection_created:
                 shutil.rmtree(projection, ignore_errors=True)
             raise
+        self.add_project_to_home(project.id)
         self.sync.schedule_commit(
             f'create remote project "{project.name or project.id}"'
         )
@@ -851,6 +914,7 @@ class Store:
         if not d.exists():
             return False
         shutil.rmtree(d)
+        self.remove_project_from_home(pid)
         self._last_activity_index.pop(pid, None)
         self._node_summary_index.pop(pid, None)
         self.sync.schedule_commit(f"delete project {pid}")

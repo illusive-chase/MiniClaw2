@@ -93,7 +93,7 @@ class ArtifactApiTests(unittest.TestCase):
         self.client = TestClient(create_app(self.registry))
         response = self.client.post(
             "/sessions",
-            json={"cwd": self.cwd.name, "model_preset_id": "opus-4-8"},
+            json={"cwd": self.cwd.name, "model_preset_id": "opus-4-8", "name": "Project", "icon": {"glyph": "code", "hue": "coral"}},
         )
         self.assertEqual(response.status_code, 200, response.text)
         self.sid = response.json()["id"]

@@ -27,7 +27,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 from .migrations.errors import MigrationError
 from .migrations.catalog import CURRENT_VERSION, MINIMUM_VERSION
-from pydantic import BaseModel, ConfigDict, Field, StrictInt, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, ValidationError, field_validator
 
 from .active_nodes import ACTIVE_STATES, ActiveNodesIndex, collect_active_entries
 from .artifacts import INLINE_TEXT_CAP, stored_artifact_path, stored_artifacts_dir
@@ -135,6 +135,8 @@ from .self_update import (
 )
 from .sync import SyncError
 from .tags import Tag
+from .home_layout import HomeConflictError, HomeItem, HomeLayout
+from .project_icons import ProjectIcon, default_project_icon
 from .templates import (
     SCHEMA_VERSION as TEMPLATE_SCHEMA_VERSION,
     SerializerError,
@@ -181,9 +183,18 @@ class CreateSessionRequest(BaseModel):
     remote_access: RemoteAccessConfig | None = None
     remote_initialization: Literal["existing", "cloned", "init"] = "existing"
     remote_clone_url: str | None = None
-    name: str | None = None
+    name: str
+    icon: ProjectIcon
     create_missing_cwd: bool = False
     concurrency: StrictInt | None = Field(default=None, ge=1)
+
+    @field_validator("name")
+    @classmethod
+    def _require_name(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("project name must not be empty")
+        return normalized
 
 
 class PasscodeLoginRequest(BaseModel):
@@ -283,6 +294,19 @@ class UpdateSessionTagsRequest(BaseModel):
     tag_ids: list[str]
 
 
+class ReplaceHomeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    items: list[HomeItem]
+    base_revision: str
+
+
+class HomeLayoutResponse(BaseModel):
+    version: int
+    revision: str
+    items: list[HomeItem]
+
+
 class UpdateSessionPreferencesRequest(BaseModel):
     preferred_language: str | None = None
     concurrency: StrictInt | None = Field(default=None, ge=1)
@@ -301,6 +325,7 @@ class SessionInfo(BaseModel):
     temporary: bool = False
     template_id: str | None = None
     tag_ids: list[str] = Field(default_factory=list)
+    icon: ProjectIcon = Field(default_factory=default_project_icon)
     last_activity_at: float | None = None
     archived_at: float | None = None
     name: str = ""
@@ -891,7 +916,7 @@ def create_app(
             sid = parts[1]
             allowed = (
                 len(parts) == 2
-                or (len(parts) == 3 and parts[2] in {"archive", "tags"})
+                or (len(parts) == 3 and parts[2] in {"archive", "tags", "icon"})
             )
             if not allowed:
                 project = registry.get_project(sid)
@@ -1642,7 +1667,8 @@ def create_app(
                     else defaults.preferred_language
                 ),
                 temporary=req.temporary,
-                name=req.name or "",
+                name=req.name,
+                icon=req.icon,
                 create_missing_cwd=req.create_missing_cwd,
                 persistence_mode=persistence_mode,
                 remote_identity=req.remote,
@@ -1660,6 +1686,21 @@ def create_app(
         except RuntimeError as exc:
             raise HTTPException(500, str(exc)) from exc
         return _session_info(registry, project)
+
+    @app.get("/home", response_model=HomeLayoutResponse)
+    def get_home() -> HomeLayoutResponse:
+        return _home_response(registry.home_layout())
+
+    @app.put("/home", response_model=HomeLayoutResponse)
+    def put_home(req: ReplaceHomeRequest) -> HomeLayoutResponse:
+        try:
+            layout = HomeLayout(items=req.items)
+            saved = registry.replace_home_layout(layout, base_revision=req.base_revision)
+        except HomeConflictError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        except (ValueError, ValidationError) as exc:
+            raise HTTPException(400, str(exc)) from exc
+        return _home_response(saved)
 
     @app.get("/tags", response_model=list[Tag])
     def list_tags() -> list[Tag]:
@@ -2071,10 +2112,23 @@ def create_app(
 
     @app.patch("/sessions/{sid}", response_model=SessionInfo)
     def rename_session(sid: str, req: RenameSessionRequest) -> SessionInfo:
-        project = registry.rename_project(sid, req.name)
+        try:
+            project = registry.rename_project(sid, req.name)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
         if project is None:
             raise HTTPException(404, "session not found")
         return _session_info(registry, project)
+
+    @app.patch("/sessions/{sid}/icon", response_model=SessionInfo)
+    def update_session_icon(sid: str, req: ProjectIcon) -> SessionInfo:
+        try:
+            project = registry.update_project_icon(sid, req)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        if project is None:
+            raise HTTPException(404, "session not found")
+        return _session_info(registry, project, include_positions=False)
 
     @app.patch("/sessions/{sid}/tags", response_model=SessionInfo)
     def update_session_tags(
@@ -3389,6 +3443,14 @@ def create_app(
     return app
 
 
+def _home_response(layout: HomeLayout) -> HomeLayoutResponse:
+    return HomeLayoutResponse(
+        version=layout.version,
+        revision=layout.revision(),
+        items=layout.items,
+    )
+
+
 def _global_state_payload(store_root: Path) -> dict[str, Any]:
     config = load_global_config(store_root)
     # The manager is keyed by the same store root and performs no network IO.
@@ -3444,6 +3506,7 @@ def _session_info(
         temporary=project.temporary,
         template_id=project.template_id,
         tag_ids=project.tag_ids,
+        icon=project.icon,
         last_activity_at=node_summary.last_activity_at,
         archived_at=project.archived_at,
         name=project.name,

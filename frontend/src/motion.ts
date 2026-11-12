@@ -21,6 +21,8 @@ export const EXIT_MS = {
   modal: 160,
   panel: 160,
   node: 160,
+  /** Home folder / archive overlay; `.home-overlay[data-phase="exit"]`. */
+  overlay: 140,
 } as const;
 
 /** How long a "fresh" mark lives; matches `--dur-emphasis` plus the ring tail. */

@@ -19,7 +19,7 @@
  * column, and the header bar and the body can share one cap and stay aligned.
  *
  * Read and write are total functions that fall back to the defaults rather than
- * throwing, following `projectSort.ts`: localStorage can be unavailable (private
+ * throwing, following `recentUsed.ts`: localStorage can be unavailable (private
  * windows, disabled site data) or over quota, and the page must still render.
  */
 

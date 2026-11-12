@@ -50,7 +50,7 @@ class CodeIndexApiTest(unittest.TestCase):
         self._project.cleanup()
 
     def _create_session(self) -> str:
-        res = self.client.post("/sessions", json={"cwd": str(self.root), "model_preset_id": "opus-4-8"})
+        res = self.client.post("/sessions", json={"cwd": str(self.root), "model_preset_id": "opus-4-8", "name": "Project", "icon": {"glyph": "code", "hue": "coral"}})
         self.assertEqual(res.status_code, 200, res.text)
         return res.json()["id"]
 
@@ -72,7 +72,7 @@ class CodeIndexApiTest(unittest.TestCase):
 
     def test_capability_for_each_project_form(self) -> None:
         self.assertTrue(self.client.get(f"/sessions/{self.sid}").json()["capabilities"]["code_reading"])
-        temp = self.client.post("/sessions", json={"temporary": True, "model_preset_id": "opus-4-8"})
+        temp = self.client.post("/sessions", json={"temporary": True, "model_preset_id": "opus-4-8", "name": "Project", "icon": {"glyph": "code", "hue": "coral"}})
         self.assertEqual(temp.status_code, 200, temp.text)
         self.assertFalse(temp.json()["capabilities"]["code_reading"])
         self.assertEqual(self.client.get(f"/sessions/{temp.json()['id']}/code/tree").status_code, 400)

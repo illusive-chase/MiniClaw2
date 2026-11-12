@@ -103,7 +103,8 @@ import {
 } from "./templateInstantiate";
 /* The canvas and the template loader must agree on what a placeholder is, so the
  * argument chips reuse the editor's scanner rather than re-deriving the rule. */
-import { ProjectsLanding } from "./components/ProjectsLanding";
+import { ProjectsHome } from "./components/ProjectsHome";
+import { ProjectGlyph } from "./components/ProjectGlyph";
 import { StorageMaintenance } from "./components/StorageMaintenance";
 import { storageGuidance, type StorageFailure } from "./storageMaintenance";
 import { NotificationBell } from "./components/NotificationBell";
@@ -135,7 +136,6 @@ import type {
   CommitDescriptor,
   TemplateSummary,
   TemplateInstanceRecord,
-  Tag,
   WorkspaceEvent,
 } from "./types";
 import { useSessionSocket } from "./ws";
@@ -358,7 +358,6 @@ export function App() {
     markRead(cleared.map((notice) => notice.readKey));
   }, [clearAllNotices, markRead]);
 
-  const [landingTags, setLandingTags] = useState<Tag[]>([]);
   const [session, setSession] = useState<SessionInfo | null>(null);
   const [nodes, setNodes] = useState<NodeInfo[]>([]);
   const [modelPresets, setModelPresets] = useState<ModelPreset[]>([]);
@@ -3097,13 +3096,13 @@ export function App() {
     return (
       <div key="landing" className="mc-route-in flex h-screen flex-col bg-surface text-ink">
         <div className="min-h-0 flex-1">
-          <ProjectsLanding
+          <ProjectsHome
           onOpen={openProject}
           onCreate={() => setNewProjectModalOpen(true)}
           sessions={landingSessions}
           setSessions={setLandingSessions}
-          tags={landingTags}
-          setTags={setLandingTags}
+          activeEntries={activeNodesFeed.entries}
+          readKeys={readKeysController.readKeys}
           modelPresets={modelPresets}
           globalState={globalState}
           onGlobalStateChanged={(next) => {
@@ -3329,6 +3328,7 @@ export function App() {
               <path d="M9.9 20.9v-4.8a1.3 1.3 0 0 1 1.3-1.3h1.6a1.3 1.3 0 0 1 1.3 1.3v4.8" />
             </svg>
           </button>
+          {session && <ProjectGlyph icon={session.icon} size={28} />}
           <div className="min-w-0">
             <div className="truncate font-display text-[14px] font-semibold tracking-tight text-ink-strong">
               {projectTitle}

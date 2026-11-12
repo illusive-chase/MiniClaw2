@@ -143,12 +143,14 @@ def merge_remote(root: Path, remote_ref: str, *, on_progress: Callable[[str], No
             extract(root, ancestor_commit, base)
             normalize(base, accepted)
             from ..git_layout import check_context_layout_conflicts, check_git_layout_conflicts, merge_git_layouts, merge_lane_layouts
+            from ..home_layout import merge_home_layout
 
             report_progress("merging")
             check_git_layout_conflicts(base, local, remote)
             check_context_layout_conflicts(base, local, remote)
             merge_git_layouts(base, local, remote)
             merge_lane_layouts(base, local, remote)
+            merge_home_layout(base, local, remote)
             remote_tree = tree(root, remote, directory / "remote.index")
             base_commit = git(root, "commit-tree", tree(root, base, directory / "base.index"), input_text="迁移规范化共同祖先\n")
             local_commit = git(root, "commit-tree", tree(root, local, directory / "local.index"), "-p", base_commit, input_text="迁移规范化本地\n")

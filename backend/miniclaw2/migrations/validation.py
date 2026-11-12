@@ -39,6 +39,8 @@ def validate(root: Path, *, external: bool = False) -> None:
                     raise ValueError("共享项目不能包含本机字段；请先通过中间版本完成分区")
                 if not payload.get("model_preset_id") or payload.get("id") != parts[1]:
                     raise ValueError("项目 id 或模型预设无效")
+                if "icon" not in payload:
+                    raise ValueError("项目缺少图标")
                 Project.model_validate({**payload, "root_path": UNBOUND_ROOT_PATH})
                 if any(candidate.is_file() for candidate in (path.parent / "nodes").rglob("*")):
                     raise ValueError("发现未分区节点，不能猜测归属")
@@ -100,6 +102,12 @@ def validate(root: Path, *, external: bool = False) -> None:
                 from ..tags import load_tags
 
                 load_tags(root)
+            elif relative == "home.json" and not external:
+                # Structure only: membership drift is healed on read, and a
+                # merge input may legitimately lag the project set.
+                from ..home_layout import load_home
+
+                load_home(root)
         except MigrationError:
             raise
         except (OSError, ValueError, KeyError, TypeError, yaml.YAMLError, TemplateError) as exc:

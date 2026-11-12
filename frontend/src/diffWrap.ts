@@ -1,6 +1,6 @@
 /* Diff viewer line-wrap mode, persisted across reloads.
  *
- * Same shape as `projectSort.ts`: read/write are total functions that fall back
+ * Same shape as `recentUsed.ts`: read/write are total functions that fall back
  * to the default rather than throwing, because localStorage can be unavailable
  * (private windows, disabled storage) and the viewer must still render.
  */

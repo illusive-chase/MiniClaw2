@@ -233,7 +233,7 @@ def test_search_endpoint(tmp_path: Path) -> None:
     workspace.mkdir()
     with TestClient(create_app()) as client:
         res = client.post(
-            "/sessions", json={"cwd": str(workspace), "model_preset_id": "opus-4-8"}
+            "/sessions", json={"cwd": str(workspace), "model_preset_id": "opus-4-8", "name": "Project", "icon": {"glyph": "code", "hue": "coral"}}
         )
         assert res.status_code == 200, res.text
         sid = res.json()["id"]

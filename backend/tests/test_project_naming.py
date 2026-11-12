@@ -28,10 +28,15 @@ class ProjectNamingApiTest(unittest.TestCase):
         self.cwd_dir.cleanup()
         self._tmp.cleanup()
 
-    def _create(self, name: str | None = None) -> dict:
-        body: dict = {"cwd": self.cwd_dir.name, "model_preset_id": "opus-4-8"}
-        if name is not None:
-            body["name"] = name
+    ICON = {"glyph": "database", "hue": "teal"}
+
+    def _create(self, name: str = "Project") -> dict:
+        body: dict = {
+            "cwd": self.cwd_dir.name,
+            "model_preset_id": "opus-4-8",
+            "name": name,
+            "icon": self.ICON,
+        }
         res = self.client.post("/sessions", json=body)
         self.assertEqual(res.status_code, 200, res.text)
         return res.json()
@@ -45,16 +50,40 @@ class ProjectNamingApiTest(unittest.TestCase):
         self.assertIsNotNone(match)
         self.assertEqual(match["name"], "My Project")
 
-    def test_create_without_name_returns_empty_string(self) -> None:
-        created = self._create()
-        self.assertEqual(created["name"], "")
+    def test_create_returns_chosen_icon(self) -> None:
+        created = self._create(name="Icon Project")
+        self.assertEqual(created["icon"], self.ICON)
+        listed = self.client.get("/sessions").json()
+        self.assertEqual(listed[0]["icon"], self.ICON)
+
+    def test_create_requires_name_and_icon(self) -> None:
+        base = {"cwd": self.cwd_dir.name, "model_preset_id": "opus-4-8"}
+        for body in (
+            base,
+            {**base, "icon": self.ICON},
+            {**base, "icon": self.ICON, "name": "   "},
+            {**base, "name": "Project"},
+            {**base, "name": "Project", "icon": {"glyph": "not-a-glyph", "hue": "teal"}},
+            {**base, "name": "Project", "icon": {"glyph": "code", "hue": "magenta"}},
+        ):
+            res = self.client.post("/sessions", json=body)
+            self.assertIn(res.status_code, (400, 422), (body, res.text))
+        self.assertEqual(self.client.get("/sessions").json(), [])
+
+    def test_create_trims_name(self) -> None:
+        self.assertEqual(self._create(name="  Spaced  ")["name"], "Spaced")
 
     def test_create_missing_cwd_returns_400_without_confirmation(self) -> None:
         missing = Path(self.cwd_dir.name) / "missing-project"
 
         res = self.client.post(
             "/sessions",
-            json={"cwd": str(missing), "model_preset_id": "opus-4-8"},
+            json={
+                "cwd": str(missing),
+                "model_preset_id": "opus-4-8",
+                "name": "Project",
+                "icon": self.ICON,
+            },
         )
 
         self.assertEqual(res.status_code, 400)
@@ -69,6 +98,8 @@ class ProjectNamingApiTest(unittest.TestCase):
             json={
                 "cwd": str(missing),
                 "model_preset_id": "opus-4-8",
+                "name": "Project",
+                "icon": self.ICON,
                 "create_missing_cwd": True,
             },
         )
@@ -88,6 +119,21 @@ class ProjectNamingApiTest(unittest.TestCase):
         match = next((s for s in listed if s["id"] == sid), None)
         self.assertIsNotNone(match)
         self.assertEqual(match["name"], "Renamed")
+
+    def test_patch_rejects_empty_name(self) -> None:
+        sid = self._create(name="Keep")["id"]
+        res = self.client.patch(f"/sessions/{sid}", json={"name": "  "})
+        self.assertEqual(res.status_code, 400)
+        self.assertEqual(self.client.get(f"/sessions/{sid}").json()["name"], "Keep")
+
+    def test_patch_icon(self) -> None:
+        sid = self._create()["id"]
+        res = self.client.patch(f"/sessions/{sid}/icon", json={"glyph": "rocket", "hue": "plum"})
+        self.assertEqual(res.status_code, 200, res.text)
+        self.assertEqual(res.json()["icon"], {"glyph": "rocket", "hue": "plum"})
+        bad = self.client.patch(f"/sessions/{sid}/icon", json={"glyph": "rocket", "hue": "neon"})
+        self.assertEqual(bad.status_code, 400)
+        self.assertEqual(self.client.get(f"/sessions/{sid}").json()["icon"]["hue"], "plum")
 
     def test_patch_unknown_id_returns_404(self) -> None:
         res = self.client.patch("/sessions/does-not-exist", json={"name": "x"})

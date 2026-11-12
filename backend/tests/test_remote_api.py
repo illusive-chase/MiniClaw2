@@ -24,7 +24,8 @@ def test_remote_entry_and_host_local_configuration(tmp_path: Path, mode: str) ->
     transport = Mock()
     transport.probe_repository.return_value = RemoteRepositoryProbe(root_commits=("a" * 40,))
     transport.export_tracked_files.return_value = archive.getvalue()
-    payload = {"persistence_mode": "remote", "remote": {"target_id": "test", "root_path": "/srv/test"},
+    payload = {"name": "Remote", "icon": {"glyph": "code", "hue": "coral"},
+               "persistence_mode": "remote", "remote": {"target_id": "test", "root_path": "/srv/test"},
                "remote_access": {"ssh_target": "test"}, "remote_initialization": mode}
     if mode == "cloned":
         payload["remote_clone_url"] = "git@host:owner/repo.git"
@@ -63,6 +64,7 @@ def test_failed_initialization_does_not_create_project_or_delete_remote(tmp_path
     with patch.object(registry._remote_transport_pool(), "get", return_value=transport), patch("miniclaw2.app.install_hooks"):
         with TestClient(create_app(registry)) as client:
             response = client.post("/sessions", json={
+                "name": "Remote", "icon": {"glyph": "code", "hue": "coral"},
                 "persistence_mode": "remote", "remote": {"target_id": "test", "root_path": "/srv/test"},
                 "remote_access": {"ssh_target": "test"}, "remote_initialization": "init",
             })

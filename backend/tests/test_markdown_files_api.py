@@ -239,7 +239,7 @@ class MarkdownFileEndpointTest(unittest.TestCase):
     def _create_session(self) -> str:
         res = self.client.post(
             "/sessions",
-            json={"cwd": str(self.root), "model_preset_id": "opus-4-8"},
+            json={"cwd": str(self.root), "model_preset_id": "opus-4-8", "name": "Project", "icon": {"glyph": "code", "hue": "coral"}},
         )
         self.assertEqual(res.status_code, 200, res.text)
         return res.json()["id"]

@@ -35,7 +35,9 @@ import type {
   SkillSelection,
   SkillSummary,
   SkillDetail,
-  Tag,
+  HomeItem,
+  HomeLayout,
+  ProjectIcon,
   MarkdownLinkBase,
   MarkdownLinkVerdict,
   MarkdownFile,
@@ -161,9 +163,10 @@ export async function createSession(
     remote_access?: RemoteAccessConfig;
     remote_initialization?: "existing" | "cloned" | "init";
     remote_clone_url?: string;
-    name?: string;
+    name: string;
+    icon: ProjectIcon;
     create_missing_cwd?: boolean;
-  } = {},
+  },
 ): Promise<SessionInfo> {
   const res = await fetch("/sessions", {
     method: "POST",
@@ -526,54 +529,32 @@ export async function deleteModelPreset(presetId: string): Promise<void> {
   }
 }
 
-export async function listTags(): Promise<Tag[]> {
-  const res = await fetch("/tags");
-  if (!res.ok) throw new ApiError("listTags", res.status, await readErrorDetail(res));
+export async function getHome(): Promise<HomeLayout> {
+  const res = await fetch("/home");
+  if (!res.ok) throw new ApiError("getHome", res.status, await readErrorDetail(res));
   return res.json();
 }
 
-export async function createTag(name: string, color?: string): Promise<Tag> {
-  const res = await fetch("/tags", {
-    method: "POST",
+/* Compare-and-swap: a 409 means another edit landed since `baseRevision` was
+ * read, and the caller should refetch and replay its edit on top. */
+export async function putHome(items: HomeItem[], baseRevision: string): Promise<HomeLayout> {
+  const res = await fetch("/home", {
+    method: "PUT",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(color === undefined ? { name } : { name, color }),
+    body: JSON.stringify({ items, base_revision: baseRevision }),
   });
-  if (!res.ok) throw new ApiError("createTag", res.status, await readErrorDetail(res));
+  if (!res.ok) throw new ApiError("putHome", res.status, await readErrorDetail(res));
   return res.json();
 }
 
-/* Omitted fields are left alone server-side, so a rename never resets the
- * color and a recolor never touches the name. */
-export async function updateTag(
-  tagId: string,
-  patch: { name?: string; color?: string },
-): Promise<Tag> {
-  const res = await fetch(`/tags/${tagId}`, {
+export async function updateSessionIcon(id: string, icon: ProjectIcon): Promise<SessionInfo> {
+  const res = await fetch(`/sessions/${id}/icon`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(patch),
-  });
-  if (!res.ok) throw new ApiError("updateTag", res.status, await readErrorDetail(res));
-  return res.json();
-}
-
-/** Also strips the id from every project that referenced it. */
-export async function deleteTag(tagId: string): Promise<void> {
-  const res = await fetch(`/tags/${tagId}`, { method: "DELETE" });
-  if (!res.ok) throw new ApiError("deleteTag", res.status, await readErrorDetail(res));
-}
-
-export async function updateSessionTags(
-  id: string,
-  tagIds: string[],
-): Promise<SessionInfo> {
-  const res = await fetch(`/sessions/${id}/tags`, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ tag_ids: tagIds }),
+    body: JSON.stringify(icon),
   });
   if (!res.ok) {
-    throw new ApiError("updateSessionTags", res.status, await readErrorDetail(res));
+    throw new ApiError("updateSessionIcon", res.status, await readErrorDetail(res));
   }
   return res.json();
 }
@@ -1044,7 +1025,7 @@ export async function renameSession(id: string, name: string): Promise<SessionIn
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ name }),
   });
-  if (!res.ok) throw new Error(`renameSession failed: ${res.status}`);
+  if (!res.ok) throw new ApiError("renameSession", res.status, await readErrorDetail(res));
   return res.json();
 }
 

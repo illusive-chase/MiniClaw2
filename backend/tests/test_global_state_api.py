@@ -180,6 +180,8 @@ class GlobalStateApiTest(unittest.TestCase):
             json={
                 "cwd": self.workspace.name,
                 "model_preset_id": "store-custom",
+                "name": "Project",
+                "icon": {"glyph": "code", "hue": "coral"},
             },
         )
         self.assertEqual(created_session.status_code, 200)
@@ -211,7 +213,7 @@ class GlobalStateApiTest(unittest.TestCase):
 
         created = self.client.post(
             "/sessions",
-            json={"cwd": self.workspace.name},
+            json={"cwd": self.workspace.name, "name": "Project", "icon": {"glyph": "code", "hue": "coral"}},
         )
         self.assertEqual(created.status_code, 200)
         body = created.json()

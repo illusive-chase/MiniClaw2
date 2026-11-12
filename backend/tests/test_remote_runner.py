@@ -21,6 +21,7 @@ from miniclaw2.domain import (
     ReviewBrief,
     ReviewSubtype,
 )
+from miniclaw2.migrations.catalog import MINIMUM_VERSION
 from miniclaw2.providers.base import AgentProviderEvent
 from miniclaw2.registry import ProjectRegistry
 from miniclaw2.remote_execution import execution_binding, local_codex_home
@@ -290,6 +291,7 @@ def test_remote_resume_rejects_changed_identity(tmp_path: Path, change: str) -> 
     registry.close_remote_transports()
 
 
+@pytest.mark.skipif(MINIMUM_VERSION > 18, reason="v18 已移出三步支持窗口")
 def test_remote_execution_migration_defaults_and_locality(tmp_path: Path) -> None:
     from miniclaw2.migrations.catalog import marker
     from miniclaw2.migrations.transaction import atomic_json

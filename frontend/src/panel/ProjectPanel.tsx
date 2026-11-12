@@ -6,16 +6,11 @@ import {
   ApiError,
   ArchiveBusyError,
   DeletePlanspaceBusyError,
-  createTag,
-  deleteTag,
-  listTags,
-  updateSessionTags,
-  updateTag,
+  updateSessionIcon,
 } from "../api";
-import { TagEditPopover } from "../components/TagEditPopover";
-import { TagChip } from "../components/TagFilterBar";
-import type { TagColor } from "../tagPalette";
-import { removeSessionTag } from "../tagEdits";
+import { IconPicker } from "../components/IconPicker";
+import { ProjectGlyph } from "../components/ProjectGlyph";
+import { HUE_NAMES, glyphName, isProjectHue } from "../projectIcons";
 import {
   defaultModelPresetId,
   modelPresetDetail,
@@ -27,9 +22,9 @@ import type {
   ContextSpacePlugSummary,
   ModelPreset,
   PlanspaceMode,
+  ProjectIcon,
   SessionContextSpaceInfo,
   SessionInfo,
-  Tag,
 } from "../types";
 import { SegmentedControl } from "../components/SegmentedControl";
 
@@ -100,14 +95,8 @@ export function ProjectPanel({
   const [skillSource, setSkillSource] = useState("");
   const [skillBusy, setSkillBusy] = useState(false);
   const [skillError, setSkillError] = useState<string | null>(null);
-  /* Tags are global, so the panel loads them itself rather than threading a
-   * second copy through App and SidePanel. `tagIds` mirrors the project's set so
-   * an edit shows immediately; the successful response is also sent back to App
-   * so a panel remount cannot restore stale assignments. */
-  const [tags, setTags] = useState<Tag[]>([]);
-  const [tagIds, setTagIds] = useState<string[]>(session?.tag_ids ?? []);
-  const [tagAnchor, setTagAnchor] = useState<HTMLElement | null>(null);
-  const [tagError, setTagError] = useState<string | null>(null);
+  const [iconOpen, setIconOpen] = useState(false);
+  const [iconError, setIconError] = useState<string | null>(null);
 
   const activeBinding = contextSpace?.bindings.find(
     (b) => b.id === (contextSpace?.resolved_binding_id ?? session?.project_context_binding_id),
@@ -119,11 +108,11 @@ export function ProjectPanel({
   const notesExist = !!contextSpace?.context_file?.exists;
   const refreshing = !!contextSpace?.context_refresh?.running;
   const busy = contextSpaceSaving || refreshing || settingsSaving || !!session?.read_only;
-  /* Read-only projects are native to another machine and the backend rejects a
-   * tag write (`require_native`), so the control is disabled with the reason
+  /* Read-only projects are native to another machine and the backend rejects an
+   * icon write (`require_native`), so the control is disabled with the reason
    * shown rather than accepting a click that cannot succeed. Unlike `busy`, this
    * does not gate on a save in flight elsewhere in the panel. */
-  const tagsLocked = !!session?.read_only;
+  const iconLocked = !!session?.read_only;
   const activeModelPresets = selectableModelPresets(modelPresets);
   const canCreateDirection = true;
 
@@ -133,78 +122,31 @@ export function ProjectPanel({
     );
   }, [modelPresets, session?.id, session?.model_preset_id]);
 
-  const sessionTagIds = session?.tag_ids;
-  useEffect(() => {
-    setTagIds(sessionTagIds ?? []);
-  }, [session?.id, sessionTagIds]);
-
-  /* Loaded once per project rather than on a timer: the list only changes when
-   * someone edits it, and this panel is where those edits happen. */
-  useEffect(() => {
-    if (!session?.id) return;
-    let cancelled = false;
-    void (async () => {
-      try {
-        const next = await listTags();
-        if (!cancelled) setTags(next);
-      } catch (err) {
-        if (!cancelled) setTagError(err instanceof Error ? err.message : String(err));
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [session?.id]);
-
   const projectId = session?.id;
-  const applyTags = useCallback(
-    async (nextIds: string[]) => {
+  /* Optimistic, so picking feels instant; the response (or the old icon, on
+   * failure) is sent back to App so a panel remount cannot show a stale look. */
+  const applyIcon = useCallback(
+    async (icon: ProjectIcon) => {
       if (!projectId) return;
-      setTagError(null);
-      const updated = await updateSessionTags(projectId, nextIds);
-      setTagIds(updated.tag_ids ?? []);
-      onSessionChange((current) =>
-        current?.id === updated.id ? { ...current, tag_ids: updated.tag_ids } : current,
-      );
+      const before = session?.icon;
+      setIconError(null);
+      onSessionChange((current) => (current?.id === projectId ? { ...current, icon } : current));
+      try {
+        const updated = await updateSessionIcon(projectId, icon);
+        onSessionChange((current) =>
+          current?.id === updated.id ? { ...current, icon: updated.icon } : current,
+        );
+      } catch (err) {
+        setIconError(err instanceof Error ? err.message : String(err));
+        if (before) {
+          onSessionChange((current) =>
+            current?.id === projectId ? { ...current, icon: before } : current,
+          );
+        }
+      }
     },
-    [onSessionChange, projectId],
+    [onSessionChange, projectId, session?.icon],
   );
-
-  const createProjectTag = useCallback(async (name: string, color: TagColor) => {
-    const created = await createTag(name, color);
-    setTags((prev) => [...prev, created]);
-    return created;
-  }, []);
-
-  const recolorProjectTag = useCallback(async (tagId: string, color: TagColor) => {
-    const updated = await updateTag(tagId, { color });
-    setTags((prev) => prev.map((tag) => (tag.id === tagId ? updated : tag)));
-  }, []);
-
-  const renameProjectTag = useCallback(async (tagId: string, name: string) => {
-    const updated = await updateTag(tagId, { name });
-    setTags((prev) => prev.map((tag) => (tag.id === tagId ? updated : tag)));
-  }, []);
-
-  /* The server strips the id from every project, including this one, so the
-   * local mirror drops it as well — `assignedTags` filters by `tagIds`, and a
-   * stale id there would keep rendering a chip for a deleted tag. App's copy is
-   * pruned in the same pass, because the effect that mirrors `session.tag_ids`
-   * into `tagIds` would otherwise restore the id on the next render. */
-  const deleteProjectTag = useCallback(
-    async (tagId: string) => {
-      await deleteTag(tagId);
-      setTags((prev) => prev.filter((tag) => tag.id !== tagId));
-      setTagIds((prev) => prev.filter((id) => id !== tagId));
-      onSessionChange((current) => removeSessionTag(current, tagId));
-    },
-    [onSessionChange],
-  );
-
-  const assignedTags = useMemo(() => {
-    const owned = new Set(tagIds);
-    return tags.filter((tag) => owned.has(tag.id));
-  }, [tags, tagIds]);
 
   useEffect(() => {
     if (newDirectionRequestVersion <= 0) {
@@ -327,43 +269,42 @@ export function ProjectPanel({
           </label>
           <div className="mt-2 rounded-md border border-line bg-surface-sunken px-3 py-2">
             <div className="flex items-center justify-between gap-2">
-              <span className="text-[11.5px] text-ink-subtle">Tags</span>
+              <span className="flex min-w-0 items-center gap-2 text-[11.5px] text-ink-subtle">
+                <ProjectGlyph icon={session.icon} size={20} />
+                图标
+                <span className="truncate text-ink-muted">
+                  {glyphName(session.icon.glyph)}
+                  {isProjectHue(session.icon.hue) ? ` · ${HUE_NAMES[session.icon.hue]}` : ""}
+                </span>
+              </span>
               <button
                 type="button"
-                disabled={tagsLocked}
-                onClick={(event) => {
-                  const trigger = event.currentTarget;
-                  setTagAnchor((current) => (current ? null : trigger));
-                }}
-                title={
-                  tagsLocked
-                    ? "此设备尚未配置项目路径，绑定后才能编辑 tag"
-                    : "编辑 tag"
-                }
-                aria-expanded={!!tagAnchor}
-                className="rounded border border-line bg-surface px-2 py-0.5 text-[11px] text-ink-muted transition hover:border-brand hover:text-ink disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-line disabled:hover:text-ink-muted"
+                disabled={iconLocked}
+                onClick={() => setIconOpen((open) => !open)}
+                title={iconLocked ? "此设备尚未配置项目路径，绑定后才能修改图标" : "修改图标与颜色"}
+                aria-expanded={iconOpen}
+                className="flex-none rounded border border-line bg-surface px-2 py-0.5 text-[11px] text-ink-muted transition hover:border-brand hover:text-ink disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-line disabled:hover:text-ink-muted"
               >
-                编辑
+                {iconOpen ? "收起" : "修改"}
               </button>
             </div>
-            {assignedTags.length > 0 ? (
-              <div className="mt-1.5 flex flex-wrap gap-1">
-                {assignedTags.map((tag) => (
-                  <TagChip key={tag.id} name={tag.name} color={tag.color} size="md" />
-                ))}
-              </div>
-            ) : (
-              <div className="mt-1.5 text-[11px] text-ink-muted">
-                {tagsLocked ? "未分类" : "未分类 —— 点「编辑」添加"}
+            {iconOpen && !iconLocked && (
+              <div className="mt-2.5">
+                <IconPicker
+                  glyph={session.icon.glyph}
+                  hue={session.icon.hue}
+                  onGlyph={(glyph) => void applyIcon({ glyph, hue: session.icon.hue })}
+                  onHue={(hue) => void applyIcon({ glyph: session.icon.glyph, hue })}
+                />
               </div>
             )}
-            {tagsLocked && (
+            {iconLocked && (
               <div className="mt-1.5 text-[10.5px] text-ink-subtle">
-                此设备绑定项目路径后才能修改 tag。
+                此设备绑定项目路径后才能修改图标。
               </div>
             )}
-            {tagError && (
-              <div className="mt-1.5 text-[10.5px] text-state-error">{tagError}</div>
+            {iconError && (
+              <div className="mt-1.5 text-[10.5px] text-state-error">{iconError}</div>
             )}
           </div>
           <div className="mt-2 rounded-md border border-line bg-surface-sunken px-3 py-2 text-[11.5px] text-ink-subtle">
@@ -562,18 +503,6 @@ export function ProjectPanel({
           )}
         </section>
       </div>
-
-      <TagEditPopover
-        anchor={tagAnchor}
-        tags={tags}
-        selectedIds={tagIds}
-        onClose={() => setTagAnchor(null)}
-        onApply={applyTags}
-        onCreateTag={createProjectTag}
-        onRecolorTag={recolorProjectTag}
-        onRenameTag={renameProjectTag}
-        onDeleteTag={deleteProjectTag}
-      />
     </div>
   );
 }

@@ -84,44 +84,40 @@ export default {
             soft: "rgb(var(--state-cancelled-soft) / <alpha-value>)",
           },
         },
-        /* Project tags — a separate family from `state`, which is reserved for
-         * node state. `DEFAULT` is the dot and chip text, `soft` the fill. */
-        tag: {
+        /* Project icon hues — a separate family from `state`, which is
+         * reserved for node state. `DEFAULT` strokes the glyph, `soft` tints. */
+        hue: {
           coral: {
-            DEFAULT: "rgb(var(--tag-coral) / <alpha-value>)",
-            soft: "rgb(var(--tag-coral-soft) / <alpha-value>)",
+            DEFAULT: "rgb(var(--hue-coral) / <alpha-value>)",
+            soft: "rgb(var(--hue-coral-soft) / <alpha-value>)",
           },
           amber: {
-            DEFAULT: "rgb(var(--tag-amber) / <alpha-value>)",
-            soft: "rgb(var(--tag-amber-soft) / <alpha-value>)",
+            DEFAULT: "rgb(var(--hue-amber) / <alpha-value>)",
+            soft: "rgb(var(--hue-amber-soft) / <alpha-value>)",
           },
           sage: {
-            DEFAULT: "rgb(var(--tag-sage) / <alpha-value>)",
-            soft: "rgb(var(--tag-sage-soft) / <alpha-value>)",
+            DEFAULT: "rgb(var(--hue-sage) / <alpha-value>)",
+            soft: "rgb(var(--hue-sage-soft) / <alpha-value>)",
           },
           teal: {
-            DEFAULT: "rgb(var(--tag-teal) / <alpha-value>)",
-            soft: "rgb(var(--tag-teal-soft) / <alpha-value>)",
+            DEFAULT: "rgb(var(--hue-teal) / <alpha-value>)",
+            soft: "rgb(var(--hue-teal-soft) / <alpha-value>)",
           },
           azure: {
-            DEFAULT: "rgb(var(--tag-azure) / <alpha-value>)",
-            soft: "rgb(var(--tag-azure-soft) / <alpha-value>)",
+            DEFAULT: "rgb(var(--hue-azure) / <alpha-value>)",
+            soft: "rgb(var(--hue-azure-soft) / <alpha-value>)",
           },
           indigo: {
-            DEFAULT: "rgb(var(--tag-indigo) / <alpha-value>)",
-            soft: "rgb(var(--tag-indigo-soft) / <alpha-value>)",
+            DEFAULT: "rgb(var(--hue-indigo) / <alpha-value>)",
+            soft: "rgb(var(--hue-indigo-soft) / <alpha-value>)",
           },
           plum: {
-            DEFAULT: "rgb(var(--tag-plum) / <alpha-value>)",
-            soft: "rgb(var(--tag-plum-soft) / <alpha-value>)",
+            DEFAULT: "rgb(var(--hue-plum) / <alpha-value>)",
+            soft: "rgb(var(--hue-plum-soft) / <alpha-value>)",
           },
           clay: {
-            DEFAULT: "rgb(var(--tag-clay) / <alpha-value>)",
-            soft: "rgb(var(--tag-clay-soft) / <alpha-value>)",
-          },
-          neutral: {
-            DEFAULT: "rgb(var(--tag-neutral) / <alpha-value>)",
-            soft: "rgb(var(--tag-neutral-soft) / <alpha-value>)",
+            DEFAULT: "rgb(var(--hue-clay) / <alpha-value>)",
+            soft: "rgb(var(--hue-clay-soft) / <alpha-value>)",
           },
         },
       },

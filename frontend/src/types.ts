@@ -225,8 +225,8 @@ export type SessionInfo = {
   preferred_language?: string | null;
   temporary?: boolean;
   template_id?: string | null;
-  /** Global tag ids this project references; unknown ids are dropped server-side. */
-  tag_ids?: string[];
+  /** Always present on the wire; keys this build does not know render as the default look. */
+  icon: ProjectIcon;
   /** Newest node start/finish across every host, derived server-side rather
    * than persisted — it can change after a backend restart or a sync. */
   last_activity_at?: number | null;
@@ -269,13 +269,26 @@ export type RemoteAccessConfig = {
   sandbox?: "workspaceWrite" | "externalSandbox";
 };
 
-/** Global project tag (`$MINICLAW_HOME/tags.json`). `color` is a palette key
- * from `tagPalette.ts`; an unknown value renders neutral rather than throwing. */
-export type Tag = {
+/** A project's look: keys from `projectIcons.ts`, validated server-side on write. */
+export type ProjectIcon = {
+  glyph: string;
+  hue: string;
+};
+
+export type HomeFolder = {
   id: string;
   name: string;
-  color: string;
-  created_at: number;
+  projects: string[];
+};
+
+/** One home-screen slot: a project, or a folder of projects (never nested). */
+export type HomeItem = { project: string } | { folder: HomeFolder };
+
+/** `GET /home`. `revision` is echoed back on `PUT` to detect a concurrent edit. */
+export type HomeLayout = {
+  version: number;
+  revision: string;
+  items: HomeItem[];
 };
 
 export type SessionHost = {

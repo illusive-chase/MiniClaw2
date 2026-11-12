@@ -24,6 +24,11 @@ async function click(text: string) {
   check(button && !button.disabled, `按钮不可用：${text}`);
   await act(async () => button.click());
 }
+async function clickLabel(label: string) {
+  const button = document.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`);
+  check(button && !button.disabled, `按钮不可用：${label}`);
+  await act(async () => button.click());
+}
 async function input(placeholder: string, value: string) {
   const element = document.querySelector<HTMLInputElement>(`input[placeholder="${placeholder}"]`);
   check(element, `输入框不存在：${placeholder}`);
@@ -40,6 +45,12 @@ async function select(value: string) {
 
 async function run() {
   await act(async () => root.render(<NewProjectModal open modelPresets={presets} defaults={null} onCancel={() => {}} onCreated={() => {}} />));
+  const create = () => [...document.querySelectorAll("button")].find((item) => item.textContent?.trim() === "Create project");
+  check(create()?.disabled, "名称、图标、颜色未填时必须禁止创建");
+  await input("例如 payments-api", "远端项目");
+  await clickLabel("代码 code");
+  check(create()?.disabled, "缺少颜色时必须禁止创建");
+  await clickLabel("青");
   await click("远端目录");
   await input("autodl-a100", "test");
   await input("user@gpu-box", "gpu-box");
@@ -53,6 +64,8 @@ async function run() {
   check(document.body.textContent?.includes("不提供进程级文件隔离"), "缺少外部沙箱警告");
   await click("Create project");
   check(requests[0].body.remote_initialization === "cloned", "未提交克隆模式");
+  check(requests[0].body.name === "远端项目", "未提交项目名称");
+  check(requests[0].body.icon?.glyph === "code" && requests[0].body.icon?.hue === "teal", "未提交项目图标");
   check(requests[0].body.remote_access.codex_remote_experimental, "未提交实验开关");
   check(requests[0].body.remote_access.sandbox === "externalSandbox", "未提交沙箱选择");
   await act(async () => root.render(<RemoteAccessModal session={{ ...session, remote_access: {

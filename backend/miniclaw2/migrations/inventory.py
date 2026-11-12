@@ -45,7 +45,7 @@ def scope_for(relative: Path, *, external: bool = False) -> Scope | None:
     if relative.match("projects/*/hosts/*/local.json"):
         return "local"
     if relative.parts[0] in {"projects", "contextspace"} or relative.name in {
-        "config.json", "tags.json", ".gitignore",
+        "config.json", "tags.json", "home.json", ".gitignore",
     }:
         return "shared"
     return None

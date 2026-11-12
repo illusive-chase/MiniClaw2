@@ -257,6 +257,7 @@ class TemporaryProjectTest(unittest.TestCase):
                         "/sessions",
                         json={
                             "name": "Remote API project",
+                            "icon": {"glyph": "code", "hue": "coral"},
                             "persistence_mode": "remote",
                             "remote": {
                                 "target_id": "training-a100",

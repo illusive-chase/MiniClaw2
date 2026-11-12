@@ -98,6 +98,8 @@ from .remote_projection import (
 )
 from .remote_transport import RemoteTransportError, RemoteTransportPool
 from .runner import NodeRunner
+from .home_layout import HomeLayout
+from .project_icons import ProjectIcon, default_project_icon, require_known_icon
 from .store import Store
 from .virtual_graph import has_cycle
 from .workspace import create_temporary_root, remove_temporary_root
@@ -854,6 +856,7 @@ class ProjectRegistry:
         remote_access: RemoteAccessConfig | None = None,
         remote_initialization: str = "existing",
         remote_clone_url: str | None = None,
+        icon: ProjectIcon | None = None,
     ) -> Project:
         if provider is not None:
             raise ValueError("provider is no longer accepted; use model_preset_id")
@@ -868,6 +871,7 @@ class ProjectRegistry:
             else default_model_preset_id(store_root=self.store.root)
         )
         normalized_language = normalize_preferred_language(preferred_language)
+        chosen_icon = require_known_icon(icon) if icon is not None else default_project_icon()
         settings: dict[str, Any] = {}
         if auto_commit is not None:
             settings["auto_commit"] = bool(auto_commit)
@@ -910,6 +914,7 @@ class ProjectRegistry:
                 persistence_mode=ProjectPersistenceMode.REMOTE,
                 remote=remote_identity,
                 template_id=template_id,
+                icon=chosen_icon,
             )
             projection = (
                 self.store.root / "workspaces" / "remote"
@@ -986,6 +991,7 @@ class ProjectRegistry:
             persistence_mode=mode,
             temporary=temporary,
             template_id=template_id,
+            icon=chosen_icon,
         )
         self.store.create_project(project)
         self._runtimes[project.id] = ProjectRuntime(project)
@@ -1273,10 +1279,42 @@ class ProjectRegistry:
         rt = self._runtimes.get(pid)
         if rt is None:
             return None
+        # A project that has a name never goes back to having none.
+        normalized = name.strip()
+        if not normalized:
+            raise ValueError("project name must not be empty")
         self.require_native(pid)
-        rt.project.name = name
+        rt.project.name = normalized
         self.store.update_project(rt.project)
         return rt.project
+
+    def update_project_icon(self, pid: str, icon: ProjectIcon) -> Project | None:
+        rt = self._runtimes.get(pid)
+        if rt is None:
+            return None
+        require_known_icon(icon)
+        self.require_native(pid)
+        rt.project.icon = icon
+        self.store.update_project(rt.project)
+        return rt.project
+
+    def _active_project_ids(self) -> list[str]:
+        """Unarchived projects, oldest first: the order a lost entry rejoins in."""
+        projects = sorted(
+            (rt.project for rt in self._runtimes.values() if rt.project.archived_at is None),
+            key=lambda project: (project.created_at, project.id),
+        )
+        return [project.id for project in projects]
+
+    def home_layout(self) -> HomeLayout:
+        return self.store.reconcile_home(self._active_project_ids())
+
+    def replace_home_layout(self, layout: HomeLayout, *, base_revision: str) -> HomeLayout:
+        return self.store.replace_home(
+            layout,
+            base_revision=base_revision,
+            active_ids=self._active_project_ids(),
+        )
 
     def update_project_tags(self, pid: str, tag_ids: list[str]) -> Project | None:
         rt = self._runtimes.get(pid)
@@ -1330,6 +1368,7 @@ class ProjectRegistry:
             return None, busy
         project.archived_at = time.time()
         self.store.update_project(project)
+        self.store.remove_project_from_home(pid)
         self.store.sync.schedule_commit(f'archive project "{project.name or pid}"')
         for node in self.store.list_nodes(pid):
             self._schedule_workspace_removed(project, node)
@@ -1344,6 +1383,7 @@ class ProjectRegistry:
             return project
         project.archived_at = None
         self.store.update_project(project)
+        self.store.add_project_to_home(pid)
         self.store.sync.schedule_commit(f'unarchive project "{project.name or pid}"')
         return project
 

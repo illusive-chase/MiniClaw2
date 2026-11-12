@@ -32,6 +32,7 @@ from .model_catalog import (
     normalize_model_preset_id,
     provider_for_model_preset,
 )
+from .project_icons import ProjectIcon, default_project_icon
 
 
 def _new_id() -> str:
@@ -306,6 +307,11 @@ class Project(BaseModel):
     temporary: bool = False
     template_id: str | None = None
     tag_ids: list[str] = Field(default_factory=list)
+    # Persisted records always carry an icon: v22 wrote one into every existing
+    # project, storage validation refuses a record without it, and the create
+    # endpoint requires the user to choose one. The default only serves
+    # in-process construction (template runs and tests).
+    icon: ProjectIcon = Field(default_factory=default_project_icon)
     created_at: float = Field(default_factory=_now)
     archived_at: float | None = None
     node_positions: dict[str, NodePosition] = Field(default_factory=dict)

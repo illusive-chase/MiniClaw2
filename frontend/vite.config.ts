@@ -18,6 +18,7 @@ export default defineConfig({
       "/auth": backendUrl,
       "/feishu": backendUrl,
       "/global-state": backendUrl,
+      "/home": backendUrl,
       "/migrations": backendUrl,
       "/model-presets": backendUrl,
       "/principles": backendUrl,
