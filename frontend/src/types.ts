@@ -294,6 +294,8 @@ export type HomeLayout = {
 export type SessionHost = {
   mid: string;
   label?: string;
+  icon?: string;
+  color?: string;
   bound_at?: number;
   head?: string;
   branch?: string;
@@ -430,13 +432,148 @@ export type GlobalState = {
     remote_url?: string | null;
     status: "up-to-date" | "changed";
     changed: boolean;
+    dirty?: boolean;
+    unpushed_commits?: number;
+    unpushed_since?: number | null;
+    debt_since?: number | null;
+    last_sync_failed?: boolean;
+    last_synced_commit?: string | null;
     last_sync_at?: number | null;
     machine_id: string;
     machine_label: string;
     hostname_mismatch: boolean;
     privacy_notice: string;
     remote?: SyncRemoteState;
+    beacon_error?: string | null;
   };
+};
+
+export type OutboundState = "clean" | "pending" | "overdue" | "failed" | "unconfigured";
+export type SourceState = "current" | "available" | "blocked" | "error" | "disabled";
+
+export type ProbeStatus = {
+  enabled: boolean;
+  last_checked_at?: number | null;
+  last_ok_at?: number | null;
+  ok?: boolean | null;
+  error?: string | null;
+  failures: number;
+};
+
+export type SyncLocalSettings = {
+  metadata_overdue_hours: number;
+  project_overdue_hours: number;
+  metadata_probe_enabled: boolean;
+  metadata_probe_minutes: number;
+  source_probe_enabled: boolean;
+  source_probe_minutes: number;
+};
+
+export type ProjectSyncEntry = {
+  id: string;
+  name: string;
+  state: "clean" | "pending" | "overdue";
+  dirty_count: number;
+  ahead: number;
+  behind: number;
+  branch: string | null;
+  upstream: string | null;
+  no_upstream: boolean;
+  since: number | null;
+  reasons: ("dirty" | "ahead")[];
+  scanned_at: number;
+  error: string | null;
+};
+
+export type SyncOverview = {
+  generated_at: number;
+  metadata: {
+    state: OutboundState;
+    unpushed_commits: number;
+    unpushed_since: number | null;
+    since: number | null;
+    dirty: boolean;
+    last_sync_at: number | null;
+    last_sync_failed: boolean;
+    remote_ahead: number;
+    remote_probe: ProbeStatus;
+    overdue_after_seconds: number;
+  };
+  projects: ProjectSyncEntry[];
+  projects_overdue: number;
+  projects_pending: number;
+  project_overdue_after_seconds: number;
+  source: {
+    state: SourceState;
+    behind: number;
+    ahead: number;
+    dirty: boolean;
+    head: string | null;
+    upstream: string | null;
+    commits: { sha: string; title: string }[];
+    error: string | null;
+    probe: ProbeStatus;
+    daemon: { active: boolean };
+  };
+  settings: SyncLocalSettings;
+};
+
+export type HostProfile = {
+  machine_id: string;
+  label: string;
+  icon: string;
+  color: string;
+  hostname: string;
+  created_at: number;
+  updated_at: number;
+};
+
+export type HostBeacon = {
+  sha: string;
+  integrated: string | null;
+  synced_at: number | null;
+  contributed: number;
+  store_schema: number | null;
+  miniclaw: { head?: string | null; upstream_behind?: number | null; daemon?: boolean };
+};
+
+export type HostEntry = {
+  machine_id: string;
+  is_self: boolean;
+  label: string;
+  icon: string | null;
+  color: string | null;
+  hostname: string | null;
+  has_profile: boolean;
+  beacon: (HostBeacon & { first_seen_at: number; clock_skew: boolean }) | null;
+  history: HostBeacon[];
+  status: "self" | "current" | "behind" | "unknown" | "no_beacon";
+  behind: number | null;
+  missing_by: { machine_id: string; count: number; label: string; is_self: boolean }[];
+  includes_my_push: boolean | null;
+  source: { head: string | null; behind_upstream: number | null } | null;
+  last_push_at: number | null;
+  stale: boolean;
+};
+
+export type HostsResponse = {
+  generated_at: number;
+  remote_tip: string | null;
+  self_id: string;
+  last_synced_commit: string | null;
+  hosts: HostEntry[];
+};
+
+export type DaemonUpdateRun = {
+  id: string;
+  target: string;
+  old_head: string | null;
+  new_head: string | null;
+  status: "running" | "succeeded" | "rolled_back" | "failed" | "rejected";
+  phase: string;
+  started_at: number;
+  finished_at: number | null;
+  error: string | null;
 };
 export type IncomingCommit = {
   sha: string;
@@ -464,9 +601,13 @@ export type SelfUpdateState = {
   ref_at: number | null;
   error: string | null;
   blockers: SelfUpdateBlocker[];
+  daemon?: boolean;
+  running_head?: string | null;
 };
 export type SelfUpdateApplyResult = {
   ok: boolean;
+  mode?: "daemon" | "exit";
+  update_id?: string | null;
   old_head: string;
   new_head: string;
   changed_paths: string[];
@@ -585,6 +726,18 @@ export type WorkspaceNodeRemoved = {
 };
 
 export type WorkspaceEvent = WorkspaceNodeUpdated | WorkspaceNodeRemoved;
+
+/** Workspace-socket events that are not about a node; they carry no entry. */
+export type WorkspaceSignal =
+  | { type: "sync_overview_changed"; seq: 0 }
+  | { type: "hosts_changed"; seq: 0 }
+  | { type: "source_update_available"; seq: 0; behind: number; target: string; title: string };
+
+export function isWorkspaceSignal(event: { type: string }): event is WorkspaceSignal {
+  return event.type === "sync_overview_changed"
+    || event.type === "hosts_changed"
+    || event.type === "source_update_available";
+}
 
 export type ArtifactRef = {
   name: string;

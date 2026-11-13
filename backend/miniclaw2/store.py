@@ -66,6 +66,15 @@ from .sync import (
     get_sync_manager,
     load_machine_identity,
     schema_is_newer,
+    update_machine_label,
+)
+from .host_profile import (
+    HostProfile,
+    load_profile as load_host_profile,
+    load_profiles as load_host_profiles,
+    new_profile as new_host_profile,
+    require_known_look,
+    save_profile as save_host_profile,
 )
 from .tags import (
     Tag,
@@ -135,6 +144,29 @@ class Store:
         self.sync.add_publication_callback(self.invalidate_owner_index)
         self.sync.add_publication_callback(self._refresh_last_activity_after_sync)
         self.refresh_last_activity_index()
+        self._ensure_own_profile()
+
+    def _ensure_own_profile(self) -> None:
+        """Create this host's profile on first open; later edits go through the API."""
+        if self.read_only_reason is not None:
+            return
+        existing = load_host_profile(self.root, self.machine.id)
+        if existing is not None:
+            if existing.label != self.machine.label:
+                self._adopt_profile_label(existing.label)
+            return
+        save_host_profile(self.root, new_host_profile(
+            self.machine.id, label=self.machine.label, hostname=self.machine.hostname,
+        ))
+        self.sync.schedule_commit("create host profile")
+
+    def _adopt_profile_label(self, label: str) -> None:
+        updated = update_machine_label(self.root, self.machine.id, label)
+        if updated is not None:
+            self.machine = updated
+            with self.sync._lock:
+                if self.sync.identity.id == updated.id:
+                    self.sync.identity = updated
 
     @property
     def read_only_reason(self) -> str | None:
@@ -348,6 +380,7 @@ class Store:
             return []
         hosts: list[dict[str, Any]] = []
         heads = self.read_host_heads(pid)
+        profiles = load_host_profiles(self.root)
         for host_dir in sorted(hosts_dir.iterdir()):
             path = host_dir / "host.json"
             if not path.is_file():
@@ -357,6 +390,11 @@ class Store:
             except (OSError, ValueError):
                 continue
             payload["mid"] = host_dir.name
+            # ``host.json.label`` is the name the host had when it bound the
+            # project; the profile is the current one.
+            profile = profiles.get(host_dir.name)
+            if profile is not None:
+                payload.update(label=profile.label, icon=profile.icon, color=profile.color)
             head = heads.get(host_dir.name)
             if head is not None:
                 payload.update(head)
@@ -1143,6 +1181,33 @@ class Store:
         reason = self.read_only_reason
         if reason is not None:
             raise StoreReadOnlyError(reason)
+
+    # ---- host profiles ----
+
+    def host_profiles(self) -> dict[str, HostProfile]:
+        return load_host_profiles(self.root)
+
+    def update_own_profile(
+        self, *, label: str | None = None, icon: str | None = None, color: str | None = None,
+    ) -> HostProfile:
+        """Edit this host's profile — the only profile this host may write."""
+        self.assert_writable()
+        current = load_host_profile(self.root, self.machine.id) or new_host_profile(
+            self.machine.id, label=self.machine.label, hostname=self.machine.hostname,
+        )
+        changes: dict[str, Any] = {"hostname": self.machine.hostname, "updated_at": time.time()}
+        if label is not None:
+            changes["label"] = label
+        if icon is not None:
+            changes["icon"] = icon
+        if color is not None:
+            changes["color"] = color
+        updated = require_known_look(HostProfile.model_validate({**current.model_dump(), **changes}))
+        save_host_profile(self.root, updated)
+        if updated.label != self.machine.label:
+            self._adopt_profile_label(updated.label)
+        self.sync.schedule_commit("update host profile")
+        return updated
 
 
 def _validate_project_record(path: Path, payload: dict[str, Any]) -> Project:

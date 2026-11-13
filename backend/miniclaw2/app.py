@@ -17,6 +17,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import quote
+from uuid import uuid4
 
 from anyio import CancelScope
 from fastapi import FastAPI, HTTPException, Query, Request, Response, WebSocket, WebSocketDisconnect
@@ -133,7 +134,11 @@ from .self_update import (
     UpdateError,
     consume_pending_exit,
 )
+from . import daemon as daemon_client
+from .host_beacons import host_timeline, list_hosts as list_known_hosts
 from .sync import SyncError
+from .sync_local import SyncLocalSettings, sync_local
+from .sync_overview import SyncOverview
 from .tags import Tag
 from .home_layout import HomeConflictError, HomeItem, HomeLayout
 from .project_icons import ProjectIcon, default_project_icon
@@ -161,6 +166,9 @@ from .webauth import (
 )
 
 logger = logging.getLogger(__name__)
+#: This backend process's incarnation. A supervisor passes the id it chose so
+#: it can recognize its own child; otherwise each process mints one.
+BOOT_ID = os.environ.get(daemon_client.BOOT_ID_ENV) or uuid4().hex
 
 # The reading page is not boxed into the 380px side panel the way an inline
 # artifact preview is, so it can carry a longer document than the artifact
@@ -268,6 +276,25 @@ class SetupSyncRequest(BaseModel):
 
     remote_url: str
     privacy_acknowledged: bool = False
+
+
+class UpdateHostProfileRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    label: str | None = None
+    icon: str | None = None
+    color: str | None = None
+
+
+class UpdateSyncLocalRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    metadata_overdue_hours: StrictInt | None = None
+    project_overdue_hours: StrictInt | None = None
+    metadata_probe_enabled: bool | None = None
+    metadata_probe_minutes: StrictInt | None = None
+    source_probe_enabled: bool | None = None
+    source_probe_minutes: StrictInt | None = None
 
 
 class RenameSessionRequest(BaseModel):
@@ -777,6 +804,20 @@ def create_app(
     node_search_index = NodeSearchIndex()
     # The code-reading cache follows whichever store this app serves.
     code_index = CodeIndexService(lambda: registry.store.root)
+    sync_overview = SyncOverview(
+        registry, update_checker, daemon_active=daemon_client.supervised,
+    )
+    # Touch the source head now: it must describe the code this process
+    # loaded, not whatever the checkout holds when someone first asks.
+    _ = update_checker.running_head
+
+    def beacon_extras() -> dict[str, Any]:
+        state = update_checker.state()
+        return {
+            "head": update_checker.running_head,
+            "upstream_behind": state.behind if state.is_repo else None,
+            "daemon": daemon_client.supervised(),
+        }
 
     def initialize_registry() -> None:
         initialize = getattr(registry, "initialize", None)
@@ -821,6 +862,10 @@ def create_app(
         # Attach before scheduling: runners read the observer when built.
         registry.gate_observer = remote
         await remote.start()
+        registry.store.sync.beacon_extras = beacon_extras
+        registry.git_observer = sync_overview.schedule_project_refresh
+        if registry.is_runtime_owner:
+            sync_overview.start(registry.broadcast_workspace)
         schedule_all = getattr(registry, "schedule_all", None)
         if schedule_all is not None:
             schedule_all()
@@ -836,6 +881,7 @@ def create_app(
         try:
             yield
         finally:
+            await sync_overview.stop()
             # Close the long connection gracefully: a connection that dies
             # without a close frame keeps receiving clicks it cannot answer.
             try:
@@ -857,6 +903,7 @@ def create_app(
     app.state.storage_syncing = False
     app.state.storage_requests = 0
     app.state.update_checker = update_checker
+    app.state.sync_overview = sync_overview
     app.state.feishu = feishu
     app.state.wecom = wecom
     app.state.remote_answers = remote
@@ -965,7 +1012,14 @@ def create_app(
         dev_instance = os.environ.get("MINICLAW_DEV_INSTANCE_TOKEN")
         if dev_instance:
             response.headers["X-MiniClaw-Dev-Instance"] = dev_instance
-        return {"status": "maintenance" if app.state.storage_error or app.state.storage_syncing else "ok"}
+        return {
+            "status": "maintenance" if app.state.storage_error or app.state.storage_syncing else "ok",
+            # The update pipeline and the browser both wait for the new
+            # process: ``boot_id`` names this incarnation, ``head`` its code.
+            "head": update_checker.running_head,
+            "boot_id": BOOT_ID,
+            "daemon": daemon_client.supervised(),
+        }
 
     @app.get("/auth/state")
     def auth_state(request: Request) -> dict[str, bool]:
@@ -1269,15 +1323,72 @@ def create_app(
 
     @app.post("/global-state/sync", response_model=dict[str, Any])
     async def sync_now() -> dict[str, Any]:
-        return await run_storage_sync(registry.store.sync.sync_now)
+        try:
+            return await run_storage_sync(registry.store.sync.sync_now)
+        finally:
+            sync_overview.poke()
 
     @app.post("/global-state/sync/check", response_model=dict[str, Any])
-    def check_sync_remote() -> dict[str, Any]:
+    async def check_sync_remote() -> dict[str, Any]:
+        # Fetching holds only the remote-refs lock, so it runs off the event
+        # loop without the storage gate that a real sync needs.
         try:
-            registry.store.sync.check_remote()
+            await asyncio.to_thread(registry.store.sync.check_remote)
         except SyncError as exc:
             raise HTTPException(409, str(exc)) from exc
-        return _global_state_payload(registry.store.root)
+        sync_overview.poke()
+        return await asyncio.to_thread(_global_state_payload, registry.store.root)
+
+    @app.get("/sync-overview", response_model=dict[str, Any])
+    def get_sync_overview() -> dict[str, Any]:
+        """Local refs and cached scans only; never contacts a remote."""
+        return sync_overview.overview()
+
+    @app.post("/sync-overview/refresh", response_model=dict[str, Any])
+    async def refresh_sync_overview() -> dict[str, Any]:
+        """Re-scan bound project checkouts now (local Git only)."""
+        await asyncio.to_thread(sync_overview.scan_projects)
+        return await asyncio.to_thread(sync_overview.overview)
+
+    @app.get("/global-state/sync-local", response_model=dict[str, Any])
+    def get_sync_local_settings() -> dict[str, Any]:
+        return sync_overview.settings().model_dump()
+
+    @app.patch("/global-state/sync-local", response_model=dict[str, Any])
+    def update_sync_local_settings(req: UpdateSyncLocalRequest) -> dict[str, Any]:
+        changes = {key: value for key, value in req.model_dump().items() if value is not None}
+        try:
+            updated = sync_local(registry.store.root).update_settings(changes)
+        except ValidationError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        sync_overview.poke()
+        return updated.model_dump()
+
+    @app.get("/hosts", response_model=dict[str, Any])
+    def get_hosts() -> dict[str, Any]:
+        """Every known host with what local refs say about it; no network IO."""
+        return list_known_hosts(
+            registry.store.root, registry.store.sync, sync_local(registry.store.root),
+            source_repo=update_checker.repo_root,
+        )
+
+    @app.get("/hosts/{machine_id}/timeline", response_model=list[dict[str, Any]])
+    def get_host_timeline(machine_id: str) -> list[dict[str, Any]]:
+        if not machine_id or "/" in machine_id or machine_id.startswith("."):
+            raise HTTPException(400, "invalid machine id")
+        return host_timeline(registry.store.root, machine_id)
+
+    @app.patch("/hosts/self", response_model=dict[str, Any])
+    async def update_own_host(req: UpdateHostProfileRequest) -> dict[str, Any]:
+        try:
+            profile = await asyncio.to_thread(
+                registry.store.update_own_profile,
+                label=req.label, icon=req.icon, color=req.color,
+            )
+        except (ValueError, ValidationError) as exc:
+            raise HTTPException(422, str(exc)) from exc
+        await registry.broadcast_workspace({"type": "hosts_changed", "seq": 0})
+        return profile.model_dump()
 
     @app.patch("/global-state/defaults", response_model=dict[str, Any])
     def update_global_defaults(
@@ -1792,6 +1903,8 @@ def create_app(
         return {
             **asdict(update_checker.state()),
             "blockers": self_update_blockers(),
+            "daemon": daemon_client.supervised(),
+            "running_head": update_checker.running_head,
         }
 
     @app.get("/self-update", response_model=dict[str, Any])
@@ -1800,12 +1913,50 @@ def create_app(
 
     @app.post("/self-update/check", response_model=dict[str, Any])
     async def check_self_update() -> dict[str, Any]:
-        """Fetch the source remote. Only ever reached by an explicit user action."""
+        """Fetch the source remote now, on top of the background probe."""
         try:
             await asyncio.to_thread(update_checker.check_remote)
         except UpdateError as exc:
             raise HTTPException(409, str(exc)) from exc
+        sync_overview.poke()
         return await asyncio.to_thread(self_update_payload)
+
+    @app.get("/self-update/progress", response_model=dict[str, Any])
+    async def self_update_progress() -> dict[str, Any]:
+        if not daemon_client.supervised():
+            return {"daemon": False, "update": None}
+        try:
+            status = await asyncio.to_thread(daemon_client.request, "status")
+        except daemon_client.DaemonError as exc:
+            raise HTTPException(503, str(exc)) from exc
+        return {"daemon": True, "phase": status.get("phase"), "update": status.get("update")}
+
+    @app.get("/self-update/last-run", response_model=dict[str, Any] | None)
+    def self_update_last_run() -> dict[str, Any] | None:
+        return daemon_client.last_update_run(registry.store.root)
+
+    def watch_daemon_update(update_id: str) -> None:
+        """Reopen scheduling if the supervisor rejects the run before stopping us.
+
+        A run that gets past its checks ends this process, so only a rejection
+        is ever observed here.
+        """
+        async def watch() -> None:
+            while True:
+                await asyncio.sleep(1.0)
+                try:
+                    status = await asyncio.to_thread(daemon_client.request, "status")
+                except daemon_client.DaemonError:
+                    continue
+                run = status.get("update") or {}
+                if run.get("id") != update_id:
+                    continue
+                if run.get("status") not in {None, "running"}:
+                    registry.cancel_self_update()
+                    return
+
+        task = asyncio.get_running_loop().create_task(watch())
+        app.state.daemon_update_watch = task
 
     @app.post("/self-update/apply", response_model=dict[str, Any])
     async def apply_self_update() -> dict[str, Any]:
@@ -1821,6 +1972,32 @@ def create_app(
                     for entry in blockers
                 )
                 raise HTTPException(409, f"仍有活跃节点，无法更新：{names}")
+            if daemon_client.supervised():
+                # The supervisor stops this process, fast-forwards, rebuilds
+                # what changed, restarts, and rolls back on failure.
+                try:
+                    state = await asyncio.to_thread(update_checker.preflight)
+                    target = (state.commits[-1].sha if state.commits else None) or state.upstream
+                    assert target is not None
+                    response = await asyncio.to_thread(
+                        daemon_client.request, "update", target=target,
+                    )
+                except UpdateError as exc:
+                    raise HTTPException(409, str(exc)) from exc
+                except daemon_client.DaemonError as exc:
+                    raise HTTPException(503, str(exc)) from exc
+                applied = True
+                watch_daemon_update(str(response.get("update_id") or ""))
+                return {
+                    "ok": True,
+                    "mode": "daemon",
+                    "update_id": response.get("update_id"),
+                    "old_head": state.head,
+                    "new_head": target,
+                    "changed_paths": [],
+                    "restart_commands": [],
+                    "message": "MiniClaw2 正在更新，完成后页面会自动刷新",
+                }
             try:
                 result = await asyncio.to_thread(
                     update_checker.apply, registry.store.root
@@ -1841,11 +2018,12 @@ def create_app(
         update_checker.schedule_exit(registry.store.root)
         return {
             "ok": True,
+            "mode": "exit",
             "old_head": result.old_head,
             "new_head": result.new_head,
             "changed_paths": result.changed_paths,
             "restart_commands": result.restart_commands,
-            "message": "更新已完成，MiniClaw2 即将退出",
+            "message": "更新已完成，MiniClaw2 即将退出；按上面的命令重启，或改用 miniclaw2 daemon start 获得自动重启",
         }
 
     @app.get(

@@ -127,6 +127,25 @@ python -m miniclaw2 --dev [--reload]
 
 Ctrl-C stops both processes.
 
+**Daemon (macOS/Linux)** — a small supervisor keeps the backend (and with
+`--dev`, Vite) running, restarts it if it crashes, and applies source updates
+end to end:
+
+```bash
+miniclaw2 daemon start [--host H] [--port P] [--dev] [--passcode 1234]
+miniclaw2 daemon status | logs [backend|vite|daemon|update] [-f] | restart | stop
+miniclaw2 daemon run ...   # foreground, for launchd / systemd / tmux
+```
+
+MiniClaw2 checks the source remote in the background and announces a new
+version once. Under the daemon, **更新** stops the backend, fast-forwards the
+checkout, runs `pip install -e backend` / `npm ci` / `npm run build` as the
+diff requires, restarts, and waits for `/health` to report the new commit;
+the page reloads by itself. If the new backend fails before it migrates the
+store, the daemon rolls the checkout back and restarts the old version. The
+checkout must be clean with no unpushed commits. Without the daemon the
+update still fast-forwards, then exits and prints the commands to run.
+
 **Optional browser passcode** — add a four-digit passcode when the UI is
 reachable by other machines:
 
@@ -178,10 +197,25 @@ python -m miniclaw2 sync init <git-url>
 ```
 
 Run the same command on a fresh machine with an empty `$MINICLAW_HOME` to clone
-the remote and generate a new local `machine.json`. After setup, remote I/O is
-manual-only: press **Sync now** in Global settings. Durable changes are
-committed locally in a roughly 30-second coalescing window, but MiniClaw2 does
-not fetch or push on startup, shutdown, or a timer.
+the remote and generate a new local `machine.json`. After setup, merging and
+pushing happen only when you press **Sync now** (in Global settings or the
+sync center). Durable changes are committed locally in a roughly 30-second
+coalescing window. A background probe reads the remote every 10 minutes
+(`ls-remote`, then a fetch only if something moved) so the sync center can
+show what other machines reported; it never merges or pushes, and can be
+turned off per machine in Global settings.
+
+The landing header shows what this machine still owes its remotes. Unpushed
+metadata and unpushed project work (uncommitted files or commits ahead of
+upstream, for projects bound on this machine) show a quiet count, and turn
+into a red dot only once the oldest of them is older than a per-machine
+threshold (3 days for metadata, 1 day for projects by default).
+
+Each machine has a name, icon, and color in **Global settings → 本机 Host**;
+every machine shows it under that name. Each sync also publishes a small
+per-machine beacon branch (`_hosts/<machine-id>`) on the metadata remote,
+which is how another machine can tell whether this one has pulled its latest
+push.
 
 Before upgrading MiniClaw2, sync once; after the upgraded process writes a
 store migration, sync again. `machine.json` records a hash of the machine's

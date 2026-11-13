@@ -37,6 +37,8 @@ import {
   importSkill,
   getGlobalState,
   getMigrationStatus,
+  getSelfUpdateLastRun,
+  listHosts,
   getGitState,
   getWorkingTreeDiff,
   gitCommit,
@@ -109,6 +111,12 @@ import { StorageMaintenance } from "./components/StorageMaintenance";
 import { storageGuidance, type StorageFailure } from "./storageMaintenance";
 import { NotificationBell } from "./components/NotificationBell";
 import { NoticeBannerRail } from "./components/NoticeBannerRail";
+import { SyncCenter } from "./components/SyncCenter";
+import { HostGlyph } from "./components/HostGlyph";
+import { SelfUpdateOverlay } from "./components/SelfUpdateOverlay";
+import { takePendingUpdate, type PendingUpdate } from "./selfUpdate";
+import { useSyncOverview } from "./useSyncOverview";
+import { titleMark } from "./syncStatus";
 import { RunStatusButton } from "./components/RunStatusButton";
 import { ThemeToggle } from "./components/ThemeToggle";
 import { UsageStrip } from "./components/UsageStrip";
@@ -137,6 +145,8 @@ import type {
   TemplateSummary,
   TemplateInstanceRecord,
   WorkspaceEvent,
+  WorkspaceSignal,
+  HostEntry,
 } from "./types";
 import { useSessionSocket } from "./ws";
 import { useActiveNodes, useReadKeys } from "./activeNodes";
@@ -312,7 +322,53 @@ export function App() {
     },
     [pushNotice],
   );
-  const activeNodesFeed = useActiveNodes(true, handleWorkspaceEvent);
+  /* Sync state for all three objects (metadata, projects, source). Refetched
+   * when the backend pushes a category change, never polled. */
+  const syncOverviewState = useSyncOverview(true);
+  const refreshSyncOverview = syncOverviewState.refresh;
+  const [hostsVersion, setHostsVersion] = useState(0);
+  const [selfHost, setSelfHost] = useState<HostEntry | null>(null);
+  const [syncCenterOpen, setSyncCenterOpen] = useState(false);
+  const [pendingUpdate, setPendingUpdate] = useState<PendingUpdate | null>(null);
+  const [updateOutcome, setUpdateOutcome] = useState<string | null>(null);
+  const [sourceAnnouncement, setSourceAnnouncement] = useState<string | null>(null);
+  useEffect(() => {
+    listHosts()
+      .then((payload) => setSelfHost(payload.hosts.find((entry) => entry.is_self) ?? null))
+      .catch(() => {});
+  }, [hostsVersion]);
+  /* A reload that follows a daemon update: say whether the new version is the
+   * one running, or whether the daemon had to roll back. */
+  useEffect(() => {
+    const previous = takePendingUpdate();
+    if (!previous) return;
+    getSelfUpdateLastRun()
+      .then((run) => {
+        if (!run || run.target !== previous.target) return;
+        if (run.status === "succeeded") setUpdateOutcome(`MiniClaw2 已更新到 ${run.target.slice(0, 8)}`);
+        else if (run.status === "rolled_back") setUpdateOutcome(`更新失败，已回滚：${run.error ?? "未知原因"}`);
+        else setUpdateOutcome(`更新未完成：${run.error ?? run.status}`);
+      })
+      .catch(() => {});
+  }, []);
+  const handleWorkspaceSignal = useCallback(
+    (signal: WorkspaceSignal) => {
+      if (signal.type === "sync_overview_changed") void refreshSyncOverview();
+      else if (signal.type === "hosts_changed") setHostsVersion((value) => value + 1);
+      else if (signal.type === "source_update_available") {
+        void refreshSyncOverview();
+        setSourceAnnouncement(`MiniClaw2 有新版本（${signal.behind} 个提交）：${signal.title}`);
+      }
+    },
+    [refreshSyncOverview],
+  );
+  const activeNodesFeed = useActiveNodes(true, handleWorkspaceEvent, handleWorkspaceSignal);
+  /* A background tab shows "●" when something is overdue or a release waits. */
+  const syncTitleMark = titleMark(syncOverviewState.overview);
+  useEffect(() => {
+    const base = document.title.replace(/^● /, "");
+    document.title = syncTitleMark + base;
+  }, [syncTitleMark]);
   /* One owner for read state: the bell's history rows and the banner rail
    * acknowledge the same keys. */
   const readKeysController = useReadKeys(activeNodesFeed);
@@ -3092,6 +3148,58 @@ export function App() {
     );
   }
 
+  const openProjectById = (projectId: string) => {
+    const target = landingSessions?.find((item) => item.id === projectId);
+    setSyncCenterOpen(false);
+    if (target) void openProject(target);
+    else void getSession(projectId).then(openProject).catch(() => {});
+  };
+  const syncOverlays = (
+    <>
+      <SyncCenter
+        open={syncCenterOpen}
+        overview={syncOverviewState.overview}
+        hostsVersion={hostsVersion}
+        onClose={() => setSyncCenterOpen(false)}
+        onOverview={syncOverviewState.setOverview}
+        onGlobalState={(next) => {
+          setGlobalState(next);
+          setModelPresets(next.model_presets);
+          setHostsVersion((value) => value + 1);
+        }}
+        onOpenProject={openProjectById}
+        onUpdateStarted={(update) => {
+          setSyncCenterOpen(false);
+          setPendingUpdate(update);
+        }}
+      />
+      {pendingUpdate && (
+        <SelfUpdateOverlay update={pendingUpdate} onClose={() => setPendingUpdate(null)} />
+      )}
+      {(updateOutcome || sourceAnnouncement) && !pendingUpdate && (
+        <div className="pointer-events-none fixed bottom-5 left-1/2 z-[70] flex -translate-x-1/2 flex-col items-center gap-2">
+          {[updateOutcome, sourceAnnouncement].filter((text): text is string => !!text).map((text) => (
+            <div key={text} role="status" className="pointer-events-auto flex max-w-[min(560px,92vw)] items-center gap-3 rounded-[10px] border border-line bg-surface-raised px-3.5 py-2 text-[12.5px] text-ink shadow-modal">
+              <span className="min-w-0 flex-1 truncate" title={text}>{text}</span>
+              {text === sourceAnnouncement && (
+                <button type="button" className="flex-none text-[12px] font-medium text-brand" onClick={() => { setSourceAnnouncement(null); setSyncCenterOpen(true); }}>
+                  查看
+                </button>
+              )}
+              <button
+                type="button"
+                className="flex-none text-[12px] text-ink-muted hover:text-ink"
+                onClick={() => (text === updateOutcome ? setUpdateOutcome(null) : setSourceAnnouncement(null))}
+              >
+                关闭
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </>
+  );
+
   if (route === "landing") {
     return (
       <div key="landing" className="mc-route-in flex h-screen flex-col bg-surface text-ink">
@@ -3141,8 +3249,14 @@ export function App() {
               onClearAll={clearAllBanners}
             />
           )}
+          syncOverview={syncOverviewState.overview}
+          onSyncSettings={() => void refreshSyncOverview()}
+          selfHost={selfHost}
+          onOpenSyncCenter={() => setSyncCenterOpen(true)}
+          onHostChanged={() => setHostsVersion((value) => value + 1)}
           />
         </div>
+        {syncOverlays}
         <NewProjectModal
           open={newProjectModalOpen}
           modelPresets={modelPresets}
@@ -3346,6 +3460,7 @@ export function App() {
                 ws {status}
               </span>
               {session?.capabilities?.git_review !== false && <GitWorkspaceStatus
+                overdue={syncOverviewState.overview?.projects.find((entry) => entry.id === session?.id)?.state === "overdue"}
                 status={gitStatus}
                 action={gitAction}
                 canCommit={session?.persistence_mode !== "remote" && !readOnly && !!gitStatus?.is_repo && !gitAction && !!gitStatus.dirty_count}
@@ -3415,10 +3530,16 @@ export function App() {
               )}
               {session?.bound_here && session.hosts.length > 0 && (
                 <span
-                  className="max-w-[16rem] truncate font-sans text-ink-muted"
+                  className="inline-flex max-w-[16rem] items-center gap-1 truncate font-sans text-ink-muted"
                   title={session.hosts.map((host) => host.label || host.mid).join("、")}
                 >
-                  设备 {session.hosts.map((host) => host.label || host.mid).join("、")}
+                  设备
+                  {session.hosts.map((host) => (
+                    <span key={host.mid} className="inline-flex items-center gap-0.5">
+                      <HostGlyph icon={host.icon} color={host.color} size={11} />
+                      {host.label || host.mid.slice(0, 8)}
+                    </span>
+                  ))}
                 </span>
               )}
               {session?.bound_here && !session.temporary && (
@@ -3618,6 +3739,27 @@ export function App() {
             </svg>
           </button>
 
+          {syncOverviewState.overview?.source.state === "available" && (
+            <button
+              type="button"
+              onClick={() => setSyncCenterOpen(true)}
+              className="inline-flex h-8 items-center whitespace-nowrap rounded-full border border-brand/40 bg-brand-soft px-2.5 text-[11.5px] font-medium text-brand-ink transition hover:brightness-95"
+              title="MiniClaw2 有新版本，打开同步中心更新"
+            >
+              新版本 · {syncOverviewState.overview.source.behind}
+            </button>
+          )}
+          {selfHost && (
+            <button
+              type="button"
+              onClick={() => setSyncCenterOpen(true)}
+              className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-line bg-surface transition hover:border-line-strong hover:bg-surface-sunken"
+              title={`本机：${selfHost.label}（打开同步中心）`}
+              aria-label="打开同步中心"
+            >
+              <HostGlyph icon={selfHost.icon} color={selfHost.color} size={16} />
+            </button>
+          )}
           <ThemeToggle />
         </div>
       </header>
@@ -3937,6 +4079,7 @@ export function App() {
       name="Working tree diff"
       onClose={() => setWorkingTreeDiff(null)}
     />
+    {syncOverlays}
     </TextZoomProvider>
   );
 }

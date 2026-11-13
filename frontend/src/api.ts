@@ -15,6 +15,11 @@ import type {
   ToolRequestSettings,
   SelfUpdateApplyResult,
   SelfUpdateState,
+  DaemonUpdateRun,
+  HostProfile,
+  HostsResponse,
+  SyncLocalSettings,
+  SyncOverview,
   ReviewBrief,
   NodeCategory,
   ReviewSubtype,
@@ -492,6 +497,77 @@ export async function checkSelfUpdate(): Promise<SelfUpdateState> {
 export async function applySelfUpdate(): Promise<SelfUpdateApplyResult> {
   const res = await fetch("/self-update/apply", { method: "POST" });
   if (!res.ok) throw new ApiError("applySelfUpdate", res.status, await readErrorDetail(res));
+  return res.json();
+}
+
+export type HealthState = {
+  status: "ok" | "maintenance";
+  head: string | null;
+  boot_id: string;
+  daemon: boolean;
+};
+
+/** Reachable without a passcode session; also polled while the backend restarts. */
+export async function getHealth(signal?: AbortSignal): Promise<HealthState> {
+  const res = await fetch("/health", { signal, cache: "no-store" });
+  if (!res.ok) throw new ApiError("getHealth", res.status, await readErrorDetail(res));
+  return res.json();
+}
+
+export async function getSelfUpdateProgress(): Promise<{
+  daemon: boolean; phase?: string; update: DaemonUpdateRun | null;
+}> {
+  const res = await fetch("/self-update/progress", { cache: "no-store" });
+  if (!res.ok) throw new ApiError("getSelfUpdateProgress", res.status, await readErrorDetail(res));
+  return res.json();
+}
+
+export async function getSelfUpdateLastRun(): Promise<DaemonUpdateRun | null> {
+  const res = await fetch("/self-update/last-run");
+  if (!res.ok) throw new ApiError("getSelfUpdateLastRun", res.status, await readErrorDetail(res));
+  return res.json();
+}
+
+/** Local refs and cached scans only; never contacts a remote. */
+export async function getSyncOverview(): Promise<SyncOverview> {
+  const res = await fetch("/sync-overview");
+  if (!res.ok) throw new ApiError("getSyncOverview", res.status, await readErrorDetail(res));
+  return res.json();
+}
+
+export async function refreshSyncOverview(): Promise<SyncOverview> {
+  const res = await fetch("/sync-overview/refresh", { method: "POST" });
+  if (!res.ok) throw new ApiError("refreshSyncOverview", res.status, await readErrorDetail(res));
+  return res.json();
+}
+
+export async function updateSyncLocalSettings(
+  body: Partial<SyncLocalSettings>,
+): Promise<SyncLocalSettings> {
+  const res = await fetch("/global-state/sync-local", {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new ApiError("updateSyncLocalSettings", res.status, await readErrorDetail(res));
+  return res.json();
+}
+
+export async function listHosts(): Promise<HostsResponse> {
+  const res = await fetch("/hosts");
+  if (!res.ok) throw new ApiError("listHosts", res.status, await readErrorDetail(res));
+  return res.json();
+}
+
+export async function updateOwnHost(
+  body: Partial<Pick<HostProfile, "label" | "icon" | "color">>,
+): Promise<HostProfile> {
+  const res = await fetch("/hosts/self", {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new ApiError("updateOwnHost", res.status, await readErrorDetail(res));
   return res.json();
 }
 

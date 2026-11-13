@@ -50,6 +50,7 @@ const payload = () => ({
 globalThis.fetch = async (input, init) => {
   const path = String(input);
   if (path === "/self-update") return Response.json({ is_repo: false });
+  if (path === "/hosts") return Response.json({ generated_at: 0, remote_tip: null, self_id: "local", last_synced_commit: null, hosts: [] });
   if (path === "/global-state/sync" && init?.method === "POST") return syncRequest.promise;
   if (path === "/migrations/status") {
     statusRequests += 1;

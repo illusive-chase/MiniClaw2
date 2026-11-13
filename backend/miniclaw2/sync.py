@@ -34,6 +34,18 @@ SCHEMA_VERSION = CURRENT_VERSION
 SCHEMA_NAME = "miniclaw2-store"
 DEFAULT_COMMIT_DEBOUNCE_SECONDS = 30.0
 REMOTE_CHECK_TIMEOUT_SECONDS = 30.0
+# Each host publishes its sync checkpoints on a branch only it writes. The
+# branch never merges into the metadata history, so publishing one creates
+# nothing for any other host to pull.
+BEACON_REF_PREFIX = "refs/heads/_hosts/"
+BEACON_TRACKING_PREFIX = "refs/remotes/origin/_hosts/"
+# Host-local, keyed by machine id so a copied store (``machine copy``) does
+# not hand the old identity's lease to the new one. Never matched by a push
+# refspec, so never published.
+BEACON_LOCAL_PREFIX = "refs/miniclaw2/beacon/"
+BEACON_PENDING_PREFIX = "refs/miniclaw2/beacon-pending/"
+BEACON_FILENAME = "beacon.json"
+BEACON_SCHEMA = 1
 # Transfers are bounded by silence rather than total size: a slow link that
 # keeps reporting progress may run long, a hung connection fails quickly.
 REMOTE_STALL_TIMEOUT_SECONDS = 60.0
@@ -196,10 +208,7 @@ def load_machine_identity(root: Path) -> MachineIdentity:
 
 def ensure_machine_identity(root: Path) -> MachineIdentity:
     with _machine_identity_lock(root):
-        identity = _ensure_machine_identity_locked(root)
-        if not schema_is_newer(root):
-            _update_owned_project_labels(root, identity)
-        return identity
+        return _ensure_machine_identity_locked(root)
 
 
 def _ensure_machine_identity_locked(root: Path) -> MachineIdentity:
@@ -253,9 +262,41 @@ def resolve_machine_rename(root: Path, *, label: str | None = None) -> MachineId
             device_fingerprint=fingerprint,
         )
         _write_json(machine_path(root), updated.payload())
-        if not schema_is_newer(root):
-            _update_owned_project_labels(root, updated)
+        if label and _schema_is_current(root):
+            _rename_host_profile(root, updated)
         return updated
+
+
+def update_machine_label(root: Path, machine_id: str, label: str) -> MachineIdentity | None:
+    """Refresh the local label cache from this host's profile."""
+    with _machine_identity_lock(root):
+        identity = load_machine_identity(root)
+        if identity.id != machine_id:
+            return None
+        if identity.label == label:
+            return identity
+        updated = replace(identity, label=label)
+        _write_json(machine_path(root), updated.payload())
+        return updated
+
+
+def _schema_is_current(root: Path) -> bool:
+    try:
+        payload = json.loads((root / SCHEMA_FILENAME).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return isinstance(payload, dict) and payload.get("schema_version") == SCHEMA_VERSION
+
+
+def _rename_host_profile(root: Path, identity: MachineIdentity) -> None:
+    from .host_profile import load_profile, new_profile, save_profile
+
+    profile = load_profile(root, identity.id) or new_profile(
+        identity.id, label=identity.label, hostname=identity.hostname,
+    )
+    save_profile(root, profile.model_copy(update={
+        "label": identity.label, "hostname": identity.hostname, "updated_at": time.time(),
+    }))
 
 
 def resolve_machine_copy(root: Path, *, label: str | None = None) -> MachineIdentity:
@@ -361,7 +402,16 @@ def bootstrap_store(root: Path, remote_url: str) -> MachineIdentity:
 
 
 class SyncManager:
-    """Owns local commit coalescing and user-triggered remote exchange."""
+    """Owns local commit coalescing, user-triggered exchange, and read-only probes.
+
+    Two locks, always taken in this order when both are needed:
+
+    - ``_lock`` is the storage coordinator's mutex. Every guarded Store method
+      takes it, so holding it across network IO stalls the whole store.
+    - ``_remote_refs_lock`` guards only ``refs/remotes/*``. A background probe
+      takes this one alone and never the storage lock; ``sync_now`` holds both
+      so a probe cannot move the tracking ref under an in-flight merge.
+    """
 
     def __init__(
         self,
@@ -377,8 +427,12 @@ class SyncManager:
 
         self.coordinator = open_storage(self.root)
         self._lock = self.coordinator.mutex
+        self._remote_refs_lock = threading.Lock()
         self._timer: threading.Timer | None = None
         self._pending_messages: list[str] = []
+        # When the oldest message in the debounce window was queued; the
+        # window is in memory only and at most ``debounce_seconds`` long.
+        self._pending_since: float | None = None
         self._pre_commit_callbacks: list[Callable[[], None]] = []
         self._success_callbacks: list[Callable[[], None]] = []
         self._publication_callbacks: list[Callable[[], None]] = []
@@ -387,6 +441,11 @@ class SyncManager:
         self._file_commit_time_cache_head: str | None = None
         self._file_commit_time_cache: dict[Path, float | None] = {}
         self.progress: dict[str, Any] = {"phase": "idle", "detail": "未在同步", "started_at": None, "phase_started_at": None}
+        #: Extra self-reported facts for this host's beacon (source version,
+        #: daemon mode). Set by the app; the store knows nothing about them.
+        self.beacon_extras: Callable[[], dict[str, Any]] | None = None
+        #: Why the last beacon push failed while the metadata push succeeded.
+        self.last_beacon_error: str | None = None
 
     def _set_progress(self, phase: str) -> None:
         now = time.time()
@@ -468,6 +527,8 @@ class SyncManager:
             return
         with self._lock:
             self._pending_messages.append(message.strip() or "update metadata")
+            if self._pending_since is None:
+                self._pending_since = time.time()
             if self._timer is not None:
                 self._timer.cancel()
             self._timer = threading.Timer(
@@ -484,6 +545,7 @@ class SyncManager:
                 self._timer = None
             messages = self._pending_messages
             self._pending_messages = []
+            self._pending_since = None
             if not (self.root / ".git").exists():
                 return None
             self._refresh_identity()
@@ -496,12 +558,13 @@ class SyncManager:
             if staged.returncode != 1:
                 raise SyncError(_command_error("cannot inspect staged changes", staged))
             commit_message = message or self._coalesced_message(messages)
+            name, email = self.author
             committed = _git(
                 self.root,
                 "-c",
-                f"user.name=MiniClaw2 ({self.identity.label})",
+                f"user.name={name}",
                 "-c",
-                f"user.email=miniclaw2@{self.identity.id}.local",
+                f"user.email={email}",
                 "commit",
                 "-m",
                 commit_message,
@@ -511,43 +574,140 @@ class SyncManager:
                 raise SyncError(_command_error("metadata commit failed", committed))
             return self._head()
 
+    @property
+    def author(self) -> tuple[str, str]:
+        """This host's Git identity; the email is how commits map to hosts."""
+        return f"MiniClaw2 ({self.identity.label})", host_email(self.identity.id)
+
     def status(self) -> dict[str, Any]:
         configured = self.configured
         changed = False
+        dirty = False
         remote = {
             "ahead": 0,
             "behind": 0,
             "ref_at": None,
             "error": None,
         }
+        debt: dict[str, Any] = {"unpushed_commits": 0, "unpushed_since": None}
         if configured:
-            dirty = _git(self.root, "status", "--porcelain", check=False)
+            # Read-only callers (the background overview) run beside commits;
+            # without this flag `status` takes index.lock to refresh stat data.
+            porcelain = _git(self.root, "--no-optional-locks", "status", "--porcelain", check=False)
+            dirty = bool(porcelain.stdout.strip())
             head = self._head()
-            changed = bool(dirty.stdout.strip()) or (
+            changed = dirty or (
                 head is not None and head != self.identity.last_synced_commit
             ) or self.identity.sync_pending
-            remote = self._remote_status(self._branch())
+            branch = self._branch()
+            remote = self._remote_status(branch)
+            debt = self._unpushed(branch)
+        dirty_since = (self._pending_since or time.time()) if dirty else None
+        since_candidates = [value for value in (debt["unpushed_since"], dirty_since) if value is not None]
         return {
             "configured": configured,
             "remote_url": self.remote_url(),
             "remote": remote,
             "status": "changed" if changed else "up-to-date",
             "changed": changed,
+            "dirty": dirty,
+            "unpushed_commits": debt["unpushed_commits"],
+            "unpushed_since": debt["unpushed_since"],
+            "debt_since": min(since_candidates) if since_candidates else None,
+            "last_sync_failed": self.identity.sync_pending,
+            "last_synced_commit": self.identity.last_synced_commit,
             "last_sync_at": self.identity.last_sync_at,
             "machine_id": self.identity.id,
             "machine_label": self.identity.label,
             "hostname_mismatch": machine_hostname_mismatch(self.identity),
+            "beacon_error": self.last_beacon_error,
+        }
+
+    def _unpushed(self, branch: str) -> dict[str, Any]:
+        """What this host has that the remote does not, derived from Git.
+
+        ``origin/<branch>`` only ever moves forward to commits the remote
+        holds, and other hosts' work lands on its far side, so the range is
+        exact without a fetch.
+        """
+        tracking = f"refs/remotes/origin/{branch}"
+        exists = _git(self.root, "rev-parse", "--verify", "--quiet", tracking, check=False).returncode == 0
+        if self._head() is None:
+            return {"unpushed_commits": 0, "unpushed_since": None}
+        revision = f"{tracking}..HEAD" if exists else "HEAD"
+        listed = _git(self.root, "log", "--format=%ct", revision, check=False)
+        if listed.returncode != 0:
+            return {"unpushed_commits": 0, "unpushed_since": None}
+        stamps = [float(line) for line in listed.stdout.split() if line.strip().isdigit()]
+        return {
+            "unpushed_commits": len(stamps),
+            "unpushed_since": min(stamps) if stamps else None,
         }
 
     def check_remote(self) -> dict[str, Any]:
+        """Fetch the metadata branch on request; never takes the storage lock."""
         if not self.configured:
             raise SyncError("metadata sync is not configured")
-        with self._lock:
+        with self._remote_refs_lock:
             branch = self._branch()
-            fetched = _git_transfer(self.root, "fetch", "origin", branch)
+            fetched = _git_transfer(
+                self.root, "fetch", "origin", *_probe_fetch_refspecs(branch),
+                config=_PROBE_GIT_CONFIG,
+            )
             if fetched.returncode != 0:
                 raise SyncError(_command_error("fetch failed", fetched))
-            return self.status()
+        return self.status()
+
+    def probe_remote(self) -> bool | None:
+        """Read-only sniff of the remote; True when tracking refs moved.
+
+        Compares a cheap ``ls-remote`` against the local tracking refs and
+        fetches only on a difference. It never merges, never touches the
+        worktree or local branches, and never pushes. Returns None when a
+        sync or another probe already holds the remote refs.
+        """
+        if not self.configured:
+            return False
+        if not self._remote_refs_lock.acquire(blocking=False):
+            return None
+        try:
+            branch = self._branch()
+            listed = _run_raw(
+                ["git", "-C", str(self.root), "ls-remote", "origin",
+                 f"refs/heads/{branch}", f"{BEACON_REF_PREFIX}*"],
+                check=False, timeout=REMOTE_CHECK_TIMEOUT_SECONDS, env=_probe_env(),
+            )
+            if listed.returncode != 0:
+                raise SyncError(_command_error("ls-remote failed", listed))
+            remote_refs: dict[str, str] = {}
+            for line in listed.stdout.splitlines():
+                sha, _, ref = line.partition("\t")
+                if ref.startswith("refs/heads/"):
+                    remote_refs["refs/remotes/origin/" + ref.removeprefix("refs/heads/")] = sha.strip()
+            local_refs = self._tracking_refs(branch)
+            if remote_refs == local_refs:
+                return False
+            fetched = _git_transfer(
+                self.root, "fetch", "--prune", "origin", *_probe_fetch_refspecs(branch),
+                config=_PROBE_GIT_CONFIG,
+            )
+            if fetched.returncode != 0:
+                raise SyncError(_command_error("fetch failed", fetched))
+            return True
+        finally:
+            self._remote_refs_lock.release()
+
+    def _tracking_refs(self, branch: str) -> dict[str, str]:
+        listed = _git(
+            self.root, "for-each-ref", "--format=%(objectname) %(refname)",
+            f"refs/remotes/origin/{branch}", BEACON_TRACKING_PREFIX, check=False,
+        )
+        refs: dict[str, str] = {}
+        for line in listed.stdout.splitlines():
+            sha, _, ref = line.partition(" ")
+            if ref == f"refs/remotes/origin/{branch}" or ref.startswith(BEACON_TRACKING_PREFIX):
+                refs[ref] = sha
+        return refs
 
     def file_commit_times(self, paths: list[Path]) -> dict[Path, float]:
         """Return each path's newest committed timestamp with bounded queries."""
@@ -606,7 +766,7 @@ class SyncManager:
         if not self.configured:
             raise SyncError("metadata sync is not configured")
         self._ensure_contextspace_inside_store()
-        with self._lock:
+        with self._lock, self._remote_refs_lock:
             self._set_progress("preparing")
             try:
                 self.coordinator.assert_current()
@@ -623,7 +783,7 @@ class SyncManager:
                 try:
                     self._set_progress("fetching")
                     fetched = _git_transfer(
-                        self.root, "fetch", "origin", on_progress=self._report_transfer,
+                        self.root, "fetch", "--prune", "origin", on_progress=self._report_transfer,
                     )
                     if fetched.returncode != 0:
                         raise SyncError(_command_error("fetch failed", fetched))
@@ -638,12 +798,7 @@ class SyncManager:
                             for callback in tuple(self._publication_callbacks):
                                 callback()
                     self._set_progress("pushing")
-                    pushed = _git_transfer(
-                        self.root, "push", "--set-upstream", "origin", f"HEAD:{branch}",
-                        on_progress=self._report_transfer,
-                    )
-                    if pushed.returncode != 0:
-                        raise SyncError(_command_error("push failed", pushed))
+                    self._push_with_beacon(branch, remote_ref if remote_exists else None)
                 except SyncError:
                     self._record_failure()
                     raise
@@ -653,11 +808,139 @@ class SyncManager:
             finally:
                 self._set_progress("idle")
 
+    def _push_with_beacon(self, branch: str, remote_ref: str | None) -> None:
+        """Push the metadata branch and this host's beacon in one transaction.
+
+        Atomicity is what lets a beacon claim "this host had integrated X":
+        the beacon never lands without the commit it names. If the atomic
+        push fails, the branch is retried alone so a beacon problem (a server
+        without ``--atomic``, a lease held by a cloned identity) never fails
+        the sync itself; the beacon follows only once the branch is on the
+        remote, and a failure there is recorded as a warning.
+        """
+        beacon_ref = BEACON_REF_PREFIX + self.identity.id
+        previous = self._own_beacon()
+        try:
+            beacon = self._beacon_commit(remote_ref, previous)
+        except SyncError as exc:
+            logger.warning("无法生成同步信标：%s", exc)
+            beacon, self.last_beacon_error = None, str(exc)
+        main_refspec = f"HEAD:refs/heads/{branch}"
+        if beacon is not None:
+            _git(self.root, "update-ref", BEACON_PENDING_PREFIX + self.identity.id, beacon)
+            lease = f"--force-with-lease={beacon_ref}:{previous or ''}"
+            pushed = _git_transfer(
+                self.root, "push", "--atomic", "--porcelain", "--set-upstream", lease, "origin",
+                main_refspec, f"{beacon}:{beacon_ref}", on_progress=self._report_transfer,
+            )
+            if pushed.returncode == 0:
+                self._beacon_published(beacon)
+                return
+        pushed = _git_transfer(
+            self.root, "push", "--set-upstream", "origin", main_refspec,
+            on_progress=self._report_transfer,
+        )
+        if pushed.returncode != 0:
+            raise SyncError(_command_error("push failed", pushed))
+        if beacon is None:
+            return
+        published = _git_transfer(
+            self.root, "push", "--porcelain", f"--force-with-lease={beacon_ref}:{previous or ''}",
+            "origin", f"{beacon}:{beacon_ref}",
+        )
+        if published.returncode == 0:
+            self._beacon_published(beacon)
+            return
+        _git(self.root, "update-ref", "-d", BEACON_PENDING_PREFIX + self.identity.id, check=False)
+        detail = (published.stdout + "\n" + published.stderr).strip()
+        self.last_beacon_error = (
+            "同步信标被拒绝：远端信标已被另一台使用本机身份的设备更新"
+            if "stale info" in detail
+            else f"同步信标推送失败：{detail or '未知错误'}"
+        )
+        logger.warning("%s", self.last_beacon_error)
+
+    def _own_beacon(self) -> str | None:
+        """The beacon this host last published — the lease every push holds.
+
+        It is kept in a host-local ref because the tracking ref follows the
+        remote, and a remote rewritten by a cloned identity is exactly what
+        the lease exists to notice. A push whose acknowledgement was lost
+        leaves its commit in the pending ref; finding that same commit on the
+        remote proves it was ours. With no local record at all (first sync on
+        this build) the remote's beacon is trusted once.
+        """
+        own = self._ref(BEACON_LOCAL_PREFIX + self.identity.id)
+        pending_ref = BEACON_PENDING_PREFIX + self.identity.id
+        pending = self._ref(pending_ref)
+        remote = self._ref(BEACON_TRACKING_PREFIX + self.identity.id)
+        if pending is not None and pending == remote:
+            self._beacon_published(pending)
+            return pending
+        if pending is not None:
+            _git(self.root, "update-ref", "-d", pending_ref, check=False)
+        return own if own is not None else remote
+
+    def _beacon_published(self, beacon: str) -> None:
+        _git(self.root, "update-ref", BEACON_LOCAL_PREFIX + self.identity.id, beacon)
+        _git(self.root, "update-ref", "-d", BEACON_PENDING_PREFIX + self.identity.id, check=False)
+        self.last_beacon_error = None
+
+    def _beacon_commit(self, remote_ref: str | None, previous: str | None) -> str:
+        head = self._head()
+        if head is None:
+            raise SyncError("本机元数据尚无提交，无法生成同步信标")
+        _, email = self.author
+        contributed = 0
+        if remote_ref is not None:
+            counted = _git(
+                self.root, "rev-list", "--count", "--no-merges", "--fixed-strings",
+                f"--author=<{email}>", f"{remote_ref}..HEAD", check=False,
+            )
+            contributed = int(counted.stdout.strip() or 0) if counted.returncode == 0 else 0
+        else:
+            counted = _git(self.root, "rev-list", "--count", "HEAD", check=False)
+            contributed = int(counted.stdout.strip() or 0) if counted.returncode == 0 else 0
+        payload: dict[str, Any] = {
+            "schema": BEACON_SCHEMA,
+            "machine_id": self.identity.id,
+            "label": self.identity.label,
+            "integrated": head,
+            "synced_at": time.time(),
+            "contributed": contributed,
+            "store_schema": SCHEMA_VERSION,
+        }
+        if self.beacon_extras is not None:
+            try:
+                payload["miniclaw"] = self.beacon_extras()
+            except Exception:  # noqa: BLE001
+                logger.warning("无法采集信标中的 MiniClaw2 版本信息", exc_info=True)
+        blob = _git(
+            self.root, "hash-object", "-w", "--stdin",
+            input_text=json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+        ).stdout.strip()
+        tree = _git(
+            self.root, "mktree", input_text=f"100644 blob {blob}\t{BEACON_FILENAME}\n",
+        ).stdout.strip()
+        name, _ = self.author
+        parents = ["-p", previous] if previous else []
+        return _git(
+            self.root, "commit-tree", tree, *parents,
+            input_text=f"同步信标 {self.identity.label}\n",
+            env=_author_env(name, email),
+        ).stdout.strip()
+
+    def _ref(self, ref: str) -> str | None:
+        result = _git(self.root, "rev-parse", "--verify", "--quiet", ref, check=False)
+        return result.stdout.strip() if result.returncode == 0 and result.stdout.strip() else None
+
     def _merge_remote(self, remote_ref: str) -> bool:
         from .migrations.sync_tree import merge_remote
 
         try:
-            return merge_remote(self.root, remote_ref, on_progress=self._set_progress)
+            return merge_remote(
+                self.root, remote_ref, on_progress=self._set_progress, author=self.author,
+            )
         except MigrationError as exc:
             raise SchemaConflictError(str(exc)) from exc
 
@@ -803,14 +1086,51 @@ def get_sync_manager(root: Path, identity: MachineIdentity | None = None) -> Syn
         return manager
 
 
+def host_email(machine_id: str) -> str:
+    """The commit email every MiniClaw2 commit from ``machine_id`` carries."""
+    return f"miniclaw2@{machine_id}.local"
+
+
+def machine_id_from_email(email: str) -> str | None:
+    match = re.fullmatch(r"miniclaw2@(.+)\.local", email.strip())
+    return match.group(1) if match else None
+
+
+# A probe must fail fast instead of stalling on a dead link, and must never
+# hang on a credential prompt.
+_PROBE_GIT_CONFIG = ("-c", "http.lowSpeedLimit=1000", "-c", "http.lowSpeedTime=30")
+
+
+def _probe_env() -> dict[str, str]:
+    ssh_command = os.environ.get("GIT_SSH_COMMAND", "ssh")
+    return {"GIT_SSH_COMMAND": f"{ssh_command} -oBatchMode=yes -oConnectTimeout=20"}
+
+
+def _probe_fetch_refspecs(branch: str) -> list[str]:
+    return [
+        f"+refs/heads/{branch}:refs/remotes/origin/{branch}",
+        f"+{BEACON_REF_PREFIX}*:{BEACON_TRACKING_PREFIX}*",
+    ]
+
+
+def _author_env(name: str, email: str) -> dict[str, str]:
+    return {
+        "GIT_AUTHOR_NAME": name, "GIT_COMMITTER_NAME": name,
+        "GIT_AUTHOR_EMAIL": email, "GIT_COMMITTER_EMAIL": email,
+    }
+
+
 def _git(
     root: Path,
     *args: str,
     check: bool = True,
     timeout: float | None = None,
+    input_text: str | None = None,
+    env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     result = _run_raw(
-        ["git", "-C", str(root), *args], check=False, timeout=timeout
+        ["git", "-C", str(root), *args], check=False, timeout=timeout,
+        input_text=input_text, env=env,
     )
     if check and result.returncode != 0:
         raise SyncError(_command_error(f"git {' '.join(args)} failed", result))
@@ -820,10 +1140,12 @@ def _git(
 def _git_transfer(
     root: Path, subcommand: str, *args: str,
     on_progress: Callable[[str], None] | None = None,
+    config: tuple[str, ...] = (),
 ) -> subprocess.CompletedProcess[str]:
     return _run_transfer(
-        ["git", "-C", str(root), subcommand, "--progress", *args],
+        ["git", "-C", str(root), *config, subcommand, "--progress", *args],
         label=f"git {subcommand}", on_progress=on_progress,
+        env=_probe_env() if config else None,
     )
 
 
@@ -834,6 +1156,7 @@ def _run_transfer(
     on_progress: Callable[[str], None] | None = None,
     stall_timeout: float = REMOTE_STALL_TIMEOUT_SECONDS,
     total_timeout: float = REMOTE_TRANSFER_TIMEOUT_SECONDS,
+    env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Run a network git command, failing on silence instead of total size.
 
@@ -848,7 +1171,7 @@ def _run_transfer(
     try:
         process = subprocess.Popen(
             command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"}, **isolation,
+            env={**os.environ, "GIT_TERMINAL_PROMPT": "0", **(env or {})}, **isolation,
         )
     except FileNotFoundError as exc:
         raise SyncError("git is not installed or not available on PATH") from exc
@@ -945,7 +1268,8 @@ def _git_init(root: Path) -> None:
 
 
 def _run_raw(
-    command: list[str], *, check: bool = True, timeout: float | None = None
+    command: list[str], *, check: bool = True, timeout: float | None = None,
+    input_text: str | None = None, env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     try:
         return subprocess.run(
@@ -954,7 +1278,9 @@ def _run_raw(
             capture_output=True,
             text=True,
             timeout=timeout,
-            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+            input=input_text,
+            stdin=None if input_text is not None else subprocess.DEVNULL,
+            env={**os.environ, "GIT_TERMINAL_PROMPT": "0", **(env or {})},
         )
     except FileNotFoundError as exc:
         raise SyncError("git is not installed or not available on PATH") from exc
@@ -979,25 +1305,3 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
     )
     temporary.replace(path)
 
-
-def _update_owned_project_labels(root: Path, identity: MachineIdentity) -> None:
-    for project_file in (root / "projects").glob("*/project.json"):
-        host_file = project_file.parent / "hosts" / identity.id / "host.json"
-        if host_file.is_file():
-            try:
-                host_payload = json.loads(host_file.read_text(encoding="utf-8"))
-                if isinstance(host_payload, dict) and host_payload.get("label") != identity.label:
-                    host_payload["label"] = identity.label
-                    _write_json(host_file, host_payload)
-            except (OSError, ValueError):
-                logger.warning("无法更新设备标签：%s", host_file)
-        try:
-            payload = json.loads(project_file.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            continue
-        if not isinstance(payload, dict) or payload.get("machine_id") != identity.id:
-            continue
-        if payload.get("machine_label") == identity.label:
-            continue
-        payload["machine_label"] = identity.label
-        _write_json(project_file, payload)

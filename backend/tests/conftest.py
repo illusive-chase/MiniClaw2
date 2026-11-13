@@ -27,11 +27,19 @@ def _isolate_miniclaw_home() -> Iterator[None]:
     previous = os.environ.get("MINICLAW_HOME")
     previous_context = os.environ.pop("MINICLAW_CONTEXT_HOME", None)
     previous_passcode = os.environ.pop("MINICLAW_PASSCODE", None)
+    # An app started under TestClient runs the sync overview loop; keep it off
+    # the network, and in particular off this checkout's real source remote.
+    previous_probes = os.environ.get("MINICLAW_DISABLE_REMOTE_PROBES")
+    os.environ["MINICLAW_DISABLE_REMOTE_PROBES"] = "1"
     with tempfile.TemporaryDirectory(prefix="miniclaw-tests-") as directory:
         os.environ["MINICLAW_HOME"] = os.path.join(directory, "home")
         try:
             yield
         finally:
+            if previous_probes is None:
+                os.environ.pop("MINICLAW_DISABLE_REMOTE_PROBES", None)
+            else:
+                os.environ["MINICLAW_DISABLE_REMOTE_PROBES"] = previous_probes
             if previous is None:
                 os.environ.pop("MINICLAW_HOME", None)
             else:

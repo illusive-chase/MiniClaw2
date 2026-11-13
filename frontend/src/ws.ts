@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { AUTH_REQUIRED_EVENT } from "./api";
-import type { ClientMessage, ServerEvent, WorkspaceEvent } from "./types";
+import type { ClientMessage, ServerEvent, WorkspaceEvent, WorkspaceSignal } from "./types";
 
 export type WSStatus = "connecting" | "open" | "closed";
 
@@ -175,7 +175,7 @@ export function useSessionSocket(
 
 export function useWorkspaceSocket(
   enabled: boolean,
-  onEvent: (ev: WorkspaceEvent) => void,
+  onEvent: (ev: WorkspaceEvent | WorkspaceSignal) => void,
   onOpen: () => void,
 ): WSStatus {
   const [status, setStatus] = useState<WSStatus>("closed");
@@ -211,7 +211,7 @@ export function useWorkspaceSocket(
       ws.onerror = () => setStatus("closed");
       ws.onmessage = (event) => {
         try {
-          onEventRef.current(JSON.parse(event.data) as WorkspaceEvent);
+          onEventRef.current(JSON.parse(event.data) as WorkspaceEvent | WorkspaceSignal);
         } catch (error) {
           console.error("bad workspace ws frame", error);
         }

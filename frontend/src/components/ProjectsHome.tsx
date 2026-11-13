@@ -14,7 +14,6 @@ import { Plus, Search } from "lucide-react";
 import {
   ArchiveBusyError,
   deleteSession,
-  getSelfUpdate,
   listSessions,
   renameSession,
   setSessionArchived,
@@ -46,11 +45,16 @@ import type {
   HomeFolder,
   HomeItem,
   ModelPreset,
+  HostEntry,
   ProjectIcon,
-  SelfUpdateState,
+  ProjectSyncEntry,
   SessionInfo,
+  SyncLocalSettings,
+  SyncOverview,
 } from "../types";
 import { GlobalSettingsModal } from "./GlobalSettingsModal";
+import { HostGlyph } from "./HostGlyph";
+import { projectDebtText, syncChips, type SyncChip } from "../syncStatus";
 import { ThemeToggle } from "./ThemeToggle";
 import {
   CornerBadge,
@@ -88,6 +92,11 @@ type Props = {
   headerStatus?: ReactNode;
   /** Overlays the grid, anchored below the header rather than scrolling with it. */
   noticeRail?: ReactNode;
+  syncOverview: SyncOverview | null;
+  onSyncSettings: (next: SyncLocalSettings) => void;
+  selfHost: HostEntry | null;
+  onOpenSyncCenter: () => void;
+  onHostChanged: () => void;
 };
 
 type Selection = { kind: "project"; id: string } | { kind: "folder"; id: string };
@@ -129,10 +138,11 @@ function statusParts(badges: SlotBadges, extra: { unbound?: boolean } = {}): str
 
 /* Unbound wins the corner: with no local path, nothing the badges point at
  * can be acted on from this device. */
-function cornerMark(badges: SlotBadges, unbound: boolean): CornerMark {
+function cornerMark(badges: SlotBadges, unbound: boolean, sync?: ProjectSyncEntry): CornerMark {
   if (unbound) return { kind: "unbound" };
   if (badges.waiting > 0) return { kind: "waiting", count: badges.waiting };
   if (badges.errors > 0) return { kind: "error" };
+  if (sync?.state === "overdue") return { kind: "unsynced" };
   return null;
 }
 
@@ -152,10 +162,18 @@ export function ProjectsHome({
   readKeys,
   headerStatus,
   noticeRail,
+  syncOverview,
+  onSyncSettings,
+  selfHost,
+  onOpenSyncCenter,
+  onHostChanged,
 }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [selfUpdate, setSelfUpdate] = useState<SelfUpdateState | null>(null);
+  const projectSync = useMemo(
+    () => new Map((syncOverview?.projects ?? []).map((entry) => [entry.id, entry])),
+    [syncOverview],
+  );
   const [editing, setEditing] = useState(false);
   const [selection, setSelection] = useState<Selection | null>(null);
   const [openFolderId, setOpenFolderId] = useState<string | null>(null);
@@ -208,21 +226,6 @@ export function ProjectsHome({
     window.addEventListener("focus", onFocus);
     return () => window.removeEventListener("focus", onFocus);
   }, [refresh, home.refresh]);
-
-  useEffect(() => {
-    if (settingsOpen) return;
-    let cancelled = false;
-    getSelfUpdate()
-      .then((next) => {
-        if (!cancelled) setSelfUpdate(next);
-      })
-      .catch(() => {
-        /* The settings panel surfaces the actionable error. */
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [settingsOpen]);
 
   useEffect(() => {
     if (!toast) return;
@@ -579,7 +582,9 @@ export function ProjectsHome({
     const slot = `p:${session.id}`;
     const projectBadges = session.archived_at ? NO_BADGES : badges.get(session.id) ?? NO_BADGES;
     const unbound = !session.bound_here;
+    const sync = session.archived_at ? undefined : projectSync.get(session.id);
     const parts = statusParts(projectBadges, { unbound });
+    if (sync && sync.state !== "clean") parts.push(projectDebtText(sync));
     parts.push(
       session.archived_at
         ? `归档于 ${formatRelative(session.archived_at)}`
@@ -596,7 +601,7 @@ export function ProjectsHome({
         label={displayName(session)}
         title={`${displayName(session)}\n${parts.join(" · ")}${draggable ? "\n拖动排列；拖到另一个项目上建组" : ""}`}
         ariaLabel={`${displayName(session)}，${parts.join(" · ")}`}
-        mark={cornerMark(projectBadges, unbound)}
+        mark={cornerMark(projectBadges, unbound, sync)}
         running={projectBadges.running > 0}
         dimmed={unbound || !!session.archived_at}
         draggable={draggable}
@@ -739,13 +744,7 @@ export function ProjectsHome({
 
   /* ---- header bits ---- */
 
-  const remoteBehind = globalState?.sync.remote?.behind ?? 0;
-  const sourceBehind = selfUpdate?.behind ?? 0;
-  const describeRef = (at: number | null | undefined) => (at ? new Date(at * 1000).toLocaleString() : "未知时间");
-  const remoteStatusTitle = [
-    remoteBehind > 0 ? `元数据远端引用落后 ${remoteBehind} 个提交；引用更新于 ${describeRef(globalState?.sync.remote?.ref_at)}` : null,
-    sourceBehind > 0 ? `源码远端引用落后 ${sourceBehind} 个提交；引用更新于 ${describeRef(selfUpdate?.ref_at)}` : null,
-  ].filter(Boolean).join("\n") || undefined;
+  const chips = syncChips(syncOverview);
 
   const sidebarInset = editing && wide ? SIDEBAR_WIDTH : 0;
   const openFolder = openFolderId && items ? findFolder(items, openFolderId) : null;
@@ -772,7 +771,7 @@ export function ProjectsHome({
     const drag = gestures.drag;
     if (!drag || !drag.slot.startsWith("p:")) return null;
     const session = byId.get(drag.slot.slice(2));
-    return session ? cornerMark(badges.get(session.id) ?? NO_BADGES, !session.bound_here) : null;
+    return session ? cornerMark(badges.get(session.id) ?? NO_BADGES, !session.bound_here, projectSync.get(session.id)) : null;
   })();
   const loaded = sessions !== null && items !== null;
   const shownError = error ?? home.error;
@@ -784,6 +783,17 @@ export function ProjectsHome({
           <span className="inline-block h-2 w-2 rounded-full bg-brand" />
           Projects
         </div>
+        {selfHost && (
+          <button
+            type="button"
+            onClick={onOpenSyncCenter}
+            className="ml-1 inline-flex h-7 max-w-[11rem] items-center gap-1.5 rounded-full border border-line bg-surface px-2.5 text-[12px] text-ink-muted transition hover:border-line-strong hover:text-ink"
+            title={`本机：${selfHost.label}（点击打开同步中心）`}
+          >
+            <HostGlyph icon={selfHost.icon} color={selfHost.color} size={13} />
+            <span className="truncate">{selfHost.label}</span>
+          </button>
+        )}
         <label
           className="ml-3 flex h-[34px] min-w-0 flex-[0_1_340px] items-center gap-2 rounded-[10px] border border-line bg-surface-sunken px-2.5 text-ink-muted transition-colors duration-[140ms] focus-within:border-brand"
           title="搜索项目（/ 或 ⌘K）"
@@ -819,20 +829,20 @@ export function ProjectsHome({
           </span>
         )}
         <div className="flex items-center gap-2">
+          {chips.length > 0 && (
+            <div className="hidden items-center gap-1.5 md:flex" role="group" aria-label="同步状态">
+              {chips.map((chip) => (
+                <SyncChipButton key={chip.key} chip={chip} onClick={onOpenSyncCenter} />
+              ))}
+            </div>
+          )}
           {headerStatus}
           <button
             type="button"
             onClick={() => setSettingsOpen(true)}
             className="relative inline-flex h-8 items-center rounded-md border border-line bg-surface-raised px-3 text-[12.5px] font-medium text-ink-muted transition hover:border-line-strong hover:text-ink"
-            title={remoteStatusTitle}
           >
             Global settings
-            {remoteStatusTitle && (
-              <span
-                className="absolute -right-1 -top-1 h-2.5 w-2.5 rounded-full border-2 border-surface-raised bg-state-waiting"
-                aria-label={remoteStatusTitle}
-              />
-            )}
           </button>
           <ThemeToggle />
           {editing ? (
@@ -1007,7 +1017,32 @@ export function ProjectsHome({
           onGlobalStateChanged(next);
           void refresh();
         }}
+        syncSettings={syncOverview?.settings ?? null}
+        onSyncSettings={onSyncSettings}
+        onOpenSyncCenter={onOpenSyncCenter}
+        onHostChanged={onHostChanged}
       />
     </div>
+  );
+}
+
+const CHIP_TONE: Record<SyncChip["tone"], string> = {
+  quiet: "border-line bg-surface text-ink-subtle",
+  alert: "border-state-error/40 bg-state-error-soft text-state-error",
+  brand: "border-brand/40 bg-brand-soft text-brand-ink",
+  muted: "border-line bg-surface-sunken text-ink-muted",
+};
+
+function SyncChipButton({ chip, onClick }: { chip: SyncChip; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={chip.title}
+      className={`inline-flex h-7 items-center gap-1.5 whitespace-nowrap rounded-full border px-2.5 text-[11.5px] font-medium transition hover:brightness-95 ${CHIP_TONE[chip.tone]}`}
+    >
+      {chip.tone === "alert" && <span className="h-1.5 w-1.5 rounded-full bg-state-error" aria-hidden="true" />}
+      {chip.label}
+    </button>
   );
 }

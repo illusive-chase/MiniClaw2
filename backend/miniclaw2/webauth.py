@@ -81,6 +81,9 @@ def is_passcode_exempt(path: str) -> bool:
             "/",
             "/favicon.svg",
             "/health",
+            # Only the update phase; the page polls it across a restart
+            # that has already dropped its session.
+            "/self-update/progress",
             "/auth/state",
             "/auth/login",
             "/auth/logout",

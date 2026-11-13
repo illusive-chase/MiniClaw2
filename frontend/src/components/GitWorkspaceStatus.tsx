@@ -6,6 +6,8 @@ import { EXIT_MS, usePresence } from "../motion";
 
 type GitWorkspaceStatusProps = {
   status: GitStatus | null;
+  /** Unpushed work older than this host's threshold; draws a red dot. */
+  overdue?: boolean;
   action: "commit" | "review" | "pull" | "push" | null;
   canCommit: boolean;
   canPull: boolean;
@@ -31,6 +33,7 @@ type PopoverPosition = {
 
 export function GitWorkspaceStatus({
   status,
+  overdue = false,
   action,
   canCommit,
   canPull,
@@ -135,9 +138,9 @@ export function GitWorkspaceStatus({
             ? "text-ink-muted hover:bg-surface-sunken hover:text-ink-strong"
             : "cursor-default text-ink-subtle")
         }
-        title={title}
+        title={overdue ? `${title}\n未推送的内容已超过提醒阈值` : title}
       >
-        <span className="inline-block h-1.5 w-1.5 rounded-full bg-current" />
+        <span className={"inline-block h-1.5 w-1.5 rounded-full " + (overdue ? "bg-state-error" : "bg-current")} />
         {summary}
       </button>
 

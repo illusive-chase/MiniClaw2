@@ -19,13 +19,15 @@ EXCLUDED_ROOTS = {
     "feishu.local.json", "feishu", "wecom.local.json", "remote_answers.local.json",
     # Derived per-host caches (code-reading index); rebuilt on demand.
     "cache",
+    # Host-local sync checkpoints and settings, and the daemon's run state.
+    ".sync-local", "daemon",
 }
 IGNORED_PATTERNS = [
     "machine.json", "machine.lock", "migration-backups/", ".migration-local/",
     ".update-exit-pending", ".runtime-owner.json", "*.tmp",
     "projects/*/hosts/*/local.json", "workspaces/",
     "/feishu.local.json", "/feishu/", "/wecom.local.json", "/remote_answers.local.json",
-    "/cache/",
+    "/cache/", "/.sync-local/", "/daemon/",
     *[f"/{relative}" for relative in sorted(LEGACY_LOCAL_FILES)],
 ]
 
@@ -44,6 +46,8 @@ def scope_for(relative: Path, *, external: bool = False) -> Scope | None:
         return "external_context"
     if relative.match("projects/*/hosts/*/local.json"):
         return "local"
+    if len(relative.parts) == 3 and relative.parts[0] == "hosts" and relative.parts[2] == "profile.json":
+        return "shared"
     if relative.parts[0] in {"projects", "contextspace"} or relative.name in {
         "config.json", "tags.json", "home.json", ".gitignore",
     }:

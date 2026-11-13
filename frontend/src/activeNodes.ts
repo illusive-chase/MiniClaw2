@@ -7,11 +7,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { listActiveNodes } from "./api";
+import { isWorkspaceSignal } from "./types";
 import type {
   ActiveNodeEntry,
   NodeCategory,
   NodeState,
   WorkspaceEvent,
+  WorkspaceSignal,
 } from "./types";
 import { useWorkspaceSocket } from "./ws";
 
@@ -536,6 +538,8 @@ export function applyWorkspaceEvent(
 export function useActiveNodes(
   enabled: boolean,
   onWorkspaceEvent?: (event: WorkspaceEvent) => void,
+  /** Non-node signals on the same socket (sync overview, hosts, source update). */
+  onWorkspaceSignal?: (signal: WorkspaceSignal) => void,
 ): ActiveNodesFeed {
   const [feed, setFeed] = useState<ActiveNodesFeed>({ entries: [], loaded: false });
   /* Guards against a slow in-flight response landing after the hook is
@@ -543,8 +547,10 @@ export function useActiveNodes(
   const enabledRef = useRef(enabled);
   const eventVersionRef = useRef(0);
   const onWorkspaceEventRef = useRef(onWorkspaceEvent);
+  const onWorkspaceSignalRef = useRef(onWorkspaceSignal);
   enabledRef.current = enabled;
   onWorkspaceEventRef.current = onWorkspaceEvent;
+  onWorkspaceSignalRef.current = onWorkspaceSignal;
 
   const refresh = useCallback(async () => {
     if (!enabledRef.current) return;
@@ -562,7 +568,11 @@ export function useActiveNodes(
     }
   }, []);
 
-  const handleWorkspaceEvent = useCallback((event: WorkspaceEvent) => {
+  const handleWorkspaceEvent = useCallback((event: WorkspaceEvent | WorkspaceSignal) => {
+    if (isWorkspaceSignal(event)) {
+      onWorkspaceSignalRef.current?.(event);
+      return;
+    }
     eventVersionRef.current += 1;
     setFeed((current) => {
       return { ...current, entries: applyWorkspaceEvent(current.entries, event) };

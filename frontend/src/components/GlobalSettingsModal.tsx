@@ -20,6 +20,8 @@ import { storageGuidance, type StorageFailure } from "../storageMaintenance";
 import { StorageGuidanceBody } from "./StorageGuidanceBody";
 import { ModalShell } from "./ModalShell";
 import { RemoteAnswersSection } from "./RemoteAnswersSection";
+import { HostProfileSection, SyncLocalSettingsFields } from "./HostProfileSection";
+import { ageSince } from "../syncStatus";
 import { useSyncProgress } from "../useSyncProgress";
 import { LANGUAGE_OPTIONS } from "../languages";
 import type {
@@ -29,6 +31,7 @@ import type {
   ModelPreset,
   SelfUpdateApplyResult,
   SelfUpdateState,
+  SyncLocalSettings,
   ToolRequestSettings,
 } from "../types";
 
@@ -37,6 +40,12 @@ type Props = {
   state: GlobalState | null;
   onClose: () => void;
   onChanged: (state: GlobalState) => void;
+  /** Host-local sync cadence; absent until the overview has loaded once. */
+  syncSettings?: SyncLocalSettings | null;
+  onSyncSettings?: (next: SyncLocalSettings) => void;
+  /** The source checkout is updated from the sync center, which owns the overlay. */
+  onOpenSyncCenter?: () => void;
+  onHostChanged?: () => void;
 };
 
 const EMPTY_PRESET: ModelPreset = {
@@ -51,7 +60,9 @@ const EMPTY_PRESET: ModelPreset = {
   status: "active",
 };
 
-export function GlobalSettingsModal({ open, state, onClose, onChanged }: Props) {
+export function GlobalSettingsModal({
+  open, state, onClose, onChanged, syncSettings, onSyncSettings, onOpenSyncCenter, onHostChanged,
+}: Props) {
   const [defaults, setDefaults] = useState<GlobalDefaults | null>(null);
   const [codeReview, setCodeReview] = useState<CodeReviewSettings | null>(null);
   const [toolRequests, setToolRequests] = useState<ToolRequestSettings | null>(null);
@@ -267,16 +278,24 @@ export function GlobalSettingsModal({ open, state, onClose, onChanged }: Props) 
         <div className="flex-1 space-y-6 overflow-y-auto bg-surface-sunken p-5">
           {error && <div className="mc-fade-rise rounded-md border border-state-error/30 bg-state-error-soft px-3 py-2 text-xs text-state-error">{error}</div>}
 
+          <HostProfileSection open={open} onChanged={onHostChanged} />
+
           <section className="rounded-lg border border-line bg-surface-raised p-4 shadow-card">
             <div className="flex items-start justify-between gap-4">
               <div>
                 <div className="font-display text-sm font-semibold text-ink-strong">Metadata sync</div>
                 <div className="mt-1 text-[11px] leading-relaxed text-ink-muted">
-                  Manual-only Git sync. MiniClaw2 never contacts the remote until you press Sync now.
+                  只有点「Sync now」才会合并并推送；后台只做只读探测（拉取远端引用，不合并、不推送）。
                 </div>
               </div>
-              <span className={`rounded border px-2 py-1 text-[10px] font-medium ${state?.sync.status === "changed" ? "border-state-waiting/40 bg-state-waiting-soft text-state-waiting" : "border-state-done/40 bg-state-done-soft text-state-done"}`}>
-                {state?.sync.configured ? state.sync.status : "not configured"}
+              <span className={`rounded border px-2 py-1 text-[10px] font-medium ${state?.sync.last_sync_failed ? "border-state-error/40 bg-state-error-soft text-state-error" : state?.sync.unpushed_commits || state?.sync.dirty ? "border-line bg-surface-sunken text-ink-muted" : "border-state-done/40 bg-state-done-soft text-state-done"}`}>
+                {!state?.sync.configured
+                  ? "not configured"
+                  : state.sync.last_sync_failed
+                    ? "上次同步失败"
+                    : state.sync.unpushed_commits || state.sync.dirty
+                      ? `↑${state.sync.unpushed_commits ?? 0} 未推送`
+                      : "已推送"}
               </span>
             </div>
             {!state?.sync.configured && (
@@ -296,6 +315,12 @@ export function GlobalSettingsModal({ open, state, onClose, onChanged }: Props) 
                   <div className="truncate">{state.sync.remote_url}</div>
                   <div>Machine: {state.sync.machine_label}</div>
                   <div>Last sync: {state.sync.last_sync_at ? new Date(state.sync.last_sync_at * 1000).toLocaleString() : "never"}</div>
+                  {state.sync.debt_since ? (
+                    <div>最早一条未推送内容：{ageSince(state.sync.debt_since)}前</div>
+                  ) : null}
+                  {state.sync.beacon_error ? (
+                    <div className="text-state-waiting">{state.sync.beacon_error}</div>
+                  ) : null}
                 </div>
                 <div className="border-t border-line pt-3">
                   <div className="flex flex-wrap items-center justify-between gap-3">
@@ -338,6 +363,11 @@ export function GlobalSettingsModal({ open, state, onClose, onChanged }: Props) 
                 {syncProgress?.detail ?? "正在准备同步"} · 已用时 {syncElapsedSeconds} 秒
               </div>
             )}
+            {state?.sync.configured && syncSettings && onSyncSettings && (
+              <div className="mt-3 border-t border-line pt-3">
+                <SyncLocalSettingsFields settings={syncSettings} onSaved={onSyncSettings} />
+              </div>
+            )}
             <div className="mt-3 flex justify-end">
               <button type="button" disabled={syncing || checkingRemote || (!state?.sync.configured && (!remoteUrl.trim() || !privacyAcknowledged))} onClick={() => void runSync()} className={primaryButton}>
                 {syncing ? "正在同步…" : state?.sync.configured ? "Sync now" : "Set up sync"}
@@ -351,7 +381,7 @@ export function GlobalSettingsModal({ open, state, onClose, onChanged }: Props) 
                 <div>
                   <div className="font-display text-sm font-semibold text-ink-strong">源码版本</div>
                   <div className="mt-1 text-[11px] leading-relaxed text-ink-muted">
-                    只在你点击「检查远端」时访问源码远端。
+                    后台定期只读探测源码远端；发现新版本时提醒一次。{selfUpdate.daemon ? "当前由 daemon 守护，更新后自动重启。" : "当前不是 daemon 模式，更新后需要手动重启。"}
                   </div>
                 </div>
                 <span className={`rounded border px-2 py-1 text-[10px] font-medium ${selfUpdate.behind > 0 || selfUpdate.error ? "border-state-waiting/40 bg-state-waiting-soft text-state-waiting" : "border-line bg-surface-sunken text-ink-muted"}`}>
@@ -405,14 +435,28 @@ export function GlobalSettingsModal({ open, state, onClose, onChanged }: Props) 
                 </div>
               ) : null}
               <div className="mt-3 flex justify-end">
-                <button
-                  type="button"
-                  disabled={!canApplyUpdate(selfUpdate) || applyingUpdate || checkingUpdate}
-                  onClick={() => void runUpdateApply()}
-                  className={primaryButton}
-                >
-                  {applyingUpdate ? "正在更新…" : "更新并退出"}
-                </button>
+                {selfUpdate.daemon && onOpenSyncCenter ? (
+                  <button
+                    type="button"
+                    disabled={!canApplyUpdate(selfUpdate)}
+                    onClick={() => {
+                      onClose();
+                      onOpenSyncCenter();
+                    }}
+                    className={primaryButton}
+                  >
+                    在同步中心更新
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    disabled={!canApplyUpdate(selfUpdate) || applyingUpdate || checkingUpdate}
+                    onClick={() => void runUpdateApply()}
+                    className={primaryButton}
+                  >
+                    {applyingUpdate ? "正在更新…" : "更新并退出"}
+                  </button>
+                )}
               </div>
             </section>
           ) : null}

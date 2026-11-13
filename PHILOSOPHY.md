@@ -887,6 +887,12 @@ about itself (its HEAD, its dirty flag) is a **snapshot with a capture
 time**, and every surface presents it as of that time. A stale value
 shown honestly is useful; a stale value shown as live is a lie.
 
+The host beacon is the canonical case. Each host publishes, from its own
+syncs, a branch only it writes (`refs/heads/_hosts/<machine-id>`) that says
+which metadata commit it had integrated, when, and which MiniClaw2 it ran.
+Another host reads it to say "that device has pulled your push" — always
+"as of T, as that host reported", never "is up to date now".
+
 ### 12.5 What this rules out
 
 Stated negatively, so it stays testable:
@@ -901,7 +907,9 @@ Stated negatively, so it stays testable:
 - **No consensus fields.** No project-level value whose correctness
   requires that all hosts hold the same version of it.
 - **No synchronous cross-host anything.** There is no channel; the
-  substrate is a Git remote reached only when the user asks.
+  substrate is a Git remote. It is written only by a sync the user starts;
+  it may be read on a schedule, and such reads may move tracking refs but
+  never a worktree, a local branch, or the remote.
 
 
 ## 13. Why we keep these constraints

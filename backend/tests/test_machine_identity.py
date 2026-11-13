@@ -104,29 +104,21 @@ class MachineIdentityTests(unittest.TestCase):
                 self.assertEqual(updated, replace(original, hostname="new-host", label=expected))
                 self.assertEqual(ensure_machine_identity(self.root), updated)
 
-    def test_rename_repairs_only_owned_project_and_host_labels(self) -> None:
-        self.seed()
-        for project_id, owner in (("owned", "original-id"), ("foreign", "other-id")):
-            project_dir = self.root / "projects" / project_id
-            host_dir = project_dir / "hosts" / "original-id"
-            host_dir.mkdir(parents=True)
-            (project_dir / "project.json").write_text(json.dumps({
-                "machine_id": owner, "machine_label": "old-host", "name": project_id,
-            }))
-            (host_dir / "host.json").write_text(json.dumps({"label": "old-host", "bound_at": 123}))
-        self.hostname.return_value = "new-host"
-        with patch.object(sync_module, "_update_owned_project_labels", side_effect=OSError):
-            with self.assertRaises(OSError):
-                ensure_machine_identity(self.root)
-        ensure_machine_identity(self.root)
-        for project_id, expected in (("owned", "new-host"), ("foreign", "old-host")):
-            project_dir = self.root / "projects" / project_id
-            self.assertEqual(json.loads((project_dir / "project.json").read_text())["machine_label"], expected)
-            host_file = project_dir / "hosts" / "original-id" / "host.json"
-            self.assertEqual(json.loads(host_file.read_text()), {"label": "new-host", "bound_at": 123})
-        with patch.object(sync_module, "_write_json") as write_json:
-            ensure_machine_identity(self.root)
-            write_json.assert_not_called()
+    def test_rename_writes_only_the_host_profile(self) -> None:
+        store = Store(self.root)
+        project = store.create_project(Project(root_path="/old/checkout", name="项目"))
+        project_file = self.root / "projects" / project.id / "project.json"
+        host_file = self.root / "projects" / project.id / "hosts" / store.machine.id / "host.json"
+        before = (project_file.read_bytes(), host_file.read_bytes())
+
+        updated = resolve_machine_rename(self.root, label="办公室 Mac")
+
+        self.assertEqual(updated.label, "办公室 Mac")
+        profile = json.loads((self.root / "hosts" / store.machine.id / "profile.json").read_text())
+        self.assertEqual(profile["label"], "办公室 Mac")
+        # Creation-time snapshots stay as they were; display reads the profile.
+        self.assertEqual((project_file.read_bytes(), host_file.read_bytes()), before)
+        self.assertEqual(Store(self.root).list_hosts(project.id)[0]["label"], "办公室 Mac")
 
     def test_copied_store_gets_new_identity_even_with_same_hostname(self) -> None:
         for hostname in ("old-host", "other-host"):
@@ -223,7 +215,11 @@ class MachineIdentityTests(unittest.TestCase):
         self.assertIsNone(store.read_only_reason)
         updated = Store(self.root)
         self.assertEqual(updated.machine.id, store.machine.id)
-        self.assertEqual(updated.sync.status()["machine_label"], "new-host")
+        # The profile name is the stable display name; hostname drift (macOS
+        # flipping between `name.local`, `bogon`, `localhost`) no longer
+        # renames the host.
+        self.assertEqual(updated.sync.status()["machine_label"], "old-host")
+        self.assertEqual(updated.machine.hostname, "new-host")
         self.assertFalse(updated.sync.status()["hostname_mismatch"])
 
     def test_sync_failure_from_stale_manager_does_not_erase_newer_checkpoint(self) -> None:

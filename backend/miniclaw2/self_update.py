@@ -17,6 +17,7 @@ from .git_state import _git, is_git_repo
 
 UPDATE_EXIT_SENTINEL = ".update-exit-pending"
 REMOTE_FETCH_TIMEOUT_SECONDS = 120.0
+PROBE_TIMEOUT_SECONDS = 30.0
 
 
 @dataclass(frozen=True)
@@ -145,6 +146,22 @@ class UpdateChecker:
         self.repo_root = repo_root if repo_root is not None else discover_repo_root()
         self._exit_scheduler = exit_scheduler
         self._operation_lock = threading.Lock()
+        self._running_head: str | None = None
+        self._running_head_read = False
+
+    @property
+    def running_head(self) -> str | None:
+        """The source revision this process loaded, read once and kept.
+
+        The checkout can move under a running process; what it executes is
+        what was on disk at startup, so the first read is the answer.
+        """
+        if not self._running_head_read:
+            self._running_head_read = True
+            if self.repo_root is not None:
+                result = self._run(["rev-parse", "HEAD"])
+                self._running_head = result.stdout.strip() if result.returncode == 0 else None
+        return self._running_head
 
     @property
     def enabled(self) -> bool:
@@ -201,7 +218,8 @@ class UpdateChecker:
             ahead, behind = 0, 0
         ancestor = self._run(["merge-base", "--is-ancestor", "HEAD", "@{upstream}"])
         fast_forward = ancestor.returncode == 0 and ahead == 0
-        status = self._run(["status", "--porcelain", "--untracked-files=all"])
+        # Polled in the background beside agents committing to this checkout.
+        status = self._run(["--no-optional-locks", "status", "--porcelain", "--untracked-files=all"])
         dirty = status.returncode != 0 or bool(status.stdout.strip())
         commits = self._incoming_commits() if behind > 0 else ()
         return UpdateState(
@@ -264,17 +282,56 @@ class UpdateChecker:
                 )
             return self.state()
 
+    def probe_remote(self) -> bool:
+        """Background read-only probe; True when the upstream ref moved.
+
+        ``ls-remote`` costs one round trip and no objects, so only a changed
+        upstream pays for a fetch. Nothing local but the tracking ref moves.
+        Skips silently while an update is being applied.
+        """
+        if not self._operation_lock.acquire(blocking=False):
+            return False
+        try:
+            current = self.state()
+            if not current.is_repo or current.upstream is None:
+                return False
+            remote, _, branch = current.upstream.partition("/")
+            listed = self._run(
+                ["ls-remote", remote, f"refs/heads/{branch}"],
+                timeout=PROBE_TIMEOUT_SECONDS,
+            )
+            if listed.returncode != 0:
+                raise UpdateError(_failure("探测源码远端", listed.stderr, listed.stdout))
+            remote_sha = listed.stdout.split("\t", 1)[0].strip()
+            local = self._run(["rev-parse", "@{upstream}"])
+            if not remote_sha or remote_sha == local.stdout.strip():
+                return False
+            fetched = self._run(
+                ["fetch", "--quiet", remote, f"+refs/heads/{branch}:refs/remotes/{remote}/{branch}"],
+                timeout=REMOTE_FETCH_TIMEOUT_SECONDS,
+            )
+            if fetched.returncode != 0:
+                raise UpdateError(_failure("获取远端更新", fetched.stderr, fetched.stdout))
+            return True
+        finally:
+            self._operation_lock.release()
+
+    def preflight(self) -> UpdateState:
+        """The checks every apply path shares; returns the state it passed."""
+        current = self.state()
+        if current.behind <= 0:
+            raise UpdateError("当前没有可快进应用的更新，请先检查远端")
+        if current.ahead > 0:
+            raise UpdateError("本地存在尚未推送的提交，无法自动更新")
+        if not current.fast_forward:
+            raise UpdateError("本地与远端历史已分叉，无法自动快进")
+        if current.dirty:
+            raise UpdateError("工作区有未提交改动，请先提交或贮藏")
+        return current
+
     def apply(self, store_root: Path) -> ApplyResult:
         with self._operation_lock:
-            current = self.state()
-            if current.behind <= 0:
-                raise UpdateError("当前没有可快进应用的更新，请先检查远端")
-            if current.ahead > 0:
-                raise UpdateError("本地存在尚未推送的提交，无法自动更新")
-            if not current.fast_forward:
-                raise UpdateError("本地与远端历史已分叉，无法自动快进")
-            if current.dirty:
-                raise UpdateError("工作区有未提交改动，请先提交或贮藏")
+            current = self.preflight()
             assert current.head is not None and current.upstream is not None
             path = sentinel_path(store_root)
             path.parent.mkdir(parents=True, exist_ok=True)

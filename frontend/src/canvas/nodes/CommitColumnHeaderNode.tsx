@@ -1,5 +1,6 @@
 import type { NodeProps } from "reactflow";
 import type { CommitColumnHeaderData } from "../layout";
+import { HostGlyph } from "../../components/HostGlyph";
 
 export function CommitColumnHeaderNode({ data }: NodeProps<CommitColumnHeaderData>) {
   const { host, head } = data;
@@ -11,8 +12,9 @@ export function CommitColumnHeaderNode({ data }: NodeProps<CommitColumnHeaderDat
     : "未知时间";
   return (
     <div className="w-[164px] rounded-md border border-line bg-surface-raised px-2.5 py-1.5 shadow-sm">
-      <div className="truncate text-[10px] font-semibold text-ink-strong">
-        {host?.label || host?.mid || "其他设备"}
+      <div className="flex items-center gap-1 truncate text-[10px] font-semibold text-ink-strong">
+        <HostGlyph icon={host?.icon} color={host?.color} size={11} />
+        <span className="truncate">{host?.label || host?.mid?.slice(0, 8) || "其他设备"}</span>
       </div>
       <div className="mt-0.5 truncate font-mono text-[9px] text-ink-muted">
         HEAD {head.slice(0, 7)} · 快照于 {recorded}

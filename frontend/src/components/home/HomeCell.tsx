@@ -15,7 +15,13 @@ export type TileFace =
   | { kind: "folder"; folder: HomeFolder; members: SessionInfo[] }
   | { kind: "archive"; count: number };
 
-export type CornerMark = { kind: "waiting"; count: number } | { kind: "error" } | { kind: "unbound" } | null;
+export type CornerMark =
+  | { kind: "waiting"; count: number }
+  | { kind: "error" }
+  | { kind: "unbound" }
+  /** Unpushed project work older than the host's threshold. */
+  | { kind: "unsynced" }
+  | null;
 
 /* A rounded square 6px outside the 64px tile, stroked from 12 o'clock
  * clockwise. `pathLength=1` lets the dash math run on 0..1 progress. */
@@ -129,6 +135,9 @@ export function TileFaceView({ face, large = false }: { face: TileFace; large?: 
 
 export function CornerBadge({ mark }: { mark: CornerMark }) {
   if (!mark) return null;
+  if (mark.kind === "unsynced") {
+    return <span className="home-badge home-badge-dot bg-state-error" aria-hidden="true" />;
+  }
   if (mark.kind === "unbound") {
     return (
       <span className="home-badge" data-kind="unbound" aria-hidden="true">

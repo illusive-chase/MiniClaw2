@@ -260,6 +260,92 @@ def is_git_repo(cwd: str) -> bool:
     return _git(cwd, ["rev-parse", "--git-dir"]).returncode == 0
 
 
+#: Dirty files whose mtime is sampled when dating a worktree's oldest change.
+DEBT_MTIME_SAMPLE = 200
+
+
+@dataclass(slots=True)
+class WorktreeDebt:
+    """What a checkout holds that its upstream does not, and since when."""
+
+    is_repo: bool = False
+    branch: str | None = None
+    upstream: str | None = None
+    ahead: int = 0
+    behind: int = 0
+    dirty_count: int = 0
+    #: Oldest mtime among sampled dirty paths; deleted files contribute none.
+    dirty_mtime: float | None = None
+    #: Committer time of the oldest commit ahead of upstream.
+    ahead_since: float | None = None
+    error: str | None = None
+
+
+def worktree_debt(cwd: str, *, timeout: float = 10) -> WorktreeDebt:
+    """One porcelain pass plus one log, without the per-file numstat of
+    ``git_status`` — this runs periodically for every bound project."""
+    # Periodic and unlocked: never take index.lock, or a concurrent agent
+    # commit in the same checkout fails on "index.lock exists".
+    result = _git(
+        cwd,
+        ["--no-optional-locks", "status", "--porcelain=v2", "--branch", "-z", "--untracked-files=all"],
+        timeout=timeout,
+    )
+    if result.returncode != 0:
+        if _git(cwd, ["rev-parse", "--git-dir"]).returncode != 0:
+            return WorktreeDebt()
+        return WorktreeDebt(is_repo=True, error=result.stderr.strip() or "git status failed")
+    debt = WorktreeDebt(is_repo=True)
+    paths: list[str] = []
+    records = result.stdout.split("\x00")
+    index = 0
+    while index < len(records):
+        record = records[index]
+        index += 1
+        if record.startswith("# branch.head "):
+            branch = record.removeprefix("# branch.head ").strip()
+            debt.branch = None if branch in {"(detached)", ""} else branch
+        elif record.startswith("# branch.upstream "):
+            debt.upstream = record.removeprefix("# branch.upstream ").strip() or None
+        elif record.startswith("# branch.ab "):
+            parts = record.removeprefix("# branch.ab ").split()
+            if len(parts) == 2:
+                try:
+                    debt.ahead = int(parts[0].removeprefix("+"))
+                    debt.behind = int(parts[1].removeprefix("-"))
+                except ValueError:
+                    pass
+        elif record.startswith("1 "):
+            parts = record.split(" ", 8)
+            if len(parts) == 9:
+                paths.append(parts[8])
+        elif record.startswith("2 "):
+            parts = record.split(" ", 9)
+            index += 1
+            if len(parts) == 10:
+                paths.append(parts[9])
+        elif record.startswith("u "):
+            parts = record.split(" ", 10)
+            if len(parts) == 11:
+                paths.append(parts[10])
+        elif record.startswith("? "):
+            paths.append(record[2:])
+    paths = [path for path in paths if not _is_generated_path(path)]
+    debt.dirty_count = len(paths)
+    mtimes: list[float] = []
+    for path in paths[:DEBT_MTIME_SAMPLE]:
+        try:
+            mtimes.append(os.lstat(os.path.join(cwd, path)).st_mtime)
+        except OSError:
+            continue
+    debt.dirty_mtime = min(mtimes) if mtimes else None
+    if debt.upstream and debt.ahead > 0:
+        log = _git(cwd, ["log", "--format=%ct", "@{upstream}..HEAD"], timeout=timeout)
+        stamps = [float(line) for line in log.stdout.split() if line.strip().isdigit()]
+        debt.ahead_since = min(stamps) if stamps else None
+    return debt
+
+
 def root_commits(cwd: str) -> list[str]:
     """Return stable, sorted root commits for a repository."""
     result = _git(cwd, ["rev-list", "--max-parents=0", "HEAD"])

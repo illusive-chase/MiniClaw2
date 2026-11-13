@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -8,7 +9,7 @@ import tempfile
 from collections.abc import Callable
 from pathlib import Path
 
-from .catalog import marker, steps, version_of
+from .catalog import marker, read_manifest, steps, version_of
 from .errors import MigrationError
 from .inventory import LEGACY_LOCAL_FILES, files, safe_path, scope_for
 from .repairs import repaired_contracts
@@ -18,12 +19,16 @@ from .validation import read_object, validate
 
 
 GIT_COMMAND_TIMEOUT_SECONDS = 120.0
+# Display name and email of the committer when no host identity is supplied.
+ANONYMOUS_AUTHOR = ("MiniClaw2", "miniclaw2@localhost")
 
 
 def git(root: Path, *arguments: str, input_text: str | None = None, index: Path | None = None,
-        worktree: Path | None = None, timeout: float | None = GIT_COMMAND_TIMEOUT_SECONDS) -> str:
-    environment = {**os.environ, "GIT_AUTHOR_NAME": "MiniClaw2", "GIT_COMMITTER_NAME": "MiniClaw2",
-                   "GIT_AUTHOR_EMAIL": "miniclaw2@localhost", "GIT_COMMITTER_EMAIL": "miniclaw2@localhost",
+        worktree: Path | None = None, timeout: float | None = GIT_COMMAND_TIMEOUT_SECONDS,
+        author: tuple[str, str] = ANONYMOUS_AUTHOR) -> str:
+    name, email = author
+    environment = {**os.environ, "GIT_AUTHOR_NAME": name, "GIT_COMMITTER_NAME": name,
+                   "GIT_AUTHOR_EMAIL": email, "GIT_COMMITTER_EMAIL": email,
                    "GIT_TERMINAL_PROMPT": "0"}
     if index is not None:
         environment["GIT_INDEX_FILE"] = str(index)
@@ -113,7 +118,34 @@ def tree(root: Path, directory: Path, index: Path) -> str:
     return git(root, "write-tree", index=index)
 
 
-def merge_remote(root: Path, remote_ref: str, *, on_progress: Callable[[str], None] | None = None) -> bool:
+def remote_schema_version(root: Path, revision: str) -> int | None:
+    """The schema version recorded at ``revision``, or None when unreadable."""
+    try:
+        payload = json.loads(git(root, "show", f"{revision}:schema.json"))
+    except (MigrationError, ValueError):
+        return None
+    version = payload.get("schema_version") if isinstance(payload, dict) else None
+    return version if type(version) is int else None
+
+
+def require_supported_remote(root: Path, revision: str) -> None:
+    """Refuse a newer remote before extraction can misread its layout.
+
+    A newer schema may add top-level paths this build does not manage, and
+    ``extract`` streams the archive in path order, so without this check the
+    failure would be a confusing "unmanaged path" instead of the real cause.
+    """
+    version = remote_schema_version(root, revision)
+    target = read_manifest()["target"]
+    if version is not None and version > target:
+        raise MigrationError(
+            "schema_too_new",
+            f"远端元数据 v{version} 新于程序 v{target}；请先更新 MiniClaw2 再同步。本机数据未改动。",
+        )
+
+
+def merge_remote(root: Path, remote_ref: str, *, on_progress: Callable[[str], None] | None = None,
+                 author: tuple[str, str] = ANONYMOUS_AUTHOR) -> bool:
     receipt = root / ".migration-local" / "state.json"
     accepted = frozenset(read_object(receipt).get("accepted_migration_contracts", [])) if receipt.exists() else frozenset()
     local_head = git(root, "rev-parse", "HEAD")
@@ -123,6 +155,7 @@ def merge_remote(root: Path, remote_ref: str, *, on_progress: Callable[[str], No
     ancestor_commit = git(root, "merge-base", local_head, remote_head)
     if ancestor_commit == remote_head:
         return False
+    require_supported_remote(root, remote_head)
     report_progress = on_progress or (lambda phase: None)
     with tempfile.TemporaryDirectory(prefix="sync-", dir=root / ".migration-local") as temporary:
         directory = Path(temporary)
@@ -152,9 +185,9 @@ def merge_remote(root: Path, remote_ref: str, *, on_progress: Callable[[str], No
             merge_lane_layouts(base, local, remote)
             merge_home_layout(base, local, remote)
             remote_tree = tree(root, remote, directory / "remote.index")
-            base_commit = git(root, "commit-tree", tree(root, base, directory / "base.index"), input_text="迁移规范化共同祖先\n")
-            local_commit = git(root, "commit-tree", tree(root, local, directory / "local.index"), "-p", base_commit, input_text="迁移规范化本地\n")
-            remote_commit = git(root, "commit-tree", remote_tree, "-p", base_commit, input_text="迁移规范化远端\n")
+            base_commit = git(root, "commit-tree", tree(root, base, directory / "base.index"), input_text="迁移规范化共同祖先\n", author=author)
+            local_commit = git(root, "commit-tree", tree(root, local, directory / "local.index"), "-p", base_commit, input_text="迁移规范化本地\n", author=author)
+            remote_commit = git(root, "commit-tree", remote_tree, "-p", base_commit, input_text="迁移规范化远端\n", author=author)
             merged_tree = git(root, "merge-tree", "--write-tree", local_commit, remote_commit).splitlines()[0]
         report_progress("publishing")
         extract(root, merged_tree, result)
@@ -162,6 +195,7 @@ def merge_remote(root: Path, remote_ref: str, *, on_progress: Callable[[str], No
         remote_original_tree = git(root, "rev-parse", f"{remote_head}^{{tree}}")
         target = remote_head if ancestor_commit == local_head and merged_tree == remote_original_tree else git(
             root, "commit-tree", merged_tree, "-p", local_head, "-p", remote_head, input_text="规范化并合并元数据\n",
+            author=author,
         )
         result_files = files(result)
         for relative, scope in result_files.items():

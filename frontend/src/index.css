@@ -963,6 +963,15 @@ html.dark .home-folder-tile .home-mini {
   color: rgb(var(--ink-muted));
   box-shadow: 0 0 0 1px rgb(var(--border-strong)), 0 1px 3px rgb(var(--shadow) / 0.12);
 }
+/* Unsynced project work: a bare dot, quieter than a count. */
+.home-badge.home-badge-dot {
+  top: -3px;
+  right: -3px;
+  min-width: 12px;
+  width: 12px;
+  height: 12px;
+  padding: 0;
+}
 @keyframes home-badge-in {
   from { opacity: 0; transform: scale(0.4); }
 }

@@ -386,6 +386,9 @@ class ProjectRegistry:
         #: Extra answer channels (the Feishu bridge) observe every inline gate.
         #: Read when a runner is built, so attach before scheduling work.
         self.gate_observer: GateObserver = NULL_GATE_OBSERVER
+        #: Told the project id after anything that may move its Git debt
+        #: (a node finishing, a push); the sync overview re-reads it.
+        self.git_observer: Callable[[str], None] | None = None
         if initialize:
             self.initialize()
 
@@ -1783,6 +1786,19 @@ class ProjectRegistry:
         for token in stale:
             self.detach_workspace_observer(token)
 
+    async def broadcast_workspace(self, event: dict[str, Any]) -> None:
+        """Publish a non-node workspace event (sync overview, host changes)."""
+        await self._broadcast_workspace(event)
+
+    def _notify_git_changed(self, pid: str) -> None:
+        observer = self.git_observer
+        if observer is None:
+            return
+        try:
+            observer(pid)
+        except Exception:  # noqa: BLE001
+            logger.debug("git observer failed", exc_info=True)
+
     async def _publish_workspace_node(
         self,
         project: Project,
@@ -2463,6 +2479,7 @@ class ProjectRegistry:
         async def publish() -> None:
             status = await asyncio.to_thread(git_status, rt.project.root_path)
             await rt.broadcast(GitStatus(**asdict(status)).model_dump())
+            self._notify_git_changed(rt.project.id)
 
         task = loop.create_task(publish())
         rt.background_tasks.add(task)
@@ -2580,7 +2597,9 @@ class ProjectRegistry:
 
             return await asyncio.to_thread(read_git_status, rt.project.root_path), "pull in progress"
         from .git_state import git_push
-        return await asyncio.to_thread(git_push, rt.project.root_path)
+        result = await asyncio.to_thread(git_push, rt.project.root_path)
+        self._notify_git_changed(pid)
+        return result
 
     def create_blank_planspace(
         self,

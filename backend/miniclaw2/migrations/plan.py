@@ -33,9 +33,13 @@ def migration_plan(root: Path) -> dict[str, Any]:
     machine_path = root / "machine.json"
     machine = read_object(machine_path) if machine_path.exists() else {}
     hosts: dict[str, str] = {}
+    for path in sorted(root.glob("hosts/*/profile.json")):
+        payload = read_object(path)
+        if isinstance(payload.get("label"), str) and payload["label"].strip():
+            hosts[path.parent.name] = payload["label"].strip()
     for path in sorted(root.glob("projects/*/hosts/*/host.json")):
         payload = read_object(path)
-        hosts[path.parent.name] = payload.get("label") or path.parent.name
+        hosts.setdefault(path.parent.name, payload.get("label") or path.parent.name)
     for path in sorted(root.glob("projects/*/project.json")):
         payload = read_object(path)
         if payload.get("machine_id"):

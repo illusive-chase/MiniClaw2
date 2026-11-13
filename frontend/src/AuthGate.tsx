@@ -4,6 +4,7 @@ import { RotateCcw } from "lucide-react";
 import { AUTH_REQUIRED_EVENT, getAuthState } from "./api";
 import type { AuthState } from "./api";
 import { PasscodeGate } from "./components/PasscodeGate";
+import { shouldReloadForUpdate } from "./selfUpdate";
 
 type GateState =
   | { kind: "loading" }
@@ -39,7 +40,13 @@ export function AuthGate({ children }: PropsWithChildren) {
   }, [checkAuth]);
 
   useEffect(() => {
-    const requireAuth = () => setState({ kind: "login", locked: false });
+    const requireAuth = () => {
+      if (shouldReloadForUpdate()) {
+        window.location.reload();
+        return;
+      }
+      setState({ kind: "login", locked: false });
+    };
     window.addEventListener(AUTH_REQUIRED_EVENT, requireAuth);
     return () => window.removeEventListener(AUTH_REQUIRED_EVENT, requireAuth);
   }, []);

@@ -108,6 +108,10 @@ def validate(root: Path, *, external: bool = False) -> None:
                 from ..home_layout import load_home
 
                 load_home(root)
+            elif not external and len(parts) == 3 and parts[0] == "hosts" and path.name == "profile.json":
+                from ..host_profile import validate_profile_file
+
+                validate_profile_file(path, parts[1])
         except MigrationError:
             raise
         except (OSError, ValueError, KeyError, TypeError, yaml.YAMLError, TemplateError) as exc:

@@ -65,9 +65,23 @@ def main() -> None:
     if len(sys.argv) > 1 and sys.argv[1] == "sync":
         _sync_cli(sys.argv[2:])
         return
+    if len(sys.argv) > 1 and sys.argv[1] == "daemon":
+        from .daemon import main as daemon_main
+
+        if len(sys.argv) > 2 and sys.argv[2] in {"start", "run"}:
+            # The supervisor itself stays stdlib-only, so check identity here:
+            # an ambiguous identity would otherwise only surface as a crashloop.
+            try:
+                ensure_machine_identity(miniclaw_home())
+            except (SyncError, OSError) as exc:
+                sys.exit(f"设备身份检查失败：{exc}")
+        raise SystemExit(daemon_main(sys.argv[2:]))
     parser = argparse.ArgumentParser(
         prog="miniclaw2",
-        epilog="设备身份管理：miniclaw2 machine {rename,copy} [--label 名称]",
+        epilog=(
+            "设备身份管理：miniclaw2 machine {rename,copy} [--label 名称]；"
+            "后台守护与一键更新：miniclaw2 daemon {start,stop,status,logs,restart,run}"
+        ),
     )
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8000)
