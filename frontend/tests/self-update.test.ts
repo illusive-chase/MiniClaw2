@@ -33,4 +33,11 @@ assert.equal(
   false,
 );
 
+assert.equal(canApplyUpdate(state({
+  restart_required: true, behind: 0, ahead: 1, fast_forward: false,
+})), true);
+assert.equal(canApplyUpdate(state({
+  restart_required: true, behind: 0, ahead: 1, dirty: true,
+})), false);
+
 console.log("self-update tests passed");

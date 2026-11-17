@@ -94,6 +94,22 @@ class SelfUpdateTest(unittest.TestCase):
         checker.schedule_exit(store_root)
         self.assertEqual(exits, [store_root])
 
+    def test_local_head_change_can_be_applied_without_remote_update(self) -> None:
+        checker = UpdateChecker(self.checkout, exit_scheduler=Mock())
+        running = checker.running_head
+        target = _commit(self.checkout, "local frontend", "frontend/src/App.tsx")
+        state = checker.state()
+        self.assertEqual(checker.running_head, running)
+        self.assertTrue(state.restart_required)
+        self.assertTrue(state.available)
+        self.assertEqual(state.behind, 0)
+        self.assertEqual(state.ahead, 1)
+        checker.preflight()
+        result = checker.apply(self.root / "home")
+        self.assertEqual(result.new_head, target)
+        self.assertIn("frontend/src/App.tsx", result.changed_paths)
+        self.assertTrue(any("npm run build" in cmd for cmd in result.restart_commands))
+
     def test_state_reads_local_refs_without_contacting_remote(self) -> None:
         """A new upstream commit stays invisible until the user checks."""
         self.push_update()

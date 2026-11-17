@@ -353,11 +353,11 @@ class SyncOverview:
         state: UpdateState = self.update_checker.state()
         if not state.is_repo:
             category = "disabled"
-        elif not settings.source_probe_enabled and not state.behind:
+        elif not settings.source_probe_enabled and not state.behind and not state.restart_required:
             category = "disabled"
-        elif state.behind > 0 and state.available and not state.dirty:
+        elif state.available and not state.dirty:
             category = "available"
-        elif state.behind > 0:
+        elif state.behind > 0 or state.restart_required:
             category = "blocked"
         elif record.get("last_check_ok") is False and _failures(record) >= FAILURE_NOTICE_THRESHOLD:
             category = "error"
@@ -366,6 +366,7 @@ class SyncOverview:
         return {
             "state": category,
             "behind": state.behind,
+            "restart_required": state.restart_required,
             "ahead": state.ahead,
             "dirty": state.dirty,
             "head": state.head,

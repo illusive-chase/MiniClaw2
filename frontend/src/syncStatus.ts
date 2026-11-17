@@ -63,9 +63,9 @@ export function syncChips(overview: SyncOverview | null, now = Date.now() / 1000
   if (source.state === "available" || source.state === "blocked") {
     chips.push({
       key: "source", tone: source.state === "available" ? "brand" : "muted",
-      label: `新版本 · ${source.behind}`,
+      label: source.restart_required && source.behind === 0 ? "本地更新待应用" : `新版本 · ${source.behind}`,
       title: source.state === "available"
-        ? `MiniClaw2 有 ${source.behind} 个新提交可更新`
+        ? (source.restart_required && source.behind === 0 ? "本地源码已更新，等待应用到运行实例" : `MiniClaw2 有 ${source.behind} 个新提交可更新`)
         : `MiniClaw2 有 ${source.behind} 个新提交，但当前无法自动更新（${sourceBlockReason(overview)}）`,
     });
   }

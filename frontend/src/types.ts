@@ -513,6 +513,7 @@ export type SyncOverview = {
   project_overdue_after_seconds: number;
   source: {
     state: SourceState;
+    restart_required?: boolean;
     behind: number;
     ahead: number;
     dirty: boolean;
@@ -598,6 +599,7 @@ export type SelfUpdateBlocker = {
 export type SelfUpdateState = {
   is_repo: boolean;
   available: boolean;
+  restart_required?: boolean;
   fast_forward: boolean;
   dirty: boolean;
   head: string | null;

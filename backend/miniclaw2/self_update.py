@@ -32,6 +32,7 @@ class IncomingCommit:
 class UpdateState:
     is_repo: bool = False
     available: bool = False
+    restart_required: bool = False
     fast_forward: bool = False
     dirty: bool = False
     head: str | None = None
@@ -148,6 +149,7 @@ class UpdateChecker:
         self._operation_lock = threading.Lock()
         self._running_head: str | None = None
         self._running_head_read = False
+        _ = self.running_head
 
     @property
     def running_head(self) -> str | None:
@@ -222,9 +224,11 @@ class UpdateChecker:
         status = self._run(["--no-optional-locks", "status", "--porcelain", "--untracked-files=all"])
         dirty = status.returncode != 0 or bool(status.stdout.strip())
         commits = self._incoming_commits() if behind > 0 else ()
+        restart_required = self.running_head is not None and self.running_head != head
         return UpdateState(
             is_repo=True,
-            available=behind > 0 and fast_forward,
+            restart_required=restart_required,
+            available=(behind > 0 and fast_forward) or (restart_required and behind == 0),
             fast_forward=fast_forward,
             dirty=dirty,
             head=head,
@@ -319,11 +323,11 @@ class UpdateChecker:
     def preflight(self) -> UpdateState:
         """The checks every apply path shares; returns the state it passed."""
         current = self.state()
-        if current.behind <= 0:
+        if current.behind <= 0 and not current.restart_required:
             raise UpdateError("当前没有可快进应用的更新，请先检查远端")
-        if current.ahead > 0:
+        if current.behind > 0 and current.ahead > 0:
             raise UpdateError("本地存在尚未推送的提交，无法自动更新")
-        if not current.fast_forward:
+        if current.behind > 0 and not current.fast_forward:
             raise UpdateError("本地与远端历史已分叉，无法自动快进")
         if current.dirty:
             raise UpdateError("工作区有未提交改动，请先提交或贮藏")
@@ -336,7 +340,7 @@ class UpdateChecker:
             path = sentinel_path(store_root)
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(current.head + "\n", encoding="utf-8")
-            merged = self._run(["merge", "--ff-only", current.upstream], timeout=120)
+            merged = self._run(["merge", "--ff-only", current.upstream if current.behind > 0 else current.head], timeout=120)
             if merged.returncode != 0:
                 path.unlink(missing_ok=True)
                 raise UpdateError(_failure("快进更新", merged.stderr, merged.stdout))
@@ -345,7 +349,7 @@ class UpdateChecker:
                 path.unlink(missing_ok=True)
                 raise UpdateError("更新完成后无法读取新的版本号")
             changed = self._run(
-                ["diff", "--name-only", current.head, next_state.head], timeout=30
+                ["diff", "--name-only", self.running_head or current.head, next_state.head], timeout=30
             )
             paths = tuple(
                 line.strip() for line in changed.stdout.splitlines() if line.strip()

@@ -243,7 +243,7 @@ export function SyncCenter({
             {source ? (
               <div className="space-y-1.5 text-[11px] text-ink-muted">
                 <div className="text-ink">
-                  {source.state === "available" && `有 ${source.behind} 个新提交可更新`}
+                  {source.state === "available" && (source.restart_required && source.behind === 0 ? "本地源码已更新，等待应用到运行实例" : `有 ${source.behind} 个新提交可更新`)}
                   {source.state === "blocked" && `有 ${source.behind} 个新提交，但无法自动更新：${sourceBlockReason(overview!)}`}
                   {source.state === "current" && "已是本机所知的最新版本"}
                   {source.state === "error" && `探测失败：${source.probe.error ?? source.error ?? "未知原因"}`}

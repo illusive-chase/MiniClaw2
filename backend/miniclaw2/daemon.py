@@ -590,7 +590,7 @@ class Supervisor:
             target = message.get("target")
             if not isinstance(target, str) or not target:
                 raise DaemonError("缺少更新目标")
-            return {"ok": True, "update_id": self.begin_update(target)}
+            return {"ok": True, "update_id": self.begin_update(target, running_head=message.get("running_head"))}
         if op == "restart":
             threading.Thread(target=self._restart_quietly, daemon=True).start()
             return {"ok": True}
@@ -624,13 +624,14 @@ class Supervisor:
 
     # ---- update pipeline ----
 
-    def begin_update(self, target: str) -> str:
+    def begin_update(self, target: str, *, running_head: str | None = None) -> str:
         with self.lock:
             if self.phase != "running":
                 raise DaemonError(f"daemon 当前状态为 {self.phase}，无法开始更新")
             run_id = uuid.uuid4().hex[:12]
             self.run = {
                 "id": run_id, "target": target, "old_head": None, "new_head": None,
+                "running_head": running_head,
                 "status": "running", "phase": "verify", "started_at": time.time(),
                 "finished_at": None, "error": None, "plan": None, "steps": [],
                 "schema_before": None, "dev": self.config.dev,
@@ -681,12 +682,15 @@ class Supervisor:
             if _git_output(repo, "status", "--porcelain", "--untracked-files=all"):
                 raise UpdateFailed("verify", "源码工作区有未提交改动")
             ahead = _git_output(repo, "rev-list", "--count", "@{upstream}..HEAD")
-            if ahead not in (None, "0"):
+            if target != head and ahead not in (None, "0"):
                 raise UpdateFailed("verify", "源码存在尚未推送的本地提交")
             return f"{head[:8]} → {target[:8]}"
 
         def plan() -> str:
-            changed = _git_output(repo, "diff", "--name-only", run["old_head"], run["target"]) or ""
+            base = run.get("running_head") or run["old_head"]
+            changed = _git_output(repo, "diff", "--name-only", base, run["target"])
+            if changed is None:
+                raise UpdateFailed("plan", "无法比较运行版本与目标版本")
             run["plan"] = update_plan([line for line in changed.splitlines() if line.strip()])
             return ", ".join(key for key, needed in run["plan"].items() if needed) or "无需安装或构建"
 

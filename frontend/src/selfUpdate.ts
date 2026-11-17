@@ -3,9 +3,9 @@ import type { SelfUpdateState } from "./types";
 export function canApplyUpdate(state: SelfUpdateState | null): boolean {
   return Boolean(
     state?.available &&
-      state.fast_forward &&
+      (state.restart_required && state.behind === 0 || state.fast_forward) &&
       !state.dirty &&
-      state.ahead === 0 &&
+      (state.behind === 0 || state.ahead === 0) &&
       state.blockers.length === 0,
   );
 }

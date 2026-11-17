@@ -141,6 +141,21 @@ class DaemonUpdateTests(unittest.TestCase):
         self.assertTrue(self.healthy())
         self.assertEqual(daemon.last_update_run(self.home)["status"], "succeeded")
 
+    def test_local_head_update_plans_from_running_revision(self) -> None:
+        from unittest.mock import patch
+        old = _git("rev-parse", "HEAD", cwd=self.repo)
+        (self.upstream / "frontend").mkdir()
+        target = self.publish("frontend/example.txt")
+        _git("merge", "--ff-only", target, cwd=self.repo)
+        # The checkout already moved, but the backend is still on old.
+        with patch.object(self.supervisor, "_build", return_value="built") as build:
+            response = daemon.request("update", home=self.home, target=target, running_head=old)
+            self.wait(lambda: (self.supervisor.run or {}).get("id") == response["update_id"]
+                      and self.supervisor.run.get("status") != "running", timeout=40)
+        self.assertEqual(self.supervisor.run["status"], "succeeded")
+        self.assertTrue(self.supervisor.run["plan"]["frontend"])
+        build.assert_called_once()
+
     def test_failed_start_rolls_back_to_the_old_head(self) -> None:
         old = _git("rev-parse", "HEAD", cwd=self.repo)
         target = self.publish("crash")

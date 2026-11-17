@@ -390,7 +390,7 @@ export function GlobalSettingsModal({
                     ? "无法比较"
                     : selfUpdate.behind > 0
                       ? `落后 ${selfUpdate.behind} 个提交${selfUpdate.fast_forward ? "" : "，不可快进"}`
-                      : "本地无已知更新"}
+                      : selfUpdate.restart_required ? "本地源码已更新，等待应用" : "本地无已知更新"}
                 </span>
               </div>
               <div className="mt-3 space-y-3">

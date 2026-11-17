@@ -2003,10 +2003,12 @@ def create_app(
                 # what changed, restarts, and rolls back on failure.
                 try:
                     state = await asyncio.to_thread(update_checker.preflight)
-                    target = (state.commits[-1].sha if state.commits else None) or state.upstream
+                    target = ((state.commits[-1].sha if state.commits else state.upstream)
+                              if state.behind > 0 else state.head)
                     assert target is not None
                     response = await asyncio.to_thread(
                         daemon_client.request, "update", target=target,
+                        running_head=update_checker.running_head,
                     )
                 except UpdateError as exc:
                     raise HTTPException(409, str(exc)) from exc
