@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Literal
 
@@ -31,6 +32,20 @@ IGNORED_PATTERNS = [
     "/codex_env.local.json", "/cache/", "/.sync-local/", "/daemon/",
     *[f"/{relative}" for relative in sorted(LEGACY_LOCAL_FILES)],
 ]
+
+
+def store_gitignore(lines: Iterable[str]) -> str:
+    """The store ``.gitignore`` in canonical form.
+
+    Managed patterns come first in ``IGNORED_PATTERNS`` order, then every
+    other line in its existing order; blank and repeated lines are dropped.
+    Hosts that reached the same pattern set through different upgrades thus
+    write byte-identical files instead of appending in their own order.
+    """
+    entries = [line for line in dict.fromkeys(lines) if line.strip()]
+    managed = [pattern for pattern in IGNORED_PATTERNS if pattern in entries]
+    extras = [line for line in entries if line not in IGNORED_PATTERNS]
+    return "\n".join([*managed, *extras]) + "\n"
 
 
 def context_root(root: Path) -> Path:

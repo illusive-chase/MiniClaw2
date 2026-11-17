@@ -346,16 +346,13 @@ def schema_is_newer(root: Path) -> bool:
 
 
 def ensure_store_gitignore(root: Path) -> None:
-    from .migrations.inventory import IGNORED_PATTERNS
+    from .migrations.inventory import IGNORED_PATTERNS, store_gitignore
 
     path = root / ".gitignore"
-    required = IGNORED_PATTERNS
-    existing = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
-    missing = [entry for entry in required if entry not in existing]
-    if not missing:
-        return
-    content = "\n".join([*existing, *missing]).strip() + "\n"
-    path.write_text(content, encoding="utf-8")
+    existing = path.read_text(encoding="utf-8") if path.exists() else None
+    content = store_gitignore([*(existing or "").splitlines(), *IGNORED_PATTERNS])
+    if content != existing:
+        path.write_text(content, encoding="utf-8")
 
 
 def bootstrap_store(root: Path, remote_url: str) -> MachineIdentity:

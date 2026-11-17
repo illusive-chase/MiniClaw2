@@ -11,7 +11,7 @@ from pathlib import Path
 
 from .catalog import marker, read_manifest, steps, version_of
 from .errors import MigrationError
-from .inventory import LEGACY_LOCAL_FILES, files, safe_path, scope_for
+from .inventory import LEGACY_LOCAL_FILES, files, safe_path, scope_for, store_gitignore
 from .repairs import repaired_contracts
 from .sdk import MigrationContext
 from .transaction import Transaction, atomic_json, durable_copy
@@ -144,6 +144,26 @@ def require_supported_remote(root: Path, revision: str) -> None:
         )
 
 
+def merge_store_gitignore(base: Path, local: Path, remote: Path) -> None:
+    """Three-way merge of the store ``.gitignore`` as a set of lines.
+
+    Hosts append patterns as they upgrade, so two hosts holding the same
+    patterns may disagree only on order, which a textual merge reports as a
+    conflict. A line survives unless one side removed it from the ancestor;
+    the canonical form is written to both sides so Git sees no difference.
+    """
+    paths = [root / ".gitignore" for root in (base, local, remote)]
+    if not any(path.exists() for path in paths):
+        return
+    ancestor, ours, theirs = (
+        path.read_text(encoding="utf-8").splitlines() if path.exists() else [] for path in paths
+    )
+    removed = (set(ancestor) - set(ours)) | (set(ancestor) - set(theirs))
+    content = store_gitignore(line for line in [*ours, *theirs] if line not in removed)
+    for root in (local, remote):
+        (root / ".gitignore").write_text(content, encoding="utf-8")
+
+
 def merge_remote(root: Path, remote_ref: str, *, on_progress: Callable[[str], None] | None = None,
                  author: tuple[str, str] = ANONYMOUS_AUTHOR) -> bool:
     receipt = root / ".migration-local" / "state.json"
@@ -184,6 +204,7 @@ def merge_remote(root: Path, remote_ref: str, *, on_progress: Callable[[str], No
             merge_git_layouts(base, local, remote)
             merge_lane_layouts(base, local, remote)
             merge_home_layout(base, local, remote)
+            merge_store_gitignore(base, local, remote)
             remote_tree = tree(root, remote, directory / "remote.index")
             base_commit = git(root, "commit-tree", tree(root, base, directory / "base.index"), input_text="迁移规范化共同祖先\n", author=author)
             local_commit = git(root, "commit-tree", tree(root, local, directory / "local.index"), "-p", base_commit, input_text="迁移规范化本地\n", author=author)

@@ -25,12 +25,13 @@ from miniclaw2.registry import ProjectRegistry
 from miniclaw2.store import Store
 from miniclaw2.migrations.catalog import MINIMUM_VERSION, marker
 from miniclaw2.migrations.errors import MigrationError
-from miniclaw2.migrations.inventory import scope_for
-from miniclaw2.migrations.sync_tree import extract
+from miniclaw2.migrations.inventory import IGNORED_PATTERNS, scope_for
+from miniclaw2.migrations.sync_tree import extract, merge_store_gitignore
 from miniclaw2.sync import (
     SchemaConflictError,
     SyncError,
     bootstrap_store,
+    ensure_store_gitignore,
 )
 
 
@@ -71,6 +72,48 @@ def test_sync_tree_git_timeout_override(tmp_path: Path) -> None:
     with patch.object(sync_tree_module.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "head\n", "")) as run:
         assert sync_tree_module.git(tmp_path, "rev-parse", "HEAD", timeout=7.0) == "head"
     assert run.call_args.kwargs["timeout"] == 7.0
+
+
+def test_store_gitignore_is_canonical_regardless_of_upgrade_order(tmp_path: Path) -> None:
+    stepwise, fresh = tmp_path / "stepwise", tmp_path / "fresh"
+    for root in (stepwise, fresh):
+        root.mkdir()
+    # One host gained the newest patterns across two upgrades, appending each
+    # time; the other received them all at once.
+    newest = ["/codex_env.local.json", "/.sync-local/", "/daemon/"]
+    older = [pattern for pattern in IGNORED_PATTERNS if pattern not in newest]
+    (stepwise / ".gitignore").write_text(
+        "\n".join([*older, "/.sync-local/", "/daemon/", "/codex_env.local.json", "", "private/"]) + "\n",
+        encoding="utf-8",
+    )
+    (fresh / ".gitignore").write_text("private/\n", encoding="utf-8")
+
+    ensure_store_gitignore(stepwise)
+    ensure_store_gitignore(fresh)
+
+    content = (stepwise / ".gitignore").read_text(encoding="utf-8")
+    assert content == (fresh / ".gitignore").read_text(encoding="utf-8")
+    assert content.splitlines() == [*IGNORED_PATTERNS, "private/"]
+
+
+def test_store_gitignore_merges_as_a_line_set(tmp_path: Path) -> None:
+    base, local, remote = (tmp_path / name for name in ("base", "local", "remote"))
+    for root, lines in (
+        (base, ["machine.json", "old/", "shared/"]),
+        (local, ["machine.json", "shared/", "/daemon/", "/.sync-local/", "local-only/"]),
+        (remote, ["machine.json", "old/", "shared/", "/.sync-local/", "/daemon/", "remote-only/"]),
+    ):
+        root.mkdir()
+        (root / ".gitignore").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    merge_store_gitignore(base, local, remote)
+
+    merged = (local / ".gitignore").read_text(encoding="utf-8")
+    assert merged == (remote / ".gitignore").read_text(encoding="utf-8")
+    # ``old/`` was removed locally; additions from either side survive.
+    assert merged.splitlines() == [
+        "machine.json", "/.sync-local/", "/daemon/", "shared/", "local-only/", "remote-only/",
+    ]
 
 
 @pytest.mark.parametrize("relative", LEGACY_MIGRATION_FILES)
@@ -729,6 +772,30 @@ class GitMetadataSyncTests(unittest.TestCase):
         self.assertFalse(tracked.exists())
         self.assertIn(incoming.id, {project.id for project in self.store_a.list_projects()})
         self.assertNotIn("contextspace/private-notes.md", _git("ls-files", cwd=self.root_a).stdout)
+
+    def test_divergent_gitignore_order_does_not_block_sync(self) -> None:
+        # Hosts on older builds appended the same patterns in the order they
+        # upgraded; a raw push stands in for such a build, which never
+        # canonicalized the file.
+        def reorder(root: Path, tail: list[str]) -> None:
+            lines = [line for line in (root / ".gitignore").read_text(encoding="utf-8").splitlines()
+                     if line not in tail]
+            (root / ".gitignore").write_text("\n".join([*lines, *tail]) + "\n", encoding="utf-8")
+            _git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qam", "legacy order", cwd=root)
+            _git("push", "-q", "origin", "HEAD:main", cwd=root)
+
+        reorder(self.root_a, ["/.sync-local/", "/daemon/", "/codex_env.local.json"])
+        other = self.base / "older-host"
+        _git("clone", "-q", str(self.remote), str(other))
+        reorder(other, ["/codex_env.local.json", "/.sync-local/", "/daemon/"])
+        self.store_a.create_project(Project(root_path="/a/order", name="本机"))
+
+        self.store_a.sync.sync_now()
+
+        expected = (self.root_a / ".gitignore").read_text(encoding="utf-8")
+        self.assertEqual(expected.splitlines(), IGNORED_PATTERNS)
+        self.assertEqual(_git("show", "origin/main:.gitignore", cwd=self.root_a).stdout, expected)
+        self.assertIn("本机", {project.name for project in self.store_a.list_projects()})
 
     def test_remote_cannot_overwrite_ignored_local_file(self) -> None:
         relative = "contextspace/private-notes.md"
