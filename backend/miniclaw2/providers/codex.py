@@ -14,8 +14,10 @@ from contextlib import AsyncExitStack
 from pathlib import Path
 from typing import Any
 
+from ..codex_env import load_codex_env, wrap_command
 from ..domain import GateSubtype
 from ..events import Activity, TextDelta, Thinking, Usage
+from ..global_config import miniclaw_home
 from ..model_catalog import get_model_preset
 from ..remote_execution import RemoteExecutor, register_environment
 from .base import (
@@ -98,6 +100,7 @@ class CodexProvider:
                 "env_overrides",
                 None,
             ),
+            env_script=_codex_env_script(context),
         ) as client:
             self._client = client
             try:
@@ -230,6 +233,7 @@ class CodexProvider:
                 "env_overrides",
                 None,
             ),
+            env_script=_codex_env_script(context),
         ) as client:
             self._client = client
             try:
@@ -717,10 +721,12 @@ class _CodexJsonRpcClient:
         *,
         cwd: str | None = None,
         env_overrides: dict[str, str] | None = None,
+        env_script: Path | None = None,
     ) -> None:
         self._proc: asyncio.subprocess.Process | None = None
         self._cwd = str(Path(cwd).resolve(strict=False)) if cwd else None
         self._env_overrides = dict(env_overrides or {})
+        self._env_script = env_script
         self._next_id = 1
         self._pending: dict[int, asyncio.Future[dict[str, Any]]] = {}
         self._queue: asyncio.Queue[dict[str, Any] | BaseException] = asyncio.Queue()
@@ -733,11 +739,13 @@ class _CodexJsonRpcClient:
     async def __aenter__(self) -> "_CodexJsonRpcClient":
         env = os.environ.copy()
         env.update(self._env_overrides)
+        argv = ["codex", "app-server", "--listen", "stdio://"]
+        if self._env_script is not None:
+            if not self._env_script.is_file():
+                raise RuntimeError(f"Codex 环境 wrapper 脚本不存在：{self._env_script}")
+            argv = wrap_command(self._env_script, argv)
         self._proc = await asyncio.create_subprocess_exec(
-            "codex",
-            "app-server",
-            "--listen",
-            "stdio://",
+            *argv,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -925,6 +933,12 @@ class _CodexJsonRpcClient:
             stderr = "\n".join(self._stderr_tail)
             message = f"{message}\nstderr tail:\n{stderr}"
         return message
+
+
+def _codex_env_script(context: AgentProviderContext) -> Path | None:
+    """The host-local env script to source before launch, when enabled."""
+    root = miniclaw_home(getattr(context, "store_root", None))
+    return load_codex_env(root).resolved_script()
 
 
 def _codex_legacy_decision(response: dict[str, Any]) -> Any:

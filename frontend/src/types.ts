@@ -460,6 +460,14 @@ export type ProbeStatus = {
   failures: number;
 };
 
+/** Host-local Codex launch wrapper; never syncs across devices. */
+export type CodexEnvSettings = {
+  enabled: boolean;
+  script_path: string;
+  script_exists: boolean;
+  shell: string;
+};
+
 export type SyncLocalSettings = {
   metadata_overdue_hours: number;
   project_overdue_hours: number;

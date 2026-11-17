@@ -19,6 +19,7 @@ import type {
   HostProfile,
   HostsResponse,
   SyncLocalSettings,
+  CodexEnvSettings,
   SyncOverview,
   ReviewBrief,
   NodeCategory,
@@ -550,6 +551,24 @@ export async function updateSyncLocalSettings(
     body: JSON.stringify(body),
   });
   if (!res.ok) throw new ApiError("updateSyncLocalSettings", res.status, await readErrorDetail(res));
+  return res.json();
+}
+
+export async function getCodexEnv(): Promise<CodexEnvSettings> {
+  const res = await fetch("/global-state/codex-env");
+  if (!res.ok) throw new ApiError("getCodexEnv", res.status, await readErrorDetail(res));
+  return res.json();
+}
+
+export async function updateCodexEnv(
+  body: Partial<Pick<CodexEnvSettings, "enabled" | "script_path">>,
+): Promise<CodexEnvSettings> {
+  const res = await fetch("/global-state/codex-env", {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new ApiError("updateCodexEnv", res.status, await readErrorDetail(res));
   return res.json();
 }
 

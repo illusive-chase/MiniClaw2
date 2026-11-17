@@ -17,6 +17,7 @@ EXCLUDED_ROOTS = {
     ".git", LOCAL_DIRECTORY, "migration-backups", "machine.json", "machine.lock",
     ".runtime-owner.json", ".update-exit-pending", "workspaces",
     "feishu.local.json", "feishu", "wecom.local.json", "remote_answers.local.json",
+    "codex_env.local.json",
     # Derived per-host caches (code-reading index); rebuilt on demand.
     "cache",
     # Host-local sync checkpoints and settings, and the daemon's run state.
@@ -27,7 +28,7 @@ IGNORED_PATTERNS = [
     ".update-exit-pending", ".runtime-owner.json", "*.tmp",
     "projects/*/hosts/*/local.json", "workspaces/",
     "/feishu.local.json", "/feishu/", "/wecom.local.json", "/remote_answers.local.json",
-    "/cache/", "/.sync-local/", "/daemon/",
+    "/codex_env.local.json", "/cache/", "/.sync-local/", "/daemon/",
     *[f"/{relative}" for relative in sorted(LEGACY_LOCAL_FILES)],
 ]
 

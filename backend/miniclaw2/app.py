@@ -138,6 +138,7 @@ from . import daemon as daemon_client
 from .host_beacons import host_timeline, list_hosts as list_known_hosts
 from .sync import SyncError
 from .sync_local import SyncLocalSettings, sync_local
+from .codex_env import CodexEnvConfig, codex_env_status, load_codex_env, save_codex_env
 from .sync_overview import SyncOverview
 from .tags import Tag
 from .home_layout import HomeConflictError, HomeItem, HomeLayout
@@ -284,6 +285,13 @@ class UpdateHostProfileRequest(BaseModel):
     label: str | None = None
     icon: str | None = None
     color: str | None = None
+
+
+class UpdateCodexEnvRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool | None = None
+    script_path: str | None = Field(default=None, max_length=4096)
 
 
 class UpdateSyncLocalRequest(BaseModel):
@@ -1363,6 +1371,24 @@ def create_app(
             raise HTTPException(422, str(exc)) from exc
         sync_overview.poke()
         return updated.model_dump()
+
+    @app.get("/global-state/codex-env", response_model=dict[str, Any])
+    def get_codex_env() -> dict[str, Any]:
+        """Host-local; the file never syncs to other devices."""
+        return codex_env_status(registry.store.root)
+
+    @app.patch("/global-state/codex-env", response_model=dict[str, Any])
+    def update_codex_env(req: UpdateCodexEnvRequest) -> dict[str, Any]:
+        changes = {key: value for key, value in req.model_dump().items() if value is not None}
+        current = load_codex_env(registry.store.root)
+        try:
+            save_codex_env(
+                registry.store.root,
+                CodexEnvConfig.model_validate({**current.model_dump(), **changes}),
+            )
+        except (ValueError, ValidationError) as exc:
+            raise HTTPException(422, str(exc)) from exc
+        return codex_env_status(registry.store.root)
 
     @app.get("/hosts", response_model=dict[str, Any])
     def get_hosts() -> dict[str, Any]:

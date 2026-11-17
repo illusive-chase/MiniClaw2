@@ -20,6 +20,7 @@ import { storageGuidance, type StorageFailure } from "../storageMaintenance";
 import { StorageGuidanceBody } from "./StorageGuidanceBody";
 import { ModalShell } from "./ModalShell";
 import { RemoteAnswersSection } from "./RemoteAnswersSection";
+import { CodexEnvSection } from "./CodexEnvSection";
 import { HostProfileSection, SyncLocalSettingsFields } from "./HostProfileSection";
 import { ageSince } from "../syncStatus";
 import { useSyncProgress } from "../useSyncProgress";
@@ -496,6 +497,8 @@ export function GlobalSettingsModal({
               <div className="mt-3 flex justify-end"><button type="button" disabled={saving} onClick={() => void saveDefaults()} className={primaryButton}>Save defaults</button></div>
             </section>
           )}
+
+          <CodexEnvSection open={open} inputClass={inputClass} labelClass={labelClass} primaryButton={primaryButton} />
 
           {toolRequests && (
             <section className="rounded-lg border border-line bg-surface-raised p-4 shadow-card">
